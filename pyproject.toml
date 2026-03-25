@@ -11,6 +11,7 @@ dependencies = [
     "motor>=3.3.0",
     "redis>=5.0.0",
     "apscheduler>=4.0.0a5",
+    "quartiermeister",
 ]
 
 [project.optional-dependencies]

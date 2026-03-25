@@ -56,6 +56,10 @@ class Feldwebel:
         # Create executor
         self._executor = Executor(mongo_db, prefix, services)
 
+        # Run migrations
+        from feldwebel.migrations import fw_migrations
+        await fw_migrations.run(mongo_db, prefix=f"{prefix}_fw")
+
         # Create consumer
         stream_name = f"{prefix}:commands"
         self._consumer = CommandConsumer(self._redis, stream_name)
