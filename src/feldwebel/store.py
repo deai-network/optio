@@ -162,10 +162,31 @@ async def create_child_process(
     return doc
 
 
+async def delete_descendants(
+    db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId,
+) -> int:
+    """Recursively delete all descendants of a process."""
+    coll = _collection(db, prefix)
+    children = await coll.find(
+        {"parentId": process_oid}, {"_id": 1},
+    ).to_list(None)
+    deleted = 0
+    for child in children:
+        deleted += await delete_descendants(db, prefix, child["_id"])
+    if children:
+        result = await coll.delete_many({"parentId": process_oid})
+        deleted += result.deleted_count
+    return deleted
+
+
 async def clear_result_fields(
     db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId,
 ) -> None:
-    """Clear previous run's result fields (for re-launch)."""
+    """Clear previous run's result fields (for re-launch).
+
+    Also deletes all descendant processes from previous runs.
+    """
+    await delete_descendants(db, prefix, process_oid)
     await _collection(db, prefix).update_one(
         {"_id": process_oid},
         {
