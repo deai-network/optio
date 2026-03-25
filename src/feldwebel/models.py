@@ -19,6 +19,7 @@ class TaskInstance:
     process_id: str
     name: str
     params: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     schedule: str | None = None
     special: bool = False
     warning: str | None = None

@@ -28,6 +28,7 @@ async def upsert_process(db: AsyncIOMotorDatabase, prefix: str, task: TaskInstan
                 "processId": task.process_id,
                 "name": task.name,
                 "params": task.params,
+                "metadata": task.metadata,
                 "cancellable": task.cancellation.cancellable,
                 "special": task.special,
                 "warning": task.warning,
