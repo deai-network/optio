@@ -12,7 +12,7 @@ from feldwebel.state_machine import LAUNCHABLE_STATES
 from feldwebel.store import (
     get_process_by_process_id,
     update_status, clear_result_fields,
-    create_child_process,
+    create_child_process, append_log,
 )
 from feldwebel.context import ProcessContext
 
@@ -46,6 +46,7 @@ class Executor:
             self._db, self._prefix, proc["_id"],
             ProcessStatus(state="scheduled"),
         )
+        await append_log(self._db, self._prefix, proc["_id"], "info", "State changed to scheduled")
 
         return await self._execute_process(proc, self._task_registry.get(process_id))
 
@@ -65,6 +66,7 @@ class Executor:
             self._db, self._prefix, oid,
             ProcessStatus(state="running", running_since=now),
         )
+        await append_log(self._db, self._prefix, oid, "info", "State changed to running")
 
         # Create context
         ctx = ProcessContext(
@@ -108,6 +110,7 @@ class Executor:
                     failed_at=datetime.now(timezone.utc),
                 ),
             )
+            await append_log(self._db, self._prefix, oid, "error", str(e))
             self._cancellation_flags.pop(oid, None)
             return "failed"
 
@@ -123,6 +126,7 @@ class Executor:
                     duration=round(elapsed, 2),
                 ),
             )
+            await append_log(self._db, self._prefix, oid, "info", "State changed to done")
         elif end_state == "cancelled":
             await update_status(
                 self._db, self._prefix, oid,
@@ -131,6 +135,7 @@ class Executor:
                     stopped_at=datetime.now(timezone.utc),
                 ),
             )
+            await append_log(self._db, self._prefix, oid, "info", "State changed to cancelled")
 
         self._cancellation_flags.pop(oid, None)
         return end_state
@@ -159,6 +164,7 @@ class Executor:
             order=order,
             initial_state="scheduled",
         )
+        await append_log(self._db, self._prefix, parent_ctx._process_oid, "info", f"Spawned child: {name}")
 
         end_state = await self._execute_process(child_doc, execute)
 

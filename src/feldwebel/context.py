@@ -101,10 +101,15 @@ class ProcessContext:
 
     async def _flush_progress(self) -> None:
         if self._pending_progress is not None:
-            from feldwebel.store import update_progress
+            from feldwebel.store import update_progress, append_log
             await update_progress(
                 self._db, self._prefix, self._process_oid, self._pending_progress,
             )
+            if self._pending_progress.message:
+                await append_log(
+                    self._db, self._prefix, self._process_oid,
+                    "info", self._pending_progress.message,
+                )
             self._last_flush_time = time.monotonic()
             self._pending_progress = None
 
@@ -117,10 +122,15 @@ class ProcessContext:
             except asyncio.CancelledError:
                 pass
         if self._pending_progress is not None:
-            from feldwebel.store import update_progress
+            from feldwebel.store import update_progress, append_log
             await update_progress(
                 self._db, self._prefix, self._process_oid, self._pending_progress,
             )
+            if self._pending_progress.message:
+                await append_log(
+                    self._db, self._prefix, self._process_oid,
+                    "info", self._pending_progress.message,
+                )
             self._pending_progress = None
 
     def _next_child_order(self) -> int:

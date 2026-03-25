@@ -162,3 +162,55 @@ async def test_idempotent_launch(mongo_db):
     proc = await get_process_by_process_id(mongo_db, "test", "idem")
     executor.request_cancel(proc["_id"])
     await launch_task
+
+
+async def test_lifecycle_log_entries(mongo_db):
+    """Process execution writes log entries for state transitions and progress messages."""
+    async def my_task(ctx):
+        ctx.report_progress(50, "Halfway there")
+        await asyncio.sleep(1.1)  # wait for progress flush
+        ctx.report_progress(100)  # no message — should NOT produce a log entry
+
+    task = TaskInstance(execute=my_task, process_id="loglife", name="Lifecycle")
+    await upsert_process(mongo_db, "test", task)
+
+    executor = Executor(mongo_db, "test", {})
+    executor.register_tasks([task])
+    await executor.launch_process("loglife")
+
+    proc = await get_process_by_process_id(mongo_db, "test", "loglife")
+    messages = [e["message"] for e in proc["log"]]
+
+    # Should have: scheduled, running, progress message, done
+    assert "State changed to scheduled" in messages
+    assert "State changed to running" in messages
+    assert "Halfway there" in messages
+    assert "State changed to done" in messages
+
+    # "100%" progress without message should NOT appear
+    assert not any("100" in m for m in messages if "State" not in m)
+
+
+async def test_child_spawn_and_failure_log_entries(mongo_db):
+    """Parent logs child spawn; failed child logs error."""
+    async def failing_child(ctx):
+        raise Exception("Child broke")
+
+    async def parent_task(ctx):
+        await ctx.run_child(failing_child, "bad", "Bad Child", survive_failure=True)
+
+    task = TaskInstance(execute=parent_task, process_id="logparent", name="Parent")
+    await upsert_process(mongo_db, "test", task)
+
+    executor = Executor(mongo_db, "test", {})
+    executor.register_tasks([task])
+    await executor.launch_process("logparent")
+
+    parent = await get_process_by_process_id(mongo_db, "test", "logparent")
+    parent_msgs = [e["message"] for e in parent["log"]]
+    assert "Spawned child: Bad Child" in parent_msgs
+
+    child = await get_process_by_process_id(mongo_db, "test", "bad")
+    child_msgs = [e["message"] for e in child["log"]]
+    assert "Child broke" in child_msgs
+    assert any(e["level"] == "error" for e in child["log"])
