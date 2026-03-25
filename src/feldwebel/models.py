@@ -35,6 +35,16 @@ class ChildResult:
 
 
 @dataclass
+class ChildProgressInfo:
+    """Progress snapshot of a child process, delivered to parent callbacks."""
+    process_id: str
+    name: str
+    state: str  # "scheduled", "running", "done", "failed", "cancelled"
+    percent: float | None = None
+    message: str | None = None
+
+
+@dataclass
 class ProcessStatus:
     """Runtime status of a process."""
     state: str = "idle"
