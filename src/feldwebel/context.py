@@ -7,7 +7,7 @@ from typing import Any, Callable, Awaitable, TYPE_CHECKING
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from feldwebel.models import Progress, ChildResult
+from feldwebel.models import Progress, ChildResult, ChildProgressInfo
 
 if TYPE_CHECKING:
     from feldwebel.executor import Executor
@@ -47,15 +47,29 @@ class ProcessContext:
         self._flush_interval: float = _ms / 1000.0
         self._flush_task: asyncio.Task | None = None
 
+        # Child progress callback
+        self._child_progress_snapshots: list["ChildProgressInfo"] = []
+        self._on_child_progress: Callable | None = None
+        self._child_callback_interval: float = 0.1  # 100ms = 10/sec
+        self._last_child_callback_time: float = 0
+        self._pending_child_callback: bool = False
+        self._child_callback_task: asyncio.Task | None = None
+
+        # Set by executor to route progress to parent
+        self._parent_listener: Callable | None = None
+
         # Set by executor after creation
         self._executor: "Executor | None" = None
 
     def report_progress(self, percent: float | None, message: str | None = None) -> None:
-        """Update progress. percent=None for indeterminate. Buffered and flushed asynchronously (max once/sec)."""
+        """Update progress. percent=None for indeterminate. Buffered and flushed asynchronously."""
         self._pending_progress = Progress(percent=percent, message=message)
         now = time.monotonic()
         if now - self._last_flush_time >= self._flush_interval:
             self._schedule_flush()
+        # Notify parent listener if wired
+        if self._parent_listener is not None:
+            self._parent_listener(percent, message)
 
     def should_continue(self) -> bool:
         """Returns False if cancellation has been requested."""
@@ -69,10 +83,13 @@ class ProcessContext:
         params: dict[str, Any] | None = None,
         survive_failure: bool = False,
         survive_cancel: bool = False,
+        on_child_progress: Callable | None = None,
     ) -> str:
         """Launch a sequential child process. Blocks until child completes."""
         if self._executor is None:
             raise RuntimeError("Executor not set on context")
+        if on_child_progress is not None:
+            self._set_child_callback(on_child_progress)
         return await self._executor.execute_child(
             parent_ctx=self,
             execute=execute,
@@ -88,6 +105,7 @@ class ProcessContext:
         max_concurrency: int = 10,
         survive_failure: bool = False,
         survive_cancel: bool = False,
+        on_child_progress: Callable | None = None,
     ) -> "ParallelGroup":
         """Create a parallel execution scope."""
         return ParallelGroup(
@@ -95,6 +113,7 @@ class ProcessContext:
             max_concurrency=max_concurrency,
             survive_failure=survive_failure,
             survive_cancel=survive_cancel,
+            on_child_progress=on_child_progress,
         )
 
     def _schedule_flush(self) -> None:
@@ -135,6 +154,67 @@ class ProcessContext:
                 )
             self._pending_progress = None
 
+    def _set_child_callback(self, callback: Callable) -> None:
+        """Set the on_child_progress callback for this context."""
+        self._on_child_progress = callback
+
+    def _notify_child_progress(self, child_id: str, name: str, state: str,
+                               percent: float | None, message: str | None) -> None:
+        """Called when a child reports progress. Updates snapshot and fires throttled callback."""
+        # Update or add snapshot
+        for info in self._child_progress_snapshots:
+            if info.process_id == child_id:
+                info.percent = percent
+                info.message = message
+                info.state = state
+                break
+        else:
+            self._child_progress_snapshots.append(
+                ChildProgressInfo(process_id=child_id, name=name, state=state,
+                                  percent=percent, message=message)
+            )
+        self._fire_child_callback_throttled()
+
+    def _notify_child_state_change(self, child_id: str, state: str) -> None:
+        """Called when a child changes state (done/failed/cancelled). Fires callback immediately."""
+        for info in self._child_progress_snapshots:
+            if info.process_id == child_id:
+                info.state = state
+                if state in ("done", "failed", "cancelled"):
+                    info.percent = 100.0
+                break
+        if self._on_child_progress is not None:
+            self._cancel_pending_child_callback()
+            self._on_child_progress(list(self._child_progress_snapshots))
+            self._last_child_callback_time = time.monotonic()
+
+    def _fire_child_callback_throttled(self) -> None:
+        """Fire the child callback, respecting the 10/sec throttle."""
+        if self._on_child_progress is None:
+            return
+        now = time.monotonic()
+        if now - self._last_child_callback_time >= self._child_callback_interval:
+            self._cancel_pending_child_callback()
+            self._on_child_progress(list(self._child_progress_snapshots))
+            self._last_child_callback_time = now
+        elif not self._pending_child_callback:
+            self._pending_child_callback = True
+            remaining = self._child_callback_interval - (now - self._last_child_callback_time)
+            self._child_callback_task = asyncio.create_task(self._deferred_child_callback(remaining))
+
+    async def _deferred_child_callback(self, delay: float) -> None:
+        """Fire buffered child callback after delay."""
+        await asyncio.sleep(delay)
+        self._pending_child_callback = False
+        if self._on_child_progress is not None:
+            self._on_child_progress(list(self._child_progress_snapshots))
+            self._last_child_callback_time = time.monotonic()
+
+    def _cancel_pending_child_callback(self) -> None:
+        if self._child_callback_task and not self._child_callback_task.done():
+            self._child_callback_task.cancel()
+        self._pending_child_callback = False
+
     def _next_child_order(self) -> int:
         order = self._child_counter.get("next", 0)
         self._child_counter["next"] = order + 1
@@ -150,6 +230,7 @@ class ParallelGroup:
         max_concurrency: int,
         survive_failure: bool,
         survive_cancel: bool,
+        on_child_progress: Callable | None = None,
     ):
         self._ctx = ctx
         self._max_concurrency = max_concurrency
@@ -159,6 +240,8 @@ class ParallelGroup:
         self._tasks: list[asyncio.Task] = []
         self._results: list[ChildResult] = []
         self._failed = False
+        if on_child_progress is not None:
+            self._ctx._set_child_callback(on_child_progress)
 
     @property
     def results(self) -> list[ChildResult]:

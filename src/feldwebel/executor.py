@@ -52,6 +52,7 @@ class Executor:
 
     async def _execute_process(
         self, proc: dict, execute_fn: Callable | None,
+        parent_ctx: ProcessContext | None = None,
     ) -> str:
         """Execute a process."""
         oid = proc["_id"]
@@ -82,6 +83,13 @@ class Executor:
             child_counter={"next": 0},
         )
         ctx._executor = self
+
+        if parent_ctx is not None and parent_ctx._on_child_progress is not None:
+            child_process_id = proc["processId"]
+            child_name = proc["name"]
+            def _listener(percent, message, _pid=child_process_id, _name=child_name):
+                parent_ctx._notify_child_progress(_pid, _name, "running", percent, message)
+            ctx._parent_listener = _listener
 
         if execute_fn is None:
             await update_status(
@@ -166,7 +174,10 @@ class Executor:
         )
         await append_log(self._db, self._prefix, parent_ctx._process_oid, "event", f"Spawned child: {name}")
 
-        end_state = await self._execute_process(child_doc, execute)
+        end_state = await self._execute_process(child_doc, execute, parent_ctx=parent_ctx)
+
+        if parent_ctx._on_child_progress is not None:
+            parent_ctx._notify_child_state_change(process_id, end_state)
 
         if end_state == "failed" and not survive_failure:
             raise RuntimeError(f"Child process '{name}' failed")
