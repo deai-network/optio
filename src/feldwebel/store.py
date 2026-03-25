@@ -107,6 +107,24 @@ async def update_progress(
     )
 
 
+async def append_log(
+    db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId,
+    level: str, message: str, data: dict | None = None,
+) -> None:
+    """Append a log entry to a process."""
+    entry: dict = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "level": level,
+        "message": message,
+    }
+    if data:
+        entry["data"] = data
+    await _collection(db, prefix).update_one(
+        {"_id": process_oid},
+        {"$push": {"log": entry}},
+    )
+
+
 async def create_child_process(
     db: AsyncIOMotorDatabase,
     prefix: str,
@@ -159,6 +177,7 @@ async def clear_result_fields(
                 "status.failedAt": None,
                 "status.stoppedAt": None,
                 "progress": Progress().to_dict(),
+                "log": [],
             }
         },
     )

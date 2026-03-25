@@ -5,6 +5,7 @@ from feldwebel.store import (
     upsert_process, remove_stale_processes,
     get_process_by_process_id, update_status, update_progress,
     create_child_process, clear_result_fields, get_children,
+    append_log,
 )
 
 
@@ -93,3 +94,29 @@ async def test_get_children(mongo_db):
     assert len(children) == 2
     assert children[0]["processId"] == "c1"
     assert children[1]["processId"] == "c2"
+
+
+async def test_append_log(mongo_db):
+    task = TaskInstance(execute=dummy_execute, process_id="logtest", name="Log Test")
+    proc = await upsert_process(mongo_db, "test", task)
+
+    await append_log(mongo_db, "test", proc["_id"], "info", "State changed to running")
+    await append_log(mongo_db, "test", proc["_id"], "error", "Something broke", {"detail": "stack"})
+
+    updated = await get_process_by_process_id(mongo_db, "test", "logtest")
+    assert len(updated["log"]) == 2
+    assert updated["log"][0]["level"] == "info"
+    assert updated["log"][0]["message"] == "State changed to running"
+    assert "timestamp" in updated["log"][0]
+    assert updated["log"][1]["data"] == {"detail": "stack"}
+
+
+async def test_clear_result_fields_clears_log(mongo_db):
+    task = TaskInstance(execute=dummy_execute, process_id="clearlog", name="Clear Log")
+    proc = await upsert_process(mongo_db, "test", task)
+
+    await append_log(mongo_db, "test", proc["_id"], "info", "Old entry")
+    await clear_result_fields(mongo_db, "test", proc["_id"])
+
+    updated = await get_process_by_process_id(mongo_db, "test", "clearlog")
+    assert updated["log"] == []
