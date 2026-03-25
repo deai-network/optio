@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "feldwebel"
+version = "0.1.0"
+description = "Reusable async process management library"
+requires-python = ">=3.11"
+dependencies = [
+    "motor>=3.3.0",
+    "redis>=5.0.0",
+    "apscheduler>=4.0.0a5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
