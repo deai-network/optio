@@ -1,6 +1,7 @@
 """Process execution context — the interface task functions receive."""
 
 import asyncio
+import os
 import time
 from typing import Any, Callable, Awaitable, TYPE_CHECKING
 from bson import ObjectId
@@ -42,7 +43,8 @@ class ProcessContext:
         # Progress throttling
         self._pending_progress: Progress | None = None
         self._last_flush_time: float = 0
-        self._flush_interval: float = 1.0
+        _ms = int(os.environ.get("FELDWEBEL_PROGRESS_FLUSH_INTERVAL_MS", "100"))
+        self._flush_interval: float = _ms / 1000.0
         self._flush_task: asyncio.Task | None = None
 
         # Set by executor after creation
