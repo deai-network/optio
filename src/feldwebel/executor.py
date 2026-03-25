@@ -46,7 +46,7 @@ class Executor:
             self._db, self._prefix, proc["_id"],
             ProcessStatus(state="scheduled"),
         )
-        await append_log(self._db, self._prefix, proc["_id"], "info", "State changed to scheduled")
+        await append_log(self._db, self._prefix, proc["_id"], "event", "State changed to scheduled")
 
         return await self._execute_process(proc, self._task_registry.get(process_id))
 
@@ -66,7 +66,7 @@ class Executor:
             self._db, self._prefix, oid,
             ProcessStatus(state="running", running_since=now),
         )
-        await append_log(self._db, self._prefix, oid, "info", "State changed to running")
+        await append_log(self._db, self._prefix, oid, "event", "State changed to running")
 
         # Create context
         ctx = ProcessContext(
@@ -126,7 +126,7 @@ class Executor:
                     duration=round(elapsed, 2),
                 ),
             )
-            await append_log(self._db, self._prefix, oid, "info", "State changed to done")
+            await append_log(self._db, self._prefix, oid, "event", "State changed to done")
         elif end_state == "cancelled":
             await update_status(
                 self._db, self._prefix, oid,
@@ -135,7 +135,7 @@ class Executor:
                     stopped_at=datetime.now(timezone.utc),
                 ),
             )
-            await append_log(self._db, self._prefix, oid, "info", "State changed to cancelled")
+            await append_log(self._db, self._prefix, oid, "event", "State changed to cancelled")
 
         self._cancellation_flags.pop(oid, None)
         return end_state
@@ -164,7 +164,7 @@ class Executor:
             order=order,
             initial_state="scheduled",
         )
-        await append_log(self._db, self._prefix, parent_ctx._process_oid, "info", f"Spawned child: {name}")
+        await append_log(self._db, self._prefix, parent_ctx._process_oid, "event", f"Spawned child: {name}")
 
         end_state = await self._execute_process(child_doc, execute)
 
