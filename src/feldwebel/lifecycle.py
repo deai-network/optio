@@ -171,6 +171,15 @@ class Feldwebel:
         if current_state not in CANCELLABLE_STATES:
             return
 
+        if current_state == "scheduled":
+            # Not yet running — go directly to cancelled
+            from datetime import datetime, timezone
+            await update_status(
+                self._config.mongo_db, self._config.prefix, proc["_id"],
+                ProcessStatus(state="cancelled", stopped_at=datetime.now(timezone.utc)),
+            )
+            return
+
         await update_status(
             self._config.mongo_db, self._config.prefix, proc["_id"],
             ProcessStatus(state="cancel_requested"),
@@ -206,4 +215,10 @@ class Feldwebel:
         )
 
     async def _handle_resync(self, payload: dict) -> None:
+        clean = payload.get("clean", False)
+        if clean:
+            # Nuke all process records before re-importing
+            coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
+            deleted = await coll.delete_many({})
+            logger.info(f"Nuked {deleted.deleted_count} process records")
         await self._sync_definitions()
