@@ -48,8 +48,8 @@ class ProcessContext:
         # Set by executor after creation
         self._executor: "Executor | None" = None
 
-    def report_progress(self, percent: float, message: str | None = None) -> None:
-        """Update progress. Buffered and flushed asynchronously (max once/sec)."""
+    def report_progress(self, percent: float | None, message: str | None = None) -> None:
+        """Update progress. percent=None for indeterminate. Buffered and flushed asynchronously (max once/sec)."""
         self._pending_progress = Progress(percent=percent, message=message)
         now = time.monotonic()
         if now - self._last_flush_time >= self._flush_interval:

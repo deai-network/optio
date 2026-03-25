@@ -59,8 +59,8 @@ class ProcessStatus:
 
 @dataclass
 class Progress:
-    """Progress of a running process."""
-    percent: float = 0.0
+    """Progress of a running process. percent=None means indeterminate."""
+    percent: float | None = 0.0
     message: str | None = None
 
     def to_dict(self) -> dict:
