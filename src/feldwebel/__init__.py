@@ -8,5 +8,6 @@ _instance = Feldwebel()
 init = _instance.init
 run = _instance.run
 shutdown = _instance.shutdown
+on_command = _instance.on_command
 
-__all__ = ["TaskInstance", "ChildResult", "init", "run", "shutdown"]
+__all__ = ["TaskInstance", "ChildResult", "init", "run", "shutdown", "on_command"]

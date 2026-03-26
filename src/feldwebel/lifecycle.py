@@ -79,6 +79,12 @@ class Feldwebel:
 
         logger.info(f"Feldwebel initialized with prefix '{prefix}'")
 
+    def on_command(self, command_type: str, handler: Callable[..., Awaitable]) -> None:
+        """Register a custom command handler (must be called before run)."""
+        if self._consumer is None:
+            raise RuntimeError("Must call init() before registering commands")
+        self._consumer.on(command_type, handler)
+
     async def run(self) -> None:
         """Start the main loop. Blocks until shutdown."""
         self._running = True
