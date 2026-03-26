@@ -214,3 +214,32 @@ async def test_child_spawn_and_failure_log_entries(mongo_db):
     child_msgs = [e["message"] for e in child["log"]]
     assert "Child broke" in child_msgs
     assert any(e["level"] == "error" for e in child["log"])
+
+
+async def test_child_inherits_parent_metadata(mongo_db):
+    """Child process should receive parent's metadata."""
+    child_metadata = {}
+
+    async def child_task(ctx):
+        nonlocal child_metadata
+        child_metadata = ctx.metadata
+
+    async def parent_task(ctx):
+        await ctx.run_child(child_task, "meta_child", "Meta Child")
+
+    task = TaskInstance(
+        execute=parent_task, process_id="meta_parent", name="Meta Parent",
+        metadata={"targetId": "source_99"},
+    )
+    await upsert_process(mongo_db, "test", task)
+
+    executor = Executor(mongo_db, "test", {})
+    executor.register_tasks([task])
+
+    result = await executor.launch_process("meta_parent")
+    assert result == "done"
+    assert child_metadata == {"targetId": "source_99"}
+
+    # Also verify it's persisted in the DB
+    child = await get_process_by_process_id(mongo_db, "test", "meta_child")
+    assert child["metadata"] == {"targetId": "source_99"}

@@ -76,6 +76,7 @@ class Executor:
             root_oid=root_oid,
             depth=proc.get("depth", 0),
             params=proc.get("params", {}),
+            metadata=proc.get("metadata", {}),
             services=self._services,
             db=self._db,
             prefix=self._prefix,
@@ -171,6 +172,7 @@ class Executor:
             depth=parent_ctx._depth + 1,
             order=order,
             initial_state="scheduled",
+            metadata=parent_ctx.metadata,
         )
         await append_log(self._db, self._prefix, parent_ctx._process_oid, "event", f"Spawned child: {name}")
 

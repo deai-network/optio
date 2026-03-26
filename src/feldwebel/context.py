@@ -28,9 +28,11 @@ class ProcessContext:
         prefix: str,
         cancellation_flag: asyncio.Event,
         child_counter: dict,
+        metadata: dict[str, Any] | None = None,
     ):
         self.process_id = process_id
         self.params = params
+        self.metadata = metadata or {}
         self.services = services
         self._process_oid = process_oid
         self._root_oid = root_oid
