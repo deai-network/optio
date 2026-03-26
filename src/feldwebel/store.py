@@ -137,6 +137,7 @@ async def create_child_process(
     order: int,
     cancellable: bool = True,
     initial_state: str = "idle",
+    metadata: dict | None = None,
 ) -> dict:
     """Create a child process record."""
     coll = _collection(db, prefix)
@@ -145,6 +146,7 @@ async def create_child_process(
         "processId": process_id,
         "name": name,
         "params": params,
+        "metadata": metadata or {},
         "parentId": parent_oid,
         "rootId": root_oid,
         "depth": depth,

@@ -62,6 +62,23 @@ async def test_create_child_process(mongo_db):
     assert child["depth"] == 1
 
 
+async def test_create_child_process_inherits_metadata(mongo_db):
+    task = TaskInstance(
+        execute=dummy_execute, process_id="parent", name="Parent",
+        metadata={"targetId": "source_42"},
+    )
+    parent = await upsert_process(mongo_db, "test", task)
+
+    child = await create_child_process(
+        mongo_db, "test",
+        parent_oid=parent["_id"], root_oid=parent["_id"],
+        process_id="child_meta", name="Child Meta", params={},
+        depth=1, order=0,
+        metadata={"targetId": "source_42"},
+    )
+    assert child["metadata"] == {"targetId": "source_42"}
+
+
 async def test_update_progress(mongo_db):
     task = TaskInstance(execute=dummy_execute, process_id="prog", name="Progress Test")
     proc = await upsert_process(mongo_db, "test", task)
