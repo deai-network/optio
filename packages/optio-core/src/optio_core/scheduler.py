@@ -3,7 +3,7 @@
 import logging
 from typing import Callable, Awaitable
 
-logger = logging.getLogger("optio.scheduler")
+logger = logging.getLogger("optio_core_core.scheduler")
 
 
 class ProcessScheduler:

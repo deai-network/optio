@@ -3,9 +3,9 @@
 import asyncio
 import os
 from unittest.mock import patch
-from optio.models import TaskInstance
-from optio.executor import Executor
-from optio.store import upsert_process, get_process_by_process_id
+from optio_core.models import TaskInstance
+from optio_core.executor import Executor
+from optio_core.store import upsert_process, get_process_by_process_id
 
 
 async def test_run_child_progress_callback(mongo_db):

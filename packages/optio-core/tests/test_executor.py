@@ -1,10 +1,10 @@
 """Tests for task executor — sequential child execution, cancellation, failure handling."""
 
 import asyncio
-from optio.models import TaskInstance
-from optio.executor import Executor
-from optio.lifecycle import Optio
-from optio.store import upsert_process, get_process_by_process_id
+from optio_core.models import TaskInstance
+from optio_core.executor import Executor
+from optio_core.lifecycle import Optio
+from optio_core.store import upsert_process, get_process_by_process_id
 
 
 async def test_launch_basic_process(mongo_db):

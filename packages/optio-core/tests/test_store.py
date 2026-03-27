@@ -1,7 +1,7 @@
 """Tests for MongoDB store operations."""
 
-from optio.models import TaskInstance, ProcessStatus, Progress
-from optio.store import (
+from optio_core.models import TaskInstance, ProcessStatus, Progress
+from optio_core.store import (
     upsert_process, remove_stale_processes,
     get_process_by_process_id, update_status, update_progress,
     create_child_process, clear_result_fields, get_children,

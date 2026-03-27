@@ -4,8 +4,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from optio.context import ProcessContext
-    from optio.models import ChildProgressInfo
+    from optio_core.context import ProcessContext
+    from optio_core.models import ChildProgressInfo
 
 
 def sequential_progress(ctx: "ProcessContext", total_children: int):

@@ -11,17 +11,17 @@ try:
 except ImportError:
     Redis = None  # type: ignore[assignment,misc]
 
-from optio.models import TaskInstance, OptioConfig, ProcessStatus
-from optio.store import (
+from optio_core.models import TaskInstance, OptioConfig, ProcessStatus
+from optio_core.store import (
     upsert_process, remove_stale_processes,
     get_process_by_process_id, update_status, clear_result_fields,
 )
-from optio.state_machine import CANCELLABLE_STATES
-from optio.executor import Executor
-from optio.consumer import CommandConsumer
-from optio.scheduler import ProcessScheduler
+from optio_core.state_machine import CANCELLABLE_STATES
+from optio_core.executor import Executor
+from optio_core.consumer import CommandConsumer
+from optio_core.scheduler import ProcessScheduler
 
-logger = logging.getLogger("optio")
+logger = logging.getLogger("optio_core_core")
 
 
 class Optio:
@@ -86,7 +86,7 @@ class Optio:
         self._executor = Executor(mongo_db, prefix, services)
 
         # Run migrations
-        from optio.migrations import fw_migrations
+        from optio_core.migrations import fw_migrations
         await fw_migrations.run(mongo_db, prefix=f"{prefix}_fw")
 
         # Create scheduler
@@ -118,7 +118,7 @@ class Optio:
         The process starts in 'idle' state — use the standard 'launch'
         command to start it.
         """
-        from optio.store import (
+        from optio_core.store import (
             upsert_process, get_process_by_id, create_child_process,
         )
 
@@ -159,7 +159,7 @@ class Optio:
 
     async def adhoc_delete(self, process_id: str) -> None:
         """Delete an ad-hoc process from DB and task registry."""
-        from optio.store import delete_process
+        from optio_core.store import delete_process
         await delete_process(self._config.mongo_db, self._config.prefix, process_id)
         self._executor._task_registry.pop(process_id, None)
 
@@ -198,7 +198,7 @@ class Optio:
     ) -> list[dict]:
         """List processes with optional filters."""
         from bson import ObjectId as OID
-        from optio.store import list_processes as _list_processes
+        from optio_core.store import list_processes as _list_processes
         return await _list_processes(
             self._config.mongo_db,
             self._config.prefix,

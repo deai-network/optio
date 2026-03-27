@@ -1,7 +1,7 @@
 """Tests for state machine."""
 
 import pytest
-from optio.state_machine import can_transition, validate_transition, LAUNCHABLE_STATES
+from optio_core.state_machine import can_transition, validate_transition, LAUNCHABLE_STATES
 
 
 def test_valid_transitions():

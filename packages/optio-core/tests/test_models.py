@@ -1,6 +1,6 @@
 """Tests for data models."""
 
-from optio.models import (
+from optio_core.models import (
     TaskInstance, ChildResult, ProcessStatus, Progress, CancellationConfig,
 )
 

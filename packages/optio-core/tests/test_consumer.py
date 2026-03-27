@@ -6,7 +6,7 @@ import pytest
 import pytest_asyncio
 from redis.asyncio import Redis
 
-from optio.consumer import CommandConsumer
+from optio_core.consumer import CommandConsumer
 
 
 @pytest_asyncio.fixture

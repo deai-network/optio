@@ -1,7 +1,7 @@
 """Optio — reusable async process management library."""
 
-from optio.models import TaskInstance, ChildResult
-from optio.lifecycle import Optio
+from optio_core.models import TaskInstance, ChildResult
+from optio_core.lifecycle import Optio
 
 _instance = Optio()
 

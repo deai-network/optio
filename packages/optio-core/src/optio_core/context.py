@@ -7,10 +7,10 @@ from typing import Any, Callable, Awaitable, TYPE_CHECKING
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from optio.models import Progress, ChildResult, ChildProgressInfo
+from optio_core.models import Progress, ChildResult, ChildProgressInfo
 
 if TYPE_CHECKING:
-    from optio.executor import Executor
+    from optio_core.executor import Executor
 
 
 class ProcessContext:
@@ -79,7 +79,7 @@ class ProcessContext:
 
     async def mark_ephemeral(self) -> None:
         """Mark this process for deletion after completion."""
-        from optio.store import _collection
+        from optio_core.store import _collection
         await _collection(self._db, self._prefix).update_one(
             {"_id": self._process_oid},
             {"$set": {"ephemeral": True}},
@@ -132,7 +132,7 @@ class ProcessContext:
 
     async def _flush_progress(self) -> None:
         if self._pending_progress is not None:
-            from optio.store import update_progress, append_log
+            from optio_core.store import update_progress, append_log
             await update_progress(
                 self._db, self._prefix, self._process_oid, self._pending_progress,
             )
@@ -153,7 +153,7 @@ class ProcessContext:
             except asyncio.CancelledError:
                 pass
         if self._pending_progress is not None:
-            from optio.store import update_progress, append_log
+            from optio_core.store import update_progress, append_log
             await update_progress(
                 self._db, self._prefix, self._process_oid, self._pending_progress,
             )

@@ -1,0 +1,10 @@
+motor>=3.3.0
+apscheduler>=4.0.0a5
+quaestor
+
+[dev]
+pytest>=8.0
+pytest-asyncio>=0.23
+
+[redis]
+redis>=5.0.0

@@ -3,9 +3,9 @@
 import asyncio
 
 import pytest
-from optio.lifecycle import Optio
-from optio.store import get_process_by_process_id
-from optio.models import TaskInstance, CancellationConfig
+from optio_core.lifecycle import Optio
+from optio_core.store import get_process_by_process_id
+from optio_core.models import TaskInstance, CancellationConfig
 
 
 @pytest.mark.asyncio

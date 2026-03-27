@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from optio.models import TaskInstance, ProcessStatus, Progress
+from optio_core.models import TaskInstance, ProcessStatus, Progress
 
 
 def _collection(db: AsyncIOMotorDatabase, prefix: str):

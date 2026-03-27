@@ -5,9 +5,9 @@ import json
 from redis.asyncio import Redis
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from optio.models import TaskInstance
-from optio.lifecycle import Optio
-from optio.store import get_process_by_process_id
+from optio_core.models import TaskInstance
+from optio_core.lifecycle import Optio
+from optio_core.store import get_process_by_process_id
 
 
 async def test_full_lifecycle():

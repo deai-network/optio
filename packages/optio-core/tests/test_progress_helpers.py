@@ -1,8 +1,8 @@
 """Tests for progress helper functions."""
 
 from unittest.mock import MagicMock
-from optio.models import ChildProgressInfo
-from optio.progress_helpers import sequential_progress, average_progress, mapped_progress
+from optio_core.models import ChildProgressInfo
+from optio_core.progress_helpers import sequential_progress, average_progress, mapped_progress
 
 
 def test_sequential_progress_first_child_partial():
