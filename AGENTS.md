@@ -4,6 +4,21 @@ Async process management library for Python backends with TypeScript API and Rea
 
 ---
 
+## Workflow
+
+**Every feature addition, behavior change, or bug fix MUST go through the relevant
+superpowers skill before implementation — brainstorming for new features/changes, debugging
+for bugs, TDD for implementation. No exceptions for "simple" tasks.** If you find yourself
+thinking "this is too simple to need it," that is the exact moment you must use it. The
+user does not need to mention skills explicitly — recognizing when they apply is your job.
+
+Put all specs, plans, and other generated documentation directly under `docs/`. Do not nest
+them under subdirectories like `docs/superpowers/specs/` — keep it flat.
+
+Do not add `Co-Authored-By` or any other self-credit lines to git commits.
+
+---
+
 ## Integration Levels
 
 | Level | Package | Language | Install |
