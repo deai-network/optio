@@ -5,7 +5,7 @@ from feldwebel.store import (
     upsert_process, remove_stale_processes,
     get_process_by_process_id, update_status, update_progress,
     create_child_process, clear_result_fields, get_children,
-    append_log,
+    append_log, delete_process,
 )
 
 
@@ -161,3 +161,25 @@ async def test_clear_result_fields_clears_log(mongo_db):
 
     updated = await get_process_by_process_id(mongo_db, "test", "clearlog")
     assert updated["log"] == []
+
+
+async def test_delete_process(mongo_db):
+    """delete_process removes the process and its descendants from DB."""
+    task = TaskInstance(execute=dummy_execute, process_id="del_parent", name="Parent")
+    parent = await upsert_process(mongo_db, "test", task)
+
+    await create_child_process(
+        mongo_db, "test",
+        parent_oid=parent["_id"], root_oid=parent["_id"],
+        process_id="del_child", name="Child", params={},
+        depth=1, order=0,
+    )
+
+    await delete_process(mongo_db, "test", "del_parent")
+    assert await get_process_by_process_id(mongo_db, "test", "del_parent") is None
+    assert await get_process_by_process_id(mongo_db, "test", "del_child") is None
+
+
+async def test_delete_process_nonexistent(mongo_db):
+    """delete_process is a no-op for nonexistent processes."""
+    await delete_process(mongo_db, "test", "nonexistent")  # should not raise

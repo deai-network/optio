@@ -85,6 +85,12 @@ class Feldwebel:
             raise RuntimeError("Must call init() before registering commands")
         self._consumer.on(command_type, handler)
 
+    async def adhoc_delete(self, process_id: str) -> None:
+        """Delete an ad-hoc process from DB and task registry."""
+        from feldwebel.store import delete_process
+        await delete_process(self._config.mongo_db, self._config.prefix, process_id)
+        self._executor._task_registry.pop(process_id, None)
+
     async def run(self) -> None:
         """Start the main loop. Blocks until shutdown."""
         self._running = True

@@ -187,6 +187,17 @@ async def delete_descendants(
     return deleted
 
 
+async def delete_process(
+    db: AsyncIOMotorDatabase, prefix: str, process_id: str,
+) -> None:
+    """Delete a process and its descendants by processId. No-op if not found."""
+    proc = await get_process_by_process_id(db, prefix, process_id)
+    if proc is None:
+        return
+    await delete_descendants(db, prefix, proc["_id"])
+    await _collection(db, prefix).delete_one({"_id": proc["_id"]})
+
+
 async def clear_result_fields(
     db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId,
 ) -> None:
