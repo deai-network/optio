@@ -128,6 +128,30 @@ async def test_append_log(mongo_db):
     assert updated["log"][1]["data"] == {"detail": "stack"}
 
 
+async def test_upsert_process_default_flags(mongo_db):
+    """New processes have adhoc=False, ephemeral=False by default."""
+    task = TaskInstance(execute=dummy_execute, process_id="flags_default", name="Flags")
+    result = await upsert_process(mongo_db, "test", task)
+    assert result.get("adhoc") is False
+    assert result.get("ephemeral") is False
+
+
+async def test_create_child_with_adhoc_ephemeral(mongo_db):
+    """Child processes can have adhoc and ephemeral flags."""
+    task = TaskInstance(execute=dummy_execute, process_id="parent_flags", name="Parent")
+    parent = await upsert_process(mongo_db, "test", task)
+
+    child = await create_child_process(
+        mongo_db, "test",
+        parent_oid=parent["_id"], root_oid=parent["_id"],
+        process_id="child_flags", name="Child", params={},
+        depth=1, order=0,
+        adhoc=True, ephemeral=True,
+    )
+    assert child["adhoc"] is True
+    assert child["ephemeral"] is True
+
+
 async def test_clear_result_fields_clears_log(mongo_db):
     task = TaskInstance(execute=dummy_execute, process_id="clearlog", name="Clear Log")
     proc = await upsert_process(mongo_db, "test", task)

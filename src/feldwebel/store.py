@@ -38,6 +38,8 @@ async def upsert_process(db: AsyncIOMotorDatabase, prefix: str, task: TaskInstan
                 "rootId": None,
                 "depth": 0,
                 "order": 0,
+                "adhoc": False,
+                "ephemeral": False,
                 "status": ProcessStatus().to_dict(),
                 "progress": Progress().to_dict(),
                 "log": [],
@@ -138,6 +140,8 @@ async def create_child_process(
     cancellable: bool = True,
     initial_state: str = "idle",
     metadata: dict | None = None,
+    adhoc: bool = False,
+    ephemeral: bool = False,
 ) -> dict:
     """Create a child process record."""
     coll = _collection(db, prefix)
@@ -152,6 +156,8 @@ async def create_child_process(
         "depth": depth,
         "order": order,
         "cancellable": cancellable,
+        "adhoc": adhoc,
+        "ephemeral": ephemeral,
         "special": False,
         "warning": None,
         "status": ProcessStatus(state=initial_state).to_dict(),
