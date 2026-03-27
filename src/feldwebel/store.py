@@ -244,3 +244,28 @@ async def cancel_children(
         },
         {"$set": {"status.state": "cancel_requested"}},
     )
+
+
+async def list_processes(
+    db: AsyncIOMotorDatabase,
+    prefix: str,
+    state: str | None = None,
+    root_id: ObjectId | None = None,
+    type: str | None = None,
+    target_id: str | None = None,
+) -> list[dict]:
+    """List processes with optional filters."""
+    coll = _collection(db, prefix)
+    filter: dict = {}
+    if state is not None:
+        filter["status.state"] = state
+    if root_id is not None:
+        filter["rootId"] = root_id
+    if type is not None:
+        filter["type"] = type
+    if target_id is not None:
+        filter["metadata.targetId"] = target_id
+
+    return await coll.find(filter).sort([
+        ("depth", 1), ("order", 1), ("_id", 1),
+    ]).to_list(None)

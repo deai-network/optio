@@ -156,3 +156,60 @@ async def test_on_command_raises_without_redis(mongo_db):
 
     with pytest.raises(RuntimeError, match="Custom commands require Redis"):
         fw.on_command("test", lambda p: None)
+
+
+@pytest.mark.asyncio
+async def test_get_process(mongo_db):
+    """get_process() returns a process by process_id."""
+    fw = Feldwebel()
+    await fw.init(mongo_db=mongo_db, prefix="test_get",
+                  get_task_definitions=_get_tasks)
+
+    proc = await fw.get_process("test_task")
+    assert proc is not None
+    assert proc["processId"] == "test_task"
+    assert proc["name"] == "Test Task"
+    assert proc["status"]["state"] == "idle"
+
+
+@pytest.mark.asyncio
+async def test_get_process_not_found(mongo_db):
+    """get_process() returns None for unknown process_id."""
+    fw = Feldwebel()
+    await fw.init(mongo_db=mongo_db, prefix="test_get_missing",
+                  get_task_definitions=_get_tasks)
+
+    proc = await fw.get_process("nonexistent")
+    assert proc is None
+
+
+@pytest.mark.asyncio
+async def test_list_processes_no_filter(mongo_db):
+    """list_processes() returns all processes."""
+    fw = Feldwebel()
+    await fw.init(mongo_db=mongo_db, prefix="test_list",
+                  get_task_definitions=_get_tasks)
+
+    procs = await fw.list_processes()
+    assert len(procs) == 2
+    names = {p["name"] for p in procs}
+    assert names == {"Test Task", "Slow Task"}
+
+
+@pytest.mark.asyncio
+async def test_list_processes_filter_state(mongo_db):
+    """list_processes(state=...) filters by state."""
+    fw = Feldwebel()
+    await fw.init(mongo_db=mongo_db, prefix="test_list_state",
+                  get_task_definitions=_get_tasks)
+
+    procs = await fw.list_processes(state="idle")
+    assert len(procs) == 2
+
+    procs = await fw.list_processes(state="running")
+    assert len(procs) == 0
+
+    await fw.launch_and_wait("test_task")
+    procs = await fw.list_processes(state="done")
+    assert len(procs) == 1
+    assert procs[0]["processId"] == "test_task"

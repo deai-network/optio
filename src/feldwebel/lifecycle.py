@@ -183,6 +183,31 @@ class Feldwebel:
         """Re-sync task definitions from the generator."""
         await self._handle_resync({"clean": clean})
 
+    async def get_process(self, process_id: str) -> dict | None:
+        """Get a process by its process_id string."""
+        return await get_process_by_process_id(
+            self._config.mongo_db, self._config.prefix, process_id,
+        )
+
+    async def list_processes(
+        self,
+        state: str | None = None,
+        root_id: str | None = None,
+        type: str | None = None,
+        target_id: str | None = None,
+    ) -> list[dict]:
+        """List processes with optional filters."""
+        from bson import ObjectId as OID
+        from feldwebel.store import list_processes as _list_processes
+        return await _list_processes(
+            self._config.mongo_db,
+            self._config.prefix,
+            state=state,
+            root_id=OID(root_id) if root_id else None,
+            type=type,
+            target_id=target_id,
+        )
+
     async def run(self) -> None:
         """Start the main loop. Blocks until shutdown."""
         self._running = True
