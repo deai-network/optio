@@ -1,20 +1,20 @@
-# feldwebel-api
+# optio-api
 
-REST API handlers and SSE streams for feldwebel process management.
+REST API handlers and SSE streams for optio process management.
 Framework-agnostic handlers with a ready-to-use Fastify adapter.
 
 ## Install
 
 ```bash
-npm install feldwebel-api feldwebel-contracts
+npm install optio-api optio-contracts
 ```
 
-`feldwebel-api` has peer dependencies on `fastify` (optional, only needed for the Fastify adapter) and runtime dependencies on `mongodb` and `ioredis`.
+`optio-api` has peer dependencies on `fastify` (optional, only needed for the Fastify adapter) and runtime dependencies on `mongodb` and `ioredis`.
 
 ## Entry Points
 
-- `feldwebel-api` — framework-agnostic handlers, Redis publishers, and stream pollers
-- `feldwebel-api/fastify` — Fastify adapter (registers routes and SSE streams)
+- `optio-api` — framework-agnostic handlers, Redis publishers, and stream pollers
+- `optio-api/fastify` — Fastify adapter (registers routes and SSE streams)
 
 ## Quick Setup (Fastify)
 
@@ -25,14 +25,14 @@ import { Redis } from 'ioredis';
 import {
   registerProcessRoutes,
   registerProcessStream,
-  type FeldwebelApiOptions,
-} from 'feldwebel-api/fastify';
+  type OptioApiOptions,
+} from 'optio-api/fastify';
 
 const app = Fastify();
 const db = (await new MongoClient(process.env.MONGO_URL!).connect()).db();
 const redis = new Redis(process.env.REDIS_URL!);
 
-const opts: FeldwebelApiOptions = {
+const opts: OptioApiOptions = {
   db,
   redis,
   prefix: 'myapp', // MongoDB collection prefix: `myapp_processes`
@@ -52,7 +52,7 @@ await app.listen({ port: 3000 });
 
 ## Exported Publishers
 
-Use these in domain code to send commands to the feldwebel worker via Redis streams.
+Use these in domain code to send commands to the optio worker via Redis streams.
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
@@ -63,7 +63,7 @@ Commands are written to the `{prefix}:commands` Redis stream.
 
 ## Building Custom Adapters
 
-Import handler functions and stream pollers directly from `feldwebel-api`:
+Import handler functions and stream pollers directly from `optio-api`:
 
 ```typescript
 import {
@@ -73,7 +73,7 @@ import {
   createListPoller, createTreePoller,
   type ListQuery, type PaginationQuery, type TreeLogQuery, type CommandResult,
   type StreamPollerOptions, type TreePollerOptions, type ListPollerHandle,
-} from 'feldwebel-api';
+} from 'optio-api';
 ```
 
 Handler functions take `db: Db` and `prefix: string` as their first two arguments,
@@ -86,4 +86,4 @@ client connects and `stop()` when they disconnect.
 
 ## See Also
 
-- [Feldwebel Overview](../feldwebel/README.md)
+- [Optio Overview](../optio/README.md)

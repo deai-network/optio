@@ -1,19 +1,19 @@
-# feldwebel-api — LLM Reference
+# optio-api — LLM Reference
 
 ## Package
 
-- **name**: `feldwebel-api`
+- **name**: `optio-api`
 - **entry points**:
-  - `feldwebel-api` → `dist/index.js` / `dist/index.d.ts`
-  - `feldwebel-api/fastify` → `dist/adapters/fastify.js` / `dist/adapters/fastify.d.ts`
-- **dependencies**: `feldwebel-contracts`, `@ts-rest/core`, `mongodb`, `ioredis`
+  - `optio-api` → `dist/index.js` / `dist/index.d.ts`
+  - `optio-api/fastify` → `dist/adapters/fastify.js` / `dist/adapters/fastify.d.ts`
+- **dependencies**: `optio-contracts`, `@ts-rest/core`, `mongodb`, `ioredis`
 - **optionalDependencies**: `@ts-rest/fastify`
 - **peerDependencies**: `fastify ^5.2.0` (optional)
 
-## FeldwebelApiOptions
+## OptioApiOptions
 
 ```typescript
-interface FeldwebelApiOptions {
+interface OptioApiOptions {
   db: Db;         // MongoDB Db instance
   redis: Redis;   // ioredis Redis instance
   prefix: string; // Collection prefix; reads/writes `{prefix}_processes`
@@ -22,17 +22,17 @@ interface FeldwebelApiOptions {
 
 ## Fastify Adapter
 
-Imported from `feldwebel-api/fastify`.
+Imported from `optio-api/fastify`.
 
 ```typescript
-function registerProcessRoutes(app: FastifyInstance, opts: FeldwebelApiOptions): void
+function registerProcessRoutes(app: FastifyInstance, opts: OptioApiOptions): void
 ```
 
 Registers all REST routes under `/api/processes/:prefix/...` using `@ts-rest/fastify`
-against the `processesContract` from `feldwebel-contracts`.
+against the `processesContract` from `optio-contracts`.
 
 ```typescript
-function registerProcessStream(app: FastifyInstance, opts: FeldwebelApiOptions): void
+function registerProcessStream(app: FastifyInstance, opts: OptioApiOptions): void
 ```
 
 Registers two SSE routes (raw HTTP, not ts-rest):
@@ -44,7 +44,7 @@ Both routes set `Content-Type: text/event-stream`, poll every 1 s, and call `pol
 
 ## Handler Functions
 
-All handlers are exported from `feldwebel-api` (main entry point).
+All handlers are exported from `optio-api` (main entry point).
 
 ```typescript
 // Query handlers
@@ -145,7 +145,7 @@ type CommandResult =
 
 ## Publishers
 
-Imported from `feldwebel-api` (main entry point). Write to the `{prefix}:commands` Redis stream.
+Imported from `optio-api` (main entry point). Write to the `{prefix}:commands` Redis stream.
 
 ```typescript
 async function publishLaunch(redis: Redis, prefix: string, processId: string): Promise<void>

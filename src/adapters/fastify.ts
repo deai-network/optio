@@ -2,7 +2,7 @@
 // monorepo type resolution. The adapter is tested via API integration tests.
 import { initServer } from '@ts-rest/fastify';
 import { initContract } from '@ts-rest/core';
-import { processesContract } from 'feldwebel-contracts';
+import { processesContract } from 'optio-contracts';
 import type { FastifyInstance } from 'fastify';
 import type { Db } from 'mongodb';
 import type { Redis } from 'ioredis';
@@ -10,7 +10,7 @@ import { ObjectId } from 'mongodb';
 import * as handlers from '../handlers.js';
 import { createListPoller, createTreePoller } from '../stream-poller.js';
 
-export interface FeldwebelApiOptions {
+export interface OptioApiOptions {
   db: Db;
   redis: Redis;
   prefix: string;
@@ -19,7 +19,7 @@ export interface FeldwebelApiOptions {
 const c = initContract();
 const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/api' });
 
-export function registerProcessRoutes(app: FastifyInstance, opts: FeldwebelApiOptions) {
+export function registerProcessRoutes(app: FastifyInstance, opts: OptioApiOptions) {
   const { db, redis, prefix } = opts;
   const s = initServer();
 
@@ -69,7 +69,7 @@ export function registerProcessRoutes(app: FastifyInstance, opts: FeldwebelApiOp
   app.register(s.plugin(routes));
 }
 
-export function registerProcessStream(app: FastifyInstance, opts: FeldwebelApiOptions) {
+export function registerProcessStream(app: FastifyInstance, opts: OptioApiOptions) {
   const { db, prefix } = opts;
 
   app.get('/api/processes/:prefix/:id/tree/stream', async (request: any, reply: any) => {
