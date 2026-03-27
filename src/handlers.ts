@@ -1,0 +1,220 @@
+import { ObjectId, type Db } from 'mongodb';
+import type { Redis } from 'ioredis';
+import { computeAggregatedProgress } from './progress.js';
+import { publishLaunch, publishCancel, publishDismiss, publishResync } from './publisher.js';
+
+function col(db: Db, prefix: string) {
+  return db.collection(`${prefix}_processes`);
+}
+
+function toResponse(proc: any) {
+  return {
+    ...proc,
+    _id: proc._id.toString(),
+    parentId: proc.parentId?.toString(),
+    rootId: proc.rootId.toString(),
+  };
+}
+
+// --- Query handlers ---
+
+export interface ListQuery {
+  cursor?: string;
+  limit: number;
+  rootId?: string;
+  type?: string;
+  state?: string;
+  targetId?: string;
+}
+
+export async function listProcesses(db: Db, prefix: string, query: ListQuery) {
+  const { cursor, limit, rootId, type, state, targetId } = query;
+  const filter: Record<string, unknown> = {};
+
+  if (rootId) filter.rootId = new ObjectId(rootId);
+  if (type) filter.type = type;
+  if (state) filter['status.state'] = state;
+  if (targetId) filter['metadata.targetId'] = targetId;
+  if (cursor) filter._id = { $gt: new ObjectId(cursor) };
+
+  const [items, totalCount] = await Promise.all([
+    col(db, prefix).find(filter).sort({ _id: 1 }).limit(limit + 1).toArray(),
+    col(db, prefix).countDocuments(filter),
+  ]);
+
+  const hasNext = items.length > limit;
+  if (hasNext) items.pop();
+
+  return {
+    items: items.map(toResponse),
+    nextCursor: hasNext ? items[items.length - 1]._id.toString() : null,
+    totalCount,
+  };
+}
+
+export async function getProcess(db: Db, prefix: string, id: string) {
+  const proc = await col(db, prefix).findOne({ _id: new ObjectId(id) });
+  if (!proc) return null;
+
+  let progress = proc.progress;
+  if (proc.progressMode === 'children') {
+    const children = await col(db, prefix).find({ parentId: proc._id }).toArray();
+    progress = computeAggregatedProgress(
+      { ...proc, _id: proc._id.toString() },
+      children.map((c: any) => ({ _id: c._id.toString(), progress: c.progress })),
+    );
+  }
+
+  return { ...toResponse(proc), progress };
+}
+
+async function buildTree(db: Db, prefix: string, processId: ObjectId, maxDepth?: number, currentDepth = 0): Promise<any> {
+  const proc = await col(db, prefix).findOne({ _id: processId });
+  if (!proc) return null;
+
+  let children: any[] = [];
+  if (maxDepth === undefined || currentDepth < maxDepth) {
+    const childDocs = await col(db, prefix)
+      .find({ parentId: processId })
+      .sort({ order: 1 })
+      .toArray();
+
+    children = await Promise.all(
+      childDocs.map((c) => buildTree(db, prefix, c._id, maxDepth, currentDepth + 1)),
+    );
+    children = children.filter(Boolean);
+  }
+
+  const progress = proc.progressMode === 'children' && children.length > 0
+    ? computeAggregatedProgress(
+        { ...proc, _id: proc._id.toString() },
+        children.map((c: any) => ({ _id: c._id, progress: c.progress })),
+      )
+    : proc.progress;
+
+  return {
+    ...proc,
+    _id: proc._id.toString(),
+    parentId: proc.parentId?.toString(),
+    rootId: proc.rootId.toString(),
+    progress,
+    children,
+  };
+}
+
+export async function getProcessTree(db: Db, prefix: string, id: string, maxDepth?: number) {
+  return buildTree(db, prefix, new ObjectId(id), maxDepth);
+}
+
+export interface PaginationQuery {
+  cursor?: string;
+  limit: number;
+}
+
+export async function getProcessLog(db: Db, prefix: string, id: string, query: PaginationQuery) {
+  const proc = await col(db, prefix).findOne({ _id: new ObjectId(id) });
+  if (!proc) return null;
+
+  const { cursor, limit } = query;
+  const startIdx = cursor ? parseInt(cursor, 10) : 0;
+  const logSlice = proc.log.slice(startIdx, startIdx + limit + 1);
+  const hasNext = logSlice.length > limit;
+  if (hasNext) logSlice.pop();
+
+  return {
+    items: logSlice,
+    nextCursor: hasNext ? String(startIdx + limit) : null,
+    totalCount: proc.log.length,
+  };
+}
+
+export interface TreeLogQuery extends PaginationQuery {
+  maxDepth?: number;
+}
+
+export async function getProcessTreeLog(db: Db, prefix: string, id: string, query: TreeLogQuery) {
+  const proc = await col(db, prefix).findOne({ _id: new ObjectId(id) });
+  if (!proc) return null;
+
+  const { maxDepth, cursor, limit } = query;
+  const filter: Record<string, unknown> = { rootId: proc.rootId };
+  if (maxDepth !== undefined) {
+    filter.depth = { $lte: proc.depth + maxDepth };
+  }
+  const allProcs = await col(db, prefix).find(filter).toArray();
+
+  const allLogs = allProcs.flatMap((p: any) =>
+    p.log.map((entry: any) => ({
+      ...entry,
+      processId: p._id.toString(),
+      processLabel: p.name,
+    })),
+  );
+  allLogs.sort((a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+  const startIdx = cursor ? parseInt(cursor, 10) : 0;
+  const logSlice = allLogs.slice(startIdx, startIdx + limit + 1);
+  const hasNext = logSlice.length > limit;
+  if (hasNext) logSlice.pop();
+
+  return {
+    items: logSlice,
+    nextCursor: hasNext ? String(startIdx + limit) : null,
+    totalCount: allLogs.length,
+  };
+}
+
+// --- Command handlers ---
+
+const LAUNCHABLE_STATES = ['idle', 'done', 'failed', 'cancelled'];
+const CANCELLABLE_STATES = ['running', 'scheduled'];
+const END_STATES = ['done', 'failed', 'cancelled'];
+
+export type CommandResult =
+  | { status: 200; body: any }
+  | { status: 404; body: { message: string } }
+  | { status: 409; body: { message: string } };
+
+export async function launchProcess(db: Db, redis: Redis, prefix: string, id: string): Promise<CommandResult> {
+  const proc = await col(db, prefix).findOne({ _id: new ObjectId(id) });
+  if (!proc) {
+    return { status: 404, body: { message: 'Process not found' } };
+  }
+  if (!LAUNCHABLE_STATES.includes(proc.status.state)) {
+    return { status: 409, body: { message: `Cannot launch process in state: ${proc.status.state}` } };
+  }
+  await publishLaunch(redis, prefix, proc.processId);
+  return { status: 200, body: toResponse(proc) };
+}
+
+export async function cancelProcess(db: Db, redis: Redis, prefix: string, id: string): Promise<CommandResult> {
+  const proc = await col(db, prefix).findOne({ _id: new ObjectId(id) });
+  if (!proc) {
+    return { status: 404, body: { message: 'Process not found' } };
+  }
+  if (!proc.cancellable) {
+    return { status: 409, body: { message: 'Process is not cancellable' } };
+  }
+  if (!CANCELLABLE_STATES.includes(proc.status.state)) {
+    return { status: 409, body: { message: `Cannot cancel process in state: ${proc.status.state}` } };
+  }
+  await publishCancel(redis, prefix, proc.processId);
+  return { status: 200, body: toResponse(proc) };
+}
+
+export async function dismissProcess(db: Db, redis: Redis, prefix: string, id: string): Promise<CommandResult> {
+  const proc = await col(db, prefix).findOne({ _id: new ObjectId(id) });
+  if (!proc) {
+    return { status: 404, body: { message: 'Process not found' } };
+  }
+  if (!END_STATES.includes(proc.status.state)) {
+    return { status: 409, body: { message: `Cannot dismiss process in state: ${proc.status.state}` } };
+  }
+  await publishDismiss(redis, prefix, proc.processId);
+  return { status: 200, body: toResponse(proc) };
+}
+
+export async function resyncProcesses(redis: Redis, prefix: string, clean: boolean = false): Promise<{ message: string }> {
+  await publishResync(redis, prefix, clean);
+  return { message: clean ? 'Nuke and resync requested' : 'Resync requested' };
+}
