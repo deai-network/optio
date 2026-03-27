@@ -252,7 +252,7 @@ async def test_adhoc_define_root(mongo_db, redis_url):
         ctx.report_progress(100, "Done")
 
     fw = Feldwebel()
-    await fw.init(mongo_db=mongo_db, redis_url=redis_url, prefix="adhoc_test")
+    await fw.init(mongo_db=mongo_db, prefix="adhoc_test", redis_url=redis_url)
 
     task = TaskInstance(execute=my_task, process_id="adhoc_root", name="Ad-hoc Root")
     await fw.adhoc_define(task)
@@ -278,7 +278,7 @@ async def test_adhoc_define_child(mongo_db, redis_url):
         pass
 
     fw = Feldwebel()
-    await fw.init(mongo_db=mongo_db, redis_url=redis_url, prefix="adhoc_test2")
+    await fw.init(mongo_db=mongo_db, prefix="adhoc_test2", redis_url=redis_url)
 
     # Create a parent
     parent_task = TaskInstance(execute=my_task, process_id="parent", name="Parent")
@@ -303,7 +303,7 @@ async def test_ephemeral_process_deleted_after_completion(mongo_db, redis_url):
         ctx.report_progress(100, "Done")
 
     fw = Feldwebel()
-    await fw.init(mongo_db=mongo_db, redis_url=redis_url, prefix="eph_test")
+    await fw.init(mongo_db=mongo_db, prefix="eph_test", redis_url=redis_url)
 
     task = TaskInstance(execute=my_task, process_id="eph_done", name="Ephemeral Done")
     await fw.adhoc_define(task, ephemeral=True)
@@ -328,7 +328,7 @@ async def test_mark_ephemeral_during_execution(mongo_db, redis_url):
         ctx.report_progress(100, "Done")
 
     fw = Feldwebel()
-    await fw.init(mongo_db=mongo_db, redis_url=redis_url, prefix="mark_eph_test")
+    await fw.init(mongo_db=mongo_db, prefix="mark_eph_test", redis_url=redis_url)
 
     task = TaskInstance(execute=my_task, process_id="mark_eph", name="Mark Ephemeral")
     await fw.adhoc_define(task)  # ephemeral=False at define time
@@ -349,7 +349,7 @@ async def test_adhoc_define_ephemeral(mongo_db, redis_url):
         pass
 
     fw = Feldwebel()
-    await fw.init(mongo_db=mongo_db, redis_url=redis_url, prefix="adhoc_test3")
+    await fw.init(mongo_db=mongo_db, prefix="adhoc_test3", redis_url=redis_url)
 
     task = TaskInstance(execute=my_task, process_id="adhoc_eph", name="Ephemeral")
     await fw.adhoc_define(task, ephemeral=True)

@@ -39,8 +39,8 @@ async def test_full_lifecycle():
     fw = Feldwebel()
     await fw.init(
         mongo_db=db,
-        redis_url=redis_url,
         prefix=prefix,
+        redis_url=redis_url,
         services={"mongo": db},
         get_task_definitions=get_tasks,
     )
@@ -119,7 +119,7 @@ async def test_child_process_tree():
 
     fw = Feldwebel()
     await fw.init(
-        mongo_db=db, redis_url=redis_url, prefix=prefix,
+        mongo_db=db, prefix=prefix, redis_url=redis_url,
         services={"mongo": db}, get_task_definitions=get_tasks,
     )
 
