@@ -1,13 +1,13 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { useFeldwebelPrefix, useFeldwebelClient } from '../context/useFeldwebelContext.js';
+import { useOptioPrefix, useOptioClient } from '../context/useOptioContext.js';
 
 interface ProcessActionsOptions {
   onResyncSuccess?: (clean: boolean) => void;
 }
 
 export function useProcessActions(options?: ProcessActionsOptions) {
-  const prefix = useFeldwebelPrefix();
-  const api = useFeldwebelClient();
+  const prefix = useOptioPrefix();
+  const api = useOptioClient();
   const queryClient = useQueryClient();
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['processes'] });
@@ -16,7 +16,7 @@ export function useProcessActions(options?: ProcessActionsOptions) {
   const cancelMutation = api.processes.cancel.useMutation({ onSuccess: invalidate });
   const dismissMutation = api.processes.dismiss.useMutation({ onSuccess: invalidate });
   const resyncMutation = api.processes.resync.useMutation({
-    onSuccess: (_data, variables) => {
+    onSuccess: (_data: any, variables: any) => {
       options?.onResyncSuccess?.(variables.body?.clean ?? false);
       invalidate();
     },

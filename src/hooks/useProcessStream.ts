@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useFeldwebelPrefix, useFeldwebelBaseUrl } from '../context/useFeldwebelContext.js';
+import { useOptioPrefix, useOptioBaseUrl } from '../context/useOptioContext.js';
 
 interface ProcessUpdate {
   _id: string;
@@ -50,8 +50,8 @@ function buildTree(flat: ProcessUpdate[]): ProcessTreeNode | null {
 }
 
 export function useProcessStream(processId: string | undefined, maxDepth = 10): ProcessStreamResult {
-  const prefix = useFeldwebelPrefix();
-  const baseUrl = useFeldwebelBaseUrl();
+  const prefix = useOptioPrefix();
+  const baseUrl = useOptioBaseUrl();
   const [state, setState] = useState<{ processes: ProcessUpdate[]; connected: boolean; logs: LogEntry[] }>({
     processes: [], connected: false, logs: [],
   });

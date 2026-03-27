@@ -1,13 +1,14 @@
 import { initQueryClient } from '@ts-rest/react-query';
 import { initContract } from '@ts-rest/core';
-import { processesContract } from 'feldwebel-contracts';
+import { processesContract } from 'optio-contracts';
 
 const c = initContract();
 const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/api' });
 
-export type FeldwebelClient = ReturnType<typeof createFeldwebelClient>;
+export type OptioClient = ReturnType<typeof createOptioClient>;
 
-export function createFeldwebelClient(baseUrl: string) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function createOptioClient(baseUrl: string): any {
   return initQueryClient(apiContract, {
     baseUrl,
     baseHeaders: {},

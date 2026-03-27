@@ -1,8 +1,8 @@
-import { useFeldwebelPrefix, useFeldwebelClient } from '../context/useFeldwebelContext.js';
+import { useOptioPrefix, useOptioClient } from '../context/useOptioContext.js';
 
 export function useProcessList(options?: { refetchInterval?: number | false }) {
-  const prefix = useFeldwebelPrefix();
-  const api = useFeldwebelClient();
+  const prefix = useOptioPrefix();
+  const api = useOptioClient();
   const { data, isLoading } = api.processes.list.useQuery(
     ['processes', prefix],
     { params: { prefix }, query: { limit: 50 } },
@@ -16,8 +16,8 @@ export function useProcessList(options?: { refetchInterval?: number | false }) {
 }
 
 export function useProcess(id: string | undefined, options?: { refetchInterval?: number | false }) {
-  const prefix = useFeldwebelPrefix();
-  const api = useFeldwebelClient();
+  const prefix = useOptioPrefix();
+  const api = useOptioClient();
   const { data, isLoading } = api.processes.get.useQuery(
     ['process', prefix, id],
     { params: { prefix, id: id! } },
@@ -30,8 +30,8 @@ export function useProcess(id: string | undefined, options?: { refetchInterval?:
 }
 
 export function useProcessTree(id: string | undefined, options?: { refetchInterval?: number | false }) {
-  const prefix = useFeldwebelPrefix();
-  const api = useFeldwebelClient();
+  const prefix = useOptioPrefix();
+  const api = useOptioClient();
   const { data } = api.processes.getTree.useQuery(
     ['process-tree', prefix, id],
     { params: { prefix, id: id! }, query: {} },
@@ -41,8 +41,8 @@ export function useProcessTree(id: string | undefined, options?: { refetchInterv
 }
 
 export function useProcessTreeLog(id: string | undefined, options?: { refetchInterval?: number | false; limit?: number }) {
-  const prefix = useFeldwebelPrefix();
-  const api = useFeldwebelClient();
+  const prefix = useOptioPrefix();
+  const api = useOptioClient();
   const { data } = api.processes.getTreeLog.useQuery(
     ['process-tree-log', prefix, id],
     { params: { prefix, id: id! }, query: { limit: options?.limit ?? 100 } },
@@ -52,8 +52,8 @@ export function useProcessTreeLog(id: string | undefined, options?: { refetchInt
 }
 
 export function useSourceProcesses(sourceId: string, options?: { refetchInterval?: number | false }) {
-  const prefix = useFeldwebelPrefix();
-  const api = useFeldwebelClient();
+  const prefix = useOptioPrefix();
+  const api = useOptioClient();
   const { data, isLoading } = api.processes.list.useQuery(
     ['source-processes', prefix, sourceId],
     { params: { prefix }, query: { targetId: sourceId, limit: 20 } },

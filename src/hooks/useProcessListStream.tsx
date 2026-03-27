@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import { useFeldwebelPrefix, useFeldwebelBaseUrl } from '../context/useFeldwebelContext.js';
+import { useOptioPrefix, useOptioBaseUrl } from '../context/useOptioContext.js';
 
 interface ProcessListStreamState {
   processes: any[];
@@ -60,8 +60,8 @@ function getSnapshot(): ProcessListStreamState {
 }
 
 export function useProcessListStream(): ProcessListStreamState {
-  const prefix = useFeldwebelPrefix();
-  const baseUrl = useFeldwebelBaseUrl();
+  const prefix = useOptioPrefix();
+  const baseUrl = useOptioBaseUrl();
   connect(baseUrl, prefix);
   return useSyncExternalStore(subscribe, getSnapshot);
 }

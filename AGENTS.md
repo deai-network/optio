@@ -1,14 +1,14 @@
-# feldwebel-ui — LLM Reference
+# optio-ui — LLM Reference
 
 ## Package
 
-- **name**: `feldwebel-ui`
+- **name**: `optio-ui`
 - **version**: `0.1.0`
 - **type**: `module` (ESM)
 - **entry**: `src/index.ts`
 
 **Dependencies** (bundled):
-- `feldwebel-contracts: workspace:*`
+- `optio-contracts: workspace:*`
 - `@ts-rest/core: ^3.51.0`
 - `@ts-rest/react-query: ^3.51.0`
 - `@ant-design/icons: ^5.6.0`
@@ -21,10 +21,10 @@
 - `react-i18next: >=15`
 - `i18next: >=24`
 
-## FeldwebelProvider
+## OptioProvider
 
 ```ts
-interface FeldwebelProviderProps {
+interface OptioProviderProps {
   prefix: string;       // process namespace prefix sent to all API calls
   baseUrl?: string;     // API base URL, default ''
   children: ReactNode;
@@ -37,10 +37,10 @@ components and hooks from this package. Requires `QueryClientProvider` from
 
 Internal context value shape:
 ```ts
-interface FeldwebelContextValue {
+interface OptioContextValue {
   prefix: string;
   baseUrl: string;
-  client: FeldwebelClient;  // ts-rest client created from baseUrl
+  client: OptioClient;  // ts-rest client created from baseUrl
 }
 ```
 
@@ -207,7 +207,7 @@ interface ProcessFiltersProps {
 
 Renders a `Select` (width 180) plus two `Checkbox` controls in an Ant Design `Space`.
 The component is purely controlled — no internal state. The `FilterGroup` type is
-exported from `feldwebel-ui`.
+exported from `optio-ui`.
 
 ## Hooks
 

@@ -1,5 +1,5 @@
 // Provider
-export { FeldwebelProvider } from './context/FeldwebelProvider.js';
+export { OptioProvider } from './context/OptioProvider.js';
 
 // Components
 export { ProcessList, ProcessItem } from './components/ProcessList.js';

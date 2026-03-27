@@ -1,11 +1,11 @@
-# feldwebel-ui
+# optio-ui
 
-React components and hooks for monitoring and controlling feldwebel processes.
+React components and hooks for monitoring and controlling optio processes.
 
 ## Install
 
 ```bash
-npm install feldwebel-ui
+npm install optio-ui
 ```
 
 ## Peer Dependencies
@@ -20,22 +20,22 @@ npm install feldwebel-ui
 
 ## Quick Setup
 
-Wrap your application (or the relevant subtree) with `FeldwebelProvider`, then use
+Wrap your application (or the relevant subtree) with `OptioProvider`, then use
 components and hooks anywhere inside it. The provider requires a `QueryClient` from
 `@tanstack/react-query` to already be present higher up the tree.
 
 ```tsx
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { FeldwebelProvider, ProcessList, useProcessList, useProcessActions } from 'feldwebel-ui';
+import { OptioProvider, ProcessList, useProcessList, useProcessActions } from 'optio-ui';
 
 const queryClient = new QueryClient();
 
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <FeldwebelProvider prefix="librarian" baseUrl="http://localhost:3000">
+      <OptioProvider prefix="librarian" baseUrl="http://localhost:3000">
         <ProcessPage />
-      </FeldwebelProvider>
+      </OptioProvider>
     </QueryClientProvider>
   );
 }
@@ -101,7 +101,7 @@ following keys:
 
 ## No Router Dependency
 
-`feldwebel-ui` has no dependency on React Router or any other routing library.
+`optio-ui` has no dependency on React Router or any other routing library.
 Components never render `<Link>` elements. Navigation is handled entirely through
 the `onProcessClick?: (processId: string) => void` callback on `ProcessList` and
 `ProcessItem` — your application decides what to do when a process is clicked (e.g.
@@ -109,4 +109,4 @@ the `onProcessClick?: (processId: string) => void` callback on `ProcessList` and
 
 ## See Also
 
-- [Feldwebel Overview](../feldwebel/README.md)
+- [Optio Overview](../optio/README.md)
