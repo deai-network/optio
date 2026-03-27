@@ -77,6 +77,14 @@ class ProcessContext:
         """Returns False if cancellation has been requested."""
         return not self._cancellation_flag.is_set()
 
+    async def mark_ephemeral(self) -> None:
+        """Mark this process for deletion after completion."""
+        from feldwebel.store import _collection
+        await _collection(self._db, self._prefix).update_one(
+            {"_id": self._process_oid},
+            {"$set": {"ephemeral": True}},
+        )
+
     async def run_child(
         self,
         execute: Callable[..., Awaitable[None]],

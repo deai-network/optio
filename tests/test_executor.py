@@ -297,6 +297,52 @@ async def test_adhoc_define_child(mongo_db, redis_url):
     await fw.shutdown()
 
 
+async def test_ephemeral_process_deleted_after_completion(mongo_db, redis_url):
+    """A process defined with ephemeral=True is deleted after reaching done state."""
+    async def my_task(ctx):
+        ctx.report_progress(100, "Done")
+
+    fw = Feldwebel()
+    await fw.init(mongo_db=mongo_db, redis_url=redis_url, prefix="eph_test")
+
+    task = TaskInstance(execute=my_task, process_id="eph_done", name="Ephemeral Done")
+    await fw.adhoc_define(task, ephemeral=True)
+
+    result = await fw._executor.launch_process("eph_done")
+    assert result == "done"
+
+    # Process should be deleted
+    proc = await get_process_by_process_id(mongo_db, "eph_test", "eph_done")
+    assert proc is None
+
+    # Should be removed from task registry
+    assert "eph_done" not in fw._executor._task_registry
+
+    await fw.shutdown()
+
+
+async def test_mark_ephemeral_during_execution(mongo_db, redis_url):
+    """ctx.mark_ephemeral() causes deletion after completion."""
+    async def my_task(ctx):
+        await ctx.mark_ephemeral()
+        ctx.report_progress(100, "Done")
+
+    fw = Feldwebel()
+    await fw.init(mongo_db=mongo_db, redis_url=redis_url, prefix="mark_eph_test")
+
+    task = TaskInstance(execute=my_task, process_id="mark_eph", name="Mark Ephemeral")
+    await fw.adhoc_define(task)  # ephemeral=False at define time
+
+    result = await fw._executor.launch_process("mark_eph")
+    assert result == "done"
+
+    # Process should be deleted (mark_ephemeral set it during execution)
+    proc = await get_process_by_process_id(mongo_db, "mark_eph_test", "mark_eph")
+    assert proc is None
+
+    await fw.shutdown()
+
+
 async def test_adhoc_define_ephemeral(mongo_db, redis_url):
     """adhoc_define with ephemeral=True sets the flag on the process."""
     async def my_task(ctx):

@@ -31,6 +31,14 @@ class Executor:
         """Register task execute functions by processId."""
         self._task_registry = {t.process_id: t.execute for t in tasks}
 
+    async def _cleanup_ephemeral(self, process_id: str) -> None:
+        """Delete the process if it's marked ephemeral."""
+        proc = await get_process_by_process_id(self._db, self._prefix, process_id)
+        if proc is not None and proc.get("ephemeral"):
+            from feldwebel.store import delete_process
+            await delete_process(self._db, self._prefix, process_id)
+            self._task_registry.pop(process_id, None)
+
     async def launch_process(self, process_id: str) -> str | None:
         """Launch a top-level process by processId. Returns end state or None."""
         proc = await get_process_by_process_id(self._db, self._prefix, process_id)
@@ -121,6 +129,7 @@ class Executor:
             )
             await append_log(self._db, self._prefix, oid, "error", str(e))
             self._cancellation_flags.pop(oid, None)
+            await self._cleanup_ephemeral(proc["processId"])
             return "failed"
 
         await ctx.flush_final_progress()
@@ -147,6 +156,7 @@ class Executor:
             await append_log(self._db, self._prefix, oid, "event", "State changed to cancelled")
 
         self._cancellation_flags.pop(oid, None)
+        await self._cleanup_ephemeral(proc["processId"])
         return end_state
 
     async def execute_child(
