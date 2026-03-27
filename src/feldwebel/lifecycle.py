@@ -39,23 +39,48 @@ class Feldwebel:
     async def init(
         self,
         mongo_db: AsyncIOMotorDatabase,
-        redis_url: str,
         prefix: str,
+        redis_url: str | None = None,
         services: dict[str, Any] | None = None,
         get_task_definitions: Callable[..., Awaitable[list[TaskInstance]]] | None = None,
     ) -> None:
-        """Initialize feldwebel."""
+        """Initialize feldwebel.
+
+        Args:
+            mongo_db: Motor async MongoDB database.
+            prefix: Namespace for collections and streams.
+            redis_url: Redis connection URL. If None, Redis features (command
+                consumer, custom commands) are disabled and processes are
+                managed via direct method calls.
+            services: Custom services dict passed to task execute functions.
+            get_task_definitions: Async function returning task definitions.
+        """
         services = services or {}
         self._config = FeldwebelConfig(
             mongo_db=mongo_db,
-            redis_url=redis_url,
             prefix=prefix,
+            redis_url=redis_url,
             services=services,
             get_task_definitions=get_task_definitions,
         )
 
-        # Connect to Redis
-        self._redis = Redis.from_url(redis_url)
+        # Connect to Redis (if configured)
+        if redis_url:
+            if Redis is None:
+                raise ImportError(
+                    "Redis support requires the 'redis' extra: "
+                    "pip install feldwebel[redis]"
+                )
+            self._redis = Redis.from_url(redis_url)
+
+            # Create consumer
+            stream_name = f"{prefix}:commands"
+            self._consumer = CommandConsumer(self._redis, stream_name)
+            self._consumer.on("launch", self._handle_launch)
+            self._consumer.on("cancel", self._handle_cancel)
+            self._consumer.on("dismiss", self._handle_dismiss)
+            self._consumer.on("resync", self._handle_resync)
+            await self._consumer.setup()
 
         # Create executor
         self._executor = Executor(mongo_db, prefix, services)
@@ -63,15 +88,6 @@ class Feldwebel:
         # Run migrations
         from feldwebel.migrations import fw_migrations
         await fw_migrations.run(mongo_db, prefix=f"{prefix}_fw")
-
-        # Create consumer
-        stream_name = f"{prefix}:commands"
-        self._consumer = CommandConsumer(self._redis, stream_name)
-        self._consumer.on("launch", self._handle_launch)
-        self._consumer.on("cancel", self._handle_cancel)
-        self._consumer.on("dismiss", self._handle_dismiss)
-        self._consumer.on("resync", self._handle_resync)
-        await self._consumer.setup()
 
         # Create scheduler
         self._scheduler = ProcessScheduler(
@@ -81,7 +97,8 @@ class Feldwebel:
         # Run initial sync
         await self._sync_definitions()
 
-        logger.info(f"Feldwebel initialized with prefix '{prefix}'")
+        logger.info(f"Feldwebel initialized with prefix '{prefix}'"
+                     f"{' (Redis: ' + redis_url + ')' if redis_url else ' (no Redis)'}")
 
     def on_command(self, command_type: str, handler: Callable[..., Awaitable]) -> None:
         """Register a custom command handler (must be called before run)."""
