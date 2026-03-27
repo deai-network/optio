@@ -1,6 +1,5 @@
 import { ObjectId, type Db } from 'mongodb';
 import type { Redis } from 'ioredis';
-import { computeAggregatedProgress } from './progress.js';
 import { publishLaunch, publishCancel, publishDismiss, publishResync } from './publisher.js';
 
 function col(db: Db, prefix: string) {
@@ -55,17 +54,7 @@ export async function listProcesses(db: Db, prefix: string, query: ListQuery) {
 export async function getProcess(db: Db, prefix: string, id: string) {
   const proc = await col(db, prefix).findOne({ _id: new ObjectId(id) });
   if (!proc) return null;
-
-  let progress = proc.progress;
-  if (proc.progressMode === 'children') {
-    const children = await col(db, prefix).find({ parentId: proc._id }).toArray();
-    progress = computeAggregatedProgress(
-      { ...proc, _id: proc._id.toString() } as any,
-      children.map((c: any) => ({ _id: c._id.toString(), progress: c.progress })),
-    );
-  }
-
-  return { ...toResponse(proc), progress };
+  return toResponse(proc);
 }
 
 async function buildTree(db: Db, prefix: string, processId: ObjectId, maxDepth?: number, currentDepth = 0): Promise<any> {
@@ -85,19 +74,12 @@ async function buildTree(db: Db, prefix: string, processId: ObjectId, maxDepth?:
     children = children.filter(Boolean);
   }
 
-  const progress = proc.progressMode === 'children' && children.length > 0
-    ? computeAggregatedProgress(
-        { ...proc, _id: proc._id.toString() } as any,
-        children.map((c: any) => ({ _id: c._id, progress: c.progress })),
-      )
-    : proc.progress;
-
   return {
     ...proc,
     _id: proc._id.toString(),
     parentId: proc.parentId?.toString(),
     rootId: proc.rootId.toString(),
-    progress,
+    progress: proc.progress,
     children,
   };
 }

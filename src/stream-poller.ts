@@ -1,5 +1,4 @@
 import { ObjectId, type Db } from 'mongodb';
-import { computeAggregatedProgress } from './progress.js';
 
 export interface StreamPollerOptions {
   db: Db;
