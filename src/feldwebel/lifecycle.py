@@ -6,7 +6,10 @@ import signal
 from typing import Any, Callable, Awaitable
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
-from redis.asyncio import Redis
+try:
+    from redis.asyncio import Redis
+except ImportError:
+    Redis = None  # type: ignore[assignment,misc]
 
 from feldwebel.models import TaskInstance, FeldwebelConfig, ProcessStatus
 from feldwebel.store import (

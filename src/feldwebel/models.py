@@ -81,7 +81,7 @@ class Progress:
 class FeldwebelConfig:
     """Configuration for feldwebel initialization."""
     mongo_db: Any  # motor AsyncIOMotorDatabase
-    redis_url: str
     prefix: str
+    redis_url: str | None = None
     services: dict[str, Any] = field(default_factory=dict)
     get_task_definitions: Callable[..., Awaitable[list[TaskInstance]]] | None = None

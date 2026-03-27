@@ -4,7 +4,10 @@ import asyncio
 import json
 import logging
 from typing import Callable, Awaitable
-from redis.asyncio import Redis
+try:
+    from redis.asyncio import Redis
+except ImportError:
+    Redis = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger("feldwebel.consumer")
 
