@@ -166,6 +166,7 @@ class Feldwebel:
     async def run(self) -> None:
         """Start the main loop. Blocks until shutdown."""
         self._running = True
+        self._shutdown_event = asyncio.Event()
 
         # Set up signal handlers (only works in main thread)
         try:
@@ -180,9 +181,11 @@ class Feldwebel:
         # Start scheduler
         await self._scheduler.start()
 
-        # Run consumer (blocks)
         try:
-            await self._consumer.run()
+            if self._consumer:
+                await self._consumer.run()
+            else:
+                await self._shutdown_event.wait()
         finally:
             await self._scheduler.stop()
 
@@ -190,8 +193,12 @@ class Feldwebel:
         """Graceful shutdown."""
         logger.info("Shutdown requested")
         self._running = False
+
         if self._consumer:
             self._consumer.stop()
+
+        if hasattr(self, '_shutdown_event'):
+            self._shutdown_event.set()
 
         # Cancel all running processes
         if self._executor:
