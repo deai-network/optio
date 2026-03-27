@@ -7,10 +7,10 @@ from typing import Any, Callable, Awaitable, TYPE_CHECKING
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from feldwebel.models import Progress, ChildResult, ChildProgressInfo
+from optio.models import Progress, ChildResult, ChildProgressInfo
 
 if TYPE_CHECKING:
-    from feldwebel.executor import Executor
+    from optio.executor import Executor
 
 
 class ProcessContext:
@@ -45,7 +45,7 @@ class ProcessContext:
         # Progress throttling
         self._pending_progress: Progress | None = None
         self._last_flush_time: float = 0
-        _ms = int(os.environ.get("FELDWEBEL_PROGRESS_FLUSH_INTERVAL_MS", "100"))
+        _ms = int(os.environ.get("OPTIO_PROGRESS_FLUSH_INTERVAL_MS", "100"))
         self._flush_interval: float = _ms / 1000.0
         self._flush_task: asyncio.Task | None = None
 
@@ -79,7 +79,7 @@ class ProcessContext:
 
     async def mark_ephemeral(self) -> None:
         """Mark this process for deletion after completion."""
-        from feldwebel.store import _collection
+        from optio.store import _collection
         await _collection(self._db, self._prefix).update_one(
             {"_id": self._process_oid},
             {"$set": {"ephemeral": True}},
@@ -132,7 +132,7 @@ class ProcessContext:
 
     async def _flush_progress(self) -> None:
         if self._pending_progress is not None:
-            from feldwebel.store import update_progress, append_log
+            from optio.store import update_progress, append_log
             await update_progress(
                 self._db, self._prefix, self._process_oid, self._pending_progress,
             )
@@ -153,7 +153,7 @@ class ProcessContext:
             except asyncio.CancelledError:
                 pass
         if self._pending_progress is not None:
-            from feldwebel.store import update_progress, append_log
+            from optio.store import update_progress, append_log
             await update_progress(
                 self._db, self._prefix, self._process_oid, self._pending_progress,
             )

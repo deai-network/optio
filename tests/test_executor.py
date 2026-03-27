@@ -1,10 +1,10 @@
 """Tests for task executor — sequential child execution, cancellation, failure handling."""
 
 import asyncio
-from feldwebel.models import TaskInstance
-from feldwebel.executor import Executor
-from feldwebel.lifecycle import Feldwebel
-from feldwebel.store import upsert_process, get_process_by_process_id
+from optio.models import TaskInstance
+from optio.executor import Executor
+from optio.lifecycle import Optio
+from optio.store import upsert_process, get_process_by_process_id
 
 
 async def test_launch_basic_process(mongo_db):
@@ -251,7 +251,7 @@ async def test_adhoc_define_root(mongo_db, redis_url):
     async def my_task(ctx):
         ctx.report_progress(100, "Done")
 
-    fw = Feldwebel()
+    fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="adhoc_test", redis_url=redis_url)
 
     task = TaskInstance(execute=my_task, process_id="adhoc_root", name="Ad-hoc Root")
@@ -277,7 +277,7 @@ async def test_adhoc_define_child(mongo_db, redis_url):
     async def my_task(ctx):
         pass
 
-    fw = Feldwebel()
+    fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="adhoc_test2", redis_url=redis_url)
 
     # Create a parent
@@ -302,7 +302,7 @@ async def test_ephemeral_process_deleted_after_completion(mongo_db, redis_url):
     async def my_task(ctx):
         ctx.report_progress(100, "Done")
 
-    fw = Feldwebel()
+    fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="eph_test", redis_url=redis_url)
 
     task = TaskInstance(execute=my_task, process_id="eph_done", name="Ephemeral Done")
@@ -327,7 +327,7 @@ async def test_mark_ephemeral_during_execution(mongo_db, redis_url):
         await ctx.mark_ephemeral()
         ctx.report_progress(100, "Done")
 
-    fw = Feldwebel()
+    fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="mark_eph_test", redis_url=redis_url)
 
     task = TaskInstance(execute=my_task, process_id="mark_eph", name="Mark Ephemeral")
@@ -348,7 +348,7 @@ async def test_adhoc_define_ephemeral(mongo_db, redis_url):
     async def my_task(ctx):
         pass
 
-    fw = Feldwebel()
+    fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="adhoc_test3", redis_url=redis_url)
 
     task = TaskInstance(execute=my_task, process_id="adhoc_eph", name="Ephemeral")

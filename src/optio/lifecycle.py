@@ -1,4 +1,4 @@
-"""Feldwebel lifecycle management — init, run, shutdown."""
+"""Optio lifecycle management — init, run, shutdown."""
 
 import asyncio
 import logging
@@ -11,24 +11,24 @@ try:
 except ImportError:
     Redis = None  # type: ignore[assignment,misc]
 
-from feldwebel.models import TaskInstance, FeldwebelConfig, ProcessStatus
-from feldwebel.store import (
+from optio.models import TaskInstance, OptioConfig, ProcessStatus
+from optio.store import (
     upsert_process, remove_stale_processes,
     get_process_by_process_id, update_status, clear_result_fields,
 )
-from feldwebel.state_machine import CANCELLABLE_STATES
-from feldwebel.executor import Executor
-from feldwebel.consumer import CommandConsumer
-from feldwebel.scheduler import ProcessScheduler
+from optio.state_machine import CANCELLABLE_STATES
+from optio.executor import Executor
+from optio.consumer import CommandConsumer
+from optio.scheduler import ProcessScheduler
 
-logger = logging.getLogger("feldwebel")
+logger = logging.getLogger("optio")
 
 
-class Feldwebel:
+class Optio:
     """Main orchestration class tying all components together."""
 
     def __init__(self):
-        self._config: FeldwebelConfig | None = None
+        self._config: OptioConfig | None = None
         self._redis: Redis | None = None
         self._executor: Executor | None = None
         self._consumer: CommandConsumer | None = None
@@ -44,7 +44,7 @@ class Feldwebel:
         services: dict[str, Any] | None = None,
         get_task_definitions: Callable[..., Awaitable[list[TaskInstance]]] | None = None,
     ) -> None:
-        """Initialize feldwebel.
+        """Initialize optio.
 
         Args:
             mongo_db: Motor async MongoDB database.
@@ -56,7 +56,7 @@ class Feldwebel:
             get_task_definitions: Async function returning task definitions.
         """
         services = services or {}
-        self._config = FeldwebelConfig(
+        self._config = OptioConfig(
             mongo_db=mongo_db,
             prefix=prefix,
             redis_url=redis_url,
@@ -69,7 +69,7 @@ class Feldwebel:
             if Redis is None:
                 raise ImportError(
                     "Redis support requires the 'redis' extra: "
-                    "pip install feldwebel[redis]"
+                    "pip install optio[redis]"
                 )
             self._redis = Redis.from_url(redis_url)
 
@@ -86,7 +86,7 @@ class Feldwebel:
         self._executor = Executor(mongo_db, prefix, services)
 
         # Run migrations
-        from feldwebel.migrations import fw_migrations
+        from optio.migrations import fw_migrations
         await fw_migrations.run(mongo_db, prefix=f"{prefix}_fw")
 
         # Create scheduler
@@ -97,7 +97,7 @@ class Feldwebel:
         # Run initial sync
         await self._sync_definitions()
 
-        logger.info(f"Feldwebel initialized with prefix '{prefix}'"
+        logger.info(f"Optio initialized with prefix '{prefix}'"
                      f"{' (Redis: ' + redis_url + ')' if redis_url else ' (no Redis)'}")
 
     def on_command(self, command_type: str, handler: Callable[..., Awaitable]) -> None:
@@ -118,7 +118,7 @@ class Feldwebel:
         The process starts in 'idle' state — use the standard 'launch'
         command to start it.
         """
-        from feldwebel.store import (
+        from optio.store import (
             upsert_process, get_process_by_id, create_child_process,
         )
 
@@ -159,7 +159,7 @@ class Feldwebel:
 
     async def adhoc_delete(self, process_id: str) -> None:
         """Delete an ad-hoc process from DB and task registry."""
-        from feldwebel.store import delete_process
+        from optio.store import delete_process
         await delete_process(self._config.mongo_db, self._config.prefix, process_id)
         self._executor._task_registry.pop(process_id, None)
 
@@ -198,7 +198,7 @@ class Feldwebel:
     ) -> list[dict]:
         """List processes with optional filters."""
         from bson import ObjectId as OID
-        from feldwebel.store import list_processes as _list_processes
+        from optio.store import list_processes as _list_processes
         return await _list_processes(
             self._config.mongo_db,
             self._config.prefix,

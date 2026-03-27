@@ -1,10 +1,10 @@
-# feldwebel
+# optio
 
-Feldwebel is a reusable async process management library for Python. It provides a framework for defining, launching, cancelling, and monitoring long-running tasks backed by MongoDB for persistence, with optional Redis integration for multi-worker command ingestion. Processes support hierarchical parent-child relationships, progress reporting, cooperative cancellation, cron scheduling, and ad-hoc dynamic task creation.
+Optio is a reusable async process management library for Python. It provides a framework for defining, launching, cancelling, and monitoring long-running tasks backed by MongoDB for persistence, with optional Redis integration for multi-worker command ingestion. Processes support hierarchical parent-child relationships, progress reporting, cooperative cancellation, cron scheduling, and ad-hoc dynamic task creation.
 
 ## Integration Levels
 
-Feldwebel is designed as a progressive stack. Each level adds capability (and a dependency).
+Optio is designed as a progressive stack. Each level adds capability (and a dependency).
 
 ### Level 1: Python Core (MongoDB only)
 
@@ -15,7 +15,7 @@ Feldwebel is designed as a progressive stack. Each level adds capability (and a 
 **Install:**
 
 ```bash
-pip install feldwebel
+pip install optio
 ```
 
 **Minimal example:**
@@ -23,7 +23,7 @@ pip install feldwebel
 ```python
 import asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
-from feldwebel import init, launch_and_wait, get_process, TaskInstance
+from optio import init, launch_and_wait, get_process, TaskInstance
 
 async def my_task(ctx):
     for i in range(10):
@@ -66,13 +66,13 @@ asyncio.run(main())
 **Install:**
 
 ```bash
-pip install feldwebel[redis]
+pip install optio[redis]
 ```
 
 **Example:**
 
 ```python
-from feldwebel import init, run, on_command
+from optio import init, run, on_command
 
 async def handle_custom(payload):
     print(f"Received: {payload}")
@@ -92,22 +92,22 @@ async def main():
 
 With Redis enabled, external systems can publish commands (launch, cancel, dismiss, resync, or custom) to the `{prefix}:commands` Redis stream. The `run()` method blocks and processes commands until `shutdown()` is called.
 
-### Level 3: + REST API (feldwebel-api)
+### Level 3: + REST API (optio-api)
 
 **Adds:** HTTP endpoints for process management, SSE streams for real-time status updates.
 
 **Install:**
 
 ```
-npm install feldwebel-api feldwebel-contracts
+npm install optio-api optio-contracts
 ```
 
 **Example (Fastify):**
 
 ```typescript
 import Fastify from "fastify";
-import { registerProcessRoutes } from "feldwebel-api/fastify";
-import { registerProcessStream } from "feldwebel-api/fastify";
+import { registerProcessRoutes } from "optio-api/fastify";
+import { registerProcessStream } from "optio-api/fastify";
 
 const app = Fastify();
 
@@ -117,36 +117,36 @@ await registerProcessStream(app, { db, prefix: "myapp" });
 await app.listen({ port: 3000 });
 ```
 
-See [`packages/feldwebel-api/README.md`](../feldwebel-api/README.md) for the full endpoint reference.
+See [`packages/optio-api/README.md`](../optio-api/README.md) for the full endpoint reference.
 
-### Level 4: + Web UI (feldwebel-ui)
+### Level 4: + Web UI (optio-ui)
 
 **Adds:** Pre-built React components for process monitoring: process list, tree view, progress bars, action buttons.
 
 **Install:**
 
 ```
-npm install feldwebel-ui
+npm install optio-ui
 ```
 
 **Example:**
 
 ```tsx
-import { FeldwebelProvider, ProcessList } from "feldwebel-ui";
+import { OptioProvider, ProcessList } from "optio-ui";
 
 function App() {
   return (
-    <FeldwebelProvider baseUrl="/api">
+    <OptioProvider baseUrl="/api">
       <ProcessList
         onLaunch={(id) => console.log("launch", id)}
         onCancel={(id) => console.log("cancel", id)}
       />
-    </FeldwebelProvider>
+    </OptioProvider>
   );
 }
 ```
 
-See [`packages/feldwebel-ui/README.md`](../feldwebel-ui/README.md) for component documentation.
+See [`packages/optio-ui/README.md`](../optio-ui/README.md) for component documentation.
 
 ## Concepts
 
@@ -194,7 +194,7 @@ Cancel path:
 
 ### Task Definitions and the Task Generator
 
-Tasks are defined as `TaskInstance` objects. Rather than registering tasks imperatively, you provide a `get_task_definitions` async callback that returns the full list of tasks. Feldwebel calls this function on `init()` and on every `resync()`, syncing the returned list with MongoDB: new tasks are created, removed tasks are deleted (if idle), and metadata on existing tasks is updated without disturbing runtime state.
+Tasks are defined as `TaskInstance` objects. Rather than registering tasks imperatively, you provide a `get_task_definitions` async callback that returns the full list of tasks. Optio calls this function on `init()` and on every `resync()`, syncing the returned list with MongoDB: new tasks are created, removed tasks are deleted (if idle), and metadata on existing tasks is updated without disturbing runtime state.
 
 ```python
 async def get_tasks(services):
@@ -214,7 +214,7 @@ async def get_tasks(services):
 
 ### ProcessContext
 
-Every task `execute` function receives a single `ProcessContext` argument. This is the task's interface to feldwebel:
+Every task `execute` function receives a single `ProcessContext` argument. This is the task's interface to optio:
 
 | Property/Method | Description |
 |----------------|-------------|
@@ -287,9 +287,9 @@ Call `ctx.report_progress(percent, message)` from your task function:
 - `percent`: `float` from 0 to 100, or `None` for indeterminate progress.
 - `message`: Optional `str` describing the current step.
 
-Progress writes are **throttled**: updates are buffered and flushed to MongoDB at most every 100ms (configurable via the `FELDWEBEL_PROGRESS_FLUSH_INTERVAL_MS` environment variable). A final flush occurs automatically when the process completes. Messages are also appended to the process log.
+Progress writes are **throttled**: updates are buffered and flushed to MongoDB at most every 100ms (configurable via the `OPTIO_PROGRESS_FLUSH_INTERVAL_MS` environment variable). A final flush occurs automatically when the process completes. Messages are also appended to the process log.
 
-**Progress helpers** for child-to-parent progress mapping (from `feldwebel.progress_helpers`):
+**Progress helpers** for child-to-parent progress mapping (from `optio.progress_helpers`):
 
 | Helper | Usage |
 |--------|-------|
@@ -413,7 +413,7 @@ async def init(
 ) -> None
 ```
 
-Initialize feldwebel. Must be called before any other function.
+Initialize optio. Must be called before any other function.
 
 | Parameter | Description |
 |-----------|-------------|
@@ -650,21 +650,21 @@ Returns an async context manager. Inside the context, call `await group.spawn(ex
 
 ## TypeScript Packages
 
-Feldwebel's TypeScript layer is split into three packages:
+Optio's TypeScript layer is split into three packages:
 
 | Package | Purpose | Key Exports |
 |---------|---------|-------------|
-| **feldwebel-contracts** | Shared API contract (ts-rest + Zod schemas) | Route definitions, Zod schemas for process documents, SSE event types |
-| **feldwebel-api** | Server-side HTTP endpoints and SSE streams | `registerProcessRoutes`, `registerProcessStream` (Fastify adapter) |
-| **feldwebel-ui** | React components for process monitoring | `FeldwebelProvider`, `ProcessList`, `ProcessTreeView`, progress/status components |
+| **optio-contracts** | Shared API contract (ts-rest + Zod schemas) | Route definitions, Zod schemas for process documents, SSE event types |
+| **optio-api** | Server-side HTTP endpoints and SSE streams | `registerProcessRoutes`, `registerProcessStream` (Fastify adapter) |
+| **optio-ui** | React components for process monitoring | `OptioProvider`, `ProcessList`, `ProcessTreeView`, progress/status components |
 
 **When do you need which?**
 
-- Building a backend that exposes process management over HTTP: `feldwebel-contracts` + `feldwebel-api`
-- Building a frontend that displays process state: `feldwebel-contracts` + `feldwebel-ui`
+- Building a backend that exposes process management over HTTP: `optio-contracts` + `optio-api`
+- Building a frontend that displays process state: `optio-contracts` + `optio-ui`
 - Full stack: all three
 
 See each package's README for detailed documentation:
-- [`packages/feldwebel-contracts/README.md`](../feldwebel-contracts/README.md)
-- [`packages/feldwebel-api/README.md`](../feldwebel-api/README.md)
-- [`packages/feldwebel-ui/README.md`](../feldwebel-ui/README.md)
+- [`packages/optio-contracts/README.md`](../optio-contracts/README.md)
+- [`packages/optio-api/README.md`](../optio-api/README.md)
+- [`packages/optio-ui/README.md`](../optio-ui/README.md)

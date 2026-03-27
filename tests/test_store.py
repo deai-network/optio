@@ -1,7 +1,7 @@
 """Tests for MongoDB store operations."""
 
-from feldwebel.models import TaskInstance, ProcessStatus, Progress
-from feldwebel.store import (
+from optio.models import TaskInstance, ProcessStatus, Progress
+from optio.store import (
     upsert_process, remove_stale_processes,
     get_process_by_process_id, update_status, update_progress,
     create_child_process, clear_result_fields, get_children,

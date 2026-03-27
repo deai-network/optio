@@ -1,19 +1,19 @@
-"""Integration test — full feldwebel lifecycle."""
+"""Integration test — full optio lifecycle."""
 
 import asyncio
 import json
 from redis.asyncio import Redis
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from feldwebel.models import TaskInstance
-from feldwebel.lifecycle import Feldwebel
-from feldwebel.store import get_process_by_process_id
+from optio.models import TaskInstance
+from optio.lifecycle import Optio
+from optio.store import get_process_by_process_id
 
 
 async def test_full_lifecycle():
     """Test init → launch via Redis → execute → verify DB state."""
     mongo_client = AsyncIOMotorClient("mongodb://localhost:27017")
-    db_name = f"feldwebel_inttest_{id(asyncio.get_event_loop())}"
+    db_name = f"optio_inttest_{id(asyncio.get_event_loop())}"
     db = mongo_client[db_name]
     redis_url = "redis://localhost:6379"
     prefix = "inttest"
@@ -36,7 +36,7 @@ async def test_full_lifecycle():
             TaskInstance(execute=my_failing_task, process_id="bad_task", name="Bad Task"),
         ]
 
-    fw = Feldwebel()
+    fw = Optio()
     await fw.init(
         mongo_db=db,
         prefix=prefix,
@@ -93,7 +93,7 @@ async def test_full_lifecycle():
 async def test_child_process_tree():
     """Test that parent-child process trees work end-to-end."""
     mongo_client = AsyncIOMotorClient("mongodb://localhost:27017")
-    db_name = f"feldwebel_tree_{id(asyncio.get_event_loop())}"
+    db_name = f"optio_tree_{id(asyncio.get_event_loop())}"
     db = mongo_client[db_name]
     redis_url = "redis://localhost:6379"
     prefix = "treetest"
@@ -117,7 +117,7 @@ async def test_child_process_tree():
             TaskInstance(execute=parent_task, process_id="parent", name="Parent Task"),
         ]
 
-    fw = Feldwebel()
+    fw = Optio()
     await fw.init(
         mongo_db=db, prefix=prefix, redis_url=redis_url,
         services={"mongo": db}, get_task_definitions=get_tasks,

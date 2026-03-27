@@ -4,8 +4,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from feldwebel.context import ProcessContext
-    from feldwebel.models import ChildProgressInfo
+    from optio.context import ProcessContext
+    from optio.models import ChildProgressInfo
 
 
 def sequential_progress(ctx: "ProcessContext", total_children: int):

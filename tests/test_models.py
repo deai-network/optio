@@ -1,6 +1,6 @@
 """Tests for data models."""
 
-from feldwebel.models import (
+from optio.models import (
     TaskInstance, ChildResult, ProcessStatus, Progress, CancellationConfig,
 )
 

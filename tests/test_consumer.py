@@ -6,7 +6,7 @@ import pytest
 import pytest_asyncio
 from redis.asyncio import Redis
 
-from feldwebel.consumer import CommandConsumer
+from optio.consumer import CommandConsumer
 
 
 @pytest_asyncio.fixture

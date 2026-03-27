@@ -5,7 +5,7 @@ field. This migration copies the root process's metadata onto all children
 that are missing it.
 """
 
-from feldwebel.migrations import fw_migrations
+from optio.migrations import fw_migrations
 
 
 @fw_migrations.register("backfill_child_metadata", depends_on=["status_subdocument"])

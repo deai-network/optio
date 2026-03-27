@@ -3,9 +3,9 @@
 import asyncio
 import os
 from unittest.mock import patch
-from feldwebel.models import TaskInstance
-from feldwebel.executor import Executor
-from feldwebel.store import upsert_process, get_process_by_process_id
+from optio.models import TaskInstance
+from optio.executor import Executor
+from optio.store import upsert_process, get_process_by_process_id
 
 
 async def test_run_child_progress_callback(mongo_db):
@@ -96,7 +96,7 @@ async def test_child_completion_fires_callback_immediately(mongo_db):
 
 
 async def test_configurable_flush_interval(mongo_db):
-    """DB flush interval reads from FELDWEBEL_PROGRESS_FLUSH_INTERVAL_MS."""
+    """DB flush interval reads from OPTIO_PROGRESS_FLUSH_INTERVAL_MS."""
     observed_interval = {}
 
     async def task_fn(ctx):
@@ -105,7 +105,7 @@ async def test_configurable_flush_interval(mongo_db):
     task = TaskInstance(execute=task_fn, process_id="flush_cfg", name="FlushCfg")
     await upsert_process(mongo_db, "test", task)
 
-    with patch.dict(os.environ, {"FELDWEBEL_PROGRESS_FLUSH_INTERVAL_MS": "50"}):
+    with patch.dict(os.environ, {"OPTIO_PROGRESS_FLUSH_INTERVAL_MS": "50"}):
         executor = Executor(mongo_db, "test", {})
         executor.register_tasks([task])
         result = await executor.launch_process("flush_cfg")

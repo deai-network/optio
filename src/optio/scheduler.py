@@ -3,7 +3,7 @@
 import logging
 from typing import Callable, Awaitable
 
-logger = logging.getLogger("feldwebel.scheduler")
+logger = logging.getLogger("optio.scheduler")
 
 
 class ProcessScheduler:

@@ -1,4 +1,4 @@
-# Feldwebel — LLM Reference
+# Optio — LLM Reference
 
 Async process management library for Python backends with TypeScript API and React UI layers.
 
@@ -8,45 +8,45 @@ Async process management library for Python backends with TypeScript API and Rea
 
 | Level | Package | Language | Install |
 |-------|---------|----------|---------|
-| 1 — Core runtime | `feldwebel` | Python | `pip install feldwebel` (MongoDB + APScheduler); add `[redis]` for Redis command bus |
-| 2 — REST API | `feldwebel-api` | TypeScript | `npm install feldwebel-api feldwebel-contracts` |
-| 3 — React UI | `feldwebel-ui` | TypeScript | `npm install feldwebel-ui feldwebel-contracts @tanstack/react-query react-i18next antd` |
+| 1 — Core runtime | `optio` | Python | `pip install optio` (MongoDB + APScheduler); add `[redis]` for Redis command bus |
+| 2 — REST API | `optio-api` | TypeScript | `npm install optio-api optio-contracts` |
+| 3 — React UI | `optio-ui` | TypeScript | `npm install optio-ui optio-contracts @tanstack/react-query react-i18next antd` |
 
-Dependencies: Python requires `motor>=3.3.0`, `apscheduler>=4.0.0a5`, `quartiermeister`. Redis support: `redis>=5.0.0` (optional extra). TypeScript API requires `mongodb`, `ioredis`, `@ts-rest/core`. UI requires React 19+, Ant Design 5+.
+Dependencies: Python requires `motor>=3.3.0`, `apscheduler>=4.0.0a5`, `quaestor`. Redis support: `redis>=5.0.0` (optional extra). TypeScript API requires `mongodb`, `ioredis`, `@ts-rest/core`. UI requires React 19+, Ant Design 5+.
 
 ---
 
-## Python: feldwebel
+## Python: optio
 
 ### Public API
 
-All symbols are available directly from `feldwebel` (module-level singleton):
+All symbols are available directly from `optio` (module-level singleton):
 
 ```python
-import feldwebel
+import optio
 
 # Lifecycle
-await feldwebel.init(mongo_db, prefix, redis_url=None, services=None, get_task_definitions=None)
-await feldwebel.run()          # blocks until shutdown; call after init()
-await feldwebel.shutdown()     # graceful shutdown; cancels running processes
+await optio.init(mongo_db, prefix, redis_url=None, services=None, get_task_definitions=None)
+await optio.run()          # blocks until shutdown; call after init()
+await optio.shutdown()     # graceful shutdown; cancels running processes
 
 # Commands
-await feldwebel.launch(process_id: str) -> None           # fire-and-forget
-await feldwebel.launch_and_wait(process_id: str) -> None  # blocks until done
-await feldwebel.cancel(process_id: str) -> None
-await feldwebel.dismiss(process_id: str) -> None          # reset done/failed/cancelled → idle
-await feldwebel.resync(clean: bool = False) -> None       # re-sync task definitions; clean=True nukes all records first
+await optio.launch(process_id: str) -> None           # fire-and-forget
+await optio.launch_and_wait(process_id: str) -> None  # blocks until done
+await optio.cancel(process_id: str) -> None
+await optio.dismiss(process_id: str) -> None          # reset done/failed/cancelled → idle
+await optio.resync(clean: bool = False) -> None       # re-sync task definitions; clean=True nukes all records first
 
 # Ad-hoc processes (not from get_task_definitions)
-await feldwebel.adhoc_define(task: TaskInstance, parent_id: ObjectId | None = None, ephemeral: bool = False) -> dict
-await feldwebel.adhoc_delete(process_id: str) -> None
+await optio.adhoc_define(task: TaskInstance, parent_id: ObjectId | None = None, ephemeral: bool = False) -> dict
+await optio.adhoc_delete(process_id: str) -> None
 
 # Queries
-await feldwebel.get_process(process_id: str) -> dict | None
-await feldwebel.list_processes(state=None, root_id=None, type=None, target_id=None) -> list[dict]
+await optio.get_process(process_id: str) -> dict | None
+await optio.list_processes(state=None, root_id=None, type=None, target_id=None) -> list[dict]
 
 # Custom Redis command handler (call before run())
-feldwebel.on_command(command_type: str, handler: Callable[..., Awaitable]) -> None
+optio.on_command(command_type: str, handler: Callable[..., Awaitable]) -> None
 ```
 
 **`init()` parameters:**
@@ -123,7 +123,7 @@ class ChildProgressInfo:
 ```python
 # Progress reporting
 ctx.report_progress(percent: float | None, message: str | None = None) -> None
-# percent=None → indeterminate; buffered and flushed every 100ms (FELDWEBEL_PROGRESS_FLUSH_INTERVAL_MS env)
+# percent=None → indeterminate; buffered and flushed every 100ms (OPTIO_PROGRESS_FLUSH_INTERVAL_MS env)
 # message is also appended to process log
 
 ctx.should_continue() -> bool
@@ -175,7 +175,7 @@ async with ctx.parallel_group(max_concurrency=5) as group:
 ### Progress Helpers
 
 ```python
-from feldwebel.progress_helpers import sequential_progress, average_progress, mapped_progress
+from optio.progress_helpers import sequential_progress, average_progress, mapped_progress
 
 # Returns on_child_progress callback — pass to run_child() or parallel_group()
 
@@ -272,9 +272,9 @@ Collection: `{prefix}_processes`
 
 ---
 
-## TypeScript: feldwebel-contracts
+## TypeScript: optio-contracts
 
-Package: `feldwebel-contracts`
+Package: `optio-contracts`
 
 ### Schemas
 
@@ -340,30 +340,30 @@ Note: The Fastify adapter mounts the entire contract under `/api`, so effective 
 
 ---
 
-## TypeScript: feldwebel-api
+## TypeScript: optio-api
 
-Package: `feldwebel-api`. Framework-agnostic handlers + Fastify adapter.
+Package: `optio-api`. Framework-agnostic handlers + Fastify adapter.
 
 ### Entry Points
 
 ```typescript
 // Handlers (framework-agnostic)
 export { listProcesses, getProcess, getProcessTree, getProcessLog, getProcessTreeLog,
-         launchProcess, cancelProcess, dismissProcess, resyncProcesses } from 'feldwebel-api';
-export type { ListQuery, PaginationQuery, TreeLogQuery, CommandResult } from 'feldwebel-api';
+         launchProcess, cancelProcess, dismissProcess, resyncProcesses } from 'optio-api';
+export type { ListQuery, PaginationQuery, TreeLogQuery, CommandResult } from 'optio-api';
 
 // Publishers (for domain code to trigger commands via Redis)
-export { publishLaunch, publishResync } from 'feldwebel-api';
+export { publishLaunch, publishResync } from 'optio-api';
 
 // Stream poller (for custom SSE adapters)
-export { createListPoller, createTreePoller } from 'feldwebel-api';
-export type { StreamPollerOptions, TreePollerOptions, ListPollerHandle } from 'feldwebel-api';
+export { createListPoller, createTreePoller } from 'optio-api';
+export type { StreamPollerOptions, TreePollerOptions, ListPollerHandle } from 'optio-api';
 ```
 
-### FeldwebelApiOptions
+### OptioApiOptions
 
 ```typescript
-interface FeldwebelApiOptions {
+interface OptioApiOptions {
   db: Db;       // mongodb Db instance
   redis: Redis; // ioredis Redis instance
   prefix: string;
@@ -373,12 +373,12 @@ interface FeldwebelApiOptions {
 ### Fastify Adapter
 
 ```typescript
-import { registerProcessRoutes, registerProcessStream } from 'feldwebel-api/adapters/fastify';
+import { registerProcessRoutes, registerProcessStream } from 'optio-api/adapters/fastify';
 
-registerProcessRoutes(app: FastifyInstance, opts: FeldwebelApiOptions): void
+registerProcessRoutes(app: FastifyInstance, opts: OptioApiOptions): void
 // Registers all REST endpoints from processesContract under /api/processes/...
 
-registerProcessStream(app: FastifyInstance, opts: FeldwebelApiOptions): void
+registerProcessStream(app: FastifyInstance, opts: OptioApiOptions): void
 // Registers two SSE endpoints:
 //   GET /api/processes/:prefix/:id/tree/stream?maxDepth=N
 //   GET /api/processes/:prefix/stream
@@ -462,14 +462,14 @@ function createTreePoller(opts: TreePollerOptions): ListPollerHandle
 
 ---
 
-## TypeScript: feldwebel-ui
+## TypeScript: optio-ui
 
-Package: `feldwebel-ui`. React components and hooks. Requires `FeldwebelProvider` at root.
+Package: `optio-ui`. React components and hooks. Requires `OptioProvider` at root.
 
-### FeldwebelProvider Props
+### OptioProvider Props
 
 ```typescript
-interface FeldwebelProviderProps {
+interface OptioProviderProps {
   prefix: string;
   baseUrl?: string;  // default: '' (same origin)
   children: ReactNode;
@@ -480,9 +480,9 @@ Wrap your application (or subtree):
 
 ```tsx
 <QueryClientProvider client={queryClient}>
-  <FeldwebelProvider prefix="myapp">
+  <OptioProvider prefix="myapp">
     <App />
-  </FeldwebelProvider>
+  </OptioProvider>
 </QueryClientProvider>
 ```
 
@@ -691,7 +691,7 @@ useProcessListStream(): {
 ### Types
 
 ```typescript
-// From feldwebel-ui
+// From optio-ui
 export type FilterGroup = 'all' | 'active' | 'hide_completed' | 'errors';
 
 export interface ProcessTreeNode {
@@ -739,9 +739,9 @@ All components use `react-i18next`. Required keys:
 
 - **Collection name**: `{prefix}_processes` (MongoDB)
 - **Redis stream**: `{prefix}:commands` — messages have `type` and `payload` (JSON string) fields
-- **No Redis mode**: `init()` with `redis_url=None` disables command consumer; use direct Python API calls (`feldwebel.launch()`, etc.) instead of REST
-- **Progress flushing**: buffered every 100ms; override with `FELDWEBEL_PROGRESS_FLUSH_INTERVAL_MS` env var
+- **No Redis mode**: `init()` with `redis_url=None` disables command consumer; use direct Python API calls (`optio.launch()`, etc.) instead of REST
+- **Progress flushing**: buffered every 100ms; override with `OPTIO_PROGRESS_FLUSH_INTERVAL_MS` env var
 - **Child processes**: stored as MongoDB documents with `parentId`/`rootId`; automatically deleted on parent re-launch (`clear_result_fields`)
 - **Ephemeral processes**: deleted from DB after reaching an end state
-- **Migrations**: run automatically on `init()` via quartiermeister; migrations live in `packages/feldwebel/src/feldwebel/migrations/`
+- **Migrations**: run automatically on `init()` via quaestor; migrations live in `packages/optio/src/optio/migrations/`
 - **Scheduler**: APScheduler-backed; cron schedules defined on `TaskInstance.schedule` are synced on init and resync

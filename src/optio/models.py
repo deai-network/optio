@@ -1,4 +1,4 @@
-"""Core data models for feldwebel."""
+"""Core data models for optio."""
 
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable
@@ -78,8 +78,8 @@ class Progress:
 
 
 @dataclass
-class FeldwebelConfig:
-    """Configuration for feldwebel initialization."""
+class OptioConfig:
+    """Configuration for optio initialization."""
     mongo_db: Any  # motor AsyncIOMotorDatabase
     prefix: str
     redis_url: str | None = None

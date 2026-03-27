@@ -3,15 +3,15 @@
 import asyncio
 
 import pytest
-from feldwebel.lifecycle import Feldwebel
-from feldwebel.store import get_process_by_process_id
-from feldwebel.models import TaskInstance, CancellationConfig
+from optio.lifecycle import Optio
+from optio.store import get_process_by_process_id
+from optio.models import TaskInstance, CancellationConfig
 
 
 @pytest.mark.asyncio
 async def test_init_without_redis(mongo_db):
     """Init succeeds without redis_url."""
-    fw = Feldwebel()
+    fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="test_no_redis")
 
     assert fw._config is not None
@@ -25,7 +25,7 @@ async def test_init_without_redis(mongo_db):
 @pytest.mark.asyncio
 async def test_run_and_shutdown_without_redis(mongo_db):
     """run() blocks until shutdown() is called, without Redis."""
-    fw = Feldwebel()
+    fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="test_no_redis_run")
 
     shutdown_called = False
@@ -66,7 +66,7 @@ async def _get_tasks(services):
 @pytest.mark.asyncio
 async def test_launch_and_wait(mongo_db):
     """launch_and_wait() runs process to completion."""
-    fw = Feldwebel()
+    fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="test_direct",
                   get_task_definitions=_get_tasks)
 
@@ -79,7 +79,7 @@ async def test_launch_and_wait(mongo_db):
 @pytest.mark.asyncio
 async def test_launch_fire_and_forget(mongo_db):
     """launch() returns immediately, process runs in background."""
-    fw = Feldwebel()
+    fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="test_fire",
                   get_task_definitions=_get_tasks)
 
@@ -100,7 +100,7 @@ async def test_launch_fire_and_forget(mongo_db):
 @pytest.mark.asyncio
 async def test_cancel(mongo_db):
     """cancel() stops a running process."""
-    fw = Feldwebel()
+    fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="test_cancel_direct",
                   get_task_definitions=_get_tasks)
 
@@ -117,7 +117,7 @@ async def test_cancel(mongo_db):
 @pytest.mark.asyncio
 async def test_dismiss(mongo_db):
     """dismiss() resets a completed process to idle."""
-    fw = Feldwebel()
+    fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="test_dismiss_direct",
                   get_task_definitions=_get_tasks)
 
@@ -133,7 +133,7 @@ async def test_dismiss(mongo_db):
 @pytest.mark.asyncio
 async def test_resync(mongo_db):
     """resync() re-syncs task definitions."""
-    fw = Feldwebel()
+    fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="test_resync_direct",
                   get_task_definitions=_get_tasks)
 
@@ -151,7 +151,7 @@ async def test_resync(mongo_db):
 @pytest.mark.asyncio
 async def test_on_command_raises_without_redis(mongo_db):
     """on_command() raises when Redis is not configured."""
-    fw = Feldwebel()
+    fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="test_no_cmd")
 
     with pytest.raises(RuntimeError, match="Custom commands require Redis"):
@@ -161,7 +161,7 @@ async def test_on_command_raises_without_redis(mongo_db):
 @pytest.mark.asyncio
 async def test_get_process(mongo_db):
     """get_process() returns a process by process_id."""
-    fw = Feldwebel()
+    fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="test_get",
                   get_task_definitions=_get_tasks)
 
@@ -175,7 +175,7 @@ async def test_get_process(mongo_db):
 @pytest.mark.asyncio
 async def test_get_process_not_found(mongo_db):
     """get_process() returns None for unknown process_id."""
-    fw = Feldwebel()
+    fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="test_get_missing",
                   get_task_definitions=_get_tasks)
 
@@ -186,7 +186,7 @@ async def test_get_process_not_found(mongo_db):
 @pytest.mark.asyncio
 async def test_list_processes_no_filter(mongo_db):
     """list_processes() returns all processes."""
-    fw = Feldwebel()
+    fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="test_list",
                   get_task_definitions=_get_tasks)
 
@@ -199,7 +199,7 @@ async def test_list_processes_no_filter(mongo_db):
 @pytest.mark.asyncio
 async def test_list_processes_filter_state(mongo_db):
     """list_processes(state=...) filters by state."""
-    fw = Feldwebel()
+    fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="test_list_state",
                   get_task_definitions=_get_tasks)
 

@@ -7,14 +7,14 @@ from typing import Any, Callable, Awaitable
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from feldwebel.models import TaskInstance, ProcessStatus, Progress
-from feldwebel.state_machine import LAUNCHABLE_STATES
-from feldwebel.store import (
+from optio.models import TaskInstance, ProcessStatus, Progress
+from optio.state_machine import LAUNCHABLE_STATES
+from optio.store import (
     get_process_by_process_id,
     update_status, clear_result_fields,
     create_child_process, append_log,
 )
-from feldwebel.context import ProcessContext
+from optio.context import ProcessContext
 
 
 class Executor:
@@ -35,7 +35,7 @@ class Executor:
         """Delete the process if it's marked ephemeral."""
         proc = await get_process_by_process_id(self._db, self._prefix, process_id)
         if proc is not None and proc.get("ephemeral"):
-            from feldwebel.store import delete_process
+            from optio.store import delete_process
             await delete_process(self._db, self._prefix, process_id)
             self._task_registry.pop(process_id, None)
 

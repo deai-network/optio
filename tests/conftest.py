@@ -11,7 +11,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 async def mongo_db():
     """Provide a test MongoDB database, cleaned up after each test."""
     client = AsyncIOMotorClient(os.environ.get("MONGO_URL", "mongodb://localhost:27017"))
-    db_name = f"feldwebel_test_{os.getpid()}"
+    db_name = f"optio_test_{os.getpid()}"
     db = client[db_name]
     yield db
     await client.drop_database(db_name)

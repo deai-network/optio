@@ -8,7 +8,7 @@ to the new schema:
 Also maps old state names to new ones.
 """
 
-from feldwebel.migrations import fw_migrations
+from optio.migrations import fw_migrations
 
 STATE_MAP = {
     "pending": "idle",

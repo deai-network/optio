@@ -9,7 +9,7 @@ try:
 except ImportError:
     Redis = None  # type: ignore[assignment,misc]
 
-logger = logging.getLogger("feldwebel.consumer")
+logger = logging.getLogger("optio.consumer")
 
 
 class CommandConsumer:
@@ -19,7 +19,7 @@ class CommandConsumer:
         self,
         redis: Redis,
         stream_name: str,
-        group_name: str = "feldwebel",
+        group_name: str = "optio",
         consumer_name: str = "worker-1",
     ):
         self._redis = redis

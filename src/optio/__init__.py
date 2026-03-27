@@ -1,9 +1,9 @@
-"""Feldwebel — reusable async process management library."""
+"""Optio — reusable async process management library."""
 
-from feldwebel.models import TaskInstance, ChildResult
-from feldwebel.lifecycle import Feldwebel
+from optio.models import TaskInstance, ChildResult
+from optio.lifecycle import Optio
 
-_instance = Feldwebel()
+_instance = Optio()
 
 init = _instance.init
 run = _instance.run

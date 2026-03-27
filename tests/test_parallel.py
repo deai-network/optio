@@ -1,9 +1,9 @@
 """Tests for parallel child execution."""
 
 import asyncio
-from feldwebel.models import TaskInstance
-from feldwebel.executor import Executor
-from feldwebel.store import upsert_process, get_process_by_process_id
+from optio.models import TaskInstance
+from optio.executor import Executor
+from optio.store import upsert_process, get_process_by_process_id
 
 
 async def test_parallel_basic(mongo_db):

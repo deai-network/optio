@@ -3,14 +3,14 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "feldwebel"
+name = "optio"
 version = "0.1.0"
 description = "Reusable async process management library"
 requires-python = ">=3.11"
 dependencies = [
     "motor>=3.3.0",
     "apscheduler>=4.0.0a5",
-    "quartiermeister",
+    "quaestor",
 ]
 
 [project.optional-dependencies]
