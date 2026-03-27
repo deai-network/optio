@@ -1,0 +1,41 @@
+{
+  "name": "optio-api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./fastify": {
+      "import": "./dist/adapters/fastify.js",
+      "types": "./dist/adapters/fastify.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "optio-contracts": "workspace:*",
+    "@ts-rest/core": "^3.51.0",
+    "mongodb": "^6.12.0",
+    "ioredis": "^5.4.0"
+  },
+  "optionalDependencies": {
+    "@ts-rest/fastify": "^3.51.0"
+  },
+  "peerDependencies": {
+    "fastify": "^5.2.0"
+  },
+  "peerDependenciesMeta": {
+    "fastify": { "optional": true }
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
