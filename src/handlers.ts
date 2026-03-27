@@ -60,7 +60,7 @@ export async function getProcess(db: Db, prefix: string, id: string) {
   if (proc.progressMode === 'children') {
     const children = await col(db, prefix).find({ parentId: proc._id }).toArray();
     progress = computeAggregatedProgress(
-      { ...proc, _id: proc._id.toString() },
+      { ...proc, _id: proc._id.toString() } as any,
       children.map((c: any) => ({ _id: c._id.toString(), progress: c.progress })),
     );
   }
@@ -87,7 +87,7 @@ async function buildTree(db: Db, prefix: string, processId: ObjectId, maxDepth?:
 
   const progress = proc.progressMode === 'children' && children.length > 0
     ? computeAggregatedProgress(
-        { ...proc, _id: proc._id.toString() },
+        { ...proc, _id: proc._id.toString() } as any,
         children.map((c: any) => ({ _id: c._id, progress: c.progress })),
       )
     : proc.progress;
