@@ -3,6 +3,7 @@
 import asyncio
 from feldwebel.models import TaskInstance
 from feldwebel.executor import Executor
+from feldwebel.lifecycle import Feldwebel
 from feldwebel.store import upsert_process, get_process_by_process_id
 
 
@@ -243,3 +244,71 @@ async def test_child_inherits_parent_metadata(mongo_db):
     # Also verify it's persisted in the DB
     child = await get_process_by_process_id(mongo_db, "test", "meta_child")
     assert child["metadata"] == {"targetId": "source_99"}
+
+
+async def test_adhoc_define_root(mongo_db, redis_url):
+    """adhoc_define creates a root process with adhoc=True, registers in task registry."""
+    async def my_task(ctx):
+        ctx.report_progress(100, "Done")
+
+    fw = Feldwebel()
+    await fw.init(mongo_db=mongo_db, redis_url=redis_url, prefix="adhoc_test")
+
+    task = TaskInstance(execute=my_task, process_id="adhoc_root", name="Ad-hoc Root")
+    await fw.adhoc_define(task)
+
+    proc = await get_process_by_process_id(mongo_db, "adhoc_test", "adhoc_root")
+    assert proc is not None
+    assert proc["adhoc"] is True
+    assert proc["ephemeral"] is False
+    assert proc["status"]["state"] == "idle"
+    assert proc["depth"] == 0
+    assert proc["parentId"] is None
+
+    # Should be launchable
+    result = await fw._executor.launch_process("adhoc_root")
+    assert result == "done"
+
+    await fw.shutdown()
+
+
+async def test_adhoc_define_child(mongo_db, redis_url):
+    """adhoc_define with parent_id creates a child process with correct depth and rootId."""
+    async def my_task(ctx):
+        pass
+
+    fw = Feldwebel()
+    await fw.init(mongo_db=mongo_db, redis_url=redis_url, prefix="adhoc_test2")
+
+    # Create a parent
+    parent_task = TaskInstance(execute=my_task, process_id="parent", name="Parent")
+    parent = await upsert_process(mongo_db, "adhoc_test2", parent_task)
+
+    child_task = TaskInstance(execute=my_task, process_id="adhoc_child", name="Ad-hoc Child")
+    await fw.adhoc_define(child_task, parent_id=parent["_id"])
+
+    child = await get_process_by_process_id(mongo_db, "adhoc_test2", "adhoc_child")
+    assert child is not None
+    assert child["adhoc"] is True
+    assert child["depth"] == 1
+    assert child["parentId"] == parent["_id"]
+    assert child["rootId"] == parent["rootId"]
+
+    await fw.shutdown()
+
+
+async def test_adhoc_define_ephemeral(mongo_db, redis_url):
+    """adhoc_define with ephemeral=True sets the flag on the process."""
+    async def my_task(ctx):
+        pass
+
+    fw = Feldwebel()
+    await fw.init(mongo_db=mongo_db, redis_url=redis_url, prefix="adhoc_test3")
+
+    task = TaskInstance(execute=my_task, process_id="adhoc_eph", name="Ephemeral")
+    await fw.adhoc_define(task, ephemeral=True)
+
+    proc = await get_process_by_process_id(mongo_db, "adhoc_test3", "adhoc_eph")
+    assert proc["ephemeral"] is True
+
+    await fw.shutdown()

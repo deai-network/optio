@@ -4,6 +4,7 @@ import asyncio
 import logging
 import signal
 from typing import Any, Callable, Awaitable
+from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from redis.asyncio import Redis
 
@@ -84,6 +85,57 @@ class Feldwebel:
         if self._consumer is None:
             raise RuntimeError("Must call init() before registering commands")
         self._consumer.on(command_type, handler)
+
+    async def adhoc_define(
+        self,
+        task: TaskInstance,
+        parent_id: ObjectId | None = None,
+        ephemeral: bool = False,
+    ) -> dict:
+        """Define an ad-hoc process. Returns the process document.
+
+        Creates the process in DB and registers the execute function.
+        The process starts in 'idle' state — use the standard 'launch'
+        command to start it.
+        """
+        from feldwebel.store import (
+            upsert_process, get_process_by_id, create_child_process,
+        )
+
+        if parent_id is None:
+            # Root ad-hoc process
+            proc = await upsert_process(self._config.mongo_db, self._config.prefix, task)
+            # Set adhoc and ephemeral flags (upsert_process sets defaults on insert)
+            coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
+            await coll.update_one(
+                {"_id": proc["_id"]},
+                {"$set": {"adhoc": True, "ephemeral": ephemeral}},
+            )
+            proc["adhoc"] = True
+            proc["ephemeral"] = ephemeral
+        else:
+            # Child ad-hoc process
+            parent = await get_process_by_id(
+                self._config.mongo_db, self._config.prefix, parent_id,
+            )
+            if parent is None:
+                raise ValueError(f"Parent process {parent_id} not found")
+            proc = await create_child_process(
+                self._config.mongo_db, self._config.prefix,
+                parent_oid=parent_id,
+                root_oid=parent.get("rootId", parent["_id"]),
+                process_id=task.process_id,
+                name=task.name,
+                params=task.params,
+                depth=parent.get("depth", 0) + 1,
+                order=0,
+                metadata=task.metadata,
+                adhoc=True,
+                ephemeral=ephemeral,
+            )
+
+        self._executor._task_registry[task.process_id] = task.execute
+        return proc
 
     async def adhoc_delete(self, process_id: str) -> None:
         """Delete an ad-hoc process from DB and task registry."""
