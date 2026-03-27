@@ -103,7 +103,7 @@ class Feldwebel:
     def on_command(self, command_type: str, handler: Callable[..., Awaitable]) -> None:
         """Register a custom command handler (must be called before run)."""
         if self._consumer is None:
-            raise RuntimeError("Must call init() before registering commands")
+            raise RuntimeError("Custom commands require Redis")
         self._consumer.on(command_type, handler)
 
     async def adhoc_define(
@@ -162,6 +162,26 @@ class Feldwebel:
         from feldwebel.store import delete_process
         await delete_process(self._config.mongo_db, self._config.prefix, process_id)
         self._executor._task_registry.pop(process_id, None)
+
+    async def launch(self, process_id: str) -> None:
+        """Fire-and-forget launch. Returns immediately, process runs in background."""
+        asyncio.create_task(self._executor.launch_process(process_id))
+
+    async def launch_and_wait(self, process_id: str) -> None:
+        """Launch and wait for the process to complete. Full progress tracking."""
+        await self._executor.launch_process(process_id)
+
+    async def cancel(self, process_id: str) -> None:
+        """Cancel a running or scheduled process."""
+        await self._handle_cancel({"processId": process_id})
+
+    async def dismiss(self, process_id: str) -> None:
+        """Dismiss a completed process (reset to idle)."""
+        await self._handle_dismiss({"processId": process_id})
+
+    async def resync(self, clean: bool = False) -> None:
+        """Re-sync task definitions from the generator."""
+        await self._handle_resync({"clean": clean})
 
     async def run(self) -> None:
         """Start the main loop. Blocks until shutdown."""
