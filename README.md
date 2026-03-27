@@ -1,10 +1,10 @@
-# feldwebel-contracts
+# optio-contracts
 
-Zod schemas and ts-rest contract for the feldwebel process management API.
+Zod schemas and ts-rest contract for the optio process management API.
 
 ## Note
 
-Internal shared dependency between feldwebel-api and feldwebel-ui. You usually
+Internal shared dependency between optio-api and optio-ui. You usually
 don't install this directly.
 
 ## Exported Schemas
@@ -46,4 +46,4 @@ don't install this directly.
 
 ## See Also
 
-- [Feldwebel Overview](../feldwebel/README.md)
+- [Optio Overview](../optio/README.md)

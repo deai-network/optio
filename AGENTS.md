@@ -1,8 +1,8 @@
-# feldwebel-contracts — LLM Reference
+# optio-contracts — LLM Reference
 
 ## Package
 
-- **Name:** `feldwebel-contracts`
+- **Name:** `optio-contracts`
 - **Version:** `0.1.0` (private, not published to npm)
 - **Type:** ESM (`"type": "module"`)
 - **Entry point:** `dist/index.js` / `dist/index.d.ts`
