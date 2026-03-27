@@ -1,6 +1,9 @@
 # optio-ui
 
-React components and hooks for monitoring and controlling optio processes.
+React components and hooks for monitoring and controlling Optio processes.
+
+<!-- TODO: Add UI screenshot here when available -->
+<!-- ![Optio UI](../../docs/images/ui-screenshot.png) -->
 
 ## Install
 
@@ -109,4 +112,4 @@ the `onProcessClick?: (processId: string) => void` callback on `ProcessList` and
 
 ## See Also
 
-- [Optio Overview](../optio/README.md)
+- [Optio Overview](../../README.md)

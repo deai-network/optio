@@ -1,11 +1,8 @@
 # optio-contracts
 
-Zod schemas and ts-rest contract for the optio process management API.
+Zod schemas and ts-rest contract for the Optio process management API.
 
-## Note
-
-Internal shared dependency between optio-api and optio-ui. You usually
-don't install this directly.
+> **Note:** This package is an implementation detail — it defines the API contract used for communication between `optio-ui` and `optio-api`. You only need to interact with this package directly if you are building an alternative frontend or a custom API adapter.
 
 ## Exported Schemas
 
@@ -46,4 +43,4 @@ don't install this directly.
 
 ## See Also
 
-- [Optio Overview](../optio/README.md)
+- [Optio Overview](../../README.md)

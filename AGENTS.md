@@ -23,19 +23,20 @@ Do not add `Co-Authored-By` or any other self-credit lines to git commits.
 
 | Level | Package | Language | Install |
 |-------|---------|----------|---------|
-| 1 — Core runtime | `optio` | Python | `pip install optio-core` (MongoDB + APScheduler); add `[redis]` for Redis command bus |
-| 2 — REST API | `optio-api` | TypeScript | `npm install optio-api optio-contracts` |
-| 3 — React UI | `optio-ui` | TypeScript | `npm install optio-ui optio-contracts @tanstack/react-query react-i18next antd` |
+| 1 — Core runtime | `optio-core` | Python | `pip install optio-core` (MongoDB + APScheduler); add `[redis]` for Redis command bus |
+| 2 — Remote control | `optio-core[redis]` | Python | `pip install optio-core[redis]` |
+| 3 — REST API | `optio-api` | TypeScript | `npm install optio-api optio-contracts` |
+| 4 — React UI | `optio-ui` | TypeScript | `npm install optio-ui optio-contracts @tanstack/react-query react-i18next antd` |
 
 Dependencies: Python requires `motor>=3.3.0`, `apscheduler>=4.0.0a5`, `quaestor`. Redis support: `redis>=5.0.0` (optional extra). TypeScript API requires `mongodb`, `ioredis`, `@ts-rest/core`. UI requires React 19+, Ant Design 5+.
 
 ---
 
-## Python: optio
+## Python: optio-core
 
 ### Public API
 
-All symbols are available directly from `optio` (module-level singleton):
+All symbols are available directly from `optio_core` (module-level singleton):
 
 ```python
 import optio_core
@@ -61,7 +62,7 @@ await optio_core.get_process(process_id: str) -> dict | None
 await optio_core.list_processes(state=None, root_id=None, type=None, target_id=None) -> list[dict]
 
 # Custom Redis command handler (call before run())
-optio.on_command(command_type: str, handler: Callable[..., Awaitable]) -> None
+optio_core.on_command(command_type: str, handler: Callable[..., Awaitable]) -> None
 ```
 
 **`init()` parameters:**
@@ -431,10 +432,10 @@ Write commands to Redis stream `{prefix}:commands`. Used by domain code that nee
 
 ```typescript
 async function publishLaunch(redis: Redis, prefix: string, processId: string): Promise<void>
-async function publishCancel(redis: Redis, prefix: string, processId: string): Promise<void>
-async function publishDismiss(redis: Redis, prefix: string, processId: string): Promise<void>
 async function publishResync(redis: Redis, prefix: string, clean?: boolean): Promise<void>
 ```
+
+Note: `publishCancel` and `publishDismiss` exist in the source but are not re-exported from the package entry point. Use the REST API or handler functions for cancel/dismiss.
 
 ### Stream Poller
 
@@ -758,5 +759,5 @@ All components use `react-i18next`. Required keys:
 - **Progress flushing**: buffered every 100ms; override with `OPTIO_PROGRESS_FLUSH_INTERVAL_MS` env var
 - **Child processes**: stored as MongoDB documents with `parentId`/`rootId`; automatically deleted on parent re-launch (`clear_result_fields`)
 - **Ephemeral processes**: deleted from DB after reaching an end state
-- **Migrations**: run automatically on `init()` via quaestor; migrations live in `packages/optio/src/optio/migrations/`
+- **Migrations**: run automatically on `init()` via quaestor; migrations live in `packages/optio-core/src/optio_core/migrations/`
 - **Scheduler**: APScheduler-backed; cron schedules defined on `TaskInstance.schedule` are synced on init and resync

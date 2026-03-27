@@ -1,6 +1,6 @@
 # optio-api
 
-REST API handlers and SSE streams for optio process management.
+REST API handlers and SSE streams for Optio process management.
 Framework-agnostic handlers with a ready-to-use Fastify adapter.
 
 ## Install
@@ -52,7 +52,7 @@ await app.listen({ port: 3000 });
 
 ## Exported Publishers
 
-Use these in domain code to send commands to the optio worker via Redis streams.
+Use these in domain code to send commands to the Optio worker via Redis streams.
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
@@ -86,4 +86,4 @@ client connects and `stop()` when they disconnect.
 
 ## See Also
 
-- [Optio Overview](../optio/README.md)
+- [Optio Overview](../../README.md)

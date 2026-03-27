@@ -1,0 +1,58 @@
+digraph state_machine {
+    rankdir=LR;
+    bgcolor=transparent;
+    ranksep=0.4;
+    nodesep=0.3;
+    margin=0.2;
+
+    node [
+        fontname="Helvetica"
+        fontsize=11
+        style="filled,rounded"
+        shape=box
+        height=0.35
+        margin="0.12,0.06"
+    ];
+
+    edge [
+        fontname="Helvetica"
+        fontsize=8
+        color="#888888"
+        fontcolor="#4477bb"
+        arrowsize=0.7
+    ];
+
+    // States
+    idle [label="idle" fillcolor="#e8e8e8" color="#999999"];
+    scheduled [label="scheduled" fillcolor="#d4f0fc" color="#00b4d8"];
+    running [label="running" fillcolor="#cce5ff" color="#4488cc"];
+    done [label="done" fillcolor="#d4edda" color="#2a9d8f"];
+    failed [label="failed" fillcolor="#f8d7da" color="#cc4444"];
+    cancel_requested [label="cancel_requested" fillcolor="#fff3cd" color="#e76f51"];
+    cancelling [label="cancelling" fillcolor="#fff3cd" color="#e76f51"];
+    cancelled [label="cancelled" fillcolor="#e8e8e8" color="#999999"];
+
+    // Layout hints
+    { rank=same; done; failed; }
+    { rank=same; cancel_requested; cancelling; cancelled; }
+
+    // Main flow
+    idle -> scheduled [label="launch"];
+    scheduled -> running [label="execute"];
+    running -> done [label="success"];
+    running -> failed [label="error"];
+
+    // Cancel flow
+    scheduled -> cancel_requested [label="cancel"];
+    running -> cancel_requested [label="cancel"];
+    cancel_requested -> cancelling;
+    cancelling -> cancelled;
+
+    // Re-launch / dismiss
+    done -> scheduled [label="re-launch" style=dashed color="#aaaaaa" fontcolor="#6699cc"];
+    failed -> scheduled [label="re-launch" style=dashed color="#aaaaaa" fontcolor="#6699cc"];
+    cancelled -> scheduled [label="re-launch" style=dashed color="#aaaaaa" fontcolor="#6699cc"];
+    done -> idle [label="dismiss" style=dashed color="#aaaaaa" fontcolor="#6699cc"];
+    failed -> idle [label="dismiss" style=dashed color="#aaaaaa" fontcolor="#6699cc"];
+    cancelled -> idle [label="dismiss" style=dashed color="#aaaaaa" fontcolor="#6699cc"];
+}
