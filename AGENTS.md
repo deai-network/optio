@@ -99,23 +99,13 @@ class TaskInstance:
     execute: Callable[..., Awaitable[None]]  # async def execute(ctx: ProcessContext) -> None
     process_id: str
     name: str
+    description: str | None = None           # optional description, shown as tooltip in UI
     params: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     schedule: str | None = None              # cron expression, e.g. "0 3 * * *"
     special: bool = False                    # hidden from default UI views when special=True
     warning: str | None = None              # shown as confirmation prompt before launch
-    cancellation: CancellationConfig = field(default_factory=CancellationConfig)
-```
-
----
-
-### CancellationConfig Fields
-
-```python
-@dataclass
-class CancellationConfig:
-    cancellable: bool = True
-    propagation: str = "down"  # "down" | "up" | "both" | "none"
+    cancellable: bool = True                 # whether this process can be cancelled
 ```
 
 ---
@@ -167,6 +157,7 @@ await ctx.run_child(
     execute: Callable[..., Awaitable[None]],
     process_id: str,
     name: str,
+    description: str | None = None,
     params: dict[str, Any] | None = None,
     survive_failure: bool = False,
     survive_cancel: bool = False,
@@ -196,7 +187,7 @@ ctx.services: dict[str, Any]
 ```python
 async with ctx.parallel_group(max_concurrency=5) as group:
     for item in items:
-        await group.spawn(execute_fn, process_id=item.id, name=item.name, params={...})
+        await group.spawn(execute_fn, process_id=item.id, name=item.name, description=item.desc, params={...})
 # group.results: list[ChildResult] after exit
 ```
 
@@ -271,6 +262,7 @@ Collection: `{prefix}_processes`
 | `_id` | ObjectId | MongoDB document ID |
 | `processId` | string | Application-defined unique identifier |
 | `name` | string | Human-readable display name |
+| `description` | string \| null | Optional description text |
 | `params` | object | Static parameters from TaskInstance |
 | `metadata` | object | Arbitrary metadata; fields can be filtered via `list_processes(metadata=...)` |
 | `parentId` | ObjectId \| null | Parent process `_id`; null for root processes |
@@ -312,6 +304,7 @@ Package: `optio-contracts`
 - `_id`: ObjectId (24-char hex string)
 - `processId`: string
 - `name`: string
+- `description`: string (nullable, optional)
 - `params`: `Record<string, unknown>` (optional)
 - `metadata`: `Record<string, unknown>` (optional)
 - `parentId`: ObjectId (optional)
@@ -482,12 +475,12 @@ function createTreePoller(opts: TreePollerOptions): ListPollerHandle
 
 **List stream process shape:**
 ```typescript
-{ _id, processId, name, status, progress, cancellable, special, warning, metadata, depth }
+{ _id, processId, name, description, status, progress, cancellable, special, warning, metadata, depth }
 ```
 
 **Tree stream process shape:**
 ```typescript
-{ _id, parentId: string | null, name, status, progress, cancellable, depth, order }
+{ _id, parentId: string | null, name, description, status, progress, cancellable, depth, order }
 ```
 
 ---
@@ -532,7 +525,7 @@ interface ProcessListProps {
 }
 ```
 
-Ant Design `List` of `ProcessItem`. Shows name, status badge, progress bar, launch/cancel buttons.
+Ant Design `List` of `ProcessItem`. Shows name (with description tooltip if set), status badge, progress bar, launch/cancel buttons.
 
 **`ProcessItem`**
 
@@ -587,6 +580,7 @@ Ant Design `Tree` rendering process hierarchy with status badges, progress bars,
 interface ProcessNode {
   _id: string;
   name: string;
+  description?: string | null;
   status: { state: string; error?: string; runningSince?: string };
   progress: { percent: number | null; message?: string };
   cancellable?: boolean;
@@ -718,6 +712,7 @@ export interface ProcessTreeNode {
   _id: string;
   parentId: string | null;
   name: string;
+  description?: string | null;
   status: { state: string; error?: string; runningSince?: string };
   progress: { percent: number | null; message?: string };
   cancellable: boolean;

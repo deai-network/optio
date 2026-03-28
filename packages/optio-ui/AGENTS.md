@@ -82,7 +82,7 @@ Single process row. Behavioral rules:
 - If `process.warning` is set, launch button is wrapped in `Popconfirm` requiring confirmation.
 - Cancel button visible when `!readonly && state in ACTIVE_STATES && process.cancellable && onCancel provided`.
 - Progress bar: active + `progress.percent != null` → determinate bar; active + no percent → indeterminate animated gradient bar; not active → hidden.
-- Name rendered as `Button[type=link]` when `onProcessClick` provided, plain `Text` otherwise.
+- Name rendered as `Button[type=link]` when `onProcessClick` provided, plain `Text` otherwise. If `process.description` is set, the name is wrapped in a `Tooltip` showing the description.
 - Progress message shown inline (blue) when process is active and `progress.message` is set.
 
 ---
@@ -127,6 +127,7 @@ string if no translation exists.
 interface ProcessNode {
   _id: string;
   name: string;
+  description?: string | null;
   status: { state: string; error?: string; runningSince?: string };
   progress: { percent: number | null; message?: string };
   cancellable?: boolean;
@@ -146,6 +147,8 @@ interface ProcessTreeViewProps {
 
 Renders an Ant Design `Tree` (non-selectable, with lines) from a nested `ProcessNode`
 hierarchy. All nodes are expanded by default.
+
+Process names show a tooltip with the `description` text when hovering, if `description` is set.
 
 Internal checkbox "Hide finished sub-tasks" (default: checked) filters out child nodes
 with `status.state === 'done'` recursively before rendering.
@@ -358,6 +361,7 @@ interface ProcessUpdate {
   _id: string;
   parentId: string | null;
   name: string;
+  description?: string | null;
   status: { state: string; error?: string; runningSince?: string };
   progress: { percent: number | null; message?: string };
   cancellable: boolean;

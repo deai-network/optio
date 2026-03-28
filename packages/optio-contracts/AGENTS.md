@@ -93,6 +93,7 @@ z.enum(['idle', 'scheduled', 'running', 'done', 'failed',
 | `_id` | `string` | ObjectId format |
 | `processId` | `string` | |
 | `name` | `string` | |
+| `description` | `string \| null` | nullable, optional |
 | `params` | `Record<string, unknown>` | optional |
 | `metadata` | `Record<string, unknown>` | optional |
 | `parentId` | `string` | optional, ObjectId format |

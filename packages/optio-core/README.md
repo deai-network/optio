@@ -240,6 +240,7 @@ await ctx.run_child(
     execute: Callable[..., Awaitable[None]],
     process_id: str,
     name: str,
+    description: str | None = None,
     params: dict[str, Any] | None = None,
     survive_failure: bool = False,
     survive_cancel: bool = False,
@@ -254,6 +255,7 @@ Run a sequential child process. Blocks until the child completes. Returns the ch
 | `execute` | `Callable` | required | Async function for the child task |
 | `process_id` | `str` | required | Unique ID for the child process |
 | `name` | `str` | required | Display name |
+| `description` | `str \| None` | `None` | Optional description text |
 | `params` | `dict \| None` | `None` | Parameters passed to the child's `ctx.params` |
 | `survive_failure` | `bool` | `False` | If `False`, raises `RuntimeError` when child fails |
 | `survive_cancel` | `bool` | `False` | If `False`, raises `RuntimeError` when child is cancelled |
@@ -279,7 +281,7 @@ Create a parallel execution group. Use as an async context manager.
 | `survive_cancel` | `bool` | `False` | If `False`, raises `RuntimeError` on exit if any child was cancelled |
 | `on_child_progress` | `Callable \| None` | `None` | Callback for child progress updates |
 
-Inside the context, call `await group.spawn(execute, process_id, name, params)` to add children. After the context exits, `group.results` contains a `list[ChildResult]`.
+Inside the context, call `await group.spawn(execute, process_id, name, description, params)` to add children. After the context exits, `group.results` contains a `list[ChildResult]`.
 
 ## Child Processes
 
@@ -549,12 +551,13 @@ class TaskInstance:
     execute: Callable[..., Awaitable[None]]  # async def execute(ctx: ProcessContext) -> None
     process_id: str
     name: str
+    description: str | None = None           # optional description, shown as tooltip in UI
     params: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     schedule: str | None = None              # cron expression, e.g. "0 3 * * *"
     special: bool = False                    # hidden from default UI views when special=True
     warning: str | None = None               # shown as confirmation prompt before launch
-    cancellation: CancellationConfig = field(default_factory=CancellationConfig)
+    cancellable: bool = True                 # whether this process can be cancelled
 ```
 
 | Field | Type | Description |
@@ -562,26 +565,13 @@ class TaskInstance:
 | `execute` | `Callable[..., Awaitable[None]]` | Async function `(ctx: ProcessContext) -> None` that implements the task |
 | `process_id` | `str` | Unique string identifier for this process |
 | `name` | `str` | Human-readable display name |
+| `description` | `str \| None` | Optional description text, shown as tooltip on process name in the UI |
 | `params` | `dict[str, Any]` | Parameters passed to the execute function via `ctx.params` |
 | `metadata` | `dict[str, Any]` | Application metadata stored on the process document. Use this for tagging processes so you can find them later — e.g., `{"customer": "2"}` to associate a task with a specific customer. See `list_processes(metadata=...)` for querying. |
 | `schedule` | `str \| None` | Cron expression (5 fields) for automatic scheduling, or `None` |
 | `special` | `bool` | Hidden from default UI views when `True` |
 | `warning` | `str \| None` | Warning message shown as confirmation prompt before launch |
-| `cancellation` | `CancellationConfig` | Cancellation behavior configuration |
-
-### `CancellationConfig`
-
-```python
-@dataclass
-class CancellationConfig:
-    cancellable: bool = True
-    propagation: str = "down"  # "down" | "up" | "both" | "none"
-```
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `cancellable` | `bool` | `True` | Whether this process can be cancelled |
-| `propagation` | `str` | `"down"` | Direction of cancellation propagation: `"down"` (to children), `"up"` (to parent), `"both"`, or `"none"` |
+| `cancellable` | `bool` | Whether this process can be cancelled (default: `True`) |
 
 ### `ChildResult`
 
@@ -620,6 +610,7 @@ Collection: `{prefix}_processes`
 | `_id` | ObjectId | MongoDB document ID |
 | `processId` | string | Application-defined unique identifier |
 | `name` | string | Human-readable display name |
+| `description` | string \| null | Optional description text |
 | `params` | object | Static parameters from TaskInstance |
 | `metadata` | object | Arbitrary metadata; fields can be filtered via `list_processes(metadata=...)` |
 | `parentId` | ObjectId \| null | Parent process `_id`; null for root processes |
