@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { OptioProvider } from '../context/OptioProvider.js';
 import { useOptioPrefix } from '../context/useOptioContext.js';
 
 // Mock the discovery hook
@@ -10,6 +9,14 @@ let mockDiscoveryResult = { prefix: null as string | null, prefixes: [] as strin
 vi.mock('../hooks/usePrefixDiscovery.js', () => ({
   usePrefixDiscovery: () => mockDiscoveryResult,
 }));
+
+// Mock the client to avoid ts-rest contract initialization
+vi.mock('../client.js', () => ({
+  createOptioClient: () => ({}),
+}));
+
+// Import OptioProvider after mocks are set up
+const { OptioProvider } = await import('../context/OptioProvider.js');
 
 function PrefixDisplay() {
   const prefix = useOptioPrefix();
