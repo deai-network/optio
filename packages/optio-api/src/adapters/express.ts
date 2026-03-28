@@ -10,18 +10,32 @@ import { ObjectId } from 'mongodb';
 import * as handlers from '../handlers.js';
 import { createListPoller, createTreePoller } from '../stream-poller.js';
 import { discoverPrefixes } from '../discovery.js';
+import { checkAuth, type AuthCallback } from '../auth.js';
 
 export interface OptioApiOptions {
   db: Db;
   redis: Redis;
   prefix?: string;
+  authenticate?: AuthCallback<import('express').Request>;
 }
 
 const c = initContract();
 const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/api' });
 
 export function registerOptioApi(app: Express, opts: OptioApiOptions) {
-  const { db, redis } = opts;
+  const { db, redis, authenticate } = opts;
+
+  if (authenticate) {
+    app.use('/api', async (req, res, next) => {
+      const isWrite = req.method === 'POST';
+      const authError = await checkAuth(req, authenticate, isWrite);
+      if (authError) {
+        res.status(authError.status).json(authError.body);
+        return;
+      }
+      next();
+    });
+  }
 
   app.get('/api/optio/prefixes', async (_req, res) => {
     const prefixes = await discoverPrefixes(db);

@@ -151,3 +151,74 @@ describe('Next.js App Router adapter integration tests', () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe('Next.js App Router adapter auth', () => {
+  it('no auth callback — all endpoints open', async () => {
+    await seedProcess();
+    const { GET } = createOptioRouteHandlers({ db, redis });
+
+    const req = makeNextRequest('http://localhost/api/processes/optio?limit=10');
+    const res = await GET(req);
+    expect(res.status).toBe(200);
+  });
+
+  it('auth returns null — 401 on read', async () => {
+    await seedProcess();
+    const { GET } = createOptioRouteHandlers({ db, redis, authenticate: () => null });
+
+    const req = makeNextRequest('http://localhost/api/processes/optio?limit=10');
+    const res = await GET(req);
+    expect(res.status).toBe(401);
+  });
+
+  it('auth returns null — 401 on write', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' } });
+    const { POST } = createOptioRouteHandlers({ db, redis, authenticate: () => null });
+
+    const req = makeNextRequest(`http://localhost/api/processes/optio/${doc._id.toString()}/launch`, {
+      method: 'POST',
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(401);
+  });
+
+  it('viewer — 200 on read', async () => {
+    await seedProcess();
+    const { GET } = createOptioRouteHandlers({ db, redis, authenticate: () => 'viewer' });
+
+    const req = makeNextRequest('http://localhost/api/processes/optio?limit=10');
+    const res = await GET(req);
+    expect(res.status).toBe(200);
+  });
+
+  it('viewer — 403 on write', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' } });
+    const { POST } = createOptioRouteHandlers({ db, redis, authenticate: () => 'viewer' });
+
+    const req = makeNextRequest(`http://localhost/api/processes/optio/${doc._id.toString()}/launch`, {
+      method: 'POST',
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(403);
+  });
+
+  it('operator — 200 on write', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' } });
+    const { POST } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
+
+    const req = makeNextRequest(`http://localhost/api/processes/optio/${doc._id.toString()}/launch`, {
+      method: 'POST',
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+  });
+
+  it('async auth callback works', async () => {
+    await seedProcess();
+    const { GET } = createOptioRouteHandlers({ db, redis, authenticate: async () => 'viewer' as const });
+
+    const req = makeNextRequest('http://localhost/api/processes/optio?limit=10');
+    const res = await GET(req);
+    expect(res.status).toBe(200);
+  });
+});

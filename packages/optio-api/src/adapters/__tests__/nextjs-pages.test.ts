@@ -108,3 +108,80 @@ describe('Next.js Pages Router adapter integration tests', () => {
     expect(res.body.message).toBe('Resync requested');
   });
 });
+
+function createAppWithAuth(authenticate: (req: any) => any) {
+  const handler = createOptioHandler({ db, redis, authenticate });
+  const app = express();
+  app.use(express.json());
+  app.use((req, _res, next) => {
+    const pathname = req.path;
+    const segments = pathname.split('/').filter(Boolean);
+    const existingQuery = Object.fromEntries(Object.entries(req.query as Record<string, unknown>));
+    Object.defineProperty(req, 'query', {
+      value: { ...existingQuery, 'ts-rest': segments },
+      writable: true,
+      configurable: true,
+    });
+    next();
+  });
+  app.use((req, res) => handler(req as any, res as any));
+  return app;
+}
+
+describe('Next.js Pages adapter auth', () => {
+  it('no auth callback — all endpoints open', async () => {
+    await seedProcess();
+    const app = createApp();
+
+    const res = await request(app).get('/api/processes/optio?limit=10');
+    expect(res.status).toBe(200);
+  });
+
+  it('auth returns null — 401 on read', async () => {
+    await seedProcess();
+    const app = createAppWithAuth(() => null);
+
+    const res = await request(app).get('/api/processes/optio?limit=10');
+    expect(res.status).toBe(401);
+  });
+
+  it('auth returns null — 401 on write', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' } });
+    const app = createAppWithAuth(() => null);
+
+    const res = await request(app).post(`/api/processes/optio/${doc._id.toString()}/launch`);
+    expect(res.status).toBe(401);
+  });
+
+  it('viewer — 200 on read', async () => {
+    await seedProcess();
+    const app = createAppWithAuth(() => 'viewer');
+
+    const res = await request(app).get('/api/processes/optio?limit=10');
+    expect(res.status).toBe(200);
+  });
+
+  it('viewer — 403 on write', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' } });
+    const app = createAppWithAuth(() => 'viewer');
+
+    const res = await request(app).post(`/api/processes/optio/${doc._id.toString()}/launch`);
+    expect(res.status).toBe(403);
+  });
+
+  it('operator — 200 on write', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' } });
+    const app = createAppWithAuth(() => 'operator');
+
+    const res = await request(app).post(`/api/processes/optio/${doc._id.toString()}/launch`);
+    expect(res.status).toBe(200);
+  });
+
+  it('async auth callback works', async () => {
+    await seedProcess();
+    const app = createAppWithAuth(async () => 'viewer');
+
+    const res = await request(app).get('/api/processes/optio?limit=10');
+    expect(res.status).toBe(200);
+  });
+});

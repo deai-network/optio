@@ -23,3 +23,6 @@ export { createListPoller, createTreePoller, type StreamPollerOptions, type Tree
 
 // Discovery
 export { discoverPrefixes } from './discovery.js';
+
+// Auth
+export { type OptioRole, type AuthCallback } from './auth.js';

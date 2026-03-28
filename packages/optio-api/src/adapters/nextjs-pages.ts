@@ -10,18 +10,20 @@ import { ObjectId } from 'mongodb';
 import * as handlers from '../handlers.js';
 import { createListPoller, createTreePoller } from '../stream-poller.js';
 import { discoverPrefixes } from '../discovery.js';
+import { checkAuth, type AuthCallback } from '../auth.js';
 
 export interface OptioApiOptions {
   db: Db;
   redis: Redis;
   prefix?: string;
+  authenticate?: AuthCallback<NextApiRequest>;
 }
 
 const c = initContract();
 const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/api' });
 
 export function createOptioHandler(opts: OptioApiOptions): (req: NextApiRequest, res: NextApiResponse) => Promise<void> {
-  const { db, redis } = opts;
+  const { db, redis, authenticate } = opts;
 
   const tsRestHandler = createNextRouter(apiContract.processes, {
     list: async ({ params, query }) => {
@@ -67,6 +69,13 @@ export function createOptioHandler(opts: OptioApiOptions): (req: NextApiRequest,
   });
 
   return async (req: NextApiRequest, res: NextApiResponse) => {
+    const isWrite = req.method === 'POST';
+    const authError = await checkAuth(req, authenticate, isWrite);
+    if (authError) {
+      res.status(authError.status).json(authError.body);
+      return;
+    }
+
     const url = req.url ?? '';
     const method = req.method ?? '';
 

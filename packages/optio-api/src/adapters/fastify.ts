@@ -10,18 +10,31 @@ import { ObjectId } from 'mongodb';
 import * as handlers from '../handlers.js';
 import { createListPoller, createTreePoller } from '../stream-poller.js';
 import { discoverPrefixes } from '../discovery.js';
+import { checkAuth, type AuthCallback } from '../auth.js';
 
 export interface OptioApiOptions {
   db: Db;
   redis: Redis;
   prefix?: string;
+  authenticate?: AuthCallback<import('fastify').FastifyRequest>;
 }
 
 const c = initContract();
 const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/api' });
 
 export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions) {
-  const { db, redis } = opts;
+  const { db, redis, authenticate } = opts;
+
+  if (authenticate) {
+    app.addHook('onRequest', async (request, reply) => {
+      const isWrite = request.method === 'POST';
+      const authError = await checkAuth(request, authenticate, isWrite);
+      if (authError) {
+        return reply.code(authError.status).send(authError.body);
+      }
+    });
+  }
+
   const s = initServer();
 
   const routes = s.router(apiContract.processes, {

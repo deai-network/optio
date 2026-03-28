@@ -9,18 +9,20 @@ import { ObjectId } from 'mongodb';
 import * as handlers from '../handlers.js';
 import { createListPoller, createTreePoller } from '../stream-poller.js';
 import { discoverPrefixes } from '../discovery.js';
+import { checkAuth, type AuthCallback } from '../auth.js';
 
 export interface OptioApiOptions {
   db: Db;
   redis: Redis;
   prefix?: string;
+  authenticate?: AuthCallback<Request>;
 }
 
 const c = initContract();
 const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/api' });
 
 export function createOptioRouteHandlers(opts: OptioApiOptions) {
-  const { db, redis } = opts;
+  const { db, redis, authenticate } = opts;
 
   const tsRestHandlers = createNextHandler(
     apiContract.processes,
@@ -69,7 +71,17 @@ export function createOptioRouteHandlers(opts: OptioApiOptions) {
     { handlerType: 'app-router' },
   );
 
+  function authErrorResponse(authError: { status: number; body: { message: string } }): Response {
+    return new Response(JSON.stringify(authError.body), {
+      status: authError.status,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+
   async function GET(request: Request): Promise<Response> {
+    const authError = await checkAuth(request, authenticate, false);
+    if (authError) return authErrorResponse(authError);
+
     const url = new URL(request.url);
     const { pathname } = url;
 
@@ -171,6 +183,9 @@ export function createOptioRouteHandlers(opts: OptioApiOptions) {
   }
 
   async function POST(request: Request): Promise<Response> {
+    const authError = await checkAuth(request, authenticate, true);
+    if (authError) return authErrorResponse(authError);
+
     return tsRestHandlers(request);
   }
 

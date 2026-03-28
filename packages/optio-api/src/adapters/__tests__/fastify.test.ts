@@ -191,3 +191,84 @@ describe('Fastify adapter integration tests', () => {
     await db.collection('fake_processes').drop();
   });
 });
+
+describe('Fastify adapter auth', () => {
+  function createAppWithAuth(authenticate: (req: any) => any) {
+    const app = Fastify();
+    registerOptioApi(app, { db, redis, authenticate });
+    return app;
+  }
+
+  it('no auth callback — all endpoints open', async () => {
+    await seedProcess();
+    const app = createApp();
+
+    const res = await app.inject({ method: 'GET', url: '/api/processes/optio?limit=10' });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('auth returns null — 401 on read', async () => {
+    await seedProcess();
+    const app = createAppWithAuth(() => null);
+
+    const res = await app.inject({ method: 'GET', url: '/api/processes/optio?limit=10' });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('auth returns null — 401 on write', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' } });
+    const app = createAppWithAuth(() => null);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/processes/optio/${doc._id.toString()}/launch`,
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('viewer — 200 on read', async () => {
+    await seedProcess();
+    const app = createAppWithAuth(() => 'viewer');
+
+    const res = await app.inject({ method: 'GET', url: '/api/processes/optio?limit=10' });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('viewer — 403 on write', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' } });
+    const app = createAppWithAuth(() => 'viewer');
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/processes/optio/${doc._id.toString()}/launch`,
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('operator — 200 on read', async () => {
+    await seedProcess();
+    const app = createAppWithAuth(() => 'operator');
+
+    const res = await app.inject({ method: 'GET', url: '/api/processes/optio?limit=10' });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('operator — 200 on write', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' } });
+    const app = createAppWithAuth(() => 'operator');
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/processes/optio/${doc._id.toString()}/launch`,
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('async auth callback works', async () => {
+    await seedProcess();
+    const app = createAppWithAuth(async () => 'viewer');
+
+    const res = await app.inject({ method: 'GET', url: '/api/processes/optio?limit=10' });
+    expect(res.statusCode).toBe(200);
+  });
+});
