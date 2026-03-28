@@ -168,6 +168,7 @@ class Executor:
         params: dict,
         survive_failure: bool = False,
         survive_cancel: bool = False,
+        description: str | None = None,
     ) -> str:
         """Execute a child process (called from ProcessContext.run_child)."""
         order = parent_ctx._next_child_order()
@@ -183,6 +184,7 @@ class Executor:
             order=order,
             initial_state="scheduled",
             metadata=parent_ctx.metadata,
+            description=description,
         )
         await append_log(self._db, self._prefix, parent_ctx._process_oid, "event", f"Spawned child: {name}")
 

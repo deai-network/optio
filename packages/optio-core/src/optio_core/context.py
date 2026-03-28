@@ -94,6 +94,7 @@ class ProcessContext:
         survive_failure: bool = False,
         survive_cancel: bool = False,
         on_child_progress: Callable | None = None,
+        description: str | None = None,
     ) -> str:
         """Launch a sequential child process. Blocks until child completes."""
         if self._executor is None:
@@ -108,6 +109,7 @@ class ProcessContext:
             params=params or {},
             survive_failure=survive_failure,
             survive_cancel=survive_cancel,
+            description=description,
         )
 
     def parallel_group(
@@ -263,6 +265,7 @@ class ParallelGroup:
         process_id: str,
         name: str,
         params: dict[str, Any] | None = None,
+        description: str | None = None,
     ) -> None:
         """Add a child to the group. Blocks if max_concurrency reached."""
         await self._semaphore.acquire()
@@ -276,6 +279,7 @@ class ParallelGroup:
                     params=params,
                     survive_failure=True,
                     survive_cancel=True,
+                    description=description,
                 )
                 self._results.append(ChildResult(
                     process_id=process_id,
