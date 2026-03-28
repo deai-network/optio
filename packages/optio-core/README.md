@@ -446,7 +446,7 @@ List processes with optional filters. Results are sorted by `depth`, `order`, th
 |-----------|------|---------|-------------|
 | `state` | `str \| None` | `None` | Filter by `status.state` (e.g., `"running"`, `"done"`) |
 | `root_id` | `str \| None` | `None` | Filter by `rootId` (string; converted to ObjectId internally) |
-| `metadata` | `dict[str, str] \| None` | `None` | Filter by metadata fields. Each key-value pair matches against `metadata.{key}` in the process document. Multiple entries are combined with AND. |
+| `metadata` | `dict[str, str] \| None` | `None` | Filter by metadata fields. Each key-value pair matches against `metadata.{key}` in the process document. Multiple entries are combined with AND. For example, `metadata={"customer": "2"}` returns all processes tagged with that customer. |
 
 ## Ad-hoc Processes
 
@@ -495,15 +495,30 @@ proc = await adhoc_define(
 await launch("one-off-123")
 ```
 
-## Custom Commands
+## Remote Control via Redis
 
-### `on_command()`
+When Redis is enabled (by passing `redis_url` to `init()`), Optio listens for commands on the `{prefix}:commands` Redis stream. This allows external systems — other services, the REST API layer, or scripts — to control processes remotely. The `run()` method blocks and processes incoming commands until `shutdown()` is called.
+
+The following built-in commands are available out of the box:
+
+| Command | Payload | Description |
+|---------|---------|-------------|
+| `launch` | `{"processId": "..."}` | Launch a process (same as calling `launch()` directly) |
+| `cancel` | `{"processId": "..."}` | Cancel a running or scheduled process |
+| `dismiss` | `{"processId": "..."}` | Reset a completed process back to `idle` |
+| `resync` | `{"clean": false}` | Re-run the task generator and sync definitions |
+
+### Custom Commands
+
+You can also register your own command handlers for application-specific operations.
+
+#### `on_command()`
 
 ```python
 optio_core.on_command(command_type: str, handler: Callable[..., Awaitable]) -> None
 ```
 
-Register a custom command handler. Requires Redis. The handler receives the command payload dict. Must be called after `init()` but before `run()`. Built-in commands (`launch`, `cancel`, `dismiss`, `resync`) are registered automatically.
+Register a custom command handler. The handler receives the command payload dict. Must be called after `init()` but before `run()`.
 
 **Example:**
 
@@ -525,8 +540,6 @@ async def main():
 
     await run()  # Blocks, listens for commands on Redis stream "myapp:commands"
 ```
-
-With Redis enabled, external systems can publish commands to the `{prefix}:commands` Redis stream. The `run()` method blocks and processes commands until `shutdown()` is called.
 
 ## Data Types
 
@@ -552,7 +565,7 @@ class TaskInstance:
 | `process_id` | `str` | Unique string identifier for this process |
 | `name` | `str` | Human-readable display name |
 | `params` | `dict[str, Any]` | Parameters passed to the execute function via `ctx.params` |
-| `metadata` | `dict[str, Any]` | Application metadata stored on the process document |
+| `metadata` | `dict[str, Any]` | Application metadata stored on the process document. Use this for tagging processes so you can find them later — e.g., `{"customer": "2"}` to associate a task with a specific customer. See `list_processes(metadata=...)` for querying. |
 | `schedule` | `str \| None` | Cron expression (5 fields) for automatic scheduling, or `None` |
 | `special` | `bool` | Hidden from default UI views when `True` |
 | `warning` | `str \| None` | Warning message shown as confirmation prompt before launch |
@@ -599,6 +612,8 @@ class ChildProgressInfo:
 Passed to `on_child_progress` callbacks. Contains the current state and progress of each child in a group.
 
 ## MongoDB Document Schema
+
+Optio-core is the sole owner of the data in MongoDB — external code should treat these documents as read-only. If you need to observe process state from other services or a frontend, use [optio-api](../optio-api/README.md), which exposes this data as a REST API with SSE streams for real-time updates.
 
 Collection: `{prefix}_processes`
 
