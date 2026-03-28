@@ -6,9 +6,9 @@
 
 ## Overview
 
-Optio is a reusable async process management library for Python. It provides a framework for defining, launching, cancelling, and monitoring long-running tasks backed by MongoDB for persistence.
+Optio is process management framework, built around optio-core, a library for Python. It provides a framework for defining, launching, cancelling, and monitoring long-running tasks backed by MongoDB for persistence.
 
-Optio is designed as a progressive stack: you start simple with just Python and MongoDB, then add layers as your needs grow — Redis for remote control, a REST API for HTTP access, and a React UI for monitoring. Each level adds capability (and a dependency), but you only adopt what you need.
+Optio is designed as a progressive stack: you start simple with just Python and MongoDB (optio-core), then add layers as your needs grow — Redis for remote control, a REST API (optio-api) for HTTP access, and a React UI (optio-ui) for monitoring. Each level adds capability (and a dependency), but you only adopt what you need.
 
 ## Architecture
 
