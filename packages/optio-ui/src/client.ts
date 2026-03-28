@@ -1,9 +1,12 @@
 import { initQueryClient } from '@ts-rest/react-query';
 import { initContract } from '@ts-rest/core';
-import { processesContract } from 'optio-contracts';
+import { processesContract, discoveryContract } from 'optio-contracts';
 
 const c = initContract();
-const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/api' });
+const apiContract = c.router(
+  { processes: processesContract, discovery: discoveryContract },
+  { pathPrefix: '/api' },
+);
 
 export type OptioClient = ReturnType<typeof createOptioClient>;
 

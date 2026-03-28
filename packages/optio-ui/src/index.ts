@@ -13,6 +13,7 @@ export { useProcessActions } from './hooks/useProcessActions.js';
 export { useProcessList, useProcess, useProcessTree, useProcessTreeLog } from './hooks/useProcessQueries.js';
 export { useProcessStream } from './hooks/useProcessStream.js';
 export { useProcessListStream } from './hooks/useProcessListStream.js';
+export { usePrefixes, usePrefixDiscovery } from './hooks/usePrefixDiscovery.js';
 
 // Types
 export type { FilterGroup } from './components/ProcessFilters.js';

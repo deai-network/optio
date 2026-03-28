@@ -11,7 +11,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export interface DashboardConfig {
   mongodbUrl: string;
   redisUrl: string;
-  prefix: string;
   port: number;
 }
 
@@ -28,7 +27,7 @@ export async function startServer(config: DashboardConfig) {
   const redis = new Redis(config.redisUrl);
 
   // Register Optio API routes and SSE streams
-  await registerOptioApi(app, { db, redis, prefix: config.prefix });
+  await registerOptioApi(app, { db, redis });
 
   // Serve the pre-built React app
   await app.register(fastifyStatic, {

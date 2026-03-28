@@ -120,3 +120,14 @@ export const processesContract = c.router({
     summary: 'Re-sync process definitions',
   },
 });
+
+export const discoveryContract = c.router({
+  prefixes: {
+    method: 'GET',
+    path: '/optio/prefixes',
+    responses: {
+      200: z.object({ prefixes: z.array(z.string()) }),
+    },
+    summary: 'Discover active optio prefixes in the database',
+  },
+});

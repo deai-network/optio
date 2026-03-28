@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Layout, Typography } from 'antd';
+import { Layout, Typography, Select, Alert } from 'antd';
 import {
   OptioProvider,
   ProcessList,
@@ -8,12 +8,33 @@ import {
   useProcessActions,
   useProcessStream,
   useProcessListStream,
+  usePrefixes,
 } from 'optio-ui';
 
 const { Header, Sider, Content } = Layout;
 const { Title } = Typography;
 
-const prefix = (window as any).__OPTIO_PREFIX__ || 'optio';
+function PrefixSelector({ onSelect }: { onSelect: (prefix: string) => void }) {
+  const { prefixes, isLoading, error } = usePrefixes();
+
+  if (isLoading) return null;
+  if (error) return <Alert type="error" message="Failed to detect prefixes" />;
+  if (prefixes.length === 0) {
+    return <Alert type="info" message="No optio instance detected in the database" />;
+  }
+
+  return (
+    <div style={{ padding: 24 }}>
+      <Typography.Text>Multiple optio instances detected. Select one:</Typography.Text>
+      <Select
+        style={{ width: '100%', marginTop: 8 }}
+        placeholder="Select prefix"
+        options={prefixes.map((p) => ({ label: p, value: p }))}
+        onChange={onSelect}
+      />
+    </div>
+  );
+}
 
 function Dashboard() {
   const [selectedProcessId, setSelectedProcessId] = useState<string | null>(null);
@@ -24,45 +45,88 @@ function Dashboard() {
   const { launch, cancel, dismiss } = useProcessActions();
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
-      <Header style={{ display: 'flex', alignItems: 'center', padding: '0 24px' }}>
-        <Title level={4} style={{ color: '#fff', margin: 0 }}>Optio Dashboard</Title>
-      </Header>
-      <Layout>
-        <Sider width={400} style={{ background: '#fff', overflow: 'auto' }}>
-          <ProcessList
-            processes={processes}
-            loading={!listConnected}
-            onLaunch={launch}
-            onCancel={cancel}
-            onProcessClick={setSelectedProcessId}
-          />
-        </Sider>
-        <Content style={{ padding: '24px', overflow: 'auto' }}>
-          {selectedProcessId ? (
-            <>
-              <ProcessTreeView
-                treeData={tree}
-                sseState={{ connected: treeConnected }}
-                onCancel={cancel}
-              />
-              <ProcessLogPanel logs={logs} />
-            </>
-          ) : (
-            <div style={{ color: '#999', textAlign: 'center', marginTop: 100 }}>
-              Select a process to view details
-            </div>
-          )}
-        </Content>
-      </Layout>
+    <Layout>
+      <Sider width={400} style={{ background: '#fff', overflow: 'auto' }}>
+        <ProcessList
+          processes={processes}
+          loading={!listConnected}
+          onLaunch={launch}
+          onCancel={cancel}
+          onProcessClick={setSelectedProcessId}
+        />
+      </Sider>
+      <Content style={{ padding: '24px', overflow: 'auto' }}>
+        {selectedProcessId ? (
+          <>
+            <ProcessTreeView
+              treeData={tree}
+              sseState={{ connected: treeConnected }}
+              onCancel={cancel}
+            />
+            <ProcessLogPanel logs={logs} />
+          </>
+        ) : (
+          <div style={{ color: '#999', textAlign: 'center', marginTop: 100 }}>
+            Select a process to view details
+          </div>
+        )}
+      </Content>
     </Layout>
+  );
+}
+
+function AppContent() {
+  const { prefixes, isLoading } = usePrefixes();
+  const [manualPrefix, setManualPrefix] = useState<string | null>(null);
+
+  if (isLoading) return null;
+
+  // Multiple prefixes and user hasn't picked yet
+  if (prefixes.length > 1 && !manualPrefix) {
+    return (
+      <Layout style={{ minHeight: '100vh' }}>
+        <Header style={{ display: 'flex', alignItems: 'center', padding: '0 24px' }}>
+          <Title level={4} style={{ color: '#fff', margin: 0 }}>Optio Dashboard</Title>
+        </Header>
+        <PrefixSelector onSelect={setManualPrefix} />
+      </Layout>
+    );
+  }
+
+  // Zero prefixes
+  if (prefixes.length === 0) {
+    return (
+      <Layout style={{ minHeight: '100vh' }}>
+        <Header style={{ display: 'flex', alignItems: 'center', padding: '0 24px' }}>
+          <Title level={4} style={{ color: '#fff', margin: 0 }}>Optio Dashboard</Title>
+        </Header>
+        <Alert
+          type="info"
+          message="No optio instance detected in the database"
+          style={{ margin: 24 }}
+        />
+      </Layout>
+    );
+  }
+
+  const prefix = manualPrefix ?? prefixes[0];
+
+  return (
+    <OptioProvider prefix={prefix}>
+      <Layout style={{ minHeight: '100vh' }}>
+        <Header style={{ display: 'flex', alignItems: 'center', padding: '0 24px' }}>
+          <Title level={4} style={{ color: '#fff', margin: 0 }}>Optio Dashboard</Title>
+        </Header>
+        <Dashboard />
+      </Layout>
+    </OptioProvider>
   );
 }
 
 export default function App() {
   return (
-    <OptioProvider prefix={prefix}>
-      <Dashboard />
+    <OptioProvider>
+      <AppContent />
     </OptioProvider>
   );
 }
