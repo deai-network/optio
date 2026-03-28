@@ -1,6 +1,7 @@
 {
   "name": "optio-monorepo",
   "private": true,
+  "license": "Apache-2.0",
   "scripts": {
     "build": "pnpm -r build",
     "test": "pnpm -r test"
