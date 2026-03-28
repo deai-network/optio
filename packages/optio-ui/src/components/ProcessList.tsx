@@ -39,13 +39,17 @@ export function ProcessItem({ process, onLaunch, onCancel, readonly, onProcessCl
     )
   );
 
-  const nameElement = onProcessClick ? (
+  const nameContent = onProcessClick ? (
     <Button type="link" style={{ padding: 0, height: 'auto' }} onClick={() => onProcessClick(process._id)}>
       {process.name}
     </Button>
   ) : (
     <Text>{process.name}</Text>
   );
+
+  const nameElement = process.description ? (
+    <Tooltip title={process.description}>{nameContent}</Tooltip>
+  ) : nameContent;
 
   return (
     <div style={{ width: '100%' }}>

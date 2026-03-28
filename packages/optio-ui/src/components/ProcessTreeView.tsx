@@ -12,6 +12,7 @@ const ACTIVE_STATES = new Set(['running', 'scheduled', 'cancel_requested', 'canc
 interface ProcessNode {
   _id: string;
   name: string;
+  description?: string | null;
   status: { state: string; error?: string; runningSince?: string };
   progress: { percent: number | null; message?: string };
   cancellable?: boolean;
@@ -58,7 +59,13 @@ function treeNodeToDataNode(
     key: node._id,
     title: (
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '0 8px', width: '100%' }}>
-        <Text style={{ whiteSpace: 'nowrap' }}>{node.name}</Text>
+        {node.description ? (
+          <Tooltip title={node.description}>
+            <Text style={{ whiteSpace: 'nowrap' }}>{node.name}</Text>
+          </Tooltip>
+        ) : (
+          <Text style={{ whiteSpace: 'nowrap' }}>{node.name}</Text>
+        )}
         <ProcessStatusBadge state={node.status.state} error={node.status.error} runningSince={node.status.runningSince} />
         <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 120 }}>
           {/* Progress bar visibility rules (keep consistent across ProcessList,
