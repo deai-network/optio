@@ -13,7 +13,7 @@ Before building the demo, add an optional `description` field to tasks across th
 ### Changes by package
 
 **optio-core** (`packages/optio-core/`):
-- `models.py`: Add `description: str | None = None` to `TaskInstance`.
+- `models.py`: Add `description: str | None = None` to `TaskInstance`. Remove `propagation` field from `CancellationConfig` (dead code — never read by executor; actual propagation is controlled per-call via `survive_cancel`). If `CancellationConfig` only has `cancellable` left, consider whether it still warrants its own dataclass or should become a plain `cancellable: bool = True` on `TaskInstance`.
 - `store.py`: Include `description` in `upsert_process` `$set` fields and in `create_child_process` document creation.
 - `context.py`: Add `description` parameter to `run_child()`. Pass it through to `executor.execute_child()`.
 - `executor.py`: Add `description` parameter to `execute_child()`. Pass it to `create_child_process()`.
@@ -246,4 +246,4 @@ Simple single-level task: reports the current time, plays an "alarm sequence" (p
 - `TaskInstance.special` — low-value UI flag, not worth a demo task
 - Ad-hoc processes (`adhoc_define`/`adhoc_delete`) — framework internals
 - Ephemeral processes (`mark_ephemeral`) — framework internals
-- `cancellation.propagation` config — stored but not actively used by executor
+- `cancellation.propagation` config — removed in Phase 0 (was dead code)
