@@ -1,0 +1,5 @@
+"""The Great Museum Heist — parallel failure, cascading errors, warning."""
+from optio_core.models import TaskInstance
+
+def get_tasks() -> list[TaskInstance]:
+    return []
