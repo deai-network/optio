@@ -1,5 +1,14 @@
 ![Optio](docs/images/banner.png)
 
+<p align="center">
+  <a href="#overview">Overview</a> •
+  <a href="#architecture">Architecture</a> •
+  <a href="#key-concepts">Key Concepts</a> •
+  <a href="#features">Features</a> •
+  <a href="#your-options-for-deployment-and-integration">Deployment & Integration</a> •
+  <a href="#packages">Packages</a>
+</p>
+
 # Optio
 
 *In the Roman army, the **optio** was the centurion's second-in-command — responsible for scheduling daily routines, managing operations, and ensuring everything ran smoothly behind the scenes. This library serves the same role for your application: scheduling and managing background processes, tracking their lifecycle, and keeping everything under control.*
