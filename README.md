@@ -15,9 +15,9 @@
 
 ## Overview
 
-Optio is process management framework, built around optio-core, a library for Python. It provides a framework for defining, launching, cancelling, and monitoring long-running tasks backed by MongoDB for persistence.
+Optio is process management framework, built around [optio-core](packages/optio-core), a library for Python. It provides a framework for defining, launching, cancelling, and monitoring long-running tasks backed by MongoDB for persistence.
 
-Optio is designed as a progressive stack: you start simple with just Python and MongoDB (optio-core), then add layers as your needs grow — Redis for remote control, a REST API (optio-api) for HTTP access, and a React UI (optio-ui) for monitoring. Each level adds capability (and a dependency), but you only adopt what you need.
+Optio is designed as a progressive stack: you start simple with just Python and MongoDB ([optio-core](packages/optio-core)), then add layers as your needs grow — Redis for remote control, a REST API ([optio-api](packages/optio-api)) for HTTP access, and a React UI ([optio-ui](packages/optio-ui)) for monitoring. Each level adds capability (and a dependency), but you only adopt what you need.
 
 ## Architecture
 
@@ -175,7 +175,7 @@ Adds external command ingestion via Redis Streams, enabling remote control of pr
 pip install optio-core[redis]
 ```
 
-### Level 3: REST API (+ optio-api)
+### Level 3: REST API (+ [optio-api](packages/optio-api))
 
 Adds HTTP endpoints to your Node.js API server for process management and SSE streams for real-time status updates. Built on ts-rest contracts for type-safe client-server communication.
 
@@ -183,7 +183,7 @@ Adds HTTP endpoints to your Node.js API server for process management and SSE st
 npm install optio-api
 ```
 
-### Level 4: Web UI (+ optio-ui)
+### Level 4: Web UI (+ [optio-ui](packages/optio-ui))
 
 Adds pre-built React components for process monitoring to your React web app: process list, tree view, progress bars, and action buttons.
 
@@ -193,12 +193,22 @@ Adds pre-built React components for process monitoring to your React web app: pr
 npm install optio-ui
 ```
 
+### The no-code dashboard alternative: [optio-dashboard](packages/optio-dashboard)
+
+If you don't need to embed Optio into an existing application, [optio-dashboard](packages/optio-dashboard) bundles [optio-api](packages/optio-api) and [optio-ui](packages/optio-ui) into a standalone app you can run directly — no custom backend or frontend code required. Just point it at your MongoDB and Redis instances and you have a full management UI.
+
+```bash
+npx optio-dashboard
+```
+
+Configuration is handled entirely through environment variables (`MONGODB_URL`, `REDIS_URL`, `OPTIO_PREFIX`, `PORT`). If you later need custom API endpoints or custom UI components, you can switch to using [optio-api](packages/optio-api) and [optio-ui](packages/optio-ui) directly.
+
 ## Packages
 
 | Package | Description | Docs |
 |---------|-------------|------|
-| **optio-core** | Python async task runtime — the core engine | [`packages/optio-core/README.md`](packages/optio-core/README.md) |
-| **optio-contracts** | Zod schemas + ts-rest API contract | [`packages/optio-contracts/README.md`](packages/optio-contracts/README.md) |
-| **optio-api** | Node.js REST API handlers + SSE streams | [`packages/optio-api/README.md`](packages/optio-api/README.md) |
-| **optio-ui** | React components & hooks for monitoring | [`packages/optio-ui/README.md`](packages/optio-ui/README.md) |
-| **optio-dashboard** | Standalone management UI — no code required | [`packages/optio-dashboard/README.md`](packages/optio-dashboard/README.md) |
+| **[optio-core](packages/optio-core)** | Python async task runtime — the core engine | [`README`](packages/optio-core/README.md) |
+| **[optio-contracts](packages/optio-contracts)** | Zod schemas + ts-rest API contract | [`README`](packages/optio-contracts/README.md) |
+| **[optio-api](packages/optio-api)** | Node.js REST API handlers + SSE streams | [`README`](packages/optio-api/README.md) |
+| **[optio-ui](packages/optio-ui)** | React components & hooks for monitoring | [`README`](packages/optio-ui/README.md) |
+| **[optio-dashboard](packages/optio-dashboard)** | Standalone management UI — no code required | [`README`](packages/optio-dashboard/README.md) |
