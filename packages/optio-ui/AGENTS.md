@@ -293,23 +293,6 @@ Query key: `['process-tree-log', prefix, id]`. Disabled when `id` is falsy.
 
 ---
 
-### useSourceProcesses
-
-```ts
-function useSourceProcesses(
-  sourceId: string,
-  options?: { refetchInterval?: number | false }  // default 10000ms
-): {
-  processes: any[];
-  isLoading: boolean;
-}
-```
-
-Query key: `['source-processes', prefix, sourceId]`. Filters by `targetId = sourceId`,
-limit 20.
-
----
-
 ### useProcessStream
 
 ```ts

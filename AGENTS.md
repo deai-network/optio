@@ -4,6 +4,13 @@ Async process management library for Python backends with TypeScript API and Rea
 
 ---
 
+## Permissions
+
+- **Reads**: You may always read any superpowers-related file without asking for permission.
+- **Writes**: You may write design and plan files to `/docs` without asking for permission. During implementation phase, you may write freely within this repo without asking for permission. For anything else, fall back to the default permission rules.
+
+---
+
 ## Workflow
 
 **Every feature addition, behavior change, or bug fix MUST go through the relevant
@@ -16,6 +23,13 @@ Put all specs, plans, and other generated documentation directly under `docs/`. 
 them under subdirectories like `docs/superpowers/specs/` — keep it flat.
 
 Do not add `Co-Authored-By` or any other self-credit lines to git commits.
+
+**AGENTS.md coordination**: Each package under `packages/` has its own `AGENTS.md` with
+package-specific API details. When you change a package's public API, exported symbols,
+query parameters, component props, hook signatures, or contract endpoints, you MUST update
+that package's `AGENTS.md` to reflect the change in the same commit. Also check whether
+the root `AGENTS.md` needs a corresponding update — it contains a unified reference that
+must stay consistent with the package-level files.
 
 ---
 

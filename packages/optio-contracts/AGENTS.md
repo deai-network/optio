@@ -157,7 +157,7 @@ processes to a named domain (e.g., a specific application or worker).
 
 | Name | Method | Path | Path Params | Query Params | Response Codes |
 |------|--------|------|-------------|--------------|----------------|
-| `list` | GET | `/processes/:prefix` | `prefix: string` | `cursor?`, `limit` (1–100, default 20), `rootId?: ObjectId`, `type?: string`, `state?: ProcessState`, `targetId?: string` | 200: `PaginatedResponse<Process>` |
+| `list` | GET | `/processes/:prefix` | `prefix: string` | `cursor?`, `limit` (1–100, default 20), `rootId?: ObjectId`, `state?: ProcessState`, plus arbitrary `metadata.*` keys via `.passthrough()` | 200: `PaginatedResponse<Process>` |
 | `get` | GET | `/processes/:prefix/:id` | `prefix: string`, `id: ObjectId` | — | 200: `Process`, 404: `Error` |
 | `getTree` | GET | `/processes/:prefix/:id/tree` | `prefix: string`, `id: ObjectId` | `maxDepth?: number` (int, min 0) | 200: `ProcessTreeNode`, 404: `Error` |
 | `getLog` | GET | `/processes/:prefix/:id/log` | `prefix: string`, `id: ObjectId` | `cursor?`, `limit` (1–100, default 20) | 200: `PaginatedResponse<LogEntry>`, 404: `Error` |
@@ -169,7 +169,7 @@ processes to a named domain (e.g., a specific application or worker).
 
 **Notes on specific endpoints:**
 
-- `list` — filters are all optional and combinable. `rootId` scopes results to a process subtree. `state` accepts any `ProcessState` value.
+- `list` — filters are all optional and combinable. `rootId` scopes results to a process subtree. `state` accepts any `ProcessState` value. Additional `metadata.*` query params are passed through for metadata filtering.
 - `getTree` — returns a `ProcessTreeNode`: a `Process` extended with `children: ProcessTreeNode[]` (recursive). `maxDepth` limits traversal depth.
 - `getTreeLog` — returns merged log entries across the process subtree, each augmented with `processId` (ObjectId) and `processLabel` (string) to identify the source process.
 - `launch` / `cancel` / `dismiss` — no request body. 409 indicates a state conflict (e.g., launching an already-running process).
