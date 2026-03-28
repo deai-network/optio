@@ -12,7 +12,7 @@ Optio is designed as a progressive stack: you start simple with just Python and 
 
 ## Architecture
 
-![Architecture](docs/images/architecture.png)
+![Architecture](docs/images/architecture-future.png)
 
 ## Key Concepts
 
@@ -192,3 +192,4 @@ npm install optio-ui
 | **optio-contracts** | Zod schemas + ts-rest API contract | [`packages/optio-contracts/README.md`](packages/optio-contracts/README.md) |
 | **optio-api** | Node.js REST API handlers + SSE streams | [`packages/optio-api/README.md`](packages/optio-api/README.md) |
 | **optio-ui** | React components & hooks for monitoring | [`packages/optio-ui/README.md`](packages/optio-ui/README.md) |
+| **optio-dashboard** | Standalone management UI — no code required | [`packages/optio-dashboard/README.md`](packages/optio-dashboard/README.md) |
