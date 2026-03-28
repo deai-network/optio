@@ -10,12 +10,12 @@ interface OptioContextValue {
 export const OptioContext = createContext<OptioContextValue>(null as any);
 
 interface OptioProviderProps {
-  prefix: string;
+  prefix?: string;
   baseUrl?: string;
   children: ReactNode;
 }
 
-export function OptioProvider({ prefix, baseUrl = '', children }: OptioProviderProps) {
+export function OptioProvider({ prefix = 'optio', baseUrl = '', children }: OptioProviderProps) {
   const client = useMemo(() => createOptioClient(baseUrl), [baseUrl]);
 
   return (

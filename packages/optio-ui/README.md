@@ -36,7 +36,7 @@ const queryClient = new QueryClient();
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <OptioProvider prefix="librarian" baseUrl="http://localhost:3000">
+      <OptioProvider baseUrl="http://localhost:3000">
         <ProcessPage />
       </OptioProvider>
     </QueryClientProvider>
@@ -58,6 +58,9 @@ function ProcessPage() {
   );
 }
 ```
+
+`OptioProvider` accepts an optional `prefix` prop (defaults to `"optio"`). Override it if you
+need a custom namespace to avoid collection name collisions in a shared database.
 
 ## Components
 

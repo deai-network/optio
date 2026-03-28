@@ -35,7 +35,6 @@ const redis = new Redis(process.env.REDIS_URL!);
 const opts: OptioApiOptions = {
   db,
   redis,
-  prefix: 'myapp', // MongoDB collection prefix: `myapp_processes`
 };
 
 registerProcessRoutes(app, opts);
@@ -59,6 +58,8 @@ Use these in domain code to send commands to the Optio worker via Redis streams.
 | `publishLaunch` | `(redis: Redis, prefix: string, processId: string) => Promise<void>` | Request launch of a process |
 | `publishResync` | `(redis: Redis, prefix: string, clean?: boolean) => Promise<void>` | Request a resync; pass `clean: true` for a nuke-and-resync |
 
+`prefix` defaults to `"optio"` when not specified in `OptioApiOptions`.
+
 Commands are written to the `{prefix}:commands` Redis stream.
 
 ## Building Custom Adapters
@@ -76,7 +77,8 @@ import {
 } from 'optio-api';
 ```
 
-Handler functions take `db: Db` and `prefix: string` as their first two arguments,
+Handler functions take `db: Db` and `prefix: string` as their first two arguments
+(the Fastify adapter defaults `prefix` to `"optio"` when not specified in `OptioApiOptions`),
 followed by any query or command parameters. Command handlers (`launchProcess`,
 `cancelProcess`, `dismissProcess`) also require `redis: Redis` and return a
 `CommandResult` union (`200 | 404 | 409`) that you can map to HTTP responses.

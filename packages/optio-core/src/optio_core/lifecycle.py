@@ -39,7 +39,7 @@ class Optio:
     async def init(
         self,
         mongo_db: AsyncIOMotorDatabase,
-        prefix: str,
+        prefix: str = "optio",
         redis_url: str | None = None,
         services: dict[str, Any] | None = None,
         get_task_definitions: Callable[..., Awaitable[list[TaskInstance]]] | None = None,

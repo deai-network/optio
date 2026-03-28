@@ -13,14 +13,14 @@ import { createListPoller, createTreePoller } from '../stream-poller.js';
 export interface OptioApiOptions {
   db: Db;
   redis: Redis;
-  prefix: string;
+  prefix?: string;
 }
 
 const c = initContract();
 const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/api' });
 
 export function registerProcessRoutes(app: FastifyInstance, opts: OptioApiOptions) {
-  const { db, redis, prefix } = opts;
+  const { db, redis } = opts;
   const s = initServer();
 
   const routes = s.router(apiContract.processes, {
@@ -70,7 +70,7 @@ export function registerProcessRoutes(app: FastifyInstance, opts: OptioApiOption
 }
 
 export function registerProcessStream(app: FastifyInstance, opts: OptioApiOptions) {
-  const { db, prefix } = opts;
+  const { db } = opts;
 
   app.get('/api/processes/:prefix/:id/tree/stream', async (request: any, reply: any) => {
     const { prefix: urlPrefix, id } = request.params as { prefix: string; id: string };

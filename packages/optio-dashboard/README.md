@@ -23,7 +23,7 @@ All configuration is via environment variables:
 |----------|---------|-------------|
 | `MONGODB_URL` | `mongodb://localhost:27017/optio` | MongoDB connection string (database name extracted from URL path) |
 | `REDIS_URL` | `redis://localhost:6379` | Redis connection string |
-| `OPTIO_PREFIX` | `optio` | Namespace prefix for MongoDB collections and Redis streams |
+| `OPTIO_PREFIX` | `optio` | Optional namespace override for MongoDB collections and Redis streams. Change only to avoid name collisions in a shared database. |
 | `PORT` | `3000` | HTTP port to listen on |
 
 Copy `.env.example` to `.env` and adjust as needed.

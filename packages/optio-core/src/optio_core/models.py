@@ -81,7 +81,7 @@ class Progress:
 class OptioConfig:
     """Configuration for optio initialization."""
     mongo_db: Any  # motor AsyncIOMotorDatabase
-    prefix: str
+    prefix: str = "optio"
     redis_url: str | None = None
     services: dict[str, Any] = field(default_factory=dict)
     get_task_definitions: Callable[..., Awaitable[list[TaskInstance]]] | None = None

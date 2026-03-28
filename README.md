@@ -156,7 +156,6 @@ async def main():
 
     await init(
         mongo_db=db,
-        prefix="myapp",
         get_task_definitions=get_tasks,
     )
 
@@ -169,7 +168,7 @@ asyncio.run(main())
 
 ### Level 2: Remote Control (+ Redis)
 
-Adds external command ingestion via Redis Streams, enabling remote control of processes from other services. External systems can publish commands (launch, cancel, dismiss, resync, or custom) to the `{prefix}:commands` Redis stream. Custom command handlers can be registered with `on_command()`.
+Adds external command ingestion via Redis Streams, enabling remote control of processes from other services. External systems can publish commands (launch, cancel, dismiss, resync, or custom) to the `optio:commands` Redis stream (customizable via the `prefix` parameter). Custom command handlers can be registered with `on_command()`.
 
 ```bash
 pip install optio-core[redis]
@@ -201,7 +200,7 @@ If you don't need to embed Optio into an existing application, [optio-dashboard]
 npx optio-dashboard
 ```
 
-Configuration is handled entirely through environment variables (`MONGODB_URL`, `REDIS_URL`, `OPTIO_PREFIX`, `PORT`). If you later need custom API endpoints or custom UI components, you can switch to using [optio-api](packages/optio-api) and [optio-ui](packages/optio-ui) directly.
+Configuration is handled entirely through environment variables (`MONGODB_URL`, `REDIS_URL`, `PORT`). An optional `OPTIO_PREFIX` variable overrides the default namespace if needed. If you later need custom API endpoints or custom UI components, you can switch to using [optio-api](packages/optio-api) and [optio-ui](packages/optio-ui) directly.
 
 ## Packages
 

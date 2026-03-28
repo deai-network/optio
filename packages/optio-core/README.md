@@ -46,7 +46,6 @@ async def main():
 
     await init(
         mongo_db=db,
-        prefix="myapp",
         get_task_definitions=get_tasks,
     )
 
@@ -70,7 +69,7 @@ import optio_core
 ```python
 await optio_core.init(
     mongo_db: AsyncIOMotorDatabase,
-    prefix: str,
+    prefix: str = "optio",
     redis_url: str | None = None,
     services: dict[str, Any] | None = None,
     get_task_definitions: Callable[..., Awaitable[list[TaskInstance]]] | None = None,
@@ -82,7 +81,7 @@ Initialize Optio. Must be called before any other function.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `mongo_db` | `AsyncIOMotorDatabase` | required | Motor async database object |
-| `prefix` | `str` | required | Namespace for collections (`{prefix}_processes`) and Redis streams (`{prefix}:commands`) |
+| `prefix` | `str` | `"optio"` | Namespace for collections (`{prefix}_processes`) and Redis streams (`{prefix}:commands`). Override if you need to avoid name collisions in a shared database. |
 | `redis_url` | `str \| None` | `None` | If `None`, Redis features are disabled; use direct method calls only |
 | `services` | `dict[str, Any] \| None` | `{}` | Passed as `ctx.services` to all task execute functions |
 | `get_task_definitions` | `Callable[..., Awaitable[list[TaskInstance]]] \| None` | `None` | Async function `(services) -> list[TaskInstance]`; called on init and resync. **This is the most important part — this is where you declare the tasks that Optio will manage.** See the [TaskInstance definition](#taskinstance) under Data Types. |
@@ -531,14 +530,13 @@ async def handle_custom(payload):
 async def main():
     await init(
         mongo_db=db,
-        prefix="myapp",
         redis_url="redis://localhost:6379",
         get_task_definitions=get_tasks,
     )
 
     on_command("my_custom_command", handle_custom)
 
-    await run()  # Blocks, listens for commands on Redis stream "myapp:commands"
+    await run()  # Blocks, listens for commands on Redis stream "optio:commands"
 ```
 
 ## Data Types
