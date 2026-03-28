@@ -20,3 +20,6 @@ export { publishLaunch, publishResync } from './publisher.js';
 
 // Stream poller (for custom adapters)
 export { createListPoller, createTreePoller, type StreamPollerOptions, type TreePollerOptions, type ListPollerHandle } from './stream-poller.js';
+
+// Discovery
+export { discoverPrefixes } from './discovery.js';

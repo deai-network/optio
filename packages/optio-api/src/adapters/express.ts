@@ -9,6 +9,7 @@ import type { Redis } from 'ioredis';
 import { ObjectId } from 'mongodb';
 import * as handlers from '../handlers.js';
 import { createListPoller, createTreePoller } from '../stream-poller.js';
+import { discoverPrefixes } from '../discovery.js';
 
 export interface OptioApiOptions {
   db: Db;
@@ -21,6 +22,11 @@ const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/a
 
 export function registerOptioApi(app: Express, opts: OptioApiOptions) {
   const { db, redis } = opts;
+
+  app.get('/api/optio/prefixes', async (_req, res) => {
+    const prefixes = await discoverPrefixes(db);
+    res.json({ prefixes });
+  });
 
   createExpressEndpoints(apiContract.processes, {
     list: async ({ params, query }) => {

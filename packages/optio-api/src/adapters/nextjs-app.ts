@@ -8,6 +8,7 @@ import type { Redis } from 'ioredis';
 import { ObjectId } from 'mongodb';
 import * as handlers from '../handlers.js';
 import { createListPoller, createTreePoller } from '../stream-poller.js';
+import { discoverPrefixes } from '../discovery.js';
 
 export interface OptioApiOptions {
   db: Db;
@@ -71,6 +72,13 @@ export function createOptioRouteHandlers(opts: OptioApiOptions) {
   async function GET(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const { pathname } = url;
+
+    if (url.pathname.endsWith('/api/optio/prefixes')) {
+      const prefixes = await discoverPrefixes(db);
+      return new Response(JSON.stringify({ prefixes }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Tree stream: /api/processes/<prefix>/<id>/tree/stream
     const treeStreamMatch = pathname.match(/^\/api\/processes\/([^/]+)\/([^/]+)\/tree\/stream$/);

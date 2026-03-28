@@ -147,4 +147,47 @@ describe('Fastify adapter integration tests', () => {
     const body = JSON.parse(res.body);
     expect(body.message).toBe('Resync requested');
   });
+
+  it('GET /api/optio/prefixes — returns empty when no collections', async () => {
+    const app = createApp();
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/optio/prefixes',
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.prefixes).toEqual([]);
+  });
+
+  it('GET /api/optio/prefixes — discovers prefixes from collections with optio schema', async () => {
+    await seedProcess();
+    const app = createApp();
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/optio/prefixes',
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.prefixes).toEqual(['optio']);
+  });
+
+  it('GET /api/optio/prefixes — ignores collections without optio schema', async () => {
+    await db.collection('fake_processes').insertOne({ unrelated: true });
+    const app = createApp();
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/optio/prefixes',
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.prefixes).toEqual([]);
+
+    await db.collection('fake_processes').drop();
+  });
 });
