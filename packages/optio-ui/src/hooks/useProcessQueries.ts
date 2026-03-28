@@ -50,17 +50,3 @@ export function useProcessTreeLog(id: string | undefined, options?: { refetchInt
   );
   return data?.status === 200 ? data.body.items : [];
 }
-
-export function useSourceProcesses(sourceId: string, options?: { refetchInterval?: number | false }) {
-  const prefix = useOptioPrefix();
-  const api = useOptioClient();
-  const { data, isLoading } = api.processes.list.useQuery(
-    ['source-processes', prefix, sourceId],
-    { params: { prefix }, query: { targetId: sourceId, limit: 20 } },
-    { queryKey: ['source-processes', prefix, sourceId], refetchInterval: options?.refetchInterval ?? 10_000 },
-  );
-  return {
-    processes: data?.status === 200 ? data.body.items : [],
-    isLoading,
-  };
-}

@@ -21,20 +21,24 @@ export interface ListQuery {
   cursor?: string;
   limit: number;
   rootId?: string;
-  type?: string;
   state?: string;
-  targetId?: string;
+  [key: string]: unknown;
 }
 
 export async function listProcesses(db: Db, prefix: string, query: ListQuery) {
-  const { cursor, limit, rootId, type, state, targetId } = query;
+  const { cursor, limit, rootId, state, ...rest } = query;
   const filter: Record<string, unknown> = {};
 
   if (rootId) filter.rootId = new ObjectId(rootId);
-  if (type) filter.type = type;
   if (state) filter['status.state'] = state;
-  if (targetId) filter['metadata.targetId'] = targetId;
   if (cursor) filter._id = { $gt: new ObjectId(cursor) };
+
+  // Extract metadata.* query params
+  for (const [key, value] of Object.entries(rest)) {
+    if (key.startsWith('metadata.') && typeof value === 'string') {
+      filter[key] = value;
+    }
+  }
 
   const [items, totalCount] = await Promise.all([
     col(db, prefix).find(filter).sort({ _id: 1 }).limit(limit + 1).toArray(),

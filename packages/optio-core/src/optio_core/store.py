@@ -251,8 +251,7 @@ async def list_processes(
     prefix: str,
     state: str | None = None,
     root_id: ObjectId | None = None,
-    type: str | None = None,
-    target_id: str | None = None,
+    metadata: dict[str, str] | None = None,
 ) -> list[dict]:
     """List processes with optional filters."""
     coll = _collection(db, prefix)
@@ -261,10 +260,9 @@ async def list_processes(
         filter["status.state"] = state
     if root_id is not None:
         filter["rootId"] = root_id
-    if type is not None:
-        filter["type"] = type
-    if target_id is not None:
-        filter["metadata.targetId"] = target_id
+    if metadata is not None:
+        for key, value in metadata.items():
+            filter[f"metadata.{key}"] = value
 
     return await coll.find(filter).sort([
         ("depth", 1), ("order", 1), ("_id", 1),

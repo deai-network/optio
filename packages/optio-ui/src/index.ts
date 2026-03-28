@@ -10,8 +10,7 @@ export { ProcessFilters } from './components/ProcessFilters.js';
 
 // Hooks
 export { useProcessActions } from './hooks/useProcessActions.js';
-export { useProcessList, useProcess, useProcessTree, useProcessTreeLog,
-         useSourceProcesses } from './hooks/useProcessQueries.js';
+export { useProcessList, useProcess, useProcessTree, useProcessTreeLog } from './hooks/useProcessQueries.js';
 export { useProcessStream } from './hooks/useProcessStream.js';
 export { useProcessListStream } from './hooks/useProcessListStream.js';
 

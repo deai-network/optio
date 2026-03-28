@@ -78,7 +78,6 @@ function ProcessPage() {
 | `useProcess` | Polls a single process by ID; returns `{ process, isLoading }` |
 | `useProcessTree` | Polls the tree endpoint for a process; returns the tree body or `null` |
 | `useProcessTreeLog` | Polls the tree log endpoint for a process; returns an array of log entries |
-| `useSourceProcesses` | Polls processes filtered by `targetId`; returns `{ processes, isLoading }` |
 | `useProcessActions` | Returns imperative action functions: `launch`, `cancel`, `dismiss`, `resync`, `resyncClean` |
 | `useProcessStream` | Opens an SSE connection to a single process tree stream; returns live `{ processes, tree, rootProcess, logs, connected }` |
 | `useProcessListStream` | Opens a module-level singleton SSE connection to the process list stream; returns `{ processes, connected }` |

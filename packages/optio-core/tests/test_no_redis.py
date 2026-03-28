@@ -213,3 +213,38 @@ async def test_list_processes_filter_state(mongo_db):
     procs = await fw.list_processes(state="done")
     assert len(procs) == 1
     assert procs[0]["processId"] == "test_task"
+
+
+@pytest.mark.asyncio
+async def test_list_processes_filter_metadata(mongo_db):
+    """list_processes(metadata=...) filters by metadata fields."""
+    async def _noop(ctx):
+        pass
+
+    async def _tasks(services):
+        return [
+            TaskInstance(execute=_noop, process_id="task_a", name="Task A",
+                         metadata={"region": "eu", "priority": "high"}),
+            TaskInstance(execute=_noop, process_id="task_b", name="Task B",
+                         metadata={"region": "us", "priority": "low"}),
+            TaskInstance(execute=_noop, process_id="task_c", name="Task C",
+                         metadata={"region": "eu", "priority": "low"}),
+        ]
+
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix="test_meta", get_task_definitions=_tasks)
+
+    # Filter by single metadata key
+    procs = await fw.list_processes(metadata={"region": "eu"})
+    assert len(procs) == 2
+    ids = {p["processId"] for p in procs}
+    assert ids == {"task_a", "task_c"}
+
+    # Filter by multiple metadata keys
+    procs = await fw.list_processes(metadata={"region": "eu", "priority": "high"})
+    assert len(procs) == 1
+    assert procs[0]["processId"] == "task_a"
+
+    # No matches
+    procs = await fw.list_processes(metadata={"region": "jp"})
+    assert len(procs) == 0

@@ -193,8 +193,7 @@ class Optio:
         self,
         state: str | None = None,
         root_id: str | None = None,
-        type: str | None = None,
-        target_id: str | None = None,
+        metadata: dict[str, str] | None = None,
     ) -> list[dict]:
         """List processes with optional filters."""
         from bson import ObjectId as OID
@@ -204,8 +203,7 @@ class Optio:
             self._config.prefix,
             state=state,
             root_id=OID(root_id) if root_id else None,
-            type=type,
-            target_id=target_id,
+            metadata=metadata,
         )
 
     async def run(self) -> None:

@@ -59,7 +59,7 @@ await optio_core.adhoc_delete(process_id: str) -> None
 
 # Queries
 await optio_core.get_process(process_id: str) -> dict | None
-await optio_core.list_processes(state=None, root_id=None, type=None, target_id=None) -> list[dict]
+await optio_core.list_processes(state=None, root_id=None, metadata=None) -> list[dict]
 
 # Custom Redis command handler (call before run())
 optio_core.on_command(command_type: str, handler: Callable[..., Awaitable]) -> None
@@ -258,7 +258,7 @@ Collection: `{prefix}_processes`
 | `processId` | string | Application-defined unique identifier |
 | `name` | string | Human-readable display name |
 | `params` | object | Static parameters from TaskInstance |
-| `metadata` | object | Arbitrary metadata; `metadata.targetId` used by `list_processes(target_id=...)` filter |
+| `metadata` | object | Arbitrary metadata; fields can be filtered via `list_processes(metadata=...)` |
 | `parentId` | ObjectId \| null | Parent process `_id`; null for root processes |
 | `rootId` | ObjectId | Root process `_id`; equals `_id` for root processes |
 | `depth` | int | Tree depth; 0 for root |
@@ -342,7 +342,7 @@ type LogEntry = z.infer<typeof LogEntrySchema>;
 
 | Name | Method | Path | Path Params | Query | Body | Responses |
 |------|--------|------|-------------|-------|------|-----------|
-| `list` | GET | `/processes/:prefix` | `prefix` | `cursor?, limit, rootId?, type?, state?, targetId?` | — | `200: PaginatedResponse<Process>` |
+| `list` | GET | `/processes/:prefix` | `prefix` | `cursor?, limit, rootId?, state?, metadata.*` | — | `200: PaginatedResponse<Process>` |
 | `get` | GET | `/processes/:prefix/:id` | `prefix, id` | — | — | `200: Process`, `404: Error` |
 | `getTree` | GET | `/processes/:prefix/:id/tree` | `prefix, id` | `maxDepth?: number` | — | `200: ProcessTreeNode`, `404: Error` |
 | `getLog` | GET | `/processes/:prefix/:id/log` | `prefix, id` | `cursor?, limit` | — | `200: PaginatedResponse<LogEntry>`, `404: Error` |
@@ -404,8 +404,8 @@ registerProcessStream(app: FastifyInstance, opts: OptioApiOptions): void
 
 ```typescript
 interface ListQuery {
-  cursor?: string; limit: number; rootId?: string; type?: string;
-  state?: string; targetId?: string;
+  cursor?: string; limit: number; rootId?: string;
+  state?: string; // Plus any metadata.* query params for metadata filtering
 }
 interface PaginationQuery { cursor?: string; limit: number; }
 interface TreeLogQuery extends PaginationQuery { maxDepth?: number; }
@@ -664,16 +664,6 @@ useProcessTreeLog(
   options?: { refetchInterval?: number | false; limit?: number }
 ): LogEntry[]
 // Default refetchInterval: 5000ms, limit: 100.
-```
-
-**`useSourceProcesses(sourceId, options?)`**
-
-```typescript
-useSourceProcesses(sourceId: string, options?: { refetchInterval?: number | false }): {
-  processes: Process[];
-  isLoading: boolean;
-}
-// Filters by metadata.targetId === sourceId. Default refetchInterval: 10000ms, limit: 20.
 ```
 
 **`useProcessStream(processId, maxDepth?)`**

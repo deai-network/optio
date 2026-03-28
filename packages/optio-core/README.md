@@ -436,8 +436,7 @@ Get a single process document by its `processId` string. Returns the full MongoD
 await optio_core.list_processes(
     state: str | None = None,
     root_id: str | None = None,
-    type: str | None = None,
-    target_id: str | None = None,
+    metadata: dict[str, str] | None = None,
 ) -> list[dict]
 ```
 
@@ -447,8 +446,7 @@ List processes with optional filters. Results are sorted by `depth`, `order`, th
 |-----------|------|---------|-------------|
 | `state` | `str \| None` | `None` | Filter by `status.state` (e.g., `"running"`, `"done"`) |
 | `root_id` | `str \| None` | `None` | Filter by `rootId` (string; converted to ObjectId internally) |
-| `type` | `str \| None` | `None` | Filter by `type` field |
-| `target_id` | `str \| None` | `None` | Filter by `metadata.targetId` |
+| `metadata` | `dict[str, str] \| None` | `None` | Filter by metadata fields. Each key-value pair matches against `metadata.{key}` in the process document. Multiple entries are combined with AND. |
 
 ## Ad-hoc Processes
 
@@ -610,7 +608,7 @@ Collection: `{prefix}_processes`
 | `processId` | string | Application-defined unique identifier |
 | `name` | string | Human-readable display name |
 | `params` | object | Static parameters from TaskInstance |
-| `metadata` | object | Arbitrary metadata; `metadata.targetId` used by `list_processes(target_id=...)` filter |
+| `metadata` | object | Arbitrary metadata; fields can be filtered via `list_processes(metadata=...)` |
 | `parentId` | ObjectId \| null | Parent process `_id`; null for root processes |
 | `rootId` | ObjectId | Root process `_id`; equals `_id` for root processes |
 | `depth` | int | Tree depth; 0 for root |

@@ -16,10 +16,8 @@ export const processesContract = c.router({
     pathParams: z.object({ prefix: z.string() }),
     query: PaginationQuerySchema.extend({
       rootId: ObjectIdSchema.optional(),
-      type: z.string().optional(),
       state: ProcessStateSchema.optional(),
-      targetId: z.string().optional(),
-    }),
+    }).passthrough(),
     responses: {
       200: PaginatedResponseSchema(ProcessSchema),
     },
