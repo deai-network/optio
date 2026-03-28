@@ -1,9 +1,9 @@
 // @ts-nocheck — type inference for ts-rest router handlers requires the full
 // monorepo type resolution. The adapter is tested via API integration tests.
-import { initServer } from '@ts-rest/fastify';
+import { createNextRouter } from '@ts-rest/next';
 import { initContract } from '@ts-rest/core';
 import { processesContract } from 'optio-contracts';
-import type { FastifyInstance } from 'fastify';
+import type { NextApiRequest, NextApiResponse } from 'next';
 import type { Db } from 'mongodb';
 import type { Redis } from 'ioredis';
 import { ObjectId } from 'mongodb';
@@ -19,11 +19,10 @@ export interface OptioApiOptions {
 const c = initContract();
 const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/api' });
 
-export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions) {
+export function createOptioHandler(opts: OptioApiOptions): (req: NextApiRequest, res: NextApiResponse) => Promise<void> {
   const { db, redis } = opts;
-  const s = initServer();
 
-  const routes = s.router(apiContract.processes, {
+  const tsRestHandler = createNextRouter(apiContract.processes, {
     list: async ({ params, query }) => {
       const result = await handlers.listProcesses(db, params.prefix, query);
       return { status: 200 as const, body: result };
@@ -66,65 +65,77 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions) {
     },
   });
 
-  app.register(s.plugin(routes));
+  return async (req: NextApiRequest, res: NextApiResponse) => {
+    const url = req.url ?? '';
+    const method = req.method ?? '';
 
-  app.get('/api/processes/:prefix/:id/tree/stream', async (request: any, reply: any) => {
-    const { prefix: urlPrefix, id } = request.params as { prefix: string; id: string };
-    const { maxDepth } = request.query as { maxDepth?: string };
-    const maxDepthNum = maxDepth !== undefined ? parseInt(maxDepth, 10) : undefined;
+    // Match tree stream: /api/processes/<prefix>/<id>/tree/stream
+    const treeStreamMatch = url.match(/^\/api\/processes\/([^/]+)\/([^/]+)\/tree\/stream$/);
+    if (treeStreamMatch && method === 'GET') {
+      const urlPrefix = treeStreamMatch[1];
+      const id = treeStreamMatch[2];
+      const maxDepth = req.query.maxDepth !== undefined ? parseInt(req.query.maxDepth as string, 10) : undefined;
 
-    const col = db.collection(`${urlPrefix}_processes`);
-    const proc = await col.findOne({ _id: new ObjectId(id) });
-    if (!proc) {
-      reply.code(404).send({ message: 'Process not found' });
+      const col = db.collection(`${urlPrefix}_processes`);
+      const proc = await col.findOne({ _id: new ObjectId(id) });
+      if (!proc) {
+        res.status(404).json({ message: 'Process not found' });
+        return;
+      }
+
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      });
+
+      const sendEvent = (data: unknown) => {
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      };
+
+      const poller = createTreePoller({
+        db,
+        prefix: urlPrefix,
+        sendEvent,
+        onError: () => res.end(),
+        rootId: proc.rootId.toString(),
+        baseDepth: proc.depth,
+        maxDepth,
+      });
+
+      poller.start();
+      req.on('close', () => poller.stop());
       return;
     }
 
-    reply.raw.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-    });
+    // Match list stream: /api/processes/<prefix>/stream
+    const listStreamMatch = url.match(/^\/api\/processes\/([^/]+)\/stream$/);
+    if (listStreamMatch && method === 'GET') {
+      const urlPrefix = listStreamMatch[1];
 
-    const sendEvent = (data: unknown) => {
-      reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
-    };
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      });
 
-    const poller = createTreePoller({
-      db,
-      prefix: urlPrefix,
-      sendEvent,
-      onError: () => reply.raw.end(),
-      rootId: proc.rootId.toString(),
-      baseDepth: proc.depth,
-      maxDepth: maxDepthNum,
-    });
+      const sendEvent = (data: unknown) => {
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      };
 
-    poller.start();
-    request.raw.on('close', () => poller.stop());
-  });
+      const poller = createListPoller({
+        db,
+        prefix: urlPrefix,
+        sendEvent,
+        onError: () => res.end(),
+      });
 
-  app.get('/api/processes/:prefix/stream', async (request: any, reply: any) => {
-    const { prefix: urlPrefix } = request.params as { prefix: string };
+      poller.start();
+      req.on('close', () => poller.stop());
+      return;
+    }
 
-    reply.raw.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-    });
-
-    const sendEvent = (data: unknown) => {
-      reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
-    };
-
-    const poller = createListPoller({
-      db,
-      prefix: urlPrefix,
-      sendEvent,
-      onError: () => reply.raw.end(),
-    });
-
-    poller.start();
-    request.raw.on('close', () => poller.stop());
-  });
+    // Delegate to ts-rest handler for all other routes
+    return tsRestHandler(req, res);
+  };
 }

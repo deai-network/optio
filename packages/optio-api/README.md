@@ -1,7 +1,7 @@
 # optio-api
 
 REST API handlers and SSE streams for Optio process management.
-Framework-agnostic handlers with a ready-to-use Fastify adapter.
+Framework-agnostic handlers with ready-to-use adapters for Fastify, Express, and Next.js.
 
 ## Install
 
@@ -9,42 +9,112 @@ Framework-agnostic handlers with a ready-to-use Fastify adapter.
 npm install optio-api optio-contracts
 ```
 
-`optio-api` has peer dependencies on `fastify` (optional, only needed for the Fastify adapter) and runtime dependencies on `mongodb` and `ioredis`.
+Then install the adapter dependencies for your framework:
+
+```bash
+# Fastify
+npm install fastify @ts-rest/fastify
+
+# Express
+npm install express @ts-rest/express
+
+# Next.js (Pages Router)
+npm install next @ts-rest/next
+
+# Next.js (App Router)
+npm install next @ts-rest/serverless
+```
 
 ## Entry Points
 
 - `optio-api` — framework-agnostic handlers, Redis publishers, and stream pollers
-- `optio-api/fastify` — Fastify adapter (registers routes and SSE streams)
+- `optio-api/fastify` — Fastify adapter
+- `optio-api/express` — Express adapter
+- `optio-api/nextjs/pages` — Next.js Pages Router adapter
+- `optio-api/nextjs/app` — Next.js App Router adapter
 
-## Quick Setup (Fastify)
+## Quick Setup
+
+### Fastify
 
 ```typescript
 import Fastify from 'fastify';
 import { MongoClient } from 'mongodb';
 import { Redis } from 'ioredis';
-import {
-  registerProcessRoutes,
-  registerProcessStream,
-  type OptioApiOptions,
-} from 'optio-api/fastify';
+import { registerOptioApi } from 'optio-api/fastify';
 
 const app = Fastify();
 const db = (await new MongoClient(process.env.MONGO_URL!).connect()).db();
 const redis = new Redis(process.env.REDIS_URL!);
 
-const opts: OptioApiOptions = {
-  db,
-  redis,
-};
-
-registerProcessRoutes(app, opts);
-registerProcessStream(app, opts);
+registerOptioApi(app, { db, redis });
 
 await app.listen({ port: 3000 });
 ```
 
-`registerProcessRoutes` mounts all REST endpoints under `/api/processes/:prefix/...`.
-`registerProcessStream` mounts two SSE endpoints:
+### Express
+
+```typescript
+import express from 'express';
+import { MongoClient } from 'mongodb';
+import { Redis } from 'ioredis';
+import { registerOptioApi } from 'optio-api/express';
+
+const app = express();
+app.use(express.json());
+const db = (await new MongoClient(process.env.MONGO_URL!).connect()).db();
+const redis = new Redis(process.env.REDIS_URL!);
+
+registerOptioApi(app, { db, redis });
+
+app.listen(3000);
+```
+
+### Next.js Pages Router
+
+```typescript
+// pages/api/processes/[...optio].ts
+import { MongoClient } from 'mongodb';
+import { Redis } from 'ioredis';
+import { createOptioHandler } from 'optio-api/nextjs/pages';
+
+const db = (await new MongoClient(process.env.MONGO_URL!).connect()).db();
+const redis = new Redis(process.env.REDIS_URL!);
+
+export default createOptioHandler({ db, redis });
+```
+
+### Next.js App Router
+
+```typescript
+// app/api/processes/[...optio]/route.ts
+import { MongoClient } from 'mongodb';
+import { Redis } from 'ioredis';
+import { createOptioRouteHandlers } from 'optio-api/nextjs/app';
+
+const db = (await new MongoClient(process.env.MONGO_URL!).connect()).db();
+const redis = new Redis(process.env.REDIS_URL!);
+
+export const { GET, POST } = createOptioRouteHandlers({ db, redis });
+```
+
+## REST Endpoints
+
+All adapters mount the same endpoints under `/api/processes/:prefix/...`:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/processes/:prefix` | List processes (cursor pagination, filtering) |
+| GET | `/api/processes/:prefix/:id` | Get single process |
+| GET | `/api/processes/:prefix/:id/tree` | Get process subtree |
+| GET | `/api/processes/:prefix/:id/log` | Get process log |
+| GET | `/api/processes/:prefix/:id/tree/log` | Get merged subtree log |
+| POST | `/api/processes/:prefix/:id/launch` | Launch a process |
+| POST | `/api/processes/:prefix/:id/cancel` | Cancel a process |
+| POST | `/api/processes/:prefix/:id/dismiss` | Dismiss a process |
+| POST | `/api/processes/:prefix/resync` | Re-sync task definitions |
+
+## SSE Streams
 
 - `GET /api/processes/:prefix/stream` — live flat process list, polls every 1 s
 - `GET /api/processes/:prefix/:id/tree/stream` — live process tree with log deltas, polls every 1 s
@@ -77,8 +147,7 @@ import {
 } from 'optio-api';
 ```
 
-Handler functions take `db: Db` and `prefix: string` as their first two arguments
-(the Fastify adapter defaults `prefix` to `"optio"` when not specified in `OptioApiOptions`),
+Handler functions take `db: Db` and `prefix: string` as their first two arguments,
 followed by any query or command parameters. Command handlers (`launchProcess`,
 `cancelProcess`, `dismissProcess`) also require `redis: Redis` and return a
 `CommandResult` union (`200 | 404 | 409`) that you can map to HTTP responses.

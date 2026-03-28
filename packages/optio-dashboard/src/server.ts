@@ -2,7 +2,7 @@ import Fastify from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { MongoClient } from 'mongodb';
 import { Redis } from 'ioredis';
-import { registerProcessRoutes, registerProcessStream } from 'optio-api/fastify';
+import { registerOptioApi } from 'optio-api/fastify';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -28,8 +28,7 @@ export async function startServer(config: DashboardConfig) {
   const redis = new Redis(config.redisUrl);
 
   // Register Optio API routes and SSE streams
-  await registerProcessRoutes(app, { db, redis, prefix: config.prefix });
-  await registerProcessStream(app, { db, redis, prefix: config.prefix });
+  await registerOptioApi(app, { db, redis, prefix: config.prefix });
 
   // Serve the pre-built React app
   await app.register(fastifyStatic, {

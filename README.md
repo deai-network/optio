@@ -176,7 +176,7 @@ pip install optio-core[redis]
 
 ### Level 3: REST API (+ [optio-api](packages/optio-api))
 
-Adds HTTP endpoints to your Node.js API server for process management and SSE streams for real-time status updates. Built on ts-rest contracts for type-safe client-server communication.
+Adds HTTP endpoints to your Node.js API server for process management and SSE streams for real-time status updates. Built on ts-rest contracts for type-safe client-server communication. Comes with ready-to-use adapters for Fastify, Express, and Next.js (both Pages Router and App Router).
 
 ```bash
 npm install optio-api
