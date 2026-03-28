@@ -5,7 +5,7 @@ import asyncio
 import pytest
 from optio_core.lifecycle import Optio
 from optio_core.store import get_process_by_process_id
-from optio_core.models import TaskInstance, CancellationConfig
+from optio_core.models import TaskInstance
 
 
 @pytest.mark.asyncio
@@ -59,7 +59,7 @@ async def _get_tasks(services):
     return [
         TaskInstance(execute=_dummy_task, process_id="test_task", name="Test Task"),
         TaskInstance(execute=_slow_task, process_id="slow_task", name="Slow Task",
-                     cancellation=CancellationConfig(cancellable=True)),
+                     cancellable=True),
     ]
 
 

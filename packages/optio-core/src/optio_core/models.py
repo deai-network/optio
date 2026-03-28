@@ -6,24 +6,18 @@ from datetime import datetime
 
 
 @dataclass
-class CancellationConfig:
-    """How this process handles cancellation."""
-    cancellable: bool = True
-    propagation: str = "down"  # "down", "up", "both", "none"
-
-
-@dataclass
 class TaskInstance:
     """A unit of work provided by the application's task generator."""
     execute: Callable[..., Awaitable[None]]
     process_id: str
     name: str
+    description: str | None = None
     params: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     schedule: str | None = None
     special: bool = False
     warning: str | None = None
-    cancellation: CancellationConfig = field(default_factory=CancellationConfig)
+    cancellable: bool = True
 
 
 @dataclass

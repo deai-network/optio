@@ -1,7 +1,7 @@
 """Tests for data models."""
 
 from optio_core.models import (
-    TaskInstance, ChildResult, ProcessStatus, Progress, CancellationConfig,
+    TaskInstance, ChildResult, ProcessStatus, Progress,
 )
 
 
@@ -17,8 +17,18 @@ def test_task_instance_defaults():
     assert task.schedule is None
     assert task.special is False
     assert task.warning is None
-    assert task.cancellation.cancellable is True
-    assert task.cancellation.propagation == "down"
+    assert task.cancellable is True
+    assert task.description is None
+
+
+def test_task_instance_with_description():
+    task = TaskInstance(
+        execute=dummy_execute,
+        process_id="test",
+        name="Test Task",
+        description="This task does something useful.",
+    )
+    assert task.description == "This task does something useful."
 
 
 def test_process_status_to_dict():
