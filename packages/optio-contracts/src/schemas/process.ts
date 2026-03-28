@@ -45,6 +45,7 @@ export const ProcessSchema = z.object({
   cancellable: z.boolean(),
   special: z.boolean().optional(),
   warning: z.string().optional(),
+  description: z.string().nullable().optional(),
 
   // Runtime
   status: ProcessStatusSchema,
