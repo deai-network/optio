@@ -93,10 +93,10 @@ async def _concert(ctx):
 
     ctx.report_progress(0, f"Welcome to {venue}! {ctx.params.get('audience_size', '???')} fans in attendance!")
 
-    await ctx.run_child(_sound_check, f"concert-{ctx.process_id}-soundcheck", "Sound Check",
+    await ctx.run_child(_sound_check, f"{ctx.process_id}-soundcheck", "Sound Check",
                         description=f"Audio setup for {venue} venue.", on_child_progress=cb)
 
-    await ctx.run_child(_opening_act, f"concert-{ctx.process_id}-opener", "Opening Act",
+    await ctx.run_child(_opening_act, f"{ctx.process_id}-opener", "Opening Act",
                         description="Local band warming up the crowd.", on_child_progress=cb)
 
     # Shuffle song names for variety
@@ -106,7 +106,7 @@ async def _concert(ctx):
     for i, song_name in enumerate(songs):
         await ctx.run_child(
             _play_song,
-            f"concert-{ctx.process_id}-song-{i+1}",
+            f"{ctx.process_id}-song-{i+1}",
             f"Song {i+1}/{num_songs}: {song_name}",
             params={"song_name": song_name, "song_num": i + 1, "total_songs": num_songs},
             description=f"Track {i+1} of the main set.",
@@ -114,7 +114,7 @@ async def _concert(ctx):
         )
 
     if do_encore:
-        await ctx.run_child(_encore, f"concert-{ctx.process_id}-encore", "Encore!",
+        await ctx.run_child(_encore, f"{ctx.process_id}-encore", "Encore!",
                             description="The crowd demands more!", on_child_progress=cb)
 
 

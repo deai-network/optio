@@ -9,4 +9,4 @@ run:
 	python -m optio_demo
 
 run-dashboard:
-	MONGODB_URL=mongodb://localhost:27017/optio-demo npx optio-dashboard
+	MONGODB_URL=mongodb://localhost:27017/optio-demo REDIS_URL=redis://localhost:6379 npx optio-dashboard
