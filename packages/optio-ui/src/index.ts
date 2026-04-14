@@ -7,7 +7,7 @@ export { ProcessList, ProcessItem } from './components/ProcessList.js';
 export { ProcessStatusBadge } from './components/ProcessStatusBadge.js';
 export { ProcessTreeView } from './components/ProcessTreeView.js';
 export { ProcessLogPanel } from './components/ProcessLogPanel.js';
-export { ProcessFilters } from './components/ProcessFilters.js';
+export { WithFilteredProcesses, ProcessFilters, FilteredProcessList, useProcessFilter } from './components/ProcessFilter.js';
 
 // Hooks
 export { useInstances, useInstanceDiscovery, type OptioInstance } from './hooks/useInstanceDiscovery.js';
@@ -18,5 +18,5 @@ export { useProcessListStream } from './hooks/useProcessListStream.js';
 export { usePrefixes, usePrefixDiscovery } from './hooks/usePrefixDiscovery.js';
 
 // Types
-export type { FilterGroup } from './components/ProcessFilters.js';
+export type { FilterGroup } from './components/ProcessFilter.js';
 export type { ProcessTreeNode } from './hooks/useProcessStream.js';

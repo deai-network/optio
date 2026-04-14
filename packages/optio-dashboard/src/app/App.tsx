@@ -2,7 +2,9 @@ import { useState } from 'react';
 import { Alert, Button, Layout, Select, Typography } from 'antd';
 import {
   OptioProvider,
-  ProcessList,
+  WithFilteredProcesses,
+  ProcessFilters,
+  FilteredProcessList,
   ProcessTreeView,
   ProcessLogPanel,
   useProcessActions,
@@ -27,110 +29,91 @@ function Dashboard() {
   const live = useOptioLive();
 
   return (
-    <Layout>
+    <WithFilteredProcesses>
       <Layout>
-        <Sider width={400} style={{ background: '#fff', overflow: 'auto' }}>
-          <ProcessList
-            processes={processes}
-            loading={!listConnected}
-            onLaunch={live ? launch : undefined}
-            onCancel={live ? cancel : undefined}
-            onProcessClick={setSelectedProcessId}
-          />
-        </Sider>
-        <Content style={{ padding: '24px', overflow: 'auto' }}>
-          {selectedProcessId ? (
-            <>
-              <ProcessTreeView
-                treeData={tree}
-                sseState={{ connected: treeConnected }}
-                onCancel={live ? cancel : undefined}
-              />
-              <ProcessLogPanel logs={logs} />
-            </>
-          ) : (
-            <div style={{ color: '#999', textAlign: 'center', marginTop: 100 }}>
-              Select a process to view details
-            </div>
-          )}
-        </Content>
+        <Layout>
+          <Sider width={400} style={{ background: '#fff', overflow: 'auto' }}>
+            <ProcessFilters />
+            <FilteredProcessList
+              processes={processes}
+              loading={!listConnected}
+              onLaunch={live ? launch : undefined}
+              onCancel={live ? cancel : undefined}
+              onProcessClick={setSelectedProcessId}
+            />
+          </Sider>
+          <Content style={{ padding: '24px', overflow: 'auto' }}>
+            {selectedProcessId ? (
+              <>
+                <ProcessTreeView
+                  treeData={tree}
+                  sseState={{ connected: treeConnected }}
+                  onCancel={live ? cancel : undefined}
+                />
+                <ProcessLogPanel logs={logs} />
+              </>
+            ) : (
+              <div style={{ color: '#999', textAlign: 'center', marginTop: 100 }}>
+                Select a process to view details
+              </div>
+            )}
+          </Content>
+        </Layout>
       </Layout>
-    </Layout>
+    </WithFilteredProcesses>
   );
 }
 
-function InstanceSelector({ onSelect }: { onSelect: (instance: { database: string; prefix: string; live: boolean }) => void }) {
-  const { instances, isLoading, error, refetch } = useInstances();
+function instanceKey(inst: { database: string; prefix: string }) {
+  return `${inst.database}/${inst.prefix}`;
+}
+
+function AppContent() {
+  const { instances, isLoading, refetch } = useInstances();
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
   if (isLoading) return null;
-  if (error) return <Alert type="error" message="Failed to detect instances" />;
-  if (instances.length === 0) {
-    return <Alert type="info" message="No optio instance detected in the database" />;
-  }
+
+  const selected = instances.find((i) => instanceKey(i) === selectedKey) ?? instances[0] ?? null;
 
   const liveInstances = instances.filter((i) => i.live);
   const offlineInstances = instances.filter((i) => !i.live);
 
   const options: any[] = [];
   for (const inst of liveInstances) {
-    options.push({
-      label: `${inst.database}/${inst.prefix}`,
-      value: `${inst.database}/${inst.prefix}`,
-    });
+    options.push({ label: instanceKey(inst), value: instanceKey(inst) });
   }
   if (liveInstances.length > 0 && offlineInstances.length > 0) {
     options.push({ label: '───', value: '__separator__', disabled: true });
   }
   for (const inst of offlineInstances) {
-    options.push({
-      label: `${inst.database}/${inst.prefix} (offline)`,
-      value: `${inst.database}/${inst.prefix}`,
-    });
+    options.push({ label: `${instanceKey(inst)} (offline)`, value: instanceKey(inst) });
   }
 
-  return (
-    <div style={{ padding: 24 }}>
-      <Typography.Text>Multiple optio instances detected. Select one:</Typography.Text>
-      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-        <Select
-          style={{ flex: 1 }}
-          placeholder="Select instance"
-          options={options}
-          onChange={(value) => {
-            const inst = instances.find((i) => `${i.database}/${i.prefix}` === value);
-            if (inst) onSelect(inst);
-          }}
-        />
-        <Button onClick={() => refetch()}>Refresh</Button>
-      </div>
+  const headerRight = (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      {instances.length > 0 && (
+        <>
+          <Select
+            style={{ minWidth: 200 }}
+            value={selected ? instanceKey(selected) : undefined}
+            placeholder="Select instance"
+            options={options}
+            onChange={setSelectedKey}
+          />
+          <Button onClick={() => refetch()}>Refresh</Button>
+        </>
+      )}
+      <Button onClick={() => signOut()}>Sign out</Button>
     </div>
   );
-}
 
-function AppContent() {
-  const { instances, isLoading } = useInstances();
-  const [manualInstance, setManualInstance] = useState<{ database: string; prefix: string; live: boolean } | null>(null);
-
-  if (isLoading) return null;
-
-  if (instances.length > 1 && !manualInstance) {
+  if (!selected) {
     return (
       <Layout style={{ minHeight: '100vh' }}>
         <Header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px' }}>
           <Title level={4} style={{ color: '#fff', margin: 0 }}>Optio Dashboard</Title>
-          <Button onClick={() => signOut()}>Sign out</Button>
-        </Header>
-        <InstanceSelector onSelect={setManualInstance} />
-      </Layout>
-    );
-  }
-
-  if (instances.length === 0) {
-    return (
-      <Layout style={{ minHeight: '100vh' }}>
-        <Header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px' }}>
-          <Title level={4} style={{ color: '#fff', margin: 0 }}>Optio Dashboard</Title>
-          <Button onClick={() => signOut()}>Sign out</Button>
+          {headerRight}
         </Header>
         <Alert
           type="info"
@@ -141,14 +124,12 @@ function AppContent() {
     );
   }
 
-  const selected = manualInstance ?? instances[0];
-
   return (
     <OptioProvider prefix={selected.prefix} database={selected.database} live={selected.live}>
       <Layout style={{ minHeight: '100vh' }}>
         <Header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px' }}>
           <Title level={4} style={{ color: '#fff', margin: 0 }}>Optio Dashboard</Title>
-          <Button onClick={() => signOut()}>Sign out</Button>
+          {headerRight}
         </Header>
         <Dashboard />
       </Layout>
