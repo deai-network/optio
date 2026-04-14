@@ -3,8 +3,12 @@ import { betterAuth } from 'better-auth';
 import { mongodbAdapter } from 'better-auth/adapters/mongodb';
 import type { Db } from 'mongodb';
 import bcrypt from 'bcryptjs';
+import { createHash } from 'crypto';
 
-export function createAuth(db: Db, secret: string) {
+export function createAuth(db: Db, password: string) {
+  const secret = createHash('sha256')
+    .update('optio-dashboard-auth:' + password)
+    .digest('base64');
   return betterAuth({
     database: mongodbAdapter(db),
     emailAndPassword: { enabled: true },
@@ -15,11 +19,11 @@ export function createAuth(db: Db, secret: string) {
 export type Auth = ReturnType<typeof createAuth>;
 
 export async function upsertAdminUser(db: Db, auth: Auth, password: string): Promise<void> {
-  const existing = await db.collection('user').findOne({ email: 'admin@localhost' });
+  const existing = await db.collection('user').findOne({ email: 'admin@optio.local' });
 
   if (!existing) {
     await auth.api.signUpEmail({
-      body: { email: 'admin@localhost', password, name: 'Admin' },
+      body: { email: 'admin@optio.local', password, name: 'Admin' },
     });
     return;
   }
