@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { Layout, Typography, Select, Alert } from 'antd';
+import { AuthForm } from '@daveyplate/better-auth-ui';
+import { useSession } from './auth-client.js';
 import {
   OptioProvider,
   ProcessList,
@@ -124,6 +126,24 @@ function AppContent() {
 }
 
 export default function App() {
+  const { data: session, isPending } = useSession();
+
+  if (isPending) return null;
+
+  if (!session) {
+    return (
+      <div style={{
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        minHeight: '100vh',
+        background: 'hsl(var(--background))',
+      }}>
+        <AuthForm />
+      </div>
+    );
+  }
+
   return (
     <OptioProvider>
       <AppContent />
