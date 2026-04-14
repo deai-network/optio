@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { useOptioPrefix, useOptioClient } from '../context/useOptioContext.js';
+import { useOptioPrefix, useOptioClient, useOptioDatabase } from '../context/useOptioContext.js';
 
 interface ProcessActionsOptions {
   onResyncSuccess?: (clean: boolean) => void;
@@ -7,6 +7,7 @@ interface ProcessActionsOptions {
 
 export function useProcessActions(options?: ProcessActionsOptions) {
   const prefix = useOptioPrefix();
+  const database = useOptioDatabase();
   const api = useOptioClient();
   const queryClient = useQueryClient();
 
@@ -23,11 +24,11 @@ export function useProcessActions(options?: ProcessActionsOptions) {
   });
 
   return {
-    launch: (processId: string) => launchMutation.mutate({ params: { prefix, id: processId } }),
-    cancel: (processId: string) => cancelMutation.mutate({ params: { prefix, id: processId } }),
-    dismiss: (processId: string) => dismissMutation.mutate({ params: { prefix, id: processId } }),
-    resync: () => resyncMutation.mutate({ params: { prefix }, body: {} }),
-    resyncClean: () => resyncMutation.mutate({ params: { prefix }, body: { clean: true } }),
+    launch: (processId: string) => launchMutation.mutate({ params: { id: processId }, query: { database, prefix } }),
+    cancel: (processId: string) => cancelMutation.mutate({ params: { id: processId }, query: { database, prefix } }),
+    dismiss: (processId: string) => dismissMutation.mutate({ params: { id: processId }, query: { database, prefix } }),
+    resync: () => resyncMutation.mutate({ query: { database, prefix }, body: {} }),
+    resyncClean: () => resyncMutation.mutate({ query: { database, prefix }, body: { clean: true } }),
     isResyncing: resyncMutation.isPending,
   };
 }

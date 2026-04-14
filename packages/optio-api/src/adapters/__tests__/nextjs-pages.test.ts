@@ -45,8 +45,8 @@ function createApp() {
   // Express 5 query is null-prototype and its keys are not directly assignable,
   // so we replace req.query entirely on the request object.
   app.use((req, _res, next) => {
-    const pathname = req.path; // e.g. /api/processes/optio
-    const segments = pathname.split('/').filter(Boolean); // ['api', 'processes', 'optio']
+    const pathname = req.path; // e.g. /api/processes
+    const segments = pathname.split('/').filter(Boolean); // ['api', 'processes']
     const existingQuery = Object.fromEntries(Object.entries(req.query as Record<string, unknown>));
     Object.defineProperty(req, 'query', {
       value: { ...existingQuery, 'ts-rest': segments },
@@ -60,49 +60,49 @@ function createApp() {
 }
 
 describe('Next.js Pages Router adapter integration tests', () => {
-  it('GET /api/processes/optio?limit=10 — lists processes', async () => {
+  it('GET /api/processes?limit=10 — lists processes', async () => {
     await seedProcess();
     const app = createApp();
 
-    const res = await request(app).get('/api/processes/optio?limit=10');
+    const res = await request(app).get('/api/processes?limit=10');
 
     expect(res.status).toBe(200);
     expect(res.body.items).toHaveLength(1);
   });
 
-  it('GET /api/processes/optio/:id — returns single process', async () => {
+  it('GET /api/processes/:id — returns single process', async () => {
     const doc = await seedProcess();
     const app = createApp();
 
-    const res = await request(app).get(`/api/processes/optio/${doc._id.toString()}`);
+    const res = await request(app).get(`/api/processes/${doc._id.toString()}`);
 
     expect(res.status).toBe(200);
     expect(res.body._id).toBe(doc._id.toString());
     expect(res.body.name).toBe('Test Task');
   });
 
-  it('GET /api/processes/optio/:id — returns 404 for nonexistent id', async () => {
+  it('GET /api/processes/:id — returns 404 for nonexistent id', async () => {
     const app = createApp();
     const fakeId = new ObjectId().toString();
 
-    const res = await request(app).get(`/api/processes/optio/${fakeId}`);
+    const res = await request(app).get(`/api/processes/${fakeId}`);
 
     expect(res.status).toBe(404);
   });
 
-  it('POST /api/processes/optio/:id/launch — launches idle process (200)', async () => {
+  it('POST /api/processes/:id/launch — launches idle process (200)', async () => {
     const doc = await seedProcess({ status: { state: 'idle' } });
     const app = createApp();
 
-    const res = await request(app).post(`/api/processes/optio/${doc._id.toString()}/launch`);
+    const res = await request(app).post(`/api/processes/${doc._id.toString()}/launch`);
 
     expect(res.status).toBe(200);
   });
 
-  it('POST /api/processes/optio/resync — triggers resync (200, body.message = "Resync requested")', async () => {
+  it('POST /api/processes/resync — triggers resync (200, body.message = "Resync requested")', async () => {
     const app = createApp();
 
-    const res = await request(app).post('/api/processes/optio/resync').send({});
+    const res = await request(app).post('/api/processes/resync').send({});
 
     expect(res.status).toBe(200);
     expect(res.body.message).toBe('Resync requested');

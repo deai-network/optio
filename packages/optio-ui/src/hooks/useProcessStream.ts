@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useOptioPrefix, useOptioBaseUrl } from '../context/useOptioContext.js';
+import { useOptioPrefix, useOptioBaseUrl, useOptioDatabase } from '../context/useOptioContext.js';
 
 interface ProcessUpdate {
   _id: string;
@@ -51,6 +51,7 @@ function buildTree(flat: ProcessUpdate[]): ProcessTreeNode | null {
 
 export function useProcessStream(processId: string | undefined, maxDepth = 10): ProcessStreamResult {
   const prefix = useOptioPrefix();
+  const database = useOptioDatabase();
   const baseUrl = useOptioBaseUrl();
   const [state, setState] = useState<{ processes: ProcessUpdate[]; connected: boolean; logs: LogEntry[] }>({
     processes: [], connected: false, logs: [],
@@ -59,7 +60,7 @@ export function useProcessStream(processId: string | undefined, maxDepth = 10): 
 
   const connect = useCallback(() => {
     if (!processId) return;
-    const url = `${baseUrl}/api/processes/${prefix}/${processId}/tree/stream?maxDepth=${maxDepth}`;
+    const url = `${baseUrl}/api/processes/${processId}/tree/stream?prefix=${encodeURIComponent(prefix)}&maxDepth=${maxDepth}${database ? `&database=${encodeURIComponent(database)}` : ''}`;
     const es = new EventSource(url);
     eventSourceRef.current = es;
     es.onopen = () => setState((s) => ({ ...s, connected: true }));
@@ -76,7 +77,7 @@ export function useProcessStream(processId: string | undefined, maxDepth = 10): 
       es.close();
       setTimeout(() => connect(), 3000);
     };
-  }, [processId, maxDepth, prefix, baseUrl]);
+  }, [processId, maxDepth, prefix, database, baseUrl]);
 
   useEffect(() => {
     connect();

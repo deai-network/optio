@@ -7,4 +7,4 @@ export { ProcessSchema, ProcessStateSchema, LogEntrySchema } from './schemas/pro
 export type { Process, ProcessState, LogEntry } from './schemas/process.js';
 
 // Contract
-export { processesContract } from './contract.js';
+export { processesContract, discoveryContract } from './contract.js';

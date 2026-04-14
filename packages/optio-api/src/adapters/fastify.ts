@@ -5,75 +5,97 @@ import { initContract } from '@ts-rest/core';
 import { processesContract } from 'optio-contracts';
 import type { FastifyInstance } from 'fastify';
 import type { Db } from 'mongodb';
+import type { MongoClient } from 'mongodb';
 import type { Redis } from 'ioredis';
 import { ObjectId } from 'mongodb';
 import * as handlers from '../handlers.js';
 import { createListPoller, createTreePoller } from '../stream-poller.js';
+import { discoverInstances } from '../discovery.js';
+import { resolveDb, type DbOptions } from '../resolve-db.js';
 
-export interface OptioApiOptions {
-  db: Db;
+export type OptioApiOptions = {
   redis: Redis;
   prefix?: string;
-}
+  authenticate: AuthCallback<import('fastify').FastifyRequest>;
+} & (
+  | { db: Db; mongoClient?: never }
+  | { mongoClient: MongoClient; db?: never }
+);
 
 const c = initContract();
 const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/api' });
 
 export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions) {
-  const { db, redis } = opts;
+  const { redis } = opts;
+  const dbOpts: DbOptions = 'mongoClient' in opts && opts.mongoClient ? { mongoClient: opts.mongoClient } : { db: opts.db! };
   const s = initServer();
 
   const routes = s.router(apiContract.processes, {
-    list: async ({ params, query }) => {
-      const result = await handlers.listProcesses(db, params.prefix, query);
+    list: async ({ query }) => {
+      const { db, prefix } = resolveDb(dbOpts, query);
+      const result = await handlers.listProcesses(db, prefix, query);
       return { status: 200 as const, body: result };
     },
-    get: async ({ params }) => {
-      const result = await handlers.getProcess(db, params.prefix, params.id);
+    get: async ({ params, query }) => {
+      const { db, prefix } = resolveDb(dbOpts, query);
+      const result = await handlers.getProcess(db, prefix, params.id);
       if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
       return { status: 200 as const, body: result };
     },
     getTree: async ({ params, query }) => {
-      const result = await handlers.getProcessTree(db, params.prefix, params.id, query.maxDepth);
+      const { db, prefix } = resolveDb(dbOpts, query);
+      const result = await handlers.getProcessTree(db, prefix, params.id, query.maxDepth);
       if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
       return { status: 200 as const, body: result };
     },
     getLog: async ({ params, query }) => {
-      const result = await handlers.getProcessLog(db, params.prefix, params.id, query);
+      const { db, prefix } = resolveDb(dbOpts, query);
+      const result = await handlers.getProcessLog(db, prefix, params.id, query);
       if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
       return { status: 200 as const, body: result };
     },
     getTreeLog: async ({ params, query }) => {
-      const result = await handlers.getProcessTreeLog(db, params.prefix, params.id, query);
+      const { db, prefix } = resolveDb(dbOpts, query);
+      const result = await handlers.getProcessTreeLog(db, prefix, params.id, query);
       if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
       return { status: 200 as const, body: result };
     },
-    launch: async ({ params }) => {
-      const result = await handlers.launchProcess(db, redis, params.prefix, params.id);
+    launch: async ({ params, query }) => {
+      const { db, prefix } = resolveDb(dbOpts, query);
+      const result = await handlers.launchProcess(db, redis, prefix, params.id);
       return result as any;
     },
-    cancel: async ({ params }) => {
-      const result = await handlers.cancelProcess(db, redis, params.prefix, params.id);
+    cancel: async ({ params, query }) => {
+      const { db, prefix } = resolveDb(dbOpts, query);
+      const result = await handlers.cancelProcess(db, redis, prefix, params.id);
       return result as any;
     },
-    dismiss: async ({ params }) => {
-      const result = await handlers.dismissProcess(db, redis, params.prefix, params.id);
+    dismiss: async ({ params, query }) => {
+      const { db, prefix } = resolveDb(dbOpts, query);
+      const result = await handlers.dismissProcess(db, redis, prefix, params.id);
       return result as any;
     },
-    resync: async ({ params, body }: { params: { prefix: string }; body: { clean?: boolean } }) => {
-      const result = await handlers.resyncProcesses(redis, params.prefix, body.clean ?? false);
+    resync: async ({ query, body }: { query: { database?: string; prefix?: string }; body: { clean?: boolean } }) => {
+      const { prefix } = resolveDb(dbOpts, query);
+      const result = await handlers.resyncProcesses(redis, prefix, body.clean ?? false);
       return { status: 200 as const, body: result };
     },
   });
 
   app.register(s.plugin(routes));
 
-  app.get('/api/processes/:prefix/:id/tree/stream', async (request: any, reply: any) => {
-    const { prefix: urlPrefix, id } = request.params as { prefix: string; id: string };
-    const { maxDepth } = request.query as { maxDepth?: string };
-    const maxDepthNum = maxDepth !== undefined ? parseInt(maxDepth, 10) : undefined;
+  app.get('/api/optio/instances', async (_request: any, reply: any) => {
+    const instances = await discoverInstances(dbOpts);
+    reply.send({ instances });
+  });
 
-    const col = db.collection(`${urlPrefix}_processes`);
+  app.get('/api/processes/:id/tree/stream', async (request: any, reply: any) => {
+    const { id } = request.params as { id: string };
+    const query = request.query as { database?: string; prefix?: string; maxDepth?: string };
+    const { db, prefix } = resolveDb(dbOpts, query);
+    const maxDepthNum = query.maxDepth !== undefined ? parseInt(query.maxDepth, 10) : undefined;
+
+    const col = db.collection(`${prefix}_processes`);
     const proc = await col.findOne({ _id: new ObjectId(id) });
     if (!proc) {
       reply.code(404).send({ message: 'Process not found' });
@@ -92,7 +114,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions) {
 
     const poller = createTreePoller({
       db,
-      prefix: urlPrefix,
+      prefix,
       sendEvent,
       onError: () => reply.raw.end(),
       rootId: proc.rootId.toString(),
@@ -104,8 +126,9 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions) {
     request.raw.on('close', () => poller.stop());
   });
 
-  app.get('/api/processes/:prefix/stream', async (request: any, reply: any) => {
-    const { prefix: urlPrefix } = request.params as { prefix: string };
+  app.get('/api/processes/stream', async (request: any, reply: any) => {
+    const query = request.query as { database?: string; prefix?: string };
+    const { db, prefix } = resolveDb(dbOpts, query);
 
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -119,7 +142,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions) {
 
     const poller = createListPoller({
       db,
-      prefix: urlPrefix,
+      prefix,
       sendEvent,
       onError: () => reply.raw.end(),
     });

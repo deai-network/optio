@@ -9,14 +9,20 @@ const ProcessTreeNodeSchema = ProcessSchema.extend({
   children: z.array(z.lazy(() => ProcessSchema.extend({ children: z.array(z.any()) }))),
 });
 
+const InstanceQuerySchema = z.object({
+  database: z.string().optional(),
+  prefix: z.string().optional(),
+});
+
 export const processesContract = c.router({
   list: {
     method: 'GET',
-    path: '/processes/:prefix',
-    pathParams: z.object({ prefix: z.string() }),
+    path: '/processes',
     query: PaginationQuerySchema.extend({
       rootId: ObjectIdSchema.optional(),
       state: ProcessStateSchema.optional(),
+      database: z.string().optional(),
+      prefix: z.string().optional(),
     }).passthrough(),
     responses: {
       200: PaginatedResponseSchema(ProcessSchema),
@@ -25,8 +31,9 @@ export const processesContract = c.router({
   },
   get: {
     method: 'GET',
-    path: '/processes/:prefix/:id',
-    pathParams: z.object({ prefix: z.string(), id: ObjectIdSchema }),
+    path: '/processes/:id',
+    pathParams: z.object({ id: ObjectIdSchema }),
+    query: InstanceQuerySchema,
     responses: {
       200: ProcessSchema,
       404: ErrorSchema,
@@ -35,10 +42,12 @@ export const processesContract = c.router({
   },
   getTree: {
     method: 'GET',
-    path: '/processes/:prefix/:id/tree',
-    pathParams: z.object({ prefix: z.string(), id: ObjectIdSchema }),
+    path: '/processes/:id/tree',
+    pathParams: z.object({ id: ObjectIdSchema }),
     query: z.object({
       maxDepth: z.coerce.number().int().min(0).optional(),
+      database: z.string().optional(),
+      prefix: z.string().optional(),
     }),
     responses: {
       200: ProcessTreeNodeSchema,
@@ -48,9 +57,12 @@ export const processesContract = c.router({
   },
   getLog: {
     method: 'GET',
-    path: '/processes/:prefix/:id/log',
-    pathParams: z.object({ prefix: z.string(), id: ObjectIdSchema }),
-    query: PaginationQuerySchema,
+    path: '/processes/:id/log',
+    pathParams: z.object({ id: ObjectIdSchema }),
+    query: PaginationQuerySchema.extend({
+      database: z.string().optional(),
+      prefix: z.string().optional(),
+    }),
     responses: {
       200: PaginatedResponseSchema(LogEntrySchema),
       404: ErrorSchema,
@@ -59,10 +71,12 @@ export const processesContract = c.router({
   },
   getTreeLog: {
     method: 'GET',
-    path: '/processes/:prefix/:id/tree/log',
-    pathParams: z.object({ prefix: z.string(), id: ObjectIdSchema }),
+    path: '/processes/:id/tree/log',
+    pathParams: z.object({ id: ObjectIdSchema }),
     query: PaginationQuerySchema.extend({
       maxDepth: z.coerce.number().int().min(0).optional(),
+      database: z.string().optional(),
+      prefix: z.string().optional(),
     }),
     responses: {
       200: PaginatedResponseSchema(LogEntrySchema.extend({
@@ -75,8 +89,9 @@ export const processesContract = c.router({
   },
   launch: {
     method: 'POST',
-    path: '/processes/:prefix/:id/launch',
-    pathParams: z.object({ prefix: z.string(), id: ObjectIdSchema }),
+    path: '/processes/:id/launch',
+    pathParams: z.object({ id: ObjectIdSchema }),
+    query: InstanceQuerySchema,
     body: c.noBody(),
     responses: {
       200: ProcessSchema,
@@ -87,8 +102,9 @@ export const processesContract = c.router({
   },
   cancel: {
     method: 'POST',
-    path: '/processes/:prefix/:id/cancel',
-    pathParams: z.object({ prefix: z.string(), id: ObjectIdSchema }),
+    path: '/processes/:id/cancel',
+    pathParams: z.object({ id: ObjectIdSchema }),
+    query: InstanceQuerySchema,
     body: c.noBody(),
     responses: {
       200: ProcessSchema,
@@ -99,8 +115,9 @@ export const processesContract = c.router({
   },
   dismiss: {
     method: 'POST',
-    path: '/processes/:prefix/:id/dismiss',
-    pathParams: z.object({ prefix: z.string(), id: ObjectIdSchema }),
+    path: '/processes/:id/dismiss',
+    pathParams: z.object({ id: ObjectIdSchema }),
+    query: InstanceQuerySchema,
     body: c.noBody(),
     responses: {
       200: ProcessSchema,
@@ -111,12 +128,28 @@ export const processesContract = c.router({
   },
   resync: {
     method: 'POST',
-    path: '/processes/:prefix/resync',
-    pathParams: z.object({ prefix: z.string() }),
+    path: '/processes/resync',
+    query: InstanceQuerySchema,
     body: z.object({ clean: z.boolean().optional() }),
     responses: {
       200: z.object({ message: z.string() }),
     },
     summary: 'Re-sync process definitions',
+  },
+});
+
+const InstanceSchema = z.object({
+  database: z.string(),
+  prefix: z.string(),
+});
+
+export const discoveryContract = c.router({
+  instances: {
+    method: 'GET',
+    path: '/optio/instances',
+    responses: {
+      200: z.object({ instances: z.array(InstanceSchema) }),
+    },
+    summary: 'Discover active optio instances across databases',
   },
 });
