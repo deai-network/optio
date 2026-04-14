@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { Layout, Typography, Select, Alert } from 'antd';
+import { Layout, Typography, Select, Alert, Button } from 'antd';
 import { AuthForm } from '@daveyplate/better-auth-ui';
-import { useSession } from './auth-client.js';
+import { useSession, signOut } from './auth-client.js';
 import {
   OptioProvider,
   ProcessList,
@@ -87,8 +87,9 @@ function AppContent() {
   if (prefixes.length > 1 && !manualPrefix) {
     return (
       <Layout style={{ minHeight: '100vh' }}>
-        <Header style={{ display: 'flex', alignItems: 'center', padding: '0 24px' }}>
+        <Header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px' }}>
           <Title level={4} style={{ color: '#fff', margin: 0 }}>Optio Dashboard</Title>
+          <Button onClick={() => signOut()}>Sign out</Button>
         </Header>
         <PrefixSelector onSelect={setManualPrefix} />
       </Layout>
@@ -99,8 +100,9 @@ function AppContent() {
   if (prefixes.length === 0) {
     return (
       <Layout style={{ minHeight: '100vh' }}>
-        <Header style={{ display: 'flex', alignItems: 'center', padding: '0 24px' }}>
+        <Header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px' }}>
           <Title level={4} style={{ color: '#fff', margin: 0 }}>Optio Dashboard</Title>
+          <Button onClick={() => signOut()}>Sign out</Button>
         </Header>
         <Alert
           type="info"
@@ -116,8 +118,9 @@ function AppContent() {
   return (
     <OptioProvider prefix={prefix}>
       <Layout style={{ minHeight: '100vh' }}>
-        <Header style={{ display: 'flex', alignItems: 'center', padding: '0 24px' }}>
+        <Header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px' }}>
           <Title level={4} style={{ color: '#fff', margin: 0 }}>Optio Dashboard</Title>
+          <Button onClick={() => signOut()}>Sign out</Button>
         </Header>
         <Dashboard />
       </Layout>
