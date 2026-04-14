@@ -13,3 +13,7 @@ export function useOptioBaseUrl(): string {
 export function useOptioClient(): OptioClient {
   return useContext(OptioContext).client;
 }
+
+export function useOptioDatabase(): string | undefined {
+  return useContext(OptioContext).database;
+}

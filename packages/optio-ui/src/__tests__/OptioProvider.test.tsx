@@ -1,55 +1,73 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useOptioPrefix } from '../context/useOptioContext.js';
+import { useOptioPrefix, useOptioDatabase } from '../context/useOptioContext.js';
 
-// Mock the discovery hook
-let mockDiscoveryResult = { prefix: null as string | null, prefixes: [] as string[], isLoading: false };
+let mockDiscoveryResult = {
+  instance: null as { database: string; prefix: string } | null,
+  instances: [] as { database: string; prefix: string }[],
+  isLoading: false,
+};
 
-vi.mock('../hooks/usePrefixDiscovery.js', () => ({
-  usePrefixDiscovery: () => mockDiscoveryResult,
+vi.mock('../hooks/useInstanceDiscovery.js', () => ({
+  useInstanceDiscovery: () => mockDiscoveryResult,
 }));
 
-// Mock the client to avoid ts-rest contract initialization
 vi.mock('../client.js', () => ({
   createOptioClient: () => ({}),
 }));
 
-// Import OptioProvider after mocks are set up
 const { OptioProvider } = await import('../context/OptioProvider.js');
 
-function PrefixDisplay() {
+function ContextDisplay() {
   const prefix = useOptioPrefix();
-  return <div data-testid="prefix">{prefix}</div>;
+  const database = useOptioDatabase();
+  return (
+    <>
+      <div data-testid="prefix">{prefix}</div>
+      <div data-testid="database">{database ?? 'undefined'}</div>
+    </>
+  );
 }
 
-function renderWithProvider(props: { prefix?: string }) {
+function renderWithProvider(props: { prefix?: string; database?: string }) {
   const queryClient = new QueryClient();
   return render(
     <QueryClientProvider client={queryClient}>
       <OptioProvider {...props}>
-        <PrefixDisplay />
+        <ContextDisplay />
       </OptioProvider>
     </QueryClientProvider>,
   );
 }
 
-describe('OptioProvider prefix resolution', () => {
-  it('uses explicit prefix when provided', () => {
-    mockDiscoveryResult = { prefix: 'discovered', prefixes: ['discovered'], isLoading: false };
-    renderWithProvider({ prefix: 'explicit' });
+describe('OptioProvider resolution', () => {
+  it('uses explicit prefix and database when provided', () => {
+    mockDiscoveryResult = {
+      instance: { database: 'discovered-db', prefix: 'discovered' },
+      instances: [{ database: 'discovered-db', prefix: 'discovered' }],
+      isLoading: false,
+    };
+    renderWithProvider({ prefix: 'explicit', database: 'explicit-db' });
     expect(screen.getByTestId('prefix').textContent).toBe('explicit');
+    expect(screen.getByTestId('database').textContent).toBe('explicit-db');
   });
 
-  it('uses discovered prefix when no explicit prefix given', () => {
-    mockDiscoveryResult = { prefix: 'discovered', prefixes: ['discovered'], isLoading: false };
+  it('uses discovered instance when no explicit values given', () => {
+    mockDiscoveryResult = {
+      instance: { database: 'auto-db', prefix: 'auto' },
+      instances: [{ database: 'auto-db', prefix: 'auto' }],
+      isLoading: false,
+    };
     renderWithProvider({});
-    expect(screen.getByTestId('prefix').textContent).toBe('discovered');
+    expect(screen.getByTestId('prefix').textContent).toBe('auto');
+    expect(screen.getByTestId('database').textContent).toBe('auto-db');
   });
 
-  it('falls back to optio when no explicit prefix and discovery returns null', () => {
-    mockDiscoveryResult = { prefix: null, prefixes: [], isLoading: false };
+  it('falls back to optio when no explicit values and discovery returns null', () => {
+    mockDiscoveryResult = { instance: null, instances: [], isLoading: false };
     renderWithProvider({});
     expect(screen.getByTestId('prefix').textContent).toBe('optio');
+    expect(screen.getByTestId('database').textContent).toBe('undefined');
   });
 });

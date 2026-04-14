@@ -9,6 +9,7 @@ export { ProcessLogPanel } from './components/ProcessLogPanel.js';
 export { ProcessFilters } from './components/ProcessFilters.js';
 
 // Hooks
+export { useInstances, useInstanceDiscovery, type OptioInstance } from './hooks/useInstanceDiscovery.js';
 export { useProcessActions } from './hooks/useProcessActions.js';
 export { useProcessList, useProcess, useProcessTree, useProcessTreeLog } from './hooks/useProcessQueries.js';
 export { useProcessStream } from './hooks/useProcessStream.js';

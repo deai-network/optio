@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import { useOptioPrefix, useOptioBaseUrl } from '../context/useOptioContext.js';
+import { useOptioPrefix, useOptioBaseUrl, useOptioDatabase } from '../context/useOptioContext.js';
 
 interface ProcessListStreamState {
   processes: any[];
@@ -15,12 +15,12 @@ function notify() {
   _listeners.forEach((fn) => fn());
 }
 
-function connect(baseUrl: string, prefix: string) {
-  const key = `${baseUrl}|${prefix}`;
+function connect(baseUrl: string, prefix: string, database?: string) {
+  const key = `${baseUrl}|${database}|${prefix}`;
   if (_eventSource && _connectedKey === key) return;
   _eventSource?.close();
 
-  const url = `${baseUrl}/api/processes/${prefix}/stream`;
+  const url = `${baseUrl}/api/processes/stream?prefix=${encodeURIComponent(prefix)}${database ? `&database=${encodeURIComponent(database)}` : ''}`;
   const es = new EventSource(url);
   _connectedKey = key;
   _eventSource = es;
@@ -46,7 +46,7 @@ function connect(baseUrl: string, prefix: string) {
     es.close();
     _eventSource = null;
     _connectedKey = null;
-    setTimeout(() => connect(baseUrl, prefix), 3000);
+    setTimeout(() => connect(baseUrl, prefix, database), 3000);
   };
 }
 
@@ -61,7 +61,8 @@ function getSnapshot(): ProcessListStreamState {
 
 export function useProcessListStream(): ProcessListStreamState {
   const prefix = useOptioPrefix();
+  const database = useOptioDatabase();
   const baseUrl = useOptioBaseUrl();
-  connect(baseUrl, prefix);
+  connect(baseUrl, prefix, database);
   return useSyncExternalStore(subscribe, getSnapshot);
 }
