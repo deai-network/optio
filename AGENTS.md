@@ -24,6 +24,8 @@ them under subdirectories like `docs/superpowers/specs/` — keep it flat.
 
 Do not add `Co-Authored-By` or any other self-credit lines to git commits.
 
+Do not implement any change — including bug fixes, refactors, or "obvious" improvements — without first describing what you intend to do and getting explicit confirmation from the user.
+
 **AGENTS.md coordination**: Each package under `packages/` has its own `AGENTS.md` with
 package-specific API details. When you change a package's public API, exported symbols,
 query parameters, component props, hook signatures, or contract endpoints, you MUST update
