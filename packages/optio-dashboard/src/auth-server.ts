@@ -5,14 +5,15 @@ import type { Db } from 'mongodb';
 import bcrypt from 'bcryptjs';
 import { createHash } from 'crypto';
 
-export function createAuth(db: Db, password: string) {
+export function createAuth(db: Db, password: string, baseURL: string) {
   const secret = createHash('sha256')
     .update('optio-dashboard-auth:' + password)
     .digest('base64');
   return betterAuth({
     database: mongodbAdapter(db),
-    emailAndPassword: { enabled: true },
+    emailAndPassword: { enabled: true, minPasswordLength: 1 },
     secret,
+    baseURL,
   });
 }
 
