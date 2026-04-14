@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Layout, Typography, Select, Alert, Button } from 'antd';
-import { AuthForm } from '@daveyplate/better-auth-ui';
+import { LoginForm } from './LoginForm.js';
 import { useSession, signOut } from './auth-client.js';
 import {
   OptioProvider,
@@ -140,10 +140,9 @@ export default function App() {
         justifyContent: 'center',
         alignItems: 'center',
         minHeight: '100vh',
-        background: 'hsl(var(--background))',
       }}>
         <div style={{ width: '100%', maxWidth: 400, padding: '0 16px' }}>
-          <AuthForm />
+          <LoginForm />
         </div>
       </div>
     );
