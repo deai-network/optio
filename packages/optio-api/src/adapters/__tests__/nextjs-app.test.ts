@@ -47,9 +47,15 @@ async function seedProcess(overrides: Record<string, unknown> = {}) {
 }
 
 describe('Next.js App Router adapter integration tests', () => {
+  it('throws synchronously when authenticate is not provided', () => {
+    expect(() => createOptioRouteHandlers({ db, redis } as any)).toThrow(
+      'authenticate option is required'
+    );
+  });
+
   it('GET /api/processes/optio?limit=10 — lists processes', async () => {
     await seedProcess();
-    const { GET } = createOptioRouteHandlers({ db, redis });
+    const { GET } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
 
     const req = makeNextRequest('http://localhost/api/processes/optio?limit=10');
     const res = await GET(req);
@@ -62,7 +68,7 @@ describe('Next.js App Router adapter integration tests', () => {
 
   it('GET /api/processes/optio/:id — returns single process', async () => {
     const doc = await seedProcess();
-    const { GET } = createOptioRouteHandlers({ db, redis });
+    const { GET } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
 
     const req = makeNextRequest(`http://localhost/api/processes/optio/${doc._id.toString()}`);
     const res = await GET(req);
@@ -74,7 +80,7 @@ describe('Next.js App Router adapter integration tests', () => {
   });
 
   it('GET /api/processes/optio/:id — returns 404 for nonexistent id', async () => {
-    const { GET } = createOptioRouteHandlers({ db, redis });
+    const { GET } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
     const fakeId = new ObjectId().toString();
 
     const req = makeNextRequest(`http://localhost/api/processes/optio/${fakeId}`);
@@ -85,7 +91,7 @@ describe('Next.js App Router adapter integration tests', () => {
 
   it('POST /api/processes/optio/:id/launch — launches idle process (200)', async () => {
     const doc = await seedProcess({ status: { state: 'idle' } });
-    const { POST } = createOptioRouteHandlers({ db, redis });
+    const { POST } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
 
     const req = makeNextRequest(`http://localhost/api/processes/optio/${doc._id.toString()}/launch`, {
       method: 'POST',
@@ -97,7 +103,7 @@ describe('Next.js App Router adapter integration tests', () => {
 
   it('POST /api/processes/optio/:id/launch — returns 409 for running process', async () => {
     const doc = await seedProcess({ status: { state: 'running' } });
-    const { POST } = createOptioRouteHandlers({ db, redis });
+    const { POST } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
 
     const req = makeNextRequest(`http://localhost/api/processes/optio/${doc._id.toString()}/launch`, {
       method: 'POST',
@@ -108,7 +114,7 @@ describe('Next.js App Router adapter integration tests', () => {
   });
 
   it('POST /api/processes/optio/resync — triggers resync (200)', async () => {
-    const { POST } = createOptioRouteHandlers({ db, redis });
+    const { POST } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
 
     const req = makeNextRequest('http://localhost/api/processes/optio/resync', {
       method: 'POST',
@@ -124,7 +130,7 @@ describe('Next.js App Router adapter integration tests', () => {
 
   it('GET /api/processes/optio/:id/tree/stream — returns event stream', async () => {
     const doc = await seedProcess();
-    const { GET } = createOptioRouteHandlers({ db, redis });
+    const { GET } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
 
     const controller = new AbortController();
     const req = makeNextRequest(
@@ -142,7 +148,7 @@ describe('Next.js App Router adapter integration tests', () => {
   });
 
   it('GET /api/processes/optio/:id/tree/stream — returns 404 for nonexistent id', async () => {
-    const { GET } = createOptioRouteHandlers({ db, redis });
+    const { GET } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
     const fakeId = new ObjectId().toString();
 
     const req = makeNextRequest(`http://localhost/api/processes/optio/${fakeId}/tree/stream`);
@@ -153,15 +159,6 @@ describe('Next.js App Router adapter integration tests', () => {
 });
 
 describe('Next.js App Router adapter auth', () => {
-  it('no auth callback — all endpoints open', async () => {
-    await seedProcess();
-    const { GET } = createOptioRouteHandlers({ db, redis });
-
-    const req = makeNextRequest('http://localhost/api/processes/optio?limit=10');
-    const res = await GET(req);
-    expect(res.status).toBe(200);
-  });
-
   it('auth returns null — 401 on read', async () => {
     await seedProcess();
     const { GET } = createOptioRouteHandlers({ db, redis, authenticate: () => null });
