@@ -16,7 +16,7 @@ export interface OptioApiOptions {
   db: Db;
   redis: Redis;
   prefix?: string;
-  authenticate?: AuthCallback<NextApiRequest>;
+  authenticate: AuthCallback<NextApiRequest>;
 }
 
 const c = initContract();
@@ -24,6 +24,8 @@ const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/a
 
 export function createOptioHandler(opts: OptioApiOptions): (req: NextApiRequest, res: NextApiResponse) => Promise<void> {
   const { db, redis, authenticate } = opts;
+
+  if (!authenticate) throw new Error('authenticate option is required');
 
   const tsRestHandler = createNextRouter(apiContract.processes, {
     list: async ({ params, query }) => {

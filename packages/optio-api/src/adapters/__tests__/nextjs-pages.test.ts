@@ -38,7 +38,7 @@ async function seedProcess(overrides: Record<string, unknown> = {}) {
 }
 
 function createApp() {
-  const handler = createOptioHandler({ db, redis });
+  const handler = createOptioHandler({ db, redis, authenticate: () => 'operator' });
   const app = express();
   app.use(express.json());
   // ts-rest's createNextRouter uses req.query['ts-rest'] as path segments for routing.
@@ -60,6 +60,12 @@ function createApp() {
 }
 
 describe('Next.js Pages Router adapter integration tests', () => {
+  it('throws synchronously when authenticate is not provided', () => {
+    expect(() => createOptioHandler({ db, redis } as any)).toThrow(
+      'authenticate option is required'
+    );
+  });
+
   it('GET /api/processes/optio?limit=10 — lists processes', async () => {
     await seedProcess();
     const app = createApp();
@@ -129,14 +135,6 @@ function createAppWithAuth(authenticate: (req: any) => any) {
 }
 
 describe('Next.js Pages adapter auth', () => {
-  it('no auth callback — all endpoints open', async () => {
-    await seedProcess();
-    const app = createApp();
-
-    const res = await request(app).get('/api/processes/optio?limit=10');
-    expect(res.status).toBe(200);
-  });
-
   it('auth returns null — 401 on read', async () => {
     await seedProcess();
     const app = createAppWithAuth(() => null);
