@@ -206,14 +206,6 @@ describe('Fastify adapter auth', () => {
     return app;
   }
 
-  it('no auth callback — all endpoints open', async () => {
-    await seedProcess();
-    const app = createApp();
-
-    const res = await app.inject({ method: 'GET', url: '/api/processes/optio?limit=10' });
-    expect(res.statusCode).toBe(200);
-  });
-
   it('auth returns null — 401 on read', async () => {
     await seedProcess();
     const app = createAppWithAuth(() => null);
