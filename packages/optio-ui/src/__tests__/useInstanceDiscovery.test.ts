@@ -25,20 +25,20 @@ describe('useInstanceDiscovery', () => {
 
   it('returns the instance when exactly one is found', () => {
     mockQueryResult = {
-      data: { body: { instances: [{ database: 'mydb', prefix: 'myapp' }] } },
+      data: { body: { instances: [{ database: 'mydb', prefix: 'myapp', live: true }] } },
       isLoading: false,
       error: null,
     };
     const { result } = renderHook(() => useInstanceDiscovery());
-    expect(result.current.instance).toEqual({ database: 'mydb', prefix: 'myapp' });
+    expect(result.current.instance).toEqual({ database: 'mydb', prefix: 'myapp', live: true });
     expect(result.current.instances).toHaveLength(1);
   });
 
   it('returns null instance when multiple are found', () => {
     mockQueryResult = {
       data: { body: { instances: [
-        { database: 'db1', prefix: 'optio' },
-        { database: 'db2', prefix: 'myapp' },
+        { database: 'db1', prefix: 'optio', live: true },
+        { database: 'db2', prefix: 'myapp', live: false },
       ] } },
       isLoading: false,
       error: null,

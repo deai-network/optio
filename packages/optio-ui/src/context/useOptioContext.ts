@@ -17,3 +17,7 @@ export function useOptioClient(): OptioClient {
 export function useOptioDatabase(): string | undefined {
   return useContext(OptioContext).database;
 }
+
+export function useOptioLive(): boolean {
+  return useContext(OptioContext).live;
+}

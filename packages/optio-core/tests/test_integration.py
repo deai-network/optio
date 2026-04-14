@@ -67,6 +67,11 @@ async def test_full_lifecycle():
     # Run briefly
     run_task = asyncio.create_task(fw.run())
     await asyncio.sleep(3)
+
+    # Verify heartbeat is set while running
+    heartbeat = await redis.get(f"{db_name}/{prefix}:heartbeat")
+    assert heartbeat is not None, "Heartbeat key should exist while running"
+
     await fw.shutdown()
     try:
         await run_task

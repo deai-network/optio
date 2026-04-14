@@ -85,7 +85,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions) {
   app.register(s.plugin(routes));
 
   app.get('/api/optio/instances', async (_request: any, reply: any) => {
-    const instances = await discoverInstances(dbOpts);
+    const instances = await discoverInstances(dbOpts, redis);
     reply.send({ instances });
   });
 

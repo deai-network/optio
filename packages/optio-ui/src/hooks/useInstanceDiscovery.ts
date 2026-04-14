@@ -3,17 +3,19 @@ import { useOptioClient } from '../context/useOptioContext.js';
 export interface OptioInstance {
   database: string;
   prefix: string;
+  live: boolean;
 }
 
 interface UseInstancesResult {
   instances: OptioInstance[];
   isLoading: boolean;
   error: unknown;
+  refetch: () => void;
 }
 
 export function useInstances(): UseInstancesResult {
   const client = useOptioClient();
-  const { data, isLoading, error } = client.discovery.instances.useQuery(
+  const { data, isLoading, error, refetch } = client.discovery.instances.useQuery(
     ['optio-instances'],
     {},
   );
@@ -21,6 +23,7 @@ export function useInstances(): UseInstancesResult {
     instances: data?.body?.instances ?? [],
     isLoading,
     error,
+    refetch,
   };
 }
 

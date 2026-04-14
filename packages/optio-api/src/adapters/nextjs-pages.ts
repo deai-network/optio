@@ -87,7 +87,7 @@ export function createOptioHandler(opts: OptioApiOptions): (req: NextApiRequest,
 
     // Discovery endpoint: /api/optio/instances
     if (url === '/api/optio/instances' && method === 'GET') {
-      const instances = await discoverInstances(dbOpts);
+      const instances = await discoverInstances(dbOpts, redis);
       res.status(200).json({ instances });
       return;
     }

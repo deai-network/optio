@@ -9,6 +9,7 @@ import {
   useProcessStream,
   useProcessListStream,
   useInstances,
+  useOptioLive,
 } from 'optio-ui';
 import { LoginForm } from './LoginForm.js';
 import { useSession, signOut } from './auth-client.js';
@@ -23,6 +24,7 @@ function Dashboard() {
     selectedProcessId ?? undefined,
   );
   const { launch, cancel, dismiss } = useProcessActions();
+  const live = useOptioLive();
 
   return (
     <Layout>
@@ -31,8 +33,8 @@ function Dashboard() {
           <ProcessList
             processes={processes}
             loading={!listConnected}
-            onLaunch={launch}
-            onCancel={cancel}
+            onLaunch={live ? launch : undefined}
+            onCancel={live ? cancel : undefined}
             onProcessClick={setSelectedProcessId}
           />
         </Sider>
@@ -42,7 +44,7 @@ function Dashboard() {
               <ProcessTreeView
                 treeData={tree}
                 sseState={{ connected: treeConnected }}
-                onCancel={cancel}
+                onCancel={live ? cancel : undefined}
               />
               <ProcessLogPanel logs={logs} />
             </>
@@ -57,8 +59,8 @@ function Dashboard() {
   );
 }
 
-function InstanceSelector({ onSelect }: { onSelect: (instance: { database: string; prefix: string }) => void }) {
-  const { instances, isLoading, error } = useInstances();
+function InstanceSelector({ onSelect }: { onSelect: (instance: { database: string; prefix: string; live: boolean }) => void }) {
+  const { instances, isLoading, error, refetch } = useInstances();
 
   if (isLoading) return null;
   if (error) return <Alert type="error" message="Failed to detect instances" />;
@@ -66,28 +68,48 @@ function InstanceSelector({ onSelect }: { onSelect: (instance: { database: strin
     return <Alert type="info" message="No optio instance detected in the database" />;
   }
 
+  const liveInstances = instances.filter((i) => i.live);
+  const offlineInstances = instances.filter((i) => !i.live);
+
+  const options: any[] = [];
+  for (const inst of liveInstances) {
+    options.push({
+      label: `${inst.database}/${inst.prefix}`,
+      value: `${inst.database}/${inst.prefix}`,
+    });
+  }
+  if (liveInstances.length > 0 && offlineInstances.length > 0) {
+    options.push({ label: '───', value: '__separator__', disabled: true });
+  }
+  for (const inst of offlineInstances) {
+    options.push({
+      label: `${inst.database}/${inst.prefix} (offline)`,
+      value: `${inst.database}/${inst.prefix}`,
+    });
+  }
+
   return (
     <div style={{ padding: 24 }}>
       <Typography.Text>Multiple optio instances detected. Select one:</Typography.Text>
-      <Select
-        style={{ width: '100%', marginTop: 8 }}
-        placeholder="Select instance"
-        options={instances.map((inst) => ({
-          label: `${inst.database}/${inst.prefix}`,
-          value: `${inst.database}/${inst.prefix}`,
-        }))}
-        onChange={(value) => {
-          const [database, ...rest] = value.split('/');
-          onSelect({ database, prefix: rest.join('/') });
-        }}
-      />
+      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        <Select
+          style={{ flex: 1 }}
+          placeholder="Select instance"
+          options={options}
+          onChange={(value) => {
+            const inst = instances.find((i) => `${i.database}/${i.prefix}` === value);
+            if (inst) onSelect(inst);
+          }}
+        />
+        <Button onClick={() => refetch()}>Refresh</Button>
+      </div>
     </div>
   );
 }
 
 function AppContent() {
   const { instances, isLoading } = useInstances();
-  const [manualInstance, setManualInstance] = useState<{ database: string; prefix: string } | null>(null);
+  const [manualInstance, setManualInstance] = useState<{ database: string; prefix: string; live: boolean } | null>(null);
 
   if (isLoading) return null;
 
@@ -122,7 +144,7 @@ function AppContent() {
   const selected = manualInstance ?? instances[0];
 
   return (
-    <OptioProvider prefix={selected.prefix} database={selected.database}>
+    <OptioProvider prefix={selected.prefix} database={selected.database} live={selected.live}>
       <Layout style={{ minHeight: '100vh' }}>
         <Header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px' }}>
           <Title level={4} style={{ color: '#fff', margin: 0 }}>Optio Dashboard</Title>

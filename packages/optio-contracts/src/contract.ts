@@ -141,6 +141,7 @@ export const processesContract = c.router({
 const InstanceSchema = z.object({
   database: z.string(),
   prefix: z.string(),
+  live: z.boolean(),
 });
 
 export const discoveryContract = c.router({

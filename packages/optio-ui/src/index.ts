@@ -1,5 +1,6 @@
 // Provider
 export { OptioProvider } from './context/OptioProvider.js';
+export { useOptioLive } from './context/useOptioContext.js';
 
 // Components
 export { ProcessList, ProcessItem } from './components/ProcessList.js';

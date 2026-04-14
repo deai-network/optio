@@ -35,6 +35,7 @@ class Optio:
         self._scheduler: ProcessScheduler | None = None
         self._tasks: list[TaskInstance] = []
         self._running = False
+        self._heartbeat_task: asyncio.Task | None = None
 
     async def init(
         self,
@@ -225,6 +226,10 @@ class Optio:
         # Start scheduler
         await self._scheduler.start()
 
+        # Start heartbeat (if Redis is configured)
+        if self._redis:
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
         try:
             if self._consumer:
                 await self._consumer.run()
@@ -237,6 +242,14 @@ class Optio:
         """Graceful shutdown."""
         logger.info("Shutdown requested")
         self._running = False
+
+        if self._heartbeat_task:
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            self._heartbeat_task = None
 
         if self._consumer:
             self._consumer.stop()
@@ -259,6 +272,18 @@ class Optio:
             await self._redis.aclose()
 
         logger.info("Shutdown complete")
+
+    async def _heartbeat_loop(self) -> None:
+        """Periodically set a heartbeat key in Redis with TTL."""
+        db_name = self._config.mongo_db.name
+        prefix = self._config.prefix
+        key = f"{db_name}/{prefix}:heartbeat"
+        while self._running:
+            try:
+                await self._redis.set(key, "1", ex=15)
+            except Exception as e:
+                logger.warning(f"Heartbeat failed: {e}")
+            await asyncio.sleep(5)
 
     async def _sync_definitions(self) -> None:
         """Run the task generator and sync with database."""

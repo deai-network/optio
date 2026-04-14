@@ -82,7 +82,7 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions) {
   }, app);
 
   app.get('/api/optio/instances', async (req: any, res: any) => {
-    const instances = await discoverInstances(dbOpts);
+    const instances = await discoverInstances(dbOpts, redis);
     res.json({ instances });
   });
 

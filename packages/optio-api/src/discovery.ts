@@ -1,4 +1,5 @@
 import type { Db, MongoClient } from 'mongodb';
+import type { Redis } from 'ioredis';
 import type { DbOptions } from './resolve-db.js';
 
 const REQUIRED_FIELDS = ['processId', 'rootId', 'depth'];
@@ -6,6 +7,7 @@ const REQUIRED_FIELDS = ['processId', 'rootId', 'depth'];
 interface OptioInstance {
   database: string;
   prefix: string;
+  live: boolean;
 }
 
 async function discoverPrefixesInDb(db: Db): Promise<string[]> {
@@ -27,11 +29,23 @@ async function discoverPrefixesInDb(db: Db): Promise<string[]> {
   return confirmed.sort();
 }
 
-export async function discoverInstances(opts: DbOptions): Promise<OptioInstance[]> {
+async function checkLive(redis: Redis | undefined, database: string, prefix: string): Promise<boolean> {
+  if (!redis) return false;
+  const key = `${database}/${prefix}:heartbeat`;
+  const result = await redis.exists(key);
+  return result === 1;
+}
+
+export async function discoverInstances(opts: DbOptions, redis?: Redis): Promise<OptioInstance[]> {
   if ('db' in opts && opts.db) {
-    const prefixes = await discoverPrefixesInDb(opts.db);
     const dbName = opts.db.databaseName;
-    return prefixes.map((prefix) => ({ database: dbName, prefix }));
+    const prefixes = await discoverPrefixesInDb(opts.db);
+    const instances: OptioInstance[] = [];
+    for (const prefix of prefixes) {
+      const live = await checkLive(redis, dbName, prefix);
+      instances.push({ database: dbName, prefix, live });
+    }
+    return instances;
   }
 
   const adminDb = opts.mongoClient!.db().admin();
@@ -42,7 +56,8 @@ export async function discoverInstances(opts: DbOptions): Promise<OptioInstance[
     const db = opts.mongoClient!.db(dbInfo.name);
     const prefixes = await discoverPrefixesInDb(db);
     for (const prefix of prefixes) {
-      instances.push({ database: dbInfo.name, prefix });
+      const live = await checkLive(redis, dbInfo.name, prefix);
+      instances.push({ database: dbInfo.name, prefix, live });
     }
   }
 

@@ -171,7 +171,26 @@ describe('Fastify adapter integration tests', () => {
     const res = await app.inject({ method: 'GET', url: '/api/optio/instances' });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
-    expect(body.instances).toEqual([{ database: 'optio_test_fastify', prefix: 'optio' }]);
+    expect(body.instances).toEqual([{ database: 'optio_test_fastify', prefix: 'optio', live: false }]);
+  });
+
+  it('GET /api/optio/instances — reports live: true when heartbeat key exists', async () => {
+    await seedProcess();
+    await redis.set('optio_test_fastify/optio:heartbeat', '1', 'EX', 15);
+    const app = createApp();
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/optio/instances',
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.instances).toEqual([
+      { database: 'optio_test_fastify', prefix: 'optio', live: true },
+    ]);
+
+    await redis.del('optio_test_fastify/optio:heartbeat');
   });
 
   it('GET /api/optio/instances — ignores collections without optio schema', async () => {

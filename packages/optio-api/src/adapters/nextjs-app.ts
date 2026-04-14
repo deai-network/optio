@@ -90,7 +90,7 @@ export function createOptioRouteHandlers(opts: OptioApiOptions) {
 
     // Discovery: /api/optio/instances
     if (pathname === '/api/optio/instances') {
-      const instances = await discoverInstances(dbOpts);
+      const instances = await discoverInstances(dbOpts, redis);
       return new Response(JSON.stringify({ instances }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
