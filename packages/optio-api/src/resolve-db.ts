@@ -15,16 +15,16 @@ export type DbOptions = SingleDbOptions | MultiDbOptions;
 export function resolveDb(
   opts: DbOptions,
   query: { database?: string; prefix?: string },
-): { db: Db; prefix: string } {
+): { db: Db; database: string; prefix: string } {
   const prefix = query.prefix || 'optio';
 
   if ('db' in opts && opts.db) {
-    return { db: opts.db, prefix };
+    return { db: opts.db, database: opts.db.databaseName, prefix };
   }
 
   if (!query.database) {
     throw new Error('database query parameter is required in multi-db mode');
   }
 
-  return { db: opts.mongoClient!.db(query.database), prefix };
+  return { db: opts.mongoClient!.db(query.database), database: query.database, prefix };
 }

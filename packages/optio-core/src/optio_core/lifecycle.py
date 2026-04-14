@@ -74,7 +74,8 @@ class Optio:
             self._redis = Redis.from_url(redis_url)
 
             # Create consumer
-            stream_name = f"{prefix}:commands"
+            db_name = mongo_db.name
+            stream_name = f"{db_name}/{prefix}:commands"
             self._consumer = CommandConsumer(self._redis, stream_name)
             self._consumer.on("launch", self._handle_launch)
             self._consumer.on("cancel", self._handle_cancel)

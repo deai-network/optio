@@ -161,7 +161,7 @@ export type CommandResult =
   | { status: 404; body: { message: string } }
   | { status: 409; body: { message: string } };
 
-export async function launchProcess(db: Db, redis: Redis, prefix: string, id: string): Promise<CommandResult> {
+export async function launchProcess(db: Db, redis: Redis, database: string, prefix: string, id: string): Promise<CommandResult> {
   const proc = await col(db, prefix).findOne({ _id: new ObjectId(id) });
   if (!proc) {
     return { status: 404, body: { message: 'Process not found' } };
@@ -169,11 +169,11 @@ export async function launchProcess(db: Db, redis: Redis, prefix: string, id: st
   if (!LAUNCHABLE_STATES.includes(proc.status.state)) {
     return { status: 409, body: { message: `Cannot launch process in state: ${proc.status.state}` } };
   }
-  await publishLaunch(redis, prefix, proc.processId);
+  await publishLaunch(redis, database, prefix, proc.processId);
   return { status: 200, body: toResponse(proc) };
 }
 
-export async function cancelProcess(db: Db, redis: Redis, prefix: string, id: string): Promise<CommandResult> {
+export async function cancelProcess(db: Db, redis: Redis, database: string, prefix: string, id: string): Promise<CommandResult> {
   const proc = await col(db, prefix).findOne({ _id: new ObjectId(id) });
   if (!proc) {
     return { status: 404, body: { message: 'Process not found' } };
@@ -184,11 +184,11 @@ export async function cancelProcess(db: Db, redis: Redis, prefix: string, id: st
   if (!CANCELLABLE_STATES.includes(proc.status.state)) {
     return { status: 409, body: { message: `Cannot cancel process in state: ${proc.status.state}` } };
   }
-  await publishCancel(redis, prefix, proc.processId);
+  await publishCancel(redis, database, prefix, proc.processId);
   return { status: 200, body: toResponse(proc) };
 }
 
-export async function dismissProcess(db: Db, redis: Redis, prefix: string, id: string): Promise<CommandResult> {
+export async function dismissProcess(db: Db, redis: Redis, database: string, prefix: string, id: string): Promise<CommandResult> {
   const proc = await col(db, prefix).findOne({ _id: new ObjectId(id) });
   if (!proc) {
     return { status: 404, body: { message: 'Process not found' } };
@@ -196,11 +196,11 @@ export async function dismissProcess(db: Db, redis: Redis, prefix: string, id: s
   if (!END_STATES.includes(proc.status.state)) {
     return { status: 409, body: { message: `Cannot dismiss process in state: ${proc.status.state}` } };
   }
-  await publishDismiss(redis, prefix, proc.processId);
+  await publishDismiss(redis, database, prefix, proc.processId);
   return { status: 200, body: toResponse(proc) };
 }
 
-export async function resyncProcesses(redis: Redis, prefix: string, clean: boolean = false): Promise<{ message: string }> {
-  await publishResync(redis, prefix, clean);
+export async function resyncProcesses(redis: Redis, database: string, prefix: string, clean: boolean = false): Promise<{ message: string }> {
+  await publishResync(redis, database, prefix, clean);
   return { message: clean ? 'Nuke and resync requested' : 'Resync requested' };
 }

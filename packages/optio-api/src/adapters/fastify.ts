@@ -61,23 +61,23 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions) {
       return { status: 200 as const, body: result };
     },
     launch: async ({ params, query }) => {
-      const { db, prefix } = resolveDb(dbOpts, query);
-      const result = await handlers.launchProcess(db, redis, prefix, params.id);
+      const { db, database, prefix } = resolveDb(dbOpts, query);
+      const result = await handlers.launchProcess(db, redis, database, prefix, params.id);
       return result as any;
     },
     cancel: async ({ params, query }) => {
-      const { db, prefix } = resolveDb(dbOpts, query);
-      const result = await handlers.cancelProcess(db, redis, prefix, params.id);
+      const { db, database, prefix } = resolveDb(dbOpts, query);
+      const result = await handlers.cancelProcess(db, redis, database, prefix, params.id);
       return result as any;
     },
     dismiss: async ({ params, query }) => {
-      const { db, prefix } = resolveDb(dbOpts, query);
-      const result = await handlers.dismissProcess(db, redis, prefix, params.id);
+      const { db, database, prefix } = resolveDb(dbOpts, query);
+      const result = await handlers.dismissProcess(db, redis, database, prefix, params.id);
       return result as any;
     },
     resync: async ({ query, body }: { query: { database?: string; prefix?: string }; body: { clean?: boolean } }) => {
-      const { prefix } = resolveDb(dbOpts, query);
-      const result = await handlers.resyncProcesses(redis, prefix, body.clean ?? false);
+      const { database, prefix } = resolveDb(dbOpts, query);
+      const result = await handlers.resyncProcesses(redis, database, prefix, body.clean ?? false);
       return { status: 200 as const, body: result };
     },
   });

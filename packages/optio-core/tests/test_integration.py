@@ -56,11 +56,11 @@ async def test_full_lifecycle():
     # Launch via Redis Stream
     redis = Redis.from_url(redis_url)
     await redis.xadd(
-        f"{prefix}:commands",
+        f"{db_name}/{prefix}:commands",
         {"type": "launch", "payload": json.dumps({"processId": "good_task"})},
     )
     await redis.xadd(
-        f"{prefix}:commands",
+        f"{db_name}/{prefix}:commands",
         {"type": "launch", "payload": json.dumps({"processId": "bad_task"})},
     )
 
@@ -125,7 +125,7 @@ async def test_child_process_tree():
 
     redis = Redis.from_url(redis_url)
     await redis.xadd(
-        f"{prefix}:commands",
+        f"{db_name}/{prefix}:commands",
         {"type": "launch", "payload": json.dumps({"processId": "parent"})},
     )
 
