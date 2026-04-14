@@ -38,11 +38,18 @@ async function seedProcess(overrides: Record<string, unknown> = {}) {
 
 function createApp() {
   const app = Fastify();
-  registerOptioApi(app, { db, redis });
+  registerOptioApi(app, { db, redis, authenticate: () => 'operator' });
   return app;
 }
 
 describe('Fastify adapter integration tests', () => {
+  it('throws synchronously when authenticate is not provided', () => {
+    const app = Fastify();
+    expect(() => registerOptioApi(app, { db, redis } as any)).toThrow(
+      'authenticate option is required'
+    );
+  });
+
   it('GET /api/processes/optio?limit=10 — lists processes', async () => {
     await seedProcess();
     const app = createApp();

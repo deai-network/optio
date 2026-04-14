@@ -16,7 +16,7 @@ export interface OptioApiOptions {
   db: Db;
   redis: Redis;
   prefix?: string;
-  authenticate?: AuthCallback<import('fastify').FastifyRequest>;
+  authenticate: AuthCallback<import('fastify').FastifyRequest>;
 }
 
 const c = initContract();
@@ -25,15 +25,15 @@ const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/a
 export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions) {
   const { db, redis, authenticate } = opts;
 
-  if (authenticate) {
-    app.addHook('onRequest', async (request, reply) => {
-      const isWrite = request.method === 'POST';
-      const authError = await checkAuth(request, authenticate, isWrite);
-      if (authError) {
-        return reply.code(authError.status).send(authError.body);
-      }
-    });
-  }
+  if (!authenticate) throw new Error('authenticate option is required');
+
+  app.addHook('onRequest', async (request, reply) => {
+    const isWrite = request.method === 'POST';
+    const authError = await checkAuth(request, authenticate, isWrite);
+    if (authError) {
+      return reply.code(authError.status).send(authError.body);
+    }
+  });
 
   const s = initServer();
 
