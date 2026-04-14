@@ -38,7 +38,7 @@ async function seedProcess(overrides: Record<string, unknown> = {}) {
 }
 
 function createApp() {
-  const handler = createOptioHandler({ db, redis });
+  const handler = createOptioHandler({ db, redis, authenticate: () => 'operator' });
   const app = express();
   app.use(express.json());
   // ts-rest's createNextRouter uses req.query['ts-rest'] as path segments for routing.

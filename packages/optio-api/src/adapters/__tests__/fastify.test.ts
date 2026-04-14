@@ -38,7 +38,7 @@ async function seedProcess(overrides: Record<string, unknown> = {}) {
 
 function createApp() {
   const app = Fastify();
-  registerOptioApi(app, { db, redis });
+  registerOptioApi(app, { db, redis, authenticate: () => 'operator' });
   return app;
 }
 

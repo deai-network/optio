@@ -49,7 +49,7 @@ async function seedProcess(overrides: Record<string, unknown> = {}) {
 describe('Next.js App Router adapter integration tests', () => {
   it('GET /api/processes?limit=10 — lists processes', async () => {
     await seedProcess();
-    const { GET } = createOptioRouteHandlers({ db, redis });
+    const { GET } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
 
     const req = makeNextRequest('http://localhost/api/processes?limit=10');
     const res = await GET(req);
@@ -62,7 +62,7 @@ describe('Next.js App Router adapter integration tests', () => {
 
   it('GET /api/processes/:id — returns single process', async () => {
     const doc = await seedProcess();
-    const { GET } = createOptioRouteHandlers({ db, redis });
+    const { GET } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
 
     const req = makeNextRequest(`http://localhost/api/processes/${doc._id.toString()}`);
     const res = await GET(req);
@@ -74,7 +74,7 @@ describe('Next.js App Router adapter integration tests', () => {
   });
 
   it('GET /api/processes/:id — returns 404 for nonexistent id', async () => {
-    const { GET } = createOptioRouteHandlers({ db, redis });
+    const { GET } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
     const fakeId = new ObjectId().toString();
 
     const req = makeNextRequest(`http://localhost/api/processes/${fakeId}`);
@@ -85,7 +85,7 @@ describe('Next.js App Router adapter integration tests', () => {
 
   it('POST /api/processes/:id/launch — launches idle process (200)', async () => {
     const doc = await seedProcess({ status: { state: 'idle' } });
-    const { POST } = createOptioRouteHandlers({ db, redis });
+    const { POST } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
 
     const req = makeNextRequest(`http://localhost/api/processes/${doc._id.toString()}/launch`, {
       method: 'POST',
@@ -97,7 +97,7 @@ describe('Next.js App Router adapter integration tests', () => {
 
   it('POST /api/processes/:id/launch — returns 409 for running process', async () => {
     const doc = await seedProcess({ status: { state: 'running' } });
-    const { POST } = createOptioRouteHandlers({ db, redis });
+    const { POST } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
 
     const req = makeNextRequest(`http://localhost/api/processes/${doc._id.toString()}/launch`, {
       method: 'POST',
@@ -108,7 +108,7 @@ describe('Next.js App Router adapter integration tests', () => {
   });
 
   it('POST /api/processes/resync — triggers resync (200)', async () => {
-    const { POST } = createOptioRouteHandlers({ db, redis });
+    const { POST } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
 
     const req = makeNextRequest('http://localhost/api/processes/resync', {
       method: 'POST',
@@ -124,7 +124,7 @@ describe('Next.js App Router adapter integration tests', () => {
 
   it('GET /api/processes/:id/tree/stream — returns event stream', async () => {
     const doc = await seedProcess();
-    const { GET } = createOptioRouteHandlers({ db, redis });
+    const { GET } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
 
     const controller = new AbortController();
     const req = makeNextRequest(
@@ -142,7 +142,7 @@ describe('Next.js App Router adapter integration tests', () => {
   });
 
   it('GET /api/processes/:id/tree/stream — returns 404 for nonexistent id', async () => {
-    const { GET } = createOptioRouteHandlers({ db, redis });
+    const { GET } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
     const fakeId = new ObjectId().toString();
 
     const req = makeNextRequest(`http://localhost/api/processes/${fakeId}/tree/stream`);

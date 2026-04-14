@@ -18,7 +18,14 @@ export interface DashboardConfig {
 }
 
 export async function startServer(config: DashboardConfig) {
-  const app = Fastify({ logger: true });
+  const app = Fastify({
+    logger: {
+      transport: {
+        target: 'pino-pretty',
+        options: { translateTime: 'HH:MM:ss', ignore: 'pid,hostname' },
+      },
+    },
+  });
 
   // Connect to MongoDB
   app.log.info(`Connecting to MongoDB: ${config.mongodbUrl}`);
@@ -28,6 +35,7 @@ export async function startServer(config: DashboardConfig) {
   const db = mongoClient.db(dbName);
 
   // Connect to Redis
+  app.log.info(`Connecting to Redis: ${config.redisUrl}`);
   const redis = new Redis(config.redisUrl);
 
   // Set up Better Auth (use the password as the signing secret so
