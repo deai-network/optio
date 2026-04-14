@@ -10,7 +10,8 @@ import {
   useProcessListStream,
   useInstances,
 } from 'optio-ui';
-import { signOut } from '../auth-client';
+import { LoginForm } from './LoginForm.js';
+import { useSession, signOut } from './auth-client.js';
 
 const { Header, Sider, Content } = Layout;
 const { Title } = Typography;
@@ -134,5 +135,28 @@ function AppContent() {
 }
 
 export default function App() {
-  return <AppContent />;
+  const { data: session, isPending } = useSession();
+
+  if (isPending) return null;
+
+  if (!session) {
+    return (
+      <div style={{
+        display: 'flex',
+        justifyContent: 'center',
+        alignItems: 'center',
+        minHeight: '100vh',
+      }}>
+        <div style={{ width: '100%', maxWidth: 400, padding: '0 16px' }}>
+          <LoginForm />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <OptioProvider>
+      <AppContent />
+    </OptioProvider>
+  );
 }
