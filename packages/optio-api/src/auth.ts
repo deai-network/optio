@@ -10,10 +10,9 @@ export interface AuthResult {
 
 export async function checkAuth<TRequest>(
   req: TRequest,
-  authenticate: AuthCallback<TRequest> | undefined,
+  authenticate: AuthCallback<TRequest>,
   isWrite: boolean,
 ): Promise<AuthResult | null> {
-  if (!authenticate) return null;
   const role = await authenticate(req);
   if (role === null) return { status: 401, body: { message: 'Unauthorized' } };
   if (isWrite && role === 'viewer') return { status: 403, body: { message: 'Forbidden' } };

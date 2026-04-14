@@ -2,16 +2,6 @@ import { describe, it, expect } from 'vitest';
 import { checkAuth, type OptioRole } from './auth.js';
 
 describe('checkAuth', () => {
-  it('returns null when no authenticate callback is provided', async () => {
-    const result = await checkAuth({}, undefined, false);
-    expect(result).toBeNull();
-  });
-
-  it('returns null when no authenticate callback is provided (write)', async () => {
-    const result = await checkAuth({}, undefined, true);
-    expect(result).toBeNull();
-  });
-
   it('returns 401 when callback returns null', async () => {
     const result = await checkAuth({}, () => null, false);
     expect(result).toEqual({ status: 401, body: { message: 'Unauthorized' } });
