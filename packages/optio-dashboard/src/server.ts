@@ -61,6 +61,14 @@ export async function startServer(config: DashboardConfig) {
     db,
     redis,
     authenticate: async (request) => {
+      const url = request.url;
+      // Only enforce auth on Optio API routes.
+      // Static files (served by fastify-static) and Better Auth routes
+      // (/api/auth/*) must pass through — the client-side auth gate and
+      // Better Auth itself handle those respectively.
+      if (!url.startsWith('/api/') || url.startsWith('/api/auth/')) {
+        return 'operator';
+      }
       const session = await auth.api.getSession({
         headers: fromNodeHeaders(request.headers),
       });
