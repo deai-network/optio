@@ -15,10 +15,10 @@ interface UseInstancesResult {
 
 export function useInstances(): UseInstancesResult {
   const client = useOptioClient();
-  const { data, isLoading, error, refetch } = client.discovery.instances.useQuery(
-    ['optio-instances'],
-    {},
-  );
+  const { data, isLoading, error, refetch } = client.discovery.instances.useQuery({
+    queryKey: ['optio-instances'],
+    queryData: {},
+  });
   return {
     instances: data?.body?.instances ?? [],
     isLoading,
