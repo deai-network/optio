@@ -122,11 +122,12 @@ export function ProcessTreeView({ treeData, sseState, onCancel }: ProcessTreeVie
   const { t } = useTranslation();
   const [hideFinishedLeaves, setHideFinishedLeaves] = useState(true);
 
-  if (!treeData) return null;
+  const filtered = treeData ? (hideFinishedLeaves ? filterDoneChildren(treeData) : treeData) : null;
+  const expandedKeys = useMemo(() => filtered ? collectKeys(filtered) : [], [filtered]);
 
-  const filtered = hideFinishedLeaves ? filterDoneChildren(treeData) : treeData;
+  if (!treeData || !filtered) return null;
+
   const treeNodes = [treeNodeToDataNode(filtered, onCancel, t)];
-  const expandedKeys = useMemo(() => collectKeys(filtered), [filtered]);
 
   return (
     <div>
