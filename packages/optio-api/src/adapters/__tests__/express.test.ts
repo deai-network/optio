@@ -40,11 +40,18 @@ async function seedProcess(overrides: Record<string, unknown> = {}) {
 function createApp() {
   const app = express();
   app.use(express.json());
-  registerOptioApi(app, { db, redis });
+  registerOptioApi(app, { db, redis, authenticate: () => 'operator' });
   return app;
 }
 
 describe('Express adapter integration tests', () => {
+  it('throws synchronously when authenticate is not provided', () => {
+    const app = express();
+    expect(() => registerOptioApi(app, { db, redis } as any)).toThrow(
+      'authenticate option is required'
+    );
+  });
+
   it('GET /api/processes/optio?limit=10 — lists processes', async () => {
     await seedProcess();
     const app = createApp();
@@ -112,14 +119,6 @@ describe('Express adapter auth', () => {
     registerOptioApi(app, { db, redis, authenticate });
     return app;
   }
-
-  it('no auth callback — all endpoints open', async () => {
-    await seedProcess();
-    const app = createApp();
-
-    const res = await request(app).get('/api/processes/optio?limit=10');
-    expect(res.status).toBe(200);
-  });
 
   it('auth returns null — 401 on read', async () => {
     await seedProcess();

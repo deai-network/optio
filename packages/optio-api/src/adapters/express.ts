@@ -16,7 +16,7 @@ export interface OptioApiOptions {
   db: Db;
   redis: Redis;
   prefix?: string;
-  authenticate?: AuthCallback<import('express').Request>;
+  authenticate: AuthCallback<import('express').Request>;
 }
 
 const c = initContract();
@@ -25,17 +25,17 @@ const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/a
 export function registerOptioApi(app: Express, opts: OptioApiOptions) {
   const { db, redis, authenticate } = opts;
 
-  if (authenticate) {
-    app.use('/api', async (req, res, next) => {
-      const isWrite = req.method === 'POST';
-      const authError = await checkAuth(req, authenticate, isWrite);
-      if (authError) {
-        res.status(authError.status).json(authError.body);
-        return;
-      }
-      next();
-    });
-  }
+  if (!authenticate) throw new Error('authenticate option is required');
+
+  app.use('/api', async (req, res, next) => {
+    const isWrite = req.method === 'POST';
+    const authError = await checkAuth(req, authenticate, isWrite);
+    if (authError) {
+      res.status(authError.status).json(authError.body);
+      return;
+    }
+    next();
+  });
 
   app.get('/api/optio/prefixes', async (_req, res) => {
     const prefixes = await discoverPrefixes(db);
