@@ -142,7 +142,9 @@ export default function App() {
         minHeight: '100vh',
         background: 'hsl(var(--background))',
       }}>
-        <AuthForm />
+        <div style={{ width: '100%', maxWidth: 400, padding: '0 16px' }}>
+          <AuthForm />
+        </div>
       </div>
     );
   }

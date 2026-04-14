@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { AuthUIProvider } from '@daveyplate/better-auth-ui';
+import { Toaster } from 'sonner';
 import { authClient } from './auth-client.js';
 import './i18n.js';
 import './auth.css';
@@ -20,6 +21,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         )}
       >
         <App />
+        <Toaster />
       </AuthUIProvider>
     </QueryClientProvider>
   </React.StrictMode>,
