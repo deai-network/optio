@@ -81,7 +81,7 @@ Initialize Optio. Must be called before any other function.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `mongo_db` | `AsyncIOMotorDatabase` | required | Motor async database object |
-| `prefix` | `str` | `"optio"` | Namespace for collections (`{prefix}_processes`) and Redis streams (`{prefix}:commands`). Override if you need to avoid name collisions in a shared database. |
+| `prefix` | `str` | `"optio"` | Namespace for collections (`{prefix}_processes`) and Redis streams (`{prefix}:commands`). Override if you need to avoid name collisions in a shared database. **Important:** The prefix also scopes Redis streams. If two optio-core instances share the same Redis server and the same prefix, their command streams will collide — even if they use different MongoDB databases. Use distinct prefixes when running multiple instances against the same Redis. |
 | `redis_url` | `str \| None` | `None` | If `None`, Redis features are disabled; use direct method calls only |
 | `services` | `dict[str, Any] \| None` | `{}` | Passed as `ctx.services` to all task execute functions |
 | `get_task_definitions` | `Callable[..., Awaitable[list[TaskInstance]]] \| None` | `None` | Async function `(services) -> list[TaskInstance]`; called on init and resync. **This is the most important part — this is where you declare the tasks that Optio will manage.** See the [TaskInstance definition](#taskinstance) under Data Types. |
