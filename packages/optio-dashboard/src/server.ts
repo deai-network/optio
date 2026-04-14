@@ -83,11 +83,23 @@ export async function startServer(config: DashboardConfig) {
   });
 
   // Graceful shutdown
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) {
+      process.exit(1);
+    }
+    shuttingDown = true;
     app.log.info('Shutting down...');
-    await app.close();
-    redis.disconnect();
-    await mongoClient.close();
+    // Force exit after 3 seconds if app.close() hangs (e.g., open SSE connections)
+    const forceTimer = setTimeout(() => process.exit(0), 3000);
+    forceTimer.unref();
+    try {
+      await app.close();
+      redis.disconnect();
+      await mongoClient.close();
+    } catch {
+      // Ignore close errors during shutdown
+    }
     process.exit(0);
   };
   process.on('SIGTERM', shutdown);
