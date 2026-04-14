@@ -1,6 +1,11 @@
-.PHONY: build run
+.PHONY: help build run
 
 ROOT := ../..
+
+help:
+	@echo "Available targets:"
+	@echo "  build  Install dependencies and build all packages"
+	@echo "  run    Start the dashboard server"
 
 build:
 	pnpm --dir $(ROOT) install
