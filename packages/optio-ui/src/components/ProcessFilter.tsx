@@ -1,11 +1,17 @@
 import { createContext, useContext, useState, useMemo, type ReactNode } from 'react';
 import { Checkbox, Select, Space } from 'antd';
 import { useTranslation } from 'react-i18next';
+import { WithSearch, useSearchContext } from '@quaesitor-textus/core';
+import { SearchInput } from '@quaesitor-textus/antd';
 import { ProcessList } from './ProcessList.js';
 
 export type FilterGroup = 'all' | 'active' | 'hide_completed' | 'errors';
 
 const QUIET_STATES = new Set(['idle', 'done']);
+
+function processSearchText(p: any): string {
+  return [p.name, p.description].filter(Boolean).join(' ');
+}
 
 interface ProcessFilterContextValue {
   filterGroup: FilterGroup;
@@ -19,28 +25,46 @@ interface ProcessFilterContextValue {
 
 const ProcessFilterContext = createContext<ProcessFilterContextValue>(null as any);
 
-export function WithFilteredProcesses({ children }: { children: ReactNode }) {
+function ProcessFilterInner({ children }: { children: ReactNode }) {
   const [filterGroup, setFilterGroup] = useState<FilterGroup>('all');
   const [showDetails, setShowDetails] = useState(false);
   const [showSpecial, setShowSpecial] = useState(false);
 
-  const filterFn = useMemo(() => (processes: any[]) => processes.filter((p) => {
-    const state = p.status?.state;
-    const isQuiet = QUIET_STATES.has(state) || !state;
+  const { filterFunction: searchFilter } = useSearchContext<any>({ mapping: processSearchText });
 
-    if (isQuiet && !showDetails && (p.depth ?? 0) !== 0) return false;
-    if (isQuiet && !showSpecial && p.special === true) return false;
+  const filterFn = useMemo(
+    () => (processes: any[]) => {
+      const searched = processes.filter(searchFilter);
+      return searched.filter((p) => {
+        const state = p.status?.state;
+        const isQuiet = QUIET_STATES.has(state) || !state;
 
-    if (filterGroup === 'active') return state !== 'idle' && state !== 'done';
-    if (filterGroup === 'hide_completed') return state !== 'done';
-    if (filterGroup === 'errors') return state === 'failed';
-    return true;
-  }), [filterGroup, showDetails, showSpecial]);
+        if (isQuiet && !showDetails && (p.depth ?? 0) !== 0) return false;
+        if (isQuiet && !showSpecial && p.special === true) return false;
+
+        if (filterGroup === 'active') return state !== 'idle' && state !== 'done';
+        if (filterGroup === 'hide_completed') return state !== 'done';
+        if (filterGroup === 'errors') return state === 'failed';
+        return true;
+      });
+    },
+    [searchFilter, filterGroup, showDetails, showSpecial],
+  );
 
   return (
-    <ProcessFilterContext.Provider value={{ filterGroup, setFilterGroup, showDetails, setShowDetails, showSpecial, setShowSpecial, filterFn }}>
+    <ProcessFilterContext.Provider
+      value={{ filterGroup, setFilterGroup, showDetails, setShowDetails, showSpecial, setShowSpecial, filterFn }}
+    >
       {children}
     </ProcessFilterContext.Provider>
+  );
+}
+
+export function WithFilteredProcesses({ children }: { children: ReactNode }) {
+  return (
+    <WithSearch>
+      <ProcessFilterInner>{children}</ProcessFilterInner>
+    </WithSearch>
   );
 }
 
@@ -54,6 +78,7 @@ export function ProcessFilters() {
 
   return (
     <Space size={16} style={{ marginBottom: 16 }}>
+      <SearchInput style={{ width: 200 }} placeholder={t('processes.search')} />
       <Select
         value={filterGroup}
         onChange={setFilterGroup}

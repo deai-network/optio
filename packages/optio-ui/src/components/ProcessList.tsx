@@ -1,6 +1,7 @@
 import { List, Button, Progress, Tooltip, Typography, Popconfirm } from 'antd';
 import { CloseCircleOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import { HighlightedText } from '@quaesitor-textus/core';
 import { ProcessStatusBadge } from './ProcessStatusBadge.js';
 
 const { Text } = Typography;
@@ -41,10 +42,10 @@ export function ProcessItem({ process, onLaunch, onCancel, readonly, onProcessCl
 
   const nameContent = onProcessClick ? (
     <Button type="link" style={{ padding: 0, height: 'auto' }} onClick={() => onProcessClick(process._id)}>
-      {process.name}
+      <HighlightedText text={process.name} />
     </Button>
   ) : (
-    <Text>{process.name}</Text>
+    <Text><HighlightedText text={process.name} /></Text>
   );
 
   const nameElement = process.description ? (

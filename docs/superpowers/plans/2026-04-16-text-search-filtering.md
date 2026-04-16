@@ -14,7 +14,7 @@
 
 | File | Change |
 |------|--------|
-| `packages/optio-ui/package.json` | Add `@quaesitor-textus/antd` dependency |
+| `packages/optio-ui/package.json` | Add `@quaesitor-textus/antd` and `@quaesitor-textus/core` dependencies |
 | `packages/optio-ui/src/components/ProcessFilter.tsx` | Split outer/inner, embed `WithSearch`, use `useSearchContext`, add `SearchInput` |
 | `packages/optio-ui/src/__tests__/ProcessFilter.test.tsx` | Add search-related test cases |
 | `packages/optio-ui/src/components/ProcessList.tsx` | Wrap `process.name` in `<HighlightedText />` |
@@ -32,6 +32,7 @@ In `packages/optio-ui/package.json`, add to the `"dependencies"` object (after `
 
 ```json
 "@quaesitor-textus/antd": "^0.1.2",
+"@quaesitor-textus/core": "^0.1.2",
 ```
 
 - [ ] **Step 2: Install**
@@ -56,7 +57,7 @@ Expected: lock file updated, package installed under `node_modules/@quaesitor-te
 At the top of `packages/optio-ui/src/__tests__/ProcessFilter.test.tsx`, add to the existing import block:
 
 ```tsx
-import { useSearchContext } from '@quaesitor-textus/antd';
+import { useSearchContext } from '@quaesitor-textus/core';
 ```
 
 - [ ] **Step 2: Add a combined hook used only in search tests**
@@ -153,7 +154,8 @@ Replace the entire contents of `packages/optio-ui/src/components/ProcessFilter.t
 import { createContext, useContext, useState, useMemo, type ReactNode } from 'react';
 import { Checkbox, Select, Space } from 'antd';
 import { useTranslation } from 'react-i18next';
-import { WithSearch, useSearchContext, SearchInput } from '@quaesitor-textus/antd';
+import { WithSearch, useSearchContext } from '@quaesitor-textus/core';
+import { SearchInput } from '@quaesitor-textus/antd';
 import { ProcessList } from './ProcessList.js';
 
 export type FilterGroup = 'all' | 'active' | 'hide_completed' | 'errors';
@@ -287,7 +289,7 @@ If any search tests still fail, check:
 At the top of `packages/optio-ui/src/components/ProcessList.tsx`, add after the existing imports:
 
 ```tsx
-import { HighlightedText } from '@quaesitor-textus/antd';
+import { HighlightedText } from '@quaesitor-textus/core';
 ```
 
 - [ ] **Step 2: Replace both `{process.name}` occurrences in `nameContent`**

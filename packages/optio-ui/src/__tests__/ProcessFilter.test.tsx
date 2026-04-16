@@ -2,9 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { renderHook, act, render, screen } from '@testing-library/react';
 import React from 'react';
 
-// We'll import these once the implementation exists.
-// For now this file won't compile — that's expected (RED phase).
 import { WithFilteredProcesses, useProcessFilter, FilteredProcessList } from '../components/ProcessFilter.js';
+import { useSearchContext } from '@quaesitor-textus/core';
 
 vi.mock('../components/ProcessList.js', () => ({
   ProcessList: ({ processes }: { processes: any[] }) => (
@@ -26,6 +25,13 @@ function makeProcess(overrides: Record<string, any> = {}) {
 
 function wrapper({ children }: { children: React.ReactNode }) {
   return <WithFilteredProcesses>{children}</WithFilteredProcesses>;
+}
+
+// Used in search tests: exposes both filterFn and setQuery from the same render
+function useFilterAndSearch() {
+  const { filterFn } = useProcessFilter();
+  const { setQuery } = useSearchContext();
+  return { filterFn, setQuery };
 }
 
 describe('useProcessFilter — filterFn', () => {
@@ -137,5 +143,57 @@ describe('FilteredProcessList', () => {
     // Default: showDetails=false hides child-idle
     expect(items).toHaveLength(2);
     expect(items.map((el) => el.textContent)).toEqual(['root-idle', 'root-running']);
+  });
+});
+
+describe('useProcessFilter — search integration', () => {
+  it('empty query: all processes pass', () => {
+    const { result } = renderHook(() => useFilterAndSearch(), { wrapper });
+    const processes = [
+      makeProcess({ _id: 'p1', name: 'alpha', depth: 0 }),
+      makeProcess({ _id: 'p2', name: 'beta', depth: 0 }),
+    ];
+    expect(result.current.filterFn(processes)).toHaveLength(2);
+  });
+
+  it('query matches name: only matching processes pass', () => {
+    const { result } = renderHook(() => useFilterAndSearch(), { wrapper });
+    act(() => result.current.setQuery('alp'));
+    const processes = [
+      makeProcess({ _id: 'p1', name: 'alpha', depth: 0 }),
+      makeProcess({ _id: 'p2', name: 'beta', depth: 0 }),
+    ];
+    const filtered = result.current.filterFn(processes);
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]._id).toBe('p1');
+  });
+
+  it('query matches description: only matching processes pass', () => {
+    const { result } = renderHook(() => useFilterAndSearch(), { wrapper });
+    act(() => result.current.setQuery('detail'));
+    const processes = [
+      makeProcess({ _id: 'p1', name: 'alpha', description: 'some detail here', depth: 0 }),
+      makeProcess({ _id: 'p2', name: 'beta', description: 'nothing here', depth: 0 }),
+    ];
+    const filtered = result.current.filterFn(processes);
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]._id).toBe('p1');
+  });
+
+  it('search and filterGroup compose: only matched + active processes pass', () => {
+    const { result } = renderHook(
+      () => ({ ...useProcessFilter(), search: useSearchContext() }),
+      { wrapper },
+    );
+    act(() => result.current.search.setQuery('task'));
+    act(() => result.current.setFilterGroup('active'));
+    const processes = [
+      makeProcess({ _id: 'p1', name: 'task-a', status: { state: 'running' }, depth: 0 }),
+      makeProcess({ _id: 'p2', name: 'task-b', status: { state: 'idle' }, depth: 0 }),
+      makeProcess({ _id: 'p3', name: 'other', status: { state: 'running' }, depth: 0 }),
+    ];
+    const filtered = result.current.filterFn(processes);
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]._id).toBe('p1');
   });
 });
