@@ -14,6 +14,7 @@ export function createAuth(db: Db, password: string, baseURL: string) {
     emailAndPassword: { enabled: true, minPasswordLength: 1 },
     secret,
     baseURL,
+    trustedOrigins: ['http://localhost:5173'],
   });
 }
 
