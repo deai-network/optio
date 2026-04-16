@@ -77,7 +77,7 @@ export function ProcessFilters() {
   const { t } = useTranslation();
 
   return (
-    <Space size={16} style={{ marginBottom: 16 }}>
+    <Space size={[16, 8]} wrap style={{ marginBottom: 16 }}>
       <SearchInput style={{ width: 200 }} placeholder={t('processes.search')} />
       <Select
         value={filterGroup}
