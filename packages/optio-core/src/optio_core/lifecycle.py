@@ -99,8 +99,8 @@ class Optio:
         # Run initial sync
         await self._sync_definitions()
 
-        logger.info(f"Optio initialized with prefix '{prefix}'"
-                     f"{' (Redis: ' + redis_url + ')' if redis_url else ' (no Redis)'}")
+        redis_info = f", redis='{redis_url}'" if redis_url else ", no Redis"
+        logger.info(f"Optio initialized: db='{mongo_db.name}', prefix='{prefix}'{redis_info}")
 
     def on_command(self, command_type: str, handler: Callable[..., Awaitable]) -> None:
         """Register a custom command handler (must be called before run)."""
