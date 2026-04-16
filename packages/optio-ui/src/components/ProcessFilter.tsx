@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useMemo, type ReactNode } from 'react';
 import { Checkbox, Select, Space } from 'antd';
 import { useTranslation } from 'react-i18next';
-import { WithSearch, useSearchContext } from '@quaesitor-textus/core';
+import { WithSearch, useFilterFunction } from '@quaesitor-textus/core';
 import { SearchInput } from '@quaesitor-textus/antd';
 import { ProcessList } from './ProcessList.js';
 
@@ -30,7 +30,7 @@ function ProcessFilterInner({ children }: { children: ReactNode }) {
   const [showDetails, setShowDetails] = useState(false);
   const [showSpecial, setShowSpecial] = useState(false);
 
-  const { filterFunction: searchFilter } = useSearchContext<any>({ mapping: processSearchText });
+  const searchFilter = useFilterFunction<any>();
 
   const filterFn = useMemo(
     () => (processes: any[]) => {
@@ -62,7 +62,7 @@ function ProcessFilterInner({ children }: { children: ReactNode }) {
 
 export function WithFilteredProcesses({ children }: { children: ReactNode }) {
   return (
-    <WithSearch>
+    <WithSearch mapping={processSearchText}>
       <ProcessFilterInner>{children}</ProcessFilterInner>
     </WithSearch>
   );
