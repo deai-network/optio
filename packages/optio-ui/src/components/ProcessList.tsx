@@ -42,10 +42,10 @@ export function ProcessItem({ process, onLaunch, onCancel, readonly, onProcessCl
 
   const nameContent = onProcessClick ? (
     <Button type="link" style={{ padding: 0, height: 'auto' }} onClick={() => onProcessClick(process._id)}>
-      <HighlightedText text={process.name} />
+      <HighlightedText text={process.name} all />
     </Button>
   ) : (
-    <Text><HighlightedText text={process.name} /></Text>
+    <Text><HighlightedText text={process.name} all /></Text>
   );
 
   const nameElement = process.description ? (
