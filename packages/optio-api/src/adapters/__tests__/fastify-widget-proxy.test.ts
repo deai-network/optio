@@ -1,0 +1,304 @@
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import Fastify, { type FastifyInstance } from 'fastify';
+import { MongoClient, ObjectId, type Db } from 'mongodb';
+import { createServer, type Server } from 'http';
+import { WebSocketServer, WebSocket } from 'ws';
+import type { IncomingMessage } from 'http';
+import { registerWidgetProxy } from '../fastify.js';
+
+const MONGO_URL = process.env.MONGO_URL ?? 'mongodb://localhost:27017';
+const DB_NAME = 'optio_test_widget_proxy_adapter';
+const PREFIX = 'test';
+
+describe('registerWidgetProxy — HTTP path', () => {
+  let mongoClient: MongoClient;
+  let db: Db;
+  let upstream: Server;
+  let upstreamPort: number;
+  let upstreamRequests: Array<{ url: string; method: string; headers: any; body: string }>;
+  let upstreamResponder: (req: any, res: any, body: string) => void;
+
+  beforeAll(async () => {
+    mongoClient = new MongoClient(MONGO_URL);
+    await mongoClient.connect();
+    db = mongoClient.db(DB_NAME);
+  });
+
+  afterAll(async () => {
+    await db.dropDatabase();
+    await mongoClient.close();
+  });
+
+  beforeEach(async () => {
+    upstreamRequests = [];
+    upstreamResponder = (_req, res, _body) => {
+      res.statusCode = 200;
+      res.setHeader('content-type', 'text/plain');
+      res.end('hi');
+    };
+    upstream = createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => {
+        upstreamRequests.push({
+          url: req.url!, method: req.method!,
+          headers: { ...req.headers }, body,
+        });
+        upstreamResponder(req, res, body);
+      });
+    });
+    await new Promise<void>((r) => upstream.listen(0, () => r()));
+    upstreamPort = (upstream.address() as any).port;
+    await db.collection(`${PREFIX}_processes`).deleteMany({});
+  });
+
+  afterEach(async () => {
+    if (upstream.listening) {
+      await new Promise<void>((r) => upstream.close(() => r()));
+    }
+  });
+
+  async function makeApp(authenticate: (req: any) => any = () => 'operator'): Promise<FastifyInstance> {
+    const app = Fastify();
+    registerWidgetProxy(app, { db, prefix: PREFIX, authenticate });
+    await app.ready();
+    return app;
+  }
+
+  async function insertProcess(upstreamConfig?: any): Promise<ObjectId> {
+    const oid = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertOne({
+      _id: oid, processId: 'p', name: 'P',
+      rootId: oid, parentId: null,
+      depth: 0, order: 0,
+      status: { state: 'running' },
+      progress: { percent: null }, log: [],
+      cancellable: true,
+      widgetUpstream: upstreamConfig ?? null,
+    });
+    return oid;
+  }
+
+  it('returns 401 when authenticate returns null', async () => {
+    const app = await makeApp(() => null);
+    const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+    const res = await app.inject({ method: 'GET', url: `/api/widget/${oid}/foo` });
+    expect(res.statusCode).toBe(401);
+    await app.close();
+  });
+
+  it('returns 403 on POST when authenticate returns viewer', async () => {
+    const app = await makeApp(() => 'viewer');
+    const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+    const res = await app.inject({ method: 'POST', url: `/api/widget/${oid}/foo`, payload: '' });
+    expect(res.statusCode).toBe(403);
+    await app.close();
+  });
+
+  it('allows viewer on GET and forwards to upstream', async () => {
+    const app = await makeApp(() => 'viewer');
+    const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+    const res = await app.inject({ method: 'GET', url: `/api/widget/${oid}/foo` });
+    expect(res.statusCode).toBe(200);
+    expect(upstreamRequests[0].url).toBe('/foo');
+    await app.close();
+  });
+
+  it('returns 404 when process is unknown', async () => {
+    const app = await makeApp();
+    const unknownOid = new ObjectId();
+    const res = await app.inject({ method: 'GET', url: `/api/widget/${unknownOid}/foo` });
+    expect(res.statusCode).toBe(404);
+    await app.close();
+  });
+
+  it('returns 404 when widgetUpstream is null', async () => {
+    const app = await makeApp();
+    const oid = await insertProcess(null);
+    const res = await app.inject({ method: 'GET', url: `/api/widget/${oid}/anything` });
+    expect(res.statusCode).toBe(404);
+    await app.close();
+  });
+
+  it('injects BasicAuth as Authorization header', async () => {
+    const app = await makeApp();
+    const oid = await insertProcess({
+      url: `http://127.0.0.1:${upstreamPort}`,
+      innerAuth: { kind: 'basic', username: 'u', password: 'p' },
+    });
+    await app.inject({ method: 'GET', url: `/api/widget/${oid}/foo` });
+    const expected = 'Basic ' + Buffer.from('u:p').toString('base64');
+    expect(upstreamRequests[0].headers.authorization).toBe(expected);
+    await app.close();
+  });
+
+  it('injects HeaderAuth as named header', async () => {
+    const app = await makeApp();
+    const oid = await insertProcess({
+      url: `http://127.0.0.1:${upstreamPort}`,
+      innerAuth: { kind: 'header', name: 'X-Opencode-Token', value: 'secret' },
+    });
+    await app.inject({ method: 'GET', url: `/api/widget/${oid}/foo` });
+    expect(upstreamRequests[0].headers['x-opencode-token']).toBe('secret');
+    await app.close();
+  });
+
+  it('injects QueryAuth into URL', async () => {
+    const app = await makeApp();
+    const oid = await insertProcess({
+      url: `http://127.0.0.1:${upstreamPort}`,
+      innerAuth: { kind: 'query', name: 'auth_token', value: 'secret' },
+    });
+    await app.inject({ method: 'GET', url: `/api/widget/${oid}/foo?x=1` });
+    const forwarded = upstreamRequests[0].url;
+    expect(forwarded).toContain('auth_token=secret');
+    expect(forwarded).toContain('x=1');
+    await app.close();
+  });
+
+  it('passes upstream 502 when upstream is down', async () => {
+    await new Promise<void>((r) => upstream.close(() => r()));
+    const app = await makeApp();
+    const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+    const res = await app.inject({ method: 'GET', url: `/api/widget/${oid}/foo` });
+    expect([502, 503]).toContain(res.statusCode);
+    await app.close();
+  });
+});
+
+describe('registerWidgetProxy — WebSocket path', () => {
+  let mongoClient: MongoClient;
+  let db: Db;
+  let upstream: Server;
+  let upstreamPort: number;
+  let wss: WebSocketServer;
+  let upstreamHandshakes: IncomingMessage[];
+
+  beforeAll(async () => {
+    mongoClient = new MongoClient(MONGO_URL);
+    await mongoClient.connect();
+    db = mongoClient.db(DB_NAME);
+  });
+
+  afterAll(async () => {
+    await mongoClient.close();
+  });
+
+  beforeEach(async () => {
+    // Start a plain HTTP server; the WSS will attach to it
+    upstream = createServer();
+    await new Promise<void>((r) => upstream.listen(0, () => r()));
+    upstreamPort = (upstream.address() as any).port;
+
+    upstreamHandshakes = [];
+    wss = new WebSocketServer({ server: upstream });
+    wss.on('connection', (ws, req) => {
+      upstreamHandshakes.push(req);
+      ws.on('message', (m) => ws.send(m.toString()));
+    });
+
+    await db.collection(`${PREFIX}_processes`).deleteMany({});
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((r) => wss.close(() => r()));
+    if (upstream.listening) {
+      await new Promise<void>((r) => upstream.close(() => r()));
+    }
+  });
+
+  async function insertProcess(upstreamConfig?: any): Promise<ObjectId> {
+    const oid = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertOne({
+      _id: oid, processId: 'p', name: 'P',
+      rootId: oid, parentId: null,
+      depth: 0, order: 0,
+      status: { state: 'running' },
+      progress: { percent: null }, log: [],
+      cancellable: true,
+      widgetUpstream: upstreamConfig ?? null,
+    });
+    return oid;
+  }
+
+  async function makeListening(authenticate: (req: any) => any = () => 'operator'): Promise<{ app: FastifyInstance; port: number }> {
+    const app = Fastify();
+    registerWidgetProxy(app, { db, prefix: PREFIX, authenticate });
+    await app.listen({ port: 0 });
+    const port = (app.server.address() as any).port;
+    return { app, port };
+  }
+
+  it('WS upgrade is rejected when authenticate returns null', async () => {
+    const { app, port } = await makeListening(() => null);
+    const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/widget/${oid}/ws`);
+    const result = await new Promise<string>((resolve) => {
+      ws.once('error', () => resolve('error'));
+      ws.once('open', () => resolve('open'));
+      setTimeout(() => resolve('timeout'), 2000);
+    });
+    ws.terminate();
+    await app.close();
+    expect(result).toBe('error');
+  });
+
+  it('WS upgrade is rejected when processId is unknown', async () => {
+    const { app, port } = await makeListening();
+    const unknownOid = new ObjectId();
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/widget/${unknownOid}/ws`);
+    const result = await new Promise<string>((resolve) => {
+      ws.once('error', () => resolve('error'));
+      ws.once('open', () => resolve('open'));
+      setTimeout(() => resolve('timeout'), 2000);
+    });
+    ws.terminate();
+    await app.close();
+    expect(result).toBe('error');
+  });
+
+  it('WS upgrade succeeds with viewer role and echoes messages', async () => {
+    const { app, port } = await makeListening(() => 'viewer');
+    const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/widget/${oid}/ws`);
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve());
+      ws.once('error', reject);
+      setTimeout(() => reject(new Error('timeout waiting for open')), 2000);
+    });
+
+    const echo = await new Promise<string>((resolve, reject) => {
+      ws.once('message', (data) => resolve(data.toString()));
+      ws.send('hello');
+      setTimeout(() => reject(new Error('timeout waiting for echo')), 2000);
+    });
+
+    ws.close();
+    await app.close();
+    expect(echo).toBe('hello');
+  });
+
+  it('WS upgrade injects HeaderAuth on upstream handshake', async () => {
+    const { app, port } = await makeListening();
+    const oid = await insertProcess({
+      url: `http://127.0.0.1:${upstreamPort}`,
+      innerAuth: { kind: 'header', name: 'X-Opencode-Token', value: 'secret' },
+    });
+
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/widget/${oid}/ws`);
+    await new Promise<void>((resolve, reject) => {
+      ws.once('open', () => resolve());
+      ws.once('error', reject);
+      setTimeout(() => reject(new Error('timeout waiting for open')), 2000);
+    });
+
+    ws.close();
+    await app.close();
+
+    expect(upstreamHandshakes.length).toBe(1);
+    expect(upstreamHandshakes[0].headers['x-opencode-token']).toBe('secret');
+  });
+});

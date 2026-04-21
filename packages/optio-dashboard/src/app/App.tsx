@@ -5,10 +5,8 @@ import {
   WithFilteredProcesses,
   ProcessFilters,
   FilteredProcessList,
-  ProcessTreeView,
-  ProcessLogPanel,
+  ProcessDetailView,
   useProcessActions,
-  useProcessStream,
   useProcessListStream,
   useInstances,
   useOptioLive,
@@ -22,9 +20,6 @@ const { Title } = Typography;
 function Dashboard() {
   const [selectedProcessId, setSelectedProcessId] = useState<string | null>(null);
   const { processes, connected: listConnected } = useProcessListStream();
-  const { tree, logs, connected: treeConnected } = useProcessStream(
-    selectedProcessId ?? undefined,
-  );
   const { launch, cancel, dismiss } = useProcessActions();
   const live = useOptioLive();
 
@@ -43,20 +38,7 @@ function Dashboard() {
             />
           </Sider>
           <Content style={{ padding: '24px', overflow: 'auto' }}>
-            {selectedProcessId ? (
-              <>
-                <ProcessTreeView
-                  treeData={tree}
-                  sseState={{ connected: treeConnected }}
-                  onCancel={live ? cancel : undefined}
-                />
-                <ProcessLogPanel logs={logs} />
-              </>
-            ) : (
-              <div style={{ color: '#999', textAlign: 'center', marginTop: 100 }}>
-                Select a process to view details
-              </div>
-            )}
+            <ProcessDetailView processId={selectedProcessId} />
           </Content>
         </Layout>
       </Layout>

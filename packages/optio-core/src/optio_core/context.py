@@ -7,7 +7,7 @@ from typing import Any, Callable, Awaitable, TYPE_CHECKING
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from optio_core.models import Progress, ChildResult, ChildProgressInfo
+from optio_core.models import Progress, ChildResult, ChildProgressInfo, InnerAuth
 
 if TYPE_CHECKING:
     from optio_core.executor import Executor
@@ -84,6 +84,32 @@ class ProcessContext:
             {"_id": self._process_oid},
             {"$set": {"ephemeral": True}},
         )
+
+    async def set_widget_upstream(
+        self,
+        url: str,
+        inner_auth: InnerAuth | None = None,
+    ) -> None:
+        """Register the upstream URL and (optional) inner auth for the widget proxy."""
+        from optio_core.store import update_widget_upstream
+        await update_widget_upstream(
+            self._db, self._prefix, self._process_oid, url, inner_auth,
+        )
+
+    async def clear_widget_upstream(self) -> None:
+        """Clear widgetUpstream so the proxy returns 404 for this process."""
+        from optio_core.store import clear_widget_upstream
+        await clear_widget_upstream(self._db, self._prefix, self._process_oid)
+
+    async def set_widget_data(self, data) -> None:
+        """Overwrite widgetData. Must be JSON-serializable. Optio does not interpret."""
+        from optio_core.store import update_widget_data
+        await update_widget_data(self._db, self._prefix, self._process_oid, data)
+
+    async def clear_widget_data(self) -> None:
+        """Clear widgetData."""
+        from optio_core.store import clear_widget_data
+        await clear_widget_data(self._db, self._prefix, self._process_oid)
 
     async def run_child(
         self,

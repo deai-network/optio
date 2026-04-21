@@ -42,6 +42,27 @@ Registers two SSE routes (raw HTTP, not ts-rest):
 
 Both routes set `Content-Type: text/event-stream`, poll every 1 s, and call `poller.stop()` on request close.
 
+```typescript
+function registerWidgetProxy(app: FastifyInstance, opts: OptioWidgetProxyOptions): void
+
+interface OptioWidgetProxyOptions {
+  db: Db;
+  prefix: string;
+  authenticate: AuthCallback<FastifyRequest>;  // viewer role for reads, operator for writes
+  ttlMs?: number;  // widgetUpstream TTL cache duration; default 5000 ms
+}
+```
+
+Imported from `optio-api/fastify`. Wires the widget proxy under `/api/widget/:processId/*`
+supporting HTTP, SSE, and WebSocket. Per-request behavior:
+
+1. Extracts `processId` (24-hex ObjectId) from the URL; 404 on malformed URL.
+2. Calls `authenticate` — viewer permission for safe HTTP methods, operator for mutating methods.
+3. Looks up `widgetUpstream` from MongoDB, TTL-cached for `ttlMs` ms (default 5 s); 404 when missing.
+4. Injects inner auth: `BasicAuth`/`HeaderAuth` → request headers; `QueryAuth` → URL query parameter.
+5. Strips `/api/widget/:processId` prefix and forwards the sub-path to the upstream URL.
+6. Maps upstream connection errors to 502 Bad Gateway; full error detail is logged server-side only.
+
 ## Handler Functions
 
 All handlers are exported from `optio-api` (main entry point).
@@ -193,9 +214,13 @@ function createTreePoller(opts: TreePollerOptions): ListPollerHandle
 ### SSE event shapes emitted by `createTreePoller`
 
 ```typescript
-{ type: 'update'; processes: Array<{ _id, parentId, name, status, progress, cancellable, depth, order }> }
+{ type: 'update'; processes: Array<{ _id, parentId, name, status, progress, cancellable, depth, order, widgetData }> }
 { type: 'log'; entries: Array<{ ...logEntry, processId, processLabel }> }
 { type: 'log-clear' }
 ```
 
 `createTreePoller` sends all existing log entries on the first poll, then only deltas. It detects log truncation (e.g. after resync) and emits `log-clear` before new entries.
+
+The `widgetData` field is included in tree-stream `update` events and is part of the snapshot fingerprint, so worker-side mutations (via `ctx.set_widget_data`) trigger a new SSE event. The list stream (`createListPoller`) does **not** include `widgetData` — it is omitted from sidebar payloads.
+
+`widgetUpstream` is **never** included in any client-facing payload (list stream, tree stream, or REST responses).

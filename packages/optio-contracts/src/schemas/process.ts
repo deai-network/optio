@@ -52,6 +52,10 @@ export const ProcessSchema = z.object({
   progress: ProgressSchema,
   log: z.array(LogEntrySchema),
 
+  // Widget extensions (widgetUpstream is server-side only and must never appear here)
+  uiWidget: z.string().nullable().optional(),
+  widgetData: z.unknown().optional(),
+
   createdAt: DateSchema,
 });
 

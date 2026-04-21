@@ -12,6 +12,120 @@ import * as handlers from '../handlers.js';
 import { createListPoller, createTreePoller } from '../stream-poller.js';
 import { discoverInstances } from '../discovery.js';
 import { resolveDb, type DbOptions } from '../resolve-db.js';
+import httpProxy from '@fastify/http-proxy';
+import type { AuthCallback } from '../auth.js';
+import { checkAuth } from '../auth.js';
+import { createWidgetUpstreamRegistry } from '../widget-upstream-registry.js';
+import {
+  resolveWidgetUpstream,
+  applyInnerAuthHeaders,
+  applyInnerAuthQuery,
+  isWriteMethod,
+} from '../widget-proxy-core.js';
+
+const WIDGET_CACHE_TTL_MS = 5000;
+
+export interface OptioWidgetProxyOptions {
+  db: Db;
+  prefix: string;
+  authenticate: AuthCallback<import('fastify').FastifyRequest>;
+  ttlMs?: number;
+}
+
+export function registerWidgetProxy(app: FastifyInstance, opts: OptioWidgetProxyOptions): void {
+  const registry = createWidgetUpstreamRegistry({ ttlMs: opts.ttlMs ?? WIDGET_CACHE_TTL_MS });
+
+  // Extracts the processId (24-hex ObjectId) from a full URL like /api/widget/<oid>/sub/path
+  function extractProcessId(url: string): string | null {
+    const m = url.match(/^\/api\/widget\/([a-f0-9]{24})(?:\/|$|\?)/i);
+    return m ? m[1] : null;
+  }
+
+  app.register(httpProxy, {
+    // Leave `upstream` unset (empty string) so that:
+    //   - HTTP path: @fastify/reply-from uses replyOptions.getUpstream per-request (unaffected by base)
+    //   - WS path:   WebSocketProxy.findUpstream falls through to replyOptions.getUpstream (non-empty
+    //               static upstream would override getUpstream and route all WS to a bogus host)
+    upstream: '',
+    prefix: '/api/widget',
+    rewritePrefix: '',
+    websocket: true,
+    // Use the Node.js http transport (not undici) so that getUpstream can override
+    // the connection target per-request via opts.url.hostname/port (undici uses
+    // the plugin-level baseUrl and ignores the per-request origin).
+    http: {},
+
+    preHandler: async (req: any, reply: any) => {
+      const fullUrl: string = req.raw.url ?? req.url;
+      const processId = extractProcessId(fullUrl);
+      if (!processId) {
+        reply.code(404).send({ message: 'Invalid widget URL' });
+        return;
+      }
+
+      const authResult = await checkAuth(req, opts.authenticate, isWriteMethod(req.method));
+      if (authResult) {
+        reply.code(authResult.status).send(authResult.body);
+        return;
+      }
+
+      let upstream;
+      try {
+        upstream = await resolveWidgetUpstream(opts.db, opts.prefix, registry, processId);
+      } catch (err) {
+        req.log.error({ err }, 'widget-proxy: upstream lookup failed');
+        reply.code(503).send({ message: 'Service Unavailable' });
+        return;
+      }
+      if (!upstream) {
+        reply.code(404).send({ message: 'Widget upstream not found' });
+        return;
+      }
+
+      // Store upstream on raw request for getUpstream + rewriteRequestHeaders to pick up
+      (req.raw as any).__optioWidget = { processId, upstream };
+
+      // Strip /api/widget/<processId> from the URL, leaving the sub-path (e.g. /foo?x=1)
+      // Then apply query-based inner auth if needed.
+      // The mutated req.raw.url becomes request.url in Fastify, which @fastify/http-proxy's
+      // fromParameters will use. Since the sub-path won't start with the plugin prefix
+      // (/api/widget), fromParameters leaves it unchanged — forwarding it as-is to the upstream.
+      const stripped = fullUrl.replace(/^\/api\/widget\/[a-f0-9]{24}/i, '') || '/';
+      req.raw.url = applyInnerAuthQuery(upstream.innerAuth, stripped);
+    },
+
+    // Rewrite headers for outgoing WebSocket handshake (inner-auth injection).
+    // The Fastify request object is passed as the second argument, which has
+    // request.raw.__optioWidget set by preHandler (runs before the upgrade handshake).
+    wsClientOptions: {
+      rewriteRequestHeaders: (headers: Record<string, any>, req: any) => {
+        const widget = (req.raw as any).__optioWidget;
+        if (!widget) return headers;
+        return applyInnerAuthHeaders(widget.upstream.innerAuth, headers);
+      },
+    },
+
+    replyOptions: {
+      getUpstream: (req: any) => {
+        const widget = (req.raw as any).__optioWidget;
+        return widget?.upstream.url ?? 'http://127.0.0.1/';
+      },
+      rewriteRequestHeaders: (req: any, headers: Record<string, any>) => {
+        const widget = (req.raw as any).__optioWidget;
+        if (!widget) return headers;
+        return applyInnerAuthHeaders(widget.upstream.innerAuth, headers);
+      },
+      // Map connection errors (ECONNREFUSED → InternalServerError/500 by default) to
+      // 502 Bad Gateway so callers get a meaningful gateway error.
+      // Full error detail is logged server-side; clients only see a fixed, non-leaking body.
+      onError: (reply: any, error: any) => {
+        reply.request.log.error({ err: error }, 'widget-proxy: upstream error');
+        const code = error?.statusCode === 500 ? 502 : (error?.statusCode ?? 502);
+        reply.code(code).send({ message: code === 502 ? 'Bad Gateway' : 'Upstream Error' });
+      },
+    },
+  });
+}
 
 export type OptioApiOptions = {
   redis: Redis;

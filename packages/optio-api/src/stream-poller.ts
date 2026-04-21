@@ -91,7 +91,9 @@ export function createTreePoller(opts: TreePollerOptions): ListPollerHandle {
 
       const allProcs = await col.find(filter).sort({ depth: 1, order: 1 }).toArray();
       const snapshot = JSON.stringify(
-        allProcs.map((p: any) => ({ id: p._id, status: p.status, progress: p.progress })),
+        allProcs.map((p: any) => ({
+          id: p._id, status: p.status, progress: p.progress, widgetData: p.widgetData, uiWidget: p.uiWidget,
+        })),
       );
 
       if (snapshot !== lastSnapshot) {
@@ -107,6 +109,8 @@ export function createTreePoller(opts: TreePollerOptions): ListPollerHandle {
             cancellable: p.cancellable ?? false,
             depth: p.depth,
             order: p.order,
+            widgetData: p.widgetData,
+            uiWidget: p.uiWidget,
           })),
         });
       }

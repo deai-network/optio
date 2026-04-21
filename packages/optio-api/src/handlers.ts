@@ -6,9 +6,15 @@ function col(db: Db, prefix: string) {
   return db.collection(`${prefix}_processes`);
 }
 
+function stripServerSideFields<T extends Record<string, any>>(proc: T): Omit<T, 'widgetUpstream'> {
+  const { widgetUpstream: _omit, ...rest } = proc;
+  return rest;
+}
+
 function toResponse(proc: any) {
+  const stripped = stripServerSideFields(proc);
   return {
-    ...proc,
+    ...stripped,
     _id: proc._id.toString(),
     parentId: proc.parentId?.toString(),
     rootId: proc.rootId.toString(),
@@ -78,8 +84,9 @@ async function buildTree(db: Db, prefix: string, processId: ObjectId, maxDepth?:
     children = children.filter(Boolean);
   }
 
+  const stripped = stripServerSideFields(proc);
   return {
-    ...proc,
+    ...stripped,
     _id: proc._id.toString(),
     parentId: proc.parentId?.toString(),
     rootId: proc.rootId.toString(),

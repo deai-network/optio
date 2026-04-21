@@ -20,3 +20,12 @@ export { usePrefixes, usePrefixDiscovery } from './hooks/usePrefixDiscovery.js';
 // Types
 export type { FilterGroup } from './components/ProcessFilter.js';
 export type { ProcessTreeNode } from './hooks/useProcessStream.js';
+
+// Widgets
+export { registerWidget } from './widgets/registry.js';
+export type { WidgetProps, WidgetComponent } from './widgets/registry.js';
+export { IframeWidget } from './widgets/IframeWidget.js';
+
+// Components
+export { ProcessDetailView } from './components/ProcessDetailView.js';
+export type { ProcessDetailViewProps } from './components/ProcessDetailView.js';

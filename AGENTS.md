@@ -108,6 +108,7 @@ class TaskInstance:
     special: bool = False                    # hidden from default UI views when special=True
     warning: str | None = None              # shown as confirmation prompt before launch
     cancellable: bool = True                 # whether this process can be cancelled
+    ui_widget: str | None = None             # widget name registered via registerWidget() in optio-ui
 ```
 
 ---
@@ -135,6 +136,36 @@ class ChildProgressInfo:
     percent: float | None = None
     message: str | None = None
 ```
+
+---
+
+### InnerAuth (optio_core.models)
+
+```python
+from optio_core.models import BasicAuth, QueryAuth, HeaderAuth, InnerAuth
+
+@dataclass
+class BasicAuth:
+    username: str
+    password: str
+    def to_dict(self) -> dict: ...  # {"kind": "basic", "username": ..., "password": ...}
+
+@dataclass
+class QueryAuth:
+    name: str
+    value: str
+    def to_dict(self) -> dict: ...  # {"kind": "query", "name": ..., "value": ...}
+
+@dataclass
+class HeaderAuth:
+    name: str
+    value: str
+    def to_dict(self) -> dict: ...  # {"kind": "header", "name": ..., "value": ...}
+
+InnerAuth = Union[BasicAuth, QueryAuth, HeaderAuth]
+```
+
+Passed to `ctx.set_widget_upstream()` to inject credentials into proxied widget requests.
 
 ---
 
@@ -182,6 +213,19 @@ ctx.process_id: str
 ctx.params: dict[str, Any]
 ctx.metadata: dict[str, Any]
 ctx.services: dict[str, Any]
+
+# Widget proxy control
+await ctx.set_widget_upstream(url: str, inner_auth: InnerAuth | None = None) -> None
+# Registers upstream URL for /api/widget/:processId/* proxy. Cleared automatically on terminal state.
+
+await ctx.clear_widget_upstream() -> None
+# Proxy returns 404 for this process until set again.
+
+await ctx.set_widget_data(data) -> None
+# Overwrites widgetData (any JSON-serializable value); delivered to widget via tree SSE stream.
+
+await ctx.clear_widget_data() -> None
+# Sets widgetData to null.
 ```
 
 **ParallelGroup usage:**
@@ -292,6 +336,9 @@ Collection: `{prefix}_processes`
 | `log[].level` | string | `event` \| `info` \| `debug` \| `warning` \| `error` |
 | `log[].message` | string | Log message |
 | `log[].data` | object \| absent | Optional structured data |
+| `uiWidget` | string \| null | Widget name; `ProcessDetailView` dispatches on this field |
+| `widgetUpstream` | `{ url, innerAuth } \| null` | Server-side only — never sent to clients |
+| `widgetData` | any JSON \| null | Live data delivered to the widget component via tree stream |
 | `createdAt` | datetime | Document creation timestamp |
 
 ---
@@ -319,6 +366,8 @@ Package: `optio-contracts`
 - `status`: `{ state, error?, runningSince?, doneAt?, duration?, failedAt?, stoppedAt? }`
 - `progress`: `{ percent: number | null (0–100), message?: string }`
 - `log`: `LogEntry[]`
+- `uiWidget`: string (nullable, optional) — widget name for `ProcessDetailView` dispatch
+- `widgetData`: unknown (optional) — live data delivered to the widget component
 - `createdAt`: Date
 
 **`ProcessStateSchema`** — enum:
@@ -398,7 +447,7 @@ interface OptioApiOptions {
 ### Fastify Adapter
 
 ```typescript
-import { registerProcessRoutes, registerProcessStream } from 'optio-api/adapters/fastify';
+import { registerProcessRoutes, registerProcessStream, registerWidgetProxy } from 'optio-api/adapters/fastify';
 
 registerProcessRoutes(app: FastifyInstance, opts: OptioApiOptions): void
 // Registers all REST endpoints from processesContract under /api/processes/...
@@ -407,6 +456,19 @@ registerProcessStream(app: FastifyInstance, opts: OptioApiOptions): void
 // Registers two SSE endpoints:
 //   GET /api/processes/:prefix/:id/tree/stream?maxDepth=N
 //   GET /api/processes/:prefix/stream
+
+interface OptioWidgetProxyOptions {
+  db: Db;
+  prefix: string;
+  authenticate: AuthCallback<FastifyRequest>;  // viewer for reads, operator for writes
+  ttlMs?: number;  // widgetUpstream TTL cache, default 5000 ms
+}
+
+registerWidgetProxy(app: FastifyInstance, opts: OptioWidgetProxyOptions): void
+// Registers /api/widget/:processId/* — proxies HTTP, SSE, and WebSocket to the upstream
+// URL stored in widgetUpstream. 404 when widgetUpstream is absent. 502 on upstream errors.
+// Inner auth (Basic/Header via headers, Query via URL) injected per-request.
+// widgetUpstream is TTL-cached (default 5 s) to reduce MongoDB round-trips.
 ```
 
 ### Handlers (all signatures)
@@ -482,8 +544,12 @@ function createTreePoller(opts: TreePollerOptions): ListPollerHandle
 
 **Tree stream process shape:**
 ```typescript
-{ _id, parentId: string | null, name, description, status, progress, cancellable, depth, order }
+{ _id, parentId: string | null, name, description, status, progress, cancellable, depth, order, widgetData }
 ```
+
+`widgetData` is included in tree-stream payloads and tracked in the snapshot fingerprint so
+worker-side mutations trigger SSE events. The list stream does **not** include `widgetData`.
+`widgetUpstream` is never present in any client-facing payload.
 
 ---
 
@@ -614,6 +680,45 @@ interface ProcessFiltersProps {
 
 type FilterGroup = 'all' | 'active' | 'hide_completed' | 'errors';
 ```
+
+**`ProcessDetailView`**
+
+```typescript
+interface ProcessDetailViewProps {
+  processId: string | null | undefined;
+}
+```
+
+Self-fetching detail panel (uses `useProcessStream` internally). Renders a placeholder when
+`processId` is falsy, a loading state while the SSE stream connects, a named widget when
+`tree.uiWidget` is a registered name, or the default `ProcessTreeView` + `ProcessLogPanel`
+layout otherwise. Warns to `console.warn` and falls back to default when `uiWidget` is set
+but no matching widget is registered.
+
+---
+
+### Widget System
+
+```typescript
+interface WidgetProps {
+  process: any;            // full process tree root (includes widgetData, uiWidget)
+  apiBaseUrl: string;      // optio API base URL
+  widgetProxyUrl: string;  // ${apiBaseUrl}/api/widget/${process._id}/ — trailing slash load-bearing
+  prefix: string;
+  database?: string;
+}
+
+type WidgetComponent = ComponentType<WidgetProps>;
+
+function registerWidget(name: string, component: WidgetComponent): void
+```
+
+Call `registerWidget` at module load time to make a widget available to `ProcessDetailView`.
+
+**Built-in `'iframe'` widget** — registered automatically when anything from `optio-ui` is
+imported. Reads `process.widgetData` for config (`iframeSrc`, `localStorageOverrides`,
+`sandbox`, `allow`, `title`). Sets localStorage entries on mount and removes them on
+unmount. Shows a dismissible "Session ended." banner on terminal states.
 
 ---
 

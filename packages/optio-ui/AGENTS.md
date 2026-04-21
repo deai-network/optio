@@ -212,6 +212,72 @@ Renders a `Select` (width 180) plus two `Checkbox` controls in an Ant Design `Sp
 The component is purely controlled — no internal state. The `FilterGroup` type is
 exported from `optio-ui`.
 
+### ProcessDetailView
+
+```ts
+interface ProcessDetailViewProps {
+  processId: string | null | undefined;
+}
+
+function ProcessDetailView({ processId }: ProcessDetailViewProps): JSX.Element
+```
+
+Self-fetching detail panel. Uses `useProcessStream` internally. Rendering branches:
+
+- **No processId** — renders a centred "Select a process" placeholder.
+- **No tree yet** (stream not yet received) — renders a "Loading…" placeholder.
+- **`tree.uiWidget` is set and registered** — renders the named widget component, passing
+  `{ process: tree, apiBaseUrl, widgetProxyUrl, prefix }`.
+- **`tree.uiWidget` is set but unregistered** — warns to `console.warn` and falls back to
+  the default tree+log view.
+- **No `uiWidget`** — renders `ProcessTreeView` + `ProcessLogPanel`.
+
+`widgetProxyUrl` shape passed to widget components: `${apiBaseUrl}/api/widget/${process._id}/`
+(trailing slash is load-bearing for relative URLs inside iframes).
+
+Exported from `optio-ui`.
+
+---
+
+## Widget System
+
+### registerWidget / WidgetComponent / WidgetProps
+
+```ts
+interface WidgetProps {
+  process: any;            // full process tree root object (includes widgetData, uiWidget)
+  apiBaseUrl: string;      // optio API base URL
+  widgetProxyUrl: string;  // ${apiBaseUrl}/api/widget/${process._id}/ — trailing slash is load-bearing
+  prefix: string;          // process namespace prefix
+  database?: string;       // optional database discriminator
+}
+
+type WidgetComponent = ComponentType<WidgetProps>;
+
+function registerWidget(name: string, component: WidgetComponent): void
+```
+
+`registerWidget` adds a named component to the module-level widget registry. Call this at
+module load time (before any `ProcessDetailView` renders). Exported from `optio-ui`.
+
+### Built-in 'iframe' widget
+
+Automatically registered (as `'iframe'`) when anything from `optio-ui` is imported.
+Reads configuration from `process.widgetData` (type `IframeWidgetData`):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `iframeSrc` | `string \| undefined` | iframe `src`; falls back to `widgetProxyUrl` when absent |
+| `localStorageOverrides` | `Record<string, string> \| undefined` | Key/value pairs written to `localStorage` on mount, removed on unmount |
+| `sandbox` | `string \| undefined` | iframe `sandbox` attribute |
+| `allow` | `string \| undefined` | iframe `allow` attribute (feature policy) |
+| `title` | `string \| undefined` | iframe `title`; falls back to `process.name` |
+
+Shows a dismissible "Session ended." banner overlay when the process is in a terminal
+state (`done`, `failed`, or `cancelled`).
+
+---
+
 ## Hooks
 
 ### useProcessActions

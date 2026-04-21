@@ -13,6 +13,7 @@ from optio_core.store import (
     get_process_by_process_id,
     update_status, clear_result_fields,
     create_child_process, append_log,
+    clear_widget_upstream,
 )
 from optio_core.context import ProcessContext
 
@@ -128,6 +129,7 @@ class Executor:
                 ),
             )
             await append_log(self._db, self._prefix, oid, "error", str(e))
+            await clear_widget_upstream(self._db, self._prefix, oid)
             self._cancellation_flags.pop(oid, None)
             await self._cleanup_ephemeral(proc["processId"])
             return "failed"
@@ -155,6 +157,7 @@ class Executor:
             )
             await append_log(self._db, self._prefix, oid, "event", "State changed to cancelled")
 
+        await clear_widget_upstream(self._db, self._prefix, oid)
         self._cancellation_flags.pop(oid, None)
         await self._cleanup_ephemeral(proc["processId"])
         return end_state

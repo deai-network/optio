@@ -67,3 +67,17 @@ A cron-scheduled task that fires every 15 minutes. Demonstrates `cron` schedulin
 | Cooperative cancellation | x | | | | |
 | Deep nesting (4 levels) | x | | | | |
 | Generated tasks (loop) | | | | x | |
+
+## Widget smoke test (Task 21)
+
+Exercises all four widget primitives end-to-end via a live marimo notebook.
+
+1. `docker compose up` in this directory to start MongoDB + Redis.
+2. `pnpm --filter optio-dashboard dev` in another terminal to serve the dashboard.
+3. `python -m optio_demo` in a third terminal to run the demo worker (make sure `pip install -e .` or equivalent has been run so the `optio-demo` package is available).
+4. Open the dashboard in a browser. Authenticate if prompted.
+5. Find the "Marimo Notebook" task in the process list. Click launch.
+6. Click the running process — the iframe widget should mount and show a live marimo notebook.
+7. Interact with the notebook. Reactive updates flow through the widget proxy.
+8. Cancel the process. The "session ended" banner overlays the iframe; the marimo subprocess is terminated.
+9. Dismiss. The iframe unmounts; `widgetUpstream` and `widgetData` are cleared on the process document.

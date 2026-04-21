@@ -1,7 +1,7 @@
 """Core data models for optio."""
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Awaitable
+from typing import Any, Callable, Awaitable, Union
 from datetime import datetime
 
 
@@ -18,6 +18,7 @@ class TaskInstance:
     special: bool = False
     warning: str | None = None
     cancellable: bool = True
+    ui_widget: str | None = None
 
 
 @dataclass
@@ -79,3 +80,33 @@ class OptioConfig:
     redis_url: str | None = None
     services: dict[str, Any] = field(default_factory=dict)
     get_task_definitions: Callable[..., Awaitable[list[TaskInstance]]] | None = None
+
+
+@dataclass
+class BasicAuth:
+    username: str
+    password: str
+
+    def to_dict(self) -> dict:
+        return {"kind": "basic", "username": self.username, "password": self.password}
+
+
+@dataclass
+class QueryAuth:
+    name: str
+    value: str
+
+    def to_dict(self) -> dict:
+        return {"kind": "query", "name": self.name, "value": self.value}
+
+
+@dataclass
+class HeaderAuth:
+    name: str
+    value: str
+
+    def to_dict(self) -> dict:
+        return {"kind": "header", "name": self.name, "value": self.value}
+
+
+InnerAuth = Union[BasicAuth, QueryAuth, HeaderAuth]

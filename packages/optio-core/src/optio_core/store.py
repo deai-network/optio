@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from optio_core.models import TaskInstance, ProcessStatus, Progress
+from optio_core.models import TaskInstance, ProcessStatus, Progress, InnerAuth
 
 
 def _collection(db: AsyncIOMotorDatabase, prefix: str):
@@ -33,6 +33,7 @@ async def upsert_process(db: AsyncIOMotorDatabase, prefix: str, task: TaskInstan
                 "description": task.description,
                 "special": task.special,
                 "warning": task.warning,
+                "uiWidget": task.ui_widget,
             },
             "$setOnInsert": {
                 "parentId": None,
@@ -221,6 +222,8 @@ async def clear_result_fields(
                 "status.stoppedAt": None,
                 "progress": Progress().to_dict(),
                 "log": [],
+                "widgetData": None,
+                "widgetUpstream": None,
             }
         },
     )
@@ -270,3 +273,52 @@ async def list_processes(
     return await coll.find(filter).sort([
         ("depth", 1), ("order", 1), ("_id", 1),
     ]).to_list(None)
+
+
+async def update_widget_upstream(
+    db: AsyncIOMotorDatabase,
+    prefix: str,
+    process_oid: ObjectId,
+    url: str,
+    inner_auth: InnerAuth | None = None,
+) -> None:
+    """Set widgetUpstream on a process (used by the proxy for forwarding)."""
+    entry: dict = {"url": url}
+    if inner_auth is not None:
+        entry["innerAuth"] = inner_auth.to_dict()
+    else:
+        entry["innerAuth"] = None
+    await _collection(db, prefix).update_one(
+        {"_id": process_oid},
+        {"$set": {"widgetUpstream": entry}},
+    )
+
+
+async def clear_widget_upstream(
+    db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId,
+) -> None:
+    """Clear widgetUpstream on a process."""
+    await _collection(db, prefix).update_one(
+        {"_id": process_oid},
+        {"$set": {"widgetUpstream": None}},
+    )
+
+
+async def update_widget_data(
+    db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId, data,
+) -> None:
+    """Overwrite widgetData with an arbitrary JSON-serializable value."""
+    await _collection(db, prefix).update_one(
+        {"_id": process_oid},
+        {"$set": {"widgetData": data}},
+    )
+
+
+async def clear_widget_data(
+    db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId,
+) -> None:
+    """Clear widgetData (sets to null)."""
+    await _collection(db, prefix).update_one(
+        {"_id": process_oid},
+        {"$set": {"widgetData": None}},
+    )
