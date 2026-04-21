@@ -68,7 +68,7 @@ registerWidget('opencode-iframe', OpencodeIframeWidget)
 interface WidgetProps {
   process: Process            // full process document (includes widgetData)
   apiBaseUrl: string          // e.g., "https://app.example.com"
-  widgetProxyUrl: string      // derived: `${apiBaseUrl}/api/widget/${process._id}`
+  widgetProxyUrl: string      // derived: `${apiBaseUrl}/api/widget/${process._id}/` (trailing slash load-bearing — see Primitive 2 subpath notes)
   prefix: string
   database: string
 }
@@ -76,7 +76,9 @@ interface WidgetProps {
 
 ### Rendering host
 
-A new component `<ProcessDetailView process={process} />` in optio-ui (no such component exists today — it is a prerequisite of this spec).
+A new component `ProcessDetailView` in optio-ui (no such component exists today — it is a prerequisite of this spec). It is used in place, not as a URL route: the current optio-dashboard has no router and selects processes via React state. `ProcessDetailView` replaces the inline `<ProcessTreeView /> + <ProcessLogPanel />` render in the right pane of the dashboard's layout.
+
+Exact prop shape (self-fetching vs. data-in-props) is an implementation detail deferred to the plan phase; leaning toward self-fetching via `processId`.
 
 Decision logic:
 
@@ -85,6 +87,8 @@ Decision logic:
 - If `process.uiWidget` is not set → default rendering (status + progress + log tail).
 
 Default rendering is minimal in this spec; enhancing it is a separate concern.
+
+Deep-linkable per-process URLs (introducing a router) are explicitly out of scope; left as future work.
 
 ### Lifecycle
 
@@ -163,7 +167,7 @@ Per-request flow:
 3. Look up `widgetUpstream` (lazy-load + cache).
 4. If absent → 404.
 5. Rewrite: strip `/api/widget/:processId` prefix; inject inner auth per the configured `InnerAuth` variant.
-6. Forward via `http-proxy`. Stream response back unmodified.
+6. Forward via the proxy plugin (see Library + adapter integration). Stream response back unmodified.
 
 ### CORS
 
@@ -171,10 +175,9 @@ The iframe is same-origin with optio-api; no CORS config needed on `/api/widget/
 
 ### Library + adapter integration
 
-- Proxy logic lives in a new core module of `optio-api`, implemented against raw Node `http.IncomingMessage` / `http.ServerResponse` using `http-proxy` (node-http-proxy). Framework-agnostic.
-- **MVP ships only the Fastify adapter.** Its `registerWidgetProxy(fastifyInstance)` attaches the routes and wires the underlying HTTP server's `upgrade` event through the shared auth check.
-- `@fastify/http-proxy` is a candidate if it exposes hooks for per-request auth callback, dynamic upstream selection, path rewriting, and inner-auth injection. If not, use `http-proxy` directly inside a Fastify plugin. Chosen during the plan phase.
-- Express, nextjs-pages, nextjs-app adapters: explicitly deferred.
+- **MVP ships only the Fastify adapter**, built on `@fastify/http-proxy`. `registerWidgetProxy(fastifyInstance)` registers the proxy with a `preHandler` that runs auth + authorization + upstream lookup + 404 short-circuit, attaches the resolved upstream to the request, and lets the plugin handle the forward. Dynamic upstream via `replyOptions.getUpstream`; header-style inner auth via `rewriteRequestHeaders`; query-style inner auth via URL mutation in the preHandler or the plugin's query-string option, whichever is cleaner in the pinned version.
+- **WS upgrade auth is the one known unknown.** `@fastify/http-proxy`'s WS hook (`wsHooks.preConnect` or equivalent in the pinned version) gives the hook callback a request shape that is not necessarily a full `FastifyRequest`. Plan-phase deliverable: confirm the WS hook shape in the pinned version and decide whether WS auth can reuse the existing `AuthCallback<FastifyRequest>` directly or needs a small adapter / separate WS-typed callback.
+- Express, nextjs-pages, nextjs-app adapters: explicitly deferred. When adapted later, each adapter will supply its own framework-native proxy integration while the core auth + upstream-lookup logic stays shared.
 
 ### Authentication
 
@@ -192,7 +195,9 @@ export type AuthCallback<TRequest> =
 
 ### WS upgrade and the generic AuthCallback
 
-`AuthCallback<TRequest>` is generic over the framework's request type. The WS upgrade event gives each framework a somewhat different request object. Each adapter's `registerWidgetProxy` is responsible for constructing the correct `TRequest` shape for the upgrade (typically the same shape already used for that framework's regular routes) and calling `checkAuth` before completing the upgrade. Fastify exposes the underlying `IncomingMessage` on upgrade events; this is straightforward.
+`AuthCallback<TRequest>` is generic over the framework's request type. The WS upgrade event gives each framework a somewhat different request object. Each adapter's `registerWidgetProxy` is responsible for constructing the correct `TRequest` shape for the upgrade and calling `checkAuth` before completing the upgrade.
+
+For the Fastify adapter specifically, the shape of the request object exposed to `@fastify/http-proxy`'s WS hook (the plan-phase unknown noted under Library + adapter integration) determines whether we can pass it straight to `AuthCallback<FastifyRequest>` or need a small adapter that constructs a `FastifyRequest`-compatible view over the raw upgrade request.
 
 ### Subpath URL routing for the embedded client
 
@@ -234,7 +239,11 @@ widgetData: <any JSON value> | null
 ### Propagation to the UI
 
 - Available on the process document returned by existing read endpoints (`GET /api/processes/:id`). No new endpoint.
-- Propagates to connected clients via the existing tree-stream SSE. The `update` event the poller already emits on process-doc change includes `widgetData`.
+- Propagates to connected clients by riding the existing tree-stream `update` event. Two changes to `createTreePoller` are required:
+  1. Add `widgetData` to the snapshot fingerprint so a widgetData-only change still triggers an event. (The current fingerprint covers only `status` and `progress`; a widgetData-only change would otherwise be invisible.)
+  2. Add `widgetData` to the per-process payload shipped in the `update` event.
+- List stream (`createListPoller`) is **not** modified: the sidebar does not use `widgetData`, and `widgetData` can be arbitrarily large. Keeping the list stream slim.
+- `widgetUpstream` is **never** included in any client-facing payload (list stream, tree stream, or REST response). It contains credentials via `innerAuth` and is server-side only. Tests assert this invariant.
 - `WidgetProps.process.widgetData` in the widget component is always the latest observed value.
 
 ### Lifecycle
@@ -429,17 +438,21 @@ A headless Playwright test in the demo package that performs steps 3–6 and ass
 
 ---
 
-## Out of Scope
+## Out of Scope (and future work)
 
 - Express, nextjs-pages, nextjs-app adapters for the widget proxy (MVP ships Fastify only).
 - optio-opencode's internal design (companion seed spec).
 - Health-probing, reconnection, or retry for upstreams (process / consumer concern).
 - App-to-app `postMessage` between iframe and parent dashboard.
 - Per-widget fine-grained authorization beyond optio-api's existing viewer/operator distinction.
+- Deep-linkable per-process URLs (would introduce a router in optio-dashboard).
 
-## Open Questions
+## Resolved Decisions
 
-1. `@fastify/http-proxy` vs. direct `http-proxy` inside a Fastify plugin. Decide during plan phase based on whether `@fastify/http-proxy` exposes hooks for per-request auth, dynamic upstream selection, path rewriting, and inner-auth injection.
-2. Exact path of the iframe `src` when the host app is mounted at a non-root path. Convention: `${apiBaseUrl}/widget/<processId>/` where `apiBaseUrl` is what the host already passes to optio-ui. Confirm against current optio-ui plumbing during implementation.
-3. Whether `ProcessDetailView` replaces an existing route or lives as a new one. The current optio-ui process tree view exists but there is no per-process detail route. Pick a route consistent with existing optio-dashboard conventions during implementation.
-4. Whether widgetData should emit a dedicated SSE event or ride the existing `update` event. Lean toward riding `update` unless the tree poller's diff logic drops widgetData updates in practice.
+These were the open questions at initial spec draft; resolved in a follow-up brainstorming pass.
+
+1. **Proxy library: `@fastify/http-proxy`.** Its hook surface accommodates our needs (per-request auth via `preHandler`, dynamic upstream via `getUpstream`, header-style inner auth via `rewriteRequestHeaders`, 404 short-circuit via the preHandler, SSE pass-through by default). Query-style inner auth needs either the plugin's query-string hook or a preHandler URL mutation — decided at plan time against the pinned version. WS auth hook shape is the one remaining unknown; also confirmed at plan time. The maintenance-burden argument for a third-party plugin outweighs the minor friction of adapting to its hook surface.
+2. **Iframe URL convention: `${apiBaseUrl}/api/widget/${processId}/`.** With `/api/` (consistent with every other API route) and trailing slash (load-bearing for relative URL resolution inside the iframe). `apiBaseUrl` is what the host already passes to `OptioProvider`; no plumbing changes required.
+3. **No routing.** The current dashboard selects processes via React state, not a URL route. `ProcessDetailView` is a new component that replaces the inline `<ProcessTreeView /> + <ProcessLogPanel />` render in the right pane. Deep-linkable per-process URLs left as future work.
+4. **widgetData rides the tree-stream `update` event.** Tree-stream snapshot fingerprint and per-process payload are extended to include `widgetData`. List stream is unchanged (sidebar doesn't need `widgetData` and it can be arbitrarily large). `widgetUpstream` is never exposed to clients.
+
