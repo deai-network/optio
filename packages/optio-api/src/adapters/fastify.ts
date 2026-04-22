@@ -37,6 +37,7 @@ interface WidgetProxyInternalOptions {
   dbOpts: DbOptions;
   authenticate: AuthCallback<import('fastify').FastifyRequest>;
   ttlMs?: number;
+  verbose?: boolean;
 }
 
 function registerWidgetProxy(app: FastifyInstance, opts: WidgetProxyInternalOptions): void {
@@ -69,6 +70,10 @@ function registerWidgetProxy(app: FastifyInstance, opts: WidgetProxyInternalOpti
     // the connection target per-request via opts.url.hostname/port (undici uses
     // the plugin-level baseUrl and ignores the per-request origin).
     http: {},
+    // Passed through to @fastify/reply-from — suppresses its per-request
+    // "fetching from remote server" / "response received" INFO lines when the
+    // host app isn't running in verbose mode. Errors remain visible.
+    disableRequestLogging: !opts.verbose,
 
     preHandler: async (req: any, reply: any) => {
       const fullUrl: string = req.raw.url ?? req.url;
@@ -173,6 +178,12 @@ export type OptioApiOptions = {
   redis: Redis;
   prefix?: string;
   authenticate: AuthCallback<import('fastify').FastifyRequest>;
+  /**
+   * When true, the widget reverse-proxy's per-request upstream-call logs
+   * (`fetching from remote server`, `response received` at INFO) are emitted.
+   * Defaults to false (quiet). Errors are logged regardless.
+   */
+  verbose?: boolean;
 } & (
   | { db: Db; mongoClient?: never }
   | { mongoClient: MongoClient; db?: never }
@@ -188,7 +199,11 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions) {
   // Widget reverse-proxy lives under /api/widget/<database>/<prefix>/<processId>/…
   // and is registered as an internal part of the Optio API surface so consumers
   // only need one init call.
-  registerWidgetProxy(app, { dbOpts, authenticate: opts.authenticate });
+  registerWidgetProxy(app, {
+    dbOpts,
+    authenticate: opts.authenticate,
+    verbose: opts.verbose,
+  });
 
   const s = initServer();
 

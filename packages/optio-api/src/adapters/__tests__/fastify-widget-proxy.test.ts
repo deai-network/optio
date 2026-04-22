@@ -229,6 +229,42 @@ describe('registerWidgetProxy — HTTP path', () => {
     expect(res.headers['content-security-policy']).toBeUndefined();
     await app.close();
   });
+
+  async function makeAppWithLog(verbose: boolean | undefined): Promise<{ app: FastifyInstance; logs: any[] }> {
+    const logs: any[] = [];
+    const stream = { write(line: string) { try { logs.push(JSON.parse(line)); } catch { logs.push(line); } } };
+    const app = Fastify({ logger: { level: 'info', stream } });
+    registerOptioApi(app, {
+      db,
+      redis: new IORedisMock() as any,
+      authenticate: () => 'operator',
+      ...(verbose === undefined ? {} : { verbose }),
+    });
+    await app.ready();
+    return { app, logs };
+  }
+
+  it('does not emit reply-from "fetching from remote server" at INFO by default (quiet)', async () => {
+    const { app, logs } = await makeAppWithLog(undefined);
+    const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+    const res = await app.inject({ method: 'GET', url: widgetUrl(oid, '/foo') });
+    expect(res.statusCode).toBe(200);
+    const messages = logs.map((l) => typeof l === 'string' ? l : l?.msg).filter(Boolean);
+    expect(messages.some((m) => String(m).includes('fetching from remote server'))).toBe(false);
+    expect(messages.some((m) => String(m).includes('response received'))).toBe(false);
+    await app.close();
+  });
+
+  it('emits reply-from "fetching from remote server" at INFO when verbose is true', async () => {
+    const { app, logs } = await makeAppWithLog(true);
+    const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+    const res = await app.inject({ method: 'GET', url: widgetUrl(oid, '/foo') });
+    expect(res.statusCode).toBe(200);
+    const messages = logs.map((l) => typeof l === 'string' ? l : l?.msg).filter(Boolean);
+    expect(messages.some((m) => String(m).includes('fetching from remote server'))).toBe(true);
+    expect(messages.some((m) => String(m).includes('response received'))).toBe(true);
+    await app.close();
+  });
 });
 
 describe('registerWidgetProxy — WebSocket path', () => {

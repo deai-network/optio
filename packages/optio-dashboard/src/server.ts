@@ -70,6 +70,7 @@ export async function startServer(config: DashboardConfig) {
   await registerOptioApi(app, {
     mongoClient,
     redis,
+    verbose: config.verbose,
     authenticate: async (request: import('fastify').FastifyRequest) => {
       const url = request.url;
       // Only enforce auth on Optio API routes.
