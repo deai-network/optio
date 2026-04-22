@@ -36,7 +36,9 @@ No other behaviour changes in `optio-api`.
 2. Initialize Better Auth with:
    - The MongoDB adapter, sharing the existing `db` connection.
    - The `emailAndPassword` plugin.
-3. Upsert a single virtual admin user (`admin@localhost` / `OPTIO_PASSWORD`) into Better Auth's users collection. This keeps the stored password in sync if the env var changes between restarts.
+3. Upsert a single virtual admin user (`admin@optio.local` / `OPTIO_PASSWORD`) into Better Auth's users collection. This keeps the stored password in sync if the env var changes between restarts.
+   - The upsert goes through Better Auth's internal adapter (`ctx.internalAdapter.createUser` + `linkAccount` on first boot, `ctx.internalAdapter.updatePassword` on subsequent boots) and hashes via `ctx.password.hash`. No direct MongoDB collection writes — the dashboard does not touch `user` / `account` documents outside the library.
+4. Configure `emailAndPassword.disableSignUp: true`. Better Auth's core always registers `/sign-up/email` in its router; this flag is what makes the handler reject external sign-ups. The server-side bootstrap above uses the internal adapter, so disabling HTTP sign-up does not affect it. This aligns with the product intent that `OPTIO_PASSWORD` is the single authentication secret and no self-registration is possible.
 
 ### Request routing
 

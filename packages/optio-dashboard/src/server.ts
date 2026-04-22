@@ -42,7 +42,7 @@ export async function startServer(config: DashboardConfig) {
   // changing the password automatically invalidates all sessions)
   const baseURL = process.env.BETTER_AUTH_URL ?? `http://localhost:${config.port}`;
   const auth = createAuth(db, config.password, baseURL);
-  await upsertAdminUser(db, auth, config.password);
+  await upsertAdminUser(auth, config.password);
 
   // Mount Better Auth routes at /api/auth/*
   app.route({
