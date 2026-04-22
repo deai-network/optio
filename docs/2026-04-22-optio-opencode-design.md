@@ -500,8 +500,6 @@ Local mode keeps the demo's prerequisites minimal: the developer must already ha
 
 ### User-verifiable walkthrough
 
-Documented in the demo's README (updated by this spec's implementation plan):
-
 1. Start MongoDB (Docker), optio-dashboard, and optio-demo locally.
 2. Authenticate in the dashboard.
 3. Launch the `opencode-demo` task.
