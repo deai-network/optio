@@ -136,6 +136,27 @@ function registerWidgetProxy(app: FastifyInstance, opts: WidgetProxyInternalOpti
         if (!widget) return headers;
         return applyInnerAuthHeaders(widget.upstream.innerAuth, headers);
       },
+      // The proxy's purpose is to make the upstream embeddable in an iframe under
+      // optio-api's outer auth. Strip `X-Frame-Options` and any `frame-ancestors`
+      // CSP directive so upstreams (marimo, jupyter, internal tools) that default
+      // to anti-embedding headers don't block that. Clickjacking defense is
+      // provided by optio-api's authenticate callback: the proxy is unreachable
+      // without a valid session.
+      rewriteHeaders: (headers: Record<string, any>) => {
+        const out = { ...headers };
+        delete out['x-frame-options'];
+        const csp = out['content-security-policy'];
+        if (typeof csp === 'string') {
+          const stripped = csp
+            .split(';')
+            .map((d) => d.trim())
+            .filter((d) => d.length > 0 && !d.toLowerCase().startsWith('frame-ancestors'))
+            .join('; ');
+          if (stripped) out['content-security-policy'] = stripped;
+          else delete out['content-security-policy'];
+        }
+        return out;
+      },
       // Map connection errors (ECONNREFUSED → InternalServerError/500 by default) to
       // 502 Bad Gateway so callers get a meaningful gateway error.
       // Full error detail is logged server-side; clients only see a fixed, non-leaking body.

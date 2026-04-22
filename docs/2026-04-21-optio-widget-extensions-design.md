@@ -177,6 +177,15 @@ Per-request flow:
 
 The iframe is same-origin with optio-api; no CORS config needed on `/api/widget/*`.
 
+### Embedding defenses (X-Frame-Options, CSP frame-ancestors)
+
+The widget proxy strips anti-embedding response headers before returning upstream responses to the browser:
+
+- Deletes `X-Frame-Options` entirely.
+- Removes only the `frame-ancestors` directive from `Content-Security-Policy`; other CSP directives pass through. If `frame-ancestors` was the sole directive, the CSP header is dropped.
+
+Rationale: the proxy's purpose is precisely to make an upstream embeddable in an iframe under optio-api's outer auth. Upstreams like marimo, jupyter, or internal dashboards default to `X-Frame-Options: deny` / `frame-ancestors 'none'` as a generic clickjacking defense against any third-party embedding. In the widget proxy's context, that defense is already provided by optio-api's `AuthCallback`: the proxy is unreachable without a valid session, and the iframe is same-origin with the dashboard. Preserving the upstream's anti-embedding headers would break the proxy without adding security.
+
 ### Library + adapter integration
 
 - **MVP ships only the Fastify adapter**, built on `@fastify/http-proxy`. The widget-proxy registration is an internal step of `registerOptioApi(fastifyInstance, opts)` — consumers only need the one init call, and the proxy inherits `opts.authenticate` and `opts.db` / `opts.mongoClient` from the same adapter options. It installs a `preHandler` that runs URL-routing extraction + auth + authorization + upstream lookup + 404 short-circuit, attaches the resolved upstream to the request, and lets the plugin handle the forward. Dynamic upstream via `replyOptions.getUpstream`; header-style inner auth via `rewriteRequestHeaders`; query-style inner auth via URL mutation in the preHandler or the plugin's query-string option, whichever is cleaner in the pinned version.

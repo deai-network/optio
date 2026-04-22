@@ -177,6 +177,58 @@ describe('registerWidgetProxy — HTTP path', () => {
     expect([502, 503]).toContain(res.statusCode);
     await app.close();
   });
+
+  it('strips X-Frame-Options from upstream response so the iframe can embed', async () => {
+    upstreamResponder = (_req, res, _body) => {
+      res.statusCode = 200;
+      res.setHeader('content-type', 'text/html');
+      res.setHeader('x-frame-options', 'DENY');
+      res.end('<html></html>');
+    };
+    const app = await makeApp();
+    const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+    const res = await app.inject({ method: 'GET', url: widgetUrl(oid, '/') });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['x-frame-options']).toBeUndefined();
+    await app.close();
+  });
+
+  it('strips frame-ancestors from CSP but keeps other directives', async () => {
+    upstreamResponder = (_req, res, _body) => {
+      res.statusCode = 200;
+      res.setHeader('content-type', 'text/html');
+      res.setHeader(
+        'content-security-policy',
+        "default-src 'self'; frame-ancestors 'none'; script-src 'self' 'unsafe-inline'",
+      );
+      res.end('<html></html>');
+    };
+    const app = await makeApp();
+    const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+    const res = await app.inject({ method: 'GET', url: widgetUrl(oid, '/') });
+    expect(res.statusCode).toBe(200);
+    const csp = res.headers['content-security-policy'];
+    expect(csp).toBeDefined();
+    expect(String(csp).toLowerCase()).not.toContain('frame-ancestors');
+    expect(String(csp)).toContain("default-src 'self'");
+    expect(String(csp)).toContain("script-src 'self' 'unsafe-inline'");
+    await app.close();
+  });
+
+  it('removes CSP entirely when frame-ancestors was its only directive', async () => {
+    upstreamResponder = (_req, res, _body) => {
+      res.statusCode = 200;
+      res.setHeader('content-type', 'text/html');
+      res.setHeader('content-security-policy', "frame-ancestors 'none'");
+      res.end('<html></html>');
+    };
+    const app = await makeApp();
+    const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+    const res = await app.inject({ method: 'GET', url: widgetUrl(oid, '/') });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-security-policy']).toBeUndefined();
+    await app.close();
+  });
 });
 
 describe('registerWidgetProxy — WebSocket path', () => {

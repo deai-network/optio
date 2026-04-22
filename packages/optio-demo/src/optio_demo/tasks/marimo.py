@@ -44,6 +44,7 @@ async def run_marimo(ctx: ProcessContext) -> None:
         "--host", "127.0.0.1",
         "--port", str(port),
         "--headless",
+        "--no-token",
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
