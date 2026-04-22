@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import signal
+from datetime import datetime, timezone
 from typing import Any, Callable, Awaitable
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -15,8 +16,9 @@ from optio_core.models import TaskInstance, OptioConfig, ProcessStatus
 from optio_core.store import (
     upsert_process, remove_stale_processes,
     get_process_by_process_id, update_status, clear_result_fields,
+    append_log,
 )
-from optio_core.state_machine import CANCELLABLE_STATES
+from optio_core.state_machine import ACTIVE_STATES, CANCELLABLE_STATES
 from optio_core.executor import Executor
 from optio_core.consumer import CommandConsumer
 from optio_core.scheduler import ProcessScheduler
@@ -95,6 +97,10 @@ class Optio:
         self._scheduler = ProcessScheduler(
             launch_fn=self._handle_launch_by_process_id,
         )
+
+        # Reconcile any processes left in active states by a previous session.
+        # Spec: docs/2026-04-22-process-reconciliation-design.md
+        await self._reconcile_interrupted_processes()
 
         # Run initial sync
         await self._sync_definitions()
@@ -238,8 +244,14 @@ class Optio:
         finally:
             await self._scheduler.stop()
 
-    async def shutdown(self) -> None:
-        """Graceful shutdown."""
+    async def shutdown(self, grace_seconds: float = 5.0) -> None:
+        """Graceful shutdown.
+
+        Args:
+            grace_seconds: how long to wait for cooperating tasks to unwind
+                after their cancellation flag is set. Tasks still running after
+                the grace period are force-finalized to 'failed' in Mongo.
+        """
         logger.info("Shutdown requested")
         self._running = False
 
@@ -262,16 +274,90 @@ class Optio:
             for oid, flag in list(self._executor._cancellation_flags.items()):
                 flag.set()
 
-            # Wait briefly for processes to exit
-            for _ in range(50):  # 5 seconds max
+            # Wait for cooperating processes to exit
+            step = 0.1
+            steps = max(1, int(grace_seconds / step))
+            for _ in range(steps):
                 if not self._executor._cancellation_flags:
                     break
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(step)
+
+            # Force-finalize any task that did not unwind in time.
+            # Spec: docs/2026-04-22-process-reconciliation-design.md
+            remaining = list(self._executor._cancellation_flags.keys())
+            if remaining:
+                await self._force_finalize_stuck_processes(remaining)
 
         if self._redis:
             await self._redis.aclose()
 
         logger.info("Shutdown complete")
+
+    async def _reconcile_interrupted_processes(self) -> None:
+        """Mark processes left in active states by a previous session as failed.
+
+        Spec: docs/2026-04-22-process-reconciliation-design.md (Rule 1).
+
+        On a fresh server start `Executor._cancellation_flags` is empty, so any
+        Mongo record whose state is in `ACTIVE_STATES` was interrupted and
+        cannot be running anywhere. Reset each one to 'failed' with an error
+        explaining what happened, and append a log entry.
+        """
+        coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
+        cursor = coll.find(
+            {"status.state": {"$in": list(ACTIVE_STATES)}},
+            {"_id": 1, "status.state": 1},
+        )
+        stale = [(doc["_id"], doc["status"]["state"]) async for doc in cursor]
+        if not stale:
+            return
+
+        now = datetime.now(timezone.utc)
+        error_msg = "Process was interrupted by server restart"
+        for oid, prev_state in stale:
+            await update_status(
+                self._config.mongo_db, self._config.prefix, oid,
+                ProcessStatus(state="failed", error=error_msg, failed_at=now),
+            )
+            await append_log(
+                self._config.mongo_db, self._config.prefix, oid,
+                "event", f"State reconciled: {prev_state} -> failed (server restart)",
+            )
+        logger.info(f"Reconciled {len(stale)} interrupted process(es) to 'failed'")
+
+    async def _force_finalize_stuck_processes(self, oids: list[ObjectId]) -> None:
+        """Mark processes that did not unwind during shutdown as failed.
+
+        Spec: docs/2026-04-22-process-reconciliation-design.md (Rule 2).
+
+        Uses a conditional Mongo update so we do not overwrite a terminal
+        state a task may have flushed at the last moment.
+        """
+        coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
+        now = datetime.now(timezone.utc)
+        error_msg = "Task did not exit within shutdown grace period"
+        status_doc = ProcessStatus(
+            state="failed", error=error_msg, failed_at=now,
+        ).to_dict()
+
+        forced = 0
+        for oid in oids:
+            result = await coll.update_one(
+                {"_id": oid, "status.state": {"$in": list(ACTIVE_STATES)}},
+                {"$set": {"status": status_doc}},
+            )
+            if result.modified_count:
+                forced += 1
+                await append_log(
+                    self._config.mongo_db, self._config.prefix, oid,
+                    "event", "State forced: running -> failed (shutdown grace period exceeded)",
+                )
+            self._executor._cancellation_flags.pop(oid, None)
+
+        if forced:
+            logger.warning(
+                f"Force-finalized {forced} process(es) that did not exit within grace period"
+            )
 
     async def _heartbeat_loop(self) -> None:
         """Periodically set a heartbeat key in Redis with TTL."""

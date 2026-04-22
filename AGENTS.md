@@ -60,7 +60,7 @@ import optio_core
 # Lifecycle
 await optio_core.init(mongo_db, prefix, redis_url=None, services=None, get_task_definitions=None)
 await optio_core.run()          # blocks until shutdown; call after init()
-await optio_core.shutdown()     # graceful shutdown; cancels running processes
+await optio_core.shutdown(grace_seconds=5.0)  # graceful shutdown; force-finalizes tasks that do not unwind in time
 
 # Commands
 await optio_core.launch(process_id: str) -> None           # fire-and-forget
@@ -762,3 +762,4 @@ All components use `react-i18next`. Required keys:
 - **Ephemeral processes**: deleted from DB after reaching an end state
 - **Migrations**: run automatically on `init()` via quaestor; migrations live in `packages/optio-core/src/optio_core/migrations/`
 - **Scheduler**: APScheduler-backed; cron schedules defined on `TaskInstance.schedule` are synced on init and resync
+- **Process state reconciliation**: on `init()`, any process still in an active state (`scheduled`, `running`, `cancel_requested`, `cancelling`) from a previous session is reset to `failed` with `error="Process was interrupted by server restart"`. On `shutdown(grace_seconds=5.0)`, tasks that do not unwind within the grace period are force-finalized to `failed` with `error="Task did not exit within shutdown grace period"`. Spec: `docs/2026-04-22-process-reconciliation-design.md`
