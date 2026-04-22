@@ -11,11 +11,18 @@ if (!password) {
   process.exit(1);
 }
 
+const verbose =
+  process.argv.includes('--verbose') ||
+  process.argv.includes('-v') ||
+  process.env.OPTIO_VERBOSE === '1' ||
+  process.env.OPTIO_VERBOSE === 'true';
+
 const config = {
   mongodbUrl: process.env.MONGODB_URL || 'mongodb://localhost:27017/optio',
   redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',
   port: parseInt(process.env.PORT || '3000', 10),
   password,
+  verbose,
 };
 
 startServer(config).catch((err) => {

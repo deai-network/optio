@@ -15,6 +15,7 @@ export interface DashboardConfig {
   redisUrl: string;
   port: number;
   password: string;
+  verbose: boolean;
 }
 
 export async function startServer(config: DashboardConfig) {
@@ -25,6 +26,7 @@ export async function startServer(config: DashboardConfig) {
         options: { translateTime: 'HH:MM:ss', ignore: 'pid,hostname' },
       },
     },
+    disableRequestLogging: !config.verbose,
   });
 
   // Connect to MongoDB
