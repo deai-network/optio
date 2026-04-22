@@ -82,11 +82,15 @@ Exact prop shape (self-fetching vs. data-in-props) is an implementation detail d
 
 Decision logic:
 
-- If `process.uiWidget` is set and a widget is registered under that name → render the registered component with `WidgetProps`.
+- If `process.uiWidget` is set, a widget is registered under that name, the resolved `database` is known, **and** the process state is `running`, `cancel_requested`, or `cancelling` (i.e. the task is still alive) → render the registered component in a two-row layout: `ProcessLogPanel` at the top (~20% of the available vertical space, scrolling independently with auto-tail behaviour), the widget below (~80%).
 - If `process.uiWidget` is set but no widget is registered → `console.warn`, fall back to default rendering.
-- If `process.uiWidget` is not set → default rendering (status + progress + log tail).
+- If `process.uiWidget` is set but `database` is unresolved (embedded single-db consumer without instance discovery) → `console.warn`, fall back to default rendering.
+- If `process.uiWidget` is set but the state is `idle` / `scheduled` / `done` / `failed` / `cancelled` → fall back to default rendering. The upstream is either not yet registered or already torn down, so the widget would only produce a broken iframe.
+- If `process.uiWidget` is not set → default rendering (tree + log).
 
 Default rendering is minimal in this spec; enhancing it is a separate concern.
+
+Rationale for keeping the log above the widget in live mode: the widget owns most of the pane, but log entries (progress messages, errors, events from the task) are the primary diagnostic surface when something goes wrong. A narrow always-visible log strip with auto-tail is cheap real-estate insurance. The iframe widget's own loading / error states are widget-author concerns; the log reflects the optio side of things.
 
 Deep-linkable per-process URLs (introducing a router) are explicitly out of scope; left as future work.
 
@@ -279,9 +283,11 @@ Ships in optio-ui as a registered widget under the name `"iframe"`. Any process 
 
 ### Rendering states, keyed on the process doc
 
+Note: `ProcessDetailView` gates the widget on the process state *before* `IframeWidget` is mounted (see Primitive 1 decision logic), so in the dashboard flow `IframeWidget` receives only live states (`running` / `cancel_requested` / `cancelling`). The states below are still relevant for consumers that mount `IframeWidget` directly, outside `ProcessDetailView`.
+
 - **No `widgetData` yet** → loading placeholder. Convention: worker sets `widgetData` only after upstream is registered and the upstream app is confirmed ready. This doubles as the "ready to mount" signal, avoiding race between iframe load and proxy registration.
 - **`widgetData` present + process running** → mount the iframe.
-- **Process terminal (`done`/`failed`/`cancelled`)** → keep the iframe mounted and overlay a dismissible "session ended" banner. Upstream is about to be cleared; any live connections drop and surface naturally in the embedded app's error UI.
+- **Process terminal (`done`/`failed`/`cancelled`)** → keep the iframe mounted and overlay a dismissible "session ended" banner. Upstream is about to be cleared; any live connections drop and surface naturally in the embedded app's error UI. (Not reached via `ProcessDetailView`, which falls back to default rendering for terminal states.)
 - **Process dismissed** → unmount the iframe.
 
 ### widgetData conventions consumed by this widget

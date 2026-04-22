@@ -8,6 +8,12 @@ export interface ProcessDetailViewProps {
   processId: string | null | undefined;
 }
 
+// Widget is shown only while the task is still alive. Terminal (done/failed/
+// cancelled) and not-yet-started (idle/scheduled) states revert to the default
+// view — the upstream is either not yet registered or already torn down, so a
+// widget here would just present a broken iframe.
+const WIDGET_LIVE_STATES = new Set(['running', 'cancel_requested', 'cancelling']);
+
 export function ProcessDetailView({ processId }: ProcessDetailViewProps) {
   const { tree, logs, connected } = useProcessStream(processId ?? undefined);
   const baseUrl = useOptioBaseUrl();
@@ -27,7 +33,8 @@ export function ProcessDetailView({ processId }: ProcessDetailViewProps) {
   }
 
   const widgetName = (tree as any).uiWidget as string | undefined;
-  if (widgetName) {
+  const currentState = (tree as any).status?.state as string | undefined;
+  if (widgetName && currentState && WIDGET_LIVE_STATES.has(currentState)) {
     const Widget = getWidget(widgetName);
     if (!Widget) {
       console.warn(`[optio-ui] No widget registered under name "${widgetName}"; falling back to default rendering.`);
@@ -44,13 +51,23 @@ export function ProcessDetailView({ processId }: ProcessDetailViewProps) {
       const widgetProxyUrl =
         `${baseUrl}/api/widget/${encodeURIComponent(database)}/${encodeURIComponent(prefix)}/${tree._id}/`;
       return (
-        <Widget
-          process={tree as any}
-          apiBaseUrl={baseUrl}
-          widgetProxyUrl={widgetProxyUrl}
-          prefix={prefix}
-          database={database}
-        />
+        <div
+          data-testid="optio-widget-layout"
+          style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}
+        >
+          <div style={{ flex: '0 0 20%', minHeight: 0, overflow: 'hidden' }}>
+            <ProcessLogPanel logs={logs} fillParent />
+          </div>
+          <div style={{ flex: '1 1 auto', minHeight: 0 }}>
+            <Widget
+              process={tree as any}
+              apiBaseUrl={baseUrl}
+              widgetProxyUrl={widgetProxyUrl}
+              prefix={prefix}
+              database={database}
+            />
+          </div>
+        </div>
       );
     }
   }

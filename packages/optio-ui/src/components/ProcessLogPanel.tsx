@@ -21,9 +21,15 @@ interface LogEntry {
 
 interface ProcessLogPanelProps {
   logs: LogEntry[];
+  /**
+   * When true, the panel fills its parent's height (use with a flex-sized
+   * container) instead of the default `maxHeight: 400`. Auto-scroll still
+   * sticks to the bottom while the user hasn't manually scrolled up.
+   */
+  fillParent?: boolean;
 }
 
-export function ProcessLogPanel({ logs }: ProcessLogPanelProps) {
+export function ProcessLogPanel({ logs, fillParent }: ProcessLogPanelProps) {
   const { t } = useTranslation();
   const listRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
@@ -51,7 +57,7 @@ export function ProcessLogPanel({ logs }: ProcessLogPanelProps) {
       ref={listRef}
       onScroll={handleScroll}
       style={{
-        maxHeight: 400,
+        ...(fillParent ? { height: '100%' } : { maxHeight: 400 }),
         overflow: 'auto',
         border: '1px solid #303030',
         borderRadius: 4,

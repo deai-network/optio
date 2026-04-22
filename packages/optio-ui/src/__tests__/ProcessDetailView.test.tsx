@@ -145,4 +145,74 @@ describe('ProcessDetailView', () => {
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
+
+  // State gating — widget renders only while the task is still alive.
+  it.each(['done', 'failed', 'cancelled', 'idle', 'scheduled'])(
+    'falls back to default when process state is %s even if uiWidget is set',
+    (state) => {
+      registerWidget('my-widget', () => <div data-testid="my-widget">should not render</div>);
+      mockProcessStream.mockReturnValue({
+        tree: {
+          _id: 'abc', name: 'P', status: { state },
+          progress: { percent: null }, cancellable: true,
+          depth: 0, order: 0, parentId: null,
+          uiWidget: 'my-widget',
+          children: [],
+        },
+        logs: [],
+        connected: true,
+      });
+      render(<ProcessDetailView processId="abc" />);
+      expect(screen.queryByTestId('my-widget')).toBeNull();
+      expect(screen.getByTestId('optio-detail-default')).toBeTruthy();
+    },
+  );
+
+  it.each(['cancel_requested', 'cancelling'])(
+    'keeps the widget while state is %s (task still alive, lax gating)',
+    (state) => {
+      registerWidget('my-widget', () => <div data-testid="my-widget">live</div>);
+      mockProcessStream.mockReturnValue({
+        tree: {
+          _id: 'abc', name: 'P', status: { state },
+          progress: { percent: null }, cancellable: true,
+          depth: 0, order: 0, parentId: null,
+          uiWidget: 'my-widget',
+          children: [],
+        },
+        logs: [],
+        connected: true,
+      });
+      render(<ProcessDetailView processId="abc" />);
+      expect(screen.getByTestId('my-widget')).toBeTruthy();
+    },
+  );
+
+  it('renders the log panel above the widget in widget mode', () => {
+    registerWidget('my-widget', () => <div data-testid="my-widget">widget body</div>);
+    mockProcessStream.mockReturnValue({
+      tree: {
+        _id: 'abc', name: 'P', status: { state: 'running' },
+        progress: { percent: null }, cancellable: true,
+        depth: 0, order: 0, parentId: null,
+        uiWidget: 'my-widget',
+        children: [],
+      },
+      logs: [
+        { timestamp: '2026-04-22T10:00:00Z', level: 'event', message: 'State changed to running' },
+      ],
+      connected: true,
+    });
+    const { container } = render(<ProcessDetailView processId="abc" />);
+    const layout = container.querySelector('[data-testid="optio-widget-layout"]');
+    expect(layout).not.toBeNull();
+    // Log panel first (top), widget second (bottom).
+    const children = Array.from(layout!.children);
+    expect(children.length).toBeGreaterThanOrEqual(2);
+    const widget = screen.getByTestId('my-widget');
+    const widgetIndex = children.findIndex((c) => c.contains(widget));
+    expect(widgetIndex).toBeGreaterThan(0);
+    // The log entry is visible.
+    expect(screen.getByText('State changed to running')).toBeTruthy();
+  });
 });
