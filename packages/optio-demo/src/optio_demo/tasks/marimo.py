@@ -61,6 +61,9 @@ async def run_marimo(ctx: ProcessContext) -> None:
 
         while ctx.should_continue():
             if proc.returncode is not None:
+                if proc.returncode == 0:
+                    ctx.report_progress(100, "marimo exited cleanly")
+                    return
                 raise RuntimeError(f"marimo exited with code {proc.returncode}")
             await asyncio.sleep(0.5)
     finally:
