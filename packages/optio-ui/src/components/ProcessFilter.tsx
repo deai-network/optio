@@ -9,10 +9,6 @@ export type FilterGroup = 'all' | 'active' | 'hide_completed' | 'errors';
 
 const QUIET_STATES = new Set(['idle', 'done']);
 
-function processSearchText(p: any): string {
-  return [p.name, p.description].filter(Boolean).join(' ');
-}
-
 interface ProcessFilterContextValue {
   filterGroup: FilterGroup;
   setFilterGroup: (g: FilterGroup) => void;
@@ -30,7 +26,7 @@ function ProcessFilterInner({ children }: { children: ReactNode }) {
   const [showDetails, setShowDetails] = useState(false);
   const [showSpecial, setShowSpecial] = useState(false);
 
-  const searchFilter = useFilterFunction<any>();
+  const searchFilter = useFilterFunction();
 
   const filterFn = useMemo(
     () => (processes: any[]) => {
@@ -62,7 +58,7 @@ function ProcessFilterInner({ children }: { children: ReactNode }) {
 
 export function WithFilteredProcesses({ children }: { children: ReactNode }) {
   return (
-    <WithSearch mapping={processSearchText}>
+    <WithSearch fields={['name', 'description']}>
       <ProcessFilterInner>{children}</ProcessFilterInner>
     </WithSearch>
   );
