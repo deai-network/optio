@@ -342,7 +342,7 @@ Process ends (done/failed/cancelled)
 
 ### Optio's lifecycle guarantees
 
-- `widgetUpstream` is cleared whenever the process enters a terminal state, whether or not the worker called `clear_widget_upstream` explicitly. Optio-core clears it as part of the standard teardown path.
+- `widgetUpstream` is cleared whenever the process enters a terminal state, whether or not the worker called `clear_widget_upstream` explicitly. Three code paths maintain this invariant: (1) the executor's normal teardown in `_execute_process` for cooperating tasks; (2) `_reconcile_interrupted_processes` at server start for processes left in active states by a crashed or killed previous session; (3) `_force_finalize_stuck_processes` at shutdown for tasks that did not unwind within the grace period. Paths (2) and (3) also force the state to `failed`; see the failure-mode table below.
 - On dismiss, both `widgetUpstream` and `widgetData` are cleared alongside logs.
 - On relaunch, previous `widgetUpstream` and `widgetData` are cleared before the worker runs.
 
@@ -355,7 +355,8 @@ Process ends (done/failed/cancelled)
 | optio-api restart mid-session | In-memory cache drops; next proxied request re-reads `widgetUpstream` from MongoDB. Active SSE/WS connections break; browser reconnects. | Nothing. |
 | Browser reloads the iframe | New request hits proxy, reads registry, forwards. Upstream's own session semantics decide whether state persists. | Nothing. |
 | Network blip between worker and upstream | Optio has no visibility into the worker's upstream. | Process decides: reconnect, or fail. Implementation in consumer. |
-| Worker process crashes hard (no teardown) | Existing instance-liveness heartbeat detects the dead process and transitions it to `failed`; `widgetUpstream` cleared as part of that transition. | Nothing. |
+| Worker process crashes hard (no teardown) | DB row remains in its active state until the next optio-core start, when `_reconcile_interrupted_processes` transitions it to `failed` with error "Process was interrupted by server restart" and clears `widgetUpstream`. `widgetData` is preserved per lifecycle rules. In-flight proxied requests during the dead window return 502 or 404 from the widget proxy's upstream-lookup (stale cache expires within 5 s; thereafter MongoDB is the source of truth). | Nothing. |
+| Shutdown grace period elapses before task unwinds | `_force_finalize_stuck_processes` transitions the row to `failed` with error "Task did not exit within shutdown grace period" and clears `widgetUpstream`, conditionally so a task that flushed a terminal state at the last moment keeps its own terminal write. | Cooperating tasks should respond to `ctx.should_continue()` and exit promptly; long-running subprocess terminate paths should fit in the grace window. |
 | `widgetData` missing after `widgetUpstream` is set | Iframe widget stays in loading state indefinitely. | Process must always set `widgetData` after upstream, as the "go live" signal. Documented convention. |
 
 ### What optio explicitly does not do

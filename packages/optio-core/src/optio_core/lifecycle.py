@@ -301,7 +301,10 @@ class Optio:
         On a fresh server start `Executor._cancellation_flags` is empty, so any
         Mongo record whose state is in `ACTIVE_STATES` was interrupted and
         cannot be running anywhere. Reset each one to 'failed' with an error
-        explaining what happened, and append a log entry.
+        explaining what happened, clear `widgetUpstream` (whose worker is
+        definitely gone), and append a log entry. `widgetData` is preserved
+        intentionally — the widget-extensions spec keeps it across terminal
+        states for post-mortem inspection.
         """
         coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
         cursor = coll.find(
@@ -319,6 +322,7 @@ class Optio:
                 self._config.mongo_db, self._config.prefix, oid,
                 ProcessStatus(state="failed", error=error_msg, failed_at=now),
             )
+            await coll.update_one({"_id": oid}, {"$set": {"widgetUpstream": None}})
             await append_log(
                 self._config.mongo_db, self._config.prefix, oid,
                 "event", f"State reconciled: {prev_state} -> failed (server restart)",
@@ -331,7 +335,10 @@ class Optio:
         Spec: docs/2026-04-22-process-reconciliation-design.md (Rule 2).
 
         Uses a conditional Mongo update so we do not overwrite a terminal
-        state a task may have flushed at the last moment.
+        state a task may have flushed at the last moment. The same
+        conditional scopes the widgetUpstream clearing — a task that won
+        the race to terminal owns its widgetUpstream transition (via the
+        executor's teardown path).
         """
         coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
         now = datetime.now(timezone.utc)
@@ -344,7 +351,7 @@ class Optio:
         for oid in oids:
             result = await coll.update_one(
                 {"_id": oid, "status.state": {"$in": list(ACTIVE_STATES)}},
-                {"$set": {"status": status_doc}},
+                {"$set": {"status": status_doc, "widgetUpstream": None}},
             )
             if result.modified_count:
                 forced += 1
