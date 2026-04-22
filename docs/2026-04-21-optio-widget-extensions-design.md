@@ -24,7 +24,7 @@ Three-layer architecture (for reader orientation):
 **In scope for this spec:**
 
 1. Widget registry — a process declares a UI widget name; optio-ui renders the registered component.
-2. Widget upstream proxy — optio-api proxies HTTP + SSE + WS on `/api/widget/<processId>/*` to a worker-registered upstream URL, injecting inner auth server-side.
+2. Widget upstream proxy — optio-api proxies HTTP + SSE + WS on `/api/widget/<database>/<prefix>/<processId>/*` to a worker-registered upstream URL, injecting inner auth server-side.
 3. Widget data — a process publishes an opaque JSON blob on its process document; optio-ui delivers it to the widget live.
 4. Generic iframe widget — shipped in optio-ui as a registered widget. Mounts an iframe to the proxied URL with configurable pre-mount setup.
 5. Cross-cutting: auth, URL-routing strategy for embedded apps, lifecycle, failure handling.
@@ -68,7 +68,7 @@ registerWidget('opencode-iframe', OpencodeIframeWidget)
 interface WidgetProps {
   process: Process            // full process document (includes widgetData)
   apiBaseUrl: string          // e.g., "https://app.example.com"
-  widgetProxyUrl: string      // derived: `${apiBaseUrl}/api/widget/${process._id}/` (trailing slash load-bearing — see Primitive 2 subpath notes)
+  widgetProxyUrl: string      // derived: `${apiBaseUrl}/api/widget/${encodeURIComponent(database)}/${encodeURIComponent(prefix)}/${process._id}/` (trailing slash load-bearing — see Primitive 2 subpath notes)
   prefix: string
   database: string
 }
@@ -156,18 +156,22 @@ No new Redis stream. The worker writes `widgetUpstream` to the process document 
 ### Proxy routes
 
 ```
-(ALL)  /api/widget/:processId/*path         → HTTP + SSE (SSE is a long-lived GET)
-(WS)   ws:/api/widget/:processId/*path      → WebSocket upgrade
+(ALL)  /api/widget/:database/:prefix/:processId/*path         → HTTP + SSE (SSE is a long-lived GET)
+(WS)   ws:/api/widget/:database/:prefix/:processId/*path      → WebSocket upgrade
 ```
+
+The `database` and `prefix` segments are URL-encoded path components, not query parameters. They must live in the path because the iframe's content generates relative URLs whose browser resolution preserves the path but drops the query string — any query-scoped routing info would be lost on the first relative navigation or asset load inside the iframe.
 
 Per-request flow:
 
-1. Authenticate the outer auth via optio-api's configured `AuthCallback`. 401 if null.
-2. Authorize: viewer role sufficient for GET/SSE and WS; operator required for POST/PUT/DELETE. Uses `checkAuth(..., isWrite)` as elsewhere.
-3. Look up `widgetUpstream` (lazy-load + cache).
-4. If absent → 404.
-5. Rewrite: strip `/api/widget/:processId` prefix; inject inner auth per the configured `InnerAuth` variant.
-6. Forward via the proxy plugin (see Library + adapter integration). Stream response back unmodified.
+1. Parse `database`, `prefix`, `processId` from the path. 404 on malformed.
+2. Authenticate the outer auth via optio-api's configured `AuthCallback`. 401 if null.
+3. Authorize: viewer role sufficient for GET/SSE and WS; operator required for POST/PUT/DELETE. Uses `checkAuth(..., isWrite)` as elsewhere.
+4. Resolve the Mongo `db` via the same `resolveDb` helper the REST routes use (`{ db } = resolveDb(dbOpts, { database, prefix })`). 404 on failure.
+5. Look up `widgetUpstream` in `{prefix}_processes` on that db (lazy-load + cache, keyed by `<database>/<prefix>/<processId>`).
+6. If absent → 404.
+7. Rewrite: strip `/api/widget/:database/:prefix/:processId` prefix; inject inner auth per the configured `InnerAuth` variant.
+8. Forward via the proxy plugin (see Library + adapter integration). Stream response back unmodified.
 
 ### CORS
 
@@ -175,7 +179,7 @@ The iframe is same-origin with optio-api; no CORS config needed on `/api/widget/
 
 ### Library + adapter integration
 
-- **MVP ships only the Fastify adapter**, built on `@fastify/http-proxy`. `registerWidgetProxy(fastifyInstance)` registers the proxy with a `preHandler` that runs auth + authorization + upstream lookup + 404 short-circuit, attaches the resolved upstream to the request, and lets the plugin handle the forward. Dynamic upstream via `replyOptions.getUpstream`; header-style inner auth via `rewriteRequestHeaders`; query-style inner auth via URL mutation in the preHandler or the plugin's query-string option, whichever is cleaner in the pinned version.
+- **MVP ships only the Fastify adapter**, built on `@fastify/http-proxy`. The widget-proxy registration is an internal step of `registerOptioApi(fastifyInstance, opts)` — consumers only need the one init call, and the proxy inherits `opts.authenticate` and `opts.db` / `opts.mongoClient` from the same adapter options. It installs a `preHandler` that runs URL-routing extraction + auth + authorization + upstream lookup + 404 short-circuit, attaches the resolved upstream to the request, and lets the plugin handle the forward. Dynamic upstream via `replyOptions.getUpstream`; header-style inner auth via `rewriteRequestHeaders`; query-style inner auth via URL mutation in the preHandler or the plugin's query-string option, whichever is cleaner in the pinned version.
 - **WS upgrade auth is the one known unknown.** `@fastify/http-proxy`'s WS hook (`wsHooks.preConnect` or equivalent in the pinned version) gives the hook callback a request shape that is not necessarily a full `FastifyRequest`. Plan-phase deliverable: confirm the WS hook shape in the pinned version and decide whether WS auth can reuse the existing `AuthCallback<FastifyRequest>` directly or needs a small adapter / separate WS-typed callback.
 - Express, nextjs-pages, nextjs-app adapters: explicitly deferred. When adapted later, each adapter will supply its own framework-native proxy integration while the core auth + upstream-lookup logic stays shared.
 
@@ -189,19 +193,19 @@ export type AuthCallback<TRequest> =
   (req: TRequest) => Promise<OptioRole | null> | OptioRole | null;
 ```
 
-- **Outer auth.** Every `/api/widget/:processId/*` request and every WS upgrade passes through the host-configured `AuthCallback`. The callback inspects the request using whatever the host's auth system is (cookie, bearer, mTLS, API key — optio-api is agnostic). Enforcement: viewer for reads, operator for writes.
+- **Outer auth.** Every `/api/widget/:database/:prefix/:processId/*` request and every WS upgrade passes through the host-configured `AuthCallback`. The callback inspects the request using whatever the host's auth system is (cookie, bearer, mTLS, API key — optio-api is agnostic). Enforcement: viewer for reads, operator for writes.
 - **Inner auth.** Configured per-process by the worker via `set_widget_upstream(url, inner_auth=...)`. Optio-api injects the configured Basic Auth / query param / header when forwarding. The browser never sees the inner credential.
 - **CSRF.** Inherits whatever the host app configured for other optio-api routes. If the host uses cookie auth, it is responsible for CSRF defenses (SameSite cookies, origin checks, etc.); the widget proxy inherits that protection.
 
 ### WS upgrade and the generic AuthCallback
 
-`AuthCallback<TRequest>` is generic over the framework's request type. The WS upgrade event gives each framework a somewhat different request object. Each adapter's `registerWidgetProxy` is responsible for constructing the correct `TRequest` shape for the upgrade and calling `checkAuth` before completing the upgrade.
+`AuthCallback<TRequest>` is generic over the framework's request type. The WS upgrade event gives each framework a somewhat different request object. Each adapter's widget-proxy registration is responsible for constructing the correct `TRequest` shape for the upgrade and calling `checkAuth` before completing the upgrade.
 
 For the Fastify adapter specifically, the shape of the request object exposed to `@fastify/http-proxy`'s WS hook (the plan-phase unknown noted under Library + adapter integration) determines whether we can pass it straight to `AuthCallback<FastifyRequest>` or need a small adapter that constructs a `FastifyRequest`-compatible view over the raw upgrade request.
 
 ### Subpath URL routing for the embedded client
 
-Most embedded web clients assume their server is at `location.origin`. When the iframe is served under `/api/widget/<processId>/`, this is wrong: the client would send requests to the root path, bypassing the proxy.
+Most embedded web clients assume their server is at `location.origin`. When the iframe is served under `/api/widget/<database>/<prefix>/<processId>/`, this is wrong: the client would send requests to the root path, bypassing the proxy.
 
 The iframe widget (Primitive 4) handles this by writing origin-scoped `localStorage` keys *before* the iframe loads. Since the iframe is same-origin with the parent dashboard, keys set by the parent are visible to the iframe's code.
 
@@ -416,7 +420,7 @@ No SSH, no remote host, no inner auth — the simplest possible consumer of the 
 
 Same issue as opencode: marimo's client may assume `location.origin` is its server. Two possibilities to resolve during the plan phase:
 
-1. Marimo supports a `--base-url` flag. If yes, the worker passes `--base-url=/api/widget/<processId>`; no localStorage tricks needed.
+1. Marimo supports a `--base-url` flag. If yes, the worker passes `--base-url=/api/widget/<database>/<prefix>/<processId>`; no localStorage tricks needed.
 2. Marimo does not. The iframe widget's `localStorageOverrides` (or equivalent mechanism for marimo's conventions) handles it.
 
 This is the intended shakedown of the subpath strategy: if marimo works cleanly, the pattern generalizes; if it does not, something is learned about the primitives before optio-opencode builds on them.
@@ -452,7 +456,8 @@ A headless Playwright test in the demo package that performs steps 3–6 and ass
 These were the open questions at initial spec draft; resolved in a follow-up brainstorming pass.
 
 1. **Proxy library: `@fastify/http-proxy`.** Its hook surface accommodates our needs (per-request auth via `preHandler`, dynamic upstream via `getUpstream`, header-style inner auth via `rewriteRequestHeaders`, 404 short-circuit via the preHandler, SSE pass-through by default). Query-style inner auth needs either the plugin's query-string hook or a preHandler URL mutation — decided at plan time against the pinned version. WS auth hook shape is the one remaining unknown; also confirmed at plan time. The maintenance-burden argument for a third-party plugin outweighs the minor friction of adapting to its hook surface.
-2. **Iframe URL convention: `${apiBaseUrl}/api/widget/${processId}/`.** With `/api/` (consistent with every other API route) and trailing slash (load-bearing for relative URL resolution inside the iframe). `apiBaseUrl` is what the host already passes to `OptioProvider`; no plumbing changes required.
+2. **Iframe URL convention: `${apiBaseUrl}/api/widget/${encodeURIComponent(database)}/${encodeURIComponent(prefix)}/${processId}/`.** With `/api/` (consistent with every other API route) and trailing slash (load-bearing for relative URL resolution inside the iframe). `database` and `prefix` are path segments — not query params — because relative URLs inside the iframe lose the query string on navigation and asset loads; the routing info must travel in the path. Both are drawn from `useOptioDatabase()` / `useOptioPrefix()` (which ultimately come from instance discovery or an explicit `<OptioProvider>` prop), so no plumbing changes are required on the host side. When `database` is undefined (embedded single-db consumer without discovery), the iframe widget falls back to default rendering with a `console.warn`.
+5. **Widget proxy exposed via `registerOptioApi`.** The Fastify adapter exposes one init call; the widget proxy is an internal component of `registerOptioApi` rather than a separately-exported `registerWidgetProxy`. This keeps the public surface narrow and lets the proxy inherit `dbOpts` and `authenticate` from the same options block the REST routes use.
 3. **No routing.** The current dashboard selects processes via React state, not a URL route. `ProcessDetailView` is a new component that replaces the inline `<ProcessTreeView /> + <ProcessLogPanel />` render in the right pane. Deep-linkable per-process URLs left as future work.
 4. **widgetData rides the tree-stream `update` event.** Tree-stream snapshot fingerprint and per-process payload are extended to include `widgetData`. List stream is unchanged (sidebar doesn't need `widgetData` and it can be arbitrarily large). `widgetUpstream` is never exposed to clients.
 

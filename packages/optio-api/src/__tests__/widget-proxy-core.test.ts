@@ -76,6 +76,39 @@ describe('resolveWidgetUpstream', () => {
     const second = await resolveWidgetUpstream(db, PREFIX, reg, oid.toString());
     expect(second?.url).toBe('http://127.0.0.1:9000');
   });
+
+  it('caches per (database, prefix) — same processId in two databases does not collide', async () => {
+    const dbA = client.db('optio_test_widget_multidb_a');
+    const dbB = client.db('optio_test_widget_multidb_b');
+    const reg = createWidgetUpstreamRegistry({ ttlMs: 5000 });
+    const oid = new ObjectId();
+
+    try {
+      const base = {
+        _id: oid, processId: 'p', name: 'P',
+        rootId: oid, depth: 0, order: 0,
+        status: { state: 'running' },
+        progress: { percent: null }, log: [],
+        cancellable: true,
+      };
+      await dbA.collection(`${PREFIX}_processes`).insertOne({
+        ...base,
+        widgetUpstream: { url: 'http://upstream-A', innerAuth: null },
+      });
+      await dbB.collection(`${PREFIX}_processes`).insertOne({
+        ...base,
+        widgetUpstream: { url: 'http://upstream-B', innerAuth: null },
+      });
+
+      const a = await resolveWidgetUpstream(dbA, PREFIX, reg, oid.toString());
+      const b = await resolveWidgetUpstream(dbB, PREFIX, reg, oid.toString());
+      expect(a?.url).toBe('http://upstream-A');
+      expect(b?.url).toBe('http://upstream-B');
+    } finally {
+      await dbA.dropDatabase();
+      await dbB.dropDatabase();
+    }
+  });
 });
 
 describe('applyInnerAuthHeaders', () => {

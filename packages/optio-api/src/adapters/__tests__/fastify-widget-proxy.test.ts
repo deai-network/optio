@@ -4,11 +4,16 @@ import { MongoClient, ObjectId, type Db } from 'mongodb';
 import { createServer, type Server } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage } from 'http';
-import { registerWidgetProxy } from '../fastify.js';
+import IORedisMock from 'ioredis-mock';
+import { registerOptioApi } from '../fastify.js';
 
 const MONGO_URL = process.env.MONGO_URL ?? 'mongodb://localhost:27017';
 const DB_NAME = 'optio_test_widget_proxy_adapter';
 const PREFIX = 'test';
+
+function widgetUrl(oid: ObjectId | string, subpath: string): string {
+  return `/api/widget/${encodeURIComponent(DB_NAME)}/${encodeURIComponent(PREFIX)}/${oid}${subpath}`;
+}
 
 describe('registerWidgetProxy — HTTP path', () => {
   let mongoClient: MongoClient;
@@ -60,7 +65,7 @@ describe('registerWidgetProxy — HTTP path', () => {
 
   async function makeApp(authenticate: (req: any) => any = () => 'operator'): Promise<FastifyInstance> {
     const app = Fastify();
-    registerWidgetProxy(app, { db, prefix: PREFIX, authenticate });
+    registerOptioApi(app, { db, redis: new IORedisMock() as any, authenticate });
     await app.ready();
     return app;
   }
@@ -82,7 +87,7 @@ describe('registerWidgetProxy — HTTP path', () => {
   it('returns 401 when authenticate returns null', async () => {
     const app = await makeApp(() => null);
     const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
-    const res = await app.inject({ method: 'GET', url: `/api/widget/${oid}/foo` });
+    const res = await app.inject({ method: 'GET', url: widgetUrl(oid, '/foo') });
     expect(res.statusCode).toBe(401);
     await app.close();
   });
@@ -90,7 +95,7 @@ describe('registerWidgetProxy — HTTP path', () => {
   it('returns 403 on POST when authenticate returns viewer', async () => {
     const app = await makeApp(() => 'viewer');
     const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
-    const res = await app.inject({ method: 'POST', url: `/api/widget/${oid}/foo`, payload: '' });
+    const res = await app.inject({ method: 'POST', url: widgetUrl(oid, '/foo'), payload: '' });
     expect(res.statusCode).toBe(403);
     await app.close();
   });
@@ -98,7 +103,7 @@ describe('registerWidgetProxy — HTTP path', () => {
   it('allows viewer on GET and forwards to upstream', async () => {
     const app = await makeApp(() => 'viewer');
     const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
-    const res = await app.inject({ method: 'GET', url: `/api/widget/${oid}/foo` });
+    const res = await app.inject({ method: 'GET', url: widgetUrl(oid, '/foo') });
     expect(res.statusCode).toBe(200);
     expect(upstreamRequests[0].url).toBe('/foo');
     await app.close();
@@ -107,7 +112,7 @@ describe('registerWidgetProxy — HTTP path', () => {
   it('returns 404 when process is unknown', async () => {
     const app = await makeApp();
     const unknownOid = new ObjectId();
-    const res = await app.inject({ method: 'GET', url: `/api/widget/${unknownOid}/foo` });
+    const res = await app.inject({ method: 'GET', url: widgetUrl(unknownOid, '/foo') });
     expect(res.statusCode).toBe(404);
     await app.close();
   });
@@ -115,7 +120,15 @@ describe('registerWidgetProxy — HTTP path', () => {
   it('returns 404 when widgetUpstream is null', async () => {
     const app = await makeApp();
     const oid = await insertProcess(null);
-    const res = await app.inject({ method: 'GET', url: `/api/widget/${oid}/anything` });
+    const res = await app.inject({ method: 'GET', url: widgetUrl(oid, '/anything') });
+    expect(res.statusCode).toBe(404);
+    await app.close();
+  });
+
+  it('returns 404 when URL omits database/prefix segments (old scheme)', async () => {
+    const app = await makeApp();
+    const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+    const res = await app.inject({ method: 'GET', url: `/api/widget/${oid}/foo` });
     expect(res.statusCode).toBe(404);
     await app.close();
   });
@@ -126,7 +139,7 @@ describe('registerWidgetProxy — HTTP path', () => {
       url: `http://127.0.0.1:${upstreamPort}`,
       innerAuth: { kind: 'basic', username: 'u', password: 'p' },
     });
-    await app.inject({ method: 'GET', url: `/api/widget/${oid}/foo` });
+    await app.inject({ method: 'GET', url: widgetUrl(oid, '/foo') });
     const expected = 'Basic ' + Buffer.from('u:p').toString('base64');
     expect(upstreamRequests[0].headers.authorization).toBe(expected);
     await app.close();
@@ -138,7 +151,7 @@ describe('registerWidgetProxy — HTTP path', () => {
       url: `http://127.0.0.1:${upstreamPort}`,
       innerAuth: { kind: 'header', name: 'X-Opencode-Token', value: 'secret' },
     });
-    await app.inject({ method: 'GET', url: `/api/widget/${oid}/foo` });
+    await app.inject({ method: 'GET', url: widgetUrl(oid, '/foo') });
     expect(upstreamRequests[0].headers['x-opencode-token']).toBe('secret');
     await app.close();
   });
@@ -149,7 +162,7 @@ describe('registerWidgetProxy — HTTP path', () => {
       url: `http://127.0.0.1:${upstreamPort}`,
       innerAuth: { kind: 'query', name: 'auth_token', value: 'secret' },
     });
-    await app.inject({ method: 'GET', url: `/api/widget/${oid}/foo?x=1` });
+    await app.inject({ method: 'GET', url: widgetUrl(oid, '/foo?x=1') });
     const forwarded = upstreamRequests[0].url;
     expect(forwarded).toContain('auth_token=secret');
     expect(forwarded).toContain('x=1');
@@ -160,7 +173,7 @@ describe('registerWidgetProxy — HTTP path', () => {
     await new Promise<void>((r) => upstream.close(() => r()));
     const app = await makeApp();
     const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
-    const res = await app.inject({ method: 'GET', url: `/api/widget/${oid}/foo` });
+    const res = await app.inject({ method: 'GET', url: widgetUrl(oid, '/foo') });
     expect([502, 503]).toContain(res.statusCode);
     await app.close();
   });
@@ -223,7 +236,7 @@ describe('registerWidgetProxy — WebSocket path', () => {
 
   async function makeListening(authenticate: (req: any) => any = () => 'operator'): Promise<{ app: FastifyInstance; port: number }> {
     const app = Fastify();
-    registerWidgetProxy(app, { db, prefix: PREFIX, authenticate });
+    registerOptioApi(app, { db, redis: new IORedisMock() as any, authenticate });
     await app.listen({ port: 0 });
     const port = (app.server.address() as any).port;
     return { app, port };
@@ -233,7 +246,7 @@ describe('registerWidgetProxy — WebSocket path', () => {
     const { app, port } = await makeListening(() => null);
     const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
 
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/widget/${oid}/ws`);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}${widgetUrl(oid, '/ws')}`);
     const result = await new Promise<string>((resolve) => {
       ws.once('error', () => resolve('error'));
       ws.once('open', () => resolve('open'));
@@ -248,7 +261,7 @@ describe('registerWidgetProxy — WebSocket path', () => {
     const { app, port } = await makeListening();
     const unknownOid = new ObjectId();
 
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/widget/${unknownOid}/ws`);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}${widgetUrl(unknownOid, '/ws')}`);
     const result = await new Promise<string>((resolve) => {
       ws.once('error', () => resolve('error'));
       ws.once('open', () => resolve('open'));
@@ -263,7 +276,7 @@ describe('registerWidgetProxy — WebSocket path', () => {
     const { app, port } = await makeListening(() => 'viewer');
     const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
 
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/widget/${oid}/ws`);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}${widgetUrl(oid, '/ws')}`);
     await new Promise<void>((resolve, reject) => {
       ws.once('open', () => resolve());
       ws.once('error', reject);
@@ -288,7 +301,7 @@ describe('registerWidgetProxy — WebSocket path', () => {
       innerAuth: { kind: 'header', name: 'X-Opencode-Token', value: 'secret' },
     });
 
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/api/widget/${oid}/ws`);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}${widgetUrl(oid, '/ws')}`);
     await new Promise<void>((resolve, reject) => {
       ws.once('open', () => resolve());
       ws.once('error', reject);

@@ -216,7 +216,7 @@ ctx.services: dict[str, Any]
 
 # Widget proxy control
 await ctx.set_widget_upstream(url: str, inner_auth: InnerAuth | None = None) -> None
-# Registers upstream URL for /api/widget/:processId/* proxy. Cleared automatically on terminal state.
+# Registers upstream URL for /api/widget/:database/:prefix/:processId/* proxy. Cleared automatically on terminal state.
 
 await ctx.clear_widget_upstream() -> None
 # Proxy returns 404 for this process until set again.
@@ -447,28 +447,19 @@ interface OptioApiOptions {
 ### Fastify Adapter
 
 ```typescript
-import { registerProcessRoutes, registerProcessStream, registerWidgetProxy } from 'optio-api/adapters/fastify';
+import { registerOptioApi } from 'optio-api/fastify';
 
-registerProcessRoutes(app: FastifyInstance, opts: OptioApiOptions): void
-// Registers all REST endpoints from processesContract under /api/processes/...
-
-registerProcessStream(app: FastifyInstance, opts: OptioApiOptions): void
-// Registers two SSE endpoints:
-//   GET /api/processes/:prefix/:id/tree/stream?maxDepth=N
-//   GET /api/processes/:prefix/stream
-
-interface OptioWidgetProxyOptions {
-  db: Db;
-  prefix: string;
-  authenticate: AuthCallback<FastifyRequest>;  // viewer for reads, operator for writes
-  ttlMs?: number;  // widgetUpstream TTL cache, default 5000 ms
-}
-
-registerWidgetProxy(app: FastifyInstance, opts: OptioWidgetProxyOptions): void
-// Registers /api/widget/:processId/* — proxies HTTP, SSE, and WebSocket to the upstream
-// URL stored in widgetUpstream. 404 when widgetUpstream is absent. 502 on upstream errors.
-// Inner auth (Basic/Header via headers, Query via URL) injected per-request.
-// widgetUpstream is TTL-cached (default 5 s) to reduce MongoDB round-trips.
+registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): void
+// Single entry point for the Fastify integration. Registers:
+//   - REST endpoints from processesContract under /api/processes/...
+//   - SSE endpoints GET /api/processes/:id/tree/stream and GET /api/processes/stream
+//   - Instance discovery GET /api/optio/instances
+//   - Widget reverse-proxy at /api/widget/:database/:prefix/:processId/*
+//     proxies HTTP, SSE, and WebSocket to the upstream URL stored in widgetUpstream.
+//     404 when widgetUpstream is absent; 502 on upstream errors.
+//     Inner auth (Basic/Header via headers, Query via URL) injected per-request.
+//     widgetUpstream is TTL-cached (5 s) per (database, prefix, processId) to reduce
+//     MongoDB round-trips.
 ```
 
 ### Handlers (all signatures)

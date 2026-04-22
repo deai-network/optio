@@ -25,20 +25,35 @@ import {
 
 const WIDGET_CACHE_TTL_MS = 5000;
 
-export interface OptioWidgetProxyOptions {
-  db: Db;
-  prefix: string;
+// Widget URL scheme: /api/widget/<database>/<prefix>/<processId>/<subpath...>
+// The database and prefix segments are required so the proxy can resolve the
+// correct Mongo database/collection per request (iframe content emits
+// relative URLs that would drop query params on navigation, so routing info
+// must live in the path).
+const WIDGET_URL_PATTERN = /^\/api\/widget\/([^/]+)\/([^/]+)\/([a-f0-9]{24})(?:\/|$|\?)/i;
+const WIDGET_PREFIX_STRIP = /^\/api\/widget\/[^/]+\/[^/]+\/[a-f0-9]{24}/i;
+
+interface WidgetProxyInternalOptions {
+  dbOpts: DbOptions;
   authenticate: AuthCallback<import('fastify').FastifyRequest>;
   ttlMs?: number;
 }
 
-export function registerWidgetProxy(app: FastifyInstance, opts: OptioWidgetProxyOptions): void {
+function registerWidgetProxy(app: FastifyInstance, opts: WidgetProxyInternalOptions): void {
   const registry = createWidgetUpstreamRegistry({ ttlMs: opts.ttlMs ?? WIDGET_CACHE_TTL_MS });
 
-  // Extracts the processId (24-hex ObjectId) from a full URL like /api/widget/<oid>/sub/path
-  function extractProcessId(url: string): string | null {
-    const m = url.match(/^\/api\/widget\/([a-f0-9]{24})(?:\/|$|\?)/i);
-    return m ? m[1] : null;
+  function extractRouting(url: string): { database: string; prefix: string; processId: string } | null {
+    const m = url.match(WIDGET_URL_PATTERN);
+    if (!m) return null;
+    try {
+      return {
+        database: decodeURIComponent(m[1]),
+        prefix: decodeURIComponent(m[2]),
+        processId: m[3],
+      };
+    } catch {
+      return null;
+    }
   }
 
   app.register(httpProxy, {
@@ -57,11 +72,12 @@ export function registerWidgetProxy(app: FastifyInstance, opts: OptioWidgetProxy
 
     preHandler: async (req: any, reply: any) => {
       const fullUrl: string = req.raw.url ?? req.url;
-      const processId = extractProcessId(fullUrl);
-      if (!processId) {
+      const routing = extractRouting(fullUrl);
+      if (!routing) {
         reply.code(404).send({ message: 'Invalid widget URL' });
         return;
       }
+      const { database, prefix, processId } = routing;
 
       const authResult = await checkAuth(req, opts.authenticate, isWriteMethod(req.method));
       if (authResult) {
@@ -69,9 +85,17 @@ export function registerWidgetProxy(app: FastifyInstance, opts: OptioWidgetProxy
         return;
       }
 
+      let db: Db;
+      try {
+        ({ db } = resolveDb(opts.dbOpts, { database, prefix }));
+      } catch {
+        reply.code(404).send({ message: 'Widget upstream not found' });
+        return;
+      }
+
       let upstream;
       try {
-        upstream = await resolveWidgetUpstream(opts.db, opts.prefix, registry, processId);
+        upstream = await resolveWidgetUpstream(db, prefix, registry, processId);
       } catch (err) {
         req.log.error({ err }, 'widget-proxy: upstream lookup failed');
         reply.code(503).send({ message: 'Service Unavailable' });
@@ -85,12 +109,9 @@ export function registerWidgetProxy(app: FastifyInstance, opts: OptioWidgetProxy
       // Store upstream on raw request for getUpstream + rewriteRequestHeaders to pick up
       (req.raw as any).__optioWidget = { processId, upstream };
 
-      // Strip /api/widget/<processId> from the URL, leaving the sub-path (e.g. /foo?x=1)
+      // Strip /api/widget/<database>/<prefix>/<processId> from the URL, leaving the sub-path.
       // Then apply query-based inner auth if needed.
-      // The mutated req.raw.url becomes request.url in Fastify, which @fastify/http-proxy's
-      // fromParameters will use. Since the sub-path won't start with the plugin prefix
-      // (/api/widget), fromParameters leaves it unchanged — forwarding it as-is to the upstream.
-      const stripped = fullUrl.replace(/^\/api\/widget\/[a-f0-9]{24}/i, '') || '/';
+      const stripped = fullUrl.replace(WIDGET_PREFIX_STRIP, '') || '/';
       req.raw.url = applyInnerAuthQuery(upstream.innerAuth, stripped);
     },
 
@@ -142,6 +163,12 @@ const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/a
 export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions) {
   const { redis } = opts;
   const dbOpts: DbOptions = 'mongoClient' in opts && opts.mongoClient ? { mongoClient: opts.mongoClient } : { db: opts.db! };
+
+  // Widget reverse-proxy lives under /api/widget/<database>/<prefix>/<processId>/…
+  // and is registered as an internal part of the Optio API surface so consumers
+  // only need one init call.
+  registerWidgetProxy(app, { dbOpts, authenticate: opts.authenticate });
+
   const s = initServer();
 
   const routes = s.router(apiContract.processes, {

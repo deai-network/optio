@@ -10,10 +10,15 @@ vi.mock('../hooks/useProcessStream.js', () => ({
 }));
 
 // Mock context hooks — these live in useOptioContext.ts (imported by useProcessStream).
+// Tests override individual return values via `mockDatabase.mockReturnValue(...)` etc.
+const mockBaseUrl = vi.fn(() => 'http://host');
+const mockPrefix = vi.fn(() => 'optio');
+const mockDatabase = vi.fn<() => string | undefined>(() => 'mydb');
+
 vi.mock('../context/useOptioContext.js', () => ({
-  useOptioBaseUrl: () => 'http://host',
-  useOptioPrefix: () => 'optio',
-  useOptioDatabase: () => undefined,
+  useOptioBaseUrl: () => mockBaseUrl(),
+  useOptioPrefix: () => mockPrefix(),
+  useOptioDatabase: () => mockDatabase(),
   useOptioClient: () => undefined,
   useOptioLive: () => false,
 }));
@@ -25,6 +30,9 @@ describe('ProcessDetailView', () => {
   beforeEach(() => {
     _clearWidgetRegistry();
     mockProcessStream.mockReset();
+    mockBaseUrl.mockReturnValue('http://host');
+    mockPrefix.mockReturnValue('optio');
+    mockDatabase.mockReturnValue('mydb');
   });
 
   afterEach(() => {
@@ -51,9 +59,11 @@ describe('ProcessDetailView', () => {
     expect(screen.getByTestId('optio-detail-default')).toBeTruthy();
   });
 
-  it('dispatches to a registered widget', () => {
+  it('dispatches to a registered widget and builds a URL with database + prefix path segments', () => {
     registerWidget('my-widget', (props) => (
-      <div data-testid="my-widget">widget:{props.process._id}</div>
+      <div data-testid="my-widget" data-proxy-url={props.widgetProxyUrl}>
+        widget:{props.process._id}
+      </div>
     ));
     mockProcessStream.mockReturnValue({
       tree: {
@@ -67,7 +77,54 @@ describe('ProcessDetailView', () => {
       connected: true,
     });
     render(<ProcessDetailView processId="abc" />);
-    expect(screen.getByTestId('my-widget').textContent).toBe('widget:abc');
+    const node = screen.getByTestId('my-widget');
+    expect(node.textContent).toBe('widget:abc');
+    expect(node.getAttribute('data-proxy-url'))
+      .toBe('http://host/api/widget/mydb/optio/abc/');
+  });
+
+  it('URL-encodes database and prefix segments', () => {
+    mockDatabase.mockReturnValue('db with spaces');
+    mockPrefix.mockReturnValue('pre/fix');
+    registerWidget('my-widget', (props) => (
+      <div data-testid="my-widget" data-proxy-url={props.widgetProxyUrl}>w</div>
+    ));
+    mockProcessStream.mockReturnValue({
+      tree: {
+        _id: 'abc', name: 'P', status: { state: 'running' },
+        progress: { percent: null }, cancellable: true,
+        depth: 0, order: 0, parentId: null,
+        uiWidget: 'my-widget',
+        children: [],
+      },
+      logs: [],
+      connected: true,
+    });
+    render(<ProcessDetailView processId="abc" />);
+    expect(screen.getByTestId('my-widget').getAttribute('data-proxy-url'))
+      .toBe('http://host/api/widget/db%20with%20spaces/pre%2Ffix/abc/');
+  });
+
+  it('falls back to default when uiWidget is set but database is unknown', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockDatabase.mockReturnValue(undefined);
+    registerWidget('my-widget', () => <div data-testid="my-widget">should not render</div>);
+    mockProcessStream.mockReturnValue({
+      tree: {
+        _id: 'abc', name: 'P', status: { state: 'running' },
+        progress: { percent: null }, cancellable: true,
+        depth: 0, order: 0, parentId: null,
+        uiWidget: 'my-widget',
+        children: [],
+      },
+      logs: [],
+      connected: true,
+    });
+    render(<ProcessDetailView processId="abc" />);
+    expect(screen.queryByTestId('my-widget')).toBeNull();
+    expect(screen.getByTestId('optio-detail-default')).toBeTruthy();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('falls back to default when uiWidget is set but unregistered', () => {

@@ -7,15 +7,19 @@ export async function resolveWidgetUpstream(
   registry: WidgetUpstreamRegistry,
   processId: string,
 ): Promise<WidgetUpstreamValue | null> {
-  if (registry.has(processId)) {
-    return registry.get(processId) ?? null;
+  // Scope the cache by (database, prefix, processId) so the same ObjectId
+  // used in two different databases does not collide.
+  const cacheKey = `${db.databaseName}/${prefix}/${processId}`;
+
+  if (registry.has(cacheKey)) {
+    return registry.get(cacheKey) ?? null;
   }
 
   let oid: ObjectId;
   try {
     oid = new ObjectId(processId);
   } catch {
-    registry.set(processId, null);
+    registry.set(cacheKey, null);
     return null;
   }
 
@@ -24,7 +28,7 @@ export async function resolveWidgetUpstream(
     { projection: { widgetUpstream: 1 } },
   );
   const upstream = (doc?.widgetUpstream ?? null) as WidgetUpstreamValue | null;
-  registry.set(processId, upstream);
+  registry.set(cacheKey, upstream);
   return upstream;
 }
 
