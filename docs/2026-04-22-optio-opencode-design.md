@@ -346,7 +346,7 @@ The worker does not know `apiBaseUrl`, `database`, `prefix`, or `processId` at r
 - The worker writes `{"opencode.settings.dat:defaultServerUrl": "{widgetProxyUrl}"}` and the UI resolves it at mount time.
 - Marimo is unaffected: it doesn't use `localStorageOverrides` at all because its client uses relative URLs.
 
-This is a ~10-line change to an existing optio-ui component plus a component test. It lives in `optio-ui` but is prerequisite for optio-opencode end-to-end. Tracked as in-scope for the implementation plan (see Section 10a).
+This is a ~10-line change to an existing optio-ui component plus a component test. It lives in `optio-ui` but is prerequisite for optio-opencode end-to-end. Tracked as in-scope for the implementation plan (see Section 11a).
 
 ---
 
@@ -458,19 +458,68 @@ Scenarios:
 
 Spin up an SSH server in a Docker container (`linuxserver/openssh-server` or equivalent) exposed on localhost. Same `asyncssh` client connects as if remote. Re-runs the happy-path + cancellation scenarios through the SSH path (port forward, exec, SFTP). Much smaller than a real remote worker; enough to catch "does the SSH code path work at all."
 
-### E2E smoke with real opencode
-
-One (manual or Playwright-driven) scenario in `optio-demo`:
-
-- New task wired up that uses optio-opencode with this consumer prompt: *"Ask the human about their favorite color, then ship a deliverable containing the number 42 and the designated color. Then signal that you have finished."*
-- Launch from dashboard, watch the iframe embed opencode, watch `STATUS:` lines flow as progress log as the LLM narrates, interact with opencode through the iframe to answer the color question, verify `on_deliverable` callback fires with a text containing both `42` and the color, verify `DONE` triggers teardown cleanly.
-- Exercises the full stack: proxy, iframe, subpath URL routing via the `{widgetProxyUrl}` template substitution, the full keyword vocabulary end-to-end, and the human-LLM interaction path that is the whole point of embedding opencode.
-
 **Cleanup property.** Every test that spins up a subprocess must clean up even on failure. Tests use `tempfile.mkdtemp` fixtures that auto-delete; the test-double `opencode` script handles SIGKILL cleanly.
 
 ---
 
-## 10. Deferred / Phase-2 & Other Future Work
+## 10. Reference Demo Task
+
+### Purpose
+
+A human-driven, end-to-end validation of the optio-opencode stack, buildable using only optio-opencode + optio-demo. Ships in `optio-demo` alongside the existing marimo reference task. A human launches it from optio-dashboard and confirms the whole stack works: workdir setup, opencode launch, widget registration, iframe embed through the proxy (with the `{widgetProxyUrl}` localStorage override resolving), keyword-prefixed log interpretation, `on_deliverable` callback delivery, `DONE` termination, and cleanup.
+
+This is **not** an automated smoke test. It is a minimal reference consumer demonstrating how a real consumer (e.g., windage) would wire up optio-opencode. It is exercised manually by the human, who also has to interact with opencode through the iframe.
+
+### Shape of the task
+
+Lives in `packages/optio-demo/src/optio_demo/tasks/opencode.py`, next to `marimo.py`.
+
+```python
+@task(name="opencode-demo", ui_widget="iframe")  # factory-produced TaskInstance
+async def opencode_demo(ctx: ProcessContext) -> None:
+    # Built via optio_opencode.create_opencode_task(...) with:
+    # - consumer_instructions: "Ask the human about their favorite color,
+    #   then ship a deliverable containing the number 42 and the designated
+    #   color. Then signal that you have finished."
+    # - opencode_config: {"model": <sensible default, e.g., anthropic/claude-sonnet-4-6>}
+    # - ssh: None  (local mode; matches marimo's simplicity)
+    # - on_deliverable: prints (path, text) to the optio log via ctx
+    ...
+```
+
+Local mode keeps the demo's prerequisites minimal: the developer must already have opencode installed and authenticated on their machine (`opencode auth login` run at least once for the chosen provider).
+
+### Primitives exercised
+
+- **Widget registry + generic iframe widget** — the factory sets `ui_widget="iframe"`, so optio-ui's generic iframe widget renders opencode.
+- **Widget upstream proxy** — optio-opencode registers a worker-local upstream (loopback in local mode); optio-api proxies HTTP + SSE + WS.
+- **Widget data + `{widgetProxyUrl}` template substitution** — optio-opencode publishes `localStorageOverrides` containing the template token; the iframe widget resolves it at mount time. Without this, opencode's SPA would hit the wrong origin and the demo would not work.
+- **Inner auth injection** — optio-opencode generates `OPENCODE_SERVER_PASSWORD` and registers `BasicAuth` as `innerAuth`; optio-api injects it on every proxied request and WebSocket upgrade.
+- **Log tail + keyword vocabulary** — `STATUS:` lines surface as progress updates in the dashboard log pane; `DELIVERABLE:` triggers the callback; `DONE` drives clean termination.
+- **Deliverable fetch + callback** — the callback receives the LLM's produced text file and prints it back into the optio log channel, giving the human visual confirmation that the round-trip worked.
+
+### User-verifiable walkthrough
+
+Documented in the demo's README (updated by this spec's implementation plan):
+
+1. Start MongoDB (Docker), optio-dashboard, and optio-demo locally.
+2. Authenticate in the dashboard.
+3. Launch the `opencode-demo` task.
+4. Open the process detail view; the iframe widget mounts and opencode's UI loads (via the proxy, with the subpath routing resolved).
+5. The LLM asks in the iframe: "What is your favorite color?" (or equivalent phrasing).
+6. Answer through opencode's input in the iframe.
+7. Watch `STATUS:` log lines flow into the dashboard's log pane as the LLM works.
+8. When the LLM writes the deliverable, confirm `on_deliverable` was invoked by observing the callback-produced log line in the dashboard. The deliverable text should contain both `42` and the color the human supplied.
+9. The LLM writes `DONE`; the task transitions to `done`; the iframe shows the "session ended" banner; the workdir is cleaned up.
+10. Dismiss the process; widgetUpstream and widgetData are cleared per optio-core's lifecycle rules.
+
+### Why local-only for the demo
+
+Remote mode requires a second host + SSH key setup per demo user, making the demo significantly less friendly. Local mode exercises all four primitives except the SSH-specific transport. The remote-mode integration test in Section 9 covers the SSH code path on its own; the demo's job is to prove the user-facing stack works end-to-end, which local mode does without the extra prerequisites.
+
+---
+
+## 11. Deferred / Phase-2 & Other Future Work
 
 Explicitly out of MVP; tracked here so nothing is forgotten:
 
@@ -486,7 +535,7 @@ Explicitly out of MVP; tracked here so nothing is forgotten:
 - **Multiple deliverables directories.** Today's `DELIVERABLE:` paths can point anywhere inside the workdir; that covers most needs.
 - **Subclass / mixin interface.** If a consumer needs to hook in more deeply (e.g., modify launch args, customize install), a base class can be introduced. MVP is factory-only.
 
-### 10a. Adjacent optio-ui change (in-scope for the implementation plan)
+### 11a. Adjacent optio-ui change (in-scope for the implementation plan)
 
 Because the URL wrinkle (Section 5a) is load-bearing for opencode, the implementation plan that follows this spec must include:
 
