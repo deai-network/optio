@@ -88,6 +88,17 @@ This is a bridge feature for shipping an iframe-embeddability fork of
 opencode until those fixes land upstream; once upstream ships, the env
 var's only remaining use is pinning to a specific build.
 
+**Where the fork lives:** the patched binaries are built from
+<https://github.com/csillag/opencode> on branch
+`csillag/make-web-embeddable-in-iframes` — three small orthogonal
+patches (relative vite base, CSP `'unsafe-eval'`, `getCurrentUrl`
+honoring localStorage).  Upstream PR:
+<https://github.com/anomalyco/opencode/pull/23912>.  To populate
+`OPTIO_OPENCODE_BINARY_DIR`: check out that branch, run
+`bun install && bun run --cwd packages/opencode build`, and point the
+env var at the resulting `packages/opencode/dist/` directory (which
+contains per-target subdirs such as `opencode-linux-x64/bin/opencode`).
+
 ## Testing
 
 Unit + local integration: `pytest tests/` (needs MongoDB via Docker).

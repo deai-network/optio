@@ -2,7 +2,7 @@
 
 Two concrete implementations:
 
-* ``LocalHost`` — the optio worker itself.  Uses asyncio subprocess + aiofiles.
+* ``LocalHost`` — the optio worker itself.  Uses asyncio subprocess.
 * ``RemoteHost`` — a remote machine reachable over SSH.  Uses asyncssh,
   multiplexing command exec + SFTP + local port forwarding over a single
   connection.
@@ -278,6 +278,14 @@ class LocalHost:
 
     async def tail_log(self) -> AsyncIterator[str]:
         log_path = os.path.join(self.workdir, "optio.log")
+        # `-n +1` reads from line 1, not EOF.  The design spec suggested
+        # `-n 0` (EOF) to avoid reprocessing a truncated earlier run, but
+        # our workdir is always fresh (setup_workdir creates the log
+        # empty just before this) so there's nothing to reprocess, and
+        # `-n 0` has a race: lines written to the log before tail
+        # subscribes (e.g. opencode eagerly appending STATUS right after
+        # launch) are silently skipped.  `-n +1` + always-empty initial
+        # log gives us at-least-once delivery.
         self._tail_proc = await asyncio.create_subprocess_exec(
             "tail", "-F", "-n", "+1", log_path,
             stdout=asyncio.subprocess.PIPE,
@@ -495,17 +503,30 @@ class RemoteHost:
         ready_timeout_s: float,
         extra_args: list[str] | None = None,
     ) -> LaunchedProcess:
-        assert self._conn is not None
+        assert self._conn is not None and self._sftp is not None
+        # Write the password to a mode-0600 file in the workdir and have
+        # the remote shell read it via command substitution at launch
+        # time.  Interpolating the literal password into the command
+        # string would leak it to any local user on the remote host who
+        # runs `ps` — the bash process executing our command has the full
+        # command line (including the password) in its argv.  With `$(cat
+        # .opencode-password)`, the command line only shows the expansion
+        # syntax, not the value; the file itself is readable only by our
+        # user.  The file is swept with the rest of the workdir on
+        # teardown.
+        pw_file = ".opencode-password"
+        await self.write_text(pw_file, password)
+        await self._conn.run(f"chmod 600 {self.workdir}/{pw_file}", check=True)
         cmd = (
             f"cd {self.workdir} && "
-            f"OPENCODE_SERVER_PASSWORD={password} "
+            f"OPENCODE_SERVER_PASSWORD=\"$(cat ./{pw_file})\" "
             f"BROWSER=true "
             # 2>&1 merges stderr into stdout because opencode prints the
             # "Web interface:" URL line via UI.println → stderr.
-            # Single-quote the command.  `$opencode` is safely substituted
-            # here (Python f-string) before the remote shell sees anything;
-            # the remote bash just sees the absolute path or the literal
-            # word "opencode".
+            # Single-quote the inner command.  `$opencode` is safely
+            # substituted here (Python f-string) before the remote shell
+            # sees anything; the remote bash just sees the absolute path
+            # or the literal word "opencode".
             f"bash -lc '{self._opencode_exec} web --port=0 --hostname=127.0.0.1 2>&1'"
         )
         self._launch_proc = await self._conn.create_process(cmd)
@@ -543,6 +564,8 @@ class RemoteHost:
     async def tail_log(self) -> AsyncIterator[str]:
         assert self._conn is not None
         log_path = f"{self.workdir}/optio.log"
+        # See LocalHost.tail_log for why `-n +1` rather than the spec's
+        # `-n 0`: fresh workdir + race-free at-least-once delivery.
         self._tail_proc = await self._conn.create_process(
             f"tail -F -n +1 {log_path}"
         )
@@ -564,7 +587,10 @@ class RemoteHost:
         if proc.returncode is not None:
             return
         if aggressive:
-            proc.terminate()
+            # Spec requires SIGKILL in the cancellation path — .terminate()
+            # sends SIGTERM, which opencode may handle and block on, blowing
+            # our shutdown grace budget.
+            proc.kill()
             # Best-effort: do not wait.
             return
         proc.terminate()
