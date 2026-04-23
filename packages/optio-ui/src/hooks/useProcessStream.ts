@@ -80,6 +80,11 @@ export function useProcessStream(processId: string | undefined, maxDepth = 10): 
   }, [processId, maxDepth, prefix, database, baseUrl]);
 
   useEffect(() => {
+    // Reset buffered state when processId changes so logs/tree from the
+    // previous process don't leak through until the new SSE catches up —
+    // the stream handler only appends to state.logs, so without this
+    // stale entries persist for several seconds after switching.
+    setState({ processes: [], connected: false, logs: [] });
     connect();
     return () => { eventSourceRef.current?.close(); };
   }, [connect]);
