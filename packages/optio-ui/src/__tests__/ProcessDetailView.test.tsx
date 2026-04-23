@@ -71,6 +71,7 @@ describe('ProcessDetailView', () => {
         progress: { percent: null }, cancellable: true,
         depth: 0, order: 0, parentId: null,
         uiWidget: 'my-widget',
+        widgetData: {},
         children: [],
       },
       logs: [],
@@ -95,6 +96,7 @@ describe('ProcessDetailView', () => {
         progress: { percent: null }, cancellable: true,
         depth: 0, order: 0, parentId: null,
         uiWidget: 'my-widget',
+        widgetData: {},
         children: [],
       },
       logs: [],
@@ -115,6 +117,7 @@ describe('ProcessDetailView', () => {
         progress: { percent: null }, cancellable: true,
         depth: 0, order: 0, parentId: null,
         uiWidget: 'my-widget',
+        widgetData: {},
         children: [],
       },
       logs: [],
@@ -135,6 +138,7 @@ describe('ProcessDetailView', () => {
         progress: { percent: null }, cancellable: true,
         depth: 0, order: 0, parentId: null,
         uiWidget: 'no-such-widget',
+        widgetData: {},
         children: [],
       },
       logs: [],
@@ -178,6 +182,7 @@ describe('ProcessDetailView', () => {
           progress: { percent: null }, cancellable: true,
           depth: 0, order: 0, parentId: null,
           uiWidget: 'my-widget',
+          widgetData: {},
           children: [],
         },
         logs: [],
@@ -196,6 +201,7 @@ describe('ProcessDetailView', () => {
         progress: { percent: null }, cancellable: true,
         depth: 0, order: 0, parentId: null,
         uiWidget: 'my-widget',
+        widgetData: {},
         children: [],
       },
       logs: [
@@ -214,5 +220,31 @@ describe('ProcessDetailView', () => {
     expect(widgetIndex).toBeGreaterThan(0);
     // The log entry is visible.
     expect(screen.getByText('State changed to running')).toBeTruthy();
+  });
+
+  it('falls back to default tree+log rendering while widgetData is not yet set', () => {
+    // Covers the period between process launch and the worker's
+    // set_widget_data call (e.g. optio-opencode uploading its binary).
+    // During that window the iframe widget would just show its "Loading…"
+    // placeholder and hide the process progress/log; falling through to
+    // the default layout keeps progress + logs visible until widgetData
+    // arrives.
+    registerWidget('my-widget', () => <div data-testid="my-widget">should not render yet</div>);
+    mockProcessStream.mockReturnValue({
+      tree: {
+        _id: 'abc', name: 'P', status: { state: 'running' },
+        progress: { percent: 25, message: 'Uploading opencode binary: 25%' },
+        cancellable: true,
+        depth: 0, order: 0, parentId: null,
+        uiWidget: 'my-widget',
+        // widgetData intentionally omitted (undefined)
+        children: [],
+      },
+      logs: [],
+      connected: true,
+    });
+    render(<ProcessDetailView processId="abc" />);
+    expect(screen.queryByTestId('my-widget')).toBeNull();
+    expect(screen.getByTestId('optio-detail-default')).toBeTruthy();
   });
 });

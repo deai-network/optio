@@ -53,6 +53,34 @@ describe('resolveWidgetUpstream', () => {
     expect(result).toBeNull();
   });
 
+  it('does NOT cache a negative lookup, so a later worker-side set_widget_upstream is seen on the next request', async () => {
+    // Covers the regression where a relaunched process was 404'd in the
+    // iframe until the 5s TTL expired because the dashboard loaded a cached
+    // null from the previous session's teardown.
+    const reg = createWidgetUpstreamRegistry({ ttlMs: 5000 });
+    const oid = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertOne({
+      _id: oid, processId: 'p', name: 'P',
+      rootId: oid, depth: 0, order: 0,
+      status: { state: 'running' },
+      progress: { percent: null }, log: [],
+      cancellable: true,
+      widgetUpstream: null,
+    });
+
+    const first = await resolveWidgetUpstream(db, PREFIX, reg, oid.toString());
+    expect(first).toBeNull();
+
+    // Worker registers upstream (simulating Python's set_widget_upstream).
+    await db.collection(`${PREFIX}_processes`).updateOne(
+      { _id: oid },
+      { $set: { widgetUpstream: { url: 'http://127.0.0.1:9000', innerAuth: null } } },
+    );
+
+    const second = await resolveWidgetUpstream(db, PREFIX, reg, oid.toString());
+    expect(second?.url).toBe('http://127.0.0.1:9000');
+  });
+
   it('returns widgetUpstream when set and caches it', async () => {
     const reg = createWidgetUpstreamRegistry({ ttlMs: 5000 });
     const oid = new ObjectId();

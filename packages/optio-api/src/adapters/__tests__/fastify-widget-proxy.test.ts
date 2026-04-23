@@ -230,6 +230,126 @@ describe('registerWidgetProxy — HTTP path', () => {
     await app.close();
   });
 
+  it('injects <base href> into text/html responses pointing at the widget-proxy prefix', async () => {
+    upstreamResponder = (_req, res, _body) => {
+      res.statusCode = 200;
+      res.setHeader('content-type', 'text/html; charset=utf-8');
+      res.end('<!doctype html>\n<html><head><title>t</title></head><body></body></html>');
+    };
+    const app = await makeApp();
+    const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+    const res = await app.inject({ method: 'GET', url: widgetUrl(oid, '/some/deep/path') });
+    expect(res.statusCode).toBe(200);
+    const expectedBase = `<base href="/api/widget/${encodeURIComponent(DB_NAME)}/${encodeURIComponent(PREFIX)}/${oid}/">`;
+    expect(res.body).toContain(expectedBase);
+    // Injection is right after <head>.
+    expect(res.body).toMatch(new RegExp(`<head[^>]*>${expectedBase.replace(/[\\^$.*+?()|[\]{}]/g, '\\$&')}`));
+    // Content-length matches the transformed body length.
+    const lenHeader = res.headers['content-length'];
+    if (lenHeader !== undefined) {
+      expect(Number(lenHeader)).toBe(Buffer.byteLength(res.body, 'utf-8'));
+    }
+    await app.close();
+  });
+
+  it('injects a history.replaceState script that strips the widget-proxy prefix from location.pathname', async () => {
+    upstreamResponder = (_req, res, _body) => {
+      res.statusCode = 200;
+      res.setHeader('content-type', 'text/html; charset=utf-8');
+      res.end('<!doctype html>\n<html><head></head><body></body></html>');
+    };
+    const app = await makeApp();
+    const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+    const res = await app.inject({ method: 'GET', url: widgetUrl(oid, '/foo/bar') });
+    expect(res.statusCode).toBe(200);
+    // The injected script references the proxy prefix (without trailing slash)
+    // inside a JSON-encoded string literal for a RegExp.
+    const literalPrefix = `/api/widget/${encodeURIComponent(DB_NAME)}/${encodeURIComponent(PREFIX)}/${oid}`;
+    expect(res.body).toContain('history.replaceState');
+    expect(res.body).toContain(JSON.stringify(literalPrefix));
+    // Script lives inside the <head>.
+    expect(res.body).toMatch(/<head[^>]*><base[^>]*><script>[\s\S]*?history\.replaceState[\s\S]*?<\/script>/);
+    await app.close();
+  });
+
+  it('appends SHA-256 hash of the inline script to script-src so CSPs that forbid inline scripts still allow it', async () => {
+    upstreamResponder = (_req, res, _body) => {
+      res.statusCode = 200;
+      res.setHeader('content-type', 'text/html; charset=utf-8');
+      res.setHeader(
+        'content-security-policy',
+        "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'",
+      );
+      res.end('<!doctype html>\n<html><head></head><body></body></html>');
+    };
+    const app = await makeApp();
+    const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+    const res = await app.inject({ method: 'GET', url: widgetUrl(oid, '/') });
+    expect(res.statusCode).toBe(200);
+
+    const csp = String(res.headers['content-security-policy']);
+    // Extract the base64 hash value following 'sha256-' and before the closing
+    // single-quote within script-src.
+    const m = csp.match(/script-src [^;]*'sha256-([A-Za-z0-9+/=]+)'/);
+    expect(m).not.toBeNull();
+    const cspHash = m![1];
+
+    // Recompute the hash of the <script> body found in the response and
+    // confirm it matches what got appended to the CSP.
+    const scriptMatch = res.body.match(/<script>([\s\S]*?)<\/script>/);
+    expect(scriptMatch).not.toBeNull();
+    const actualHash = require('node:crypto').createHash('sha256').update(scriptMatch![1], 'utf-8').digest('base64');
+    expect(cspHash).toBe(actualHash);
+
+    // Original directives preserved.
+    expect(csp).toContain("default-src 'self'");
+    expect(csp).toContain("'wasm-unsafe-eval'");
+    await app.close();
+  });
+
+  it('does not touch CSP when upstream sends none', async () => {
+    upstreamResponder = (_req, res, _body) => {
+      res.statusCode = 200;
+      res.setHeader('content-type', 'text/html; charset=utf-8');
+      res.end('<!doctype html>\n<html><head></head><body></body></html>');
+    };
+    const app = await makeApp();
+    const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+    const res = await app.inject({ method: 'GET', url: widgetUrl(oid, '/') });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-security-policy']).toBeUndefined();
+    await app.close();
+  });
+
+  it('does NOT inject <base href> into non-HTML responses (e.g. JS assets)', async () => {
+    const jsSource = 'export const x = "/assets/foo.png"; // literal path string';
+    upstreamResponder = (_req, res, _body) => {
+      res.statusCode = 200;
+      res.setHeader('content-type', 'application/javascript');
+      res.end(jsSource);
+    };
+    const app = await makeApp();
+    const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+    const res = await app.inject({ method: 'GET', url: widgetUrl(oid, '/assets/x.js') });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe(jsSource);
+    expect(res.body).not.toContain('<base');
+    await app.close();
+  });
+
+  it('strips Accept-Encoding from the outgoing upstream request', async () => {
+    const app = await makeApp();
+    const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+    await app.inject({
+      method: 'GET',
+      url: widgetUrl(oid, '/'),
+      headers: { 'accept-encoding': 'gzip, deflate, br' },
+    });
+    expect(upstreamRequests.length).toBeGreaterThan(0);
+    expect(upstreamRequests[0].headers['accept-encoding']).toBeUndefined();
+    await app.close();
+  });
+
   async function makeAppWithLog(verbose: boolean | undefined): Promise<{ app: FastifyInstance; logs: any[] }> {
     const logs: any[] = [];
     const stream = { write(line: string) { try { logs.push(JSON.parse(line)); } catch { logs.push(line); } } };

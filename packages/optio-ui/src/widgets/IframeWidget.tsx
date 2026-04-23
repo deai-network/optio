@@ -22,18 +22,21 @@ export function IframeWidget(props: WidgetProps) {
     if (!widgetData?.localStorageOverrides) return;
     const keys = Object.keys(widgetData.localStorageOverrides);
     for (const k of keys) {
-      localStorage.setItem(k, widgetData.localStorageOverrides[k]);
+      const raw = widgetData.localStorageOverrides[k];
+      const resolved = raw.replace(/\{widgetProxyUrl\}/g, props.widgetProxyUrl);
+      localStorage.setItem(k, resolved);
     }
     return () => {
       for (const k of keys) localStorage.removeItem(k);
     };
-  }, [widgetData?.localStorageOverrides]);
+  }, [widgetData?.localStorageOverrides, props.widgetProxyUrl]);
 
   if (!widgetData) {
     return <div data-testid="optio-widget-loading">Loading…</div>;
   }
 
-  const src = widgetData.iframeSrc ?? props.widgetProxyUrl;
+  const rawSrc = widgetData.iframeSrc ?? props.widgetProxyUrl;
+  const src = rawSrc.replace(/\{widgetProxyUrl\}/g, props.widgetProxyUrl);
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>

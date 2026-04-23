@@ -75,4 +75,31 @@ describe('IframeWidget', () => {
     expect(screen.getByTestId('optio-widget-iframe')).toBeTruthy();
     expect(screen.getByTestId('optio-widget-session-ended')).toBeTruthy();
   });
+
+  it('substitutes {widgetProxyUrl} in localStorageOverrides values', () => {
+    const props = makeProps({
+      widgetData: {
+        localStorageOverrides: {
+          'opencode.settings.dat:defaultServerUrl': '{widgetProxyUrl}',
+          'static.key': 'static-value',
+        },
+      },
+    });
+    render(<IframeWidget {...props} />);
+    expect(
+      localStorage.getItem('opencode.settings.dat:defaultServerUrl'),
+    ).toBe('http://localhost:3000/api/widget/abc/');
+    expect(localStorage.getItem('static.key')).toBe('static-value');
+  });
+
+  it('substitutes {widgetProxyUrl} in iframeSrc', () => {
+    const props = makeProps({
+      widgetData: { iframeSrc: '{widgetProxyUrl}%2Ftmp%2Fxyz/session/' },
+    });
+    render(<IframeWidget {...props} />);
+    const iframe = screen.getByTestId('optio-widget-iframe') as HTMLIFrameElement;
+    expect(iframe.src).toBe(
+      'http://localhost:3000/api/widget/abc/%2Ftmp%2Fxyz/session/',
+    );
+  });
 });

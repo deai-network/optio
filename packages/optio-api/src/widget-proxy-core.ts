@@ -19,7 +19,8 @@ export async function resolveWidgetUpstream(
   try {
     oid = new ObjectId(processId);
   } catch {
-    registry.set(cacheKey, null);
+    // Don't cache: a malformed processId is a one-off URL and caching
+    // the negative would waste an entry; the 404 is cheap to re-derive.
     return null;
   }
 
@@ -28,7 +29,16 @@ export async function resolveWidgetUpstream(
     { projection: { widgetUpstream: 1 } },
   );
   const upstream = (doc?.widgetUpstream ?? null) as WidgetUpstreamValue | null;
-  registry.set(cacheKey, upstream);
+  // Only cache positive lookups.  A null (no widgetUpstream registered yet
+  // or just cleared at teardown) must NOT stick in the cache: when the
+  // worker subsequently calls set_widget_upstream, the dashboard's first
+  // iframe load would otherwise see a stale negative entry and 404 until
+  // the TTL expired.  The design spec calls for tree-poller-based
+  // invalidation to handle this; until that's wired, skipping the negative
+  // cache is the minimal correct behavior.
+  if (upstream !== null) {
+    registry.set(cacheKey, upstream);
+  }
   return upstream;
 }
 

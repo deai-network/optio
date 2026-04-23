@@ -13,6 +13,7 @@ import { createListPoller, createTreePoller } from '../stream-poller.js';
 import { discoverInstances } from '../discovery.js';
 import { resolveDb, type DbOptions } from '../resolve-db.js';
 import httpProxy from '@fastify/http-proxy';
+import { createHash } from 'node:crypto';
 import type { AuthCallback } from '../auth.js';
 import { checkAuth } from '../auth.js';
 import { createWidgetUpstreamRegistry } from '../widget-upstream-registry.js';
@@ -38,6 +39,100 @@ interface WidgetProxyInternalOptions {
   authenticate: AuthCallback<import('fastify').FastifyRequest>;
   ttlMs?: number;
   verbose?: boolean;
+}
+
+function rewriteResponseHeaders(headers: Record<string, any>): Record<string, any> {
+  // The proxy's purpose is to make the upstream embeddable in an iframe under
+  // optio-api's outer auth. Strip `X-Frame-Options` and any `frame-ancestors`
+  // CSP directive so upstreams (marimo, jupyter, internal tools) that default
+  // to anti-embedding headers don't block that. Clickjacking defense is
+  // provided by optio-api's authenticate callback: the proxy is unreachable
+  // without a valid session.
+  const out = { ...headers };
+  delete out['x-frame-options'];
+  const csp = out['content-security-policy'];
+  if (typeof csp === 'string') {
+    const stripped = csp
+      .split(';')
+      .map((d) => d.trim())
+      .filter((d) => d.length > 0 && !d.toLowerCase().startsWith('frame-ancestors'))
+      .join('; ');
+    if (stripped) out['content-security-policy'] = stripped;
+    else delete out['content-security-policy'];
+  }
+  return out;
+}
+
+function widgetProxyPrefix(database: string, prefix: string, processId: string): string {
+  return `/api/widget/${encodeURIComponent(database)}/${encodeURIComponent(prefix)}/${processId}/`;
+}
+
+interface HtmlInjection {
+  html: string;
+  stripScriptSha256: string; // base64-encoded SHA-256 of the inline script body (for CSP)
+}
+
+function injectBaseHref(html: string, proxyPrefix: string): HtmlInjection {
+  // Inject two things right after <head>:
+  //
+  // 1. <base href="<proxyPrefix>"> — forces relative URLs in the page to
+  //    resolve against the proxy root regardless of how deep the current
+  //    document URL is.  Required for SPAs (like opencode) whose HTML uses
+  //    relative asset paths ("./assets/x.js") but are loaded via a routing-
+  //    deep URL like /api/widget/<db>/<prefix>/<pid>/<workdir>/session/.
+  //    Without it, assets resolve to `.../workdir/session/assets/x.js` and
+  //    hit the upstream's SPA fallback with wrong MIME types.
+  //
+  // 2. An inline <script> that runs before the SPA bundle and strips the
+  //    proxy prefix from `location.pathname` via history.replaceState.
+  //    This makes the SPA's client-side router (e.g. @solidjs/router, react
+  //    -router) see the application's intended URL space (`/:dir/session/`
+  //    in opencode's case) rather than the proxy-nested one
+  //    (`/api/widget/<db>/<prefix>/<pid>/:dir/session/`).  `<base href>` is
+  //    unaffected, so asset loading continues to work.
+  //
+  // Because the inline script violates `script-src 'self'` CSPs, we also
+  // return its SHA-256 so the caller can append `'sha256-…'` to the
+  // outgoing CSP's script-src directive.
+  const baseTag = `<base href="${proxyPrefix}">`;
+  // Escape regex-meta characters in the prefix for the runtime match.
+  const prefixLiteralForRegex = proxyPrefix
+    .replace(/\/$/, '') // the script uses the stripped form without trailing slash
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const scriptBody =
+    `(function(){var r=new RegExp('^' + ${JSON.stringify(prefixLiteralForRegex)});` +
+    `var p=location.pathname;var m=p.match(r);` +
+    `if(m){history.replaceState(null,'',(p.slice(m[0].length)||'/')+location.search+location.hash);}` +
+    `})();`;
+  const stripScriptSha256 = createHash('sha256').update(scriptBody, 'utf-8').digest('base64');
+  const stripScript = `<script>${scriptBody}</script>`;
+  const injection = `${baseTag}${stripScript}`;
+  const m = html.match(/<head(\s[^>]*)?>/i);
+  const transformed = m
+    ? html.replace(m[0], `${m[0]}${injection}`)
+    : `${injection}${html}`;
+  return { html: transformed, stripScriptSha256 };
+}
+
+// Extend the upstream CSP's script-src (or add one) with the SHA-256 of our
+// injected inline script.  Called only when HTML body rewriting has happened.
+function appendScriptHashToCsp(csp: string, scriptHashBase64: string): string {
+  const hashToken = `'sha256-${scriptHashBase64}'`;
+  const parts = csp
+    .split(';')
+    .map((d) => d.trim())
+    .filter((d) => d.length > 0);
+  let found = false;
+  const updated = parts.map((directive) => {
+    const lower = directive.toLowerCase();
+    if (lower.startsWith('script-src ') || lower === 'script-src') {
+      found = true;
+      return `${directive} ${hashToken}`;
+    }
+    return directive;
+  });
+  if (!found) updated.push(`script-src ${hashToken}`);
+  return updated.join('; ');
 }
 
 function registerWidgetProxy(app: FastifyInstance, opts: WidgetProxyInternalOptions): void {
@@ -112,12 +207,22 @@ function registerWidgetProxy(app: FastifyInstance, opts: WidgetProxyInternalOpti
       }
 
       // Store upstream on raw request for getUpstream + rewriteRequestHeaders to pick up
-      (req.raw as any).__optioWidget = { processId, upstream };
+      (req.raw as any).__optioWidget = {
+        processId,
+        upstream,
+        proxyPrefix: widgetProxyPrefix(database, prefix, processId),
+      };
 
       // Strip /api/widget/<database>/<prefix>/<processId> from the URL, leaving the sub-path.
       // Then apply query-based inner auth if needed.
       const stripped = fullUrl.replace(WIDGET_PREFIX_STRIP, '') || '/';
       req.raw.url = applyInnerAuthQuery(upstream.innerAuth, stripped);
+
+      // Strip Accept-Encoding so the upstream returns uncompressed bodies.
+      // We need to rewrite text/html bodies in onResponse to inject <base href>,
+      // and handling gzip/br variants per upstream is more friction than the
+      // bandwidth savings are worth for a dev-tool reverse proxy.
+      delete (req.raw.headers as Record<string, any>)['accept-encoding'];
     },
 
     // Rewrite headers for outgoing WebSocket handshake (inner-auth injection).
@@ -141,26 +246,70 @@ function registerWidgetProxy(app: FastifyInstance, opts: WidgetProxyInternalOpti
         if (!widget) return headers;
         return applyInnerAuthHeaders(widget.upstream.innerAuth, headers);
       },
-      // The proxy's purpose is to make the upstream embeddable in an iframe under
-      // optio-api's outer auth. Strip `X-Frame-Options` and any `frame-ancestors`
-      // CSP directive so upstreams (marimo, jupyter, internal tools) that default
-      // to anti-embedding headers don't block that. Clickjacking defense is
-      // provided by optio-api's authenticate callback: the proxy is unreachable
-      // without a valid session.
-      rewriteHeaders: (headers: Record<string, any>) => {
-        const out = { ...headers };
-        delete out['x-frame-options'];
-        const csp = out['content-security-policy'];
-        if (typeof csp === 'string') {
-          const stripped = csp
-            .split(';')
-            .map((d) => d.trim())
-            .filter((d) => d.length > 0 && !d.toLowerCase().startsWith('frame-ancestors'))
-            .join('; ');
-          if (stripped) out['content-security-policy'] = stripped;
-          else delete out['content-security-policy'];
+      rewriteHeaders: rewriteResponseHeaders,
+      // onResponse takes over the response forwarding so we can rewrite
+      // text/html bodies (inject <base href> — see injectBaseHref).
+      // Non-HTML responses stream through unchanged.
+      //
+      // We use reply.hijack() + reply.raw directly because fastify 5's
+      // reply.send() does not accept Node IncomingMessage streams, and the
+      // header/body coordination for a transformed HTML body is simpler on
+      // the raw ServerResponse anyway.  reply-from does NOT auto-apply
+      // rewriteHeaders when onResponse is defined, so apply them here
+      // explicitly to the outgoing response.
+      onResponse: (request: any, reply: any, res: any) => {
+        // @fastify/reply-from passes a wrapper: res.stream is the Readable
+        // upstream body; res.headers / res.statusCode are the top-level fields.
+        const stream: NodeJS.ReadableStream = res.stream;
+        reply.hijack();
+        const rawRes: import('http').ServerResponse = reply.raw;
+        const statusCode: number = res.statusCode ?? 200;
+        const incomingHeaders = res.headers as Record<string, any>;
+        const contentType = String(incomingHeaders['content-type'] ?? '').toLowerCase();
+
+        if (!contentType.includes('text/html')) {
+          const outHeaders = rewriteResponseHeaders(incomingHeaders);
+          rawRes.writeHead(statusCode, outHeaders as any);
+          stream.pipe(rawRes);
+          stream.on('error', (err: any) => {
+            request.log.error({ err }, 'widget-proxy: upstream body read error');
+            if (!rawRes.headersSent) rawRes.writeHead(502);
+            rawRes.end();
+          });
+          return;
         }
-        return out;
+
+        const widget = (request.raw as any).__optioWidget;
+        const proxyPrefix: string = widget?.proxyPrefix ?? '/';
+        const chunks: Buffer[] = [];
+        stream.on('data', (c: Buffer) => {
+          chunks.push(c);
+        });
+        stream.on('end', () => {
+          const html = Buffer.concat(chunks).toString('utf-8');
+          const { html: transformed, stripScriptSha256 } = injectBaseHref(html, proxyPrefix);
+          const body = Buffer.from(transformed, 'utf-8');
+          // Rebuild headers: copy upstream, then override transform-affected ones.
+          const outHeaders: Record<string, any> = rewriteResponseHeaders(incomingHeaders);
+          outHeaders['content-length'] = String(body.byteLength);
+          // Drop content-encoding — we already decoded if upstream gzipped.
+          // (We also strip Accept-Encoding on the way out in preHandler so in
+          // practice upstream should send identity, but belt-and-braces.)
+          delete outHeaders['content-encoding'];
+          // If a CSP is present, allowlist our injected inline script by hash
+          // so it isn't blocked by `script-src 'self'`.
+          const csp = outHeaders['content-security-policy'];
+          if (typeof csp === 'string' && csp.length > 0) {
+            outHeaders['content-security-policy'] = appendScriptHashToCsp(csp, stripScriptSha256);
+          }
+          rawRes.writeHead(statusCode, outHeaders as any);
+          rawRes.end(body);
+        });
+        stream.on('error', (err: any) => {
+          request.log.error({ err }, 'widget-proxy: upstream body read error');
+          if (!rawRes.headersSent) rawRes.writeHead(502);
+          rawRes.end();
+        });
       },
       // Map connection errors (ECONNREFUSED → InternalServerError/500 by default) to
       // 502 Bad Gateway so callers get a meaningful gateway error.

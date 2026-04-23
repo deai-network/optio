@@ -34,7 +34,19 @@ export function ProcessDetailView({ processId }: ProcessDetailViewProps) {
 
   const widgetName = (tree as any).uiWidget as string | undefined;
   const currentState = (tree as any).status?.state as string | undefined;
-  if (widgetName && currentState && WIDGET_LIVE_STATES.has(currentState)) {
+  // Wait for the worker's set_widget_data call before swapping in the
+  // widget layout.  Before widgetData exists the task is typically still
+  // doing pre-widget setup work (e.g. optio-opencode uploading the ~150 MB
+  // opencode binary) and we want the default tree + log view to stay
+  // visible so the process progress bar + log messages are readable.
+  // Once widgetData appears, we switch to the widget layout.
+  const widgetDataReady = (tree as any).widgetData != null;
+  if (
+    widgetName
+    && currentState
+    && WIDGET_LIVE_STATES.has(currentState)
+    && widgetDataReady
+  ) {
     const Widget = getWidget(widgetName);
     if (!Widget) {
       console.warn(`[optio-ui] No widget registered under name "${widgetName}"; falling back to default rendering.`);
