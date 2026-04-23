@@ -92,7 +92,7 @@ function AppContent() {
 
   if (!selected) {
     return (
-      <Layout style={{ minHeight: '100vh' }}>
+      <Layout style={{ height: '100vh' }}>
         <Header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px' }}>
           <Title level={4} style={{ color: '#fff', margin: 0 }}>Optio Dashboard</Title>
           {headerRight}
@@ -108,7 +108,7 @@ function AppContent() {
 
   return (
     <OptioProvider prefix={selected.prefix} database={selected.database} live={selected.live}>
-      <Layout style={{ minHeight: '100vh' }}>
+      <Layout style={{ height: '100vh' }}>
         <Header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px' }}>
           <Title level={4} style={{ color: '#fff', margin: 0 }}>Optio Dashboard</Title>
           {headerRight}
