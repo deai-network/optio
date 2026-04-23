@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "optio-opencode"
+version = "0.1.0"
+description = "Run opencode web as an optio task; local subprocess or remote via SSH."
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = [
+    "optio-core",
+    "asyncssh>=2.14",
+    "aiofiles>=23.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

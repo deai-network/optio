@@ -1,0 +1,4 @@
+FROM linuxserver/openssh-server:latest
+# Pre-install python3 so the fake opencode shim works without
+# waiting for apk to run at container startup.
+RUN apk add --no-cache python3

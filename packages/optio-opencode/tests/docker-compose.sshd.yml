@@ -1,0 +1,18 @@
+services:
+  sshd:
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - USER_NAME=optiotest
+      - PUBLIC_KEY_FILE=/keys/id_ed25519.pub
+      - SUDO_ACCESS=false
+      - PASSWORD_ACCESS=false
+    volumes:
+      - ./ssh-keys:/keys:ro
+      - ./fake_opencode.py:/usr/local/bin/fake_opencode.py:ro
+      - ./opencode-shim.sh:/usr/local/bin/opencode:ro
+    ports:
+      - "127.0.0.1:22222:2222"

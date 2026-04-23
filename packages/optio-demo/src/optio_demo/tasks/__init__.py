@@ -8,6 +8,7 @@ from optio_demo.tasks.heist import get_tasks as heist_tasks
 from optio_demo.tasks.festival import get_tasks as festival_tasks
 from optio_demo.tasks.wakeup import get_tasks as wakeup_tasks
 from optio_demo.tasks.marimo import get_tasks as marimo_tasks
+from optio_demo.tasks.opencode import get_tasks as opencode_tasks
 
 
 async def get_task_definitions(services: dict) -> list[TaskInstance]:
@@ -18,4 +19,5 @@ async def get_task_definitions(services: dict) -> list[TaskInstance]:
         *festival_tasks(),
         *wakeup_tasks(),
         *marimo_tasks(),
+        *opencode_tasks(),
     ]

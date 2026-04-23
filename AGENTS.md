@@ -43,6 +43,7 @@ must stay consistent with the package-level files.
 | 2 — Remote control | `optio-core[redis]` | Python | `pip install optio-core[redis]` |
 | 3 — REST API | `optio-api` | TypeScript | `npm install optio-api optio-contracts` |
 | 4 — React UI | `optio-ui` | TypeScript | `npm install optio-ui optio-contracts @tanstack/react-query react-i18next antd` |
+| 1+ — Opencode runner | `optio-opencode` | Python | workspace; runs `opencode web` as an optio task (local subprocess or remote via SSH) |
 
 Dependencies: Python requires `motor>=3.3.0`, `apscheduler>=4.0.0a5`, `quaestor`. Redis support: `redis>=5.0.0` (optional extra). TypeScript API requires `mongodb`, `ioredis`, `@ts-rest/core`. UI requires React 19+, Ant Design 5+.
 
@@ -340,6 +341,28 @@ Collection: `{prefix}_processes`
 | `widgetUpstream` | `{ url, innerAuth } \| null` | Server-side only — never sent to clients |
 | `widgetData` | any JSON \| null | Live data delivered to the widget component via tree stream |
 | `createdAt` | datetime | Document creation timestamp |
+
+---
+
+## Python: optio-opencode
+
+Run `opencode web` as an optio task.  Public API:
+
+```python
+from optio_opencode import create_opencode_task, OpencodeTaskConfig, SSHConfig
+
+task = create_opencode_task(
+    process_id="my-task", name="My task",
+    config=OpencodeTaskConfig(
+        consumer_instructions="...",
+        opencode_config={...},     # passthrough to opencode.json
+        ssh=None,                  # None = local subprocess
+        on_deliverable=cb,
+    ),
+)
+```
+
+Full details: `packages/optio-opencode/AGENTS.md`.
 
 ---
 

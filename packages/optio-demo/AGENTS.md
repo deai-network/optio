@@ -81,3 +81,11 @@ Environment variables (all optional, shown with defaults):
 - `MONGODB_URL` — `mongodb://localhost:27017/optio-demo`
 - `REDIS_URL` — `redis://localhost:6379`
 - `OPTIO_PREFIX` — `optio`
+
+## Opencode demo
+
+Task `opencode-demo` runs a short local opencode session that asks the
+human for a favorite color and ships a deliverable containing the
+color and the number 42.  Reference consumer for `optio-opencode`;
+exercises the full iframe + proxy + log-tail stack.  Requires opencode
+to be installed and authenticated on the developer's machine.
