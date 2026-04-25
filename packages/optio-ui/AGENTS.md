@@ -46,19 +46,42 @@ interface OptioContextValue {
 
 ## Components
 
+### LaunchControls
+
+```ts
+interface LaunchControlsProps {
+  process: any;
+  onLaunch?: (id: string, opts?: { resume?: boolean }) => void;
+  size?: ButtonProps['size'];
+}
+```
+
+Smart launch button (`packages/optio-ui/src/components/LaunchControls.tsx`).
+
+Rendering rules:
+- Renders **nothing** when the process is not in a launchable state (`idle | done | failed | cancelled`), or when `onLaunch` is not provided.
+- Renders a single play button (calls `onLaunch(id)` with no opts) when `supportsResume=false` **or** `hasSavedState=false`.
+- Renders an Ant Design `Dropdown.Button` when both `supportsResume=true` and `hasSavedState=true`:
+  - Primary button: **Resume** — calls `onLaunch(id, { resume: true })`.
+  - Dropdown menu item: **Restart (discard saved state)** — calls `onLaunch(id)`.
+
+Used by `ProcessList` (replaces the old inline launch button logic) and `ProcessDetailView` (header action area).
+
+---
+
 ### ProcessList
 
 ```ts
 interface ProcessListProps {
   processes: any[];
   loading: boolean;
-  onLaunch?: (processId: string) => void;
+  onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
   onCancel?: (processId: string) => void;
   onProcessClick?: (processId: string) => void;
 }
 ```
 
-Renders an Ant Design `List`. Each item delegates to `ProcessItem`.
+Renders an Ant Design `List`. Each item delegates to `ProcessItem`. The launch button is provided via `LaunchControls`.
 
 Launchable states: `idle | done | failed | cancelled`.
 Active states: `running | scheduled | cancel_requested | cancelling`.
@@ -286,7 +309,7 @@ state (`done`, `failed`, or `cancelled`).
 function useProcessActions(options?: {
   onResyncSuccess?: (clean: boolean) => void;
 }): {
-  launch: (processId: string) => void;
+  launch: (processId: string, opts?: { resume?: boolean }) => void;
   cancel: (processId: string) => void;
   dismiss: (processId: string) => void;
   resync: () => void;
@@ -298,6 +321,7 @@ function useProcessActions(options?: {
 All mutations invalidate the `['processes']` query key on success.
 `resync` sends `body: {}`, `resyncClean` sends `body: { clean: true }`.
 `onResyncSuccess(clean)` is called after a successful resync with the `clean` flag value.
+`launch` sends `body: { resume: true }` when `opts.resume` is true; empty body otherwise.
 
 ---
 
@@ -449,6 +473,8 @@ Complete list of all translation keys used in component source files:
 | Key | Component | Usage |
 |-----|-----------|-------|
 | `processes.launch` | `ProcessItem` | Tooltip on launch button |
+| `processes.resume` | `LaunchControls` | Primary button label when `hasSavedState=true` (default: "Resume") |
+| `processes.restart` | `LaunchControls` | Dropdown menu item label (default: "Restart (discard saved state)") |
 | `processes.cancel` | `ProcessItem`, `ProcessTreeView` | Tooltip on cancel button |
 | `processes.filterAll` | `ProcessFilters` | Select option label |
 | `processes.filterActive` | `ProcessFilters` | Select option label |

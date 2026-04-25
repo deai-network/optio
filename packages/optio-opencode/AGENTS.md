@@ -28,12 +28,26 @@ task = create_opencode_task(
         ssh=None,                          # None = local subprocess
         on_deliverable=on_file,
         install_if_missing=True,
+        workdir_exclude=None,              # see OpencodeTaskConfig.workdir_exclude below
     ),
     description="optional",
 )
 ```
 
-The returned `TaskInstance` has `ui_widget="iframe"` baked in.
+The returned `TaskInstance` has `ui_widget="iframe"` and `supports_resume=True` baked in.
+
+### OpencodeTaskConfig.workdir_exclude
+
+```python
+workdir_exclude: list[str] | None = None
+```
+
+Controls which paths are excluded when snapshotting the working directory for resume:
+
+- `None` (default) — uses `archive.DEFAULT_WORKDIR_EXCLUDES`: `.git`, `node_modules`,
+  `__pycache__`, `.venv`, `*.pyc`, `.DS_Store`.
+- `[]` (empty list) — capture everything; no exclusions.
+- Non-empty list — used verbatim; no merge with defaults.
 
 ## Log-file contract
 
@@ -118,3 +132,79 @@ machines without Docker; brings up `linuxserver/openssh-server` on
   `optio_core.shutdown(grace_seconds=30)`.
 
 Deferred items live in spec Section 11.
+
+---
+
+## Per-task directory layout
+
+All task state lives under a per-process-ID directory. The `process_id` value is validated
+against `^[A-Za-z0-9._-]+$`.
+
+**Host-side (local mode):**
+
+```
+${OPTIO_OPENCODE_TASK_ROOT
+  or XDG_DATA_HOME/optio-opencode
+  or $HOME/.local/share/optio-opencode}/<process_id>/
+```
+
+**Remote side:**
+
+```
+${OPTIO_OPENCODE_REMOTE_TASK_ROOT or /tmp/optio-opencode}/<process_id>/
+```
+
+**Sub-paths within `<task_dir>/`:**
+
+| Sub-path | Contents |
+|----------|----------|
+| `workdir/` | opencode current working directory |
+| `opencode.db` | opencode SQLite session database |
+| `snapshot.json` | transient snapshot metadata (written locally during capture; deleted after blobs are stored) |
+
+---
+
+## Snapshot collection
+
+MongoDB collection: `{prefix}_opencode_session_snapshots`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `processId` | string | Process ID this snapshot belongs to |
+| `capturedAt` | datetime | When the snapshot was taken |
+| `endState` | string | `done` \| `failed` \| `cancelled` — opencode exit reason |
+| `sessionId` | string | opencode session ID |
+| `sessionBlobId` | GridFS file_id | opencode SQLite DB blob |
+| `workdirBlobId` | GridFS file_id | tar.gz of the working directory |
+| `deliverablesEmitted` | list[string] | deliverable paths emitted during this run |
+
+**Index:** compound `{processId: 1, capturedAt: -1}`.
+
+**Retention:** the latest 5 snapshots per process are kept; older snapshots and their
+GridFS blobs (`sessionBlobId`, `workdirBlobId`) are deleted together with the document.
+
+---
+
+## Host abstraction additions
+
+Both `LocalHost` and `RemoteHost` gain the following methods (beyond the MVP set):
+
+```python
+# Launch opencode web server (accepts an optional env dict)
+await host.launch_opencode(..., env: dict[str, str] | None = None) -> ...
+
+# Import a previously exported session into the on-disk DB
+await host.opencode_import(db_path: str, session_json: bytes) -> None
+
+# Export session data from the DB as raw bytes (JSON)
+await host.opencode_export(db_path: str, session_id: str) -> bytes
+
+# Stream a tar.gz of the working directory, honouring workdir_exclude
+async def host.archive_workdir(exclude: list[str]) -> AsyncIterator[bytes]
+
+# Restore a working directory from a tar.gz stream
+await host.restore_workdir(stream: AsyncIterator[bytes]) -> None
+
+# Remove a single file (used for teardown of transient files such as snapshot.json)
+await host.remove_file(path: str) -> None
+```
