@@ -56,6 +56,11 @@ export const ProcessSchema = z.object({
   uiWidget: z.string().nullable().optional(),
   widgetData: z.unknown().optional(),
 
+  // Resume feature — default false when absent in stored doc (UI treats
+  // missing fields as false defensively)
+  supportsResume: z.boolean().optional(),
+  hasSavedState: z.boolean().optional(),
+
   createdAt: DateSchema,
 });
 
