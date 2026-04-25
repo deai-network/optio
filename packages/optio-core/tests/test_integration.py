@@ -164,3 +164,33 @@ async def test_child_process_tree():
     await redis.aclose()
     await mongo_client.drop_database(db_name)
     mongo_client.close()
+
+
+async def test_resume_flag_reaches_execute_function(mongo_db, redis_url):
+    """End-to-end: launch_and_wait(resume=True) surfaces on ctx.resume."""
+    from optio_core.lifecycle import Optio
+    from optio_core.models import TaskInstance
+
+    seen: dict = {}
+
+    async def execute(ctx):
+        seen["resume"] = ctx.resume
+
+    async def get_defs(_services):
+        return [TaskInstance(
+            execute=execute, process_id="r_int", name="R Int",
+            supports_resume=True,
+        )]
+
+    optio = Optio()
+    await optio.init(
+        mongo_db=mongo_db,
+        prefix="test",
+        redis_url=redis_url,
+        get_task_definitions=get_defs,
+    )
+
+    # Direct Python API (avoids Redis round-trip latency in the test).
+    await optio.launch_and_wait("r_int", resume=True)
+    await optio.shutdown()
+    assert seen["resume"] is True

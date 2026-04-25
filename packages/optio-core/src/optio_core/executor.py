@@ -40,7 +40,7 @@ class Executor:
             await delete_process(self._db, self._prefix, process_id)
             self._task_registry.pop(process_id, None)
 
-    async def launch_process(self, process_id: str) -> str | None:
+    async def launch_process(self, process_id: str, resume: bool = False) -> str | None:
         """Launch a top-level process by processId. Returns end state or None."""
         proc = await get_process_by_process_id(self._db, self._prefix, process_id)
         if proc is None:
@@ -57,11 +57,12 @@ class Executor:
         )
         await append_log(self._db, self._prefix, proc["_id"], "event", "State changed to scheduled")
 
-        return await self._execute_process(proc, self._task_registry.get(process_id))
+        return await self._execute_process(proc, self._task_registry.get(process_id), resume=resume)
 
     async def _execute_process(
         self, proc: dict, execute_fn: Callable | None,
         parent_ctx: ProcessContext | None = None,
+        resume: bool = False,
     ) -> str:
         """Execute a process."""
         oid = proc["_id"]
@@ -91,6 +92,7 @@ class Executor:
             prefix=self._prefix,
             cancellation_flag=cancel_flag,
             child_counter={"next": 0},
+            resume=resume,
         )
         ctx._executor = self
 
