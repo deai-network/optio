@@ -19,6 +19,7 @@ class TaskInstance:
     warning: str | None = None
     cancellable: bool = True
     ui_widget: str | None = None
+    supports_resume: bool = False
 
 
 @dataclass
