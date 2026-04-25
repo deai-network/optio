@@ -171,6 +171,7 @@ class Host(Protocol):
 import asyncio
 import os
 import re
+import shlex
 import shutil
 
 
@@ -510,9 +511,11 @@ class RemoteHost:
 
     workdir: str
 
-    def __init__(self, ssh_config: SSHConfig):
+    def __init__(self, ssh_config: SSHConfig, workdir: str | None = None):
         self._ssh = ssh_config
-        self.workdir = f"/tmp/optio-opencode-{uuid.uuid4().hex[:12]}"
+        # workdir defaults to the legacy random path when not supplied so
+        # existing callers (test_session_remote.py) keep working.
+        self.workdir = workdir or f"/tmp/optio-opencode-{uuid.uuid4().hex[:12]}"
         self._conn: asyncssh.SSHClientConnection | None = None
         self._sftp: asyncssh.SFTPClient | None = None
         self._launch_proc: asyncssh.SSHClientProcess | None = None
@@ -599,6 +602,7 @@ class RemoteHost:
         password: str,
         ready_timeout_s: float,
         extra_args: list[str] | None = None,
+        env: dict[str, str] | None = None,
     ) -> LaunchedProcess:
         assert self._conn is not None and self._sftp is not None
         # Write the password to a mode-0600 file in the workdir and have
@@ -614,10 +618,15 @@ class RemoteHost:
         pw_file = ".opencode-password"
         await self.write_text(pw_file, password)
         await self._conn.run(f"chmod 600 {self.workdir}/{pw_file}", check=True)
+        env_prefix = ""
+        if env:
+            env_prefix = " ".join(
+                f"{k}={shlex.quote(v)}" for k, v in env.items()
+            ) + " "
         cmd = (
             f"cd {self.workdir} && "
             f"OPENCODE_SERVER_PASSWORD=\"$(cat ./{pw_file})\" "
-            f"BROWSER=true "
+            f"BROWSER=true {env_prefix}"
             # 2>&1 merges stderr into stdout because opencode prints the
             # "Web interface:" URL line via UI.println → stderr.
             # Single-quote the inner command.  `$opencode` is safely
@@ -706,6 +715,84 @@ class RemoteHost:
             asyncio.create_task(self._conn.run(cmd, check=False))
             return
         await self._conn.run(cmd, check=False)
+
+    async def opencode_import(
+        self, opencode_db_path: str, session_json: bytes,
+    ) -> None:
+        assert self._conn is not None and self._sftp is not None
+        scratch = f"{self.workdir}/snapshot.json"
+        async with self._sftp.open(scratch, "wb") as fh:
+            await fh.write(session_json)
+        try:
+            r = await self._conn.run(
+                f"OPENCODE_DB={shlex.quote(opencode_db_path)} "
+                f"bash -lc '{self._opencode_exec} import {shlex.quote(scratch)}'",
+                check=False,
+            )
+            if r.exit_status != 0:
+                raise RuntimeError(
+                    f"remote opencode import failed "
+                    f"(exit {r.exit_status}): {r.stderr}"
+                )
+        finally:
+            await self._conn.run(f"rm -f {shlex.quote(scratch)}", check=False)
+
+    async def opencode_export(
+        self, opencode_db_path: str, session_id: str,
+    ) -> bytes:
+        assert self._conn is not None
+        r = await self._conn.run(
+            f"OPENCODE_DB={shlex.quote(opencode_db_path)} "
+            f"bash -lc '{self._opencode_exec} export {shlex.quote(session_id)}'",
+            check=False,
+        )
+        if r.exit_status != 0:
+            raise RuntimeError(
+                f"remote opencode export failed "
+                f"(exit {r.exit_status}): {r.stderr}"
+            )
+        out = r.stdout or b""
+        return out if isinstance(out, bytes) else out.encode("utf-8")
+
+    async def archive_workdir(
+        self, exclude: list[str] | None,
+    ):
+        from optio_opencode.archive import DEFAULT_WORKDIR_EXCLUDES
+        assert self._conn is not None
+        patterns = list(DEFAULT_WORKDIR_EXCLUDES) if exclude is None else list(exclude)
+        excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in patterns)
+        cmd = f"cd {shlex.quote(self.workdir)} && tar czf - {excludes} ."
+        proc = await self._conn.create_process(cmd, encoding=None)
+        async for chunk in proc.stdout:
+            if chunk:
+                yield chunk
+        await proc.wait()
+        if proc.exit_status not in (0, None):
+            raise RuntimeError(f"remote tar czf - failed (exit {proc.exit_status})")
+
+    async def restore_workdir(
+        self, stream,
+    ) -> None:
+        assert self._conn is not None
+        # Empty workdir contents (preserve workdir itself).
+        await self._conn.run(
+            f"find {shlex.quote(self.workdir)} -mindepth 1 -delete",
+            check=False,
+        )
+        cmd = f"cd {shlex.quote(self.workdir)} && tar xzf -"
+        proc = await self._conn.create_process(cmd, encoding=None)
+        async for chunk in stream:
+            proc.stdin.write(chunk)
+            await proc.stdin.drain()
+        proc.stdin.write_eof()
+        await proc.wait()
+        if proc.exit_status not in (0, None):
+            raise RuntimeError(f"remote tar xzf - failed (exit {proc.exit_status})")
+
+    async def remove_file(self, path: str) -> None:
+        assert self._conn is not None
+        # `rm -f` is idempotent: missing files are not an error.
+        await self._conn.run(f"rm -f {shlex.quote(path)}", check=False)
 
     async def detect_target(self) -> OpencodeTarget:
         assert self._conn is not None
