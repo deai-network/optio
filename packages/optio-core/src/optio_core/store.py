@@ -34,6 +34,7 @@ async def upsert_process(db: AsyncIOMotorDatabase, prefix: str, task: TaskInstan
                 "special": task.special,
                 "warning": task.warning,
                 "uiWidget": task.ui_widget,
+                "supportsResume": task.supports_resume,
             },
             "$setOnInsert": {
                 "parentId": None,
@@ -46,6 +47,7 @@ async def upsert_process(db: AsyncIOMotorDatabase, prefix: str, task: TaskInstan
                 "progress": Progress().to_dict(),
                 "log": [],
                 "createdAt": now,
+                "hasSavedState": False,
             },
         },
         upsert=True,

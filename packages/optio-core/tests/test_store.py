@@ -183,3 +183,57 @@ async def test_delete_process(mongo_db):
 async def test_delete_process_nonexistent(mongo_db):
     """delete_process is a no-op for nonexistent processes."""
     await delete_process(mongo_db, "test", "nonexistent")  # should not raise
+
+
+async def test_upsert_sets_supports_resume_on_insert(mongo_db):
+    task = TaskInstance(
+        execute=dummy_execute, process_id="sr_new", name="SR New",
+        supports_resume=True,
+    )
+    result = await upsert_process(mongo_db, "test", task)
+    assert result["supportsResume"] is True
+    assert result["hasSavedState"] is False
+
+
+async def test_upsert_refreshes_supports_resume_on_resync(mongo_db):
+    task = TaskInstance(
+        execute=dummy_execute, process_id="sr_flip", name="SR Flip",
+        supports_resume=False,
+    )
+    await upsert_process(mongo_db, "test", task)
+
+    task.supports_resume = True
+    result = await upsert_process(mongo_db, "test", task)
+    assert result["supportsResume"] is True
+
+
+async def test_upsert_preserves_has_saved_state_across_resync(mongo_db):
+    task = TaskInstance(
+        execute=dummy_execute, process_id="hss_keep", name="HSS",
+        supports_resume=True,
+    )
+    proc = await upsert_process(mongo_db, "test", task)
+    # Simulate executor having flipped the flag to True.
+    await mongo_db["test_processes"].update_one(
+        {"_id": proc["_id"]}, {"$set": {"hasSavedState": True}},
+    )
+
+    # Re-sync — hasSavedState must not be reset.
+    result = await upsert_process(mongo_db, "test", task)
+    assert result["hasSavedState"] is True
+
+
+async def test_clear_result_fields_preserves_resume_fields(mongo_db):
+    task = TaskInstance(
+        execute=dummy_execute, process_id="crf_keep", name="CRF",
+        supports_resume=True,
+    )
+    proc = await upsert_process(mongo_db, "test", task)
+    await mongo_db["test_processes"].update_one(
+        {"_id": proc["_id"]}, {"$set": {"hasSavedState": True}},
+    )
+
+    await clear_result_fields(mongo_db, "test", proc["_id"])
+    updated = await get_process_by_process_id(mongo_db, "test", "crf_keep")
+    assert updated["supportsResume"] is True
+    assert updated["hasSavedState"] is True
