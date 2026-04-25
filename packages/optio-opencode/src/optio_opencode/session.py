@@ -93,6 +93,15 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                 await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
                 session_bytes = await _read_blob_bytes(ctx, snapshot["sessionBlobId"])
                 await host.opencode_import(opencode_db, session_bytes)
+                # Move the restored log channel out of the way before tail
+                # subscribes. The snapshot tar includes optio.log from the
+                # previous run; without this `tail -F -n +1` would re-emit
+                # every old DELIVERABLE / DONE / ERROR line and the resumed
+                # process would terminate within seconds of launch (see
+                # LocalHost.tail_log's "-n +1" choice). We preserve the
+                # historical content by appending it to optio.log.old so
+                # nothing is lost across consecutive resumes.
+                await _rotate_optio_log(host)
                 preserved_session_id = snapshot["sessionId"]
             except Exception:
                 _LOG.exception(
@@ -460,6 +469,33 @@ async def _watch_cancellation(ctx: ProcessContext) -> bool:
     while ctx.should_continue():
         await asyncio.sleep(0.1)
     return True
+
+
+async def _rotate_optio_log(host: Host) -> None:
+    """Append the restored optio.log to optio.log.old, then truncate optio.log.
+
+    Preserves the historical log content across consecutive resumes
+    (rather than discarding it) while ensuring `tail -F -n +1` only sees
+    fresh lines emitted in the resumed run.
+    """
+    workdir = host.workdir.rstrip("/")
+    log_abs = f"{workdir}/optio.log"
+    old_abs = f"{workdir}/optio.log.old"
+    try:
+        current = await host.fetch_deliverable_text(log_abs)
+    except FileNotFoundError:
+        current = ""
+    if not current:
+        # Nothing to rotate. Still ensure optio.log exists empty so the
+        # tail process has something to follow.
+        await host.write_text("optio.log", "")
+        return
+    try:
+        existing_old = await host.fetch_deliverable_text(old_abs)
+    except FileNotFoundError:
+        existing_old = ""
+    await host.write_text("optio.log.old", existing_old + current)
+    await host.write_text("optio.log", "")
 
 
 def _pick_local_workdir() -> str:
