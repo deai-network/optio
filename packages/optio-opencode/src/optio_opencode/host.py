@@ -754,24 +754,29 @@ class RemoteHost:
         out = r.stdout or b""
         return out if isinstance(out, bytes) else out.encode("utf-8")
 
-    async def archive_workdir(
+    def archive_workdir(
         self, exclude: list[str] | None,
-    ):
+    ) -> "AsyncIterator[bytes]":
         from optio_opencode.archive import DEFAULT_WORKDIR_EXCLUDES
         assert self._conn is not None
         patterns = list(DEFAULT_WORKDIR_EXCLUDES) if exclude is None else list(exclude)
         excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in patterns)
         cmd = f"cd {shlex.quote(self.workdir)} && tar czf - {excludes} ."
-        proc = await self._conn.create_process(cmd, encoding=None)
-        async for chunk in proc.stdout:
-            if chunk:
-                yield chunk
-        await proc.wait()
-        if proc.exit_status not in (0, None):
-            raise RuntimeError(f"remote tar czf - failed (exit {proc.exit_status})")
+
+        async def _gen() -> "AsyncIterator[bytes]":
+            assert self._conn is not None
+            proc = await self._conn.create_process(cmd, encoding=None)
+            async for chunk in proc.stdout:
+                if chunk:
+                    yield chunk
+            await proc.wait()
+            if proc.exit_status not in (0, None):
+                raise RuntimeError(f"remote tar czf - failed (exit {proc.exit_status})")
+
+        return _gen()
 
     async def restore_workdir(
-        self, stream,
+        self, stream: "AsyncIterator[bytes]",
     ) -> None:
         assert self._conn is not None
         # Empty workdir contents (preserve workdir itself).
