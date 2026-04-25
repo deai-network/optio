@@ -10,7 +10,7 @@ let db: Db;
 let redis: any;
 
 beforeAll(async () => {
-  mongoClient = new MongoClient('mongodb://localhost:27117');
+  mongoClient = new MongoClient(process.env.MONGO_URL ?? 'mongodb://localhost:27017');
   await mongoClient.connect();
   db = mongoClient.db('optio_test_nextjs_pages');
   redis = new Redis();
