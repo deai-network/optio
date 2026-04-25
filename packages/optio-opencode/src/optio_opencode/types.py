@@ -34,3 +34,4 @@ class OpencodeTaskConfig:
     ssh: SSHConfig | None = None
     on_deliverable: DeliverableCallback | None = None
     install_if_missing: bool = True
+    workdir_exclude: list[str] | None = None
