@@ -3,6 +3,8 @@ import { useOptioBaseUrl, useOptioPrefix, useOptioDatabase } from '../context/us
 import { getWidget } from '../widgets/registry.js';
 import { ProcessTreeView } from './ProcessTreeView.js';
 import { ProcessLogPanel } from './ProcessLogPanel.js';
+import { LaunchControls } from './LaunchControls.js';
+import { useProcessActions } from '../hooks/useProcessActions.js';
 
 export interface ProcessDetailViewProps {
   processId: string | null | undefined;
@@ -19,6 +21,7 @@ export function ProcessDetailView({ processId }: ProcessDetailViewProps) {
   const baseUrl = useOptioBaseUrl();
   const prefix = useOptioPrefix();
   const database = useOptioDatabase();
+  const { launch } = useProcessActions();
 
   if (!processId) {
     return (
@@ -31,6 +34,19 @@ export function ProcessDetailView({ processId }: ProcessDetailViewProps) {
   if (!tree) {
     return <div data-testid="optio-detail-loading">Loading…</div>;
   }
+
+  const header = (
+    <div
+      data-testid="optio-detail-header"
+      style={{ display: 'flex', justifyContent: 'flex-end', padding: 4 }}
+    >
+      <LaunchControls
+        process={tree as any}
+        onLaunch={(id, opts) => launch(id, opts)}
+        size="middle"
+      />
+    </div>
+  );
 
   const widgetName = (tree as any).uiWidget as string | undefined;
   const currentState = (tree as any).status?.state as string | undefined;
@@ -67,6 +83,7 @@ export function ProcessDetailView({ processId }: ProcessDetailViewProps) {
           data-testid="optio-widget-layout"
           style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}
         >
+          {header}
           <div style={{ flex: '0 0 20%', minHeight: 0, overflow: 'hidden' }}>
             <ProcessLogPanel logs={logs} fillParent />
           </div>
@@ -86,6 +103,7 @@ export function ProcessDetailView({ processId }: ProcessDetailViewProps) {
 
   return (
     <div data-testid="optio-detail-default">
+      {header}
       <ProcessTreeView treeData={tree} sseState={{ connected }} />
       <ProcessLogPanel logs={logs} />
     </div>
