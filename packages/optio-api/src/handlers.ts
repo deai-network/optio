@@ -168,7 +168,7 @@ export type CommandResult =
   | { status: 404; body: { message: string } }
   | { status: 409; body: { message: string } };
 
-export async function launchProcess(db: Db, redis: Redis, database: string, prefix: string, id: string): Promise<CommandResult> {
+export async function launchProcess(db: Db, redis: Redis, database: string, prefix: string, id: string, resume: boolean = false): Promise<CommandResult> {
   const proc = await col(db, prefix).findOne({ _id: new ObjectId(id) });
   if (!proc) {
     return { status: 404, body: { message: 'Process not found' } };
@@ -176,7 +176,10 @@ export async function launchProcess(db: Db, redis: Redis, database: string, pref
   if (!LAUNCHABLE_STATES.includes(proc.status.state)) {
     return { status: 409, body: { message: `Cannot launch process in state: ${proc.status.state}` } };
   }
-  await publishLaunch(redis, database, prefix, proc.processId);
+  if (resume && !proc.supportsResume) {
+    return { status: 409, body: { message: 'This task does not support resume' } };
+  }
+  await publishLaunch(redis, database, prefix, proc.processId, resume);
   return { status: 200, body: toResponse(proc) };
 }
 
