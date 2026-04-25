@@ -254,17 +254,4 @@ describe('ProcessDetailView', () => {
     expect(screen.getByTestId('optio-detail-default')).toBeTruthy();
   });
 
-  it('renders LaunchControls in the header when tree is loaded', () => {
-    mockProcessStream.mockReturnValue({
-      tree: {
-        _id: 'abc', name: 'P', status: { state: 'idle' },
-        progress: { percent: null }, cancellable: false,
-        depth: 0, order: 0, parentId: null, children: [],
-      },
-      logs: [],
-      connected: false,
-    });
-    render(<ProcessDetailView processId="abc" />);
-    expect(screen.getByTestId('optio-detail-header')).toBeTruthy();
-  });
 });

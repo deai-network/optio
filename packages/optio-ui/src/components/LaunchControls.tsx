@@ -1,6 +1,6 @@
-import { Button, Dropdown, Tooltip, Popconfirm } from 'antd';
+import { Button, Dropdown, Space, Tooltip, Popconfirm } from 'antd';
 import type { MenuProps, ButtonProps } from 'antd';
-import { PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons';
+import { DownOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 
 const LAUNCHABLE_STATES = new Set(['idle', 'done', 'failed', 'cancelled']);
@@ -67,16 +67,28 @@ export function LaunchControls({ process, onLaunch, size = 'small' }: LaunchCont
   };
 
   return (
-    <Tooltip title={t('processes.resume', { defaultValue: 'Resume' })}>
-      <Dropdown.Button
-        size={size}
-        trigger={['click']}
-        icon={<PlayCircleOutlined />}
-        menu={menu}
-        onClick={() => onLaunch(process._id, { resume: true })}
-      >
-        <PlayCircleOutlined style={{ color: '#52c41a' }} />
-      </Dropdown.Button>
-    </Tooltip>
+    <Space.Compact>
+      <Tooltip title={t('processes.resume', { defaultValue: 'Resume' })}>
+        <Button
+          type="text"
+          size={size}
+          icon={<PlayCircleOutlined />}
+          style={{ color: '#52c41a' }}
+          onClick={(e) => {
+            e.preventDefault();
+            onLaunch(process._id, { resume: true });
+          }}
+        />
+      </Tooltip>
+      <Dropdown menu={menu} trigger={['click']}>
+        <Tooltip title={t('processes.moreOptions', { defaultValue: 'More options' })}>
+          <Button
+            type="text"
+            size={size}
+            icon={<DownOutlined />}
+          />
+        </Tooltip>
+      </Dropdown>
+    </Space.Compact>
   );
 }

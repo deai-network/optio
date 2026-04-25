@@ -3,6 +3,7 @@ import { Tree, Progress, Button, Tooltip, Typography, Checkbox } from 'antd';
 import { CloseCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { ProcessStatusBadge } from './ProcessStatusBadge.js';
+import { LaunchControls } from './LaunchControls.js';
 import type { DataNode } from 'antd/es/tree';
 
 const { Text } = Typography;
@@ -16,6 +17,9 @@ interface ProcessNode {
   status: { state: string; error?: string; runningSince?: string };
   progress: { percent: number | null; message?: string };
   cancellable?: boolean;
+  warning?: string;
+  supportsResume?: boolean;
+  hasSavedState?: boolean;
   children?: ProcessNode[];
 }
 
@@ -27,6 +31,7 @@ interface ProcessTreeViewProps {
   treeData: ProcessNode | null;
   sseState: SseState;
   onCancel?: (processId: string) => void;
+  onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
 }
 
 function filterDoneChildren(node: ProcessNode): ProcessNode {
@@ -49,6 +54,7 @@ function collectKeys(node: ProcessNode): string[] {
 function treeNodeToDataNode(
   node: ProcessNode,
   onCancel: ((id: string) => void) | undefined,
+  onLaunch: ((id: string, opts?: { resume?: boolean }) => void) | undefined,
   t: (key: string) => string,
 ): DataNode {
   const isActive = ACTIVE_STATES.has(node.status.state);
@@ -66,8 +72,8 @@ function treeNodeToDataNode(
         ) : (
           <Text style={{ whiteSpace: 'nowrap' }}>{node.name}</Text>
         )}
-        <ProcessStatusBadge state={node.status.state} error={node.status.error} runningSince={node.status.runningSince} />
-        <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 120 }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto', minWidth: 120, justifyContent: 'flex-end' }}>
+          <ProcessStatusBadge state={node.status.state} error={node.status.error} runningSince={node.status.runningSince} />
           {/* Progress bar visibility rules (keep consistent across ProcessList,
               RecentProcesses):
               - active with percent: determinate bar
@@ -78,7 +84,7 @@ function treeNodeToDataNode(
               percent={node.progress.percent!}
               size="small"
               showInfo={false}
-              style={{ flex: 1 }}
+              style={{ width: 120 }}
               status={node.status.state === 'failed' ? 'exception' : 'active'}
             />
           ) : isActive ? (
@@ -87,7 +93,7 @@ function treeNodeToDataNode(
               status="active"
               size="small"
               showInfo={false}
-              style={{ flex: 1 }}
+              style={{ width: 120 }}
               strokeColor={{ from: '#108ee9', to: '#87d068' }}
             />
           ) : null}
@@ -108,17 +114,20 @@ function treeNodeToDataNode(
               />
             </Tooltip>
           )}
+          {onLaunch && (
+            <LaunchControls process={node as any} onLaunch={onLaunch} size="small" />
+          )}
         </span>
         {isActive && node.progress.message && (
           <Text style={{ width: '100%', fontSize: 12, color: '#1890ff' }}>— {node.progress.message}</Text>
         )}
       </div>
     ),
-    children: node.children?.map((child) => treeNodeToDataNode(child, onCancel, t)) ?? [],
+    children: node.children?.map((child) => treeNodeToDataNode(child, onCancel, onLaunch, t)) ?? [],
   };
 }
 
-export function ProcessTreeView({ treeData, sseState, onCancel }: ProcessTreeViewProps) {
+export function ProcessTreeView({ treeData, sseState, onCancel, onLaunch }: ProcessTreeViewProps) {
   const { t } = useTranslation();
   const [hideFinishedLeaves, setHideFinishedLeaves] = useState(true);
 
@@ -127,7 +136,7 @@ export function ProcessTreeView({ treeData, sseState, onCancel }: ProcessTreeVie
 
   if (!treeData || !filtered) return null;
 
-  const treeNodes = [treeNodeToDataNode(filtered, onCancel, t)];
+  const treeNodes = [treeNodeToDataNode(filtered, onCancel, onLaunch, t)];
 
   return (
     <div>
