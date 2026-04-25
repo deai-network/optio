@@ -165,6 +165,10 @@ class Host(Protocol):
 
     async def remove_file(self, path: str) -> None: ...
 
+    async def opencode_version(self) -> str | None: ...
+    # Run `<opencode_cmd> --version` on the host and return stripped stdout.
+    # Returns None on any failure — best-effort, used only for status messages.
+
 
 # --- implementation -----------------------------------------------------
 
@@ -429,6 +433,21 @@ class LocalHost:
             logging.getLogger(__name__).warning(
                 "LocalHost.remove_file(%r) failed: %r", path, exc,
             )
+
+    async def opencode_version(self) -> str | None:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *self._opencode_cmd, "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+        except Exception:
+            return None
+        if proc.returncode != 0:
+            return None
+        text = stdout.decode("utf-8", errors="replace").strip()
+        return text or None
 
     async def detect_target(self) -> OpencodeTarget:
         import platform
@@ -798,6 +817,22 @@ class RemoteHost:
         assert self._conn is not None
         # `rm -f` is idempotent: missing files are not an error.
         await self._conn.run(f"rm -f {shlex.quote(path)}", check=False)
+
+    async def opencode_version(self) -> str | None:
+        if self._conn is None:
+            return None
+        try:
+            r = await self._conn.run(
+                f"bash -lc '{self._opencode_exec} --version'",
+                check=False,
+            )
+        except Exception:
+            return None
+        if r.exit_status != 0:
+            return None
+        out = r.stdout or ""
+        text = (out if isinstance(out, str) else out.decode("utf-8", errors="replace")).strip()
+        return text or None
 
     async def detect_target(self) -> OpencodeTarget:
         assert self._conn is not None

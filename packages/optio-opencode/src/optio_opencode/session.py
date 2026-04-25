@@ -156,7 +156,9 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             await host.ensure_opencode_installed(config.install_if_missing)
 
         # --- launch ------------------------------------------------------
-        ctx.report_progress(None, "Launching opencode…")
+        version = await host.opencode_version()
+        version_suffix = f" {version}" if version else ""
+        ctx.report_progress(None, f"Launching opencode{version_suffix}…")
         process = await host.launch_opencode(
             password=password,
             ready_timeout_s=READY_TIMEOUT_S,
