@@ -56,15 +56,11 @@ def test_child_result_failed():
     assert result.error == "boom"
 
 
-async def _dummy(ctx):
-    pass
-
-
 def test_task_instance_supports_resume_default_false():
-    task = TaskInstance(execute=_dummy, process_id="t", name="T")
+    task = TaskInstance(execute=dummy_execute, process_id="t", name="T")
     assert task.supports_resume is False
 
 
 def test_task_instance_supports_resume_can_be_set():
-    task = TaskInstance(execute=_dummy, process_id="t", name="T", supports_resume=True)
+    task = TaskInstance(execute=dummy_execute, process_id="t", name="T", supports_resume=True)
     assert task.supports_resume is True
