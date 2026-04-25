@@ -103,6 +103,8 @@ class HookContext:
         self,
         source: str | os.PathLike | bytes | GridFSBlobHandle,
         target: str,
+        *,
+        skip_if_unchanged: bool = False,
     ) -> None: ...
 
     async def run_on_host(
@@ -125,26 +127,52 @@ class HookContext:
 helpers) plus the four new ones — for IDE discoverability without
 relying on `__getattr__`.
 
-### `copy_file(source, target)`
+### `copy_file(source, target, *, skip_if_unchanged=False)`
 
 - `source` is one of: a path-like (read from worker filesystem),
   `bytes` (shipped directly without a worker temp file), or a
   `GridFSBlobHandle` from `optio-core` (streamed through the transfer
   primitive without materializing a worker temp file).
-- `target` is **always workdir-relative**. Absolute paths, `..`
-  segments, empty paths, and any path that resolves outside the
-  workdir are rejected with `ValueError`. Parent directories are
-  auto-created.
+- `target` follows Unix path conventions to encode where it goes:
+  - Starts with `/` → absolute host path (e.g.
+    `/usr/local/bin/mytool`); used as-is.
+  - Starts with `~/` (or is exactly `~`) → home-relative on the host;
+    `~` is expanded by the host to `<host_home>/<rest>` (the SSH
+    user's home for `RemoteHost`, the worker user's home for
+    `LocalHost`). Useful for `~/.local/bin/...` style installs.
+  - Otherwise → **workdir-relative**: resolved to `<workdir>/<target>`.
+- Parent directories are auto-created in all three cases (mkdir -p
+  semantics for the parent of the target).
+- Validation rules:
+  - Workdir-relative paths: reject `..` segments and any resolved
+    path outside `<workdir>` (sandbox).
+  - Absolute and home-relative paths: trusted; no sandbox check.
+    Consumers asking for `/usr/local/bin/...` or
+    `~/.local/bin/...` know what they're doing.
+  - Empty `target` is rejected in all cases.
 - For `RemoteHost`: SFTP put with the same atomic-rename pattern as
   `install_opencode_binary` (write to `<target>.tmp`, fsync, rename).
+- `skip_if_unchanged=True`: enables a checksum-based skip. Computes
+  SHA-256 of `source` (path → streaming hash, bytes → hash directly,
+  `GridFSBlobHandle` → use the blob's stored checksum if available,
+  otherwise hash on read) and SHA-256 of `target` (locally for
+  `LocalHost`, via remote `sha256sum` for `RemoteHost`). If hashes
+  match, the transfer is skipped. If `target` does not exist, the
+  copy proceeds normally. Default `False`: always copy.
 - Progress reporting:
-  - On entry: `ctx.report_progress(None, f"Copying {basename(target)}...")`.
-  - During: numerical `ctx.report_progress(percent, None)` updates as
-    bytes flow. Throttled to ≤ ~10 Hz to avoid spamming the channel
-    for small files.
-  - `basename(target)` is used as the universal identifier across all
-    source types (path / bytes / blob), since `bytes` and blob sources
-    don't have a meaningful source filename.
+  - With `skip_if_unchanged=False`:
+    - On entry: `ctx.report_progress(None, f"Copying {basename(target)}...")`.
+    - During: numerical `ctx.report_progress(percent, None)` updates
+      as bytes flow. Throttled to ≤ ~10 Hz to avoid spamming the
+      channel for small files.
+  - With `skip_if_unchanged=True`:
+    - On entry: `ctx.report_progress(None, f"Verifying {basename(target)}...")`.
+    - If hashes match → `ctx.report_progress(None, f"Already up to date: {basename(target)}")` and return.
+    - Otherwise → fall through to the normal "Copying ..." +
+      percent-updates flow.
+  - `basename(target)` is used as the universal identifier across
+    all source types (path / bytes / blob), since `bytes` and blob
+    sources don't have a meaningful source filename.
 
 ### `run_on_host(command, *, check=True, capture_stderr=False, cwd=None)`
 
@@ -164,7 +192,9 @@ exit code and the first 200 chars of stderr.
 
 ### `read_from_host(path)` / `read_text_from_host(path)`
 
-- `path` is workdir-relative (same validation as `copy_file` target).
+- `path` follows the same three-form convention as `copy_file`'s
+  `target`: workdir-relative (sandboxed), `~/`-prefixed (home-relative
+  on the host), or absolute (`/`-prefixed). Empty `path` is rejected.
 - Returns full contents as `bytes` / decoded UTF-8 `str`. No streaming
   for now.
 - Progress reporting:
@@ -290,6 +320,7 @@ class Host(Protocol):
         source: str | os.PathLike | bytes | GridFSBlobHandle,
         absolute_target: str,
         *,
+        skip_if_unchanged: bool = False,
         progress_cb: Callable[[float | None, str | None], None] | None = None,
     ) -> None: ...
 
@@ -310,11 +341,23 @@ class Host(Protocol):
 ```
 
 These are the **generic** primitives. `HookContext.copy_file` /
-`read_from_host` validate the workdir-relative target, resolve to an
-absolute host path via `host.workdir`, wire `progress_cb` into
-`ctx.report_progress`, and call into these methods.
-`HookContext.run_on_host` calls `host.run_command` and applies the
-`check=True` raise behavior.
+`read_from_host` resolve the user-supplied path according to the
+three-form convention (workdir-relative / `~/`-home-relative /
+absolute), pass the resulting absolute host path to these methods,
+forward `skip_if_unchanged`, wire `progress_cb` into
+`ctx.report_progress`, and return. `HookContext.run_on_host` calls
+`host.run_command` and applies the `check=True` raise behavior.
+
+`put_file_to_host`'s `skip_if_unchanged=True` semantics:
+
+- Compute SHA-256 of `source` (path → streaming hash, bytes → hash
+  directly, `GridFSBlobHandle` → use stored checksum if available,
+  else hash on read).
+- Compute SHA-256 of `absolute_target` if it exists. For `LocalHost`,
+  read it locally; for `RemoteHost`, run `sha256sum` over SSH (or
+  fall back to streaming via SFTP if `sha256sum` is unavailable).
+- If hashes match, return without transferring. If `absolute_target`
+  does not exist, proceed with normal copy.
 
 ### `LocalHost` implementations
 
@@ -344,33 +387,56 @@ absolute host path via `host.workdir`, wire `progress_cb` into
 
 ### Refactoring `install_opencode_binary`
 
-After this change:
+After this change, `RemoteHost.install_opencode_binary` is a thin
+wrapper that resolves the install path, delegates the transfer
+(including the SHA-256 skip) to `put_file_to_host`, and chmods the
+result:
 
-- `RemoteHost.install_opencode_binary` becomes ~30 lines: resolve
-  install path, do SHA-256 skip check, call
-  `await self.put_file_to_host(local_binary_path, install_path,
-  progress_cb=...)`, then chmod via `await
-  self.run_command(f"chmod +x {install_path}")`. The atomic-rename +
-  per-chunk SFTP machinery moves into `put_file_to_host` and is
-  inherited.
-- `LocalHost.install_opencode_binary` is unchanged — it still just
-  stores a path.
+```python
+async def install_opencode_binary(self, local_path, *, progress=None):
+    install_path = await self._resolve_install_path()  # e.g. ~/.opencode/bin/opencode
+    await self.put_file_to_host(
+        local_path,
+        install_path,
+        skip_if_unchanged=True,
+        progress_cb=progress,
+    )
+    await self.run_command(f"chmod +x {install_path}")
+```
 
-The "Installing opencode binary..." high-level progress message stays;
-it now sits on top of the generic per-byte progress emitted by
-`put_file_to_host`.
+All the SFTP plumbing, atomic-rename, and SHA-256 skip logic now
+lives in `put_file_to_host` and is inherited from there.
 
-### Path validation helper
+`LocalHost.install_opencode_binary` is unchanged — it still just
+stores a path (no copy needed when worker and host share a
+filesystem).
 
-A small helper `_validate_workdir_relative(path: str, workdir: str) ->
-str` rejects:
+The "Installing opencode binary..." high-level progress message
+stays; it sits on top of the generic
+"Verifying ..." / "Already up to date" / "Copying ..." messages
+emitted by `put_file_to_host`.
 
-- Absolute paths (starting with `/` or drive-letter).
-- `..` segments (e.g., `data/../../../etc/passwd`).
-- Empty paths or paths that resolve outside `workdir`.
+### Path resolution helper
 
-Returns the resolved absolute host path. Used by `HookContext.copy_file`,
-`read_from_host`, and `read_text_from_host`.
+A small helper `_resolve_target_path(path: str, workdir: str,
+host_home: str) -> str` implements the three-form convention:
+
+- Empty `path` → raise `ValueError`.
+- `path` starts with `/` → return as-is (absolute host path).
+- `path == "~"` or starts with `~/` → return
+  `<host_home> + rest` (home-relative; `~` is expanded once,
+  no further user expansion attempted).
+- Otherwise → workdir-relative:
+  - Reject `..` segments and any resolved path that escapes
+    `<workdir>` (sandbox).
+  - Return `<workdir>/<path>`.
+
+`host_home` is queried lazily and cached on the `Host` (one
+`pwd` / `echo $HOME` per session). For `LocalHost`, it's
+`os.path.expanduser("~")` on the worker.
+
+Used by `HookContext.copy_file`, `read_from_host`, and
+`read_text_from_host`.
 
 ## `optio-demo` rewrite
 
@@ -516,9 +582,30 @@ Exercises `HookContext` against fake `Host` implementations:
 
 - `copy_file` with each source type (path, bytes, GridFS blob);
   asserts `put_file_to_host` is called with the resolved absolute target.
-- `copy_file` rejects absolute targets, `..` segments, empty paths.
+- `copy_file` path-resolution matrix:
+  - Workdir-relative `"data/foo.yaml"` → resolves to
+    `<workdir>/data/foo.yaml`.
+  - Absolute `"/usr/local/bin/tool"` → passed as-is to
+    `put_file_to_host`.
+  - Home-relative `"~/.local/bin/tool"` → expanded using cached
+    `host_home` to `<host_home>/.local/bin/tool`.
+- `copy_file` rejects: empty target, workdir-relative targets with
+  `..` segments, workdir-relative paths whose resolved form escapes
+  the workdir.
+- `copy_file` does NOT reject `..` in absolute or `~/`-prefixed
+  targets (consumer-trusted forms).
 - `copy_file` emits `"Copying <basename>..."` and percent updates
   (asserted against a recording `ctx.report_progress` fake).
+- `copy_file(skip_if_unchanged=True)` matrix:
+  - Target does not exist → normal copy proceeds; "Verifying ..." +
+    "Copying ..." messages emitted.
+  - Target exists with matching SHA → transfer is skipped;
+    "Verifying ..." then "Already up to date: ..." messages
+    emitted; no bytes transferred (assert `put_file_to_host` records
+    a skip).
+  - Target exists with different SHA → fall through to copy;
+    "Verifying ..." + "Copying ..." both emitted.
+  - Source variant covered for each: path, bytes, GridFS blob.
 - `run_on_host` returns stdout string on exit 0 with `check=True`.
 - `run_on_host` raises `HostCommandError` on non-zero exit with
   `check=True`; the error carries exit code + stderr.
@@ -575,12 +662,25 @@ SSH harness for `RemoteHost` and a tempdir for `LocalHost`:
 - `LocalHost.put_file_to_host` from path / bytes / GridFS blob, target
   absolute → file present, atomic-rename used (assert no `*.tmp`
   left around on success or simulated mid-write failure).
+- `LocalHost.put_file_to_host(skip_if_unchanged=True)`:
+  - Missing target → copy proceeds.
+  - Target exists, same content → transfer skipped (assert no
+    bytes-written / no-temp-file-created).
+  - Target exists, different content → copy proceeds, replaces target
+    atomically.
 - `LocalHost.fetch_bytes_from_host` returns full bytes.
 - `LocalHost.run_command` returns `RunResult` with correct
   stdout/stderr/exit_code; `cwd` is honored.
 - `RemoteHost.put_file_to_host` (against the existing test SSH
-  harness) — same matrix as LocalHost.
+  harness) — same matrix as LocalHost, including the
+  `skip_if_unchanged` cases (asserting `sha256sum` is invoked over
+  SSH for the existing-target hash).
 - `RemoteHost.run_command` honors cwd and env via asyncssh.
+- `host_home` resolution: cached lookup via `pwd` /
+  `os.path.expanduser("~")` returns expected home directory; tilde
+  expansion in `put_file_to_host`-callers (the `HookContext` layer
+  exercises this) lands files at the correct path on both host
+  types.
 - **Regression test for `install_opencode_binary`:** unchanged
   externally — still uploads, SHA-256 skips, chmods. Internally now
   goes through `put_file_to_host`. Test asserts the binary lands at
@@ -618,8 +718,16 @@ regression (e.g. importing fails after rename).
 - **Throttling of progress callbacks.** A 10 Hz cap is a guess;
   during implementation we may discover the optio-ui rendering layer
   prefers a different rate. Tunable via a module constant.
-- **Workdir-relative `..` policy.** We reject any `..` segment, even
-  ones that resolve safely back inside the workdir. Strictly
-  conservative; if a real consumer scenario needs `..` we can
-  loosen by resolving and checking the absolute result against the
-  workdir prefix.
+- **Workdir-relative `..` policy.** We reject any `..` segment in
+  workdir-relative paths, even ones that resolve safely back inside
+  the workdir — strictly conservative. Absolute and `~/`-prefixed
+  paths are not subject to this check (consumer-trusted forms).
+  If a real consumer scenario needs `..` inside workdir-relative
+  paths, we can loosen by resolving and checking the absolute
+  result against the workdir prefix.
+- **`sha256sum` availability for `skip_if_unchanged` over SSH.**
+  Most Linux hosts have `sha256sum`; macOS hosts have `shasum -a 256`
+  but not `sha256sum` by default. If neither is available,
+  `put_file_to_host` falls back to streaming the target via SFTP
+  and hashing locally — slower but correct. Plan step will pin which
+  detection logic we use.
