@@ -216,13 +216,14 @@ class ProcessContext:
 
     async def delete_blob(self, file_id: ObjectId) -> None:
         """Delete a GridFS file. No-op if the file does not exist."""
+        import gridfs.errors
         bucket = self._gridfs()
         try:
             await bucket.delete(file_id)
+        except gridfs.errors.NoFile:
+            pass  # already gone; nothing to do
         except Exception:
-            # motor raises NoFile when the id is unknown; swallow — helper is
-            # convenience API for executors doing best-effort cleanup.
-            pass
+            _log.warning("delete_blob(%s): suppressed error during cleanup", file_id, exc_info=True)
 
     async def run_child(
         self,

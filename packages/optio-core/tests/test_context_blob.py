@@ -1,7 +1,7 @@
 """Tests for ProcessContext GridFS blob helpers."""
 
 import asyncio
-import io
+import hashlib
 import os
 
 from bson import ObjectId
@@ -88,7 +88,6 @@ async def test_store_blob_large_roundtrip(mongo_db):
 
     chunk = os.urandom(1 << 20)  # 1 MiB of random data
     total = 100
-    import hashlib
     hasher = hashlib.sha256()
 
     async with ctx.store_blob("big") as writer:
