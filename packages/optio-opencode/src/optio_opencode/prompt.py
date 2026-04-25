@@ -26,6 +26,14 @@ must start with one of:
 - `ERROR` — you cannot continue. May be followed by an optional
   message: `ERROR: provider auth failed`.
 
+**Every entry must end with a newline character (`\\n`).** The host
+reads `optio.log` with a line-oriented tailer that only emits a line
+once it sees `\\n`; an entry written without a trailing newline (e.g.
+via `printf 'DONE'`) will be buffered indefinitely and never reach the
+host. Use `echo`, `>>` redirection of a heredoc, or any other mechanism
+that guarantees a trailing newline. If unsure, double-check with
+`tail -c 1 ./optio.log` — the result must be a newline.
+
 After writing `DONE` or `ERROR`, the session will terminate. Do not
 write further lines.
 
