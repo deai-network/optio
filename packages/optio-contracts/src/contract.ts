@@ -92,13 +92,13 @@ export const processesContract = c.router({
     path: '/processes/:id/launch',
     pathParams: z.object({ id: ObjectIdSchema }),
     query: InstanceQuerySchema,
-    body: c.noBody(),
+    body: z.object({ resume: z.boolean().optional() }).optional(),
     responses: {
       200: ProcessSchema,
       404: ErrorSchema,
       409: ErrorSchema,
     },
-    summary: 'Launch a process',
+    summary: 'Launch a process (optionally in resume mode)',
   },
   cancel: {
     method: 'POST',
