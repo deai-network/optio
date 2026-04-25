@@ -172,11 +172,19 @@ class Optio:
         self._executor._task_registry.pop(process_id, None)
 
     async def launch(self, process_id: str, resume: bool = False) -> None:
-        """Fire-and-forget launch. Returns immediately, process runs in background."""
+        """Fire-and-forget launch. Returns immediately, process runs in background.
+
+        If resume is True, the task is launched with ctx.resume=True so it can
+        restore previous state rather than start fresh.
+        """
         asyncio.create_task(self._executor.launch_process(process_id, resume=resume))
 
     async def launch_and_wait(self, process_id: str, resume: bool = False) -> None:
-        """Launch and wait for the process to complete. Full progress tracking."""
+        """Launch and wait for the process to complete. Full progress tracking.
+
+        If resume is True, the task is launched with ctx.resume=True so it can
+        restore previous state rather than start fresh.
+        """
         await self._executor.launch_process(process_id, resume=resume)
 
     async def cancel(self, process_id: str) -> None:

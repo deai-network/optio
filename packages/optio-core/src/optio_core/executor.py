@@ -41,7 +41,11 @@ class Executor:
             self._task_registry.pop(process_id, None)
 
     async def launch_process(self, process_id: str, resume: bool = False) -> str | None:
-        """Launch a top-level process by processId. Returns end state or None."""
+        """Launch a top-level process by processId. Returns end state or None.
+
+        If resume is True, ctx.resume will be True inside the execute function,
+        signalling that the task should restore previous state rather than start fresh.
+        """
         proc = await get_process_by_process_id(self._db, self._prefix, process_id)
         if proc is None:
             return None
