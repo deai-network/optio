@@ -94,5 +94,6 @@ def get_tasks() -> list[TaskInstance]:
                 "remotely; otherwise runs locally."
             ),
             ui_widget="iframe",
+            supports_resume=True,
         )
     ]
