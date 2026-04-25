@@ -4,9 +4,10 @@ import asyncio
 import logging as _logging
 import os
 import time
+from contextlib import asynccontextmanager
 from typing import Any, Callable, Awaitable, TYPE_CHECKING
 from bson import ObjectId
-from motor.motor_asyncio import AsyncIOMotorDatabase
+from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorGridFSBucket
 
 from optio_core.models import Progress, ChildResult, ChildProgressInfo, InnerAuth
 
@@ -14,6 +15,24 @@ if TYPE_CHECKING:
     from optio_core.executor import Executor
 
 _log = _logging.getLogger("optio_core.context")
+
+
+class _GridInWrapper:
+    """Thin wrapper around a motor GridIn upload stream.
+
+    Exposes ``file_id`` as a convenience alias for the underlying ``_id``
+    attribute so callers don't need to use a private-looking name.
+    """
+
+    def __init__(self, stream) -> None:
+        self._stream = stream
+
+    @property
+    def file_id(self) -> ObjectId:
+        return self._stream._id
+
+    def __getattr__(self, name: str):
+        return getattr(self._stream, name)
 
 
 class ProcessContext:
@@ -156,6 +175,54 @@ class ProcessContext:
             {"_id": self._process_oid},
             {"$set": {"hasSavedState": value}},
         )
+
+    def _gridfs(self) -> AsyncIOMotorGridFSBucket:
+        return AsyncIOMotorGridFSBucket(self._db)
+
+    @asynccontextmanager
+    async def store_blob(self, name: str):
+        """Open a GridFS upload stream tagged with processId + prefix.
+
+        Usage:
+            async with ctx.store_blob("session") as writer:
+                await writer.write(chunk)
+                # ... more writes
+            # After the `async with` block exits cleanly, writer.file_id is the
+            # ObjectId of the stored file.
+        """
+        bucket = self._gridfs()
+        metadata = {
+            "processId": str(self._process_oid),
+            "prefix": self._prefix,
+            "name": name,
+        }
+        async with bucket.open_upload_stream(name, metadata=metadata) as stream:
+            yield _GridInWrapper(stream)
+
+    @asynccontextmanager
+    async def load_blob(self, file_id: ObjectId):
+        """Open a GridFS download stream for `file_id`.
+
+        Usage:
+            async with ctx.load_blob(file_id) as reader:
+                chunk = await reader.read(1 << 20)
+        """
+        bucket = self._gridfs()
+        stream = await bucket.open_download_stream(file_id)
+        try:
+            yield stream
+        finally:
+            stream.close()
+
+    async def delete_blob(self, file_id: ObjectId) -> None:
+        """Delete a GridFS file. No-op if the file does not exist."""
+        bucket = self._gridfs()
+        try:
+            await bucket.delete(file_id)
+        except Exception:
+            # motor raises NoFile when the id is unknown; swallow — helper is
+            # convenience API for executors doing best-effort cleanup.
+            pass
 
     async def run_child(
         self,
