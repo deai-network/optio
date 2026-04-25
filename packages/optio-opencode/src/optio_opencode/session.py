@@ -15,6 +15,7 @@ import logging
 import os
 import secrets
 import tempfile
+from typing import AsyncIterator
 
 from optio_core.context import ProcessContext
 from optio_core.models import BasicAuth, TaskInstance
@@ -30,7 +31,13 @@ from optio_opencode.logparse import (
     parse_log_line,
     validate_deliverable_path,
 )
+from optio_opencode.paths import local_task_dir, remote_task_dir
 from optio_opencode.prompt import compose_agents_md
+from optio_opencode.snapshots import (
+    insert_snapshot,
+    load_latest_snapshot,
+    prune_snapshots,
+)
 from optio_opencode.types import DeliverableCallback, OpencodeTaskConfig
 
 
@@ -47,28 +54,63 @@ class _SessionFailed(Exception):
 
 async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) -> None:
     """Execute function body for one optio-opencode task instance."""
-
-    host: Host
+    # --- per-task filesystem layout ---------------------------------------
     if config.ssh is None:
-        host = LocalHost(workdir=_pick_local_workdir())
+        task_dir = local_task_dir(ctx.process_id)
+        workdir = os.path.join(task_dir, "workdir")
+        opencode_db = os.path.join(task_dir, "opencode.db")
+        os.makedirs(task_dir, exist_ok=True)
+        os.makedirs(workdir, exist_ok=True)
+        host: Host = LocalHost(workdir=workdir)
     else:
-        host = RemoteHost(ssh_config=config.ssh)
+        task_dir = remote_task_dir(ctx.process_id)
+        workdir = f"{task_dir}/workdir"
+        opencode_db = f"{task_dir}/opencode.db"
+        host = RemoteHost(ssh_config=config.ssh, workdir=workdir)
 
     password = secrets.token_urlsafe(32)
     process: LaunchedProcess | None = None
     cancelled = False
+    preserved_session_id: str | None = None
+    session_id: str | None = None
+
+    # --- resume decision --------------------------------------------------
+    resume_requested = bool(getattr(ctx, "resume", False))
+    snapshot: dict | None = None
+    if resume_requested:
+        snapshot = await load_latest_snapshot(
+            ctx._db, prefix=ctx._prefix, process_id=ctx.process_id,
+        )
+    resuming = snapshot is not None
 
     try:
         await host.connect()
-
-        # --- provision ---------------------------------------------------
         await host.setup_workdir()
-        await host.write_text(
-            "AGENTS.md", compose_agents_md(config.consumer_instructions)
-        )
-        await host.write_text(
-            "opencode.json", json.dumps(config.opencode_config, indent=2)
-        )
+        await host.remove_file(opencode_db)
+
+        if resuming:
+            try:
+                await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
+                session_bytes = await _read_blob_bytes(ctx, snapshot["sessionBlobId"])
+                await host.opencode_import(opencode_db, session_bytes)
+                preserved_session_id = snapshot["sessionId"]
+            except Exception:
+                _LOG.exception(
+                    "resume restore failed; falling back to fresh-start path "
+                    "(Mongo blob preserved for inspection)",
+                )
+                await host.remove_file(opencode_db)
+                resuming = False
+                preserved_session_id = None
+
+        if not resuming:
+            await host.write_text(
+                "AGENTS.md", compose_agents_md(config.consumer_instructions),
+            )
+            await host.write_text(
+                "opencode.json", json.dumps(config.opencode_config, indent=2),
+            )
+            await ctx.clear_has_saved_state()
 
         # --- install ----------------------------------------------------
         # When OPTIO_OPENCODE_BINARY_DIR is set, we ship a platform-matched
@@ -113,24 +155,29 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         else:
             await host.ensure_opencode_installed(config.install_if_missing)
 
-        # --- launch -----------------------------------------------------
+        # --- launch ------------------------------------------------------
         ctx.report_progress(None, "Launching opencode…")
         process = await host.launch_opencode(
-            password=password, ready_timeout_s=READY_TIMEOUT_S
+            password=password,
+            ready_timeout_s=READY_TIMEOUT_S,
+            env={"OPENCODE_DB": opencode_db},
         )
 
-        # --- tunnel + widget registration -------------------------------
+        # --- tunnel + widget registration --------------------------------
         worker_port = await host.establish_tunnel(process.opencode_port)
 
-        # Pre-create a single opencode session for this task instance.  All
-        # dashboards that embed this widget navigate to the same session ID
-        # via the iframe URL, so concurrent viewers share live state (events
-        # over SSE) rather than each creating a fresh isolated session on
-        # load.  Matches optio's mental model: one background process, N
-        # observers.
-        session_id = await _create_opencode_session(
-            worker_port, password, host.workdir
-        )
+        if preserved_session_id is not None:
+            session_id = preserved_session_id
+        else:
+            # Pre-create a single opencode session for this task instance.
+            # All dashboards that embed this widget navigate to the same
+            # session ID via the iframe URL, so concurrent viewers share
+            # live state (events over SSE) rather than each creating a fresh
+            # isolated session on load.  Matches optio's mental model: one
+            # background process, N observers.
+            session_id = await _create_opencode_session(
+                worker_port, password, host.workdir,
+            )
 
         await ctx.set_widget_upstream(
             f"http://127.0.0.1:{worker_port}",
@@ -145,17 +192,14 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         # widget at mount time.
         _workdir_b64 = (
             base64.urlsafe_b64encode(host.workdir.encode("utf-8"))
-            .decode("ascii")
-            .rstrip("=")
+            .decode("ascii").rstrip("=")
         )
-        await ctx.set_widget_data(
-            {
-                "iframeSrc": f"{{widgetProxyUrl}}{_workdir_b64}/session/{session_id}",
-                "localStorageOverrides": {
-                    "opencode.settings.dat:defaultServerUrl": "{widgetProxyUrl}",
-                },
-            }
-        )
+        await ctx.set_widget_data({
+            "iframeSrc": f"{{widgetProxyUrl}}{_workdir_b64}/session/{session_id}",
+            "localStorageOverrides": {
+                "opencode.settings.dat:defaultServerUrl": "{widgetProxyUrl}",
+            },
+        })
         ctx.report_progress(None, "opencode is live")
 
         # --- run --------------------------------------------------------
@@ -215,12 +259,26 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         raise RuntimeError(str(fail)) from None
 
     finally:
-        # Teardown — aggressive if we got cancelled, polite otherwise.
         if process is not None:
             try:
                 await host.terminate_opencode(process, aggressive=cancelled)
             except Exception:  # noqa: BLE001
                 _LOG.exception("terminate_opencode failed")
+
+        if session_id is not None:
+            try:
+                await _capture_snapshot(
+                    ctx, host,
+                    session_id=preserved_session_id or session_id,
+                    opencode_db=opencode_db,
+                    end_state="cancelled" if cancelled else "done",
+                    workdir_exclude=config.workdir_exclude,
+                )
+            except Exception:  # noqa: BLE001
+                _LOG.exception(
+                    "snapshot capture failed; proceeding with workdir wipe",
+                )
+
         try:
             await host.cleanup_workdir(aggressive=cancelled)
         except Exception:  # noqa: BLE001
@@ -229,6 +287,75 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             await host.disconnect()
         except Exception:  # noqa: BLE001
             _LOG.exception("host.disconnect failed")
+
+
+# --- helpers ---------------------------------------------------------------
+
+
+async def _stream_blob(ctx: ProcessContext, blob_id) -> "AsyncIterator[bytes]":
+    async with ctx.load_blob(blob_id) as reader:
+        while True:
+            chunk = await reader.read(1 << 20)
+            if not chunk:
+                break
+            yield chunk
+
+
+async def _read_blob_bytes(ctx: ProcessContext, blob_id) -> bytes:
+    out = bytearray()
+    async with ctx.load_blob(blob_id) as reader:
+        while True:
+            chunk = await reader.read(1 << 20)
+            if not chunk:
+                break
+            out.extend(chunk)
+    return bytes(out)
+
+
+async def _capture_snapshot(
+    ctx: ProcessContext,
+    host: Host,
+    *,
+    session_id: str,
+    opencode_db: str,
+    end_state: str,
+    workdir_exclude: list[str] | None,
+) -> None:
+    session_json = await host.opencode_export(opencode_db, session_id)
+
+    async with ctx.store_blob("workdir") as wwriter:
+        async for chunk in host.archive_workdir(workdir_exclude):
+            await wwriter.write(chunk)
+        workdir_blob_id = wwriter.file_id
+
+    async with ctx.store_blob("session") as swriter:
+        await swriter.write(session_json)
+        session_blob_id = swriter.file_id
+
+    await insert_snapshot(
+        ctx._db,
+        prefix=ctx._prefix,
+        process_id=ctx.process_id,
+        end_state=end_state,
+        session_id=session_id,
+        session_blob_id=session_blob_id,
+        workdir_blob_id=workdir_blob_id,
+        deliverables_emitted=[],
+    )
+    pruned = await prune_snapshots(
+        ctx._db, prefix=ctx._prefix, process_id=ctx.process_id,
+    )
+    for p in pruned:
+        try:
+            await ctx.delete_blob(p["sessionBlobId"])
+        except Exception:  # noqa: BLE001
+            _LOG.exception("delete_blob(session) failed")
+        try:
+            await ctx.delete_blob(p["workdirBlobId"])
+        except Exception:  # noqa: BLE001
+            _LOG.exception("delete_blob(workdir) failed")
+
+    await ctx.mark_has_saved_state()
 
 
 async def _tail_and_dispatch(

@@ -115,10 +115,11 @@ def _supply_scenario(monkeypatch):
     orig_launch = host_mod.LocalHost.launch_opencode
     scenario_holder: dict = {"name": "happy"}
 
-    async def _launch(self, password, ready_timeout_s, extra_args=None):
+    async def _launch(self, password, ready_timeout_s, extra_args=None, env=None):
         return await orig_launch(
             self, password, ready_timeout_s,
             extra_args=["--scenario", scenario_holder["name"]],
+            env=env,
         )
     monkeypatch.setattr(host_mod.LocalHost, "launch_opencode", _launch)
     return scenario_holder
