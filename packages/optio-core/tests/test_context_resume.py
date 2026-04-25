@@ -3,9 +3,6 @@
 import asyncio
 import logging
 
-import pytest
-from bson import ObjectId
-
 from optio_core.context import ProcessContext
 from optio_core.models import TaskInstance
 from optio_core.store import upsert_process
@@ -104,3 +101,4 @@ async def test_clear_has_saved_state_warns_when_unsupported(mongo_db, caplog):
     # No write happened, state unchanged from its $setOnInsert value (False).
     updated = await mongo_db["test_processes"].find_one({"_id": proc["_id"]})
     assert updated["hasSavedState"] is False
+    assert any("resume" in rec.getMessage().lower() for rec in caplog.records)
