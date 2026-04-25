@@ -96,6 +96,7 @@ class Host(Protocol):
         password: str,
         ready_timeout_s: float,
         extra_args: list[str] | None = None,
+        env: dict[str, str] | None = None,
     ) -> LaunchedProcess:
         """Launch ``opencode web`` in the workdir with the given password.
 
@@ -105,6 +106,9 @@ class Host(Protocol):
 
         ``extra_args`` is a test-only hook for substituting a test-double
         binary for opencode; production callers omit it.
+
+        ``env`` is an optional dict of extra environment variables to
+        merge into the subprocess environment (after the defaults).
         """
 
     async def establish_tunnel(self, opencode_port: int) -> int:
@@ -140,6 +144,26 @@ class Host(Protocol):
         aggressive=True: fire-and-forget; return as soon as the call
         has been dispatched.
         """
+
+    async def opencode_import(
+        self, opencode_db_path: str, session_json: bytes,
+    ) -> None: ...
+
+    async def opencode_export(
+        self, opencode_db_path: str, session_id: str,
+    ) -> bytes: ...
+
+    def archive_workdir(
+        self, exclude: list[str] | None,
+    ) -> AsyncIterator[bytes]: ...
+    # NB: archive_workdir is a *plain* method that returns an AsyncIterator,
+    # not an async method. Callers iterate via `async for chunk in host.archive_workdir(...)`.
+
+    async def restore_workdir(
+        self, stream: AsyncIterator[bytes],
+    ) -> None: ...
+
+    async def remove_file(self, path: str) -> None: ...
 
 
 # --- implementation -----------------------------------------------------
@@ -204,9 +228,10 @@ class LocalHost:
         password: str,
         ready_timeout_s: float,
         extra_args: list[str] | None = None,
+        env: dict[str, str] | None = None,
     ) -> LaunchedProcess:
-        env = os.environ.copy()
-        env["OPENCODE_SERVER_PASSWORD"] = password
+        proc_env = os.environ.copy()
+        proc_env["OPENCODE_SERVER_PASSWORD"] = password
         # Suppress opencode's automatic browser-open.  The `open` npm package
         # on Linux defers to xdg-open, which on GNOME/KDE ignores $BROWSER and
         # uses the desktop environment's default handler.  Shadow xdg-open in
@@ -219,10 +244,12 @@ class LocalHost:
             with open(_p, "w") as _fh:
                 _fh.write("#!/bin/sh\nexit 0\n")
             os.chmod(_p, 0o755)
-        env["PATH"] = _bin + os.pathsep + env.get("PATH", "")
+        proc_env["PATH"] = _bin + os.pathsep + proc_env.get("PATH", "")
         # Defense in depth: $BROWSER is honored by xdg-open only in
         # non-desktop sessions, but setting it costs nothing.
-        env["BROWSER"] = "true"
+        proc_env["BROWSER"] = "true"
+        if env:
+            proc_env.update(env)
         # When using the real opencode binary, "web" is a subcommand.
         # When using the fake_opencode.py test double, there is no "web".
         # Discriminator is the basename of the executable: "opencode" (or
@@ -239,7 +266,7 @@ class LocalHost:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=self.workdir,
-            env=env,
+            env=proc_env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
@@ -331,6 +358,76 @@ class LocalHost:
         # makes no difference.
         if os.path.exists(self.workdir):
             shutil.rmtree(self.workdir, ignore_errors=True)
+
+    async def opencode_import(
+        self, opencode_db_path: str, session_json: bytes,
+    ) -> None:
+        """Write `session_json` to a scratch file and run `opencode import`."""
+        scratch = os.path.join(os.path.dirname(opencode_db_path), "snapshot.json")
+        with open(scratch, "wb") as fh:
+            fh.write(session_json)
+        try:
+            env = os.environ.copy()
+            env["OPENCODE_DB"] = opencode_db_path
+            proc = await asyncio.create_subprocess_exec(
+                *self._opencode_cmd, "import", scratch,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"opencode import failed (exit {proc.returncode}): "
+                    f"{stderr.decode('utf-8', 'replace')}"
+                )
+        finally:
+            try:
+                os.unlink(scratch)
+            except OSError:
+                pass
+
+    async def opencode_export(
+        self, opencode_db_path: str, session_id: str,
+    ) -> bytes:
+        env = os.environ.copy()
+        env["OPENCODE_DB"] = opencode_db_path
+        proc = await asyncio.create_subprocess_exec(
+            *self._opencode_cmd, "export", session_id,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"opencode export failed (exit {proc.returncode}): "
+                f"{stderr.decode('utf-8', 'replace')}"
+            )
+        return stdout
+
+    def archive_workdir(
+        self, exclude: list[str] | None,
+    ) -> "AsyncIterator[bytes]":
+        from optio_opencode.archive import yield_workdir_archive
+        return yield_workdir_archive(self.workdir, exclude=exclude)
+
+    async def restore_workdir(
+        self, stream: "AsyncIterator[bytes]",
+    ) -> None:
+        from optio_opencode.archive import consume_workdir_archive
+        await consume_workdir_archive(stream, self.workdir)
+
+    async def remove_file(self, path: str) -> None:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "LocalHost.remove_file(%r) failed: %r", path, exc,
+            )
 
     async def detect_target(self) -> OpencodeTarget:
         import platform
