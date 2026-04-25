@@ -21,9 +21,76 @@ Scenarios are driven by the CWD containing ``optio.log`` and
 
 import argparse
 import asyncio
+import json
 import os
 import socket
 import sys
+
+
+# ---------------------------------------------------------------------------
+# Early dispatch: import / export / --env-dump
+# These subcommands are handled synchronously before the asyncio `web` path
+# runs so they can be invoked from simple subprocess calls in tests.
+# ---------------------------------------------------------------------------
+
+def _handle_env_dump() -> None:
+    """If --env-dump <path> is in sys.argv, write os.environ as JSON to <path>
+    and remove those two arguments so subsequent parsing is not confused."""
+    argv = sys.argv[1:]
+    if "--env-dump" not in argv:
+        return
+    idx = argv.index("--env-dump")
+    if idx + 1 >= len(argv):
+        sys.exit("--env-dump requires a path argument")
+    dump_path = argv[idx + 1]
+    with open(dump_path, "w", encoding="utf-8") as fh:
+        json.dump(dict(os.environ), fh)
+    # Remove --env-dump <path> from sys.argv so the rest of the script sees
+    # clean args.
+    del sys.argv[sys.argv.index("--env-dump") : sys.argv.index("--env-dump") + 2]
+
+
+def _cmd_import(path: str) -> None:
+    """Read a JSON session file and store it in $OPENCODE_DB."""
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    db_path = os.environ.get("OPENCODE_DB")
+    if not db_path:
+        sys.exit("OPENCODE_DB is not set")
+    with open(db_path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+    sys.exit(0)
+
+
+def _cmd_export(session_id: str) -> None:
+    """Write a minimal session JSON for session_id to stdout."""
+    db_path = os.environ.get("OPENCODE_DB")
+    if db_path and os.path.isfile(db_path):
+        with open(db_path, encoding="utf-8") as fh:
+            stored = json.load(fh)
+        # If the stored data has the requested id, return it enriched;
+        # otherwise fall through to the minimal stub.
+        if stored.get("id") == session_id:
+            print(json.dumps(stored), flush=True)
+            sys.exit(0)
+    # Minimal stub so callers always get a parseable response.
+    print(json.dumps({"id": session_id, "messages": []}), flush=True)
+    sys.exit(0)
+
+
+# Run env-dump first (it may strip args), then check for import/export.
+_handle_env_dump()
+
+if len(sys.argv) >= 2:
+    _sub = sys.argv[1]
+    if _sub == "import":
+        if len(sys.argv) < 3:
+            sys.exit("Usage: fake_opencode.py import <path>")
+        _cmd_import(sys.argv[2])
+    elif _sub == "export":
+        if len(sys.argv) < 3:
+            sys.exit("Usage: fake_opencode.py export <session-id>")
+        _cmd_export(sys.argv[2])
 
 
 SCENARIOS = {
