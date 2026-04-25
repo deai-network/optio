@@ -24,7 +24,12 @@ export function useProcessActions(options?: ProcessActionsOptions) {
   });
 
   return {
-    launch: (processId: string) => launchMutation.mutate({ params: { id: processId }, query: { database, prefix } }),
+    launch: (processId: string, opts?: { resume?: boolean }) =>
+      launchMutation.mutate({
+        params: { id: processId },
+        query: { database, prefix },
+        body: opts?.resume === true ? { resume: true } : {},
+      }),
     cancel: (processId: string) => cancelMutation.mutate({ params: { id: processId }, query: { database, prefix } }),
     dismiss: (processId: string) => dismissMutation.mutate({ params: { id: processId }, query: { database, prefix } }),
     resync: () => resyncMutation.mutate({ query: { database, prefix }, body: {} }),
