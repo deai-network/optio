@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import AsyncIterator, Callable, Protocol
 
+from optio_opencode.hook_context import RunResult
 from optio_opencode.install import (
     OpencodeTarget,
     make_target,
@@ -169,6 +170,35 @@ class Host(Protocol):
     async def opencode_version(self) -> str | None: ...
     # Run `<opencode_cmd> --version` on the host and return stripped stdout.
     # Returns None on any failure — best-effort, used only for status messages.
+
+    # --- new primitives for HookContext (Task 3+ implement these) ---
+
+    async def put_file_to_host(
+        self,
+        source,                       # str | os.PathLike | bytes | AsyncIterator[bytes]
+        absolute_target: str,
+        *,
+        expected_sha256: str | None = None,
+        skip_if_unchanged: bool = False,
+        progress_cb=None,             # Callable[[float | None, str | None], None] | None
+    ) -> None: ...
+
+    async def fetch_bytes_from_host(
+        self,
+        absolute_path: str,
+        *,
+        progress_cb=None,
+    ) -> bytes: ...
+
+    async def run_command(
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> RunResult: ...
+
+    async def resolve_host_home(self) -> str: ...
 
 
 # --- implementation -----------------------------------------------------
