@@ -214,3 +214,14 @@ async def test_remote_fetch_bytes_missing_raises_filenotfound(remote_host):
         await remote_host.fetch_bytes_from_host(
             remote_host.workdir + "/no_such",
         )
+
+
+async def test_remote_resolve_host_home_resolves_and_caches(remote_host):
+    home1 = await remote_host.resolve_host_home()
+    assert home1.startswith("/")  # absolute
+    # The harness uses linuxserver/openssh-server which sets $HOME=/config
+    # for the optiotest user (not /home/optiotest).
+    assert home1 == "/config"
+    # Second call uses cache; just verifies same return value.
+    home2 = await remote_host.resolve_host_home()
+    assert home2 == home1

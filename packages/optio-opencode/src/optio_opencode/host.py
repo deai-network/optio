@@ -732,6 +732,7 @@ class RemoteHost:
         # remote workdir; launch_opencode uses it instead of `opencode` on
         # PATH when not None.
         self._opencode_exec: str = "opencode"
+        self._host_home_cache: str | None = None
 
     async def connect(self) -> None:
         self._conn = await asyncssh.connect(
@@ -1181,6 +1182,20 @@ class RemoteHost:
             return data
         finally:
             sftp.exit()
+
+    async def resolve_host_home(self) -> str:
+        if self._host_home_cache is not None:
+            return self._host_home_cache
+        assert self._conn is not None
+        result = await self._conn.run("printf '%s' \"$HOME\"", check=False)
+        if result.exit_status != 0 or not result.stdout:
+            # Fallback for very stripped-down containers.
+            result = await self._conn.run("getent passwd \"$USER\" | cut -d: -f6", check=False)
+        home = (result.stdout or "").strip()
+        if not home or not home.startswith("/"):
+            raise RuntimeError(f"could not resolve $HOME on remote host: {result.stdout!r}")
+        self._host_home_cache = home
+        return home
 
     async def run_command(
         self,
