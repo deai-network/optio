@@ -117,7 +117,17 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             await host.write_text(
                 "opencode.json", json.dumps(config.opencode_config, indent=2),
             )
-            await ctx.clear_has_saved_state()
+            # Note: do NOT call ctx.clear_has_saved_state() here. The spec
+            # described it as "belt-and-braces", but in practice it makes
+            # `hasSavedState` track the live session rather than the durable
+            # snapshot collection. A worker crash mid-Restart would then
+            # leave hasSavedState=false even though perfectly good prior
+            # snapshots are still in Mongo, hiding the Resume affordance
+            # from the UI. The flag is now only ever flipped true by
+            # mark_has_saved_state at terminal capture; resume's stale-flag
+            # self-healing (snapshot lookup returns None → fresh-start
+            # fallback) handles the rare case where the flag is true but
+            # no snapshot exists.
 
         # --- install ----------------------------------------------------
         # When OPTIO_OPENCODE_BINARY_DIR is set, we ship a platform-matched
