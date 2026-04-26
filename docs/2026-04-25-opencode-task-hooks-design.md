@@ -1,6 +1,6 @@
 # Opencode Task Hooks: `before_execute` / `after_execute`
 
-**Base revision:** `39d1692bebf021057fccde67af22ff1a58b53d23` on branch `main` (as of 2026-04-25T14:52:26Z)
+**Base revision:** `39d1692bebf021057fccde67af22ff1a58b53d23` on branch `main`, later updated to reflect `c3e8a080bd8c70691b6e72249840aa49014e5518` (as of 2026-04-26T00:57:45Z)
 
 ## Summary
 
@@ -77,8 +77,13 @@ for doing so, instead of having to build out their own SFTP plumbing.
   functions returning `None`.
 - No declarative "list of files to deliver" alternative — the
   imperative hook approach is the only path.
-- No changes to the resume feature or other in-flight work; this is
-  purely additive in the opencode-task surface.
+- No functional changes to the resume feature. Hooks slot into
+  the existing post-resume pipeline without modifying snapshot
+  capture, restore, or `OpencodeTaskConfig.workdir_exclude`
+  semantics. `after_execute` runs *before* snapshot capture, so
+  consumer side-effects naturally become part of the snapshot —
+  but this is hook-author behavior, not a change to the resume
+  contract.
 - No Windows local-host support for `run_on_host` — same constraint
   the rest of optio-opencode has today.
 
@@ -101,7 +106,7 @@ class HookContext:
 
     async def copy_file(
         self,
-        source: str | os.PathLike | bytes | GridFSBlobHandle,
+        source: str | os.PathLike | bytes | ObjectId,
         target: str,
         *,
         skip_if_unchanged: bool = False,
@@ -129,10 +134,13 @@ relying on `__getattr__`.
 
 ### `copy_file(source, target, *, skip_if_unchanged=False)`
 
-- `source` is one of: a path-like (read from worker filesystem),
-  `bytes` (shipped directly without a worker temp file), or a
-  `GridFSBlobHandle` from `optio-core` (streamed through the transfer
-  primitive without materializing a worker temp file).
+- `source` is one of:
+  - a path-like (read from worker filesystem);
+  - `bytes` (shipped directly without a worker temp file); or
+  - an `ObjectId` referring to a GridFS blob — `HookContext` opens
+    the blob via the wrapped `ProcessContext`'s
+    `load_blob(file_id)` and streams chunks directly to the
+    transfer primitive without materializing a worker temp file.
 - `target` follows Unix path conventions to encode where it goes:
   - Starts with `/` → absolute host path (e.g.
     `/usr/local/bin/mytool`); used as-is.
@@ -154,8 +162,9 @@ relying on `__getattr__`.
   `install_opencode_binary` (write to `<target>.tmp`, fsync, rename).
 - `skip_if_unchanged=True`: enables a checksum-based skip. Computes
   SHA-256 of `source` (path → streaming hash, bytes → hash directly,
-  `GridFSBlobHandle` → use the blob's stored checksum if available,
-  otherwise hash on read) and SHA-256 of `target` (locally for
+  blob `ObjectId` → stream the blob via `load_blob` and hash on
+  read; we do not rely on GridFS's stored MD5 since we use SHA-256
+  for the comparison) and SHA-256 of `target` (locally for
   `LocalHost`, via remote `sha256sum` for `RemoteHost`). If hashes
   match, the transfer is skipped. If `target` does not exist, the
   copy proceeds normally. Default `False`: always copy.
@@ -212,6 +221,7 @@ class OpencodeTaskConfig:
     ssh: SSHConfig | None = None
     on_deliverable: DeliverableCallback | None = None       # signature changes
     install_if_missing: bool = True
+    workdir_exclude: list[str] | None = None                # existing (resume)
     before_execute: HookCallback | None = None              # NEW
     after_execute: HookCallback | None = None               # NEW
 ```
@@ -225,21 +235,41 @@ Hooks must be async (no sync support — keeps the contract simple).
 
 ## Pipeline integration
 
-`run_opencode_session` is extended with two hook slots:
+`run_opencode_session` is extended with two hook slots. The current
+post-resume pipeline already has more shape than the pre-hook
+baseline; the hooks slot in as follows:
 
 ```
-connect → setup_workdir + write AGENTS.md/opencode.json → install binary 
-       → [BEFORE_EXECUTE] → launch opencode → tunnel → run loop
-       → [AFTER_EXECUTE]  → cleanup_workdir → disconnect
+connect → setup_workdir
+        [if resuming: restore_workdir → opencode_import → rotate optio.log]
+        [if not resuming: write AGENTS.md/opencode.json]
+        → install binary
+        → [BEFORE_EXECUTE]
+        → launch opencode → establish tunnel → create / reuse session
+        → run loop (tail + dispatch + deliverables + cancellation)
+[finally]
+        → terminate opencode
+        → [AFTER_EXECUTE]
+        → snapshot capture (opencode_export + archive_workdir)
+        → cleanup_taskdir
+        → disconnect
 ```
 
-`before_execute` runs on a fully-provisioned host: workdir exists,
-`AGENTS.md` and `opencode.json` are written, opencode binary is on
+`before_execute` runs on a fully-provisioned host: workdir exists
+(either freshly created with `AGENTS.md` / `opencode.json`, or
+restored from a prior snapshot when resuming), opencode binary is on
 the host, but opencode itself is not yet running.
 
 `after_execute` runs after opencode has terminated (or been
-cancelled) but before the workdir is wiped — giving it a last chance
-to fetch artifacts via `read_from_host`.
+cancelled), **before snapshot capture**, and before the taskdir is
+wiped. This ordering is deliberate: side effects of `after_execute`
+(e.g., a final report file the consumer wants persisted across
+resumes) become part of the snapshot. Consumers who want
+post-snapshot work — i.e., reading the workdir without contributing
+to it — can simply choose not to write inside `after_execute`.
+
+Both hooks have `read_from_host` available, so artifact retrieval is
+possible from either slot.
 
 Implementation shape:
 
@@ -250,8 +280,13 @@ session_error: BaseException | None = None
 try:
     await host.connect()
     await host.setup_workdir()
-    await host.write_text("AGENTS.md", ...)
-    await host.write_text("opencode.json", ...)
+    if ctx.resume:
+        await host.restore_workdir(...)
+        await host.opencode_import(...)
+        # rotate optio.log
+    else:
+        await host.write_text("AGENTS.md", ...)
+        await host.write_text("opencode.json", ...)
     await _install_or_ensure_binary(host, config)
 
     hook_ctx = HookContext(ctx, host)
@@ -264,6 +299,10 @@ except BaseException as exc:
     session_error = exc
     raise
 finally:
+    # Terminate opencode first (existing behavior).
+    await _terminate_opencode_if_running(...)
+    # AFTER_EXECUTE runs before snapshot capture, so its side effects
+    # become part of the snapshot.
     if config.after_execute is not None and hook_ctx is not None:
         try:
             await config.after_execute(hook_ctx)
@@ -271,9 +310,11 @@ finally:
             if session_error is None:
                 raise
             ctx.report_progress(None, f"after_execute callback raised: {after_exc!r}")
+    # Snapshot + cleanup (existing post-resume behavior, unchanged).
+    await _capture_snapshot(...)
     if host.is_connected:
         try:
-            await host.cleanup_workdir()
+            await host.cleanup_taskdir()
         finally:
             await host.disconnect()
 ```
@@ -317,9 +358,10 @@ class Host(Protocol):
 
     async def put_file_to_host(
         self,
-        source: str | os.PathLike | bytes | GridFSBlobHandle,
+        source: str | os.PathLike | bytes | AsyncIterator[bytes],
         absolute_target: str,
         *,
+        expected_sha256: str | None = None,
         skip_if_unchanged: bool = False,
         progress_cb: Callable[[float | None, str | None], None] | None = None,
     ) -> None: ...
@@ -350,22 +392,33 @@ forward `skip_if_unchanged`, wire `progress_cb` into
 
 `put_file_to_host`'s `skip_if_unchanged=True` semantics:
 
-- Compute SHA-256 of `source` (path → streaming hash, bytes → hash
-  directly, `GridFSBlobHandle` → use stored checksum if available,
-  else hash on read).
+- Compute SHA-256 of `source`:
+  - path → streaming hash from disk;
+  - bytes → hash the buffer;
+  - `AsyncIterator[bytes]` → cannot be hashed without consuming the
+    iterator, so callers using a stream source must supply
+    `expected_sha256`. Failing to do so when `skip_if_unchanged=True`
+    is a `ValueError`.
 - Compute SHA-256 of `absolute_target` if it exists. For `LocalHost`,
   read it locally; for `RemoteHost`, run `sha256sum` over SSH (or
   fall back to streaming via SFTP if `sha256sum` is unavailable).
 - If hashes match, return without transferring. If `absolute_target`
   does not exist, proceed with normal copy.
 
+`HookContext.copy_file` handles the blob case at its own layer:
+when given an `ObjectId` source with `skip_if_unchanged=True`, it
+streams the blob once via `load_blob` to compute the SHA, then
+passes a fresh blob iterator plus the precomputed
+`expected_sha256` into `put_file_to_host`. Path and bytes sources
+flow through unchanged.
+
 ### `LocalHost` implementations
 
 - `put_file_to_host`: source-path → `aiofiles` read + write to a temp
   file alongside target, then `os.replace` for atomic rename. Bytes →
-  write to temp + replace. `GridFSBlobHandle` → stream chunks from
-  blob to temp file + replace. Progress callback fires per-chunk
-  (16 KB chunks, throttled).
+  write to temp + replace. `AsyncIterator[bytes]` → consume the
+  iterator into the temp file, then replace. Progress callback fires
+  per-chunk (16 KB chunks, throttled).
 - `fetch_bytes_from_host`: read full file via `aiofiles`. Progress
   fires once per chunk while reading.
 - `run_command`: `asyncio.create_subprocess_exec("/bin/sh", "-c",
@@ -375,11 +428,11 @@ forward `skip_if_unchanged`, wire `progress_cb` into
 ### `RemoteHost` implementations
 
 - `put_file_to_host`: SFTP put with the same atomic-rename pattern
-  already in `install_opencode_binary` (lines 663-736). For path
-  source: stream from disk. For bytes: stream from `io.BytesIO`. For
-  `GridFSBlobHandle`: stream blob chunks directly into the SFTP file
-  handle (no worker temp file). Progress fires per-chunk based on
-  transferred / total bytes.
+  the existing `install_opencode_binary` uses (write to `<target>.tmp`
+  via SFTP, then `mv -f`). For path source: stream from disk. For
+  bytes: stream from `io.BytesIO`. For `AsyncIterator[bytes]`: feed
+  iterator chunks into the SFTP write file handle (no worker temp
+  file). Progress fires per-chunk based on transferred / total bytes.
 - `fetch_bytes_from_host`: SFTP open + read in chunks; progress fires
   if SFTP stat reports a size, otherwise just the start message.
 - `run_command`: `await self._conn.run(command, cwd=cwd, env=env,
@@ -710,11 +763,13 @@ regression (e.g. importing fails after rename).
   AGENTS.md docs and the demo show the protocol form. We can
   reconsider an explicit-delegation variant later if real consumers
   trip on this.
-- **GridFS blob handle import shape.** The `GridFSBlobHandle` type
-  lives in optio-core today. We'll need it importable from
-  `optio_opencode` (re-exported) so `HookContext.copy_file`'s type
-  hint reads cleanly. If the type isn't yet a stable name, plan
-  step 1 will pin that down.
+- **Blob source double-read for `skip_if_unchanged`.** When the
+  source is an `ObjectId` and `skip_if_unchanged=True`, `HookContext`
+  reads the blob once to compute SHA, then (if hashes don't match)
+  reads it again to send. For typical small blobs this is fine. If a
+  real consumer ships large blobs frequently, we could optimise by
+  caching the SHA in the GridFS metadata at `store_blob` time (out
+  of scope for this iteration).
 - **Throttling of progress callbacks.** A 10 Hz cap is a guess;
   during implementation we may discover the optio-ui rendering layer
   prefers a different rate. Tunable via a module constant.
