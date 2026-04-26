@@ -451,6 +451,27 @@ class LocalHost:
             )
         return stdout
 
+    async def run_command(
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> RunResult:
+        proc = await asyncio.create_subprocess_exec(
+            "/bin/sh", "-c", command,
+            cwd=cwd if cwd is not None else self.workdir,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_b, stderr_b = await proc.communicate()
+        return RunResult(
+            stdout=stdout_b.decode("utf-8", errors="replace"),
+            stderr=stderr_b.decode("utf-8", errors="replace"),
+            exit_code=proc.returncode if proc.returncode is not None else -1,
+        )
+
     def archive_workdir(
         self, exclude: list[str] | None,
     ) -> "AsyncIterator[bytes]":
