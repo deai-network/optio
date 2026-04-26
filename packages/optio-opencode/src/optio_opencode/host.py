@@ -1157,3 +1157,31 @@ class RemoteHost:
             )
 
         self._opencode_exec = remote_path
+
+    async def run_command(
+        self,
+        command: str,
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> RunResult:
+        assert self._conn is not None
+        run_cwd = cwd if cwd is not None else self.workdir
+        # asyncssh's run() does not support cwd/env kwargs directly.
+        # Build a shell invocation that handles both explicitly.
+        # We use `export` so that variable expansions inside `command`
+        # (e.g. `echo "$X"`) pick up the values set by the caller.
+        exports = ""
+        if env:
+            exports = " ".join(
+                f"export {k}={shlex.quote(v)};" for k, v in env.items()
+            ) + " "
+        full_command = f"cd {shlex.quote(run_cwd)} && {exports}{command}"
+        result = await self._conn.run(full_command, check=False)
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
+        return RunResult(
+            stdout=stdout if isinstance(stdout, str) else stdout.decode("utf-8", errors="replace"),
+            stderr=stderr if isinstance(stderr, str) else stderr.decode("utf-8", errors="replace"),
+            exit_code=result.exit_status if result.exit_status is not None else -1,
+        )
