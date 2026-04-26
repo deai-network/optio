@@ -557,6 +557,61 @@ class LocalHost:
                 baseline = True
         return make_target(os_, arch, rosetta=rosetta, musl=musl, baseline=baseline)
 
+    async def put_file_to_host(
+        self,
+        source,
+        absolute_target: str,
+        *,
+        expected_sha256: str | None = None,
+        skip_if_unchanged: bool = False,
+        progress_cb=None,
+    ) -> None:
+        # skip_if_unchanged is added in Task 5; for now ignore.
+        os.makedirs(os.path.dirname(absolute_target), exist_ok=True)
+        tmp = absolute_target + ".tmp"
+        try:
+            await self._stream_source_to_path(source, tmp, progress_cb)
+            os.replace(tmp, absolute_target)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            raise
+
+    async def _stream_source_to_path(self, source, dest_path: str, progress_cb) -> None:
+        """Write `source` (path, bytes, or async iterator) to `dest_path`."""
+        chunk_size = 16 * 1024
+        if isinstance(source, (bytes, bytearray)):
+            await asyncio.to_thread(_write_bytes_sync, dest_path, bytes(source))
+            if progress_cb is not None:
+                progress_cb(100.0, None)
+            return
+        if isinstance(source, (str, os.PathLike)):
+            total = os.path.getsize(os.fspath(source))
+            written = 0
+
+            def _copy() -> None:
+                nonlocal written
+                with open(os.fspath(source), "rb") as src, open(dest_path, "wb") as dst:
+                    while True:
+                        chunk = src.read(chunk_size)
+                        if not chunk:
+                            break
+                        dst.write(chunk)
+                        written += len(chunk)
+
+            await asyncio.to_thread(_copy)
+            if progress_cb is not None and total > 0:
+                progress_cb(100.0, None)
+            return
+        # async iterator
+        with open(dest_path, "wb") as dst:
+            async for chunk in source:
+                dst.write(chunk)
+        if progress_cb is not None:
+            progress_cb(100.0, None)
+
     async def install_opencode_binary(
         self,
         local_binary_path: str,
@@ -569,6 +624,11 @@ class LocalHost:
         # Simply point _opencode_cmd at the absolute path; we don't copy.
         self._opencode_cmd = [local_binary_path]
         # No actual transfer happens locally, so `progress` is not called.
+
+
+def _write_bytes_sync(dest_path: str, data: bytes) -> None:
+    with open(dest_path, "wb") as fh:
+        fh.write(data)
 
 
 # --- RemoteHost -----------------------------------------------------
