@@ -154,3 +154,47 @@ async def test_remote_put_file_atomic_no_tmp(remote_host):
     await remote_host.put_file_to_host(b"ok", target)
     ls = await remote_host.run_command(f"ls {remote_host.workdir}")
     assert ".tmp" not in ls.stdout
+
+
+async def test_remote_put_file_skip_if_unchanged_target_missing(remote_host):
+    target = remote_host.workdir + "/skip-missing.bin"
+    await remote_host.put_file_to_host(
+        b"first", target, skip_if_unchanged=True,
+    )
+    out = await remote_host.run_command(f"cat {target}")
+    assert out.stdout == "first"
+
+
+async def test_remote_put_file_skip_if_unchanged_matches(remote_host):
+    target = remote_host.workdir + "/skip-match.bin"
+    await remote_host.put_file_to_host(b"same", target)
+    mtime1 = (await remote_host.run_command(f"stat -c %Y {target}")).stdout.strip()
+    # Wait briefly to make any mtime change observable.
+    await asyncio.sleep(1.1)
+    await remote_host.put_file_to_host(
+        b"same", target, skip_if_unchanged=True,
+    )
+    mtime2 = (await remote_host.run_command(f"stat -c %Y {target}")).stdout.strip()
+    assert mtime1 == mtime2  # untouched
+
+
+async def test_remote_put_file_skip_if_unchanged_differs(remote_host):
+    target = remote_host.workdir + "/skip-diff.bin"
+    await remote_host.put_file_to_host(b"OLD", target)
+    await remote_host.put_file_to_host(
+        b"NEW", target, skip_if_unchanged=True,
+    )
+    out = await remote_host.run_command(f"cat {target}")
+    assert out.stdout == "NEW"
+
+
+async def test_remote_put_file_iterator_skip_requires_expected_sha(remote_host):
+    target = remote_host.workdir + "/iter-skip.bin"
+
+    async def chunks():
+        yield b"abc"
+
+    with pytest.raises(ValueError, match="expected_sha256"):
+        await remote_host.put_file_to_host(
+            chunks(), target, skip_if_unchanged=True,
+        )

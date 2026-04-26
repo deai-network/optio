@@ -1195,12 +1195,33 @@ class RemoteHost:
         skip_if_unchanged: bool = False,
         progress_cb=None,
     ) -> None:
-        # skip_if_unchanged is wired up in Task 10.
         assert self._conn is not None
-        # Ensure parent directory exists.
         parent = os.path.dirname(absolute_target)
         if parent:
             await self._conn.run(f"mkdir -p {shlex.quote(parent)}", check=False)
+
+        # Iterator + skip_if_unchanged + no expected_sha256 is always a
+        # contract error, even if the target does not yet exist.
+        if (
+            skip_if_unchanged
+            and expected_sha256 is None
+            and not isinstance(source, (bytes, bytearray, str, os.PathLike))
+        ):
+            raise ValueError(
+                "skip_if_unchanged with an AsyncIterator source requires "
+                "expected_sha256"
+            )
+
+        if skip_if_unchanged:
+            target_sha = await self._sha256_of_remote(absolute_target)
+            if target_sha is not None:
+                source_sha = await self._compute_source_sha_remote(
+                    source, expected_sha256,
+                )
+                if source_sha == target_sha:
+                    if progress_cb is not None:
+                        progress_cb(None, "already up to date")
+                    return
 
         tmp = absolute_target + ".tmp"
         try:
@@ -1219,6 +1240,38 @@ class RemoteHost:
             except Exception:
                 pass
             raise
+
+    async def _sha256_of_remote(self, path: str) -> str | None:
+        """Return the SHA-256 of `path`, or None if the file does not exist."""
+        assert self._conn is not None
+        # First check existence; we want None for missing, not a sha256sum error.
+        check = await self._conn.run(
+            f"test -f {shlex.quote(path)}", check=False,
+        )
+        if check.exit_status != 0:
+            return None
+        # sha256sum on Linux containers (which is what the test harness runs);
+        # on macOS hosts use `shasum -a 256`.
+        result = await self._conn.run(
+            f"sha256sum {shlex.quote(path)} 2>/dev/null || shasum -a 256 {shlex.quote(path)}",
+            check=False,
+        )
+        if result.exit_status != 0:
+            return None
+        # Output: "<hex>  <path>"
+        first = result.stdout.split(None, 1)[0] if result.stdout else ""
+        return first if len(first) == 64 else None
+
+    async def _compute_source_sha_remote(
+        self, source, expected_sha256: str | None,
+    ) -> str:
+        if isinstance(source, (bytes, bytearray)):
+            return hashlib.sha256(bytes(source)).hexdigest()
+        if isinstance(source, (str, os.PathLike)):
+            return await asyncio.to_thread(_sha256_of_file, os.fspath(source))
+        # The upfront guard above ensures expected_sha256 is set by this point.
+        assert expected_sha256 is not None
+        return expected_sha256
 
     async def _stream_source_to_remote(self, source, remote_path: str, progress_cb) -> None:
         """SFTP-write `source` (path/bytes/async iterator) to `remote_path`."""
