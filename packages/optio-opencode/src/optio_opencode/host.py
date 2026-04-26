@@ -1185,3 +1185,66 @@ class RemoteHost:
             stderr=stderr if isinstance(stderr, str) else stderr.decode("utf-8", errors="replace"),
             exit_code=result.exit_status if result.exit_status is not None else -1,
         )
+
+    async def put_file_to_host(
+        self,
+        source,
+        absolute_target: str,
+        *,
+        expected_sha256: str | None = None,
+        skip_if_unchanged: bool = False,
+        progress_cb=None,
+    ) -> None:
+        # skip_if_unchanged is wired up in Task 10.
+        assert self._conn is not None
+        # Ensure parent directory exists.
+        parent = os.path.dirname(absolute_target)
+        if parent:
+            await self._conn.run(f"mkdir -p {shlex.quote(parent)}", check=False)
+
+        tmp = absolute_target + ".tmp"
+        try:
+            await self._stream_source_to_remote(source, tmp, progress_cb)
+            mv = await self._conn.run(
+                f"mv -f {shlex.quote(tmp)} {shlex.quote(absolute_target)}",
+                check=False,
+            )
+            if mv.exit_status not in (0, None):
+                raise RuntimeError(
+                    f"mv failed: exit {mv.exit_status}: {mv.stderr!r}"
+                )
+        except BaseException:
+            try:
+                await self._conn.run(f"rm -f {shlex.quote(tmp)}", check=False)
+            except Exception:
+                pass
+            raise
+
+    async def _stream_source_to_remote(self, source, remote_path: str, progress_cb) -> None:
+        """SFTP-write `source` (path/bytes/async iterator) to `remote_path`."""
+        sftp = await self._conn.start_sftp_client()
+        try:
+            if isinstance(source, (bytes, bytearray)):
+                async with sftp.open(remote_path, "wb") as fh:
+                    await fh.write(bytes(source))
+                if progress_cb is not None:
+                    progress_cb(100.0, None)
+                return
+            if isinstance(source, (str, os.PathLike)):
+                # asyncssh's put streams from disk and reports progress.
+                def _progress_adapter(_src, _dst, transferred, total):
+                    if progress_cb is not None and total:
+                        progress_cb(min(100.0, transferred * 100.0 / total), None)
+                await sftp.put(
+                    os.fspath(source), remote_path,
+                    progress_handler=_progress_adapter,
+                )
+                return
+            # async iterator
+            async with sftp.open(remote_path, "wb") as fh:
+                async for chunk in source:
+                    await fh.write(chunk)
+            if progress_cb is not None:
+                progress_cb(100.0, None)
+        finally:
+            sftp.exit()

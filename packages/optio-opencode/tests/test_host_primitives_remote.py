@@ -119,3 +119,38 @@ async def test_remote_run_command_env(remote_host):
         'echo "$X"', env={"X": "yes"},
     )
     assert result.stdout.strip() == "yes"
+
+
+async def test_remote_put_file_path_source(remote_host, tmp_path):
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"path-source-content")
+    target = remote_host.workdir + "/data/out.bin"
+    await remote_host.put_file_to_host(str(src), target)
+    out = await remote_host.run_command(f"cat {target}")
+    assert out.stdout == "path-source-content"
+
+
+async def test_remote_put_file_bytes_source(remote_host):
+    target = remote_host.workdir + "/x.bin"
+    await remote_host.put_file_to_host(b"bytes-content", target)
+    out = await remote_host.run_command(f"cat {target}")
+    assert out.stdout == "bytes-content"
+
+
+async def test_remote_put_file_iterator_source(remote_host):
+    target = remote_host.workdir + "/y.bin"
+
+    async def chunks():
+        yield b"part1-"
+        yield b"part2"
+
+    await remote_host.put_file_to_host(chunks(), target)
+    out = await remote_host.run_command(f"cat {target}")
+    assert out.stdout == "part1-part2"
+
+
+async def test_remote_put_file_atomic_no_tmp(remote_host):
+    target = remote_host.workdir + "/atomic.bin"
+    await remote_host.put_file_to_host(b"ok", target)
+    ls = await remote_host.run_command(f"ls {remote_host.workdir}")
+    assert ".tmp" not in ls.stdout
