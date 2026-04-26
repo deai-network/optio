@@ -927,7 +927,7 @@ async def sshd():
     try:
         yield SSHConfig(
             host="127.0.0.1",
-            user="root",
+            user="optiotest",  # matches USER_NAME in tests/docker-compose.sshd.yml
             key_path=str(priv),
             port=22222,
         )
@@ -1002,19 +1002,27 @@ In `host.py`, inside `RemoteHost`, add:
     ) -> RunResult:
         assert self._conn is not None
         run_cwd = cwd if cwd is not None else self.workdir
-        # asyncssh's run() accepts cwd / env directly.
-        result = await self._conn.run(
-            command,
-            cwd=run_cwd,
-            env=env,
-            check=False,
-        )
+        # asyncssh's run() does not support cwd/env kwargs directly.
+        # Build a shell invocation that handles both explicitly.
+        # We use `export` so that variable expansions inside `command`
+        # (e.g. `echo "$X"`) pick up the values set by the caller.
+        exports = ""
+        if env:
+            exports = " ".join(
+                f"export {k}={shlex.quote(v)};" for k, v in env.items()
+            ) + " "
+        full_command = f"cd {shlex.quote(run_cwd)} && {exports}{command}"
+        result = await self._conn.run(full_command, check=False)
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
         return RunResult(
-            stdout=result.stdout if isinstance(result.stdout, str) else result.stdout.decode("utf-8", errors="replace"),
-            stderr=result.stderr if isinstance(result.stderr, str) else result.stderr.decode("utf-8", errors="replace"),
+            stdout=stdout if isinstance(stdout, str) else stdout.decode("utf-8", errors="replace"),
+            stderr=stderr if isinstance(stderr, str) else stderr.decode("utf-8", errors="replace"),
             exit_code=result.exit_status if result.exit_status is not None else -1,
         )
 ```
+
+(Requires `import shlex` at the top of `host.py` — verify it's already there.)
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -1416,8 +1424,8 @@ git commit -m "feat(optio-opencode): RemoteHost.fetch_bytes_from_host"
 async def test_remote_resolve_host_home_resolves_and_caches(remote_host):
     home1 = await remote_host.resolve_host_home()
     assert home1.startswith("/")  # absolute
-    # The harness runs as root in the container.
-    assert home1 == "/root"
+    # The harness runs as `optiotest` (USER_NAME in docker-compose.sshd.yml).
+    assert home1 == "/home/optiotest"
     # Second call uses cache; just verifies same return value.
     home2 = await remote_host.resolve_host_home()
     assert home2 == home1
