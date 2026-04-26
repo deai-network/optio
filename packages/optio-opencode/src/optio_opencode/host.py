@@ -589,17 +589,14 @@ class LocalHost:
             return
         if isinstance(source, (str, os.PathLike)):
             total = os.path.getsize(os.fspath(source))
-            written = 0
 
             def _copy() -> None:
-                nonlocal written
                 with open(os.fspath(source), "rb") as src, open(dest_path, "wb") as dst:
                     while True:
                         chunk = src.read(chunk_size)
                         if not chunk:
                             break
                         dst.write(chunk)
-                        written += len(chunk)
 
             await asyncio.to_thread(_copy)
             if progress_cb is not None and total > 0:
