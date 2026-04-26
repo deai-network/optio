@@ -36,3 +36,21 @@ def test_deliverable_callback_is_callable_alias():
     # Type alias: the callback takes (str, str) and returns an awaitable.
     # Existence check only — no runtime behavior to assert.
     assert DeliverableCallback is not None
+
+
+def test_opencode_task_config_workdir_exclude_default_none():
+    from optio_opencode.types import OpencodeTaskConfig
+    c = OpencodeTaskConfig(consumer_instructions="hi")
+    assert c.workdir_exclude is None
+
+
+def test_opencode_task_config_workdir_exclude_empty_list():
+    from optio_opencode.types import OpencodeTaskConfig
+    c = OpencodeTaskConfig(consumer_instructions="hi", workdir_exclude=[])
+    assert c.workdir_exclude == []
+
+
+def test_opencode_task_config_workdir_exclude_custom_list():
+    from optio_opencode.types import OpencodeTaskConfig
+    c = OpencodeTaskConfig(consumer_instructions="hi", workdir_exclude=["*.log"])
+    assert c.workdir_exclude == ["*.log"]

@@ -3,6 +3,7 @@ import { useOptioBaseUrl, useOptioPrefix, useOptioDatabase } from '../context/us
 import { getWidget } from '../widgets/registry.js';
 import { ProcessTreeView } from './ProcessTreeView.js';
 import { ProcessLogPanel } from './ProcessLogPanel.js';
+import { useProcessActions } from '../hooks/useProcessActions.js';
 
 export interface ProcessDetailViewProps {
   processId: string | null | undefined;
@@ -19,6 +20,7 @@ export function ProcessDetailView({ processId }: ProcessDetailViewProps) {
   const baseUrl = useOptioBaseUrl();
   const prefix = useOptioPrefix();
   const database = useOptioDatabase();
+  const { launch } = useProcessActions();
 
   if (!processId) {
     return (
@@ -86,7 +88,11 @@ export function ProcessDetailView({ processId }: ProcessDetailViewProps) {
 
   return (
     <div data-testid="optio-detail-default">
-      <ProcessTreeView treeData={tree} sseState={{ connected }} />
+      <ProcessTreeView
+        treeData={tree}
+        sseState={{ connected }}
+        onLaunch={(id, opts) => launch(id, opts)}
+      />
       <ProcessLogPanel logs={logs} />
     </div>
   );

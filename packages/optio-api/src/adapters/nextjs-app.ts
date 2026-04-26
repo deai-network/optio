@@ -60,9 +60,10 @@ export function createOptioRouteHandlers(opts: OptioApiOptions) {
         if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
         return { status: 200 as const, body: result };
       },
-      launch: async ({ params, query }) => {
+      launch: async ({ params, query, body }) => {
         const { db, database, prefix } = resolveDb(dbOpts, query);
-        const result = await handlers.launchProcess(db, redis, database, prefix, params.id);
+        const resume = body?.resume === true;
+        const result = await handlers.launchProcess(db, redis, database, prefix, params.id, resume);
         return result as any;
       },
       cancel: async ({ params, query }) => {

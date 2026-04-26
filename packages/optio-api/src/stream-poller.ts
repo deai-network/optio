@@ -27,6 +27,8 @@ export function createListPoller(opts: StreamPollerOptions): ListPollerHandle {
           state: p.status?.state,
           percent: p.progress?.percent,
           message: p.progress?.message,
+          supportsResume: p.supportsResume ?? false,
+          hasSavedState: p.hasSavedState ?? false,
         })),
       );
 
@@ -45,6 +47,8 @@ export function createListPoller(opts: StreamPollerOptions): ListPollerHandle {
             warning: p.warning,
             metadata: p.metadata,
             depth: p.depth ?? 0,
+            supportsResume: p.supportsResume ?? false,
+            hasSavedState: p.hasSavedState ?? false,
           })),
         });
       }
@@ -92,7 +96,10 @@ export function createTreePoller(opts: TreePollerOptions): ListPollerHandle {
       const allProcs = await col.find(filter).sort({ depth: 1, order: 1 }).toArray();
       const snapshot = JSON.stringify(
         allProcs.map((p: any) => ({
-          id: p._id, status: p.status, progress: p.progress, widgetData: p.widgetData, uiWidget: p.uiWidget,
+          id: p._id, status: p.status, progress: p.progress,
+          widgetData: p.widgetData, uiWidget: p.uiWidget,
+          supportsResume: p.supportsResume ?? false,
+          hasSavedState: p.hasSavedState ?? false,
         })),
       );
 
@@ -111,6 +118,8 @@ export function createTreePoller(opts: TreePollerOptions): ListPollerHandle {
             order: p.order,
             widgetData: p.widgetData,
             uiWidget: p.uiWidget,
+            supportsResume: p.supportsResume ?? false,
+            hasSavedState: p.hasSavedState ?? false,
           })),
         });
       }

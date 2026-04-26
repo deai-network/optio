@@ -9,6 +9,11 @@ vi.mock('../hooks/useProcessStream.js', () => ({
   useProcessStream: (...args: any[]) => mockProcessStream(...args),
 }));
 
+const mockLaunch = vi.fn();
+vi.mock('../hooks/useProcessActions.js', () => ({
+  useProcessActions: () => ({ launch: mockLaunch }),
+}));
+
 // Mock context hooks — these live in useOptioContext.ts (imported by useProcessStream).
 // Tests override individual return values via `mockDatabase.mockReturnValue(...)` etc.
 const mockBaseUrl = vi.fn(() => 'http://host');
@@ -30,6 +35,7 @@ describe('ProcessDetailView', () => {
   beforeEach(() => {
     _clearWidgetRegistry();
     mockProcessStream.mockReset();
+    mockLaunch.mockReset();
     mockBaseUrl.mockReturnValue('http://host');
     mockPrefix.mockReturnValue('optio');
     mockDatabase.mockReturnValue('mydb');
@@ -247,4 +253,5 @@ describe('ProcessDetailView', () => {
     expect(screen.queryByTestId('my-widget')).toBeNull();
     expect(screen.getByTestId('optio-detail-default')).toBeTruthy();
   });
+
 });

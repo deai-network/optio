@@ -1,6 +1,6 @@
 # Optio Resume Feature — Design
 
-**Base revision:** `a3c79b40b5404959d3b5aeb2367fe38b98104d34` on branch `main` (as of 2026-04-24T16:16:06Z)
+**Base revision:** `a3c79b40b5404959d3b5aeb2367fe38b98104d34` on branch `main`, later updated to reflect `39d1692bebf021057fccde67af22ff1a58b53d23` (as of 2026-04-25T00:49:28Z)
 
 ## Summary
 
@@ -192,14 +192,82 @@ Change signature from `launch(processId)` to `launch(processId, opts?: { resume?
 
 ### Per-task filesystem layout
 
-Rooted at the existing per-task directory (`<task_dir>`):
+A stable per-task directory (`<task_dir>`) lives on the host where opencode runs. It is identified by `process_id` alone — host-independent — so the same task always lands in the same path on a given host.
 
 ```
 <task_dir>/
-  workdir/        # persisted across runs on the same host
-  opencode.db     # per-task SQLite; passed to opencode via OPENCODE_DB
-  snapshot.json   # transient scratch for import/export
+  workdir/        # opencode's cwd; wiped at terminal, repopulated from
+                  # GridFS on resume; not authoritative between runs
+  opencode.db     # per-task SQLite; passed to opencode via OPENCODE_DB.
+                  # Always deleted at start of run; Mongo blob is authoritative
+  snapshot.json   # transient scratch used by opencode_import/export helpers
 ```
+
+**Resolution:**
+
+- Local (worker filesystem): `${OPTIO_OPENCODE_TASK_ROOT:-/tmp/optio-opencode}/<process_id>/`
+- Remote (SSH target):       `${OPTIO_OPENCODE_REMOTE_TASK_ROOT:-/tmp/optio-opencode}/<process_id>/`
+
+`process_id` is validated against `^[A-Za-z0-9._-]+$` to prevent path traversal; non-conforming ids raise `ValueError` before any filesystem operation.
+
+**Persistence is not required between runs.** workdir is wiped at terminal (server-side hygiene), `opencode.db` is always deleted at start of the next run, and the resume flow always reconstructs both from GridFS — there is nothing on disk that resume reads. `/tmp` is the default because it "just works"; the env-var override exists for capacity reasons (operators expecting very large workdirs may want a dedicated mount), not durability.
+
+### Host abstraction additions
+
+The five operations resume needs on the host are added to the existing `Host` protocol so `session.py` stays host-agnostic. Both `LocalHost` (subprocess + os.* + tarfile) and `RemoteHost` (asyncssh exec + SFTP + remote `tar`/`opencode`) implement them.
+
+```python
+async def launch_opencode(
+    self,
+    password: str,
+    ready_timeout_s: float,
+    extra_args: list[str] | None = None,
+    env: dict[str, str] | None = None,
+) -> LaunchedProcess:
+    """As before, plus an optional `env` mapping injected into opencode's
+    environment. LocalHost: merged into the subprocess env. RemoteHost:
+    prepended as `KEY1=value1 KEY2=value2 …` to the SSH-exec'd command line."""
+
+async def opencode_import(
+    self, opencode_db_path: str, session_json: bytes,
+) -> None:
+    """Materialize `session_json` as a file on the host (LocalHost: write to
+    disk; RemoteHost: SFTP to a path under `<task_dir>`) and run
+    `opencode import <file>` against `opencode_db_path`. Raises on non-zero
+    exit. Cleans up the temporary file on success and failure."""
+
+async def opencode_export(
+    self, opencode_db_path: str, session_id: str,
+) -> bytes:
+    """Run `opencode export <session-id>` against `opencode_db_path` on the
+    host and return stdout as bytes. Raises on non-zero exit."""
+
+async def archive_workdir(
+    self, exclude: list[str] | None,
+) -> AsyncIterator[bytes]:
+    """Yield gzipped tar chunks of the workdir contents.
+
+    LocalHost: in-process tarfile streamed in 1 MiB chunks.
+    RemoteHost: `tar czf - --exclude=PAT … .` over SSH; stdout streamed
+    back as it arrives (no full-buffer in worker memory).
+
+    `exclude`:
+      * None       → use DEFAULT_WORKDIR_EXCLUDES (.git, node_modules,
+                     __pycache__, .venv, *.pyc, .DS_Store)
+      * []         → no excludes; capture everything verbatim
+      * non-empty  → use verbatim (no merge with defaults)"""
+
+async def restore_workdir(
+    self, stream: AsyncIterator[bytes],
+) -> None:
+    """Empty the workdir, then ingest the gzipped tar stream into it.
+
+    LocalHost: rmtree(workdir); tarfile.open(..., mode="r:gz").extractall().
+    RemoteHost: `rm -rf workdir/*` over SSH; pipe stream bytes into
+    `tar xzf -` on stdin."""
+```
+
+The existing methods (`connect`, `setup_workdir`, `write_text`, `ensure_opencode_installed`, `establish_tunnel`, `tail_log`, `fetch_deliverable_text`, `terminate_opencode`, `cleanup_workdir`, `disconnect`) are unchanged.
 
 ### TaskInstance declaration
 
@@ -237,33 +305,31 @@ Compound index: `{ processId: 1, capturedAt: -1 }`.
 
 ### Launch flow
 
-1. Compute `task_dir`; ensure it exists. Ensure `workdir/` exists (create on first run, reuse thereafter).
+1. Compute `task_dir`; ensure it exists. Ensure `workdir/` exists (mkdir -p; contents are not authoritative).
 2. Always delete any existing `opencode.db` at the start of the run. The Mongo blob is authoritative; any disk residue is discarded.
 3. Branch on `ctx.resume`:
    - **`resume=True` AND latest snapshot exists in Mongo:**
      1. Fetch latest snapshot (`findOne({processId}, sort {capturedAt: -1})`).
-     2. Stream GridFS blob (`workdirBlobId`) through `tar xzf -` into a freshly emptied `workdir/`.
-     3. Stream GridFS blob (`sessionBlobId`) to `snapshot.json`.
-     4. Run `opencode import snapshot.json` with `OPENCODE_DB=<task_dir>/opencode.db`.
-     5. Delete `snapshot.json`.
-     6. Launch `opencode web` with `OPENCODE_DB=<task_dir>/opencode.db`, `cwd=<task_dir>/workdir`.
-     7. Publish the preserved `sessionId` in `widgetData` (via the existing widget machinery), so the iframe URL selects the resumed session rather than creating a new one.
-     8. **Skip** sending `consumer_instructions` (already in the imported conversation history).
+     2. `await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))` — empties `workdir/` on the host and repopulates it from the GridFS tar.
+     3. Read `snapshot["sessionBlobId"]` from GridFS into memory; `await host.opencode_import(opencode_db_path, session_json_bytes)`.
+     4. `await host.launch_opencode(password, READY_TIMEOUT_S, env={"OPENCODE_DB": opencode_db_path})`.
+     5. Publish the preserved `sessionId` in `widgetData` (via the existing widget machinery), so the iframe URL selects the resumed session rather than creating a new one.
+     6. **Skip** rewriting `AGENTS.md` / `opencode.json` — they are already in the restored workdir from the tar, and rewriting would clobber any in-flight edits the LLM made.
    - **`resume=False` OR no snapshot exists:**
      1. `await ctx.clear_has_saved_state()` (belt-and-braces).
-     2. Launch `opencode web` against the empty per-task DB and fresh/reused workdir.
-     3. Pre-create session via REST (existing flow).
-     4. Send `consumer_instructions` as first message (existing flow).
+     2. `host.write_text("AGENTS.md", compose_agents_md(consumer_instructions))` and `host.write_text("opencode.json", json.dumps(opencode_config))`.
+     3. `await host.launch_opencode(password, READY_TIMEOUT_S, env={"OPENCODE_DB": opencode_db_path})`.
+     4. Pre-create session via REST (existing flow).
 
 ### Terminal flow (on `done`, `failed`, `cancelled`)
 
 1. Graceful opencode shutdown (existing teardown).
-2. Run `opencode export <session-id>` against the per-task DB; capture JSON on stdout.
-3. Tar+gzip `workdir/` (applying excludes), streamed through `ctx.store_blob("workdir")` → `workdirBlobId`.
-4. Write session JSON through `ctx.store_blob("session")` → `sessionBlobId`.
+2. `session_json = await host.opencode_export(opencode_db_path, session_id)` — captures the session as JSON bytes.
+3. Open `ctx.store_blob("workdir")` for upload; iterate `host.archive_workdir(config.workdir_exclude)` and pipe each chunk into the writer → `workdir_blob_id`.
+4. Open `ctx.store_blob("session")` for upload; write `session_json` → `session_blob_id`.
 5. Insert snapshot metadata doc (processId, capturedAt, endState, sessionId, sessionBlobId, workdirBlobId, deliverablesEmitted).
 6. Prune: find all snapshot docs for this processId ordered by `capturedAt` desc; for everything beyond index 5, delete the doc AND call `ctx.delete_blob()` on both `sessionBlobId` and `workdirBlobId`.
-7. Delete the on-disk `workdir/` (server-side wipe — user requirement).
+7. `await host.cleanup_workdir(aggressive=cancelled)` — server-side wipe; unconditional regardless of capture success above.
 8. `await ctx.mark_has_saved_state()`.
 
 **On any failure during steps 2–5:** log the error, do not touch `hasSavedState` (previous value stands), continue with teardown (including step 7 — workdir wipe is unconditional). The task's end state is unaffected.
@@ -276,10 +342,10 @@ Prior-run deliverables are not replayed on resume. The executor only forwards de
 
 | Condition | Behavior |
 |---|---|
-| `opencode import` fails on resume | Log; delete the DB; fall back to fresh-start path (`clear_has_saved_state`, send instructions). Mongo blob preserved for inspection. |
-| `opencode export` fails at terminal | Log; skip snapshot insert and `mark_has_saved_state`; continue with workdir wipe. |
-| GridFS upload fails at terminal | Log; skip snapshot insert and `mark_has_saved_state`; continue with workdir wipe. Any partially-uploaded blobs are best-effort deleted (ignore errors). |
-| Mongo snapshot insert fails after successful GridFS upload | Log; explicitly delete the uploaded blobs to avoid orphans; do not mark flag. |
+| `host.opencode_import` fails on resume (non-zero exit, SSH stream drop, etc.) | Log; delete `opencode.db`; fall back to fresh-start path (`clear_has_saved_state`, write `AGENTS.md`/`opencode.json`). Mongo blob preserved for inspection. |
+| `host.opencode_export` fails at terminal | Log; skip snapshot insert and `mark_has_saved_state`; continue with workdir wipe. |
+| `host.archive_workdir` interrupted, or GridFS upload fails | Log; skip snapshot insert and `mark_has_saved_state`; continue with workdir wipe. Any partially-uploaded blobs are best-effort deleted (ignore errors). |
+| Mongo snapshot insert fails after successful uploads | Log; explicitly delete the uploaded blobs to avoid orphans; do not mark flag. |
 | Stale flag (hasSavedState=true but Mongo has no snapshot) | Resume lookup returns none → fall back to fresh-start path. Self-healing. |
 
 ## Testing

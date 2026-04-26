@@ -31,6 +31,24 @@ describe('publishLaunch', () => {
   });
 });
 
+describe('publishLaunch — resume', () => {
+  it('includes resume=true in the payload', async () => {
+    await publishLaunch(redis, 'mydb', 'optio', 'task-r', true);
+    const entries = await redis.xrange('mydb/optio:commands', '-', '+');
+    const [, fields] = entries[0];
+    const payload = JSON.parse(fields[fields.indexOf('payload') + 1]);
+    expect(payload.resume).toBe(true);
+  });
+
+  it('defaults resume to false when not passed', async () => {
+    await publishLaunch(redis, 'mydb', 'optio', 'task-d');
+    const entries = await redis.xrange('mydb/optio:commands', '-', '+');
+    const [, fields] = entries[0];
+    const payload = JSON.parse(fields[fields.indexOf('payload') + 1]);
+    expect(payload.resume ?? false).toBe(false);
+  });
+});
+
 describe('publishCancel', () => {
   it('writes cancel command to the database-scoped stream', async () => {
     await publishCancel(redis, 'mydb', 'optio', 'task-2');

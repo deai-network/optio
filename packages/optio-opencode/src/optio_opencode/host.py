@@ -96,6 +96,7 @@ class Host(Protocol):
         password: str,
         ready_timeout_s: float,
         extra_args: list[str] | None = None,
+        env: dict[str, str] | None = None,
     ) -> LaunchedProcess:
         """Launch ``opencode web`` in the workdir with the given password.
 
@@ -105,6 +106,9 @@ class Host(Protocol):
 
         ``extra_args`` is a test-only hook for substituting a test-double
         binary for opencode; production callers omit it.
+
+        ``env`` is an optional dict of extra environment variables to
+        merge into the subprocess environment (after the defaults).
         """
 
     async def establish_tunnel(self, opencode_port: int) -> int:
@@ -133,13 +137,38 @@ class Host(Protocol):
         aggressive=True: SIGKILL immediately; do not wait.
         """
 
-    async def cleanup_workdir(self, aggressive: bool) -> None:
-        """Remove the workdir.
+    async def cleanup_taskdir(self, aggressive: bool) -> None:
+        """Remove the entire per-task directory (workdir + opencode.db + any
+        opencode-side stray files). Uses ``self.task_dir``.
 
         aggressive=False: wait for the rm to complete.
         aggressive=True: fire-and-forget; return as soon as the call
         has been dispatched.
         """
+
+    async def opencode_import(
+        self, opencode_db_path: str, session_json: bytes,
+    ) -> None: ...
+
+    async def opencode_export(
+        self, opencode_db_path: str, session_id: str,
+    ) -> bytes: ...
+
+    def archive_workdir(
+        self, exclude: list[str] | None,
+    ) -> AsyncIterator[bytes]: ...
+    # NB: archive_workdir is a *plain* method that returns an AsyncIterator,
+    # not an async method. Callers iterate via `async for chunk in host.archive_workdir(...)`.
+
+    async def restore_workdir(
+        self, stream: AsyncIterator[bytes],
+    ) -> None: ...
+
+    async def remove_file(self, path: str) -> None: ...
+
+    async def opencode_version(self) -> str | None: ...
+    # Run `<opencode_cmd> --version` on the host and return stripped stdout.
+    # Returns None on any failure — best-effort, used only for status messages.
 
 
 # --- implementation -----------------------------------------------------
@@ -147,6 +176,7 @@ class Host(Protocol):
 import asyncio
 import os
 import re
+import shlex
 import shutil
 
 
@@ -157,9 +187,17 @@ class LocalHost:
     """Host implementation for a local subprocess."""
 
     workdir: str
+    taskdir: str
 
-    def __init__(self, workdir: str, opencode_cmd: list[str] | None = None):
-        self.workdir = workdir
+    def __init__(
+        self,
+        taskdir: str,
+        opencode_cmd: list[str] | None = None,
+    ):
+        # taskdir is the per-process directory that holds workdir + opencode.db.
+        # workdir is always taskdir/workdir.
+        self.taskdir = taskdir
+        self.workdir = os.path.join(taskdir, "workdir")
         # Allow tests to substitute a fake opencode binary.
         self._opencode_cmd = opencode_cmd or ["opencode"]
         self._tail_proc: asyncio.subprocess.Process | None = None
@@ -204,9 +242,10 @@ class LocalHost:
         password: str,
         ready_timeout_s: float,
         extra_args: list[str] | None = None,
+        env: dict[str, str] | None = None,
     ) -> LaunchedProcess:
-        env = os.environ.copy()
-        env["OPENCODE_SERVER_PASSWORD"] = password
+        proc_env = os.environ.copy()
+        proc_env["OPENCODE_SERVER_PASSWORD"] = password
         # Suppress opencode's automatic browser-open.  The `open` npm package
         # on Linux defers to xdg-open, which on GNOME/KDE ignores $BROWSER and
         # uses the desktop environment's default handler.  Shadow xdg-open in
@@ -219,10 +258,12 @@ class LocalHost:
             with open(_p, "w") as _fh:
                 _fh.write("#!/bin/sh\nexit 0\n")
             os.chmod(_p, 0o755)
-        env["PATH"] = _bin + os.pathsep + env.get("PATH", "")
+        proc_env["PATH"] = _bin + os.pathsep + proc_env.get("PATH", "")
         # Defense in depth: $BROWSER is honored by xdg-open only in
         # non-desktop sessions, but setting it costs nothing.
-        env["BROWSER"] = "true"
+        proc_env["BROWSER"] = "true"
+        if env:
+            proc_env.update(env)
         # When using the real opencode binary, "web" is a subcommand.
         # When using the fake_opencode.py test double, there is no "web".
         # Discriminator is the basename of the executable: "opencode" (or
@@ -239,7 +280,7 @@ class LocalHost:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=self.workdir,
-            env=env,
+            env=proc_env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
         )
@@ -326,11 +367,97 @@ class LocalHost:
             proc.kill()
             await proc.wait()
 
-    async def cleanup_workdir(self, aggressive: bool) -> None:
+    async def cleanup_taskdir(self, aggressive: bool) -> None:
         # On local filesystems rmtree is fast enough that aggressive vs. not
-        # makes no difference.
-        if os.path.exists(self.workdir):
-            shutil.rmtree(self.workdir, ignore_errors=True)
+        # makes no difference. Wipes the whole per-task dir (workdir +
+        # opencode.db + any stray files opencode left next to the DB).
+        if os.path.exists(self.taskdir):
+            shutil.rmtree(self.taskdir, ignore_errors=True)
+
+    async def opencode_import(
+        self, opencode_db_path: str, session_json: bytes,
+    ) -> None:
+        """Write `session_json` to a scratch file and run `opencode import`."""
+        scratch = os.path.join(os.path.dirname(opencode_db_path), "snapshot.json")
+        with open(scratch, "wb") as fh:
+            fh.write(session_json)
+        try:
+            env = os.environ.copy()
+            env["OPENCODE_DB"] = opencode_db_path
+            proc = await asyncio.create_subprocess_exec(
+                *self._opencode_cmd, "import", scratch,
+                env=env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                raise RuntimeError(
+                    f"opencode import failed (exit {proc.returncode}): "
+                    f"{stderr.decode('utf-8', 'replace')}"
+                )
+        finally:
+            try:
+                os.unlink(scratch)
+            except OSError:
+                pass
+
+    async def opencode_export(
+        self, opencode_db_path: str, session_id: str,
+    ) -> bytes:
+        env = os.environ.copy()
+        env["OPENCODE_DB"] = opencode_db_path
+        proc = await asyncio.create_subprocess_exec(
+            *self._opencode_cmd, "export", session_id,
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"opencode export failed (exit {proc.returncode}): "
+                f"{stderr.decode('utf-8', 'replace')}"
+            )
+        return stdout
+
+    def archive_workdir(
+        self, exclude: list[str] | None,
+    ) -> "AsyncIterator[bytes]":
+        from optio_opencode.archive import yield_workdir_archive
+        return yield_workdir_archive(self.workdir, exclude=exclude)
+
+    async def restore_workdir(
+        self, stream: "AsyncIterator[bytes]",
+    ) -> None:
+        from optio_opencode.archive import consume_workdir_archive
+        await consume_workdir_archive(stream, self.workdir)
+
+    async def remove_file(self, path: str) -> None:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "LocalHost.remove_file(%r) failed: %r", path, exc,
+            )
+
+    async def opencode_version(self) -> str | None:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *self._opencode_cmd, "--version",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+        except Exception:
+            return None
+        if proc.returncode != 0:
+            return None
+        text = stdout.decode("utf-8", errors="replace").strip()
+        return text or None
 
     async def detect_target(self) -> OpencodeTarget:
         import platform
@@ -412,10 +539,20 @@ class RemoteHost:
     """
 
     workdir: str
+    taskdir: str
 
-    def __init__(self, ssh_config: SSHConfig):
+    def __init__(
+        self,
+        ssh_config: SSHConfig,
+        taskdir: str | None = None,
+    ):
         self._ssh = ssh_config
-        self.workdir = f"/tmp/optio-opencode-{uuid.uuid4().hex[:12]}"
+        # taskdir is the per-process directory that holds workdir + opencode.db.
+        # Defaults to a legacy random /tmp path when not supplied so existing
+        # callers (test_session_remote.py) keep working. workdir is always
+        # taskdir/workdir.
+        self.taskdir = taskdir or f"/tmp/optio-opencode-{uuid.uuid4().hex[:12]}"
+        self.workdir = f"{self.taskdir}/workdir"
         self._conn: asyncssh.SSHClientConnection | None = None
         self._sftp: asyncssh.SFTPClient | None = None
         self._launch_proc: asyncssh.SSHClientProcess | None = None
@@ -502,6 +639,7 @@ class RemoteHost:
         password: str,
         ready_timeout_s: float,
         extra_args: list[str] | None = None,
+        env: dict[str, str] | None = None,
     ) -> LaunchedProcess:
         assert self._conn is not None and self._sftp is not None
         # Write the password to a mode-0600 file in the workdir and have
@@ -517,10 +655,15 @@ class RemoteHost:
         pw_file = ".opencode-password"
         await self.write_text(pw_file, password)
         await self._conn.run(f"chmod 600 {self.workdir}/{pw_file}", check=True)
+        env_prefix = ""
+        if env:
+            env_prefix = " ".join(
+                f"{k}={shlex.quote(v)}" for k, v in env.items()
+            ) + " "
         cmd = (
             f"cd {self.workdir} && "
             f"OPENCODE_SERVER_PASSWORD=\"$(cat ./{pw_file})\" "
-            f"BROWSER=true "
+            f"BROWSER=true {env_prefix}"
             # 2>&1 merges stderr into stdout because opencode prints the
             # "Web interface:" URL line via UI.println → stderr.
             # Single-quote the inner command.  `$opencode` is safely
@@ -574,8 +717,15 @@ class RemoteHost:
 
     async def fetch_deliverable_text(self, absolute_path: str) -> str:
         assert self._sftp is not None
-        async with self._sftp.open(absolute_path, "rb") as fh:
-            data = await fh.read()
+        try:
+            async with self._sftp.open(absolute_path, "rb") as fh:
+                data = await fh.read()
+        except asyncssh.SFTPNoSuchFile as exc:
+            # Honor the Host protocol contract: missing file → FileNotFoundError.
+            # asyncssh raises its own SFTPNoSuchFile which is NOT a subclass of
+            # OSError / FileNotFoundError, so callers expecting the contract
+            # would otherwise see this exception bubble out unhandled.
+            raise FileNotFoundError(absolute_path) from exc
         return data.decode("utf-8")
 
     async def terminate_opencode(
@@ -600,15 +750,118 @@ class RemoteHost:
             proc.kill()
             await proc.wait()
 
-    async def cleanup_workdir(self, aggressive: bool) -> None:
+    async def cleanup_taskdir(self, aggressive: bool) -> None:
         if self._conn is None:
             return
-        cmd = f"rm -rf {self.workdir}"
-        if aggressive:
-            # Fire-and-forget: schedule the exec, do not await completion.
-            asyncio.create_task(self._conn.run(cmd, check=False))
-            return
-        await self._conn.run(cmd, check=False)
+        # Always await: session.py calls host.disconnect() right after this
+        # in the finally block, and a fire-and-forget asyncio task would be
+        # aborted as soon as the SSH connection closes. The latency win
+        # from skipping the await isn't worth the resulting taskdir leak.
+        # `aggressive` is honored by terminate_opencode (SIGKILL vs SIGTERM)
+        # and is ignored here — by the time we reach cleanup, opencode is
+        # already dead.
+        await self._conn.run(
+            f"rm -rf {shlex.quote(self.taskdir)}", check=False,
+        )
+
+    async def opencode_import(
+        self, opencode_db_path: str, session_json: bytes,
+    ) -> None:
+        assert self._conn is not None and self._sftp is not None
+        scratch = f"{self.workdir}/snapshot.json"
+        async with self._sftp.open(scratch, "wb") as fh:
+            await fh.write(session_json)
+        try:
+            r = await self._conn.run(
+                f"OPENCODE_DB={shlex.quote(opencode_db_path)} "
+                f"bash -lc '{self._opencode_exec} import {shlex.quote(scratch)}'",
+                check=False,
+            )
+            if r.exit_status != 0:
+                raise RuntimeError(
+                    f"remote opencode import failed "
+                    f"(exit {r.exit_status}): {r.stderr}"
+                )
+        finally:
+            await self._conn.run(f"rm -f {shlex.quote(scratch)}", check=False)
+
+    async def opencode_export(
+        self, opencode_db_path: str, session_id: str,
+    ) -> bytes:
+        assert self._conn is not None
+        r = await self._conn.run(
+            f"OPENCODE_DB={shlex.quote(opencode_db_path)} "
+            f"bash -lc '{self._opencode_exec} export {shlex.quote(session_id)}'",
+            check=False,
+        )
+        if r.exit_status != 0:
+            raise RuntimeError(
+                f"remote opencode export failed "
+                f"(exit {r.exit_status}): {r.stderr}"
+            )
+        out = r.stdout or b""
+        return out if isinstance(out, bytes) else out.encode("utf-8")
+
+    def archive_workdir(
+        self, exclude: list[str] | None,
+    ) -> "AsyncIterator[bytes]":
+        from optio_opencode.archive import DEFAULT_WORKDIR_EXCLUDES
+        assert self._conn is not None
+        patterns = list(DEFAULT_WORKDIR_EXCLUDES) if exclude is None else list(exclude)
+        excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in patterns)
+        cmd = f"cd {shlex.quote(self.workdir)} && tar czf - {excludes} ."
+
+        async def _gen() -> "AsyncIterator[bytes]":
+            assert self._conn is not None
+            proc = await self._conn.create_process(cmd, encoding=None)
+            async for chunk in proc.stdout:
+                if chunk:
+                    yield chunk
+            await proc.wait()
+            if proc.exit_status not in (0, None):
+                raise RuntimeError(f"remote tar czf - failed (exit {proc.exit_status})")
+
+        return _gen()
+
+    async def restore_workdir(
+        self, stream: "AsyncIterator[bytes]",
+    ) -> None:
+        assert self._conn is not None
+        # Empty workdir contents (preserve workdir itself).
+        await self._conn.run(
+            f"find {shlex.quote(self.workdir)} -mindepth 1 -delete",
+            check=False,
+        )
+        cmd = f"cd {shlex.quote(self.workdir)} && tar xzf -"
+        proc = await self._conn.create_process(cmd, encoding=None)
+        async for chunk in stream:
+            proc.stdin.write(chunk)
+            await proc.stdin.drain()
+        proc.stdin.write_eof()
+        await proc.wait()
+        if proc.exit_status not in (0, None):
+            raise RuntimeError(f"remote tar xzf - failed (exit {proc.exit_status})")
+
+    async def remove_file(self, path: str) -> None:
+        assert self._conn is not None
+        # `rm -f` is idempotent: missing files are not an error.
+        await self._conn.run(f"rm -f {shlex.quote(path)}", check=False)
+
+    async def opencode_version(self) -> str | None:
+        if self._conn is None:
+            return None
+        try:
+            r = await self._conn.run(
+                f"bash -lc '{self._opencode_exec} --version'",
+                check=False,
+            )
+        except Exception:
+            return None
+        if r.exit_status != 0:
+            return None
+        out = r.stdout or ""
+        text = (out if isinstance(out, str) else out.decode("utf-8", errors="replace")).strip()
+        return text or None
 
     async def detect_target(self) -> OpencodeTarget:
         assert self._conn is not None

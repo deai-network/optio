@@ -106,9 +106,14 @@ async function getProcessTreeLog(
 async function launchProcess(
   db: Db,
   redis: Redis,
+  database: string,
   prefix: string,
   id: string,
+  resume?: boolean,  // default: false
 ): Promise<CommandResult>
+// Returns 409 with message "This task does not support resume" when resume=true is
+// requested against a process whose supportsResume field is false.
+// (409 is used instead of 400 because CommandResult has no 400 variant.)
 
 async function cancelProcess(
   db: Db,
@@ -131,9 +136,12 @@ async function resyncProcesses(
 ): Promise<{ message: string }>
 ```
 
+**Adapters** (`fastify`, `express`, `nextjs-app`, `nextjs-pages`): all four extract `body?.resume`
+from the request body and forward it to `launchProcess` as the sixth argument.
+
 State guards enforced by command handlers:
 
-- `launchProcess`: allowed states `idle | done | failed | cancelled`
+- `launchProcess`: allowed states `idle | done | failed | cancelled`; 409 when `resume=true` and `supportsResume=false`
 - `cancelProcess`: requires `proc.cancellable === true`; allowed states `running | scheduled`
 - `dismissProcess`: allowed states `done | failed | cancelled`
 
@@ -169,7 +177,8 @@ type CommandResult =
 Imported from `optio-api` (main entry point). Write to the `{prefix}:commands` Redis stream.
 
 ```typescript
-async function publishLaunch(redis: Redis, prefix: string, processId: string): Promise<void>
+async function publishLaunch(redis: Redis, database: string, prefix: string, processId: string, resume?: boolean): Promise<void>
+// resume=true is included in the Redis launch payload; the consumer forwards it to the executor.
 async function publishResync(redis: Redis, prefix: string, clean?: boolean): Promise<void>
 ```
 

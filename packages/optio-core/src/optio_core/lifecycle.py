@@ -171,13 +171,21 @@ class Optio:
         await delete_process(self._config.mongo_db, self._config.prefix, process_id)
         self._executor._task_registry.pop(process_id, None)
 
-    async def launch(self, process_id: str) -> None:
-        """Fire-and-forget launch. Returns immediately, process runs in background."""
-        asyncio.create_task(self._executor.launch_process(process_id))
+    async def launch(self, process_id: str, resume: bool = False) -> None:
+        """Fire-and-forget launch. Returns immediately, process runs in background.
 
-    async def launch_and_wait(self, process_id: str) -> None:
-        """Launch and wait for the process to complete. Full progress tracking."""
-        await self._executor.launch_process(process_id)
+        If resume is True, the task is launched with ctx.resume=True so it can
+        restore previous state rather than start fresh.
+        """
+        asyncio.create_task(self._executor.launch_process(process_id, resume=resume))
+
+    async def launch_and_wait(self, process_id: str, resume: bool = False) -> None:
+        """Launch and wait for the process to complete. Full progress tracking.
+
+        If resume is True, the task is launched with ctx.resume=True so it can
+        restore previous state rather than start fresh.
+        """
+        await self._executor.launch_process(process_id, resume=resume)
 
     async def cancel(self, process_id: str) -> None:
         """Cancel a running or scheduled process."""
@@ -403,11 +411,12 @@ class Optio:
     async def _handle_launch(self, payload: dict) -> None:
         process_id = payload.get("processId")
         if process_id:
-            await self._handle_launch_by_process_id(process_id)
+            resume = payload.get("resume", False)
+            await self._handle_launch_by_process_id(process_id, resume=resume)
 
-    async def _handle_launch_by_process_id(self, process_id: str) -> None:
+    async def _handle_launch_by_process_id(self, process_id: str, resume: bool = False) -> None:
         # Run in a background task so the consumer can continue
-        asyncio.create_task(self._executor.launch_process(process_id))
+        asyncio.create_task(self._executor.launch_process(process_id, resume=resume))
 
     async def _handle_cancel(self, payload: dict) -> None:
         process_id = payload.get("processId")

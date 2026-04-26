@@ -98,10 +98,10 @@ def _patch_localhost_to_use_fake(monkeypatch):
     import optio_opencode.host as host_mod
     orig_init = host_mod.LocalHost.__init__
 
-    def _init(self, workdir: str, opencode_cmd=None):
+    def _init(self, taskdir: str, opencode_cmd=None):
         return orig_init(
             self,
-            workdir=workdir,
+            taskdir=taskdir,
             opencode_cmd=[sys.executable, FAKE_OPENCODE],
         )
 
@@ -115,10 +115,11 @@ def _supply_scenario(monkeypatch):
     orig_launch = host_mod.LocalHost.launch_opencode
     scenario_holder: dict = {"name": "happy"}
 
-    async def _launch(self, password, ready_timeout_s, extra_args=None):
+    async def _launch(self, password, ready_timeout_s, extra_args=None, env=None):
         return await orig_launch(
             self, password, ready_timeout_s,
             extra_args=["--scenario", scenario_holder["name"]],
+            env=env,
         )
     monkeypatch.setattr(host_mod.LocalHost, "launch_opencode", _launch)
     return scenario_holder

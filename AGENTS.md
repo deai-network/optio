@@ -64,8 +64,8 @@ await optio_core.run()          # blocks until shutdown; call after init()
 await optio_core.shutdown(grace_seconds=5.0)  # graceful shutdown; force-finalizes tasks that do not unwind in time
 
 # Commands
-await optio_core.launch(process_id: str) -> None           # fire-and-forget
-await optio_core.launch_and_wait(process_id: str) -> None  # blocks until done
+await optio_core.launch(process_id: str, resume: bool = False) -> None           # fire-and-forget
+await optio_core.launch_and_wait(process_id: str, resume: bool = False) -> None  # blocks until done
 await optio_core.cancel(process_id: str) -> None
 await optio_core.dismiss(process_id: str) -> None          # reset done/failed/cancelled → idle
 await optio_core.resync(clean: bool = False) -> None       # re-sync task definitions; clean=True nukes all records first
@@ -107,6 +107,7 @@ class TaskInstance:
     metadata: dict[str, Any] = field(default_factory=dict)
     schedule: str | None = None              # cron expression, e.g. "0 3 * * *"
     special: bool = False                    # hidden from default UI views when special=True
+    supports_resume: bool = False            # opt-in: enable resume/checkpoint support
     warning: str | None = None              # shown as confirmation prompt before launch
     cancellable: bool = True                 # whether this process can be cancelled
     ui_widget: str | None = None             # widget name registered via registerWidget() in optio-ui
@@ -214,6 +215,26 @@ ctx.process_id: str
 ctx.params: dict[str, Any]
 ctx.metadata: dict[str, Any]
 ctx.services: dict[str, Any]
+ctx.resume: bool  # True when this execution was triggered with resume=True
+
+# Resume / checkpoint support
+await ctx.mark_has_saved_state() -> None
+# Set hasSavedState=True on the process doc. Idempotent.
+# Warn-and-noop when task's supports_resume=False.
+
+await ctx.clear_has_saved_state() -> None
+# Set hasSavedState=False. Idempotent. Warn-and-noop when supports_resume=False.
+
+# GridFS blob helpers (blobs tagged with metadata {processId, prefix, name})
+async with ctx.store_blob(name: str) as stream:
+    stream.file_id  # assigned GridFS file_id
+    await stream.write(data: bytes)
+
+async with ctx.load_blob(file_id) as stream:
+    data = await stream.read()
+
+await ctx.delete_blob(file_id) -> None
+# No-op if file_id does not exist.
 
 # Widget proxy control
 await ctx.set_widget_upstream(url: str, inner_auth: InnerAuth | None = None) -> None
@@ -340,6 +361,8 @@ Collection: `{prefix}_processes`
 | `uiWidget` | string \| null | Widget name; `ProcessDetailView` dispatches on this field |
 | `widgetUpstream` | `{ url, innerAuth } \| null` | Server-side only — never sent to clients |
 | `widgetData` | any JSON \| null | Live data delivered to the widget component via tree stream |
+| `supportsResume` | bool | Task opted into resume support; refreshed via `$set` on every sync |
+| `hasSavedState` | bool | Task has a valid checkpoint; `$setOnInsert: false`; mutated only by `mark/clear_has_saved_state` |
 | `createdAt` | datetime | Document creation timestamp |
 
 ---
@@ -358,9 +381,24 @@ task = create_opencode_task(
         opencode_config={...},     # passthrough to opencode.json
         ssh=None,                  # None = local subprocess
         on_deliverable=cb,
+        workdir_exclude=None,      # None = DEFAULT_WORKDIR_EXCLUDES; [] = capture all
     ),
 )
 ```
+
+The returned `TaskInstance` has `ui_widget="iframe"` and `supports_resume=True` baked in.
+
+**`OpencodeTaskConfig.workdir_exclude`** — controls snapshot exclusions:
+`None` → use `archive.DEFAULT_WORKDIR_EXCLUDES` (`.git`, `node_modules`, `__pycache__`, `.venv`, `*.pyc`, `.DS_Store`).
+`[]` → capture everything. Non-empty list → verbatim (no merge with defaults).
+
+**Snapshot collection** — `{prefix}_opencode_session_snapshots`. Key fields:
+`processId`, `capturedAt`, `endState`, `sessionId`, `sessionBlobId`, `workdirBlobId`, `deliverablesEmitted`.
+Compound index `{processId: 1, capturedAt: -1}`. Retention: keep latest 5; older snapshots' blobs deleted with the doc.
+
+**Host method additions** (both `LocalHost` and `RemoteHost`):
+`launch_opencode(..., env=None)`, `opencode_import(db_path, session_json)`, `opencode_export(db_path, session_id) -> bytes`,
+`archive_workdir(exclude) -> AsyncIterator[bytes]`, `restore_workdir(stream)`, `remove_file(path)`.
 
 Full details: `packages/optio-opencode/AGENTS.md`.
 
@@ -391,6 +429,8 @@ Package: `optio-contracts`
 - `log`: `LogEntry[]`
 - `uiWidget`: string (nullable, optional) — widget name for `ProcessDetailView` dispatch
 - `widgetData`: unknown (optional) — live data delivered to the widget component
+- `supportsResume`: boolean (optional) — task opted into resume support
+- `hasSavedState`: boolean (optional) — task has a valid checkpoint ready to restore
 - `createdAt`: Date
 
 **`ProcessStateSchema`** — enum:
@@ -428,7 +468,7 @@ type LogEntry = z.infer<typeof LogEntrySchema>;
 | `getTree` | GET | `/processes/:prefix/:id/tree` | `prefix, id` | `maxDepth?: number` | — | `200: ProcessTreeNode`, `404: Error` |
 | `getLog` | GET | `/processes/:prefix/:id/log` | `prefix, id` | `cursor?, limit` | — | `200: PaginatedResponse<LogEntry>`, `404: Error` |
 | `getTreeLog` | GET | `/processes/:prefix/:id/tree/log` | `prefix, id` | `cursor?, limit, maxDepth?` | — | `200: PaginatedResponse<LogEntry & {processId, processLabel}>`, `404: Error` |
-| `launch` | POST | `/processes/:prefix/:id/launch` | `prefix, id` | — | (none) | `200: Process`, `404: Error`, `409: Error` |
+| `launch` | POST | `/processes/:prefix/:id/launch` | `prefix, id` | — | `{ resume?: boolean }` (optional; body may be omitted entirely) | `200: Process`, `404: Error`, `409: Error` |
 | `cancel` | POST | `/processes/:prefix/:id/cancel` | `prefix, id` | — | (none) | `200: Process`, `404: Error`, `409: Error` |
 | `dismiss` | POST | `/processes/:prefix/:id/dismiss` | `prefix, id` | — | (none) | `200: Process`, `404: Error`, `409: Error` |
 | `resync` | POST | `/processes/:prefix/resync` | `prefix` | — | `{ clean?: boolean }` | `200: { message: string }` |
@@ -505,7 +545,8 @@ async function getProcess(db: Db, prefix: string, id: string): Promise<Process |
 async function getProcessTree(db: Db, prefix: string, id: string, maxDepth?: number): Promise<ProcessTreeNode | null>
 async function getProcessLog(db: Db, prefix: string, id: string, query: PaginationQuery): Promise<PaginatedResponse<LogEntry> | null>
 async function getProcessTreeLog(db: Db, prefix: string, id: string, query: TreeLogQuery): Promise<PaginatedResponse | null>
-async function launchProcess(db: Db, redis: Redis, prefix: string, id: string): Promise<CommandResult>
+async function launchProcess(db: Db, redis: Redis, database: string, prefix: string, id: string, resume?: boolean): Promise<CommandResult>
+// Returns 409 "This task does not support resume" when resume=true and supportsResume=false.
 async function cancelProcess(db: Db, redis: Redis, prefix: string, id: string): Promise<CommandResult>
 async function dismissProcess(db: Db, redis: Redis, prefix: string, id: string): Promise<CommandResult>
 async function resyncProcesses(redis: Redis, prefix: string, clean?: boolean): Promise<{ message: string }>
@@ -516,7 +557,8 @@ async function resyncProcesses(redis: Redis, prefix: string, clean?: boolean): P
 Write commands to Redis stream `{prefix}:commands`. Used by domain code that needs to trigger processes without HTTP.
 
 ```typescript
-async function publishLaunch(redis: Redis, prefix: string, processId: string): Promise<void>
+async function publishLaunch(redis: Redis, database: string, prefix: string, processId: string, resume?: boolean): Promise<void>
+// resume=true is included in the Redis launch payload.
 async function publishResync(redis: Redis, prefix: string, clean?: boolean): Promise<void>
 ```
 
@@ -595,19 +637,34 @@ Wrap your application (or subtree):
 
 ### Components
 
+**`LaunchControls`** (`packages/optio-ui/src/components/LaunchControls.tsx`)
+
+```typescript
+interface LaunchControlsProps {
+  process: any;
+  onLaunch?: (id: string, opts?: { resume?: boolean }) => void;
+  size?: ButtonProps['size'];
+}
+```
+
+Smart launch button. Renders nothing when not in a launchable state or `onLaunch` is absent.
+Renders a single play button when `supportsResume=false` or `hasSavedState=false`.
+Renders an Ant Design `Dropdown.Button` (primary = Resume, menu = Restart) when both flags are true.
+Used by `ProcessList` and `ProcessDetailView`.
+
 **`ProcessList`**
 
 ```typescript
 interface ProcessListProps {
   processes: any[];
   loading: boolean;
-  onLaunch?: (processId: string) => void;
+  onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
   onCancel?: (processId: string) => void;
   onProcessClick?: (processId: string) => void;
 }
 ```
 
-Ant Design `List` of `ProcessItem`. Shows name (with description tooltip if set), status badge, progress bar, launch/cancel buttons.
+Ant Design `List` of `ProcessItem`. Shows name (with description tooltip if set), status badge, progress bar, launch/cancel buttons. Launch button rendered via `LaunchControls`.
 
 **`ProcessItem`**
 
@@ -746,13 +803,14 @@ interface ProcessActionsOptions {
 }
 
 useProcessActions(options?: ProcessActionsOptions): {
-  launch: (processId: string) => void;
+  launch: (processId: string, opts?: { resume?: boolean }) => void;
   cancel: (processId: string) => void;
   dismiss: (processId: string) => void;
   resync: () => void;
   resyncClean: () => void;
   isResyncing: boolean;
 }
+// launch sends body: { resume: true } when opts.resume is true; empty body otherwise.
 ```
 
 Note: `processId` arguments are MongoDB `_id` strings (ObjectId hex), not `processId` strings.
@@ -852,6 +910,8 @@ All components use `react-i18next`. Required keys:
 | Key | Used by |
 |-----|---------|
 | `processes.launch` | ProcessItem (launch button tooltip) |
+| `processes.resume` | LaunchControls (primary button label when hasSavedState=true; default "Resume") |
+| `processes.restart` | LaunchControls (dropdown menu item; default "Restart (discard saved state)") |
 | `processes.cancel` | ProcessItem, ProcessTreeView (cancel button tooltip) |
 | `processes.filterAll` | ProcessFilters |
 | `processes.filterActive` | ProcessFilters |
