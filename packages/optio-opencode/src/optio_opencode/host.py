@@ -717,8 +717,15 @@ class RemoteHost:
 
     async def fetch_deliverable_text(self, absolute_path: str) -> str:
         assert self._sftp is not None
-        async with self._sftp.open(absolute_path, "rb") as fh:
-            data = await fh.read()
+        try:
+            async with self._sftp.open(absolute_path, "rb") as fh:
+                data = await fh.read()
+        except asyncssh.SFTPNoSuchFile as exc:
+            # Honor the Host protocol contract: missing file → FileNotFoundError.
+            # asyncssh raises its own SFTPNoSuchFile which is NOT a subclass of
+            # OSError / FileNotFoundError, so callers expecting the contract
+            # would otherwise see this exception bubble out unhandled.
+            raise FileNotFoundError(absolute_path) from exc
         return data.decode("utf-8")
 
     async def terminate_opencode(
