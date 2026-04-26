@@ -31,6 +31,63 @@ class HostCommandError(Exception):
         )
 
 
+from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
+
+
+class HookContext:
+    """ProcessContext + host primitives, passed to before/after_execute hooks
+    and to on_deliverable callbacks.
+
+    Attributes not defined on this class fall through to the wrapped
+    ProcessContext via __getattr__, so consumers can call e.g.
+    ``hook_ctx.report_progress(...)`` directly.
+    """
+
+    def __init__(self, ctx, host) -> None:
+        # Use object.__setattr__ to avoid __getattr__ recursion in __init__.
+        object.__setattr__(self, "_ctx", ctx)
+        object.__setattr__(self, "_host", host)
+
+    def __getattr__(self, name: str) -> Any:
+        # Only called if the attribute isn't found on the instance / class.
+        return getattr(self._ctx, name)
+
+
+class HookContextProtocol(Protocol):
+    """Type-hint surface for hook authors who want IDE discoverability.
+
+    Subset of ProcessContext + the four new methods.
+    """
+
+    process_id: str
+
+    @property
+    def params(self) -> dict: ...
+
+    @property
+    def metadata(self) -> dict: ...
+
+    def report_progress(self, percent: float | None, message: str | None = None) -> None: ...
+    def should_continue(self) -> bool: ...
+    async def copy_file(
+        self,
+        source,
+        target: str,
+        *,
+        skip_if_unchanged: bool = False,
+    ) -> None: ...
+    async def run_on_host(
+        self,
+        command: str,
+        *,
+        check: bool = True,
+        capture_stderr: bool = False,
+        cwd: str | None = None,
+    ): ...
+    async def read_from_host(self, path: str) -> bytes: ...
+    async def read_text_from_host(self, path: str) -> str: ...
+
+
 def _resolve_target_path(path: str, workdir: str, host_home: str) -> str:
     """Resolve a user-supplied path to an absolute host path.
 
