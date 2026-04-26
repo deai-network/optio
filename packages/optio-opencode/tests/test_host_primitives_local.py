@@ -192,3 +192,8 @@ async def test_fetch_bytes_from_host_missing_raises_filenotfound(local_host):
         await local_host.fetch_bytes_from_host(
             os.path.join(local_host.workdir, "no_such")
         )
+
+
+async def test_resolve_host_home_returns_user_home(local_host):
+    expected = os.path.expanduser("~")
+    assert await local_host.resolve_host_home() == expected

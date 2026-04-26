@@ -657,6 +657,9 @@ class LocalHost:
             progress_cb(100.0, None)
         return data
 
+    async def resolve_host_home(self) -> str:
+        return os.path.expanduser("~")
+
     async def install_opencode_binary(
         self,
         local_binary_path: str,
