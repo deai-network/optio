@@ -224,3 +224,43 @@ async def test_after_execute_failure_does_not_shadow_session_error(tmp_workdir, 
         "after_execute callback raised" in str(c[2])
         for c in ctx.calls
     )
+
+
+async def test_on_deliverable_receives_hook_ctx_and_can_use_host_primitives(tmp_workdir, monkeypatch):
+    host = _RecordingFakeHost()
+    ctx = _MinimalCtx()
+    received = []
+
+    async def cb(hook_ctx, path, text):
+        received.append((path, text))
+        # The hook_ctx must expose host primitives — exercise one.
+        await hook_ctx.run_on_host("noop")
+
+    config = OpencodeTaskConfig(
+        consumer_instructions="x",
+        on_deliverable=cb,
+    )
+    # We don't run a full session here; we directly invoke
+    # _deliverable_fetch_loop with a constructed HookContext.
+    from optio_opencode.session import _deliverable_fetch_loop
+    from optio_opencode.hook_context import HookContext
+
+    queue = asyncio.Queue()
+    await queue.put("/wd/deliverables/x.txt")
+
+    # Patch host.fetch_deliverable_text to return canned content.
+    async def _fake_fetch(_path):
+        return "deliverable text"
+    host.fetch_deliverable_text = _fake_fetch  # type: ignore[attr-defined]
+
+    hook_ctx = HookContext(ctx, host)
+    task = asyncio.create_task(
+        _deliverable_fetch_loop(host, cb, queue, ctx, hook_ctx)
+    )
+    await queue.join()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert received == [("/wd/deliverables/x.txt", "deliverable text")]
+    assert "run_command:noop" in host.timeline

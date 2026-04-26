@@ -132,7 +132,7 @@ async def test_happy_path(ctx_and_captures, _supply_scenario):
     _supply_scenario["name"] = "happy"
 
     received: list[tuple[str, str]] = []
-    async def on_d(path, text):
+    async def on_d(hook_ctx, path, text):
         received.append((path, text))
 
     cfg = _config("happy", deliverable_cb=on_d)
@@ -173,7 +173,7 @@ async def test_invalid_deliverable_path_is_skipped(ctx_and_captures, _supply_sce
     _supply_scenario["name"] = "escape_path"
 
     received: list = []
-    async def on_d(path, text):
+    async def on_d(hook_ctx, path, text):
         received.append((path, text))
 
     await run_opencode_session(ctx, _config("escape_path", deliverable_cb=on_d))
@@ -187,7 +187,7 @@ async def test_non_utf8_deliverable_is_skipped(ctx_and_captures, _supply_scenari
     _supply_scenario["name"] = "non_utf8"
 
     received: list = []
-    async def on_d(path, text):
+    async def on_d(hook_ctx, path, text):
         received.append((path, text))
 
     await run_opencode_session(ctx, _config("non_utf8", deliverable_cb=on_d))
@@ -200,7 +200,7 @@ async def test_callback_raises_does_not_fail_task(ctx_and_captures, _supply_scen
     ctx, cap, _ = ctx_and_captures
     _supply_scenario["name"] = "happy"
 
-    async def on_d(path, text):
+    async def on_d(hook_ctx, path, text):
         raise RuntimeError("boom")
 
     await run_opencode_session(ctx, _config("happy", deliverable_cb=on_d))

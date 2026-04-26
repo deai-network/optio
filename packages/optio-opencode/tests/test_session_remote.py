@@ -93,7 +93,7 @@ async def ctx(mongo_db):
 
 async def test_remote_happy_path(sshd, ctx, monkeypatch):
     received: list = []
-    async def on_d(path, text):
+    async def on_d(hook_ctx, path, text):
         received.append((path, text))
 
     # Short-circuit the HTTP-based session pre-creation for this test.  The

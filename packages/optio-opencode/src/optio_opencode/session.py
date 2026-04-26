@@ -254,7 +254,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         subprocess_exit: list[int | None] = []  # [exit_code] when seen
 
         fetch_task = asyncio.create_task(
-            _deliverable_fetch_loop(host, config.on_deliverable, deliverable_queue, ctx)
+            _deliverable_fetch_loop(host, config.on_deliverable, deliverable_queue, ctx, hook_ctx)
         )
         tail_task = asyncio.create_task(
             _tail_and_dispatch(
@@ -463,6 +463,7 @@ async def _deliverable_fetch_loop(
     callback: DeliverableCallback | None,
     queue: asyncio.Queue[str],
     ctx: ProcessContext,
+    hook_ctx: "HookContext",
 ) -> None:
     """Consume resolved deliverable paths and invoke the callback."""
     while True:
@@ -489,7 +490,7 @@ async def _deliverable_fetch_loop(
             if callback is None:
                 continue
             try:
-                await callback(path, text)
+                await callback(hook_ctx, path, text)
             except Exception as exc:  # noqa: BLE001
                 ctx.report_progress(
                     None, f"on_deliverable callback raised: {exc!r}"
