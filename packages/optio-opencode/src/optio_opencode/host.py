@@ -187,20 +187,17 @@ class LocalHost:
     """Host implementation for a local subprocess."""
 
     workdir: str
-    task_dir: str
+    taskdir: str
 
     def __init__(
         self,
-        workdir: str,
+        taskdir: str,
         opencode_cmd: list[str] | None = None,
-        task_dir: str | None = None,
     ):
-        self.workdir = workdir
-        # task_dir is the per-process directory that holds workdir + opencode.db.
-        # Defaults to workdir when not supplied so legacy / test callers that
-        # don't track a separate task_dir keep working — cleanup_taskdir then
-        # wipes the workdir itself.
-        self.task_dir = task_dir if task_dir is not None else workdir
+        # taskdir is the per-process directory that holds workdir + opencode.db.
+        # workdir is always taskdir/workdir.
+        self.taskdir = taskdir
+        self.workdir = os.path.join(taskdir, "workdir")
         # Allow tests to substitute a fake opencode binary.
         self._opencode_cmd = opencode_cmd or ["opencode"]
         self._tail_proc: asyncio.subprocess.Process | None = None
@@ -374,8 +371,8 @@ class LocalHost:
         # On local filesystems rmtree is fast enough that aggressive vs. not
         # makes no difference. Wipes the whole per-task dir (workdir +
         # opencode.db + any stray files opencode left next to the DB).
-        if os.path.exists(self.task_dir):
-            shutil.rmtree(self.task_dir, ignore_errors=True)
+        if os.path.exists(self.taskdir):
+            shutil.rmtree(self.taskdir, ignore_errors=True)
 
     async def opencode_import(
         self, opencode_db_path: str, session_json: bytes,
@@ -542,23 +539,20 @@ class RemoteHost:
     """
 
     workdir: str
-    task_dir: str
+    taskdir: str
 
     def __init__(
         self,
         ssh_config: SSHConfig,
-        workdir: str | None = None,
-        task_dir: str | None = None,
+        taskdir: str | None = None,
     ):
         self._ssh = ssh_config
-        # workdir defaults to the legacy random path when not supplied so
-        # existing callers (test_session_remote.py) keep working.
-        self.workdir = workdir or f"/tmp/optio-opencode-{uuid.uuid4().hex[:12]}"
-        # task_dir is the per-process directory that holds workdir + opencode.db.
-        # Defaults to workdir when not supplied so legacy / test callers that
-        # don't track a separate task_dir keep working — cleanup_taskdir then
-        # wipes the workdir itself.
-        self.task_dir = task_dir if task_dir is not None else self.workdir
+        # taskdir is the per-process directory that holds workdir + opencode.db.
+        # Defaults to a legacy random /tmp path when not supplied so existing
+        # callers (test_session_remote.py) keep working. workdir is always
+        # taskdir/workdir.
+        self.taskdir = taskdir or f"/tmp/optio-opencode-{uuid.uuid4().hex[:12]}"
+        self.workdir = f"{self.taskdir}/workdir"
         self._conn: asyncssh.SSHClientConnection | None = None
         self._sftp: asyncssh.SFTPClient | None = None
         self._launch_proc: asyncssh.SSHClientProcess | None = None
@@ -752,7 +746,7 @@ class RemoteHost:
     async def cleanup_taskdir(self, aggressive: bool) -> None:
         if self._conn is None:
             return
-        cmd = f"rm -rf {shlex.quote(self.task_dir)}"
+        cmd = f"rm -rf {shlex.quote(self.taskdir)}"
         if aggressive:
             # Fire-and-forget: schedule the exec, do not await completion.
             asyncio.create_task(self._conn.run(cmd, check=False))

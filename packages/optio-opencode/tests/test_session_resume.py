@@ -15,7 +15,7 @@ from optio_core.models import TaskInstance
 from optio_core.store import upsert_process
 
 from optio_opencode import OpencodeTaskConfig
-from optio_opencode.paths import local_task_dir
+from optio_opencode.paths import local_taskdir
 from optio_opencode.session import run_opencode_session
 from optio_opencode.snapshots import (
     SESSION_SNAPSHOT_COLLECTION_SUFFIX,
@@ -48,12 +48,11 @@ def _patch_localhost_to_use_fake(monkeypatch):
     import optio_opencode.host as host_mod
     orig_init = host_mod.LocalHost.__init__
 
-    def _init(self, workdir, opencode_cmd=None, task_dir=None):
+    def _init(self, taskdir, opencode_cmd=None):
         return orig_init(
             self,
-            workdir=workdir,
+            taskdir=taskdir,
             opencode_cmd=[sys.executable, FAKE_OPENCODE],
-            task_dir=task_dir,
         )
 
     monkeypatch.setattr(host_mod.LocalHost, "__init__", _init)
@@ -119,7 +118,7 @@ async def test_terminal_flow_captures_snapshot_and_wipes_workdir(mongo_db, task_
     proc = await mongo_db["test_processes"].find_one({"processId": pid})
     assert proc["hasSavedState"] is True
 
-    wd = Path(local_task_dir(pid)) / "workdir"
+    wd = Path(local_taskdir(pid)) / "workdir"
     assert not wd.exists() or not any(wd.iterdir())
 
 

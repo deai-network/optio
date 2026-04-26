@@ -31,7 +31,7 @@ from optio_opencode.logparse import (
     parse_log_line,
     validate_deliverable_path,
 )
-from optio_opencode.paths import local_task_dir, remote_task_dir
+from optio_opencode.paths import local_taskdir, remote_taskdir
 from optio_opencode.prompt import compose_agents_md
 from optio_opencode.snapshots import (
     insert_snapshot,
@@ -56,17 +56,15 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
     """Execute function body for one optio-opencode task instance."""
     # --- per-task filesystem layout ---------------------------------------
     if config.ssh is None:
-        task_dir = local_task_dir(ctx.process_id)
-        workdir = os.path.join(task_dir, "workdir")
-        opencode_db = os.path.join(task_dir, "opencode.db")
-        os.makedirs(task_dir, exist_ok=True)
-        os.makedirs(workdir, exist_ok=True)
-        host: Host = LocalHost(workdir=workdir, task_dir=task_dir)
+        taskdir = local_taskdir(ctx.process_id)
+        os.makedirs(taskdir, exist_ok=True)
+        host: Host = LocalHost(taskdir=taskdir)
+        os.makedirs(host.workdir, exist_ok=True)
+        opencode_db = os.path.join(taskdir, "opencode.db")
     else:
-        task_dir = remote_task_dir(ctx.process_id)
-        workdir = f"{task_dir}/workdir"
-        opencode_db = f"{task_dir}/opencode.db"
-        host = RemoteHost(ssh_config=config.ssh, workdir=workdir, task_dir=task_dir)
+        taskdir = remote_taskdir(ctx.process_id)
+        host = RemoteHost(ssh_config=config.ssh, taskdir=taskdir)
+        opencode_db = f"{taskdir}/opencode.db"
 
     password = secrets.token_urlsafe(32)
     process: LaunchedProcess | None = None

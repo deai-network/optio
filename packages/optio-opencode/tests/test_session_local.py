@@ -98,12 +98,11 @@ def _patch_localhost_to_use_fake(monkeypatch):
     import optio_opencode.host as host_mod
     orig_init = host_mod.LocalHost.__init__
 
-    def _init(self, workdir: str, opencode_cmd=None, task_dir=None):
+    def _init(self, taskdir: str, opencode_cmd=None):
         return orig_init(
             self,
-            workdir=workdir,
+            taskdir=taskdir,
             opencode_cmd=[sys.executable, FAKE_OPENCODE],
-            task_dir=task_dir,
         )
 
     monkeypatch.setattr(host_mod.LocalHost, "__init__", _init)

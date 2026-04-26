@@ -91,8 +91,8 @@ async def sshd():
 
 @pytest_asyncio.fixture
 async def remote_host(sshd):
-    """A connected RemoteHost with a stable, fresh workdir."""
-    workdir = f"/tmp/optio-test-resume-{id(object())}"
+    """A connected RemoteHost with a stable, fresh taskdir."""
+    taskdir = f"/tmp/optio-test-resume-{id(object())}"
     host = RemoteHost(
         ssh_config=SSHConfig(
             host=sshd["host"],
@@ -100,7 +100,7 @@ async def remote_host(sshd):
             key_path=sshd["key_path"],
             port=sshd["port"],
         ),
-        workdir=workdir,
+        taskdir=taskdir,
     )
     await host.connect()
     await host.setup_workdir()
@@ -165,11 +165,11 @@ async def test_remote_restore_workdir_empties_then_extracts(sshd):
         port=sshd["port"],
     )
 
-    src_workdir = f"/tmp/optio-test-resume-src-{id(object())}"
-    dst_workdir = f"/tmp/optio-test-resume-dst-{id(object())}"
+    src_taskdir = f"/tmp/optio-test-resume-src-{id(object())}"
+    dst_taskdir = f"/tmp/optio-test-resume-dst-{id(object())}"
 
-    src = RemoteHost(ssh_config=ssh, workdir=src_workdir)
-    dst = RemoteHost(ssh_config=ssh, workdir=dst_workdir)
+    src = RemoteHost(ssh_config=ssh, taskdir=src_taskdir)
+    dst = RemoteHost(ssh_config=ssh, taskdir=dst_taskdir)
 
     await src.connect()
     await dst.connect()

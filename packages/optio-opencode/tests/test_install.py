@@ -103,7 +103,7 @@ def test_make_target_rejects_unsupported():
 
 
 async def test_local_host_detect_target_matches_platform(tmp_workdir):
-    host = LocalHost(workdir=tmp_workdir)
+    host = LocalHost(taskdir=tmp_workdir)
     t = await host.detect_target()
     # The combination must be supported.
     assert is_supported(t.os, t.arch), (t.os, t.arch)
@@ -112,7 +112,7 @@ async def test_local_host_detect_target_matches_platform(tmp_workdir):
 
 
 async def test_local_host_install_opencode_binary_sets_opencode_cmd(tmp_workdir):
-    host = LocalHost(workdir=tmp_workdir)
+    host = LocalHost(taskdir=tmp_workdir)
     # Create a dummy executable and install it.
     dummy = os.path.join(tmp_workdir, "my-opencode")
     with open(dummy, "w") as fh:
@@ -123,6 +123,6 @@ async def test_local_host_install_opencode_binary_sets_opencode_cmd(tmp_workdir)
 
 
 async def test_local_host_install_opencode_binary_raises_on_missing(tmp_workdir):
-    host = LocalHost(workdir=tmp_workdir)
+    host = LocalHost(taskdir=tmp_workdir)
     with pytest.raises(RuntimeError, match="not found"):
         await host.install_opencode_binary("/nonexistent/path/to/opencode")

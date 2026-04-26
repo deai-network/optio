@@ -21,7 +21,7 @@ def _validate(process_id: str) -> None:
         )
 
 
-def local_task_dir(process_id: str) -> str:
+def local_taskdir(process_id: str) -> str:
     """Return the absolute local task directory for a process_id.
 
     Resolution order:
@@ -40,7 +40,7 @@ def local_task_dir(process_id: str) -> str:
     return os.path.join(home, ".local", "share", "optio-opencode", process_id)
 
 
-def remote_task_dir(process_id: str) -> str:
+def remote_taskdir(process_id: str) -> str:
     """Return the per-task directory on a remote host.
 
     Resolution order:

@@ -12,22 +12,24 @@ FAKE_OPENCODE = os.path.join(os.path.dirname(__file__), "fake_opencode.py")
 
 @pytest.fixture
 def local_host(tmp_workdir):
+    # tmp_workdir is the per-test pytest tmp directory; we use it as the
+    # host's taskdir. The host then derives workdir = taskdir/workdir.
     return LocalHost(
-        workdir=tmp_workdir,
+        taskdir=tmp_workdir,
         opencode_cmd=[sys.executable, FAKE_OPENCODE],
     )
 
 
-async def test_setup_workdir_creates_expected_layout(local_host, tmp_workdir):
+async def test_setup_workdir_creates_expected_layout(local_host):
     await local_host.setup_workdir()
-    assert os.path.isdir(os.path.join(tmp_workdir, "deliverables"))
-    assert os.path.isfile(os.path.join(tmp_workdir, "optio.log"))
+    assert os.path.isdir(os.path.join(local_host.workdir, "deliverables"))
+    assert os.path.isfile(os.path.join(local_host.workdir, "optio.log"))
 
 
-async def test_write_text_writes_utf8(local_host, tmp_workdir):
+async def test_write_text_writes_utf8(local_host):
     await local_host.setup_workdir()
     await local_host.write_text("AGENTS.md", "héllo")
-    with open(os.path.join(tmp_workdir, "AGENTS.md"), encoding="utf-8") as fh:
+    with open(os.path.join(local_host.workdir, "AGENTS.md"), encoding="utf-8") as fh:
         assert fh.read() == "héllo"
 
 
@@ -44,24 +46,25 @@ async def test_launch_prints_url_and_reports_port(local_host):
         await local_host.terminate_opencode(proc, aggressive=True)
 
 
-async def test_launch_times_out_on_no_url():
+async def test_launch_times_out_on_no_url(tmp_path):
     # Use /bin/sleep — it never prints a URL.  readiness should time out.
     host = LocalHost(
-        workdir="/tmp",
+        taskdir=str(tmp_path),
         opencode_cmd=["/bin/sleep", "60"],
     )
+    await host.setup_workdir()  # cwd for the subprocess must exist
     with pytest.raises(TimeoutError):
         await host.launch_opencode(
             password="x", ready_timeout_s=0.5, extra_args=[]
         )
 
 
-async def test_tail_log_yields_appended_lines(local_host, tmp_workdir):
+async def test_tail_log_yields_appended_lines(local_host):
     await local_host.setup_workdir()
 
     async def append_later():
         await asyncio.sleep(0.05)
-        with open(os.path.join(tmp_workdir, "optio.log"), "a", encoding="utf-8") as fh:
+        with open(os.path.join(local_host.workdir, "optio.log"), "a", encoding="utf-8") as fh:
             fh.write("hello\n")
             fh.flush()
 
@@ -79,17 +82,17 @@ async def test_tail_log_yields_appended_lines(local_host, tmp_workdir):
     assert collected == ["hello"]
 
 
-async def test_fetch_deliverable_text(local_host, tmp_workdir):
+async def test_fetch_deliverable_text(local_host):
     await local_host.setup_workdir()
-    target = os.path.join(tmp_workdir, "deliverables", "a.txt")
+    target = os.path.join(local_host.workdir, "deliverables", "a.txt")
     with open(target, "w", encoding="utf-8") as fh:
         fh.write("contents")
     assert await local_host.fetch_deliverable_text(target) == "contents"
 
 
-async def test_fetch_deliverable_non_utf8_raises(local_host, tmp_workdir):
+async def test_fetch_deliverable_non_utf8_raises(local_host):
     await local_host.setup_workdir()
-    target = os.path.join(tmp_workdir, "deliverables", "b.bin")
+    target = os.path.join(local_host.workdir, "deliverables", "b.bin")
     with open(target, "wb") as fh:
         fh.write(b"\xff\xfe\x00")
     with pytest.raises(UnicodeDecodeError):
@@ -98,7 +101,6 @@ async def test_fetch_deliverable_non_utf8_raises(local_host, tmp_workdir):
 
 async def test_cleanup_taskdir_removes_directory(local_host, tmp_workdir):
     await local_host.setup_workdir()
-    # local_host's task_dir defaults to its workdir when not supplied; the
-    # fixture takes that path so the cleanup wipes the test's tmp dir.
+    # tmp_workdir is the host's taskdir; cleanup_taskdir wipes the whole thing.
     await local_host.cleanup_taskdir(aggressive=False)
     assert not os.path.exists(tmp_workdir)
