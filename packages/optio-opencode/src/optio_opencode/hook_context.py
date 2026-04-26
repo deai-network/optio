@@ -72,6 +72,63 @@ class HookContext:
             return result.stdout + (result.stderr if capture_stderr else "")
         return result
 
+    async def copy_file(
+        self,
+        source,
+        target: str,
+        *,
+        skip_if_unchanged: bool = False,
+    ) -> None:
+        host_home = await self._host.resolve_host_home()
+        abs_target = _resolve_target_path(target, self._host.workdir, host_home)
+        basename = os.path.basename(abs_target) or abs_target
+
+        ctx = self._ctx
+        skipped = False
+
+        def _progress_cb(percent, message):
+            nonlocal skipped
+            if message == "already up to date":
+                skipped = True
+                ctx.report_progress(None, f"Already up to date: {basename}")
+            elif percent is not None:
+                ctx.report_progress(percent, None)
+
+        if skip_if_unchanged:
+            ctx.report_progress(None, f"Verifying {basename}...")
+        else:
+            ctx.report_progress(None, f"Copying {basename}...")
+
+        await self._host.put_file_to_host(
+            source,
+            abs_target,
+            skip_if_unchanged=skip_if_unchanged,
+            progress_cb=_progress_cb,
+        )
+
+        if skip_if_unchanged and not skipped:
+            # Verifying revealed a mismatch; the host streamed a copy.
+            # Surface the "Copying ..." message after the fact for clarity.
+            ctx.report_progress(None, f"Copying {basename}...")
+
+    async def read_from_host(self, path: str) -> bytes:
+        host_home = await self._host.resolve_host_home()
+        abs_path = _resolve_target_path(path, self._host.workdir, host_home)
+        basename = os.path.basename(abs_path) or abs_path
+        self._ctx.report_progress(None, f"Reading {basename}...")
+
+        def _progress_cb(percent, message):
+            if percent is not None:
+                self._ctx.report_progress(percent, None)
+
+        return await self._host.fetch_bytes_from_host(
+            abs_path, progress_cb=_progress_cb,
+        )
+
+    async def read_text_from_host(self, path: str) -> str:
+        data = await self.read_from_host(path)
+        return data.decode("utf-8")
+
 
 class HookContextProtocol(Protocol):
     """Type-hint surface for hook authors who want IDE discoverability.

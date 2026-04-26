@@ -162,3 +162,122 @@ async def test_run_on_host_cwd_is_forwarded():
     h = HookContext(_FakeCtx(), host)
     await h.run_on_host("pwd", cwd="/elsewhere")
     assert host.calls[0][1] == "/elsewhere"
+
+
+class _FakeCopyHost:
+    def __init__(self, *, host_home="/home/u"):
+        self.workdir = "/wd"
+        self._host_home = host_home
+        self.put_calls = []
+        self.fetch_calls = []
+        self.fetch_returns = b""
+
+    async def resolve_host_home(self):
+        return self._host_home
+
+    async def put_file_to_host(
+        self, source, absolute_target, *,
+        expected_sha256=None, skip_if_unchanged=False, progress_cb=None,
+    ):
+        # Snapshot the call.
+        self.put_calls.append({
+            "source": source,
+            "absolute_target": absolute_target,
+            "expected_sha256": expected_sha256,
+            "skip_if_unchanged": skip_if_unchanged,
+        })
+        if progress_cb is not None:
+            progress_cb(None, None)
+            progress_cb(50.0, None)
+            progress_cb(100.0, None)
+
+    async def fetch_bytes_from_host(self, absolute_path, *, progress_cb=None):
+        self.fetch_calls.append(absolute_path)
+        return self.fetch_returns
+
+
+async def test_copy_file_workdir_relative_resolves_to_workdir():
+    host = _FakeCopyHost()
+    h = HookContext(_FakeCtx(), host)
+    await h.copy_file(b"data", "out/foo.bin")
+    assert host.put_calls[0]["absolute_target"] == "/wd/out/foo.bin"
+
+
+async def test_copy_file_absolute_passthrough():
+    host = _FakeCopyHost()
+    h = HookContext(_FakeCtx(), host)
+    await h.copy_file(b"data", "/usr/local/bin/tool")
+    assert host.put_calls[0]["absolute_target"] == "/usr/local/bin/tool"
+
+
+async def test_copy_file_home_relative_expanded():
+    host = _FakeCopyHost(host_home="/home/u")
+    h = HookContext(_FakeCtx(), host)
+    await h.copy_file(b"data", "~/.local/bin/tool")
+    assert host.put_calls[0]["absolute_target"] == "/home/u/.local/bin/tool"
+
+
+async def test_copy_file_path_source_forwarded():
+    host = _FakeCopyHost()
+    h = HookContext(_FakeCtx(), host)
+    await h.copy_file("/worker/path/file", "out.bin")
+    assert host.put_calls[0]["source"] == "/worker/path/file"
+
+
+async def test_copy_file_emits_progress_messages():
+    ctx = _FakeCtx()
+    host = _FakeCopyHost()
+    h = HookContext(ctx, host)
+    await h.copy_file(b"data", "out.bin")
+    # First call: start message; subsequent: percent.
+    msgs = [c[2] for c in ctx.calls]
+    assert any("Copying out.bin" in (m or "") for m in msgs)
+
+
+async def test_copy_file_skip_if_unchanged_emits_verifying_then_done():
+    """When the host reports skipped (progress_cb called once with 'already up to date'),
+    HookContext should emit Verifying + Already up to date messages."""
+    ctx = _FakeCtx()
+
+    class _SkippingHost(_FakeCopyHost):
+        async def put_file_to_host(self, source, absolute_target, *,
+                                   expected_sha256=None,
+                                   skip_if_unchanged=False,
+                                   progress_cb=None):
+            self.put_calls.append({"source": source, "absolute_target": absolute_target})
+            if progress_cb is not None:
+                progress_cb(None, "already up to date")
+
+    host = _SkippingHost()
+    h = HookContext(ctx, host)
+    await h.copy_file(b"data", "out.bin", skip_if_unchanged=True)
+    msgs = [c[2] for c in ctx.calls]
+    assert any("Verifying out.bin" in (m or "") for m in msgs)
+    assert any("Already up to date: out.bin" in (m or "") for m in msgs)
+
+
+async def test_read_from_host_workdir_relative_resolves():
+    host = _FakeCopyHost()
+    host.fetch_returns = b"contents"
+    h = HookContext(_FakeCtx(), host)
+    out = await h.read_from_host("data/x")
+    assert out == b"contents"
+    assert host.fetch_calls[0] == "/wd/data/x"
+
+
+async def test_read_text_from_host_decodes_utf8():
+    host = _FakeCopyHost()
+    host.fetch_returns = "héllo".encode("utf-8")
+    h = HookContext(_FakeCtx(), host)
+    out = await h.read_text_from_host("data/x")
+    assert out == "héllo"
+
+
+async def test_read_from_host_emits_reading_message():
+    ctx = _FakeCtx()
+    host = _FakeCopyHost()
+    host.fetch_returns = b"abc"
+    h = HookContext(ctx, host)
+    await h.read_from_host("data/x")
+    msgs = [c[2] for c in ctx.calls]
+    assert any("Reading x" in (m or "") for m in msgs)
