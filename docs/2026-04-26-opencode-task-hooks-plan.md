@@ -1424,8 +1424,9 @@ git commit -m "feat(optio-opencode): RemoteHost.fetch_bytes_from_host"
 async def test_remote_resolve_host_home_resolves_and_caches(remote_host):
     home1 = await remote_host.resolve_host_home()
     assert home1.startswith("/")  # absolute
-    # The harness runs as `optiotest` (USER_NAME in docker-compose.sshd.yml).
-    assert home1 == "/home/optiotest"
+    # The harness runs as `optiotest` but the linuxserver/openssh-server
+    # image sets HOME=/config for the unprivileged user.
+    assert home1 == "/config"
     # Second call uses cache; just verifies same return value.
     home2 = await remote_host.resolve_host_home()
     assert home2 == home1
