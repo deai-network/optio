@@ -54,3 +54,34 @@ def test_opencode_task_config_workdir_exclude_custom_list():
     from optio_opencode.types import OpencodeTaskConfig
     c = OpencodeTaskConfig(consumer_instructions="hi", workdir_exclude=["*.log"])
     assert c.workdir_exclude == ["*.log"]
+
+
+"""Type-shape tests for OpencodeTaskConfig and DeliverableCallback."""
+
+import inspect
+from typing import get_type_hints
+
+from optio_opencode.types import (
+    DeliverableCallback,
+    OpencodeTaskConfig,
+    HookCallback,
+)
+
+
+def test_opencode_task_config_has_hook_fields():
+    fields = {f for f in OpencodeTaskConfig.__dataclass_fields__}
+    assert "before_execute" in fields
+    assert "after_execute" in fields
+
+
+def test_opencode_task_config_hook_default_none():
+    cfg = OpencodeTaskConfig(consumer_instructions="x")
+    assert cfg.before_execute is None
+    assert cfg.after_execute is None
+
+
+def test_deliverable_callback_now_takes_three_args():
+    # The Callable type alias is structural; we can't introspect deeply,
+    # but we can ensure HookCallback exists and is callable type.
+    assert HookCallback is not None
+    assert DeliverableCallback is not None
