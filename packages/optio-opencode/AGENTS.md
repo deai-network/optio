@@ -9,32 +9,42 @@ Full design: `docs/2026-04-22-optio-opencode-design.md`.
 ## Public API
 
 ```python
-from optio_opencode import (
-    create_opencode_task,
-    OpencodeTaskConfig,
-    SSHConfig,
-    DeliverableCallback,
-)
+from optio_opencode import OpencodeTaskConfig, create_opencode_task
 
-async def on_file(path: str, text: str) -> None:
-    ...
-
-task = create_opencode_task(
-    process_id="my-task",
-    name="My task",
-    config=OpencodeTaskConfig(
-        consumer_instructions="...",      # prepended with optio-opencode's base prompt
-        opencode_config={"model": "..."},  # passthrough to opencode.json
-        ssh=None,                          # None = local subprocess
-        on_deliverable=on_file,
-        install_if_missing=True,
-        workdir_exclude=None,              # see OpencodeTaskConfig.workdir_exclude below
-    ),
-    description="optional",
-)
+def get_tasks():
+    return [
+        create_opencode_task(
+            process_id="my-task",
+            name="My task",
+            config=OpencodeTaskConfig(
+                consumer_instructions="...",
+                ssh=my_ssh_config,
+                before_execute=my_before_hook,
+                on_deliverable=my_callback,
+            ),
+        )
+    ]
 ```
 
 The returned `TaskInstance` has `ui_widget="iframe"` and `supports_resume=True` baked in.
+
+### OpencodeTaskConfig fields (selected)
+
+- `consumer_instructions: str` — prepended with optio-opencode's base prompt.
+- `opencode_config: dict | None` — passthrough to `opencode.json` on the host.
+- `ssh: SSHConfig | None` — `None` = local subprocess.
+- `install_if_missing: bool` — default `True`; run upstream curl installer when opencode is absent.
+- `workdir_exclude: list[str] | None` — see `OpencodeTaskConfig.workdir_exclude` below.
+- `before_execute: Callable | None` — see **Hooks** below.
+- `after_execute: Callable | None` — see **Hooks** below.
+- `on_deliverable: Callable[[HookContext, str, str], Awaitable[None]] | None`
+  — invoked once per fetched DELIVERABLE with `(hook_ctx,
+  remote_path, decoded_text)`. The framework already auto-emits a
+  `"Deliverable: <path>"` progress message before the callback fires,
+  so callbacks only need to add behavior beyond that (e.g. parsing
+  the body, fetching a related file via
+  `hook_ctx.read_text_from_host`, etc.). **Breaking change**: prior
+  to the hooks feature, this callback received `(path, text)` only.
 
 ### OpencodeTaskConfig.workdir_exclude
 
@@ -48,6 +58,54 @@ Controls which paths are excluded when snapshotting the working directory for re
   `__pycache__`, `.venv`, `*.pyc`, `.DS_Store`.
 - `[]` (empty list) — capture everything; no exclusions.
 - Non-empty list — used verbatim; no merge with defaults.
+
+## Hooks: `before_execute` / `after_execute`
+
+`OpencodeTaskConfig` accepts two optional async callbacks:
+
+- `before_execute(hook_ctx)`: runs after the opencode binary has been
+  installed on the host but before opencode launches. Use this to
+  ship per-task files via `hook_ctx.copy_file(...)` or to run setup
+  commands via `hook_ctx.run_on_host(...)`.
+- `after_execute(hook_ctx)`: runs after opencode has terminated (or
+  been cancelled) and **before** snapshot capture. Side effects in
+  this hook become part of the snapshot, so files written here are
+  preserved across resumes. The hook always runs once a host has
+  been connected and a workdir set up — even if `before_execute` or
+  the run loop fails.
+
+Both hooks receive a `HookContext`, which is a wrapped
+`ProcessContext` extended with four host primitives:
+
+- `copy_file(source, target, *, skip_if_unchanged=False)` — ship a
+  file (path / bytes / GridFS blob `ObjectId`) to the host. `target`
+  is workdir-relative by default; `/`-prefixed paths are absolute,
+  `~/`-prefixed paths are home-relative. `skip_if_unchanged=True`
+  computes SHA-256 on both sides and skips the transfer when they
+  match.
+- `run_on_host(command, *, check=True, capture_stderr=False, cwd=None)`
+  — run a shell command on the host. With `check=True` (default),
+  returns stdout on exit 0 and raises `HostCommandError` on non-zero;
+  with `check=False`, returns a `RunResult(stdout, stderr,
+  exit_code)`.
+- `read_from_host(path) -> bytes` and `read_text_from_host(path) -> str`
+  — fetch a file from the host. Same path conventions as
+  `copy_file`.
+
+`HookContext` also exposes everything `ProcessContext` does
+(`report_progress`, `should_continue`, `params`, GridFS helpers,
+etc.) via attribute delegation. For best IDE support, type-hint
+your hooks against `HookContextProtocol`.
+
+### Failure semantics
+
+- `before_execute` raising → the session fails immediately. Opencode
+  never launches. `after_execute` still runs. Cleanup runs.
+- `after_execute` raising on a successful session → the session is
+  marked failed with the `after_execute` exception.
+- `after_execute` raising on an already-failing session → the
+  exception is logged via `report_progress("after_execute callback
+  raised: ...")` and does not shadow the original cause.
 
 ## Log-file contract
 
