@@ -86,6 +86,11 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
     preserved_session_id: str | None = None
     session_id: str | None = None
 
+    from optio_opencode.hook_context import HookContext  # noqa: PLC0415
+
+    hook_ctx: HookContext | None = None
+    session_error: BaseException | None = None
+
     # --- resume decision --------------------------------------------------
     resume_requested = bool(getattr(ctx, "resume", False))
     snapshot: dict | None = None
@@ -187,8 +192,6 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             await host.ensure_opencode_installed(config.install_if_missing)
 
         # --- before_execute hook -----------------------------------------
-        from optio_opencode.hook_context import HookContext  # noqa: PLC0415
-
         hook_ctx = HookContext(ctx, host)
         if config.before_execute is not None:
             await config.before_execute(hook_ctx)
@@ -296,7 +299,11 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         )
 
     except _SessionFailed as fail:
+        session_error = fail
         raise RuntimeError(str(fail)) from None
+    except BaseException as exc:
+        session_error = exc
+        raise
 
     finally:
         if process is not None:
@@ -304,6 +311,20 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                 await host.terminate_opencode(process, aggressive=cancelled)
             except Exception:  # noqa: BLE001
                 _LOG.exception("terminate_opencode failed")
+
+        # after_execute: runs whenever hook_ctx exists (i.e. setup_workdir
+        # succeeded), regardless of success/failure/cancellation.  Its side
+        # effects become part of the workdir that is snapshotted next.
+        if config.after_execute is not None and hook_ctx is not None:
+            try:
+                await config.after_execute(hook_ctx)
+            except BaseException as after_exc:
+                if session_error is None:
+                    raise
+                ctx.report_progress(
+                    None,
+                    f"after_execute callback raised: {after_exc!r}",
+                )
 
         if session_id is not None:
             try:

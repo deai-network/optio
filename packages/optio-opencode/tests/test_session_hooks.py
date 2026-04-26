@@ -141,3 +141,86 @@ async def test_before_execute_runs_after_install_before_launch(tmp_workdir, monk
     before_idx = host.timeline.index("before_execute")
     launch_idx = host.timeline.index("launch_opencode")
     assert install_idx < before_idx < launch_idx
+
+
+async def test_after_execute_runs_when_before_execute_raises(tmp_workdir, monkeypatch):
+    host = _RecordingFakeHost()
+    ctx = _MinimalCtx()
+
+    async def failing_before(hook_ctx):
+        host.timeline.append("before_execute")
+        raise RuntimeError("before fails")
+
+    async def my_after(hook_ctx):
+        host.timeline.append("after_execute")
+
+    config = OpencodeTaskConfig(
+        consumer_instructions="x",
+        before_execute=failing_before,
+        after_execute=my_after,
+    )
+    monkeypatch.setattr(
+        "optio_opencode.session._build_host", lambda config, process_id: host,
+    )
+
+    with pytest.raises(RuntimeError, match="before fails"):
+        await run_opencode_session(ctx, config)
+
+    # before_execute and after_execute both ran; cleanup ran.
+    assert "before_execute" in host.timeline
+    assert "after_execute" in host.timeline
+    assert "launch_opencode" not in host.timeline  # never launched
+    assert "cleanup_taskdir" in host.timeline
+
+
+async def test_after_execute_skipped_when_failure_before_host_connect(tmp_workdir, monkeypatch):
+    host = _RecordingFakeHost(fail_in="connect")
+    ctx = _MinimalCtx()
+
+    async def my_after(hook_ctx):
+        host.timeline.append("after_execute")
+
+    config = OpencodeTaskConfig(
+        consumer_instructions="x",
+        after_execute=my_after,
+    )
+    monkeypatch.setattr(
+        "optio_opencode.session._build_host", lambda config, process_id: host,
+    )
+
+    with pytest.raises(RuntimeError, match="injected failure"):
+        await run_opencode_session(ctx, config)
+
+    # Before host connected, hook_ctx wasn't built — after_execute is skipped.
+    assert "after_execute" not in host.timeline
+
+
+async def test_after_execute_failure_does_not_shadow_session_error(tmp_workdir, monkeypatch):
+    """If session is already failing, an after_execute exception is logged
+    via report_progress but doesn't override the original cause."""
+    host = _RecordingFakeHost()
+    ctx = _MinimalCtx()
+
+    async def failing_before(hook_ctx):
+        raise RuntimeError("primary failure")
+
+    async def failing_after(hook_ctx):
+        raise RuntimeError("secondary after failure")
+
+    config = OpencodeTaskConfig(
+        consumer_instructions="x",
+        before_execute=failing_before,
+        after_execute=failing_after,
+    )
+    monkeypatch.setattr(
+        "optio_opencode.session._build_host", lambda config, process_id: host,
+    )
+
+    with pytest.raises(RuntimeError, match="primary failure"):
+        await run_opencode_session(ctx, config)
+
+    # The secondary exception was reported via ctx.report_progress.
+    assert any(
+        "after_execute callback raised" in str(c[2])
+        for c in ctx.calls
+    )
