@@ -1084,6 +1084,11 @@ class RemoteHost:
 
         return make_target(os_, arch, rosetta=rosetta, musl=musl, baseline=baseline)
 
+    async def _resolve_install_path(self) -> str:
+        """Return the absolute remote path where opencode should be installed."""
+        home = await self.resolve_host_home()
+        return f"{home}/.local/bin/opencode"
+
     async def install_opencode_binary(
         self,
         local_binary_path: str,
@@ -1093,71 +1098,46 @@ class RemoteHost:
 
         Persistent (survives the workdir's rm -rf on teardown) and — if the
         remote user has ``~/.local/bin`` on PATH — discoverable by future
-        manual invocations too.  Idempotent: we hash-compare the remote
-        file against the local source and skip SFTP when they match, so
-        subsequent task runs reuse the existing install without re-
-        uploading ~150 MB.
+        manual invocations too.  Idempotent: delegates to put_file_to_host
+        which skips the upload when the remote file's SHA-256 already matches.
 
         If ``progress`` is given and an upload actually happens, it is
         called periodically with ``(bytes_transferred, total_bytes)``.
         """
-        import hashlib
-
-        assert self._conn is not None and self._sftp is not None
+        assert self._conn is not None
         if not os.path.isfile(local_binary_path):
             raise RuntimeError(
                 f"opencode binary not found at {local_binary_path!r}"
             )
 
-        # Compute local SHA-256 (read in chunks so we don't load 150 MB at once).
-        h = hashlib.sha256()
-        with open(local_binary_path, "rb") as fh:
-            for chunk in iter(lambda: fh.read(1 << 20), b""):
-                h.update(chunk)
-        local_hash = h.hexdigest()
+        install_path = await self._resolve_install_path()
 
-        # Resolve $HOME on the remote to build an absolute path.
-        r = await self._conn.run("printf %s \"$HOME\"", check=True)
-        home = str(r.stdout or "").strip()
-        if not home:
-            raise RuntimeError("could not resolve $HOME on remote host")
-        remote_bin_dir = f"{home}/.local/bin"
-        remote_path = f"{remote_bin_dir}/opencode"
+        # Adapt the public progress(transferred, total) signature to the
+        # progress_cb(pct_or_None, msg_or_None) interface used internally.
+        progress_cb = None
+        if progress is not None:
+            _file_size = os.path.getsize(local_binary_path)
 
-        # If the remote file already exists with the same SHA-256, we can
-        # reuse it directly — skip the SFTP upload.
-        rh = await self._conn.run(
-            f"sha256sum {remote_path} 2>/dev/null | awk '{{print $1}}'",
-            check=False,
+            def progress_cb(pct, _msg):
+                if pct is not None and _file_size > 0:
+                    progress(int(pct * _file_size / 100), _file_size)
+
+        # Delegate the transfer (with skip-if-unchanged + atomic rename + progress)
+        # to the generic primitive.
+        await self.put_file_to_host(
+            local_binary_path,
+            install_path,
+            skip_if_unchanged=True,
+            progress_cb=progress_cb,
         )
-        remote_hash = str(rh.stdout or "").strip()
-
-        if remote_hash != local_hash:
-            # Ensure target dir exists, then stage via a temp path and rename
-            # atomically so a concurrent run doesn't see a partially-written
-            # file or overlap with another upload.
-            await self._conn.run(f"mkdir -p {remote_bin_dir}", check=True)
-            tmp_remote = f"{remote_path}.optio-opencode.{uuid.uuid4().hex[:8]}.tmp"
-
-            # asyncssh's SFTP progress_handler has signature
-            # (srcpath, dstpath, bytes_copied, total_bytes); paths are bytes.
-            # We adapt it to the (transferred, total) API we expose.
-            sftp_progress = None
-            if progress is not None:
-                def sftp_progress(
-                    _src: bytes, _dst: bytes, transferred: int, total: int
-                ) -> None:
-                    progress(transferred, total)
-
-            await self._sftp.put(
-                local_binary_path, tmp_remote, progress_handler=sftp_progress
-            )
-            await self._conn.run(
-                f"chmod +x {tmp_remote} && mv -f {tmp_remote} {remote_path}",
-                check=True,
+        # Make sure the binary is executable. chmod is idempotent.
+        result = await self.run_command(f"chmod +x {shlex.quote(install_path)}")
+        if result.exit_code != 0:
+            raise RuntimeError(
+                f"chmod +x {install_path} failed: exit {result.exit_code}: {result.stderr!r}"
             )
 
-        self._opencode_exec = remote_path
+        self._opencode_exec = install_path
 
     async def fetch_bytes_from_host(
         self,
