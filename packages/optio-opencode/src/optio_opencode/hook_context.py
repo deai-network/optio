@@ -52,6 +52,26 @@ class HookContext:
         # Only called if the attribute isn't found on the instance / class.
         return getattr(self._ctx, name)
 
+    async def run_on_host(
+        self,
+        command: str,
+        *,
+        check: bool = True,
+        capture_stderr: bool = False,
+        cwd: str | None = None,
+    ):
+        result = await self._host.run_command(command, cwd=cwd)
+        if check:
+            if result.exit_code != 0:
+                raise HostCommandError(
+                    command=command,
+                    exit_code=result.exit_code,
+                    stdout=result.stdout,
+                    stderr=result.stderr,
+                )
+            return result.stdout + (result.stderr if capture_stderr else "")
+        return result
+
 
 class HookContextProtocol(Protocol):
     """Type-hint surface for hook authors who want IDE discoverability.

@@ -108,3 +108,57 @@ def test_hook_context_protocol_is_protocol():
         "report_progress", "should_continue", "params", "metadata",
     }
     assert expected <= methods
+
+
+class _FakeRunHost:
+    def __init__(self, results):
+        self.workdir = "/wd"
+        self._results = list(results)
+        self.calls = []
+
+    async def run_command(self, command, *, cwd=None, env=None):
+        self.calls.append((command, cwd, env))
+        return self._results.pop(0)
+
+
+async def test_run_on_host_check_true_returns_stdout_on_success():
+    from optio_opencode.hook_context import RunResult
+    host = _FakeRunHost([RunResult(stdout="hi\n", stderr="", exit_code=0)])
+    h = HookContext(_FakeCtx(), host)
+    out = await h.run_on_host("echo hi")
+    assert out == "hi\n"
+
+
+async def test_run_on_host_check_true_raises_on_nonzero():
+    from optio_opencode.hook_context import HostCommandError, RunResult
+    host = _FakeRunHost([RunResult(stdout="", stderr="boom", exit_code=2)])
+    h = HookContext(_FakeCtx(), host)
+    with pytest.raises(HostCommandError) as ei:
+        await h.run_on_host("false")
+    assert ei.value.exit_code == 2
+    assert ei.value.stderr == "boom"
+
+
+async def test_run_on_host_check_false_returns_result_object():
+    from optio_opencode.hook_context import RunResult
+    host = _FakeRunHost([RunResult(stdout="", stderr="oops", exit_code=3)])
+    h = HookContext(_FakeCtx(), host)
+    res = await h.run_on_host("false", check=False)
+    assert res.exit_code == 3
+    assert res.stderr == "oops"
+
+
+async def test_run_on_host_capture_stderr_merges_into_returned_stdout():
+    from optio_opencode.hook_context import RunResult
+    host = _FakeRunHost([RunResult(stdout="o", stderr="e", exit_code=0)])
+    h = HookContext(_FakeCtx(), host)
+    out = await h.run_on_host("cmd", capture_stderr=True)
+    assert out == "oe"
+
+
+async def test_run_on_host_cwd_is_forwarded():
+    from optio_opencode.hook_context import RunResult
+    host = _FakeRunHost([RunResult(stdout="", stderr="", exit_code=0)])
+    h = HookContext(_FakeCtx(), host)
+    await h.run_on_host("pwd", cwd="/elsewhere")
+    assert host.calls[0][1] == "/elsewhere"
