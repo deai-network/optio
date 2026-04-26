@@ -281,3 +281,61 @@ async def test_read_from_host_emits_reading_message():
     await h.read_from_host("data/x")
     msgs = [c[2] for c in ctx.calls]
     assert any("Reading x" in (m or "") for m in msgs)
+
+
+from bson import ObjectId
+
+
+class _FakeBlobReader:
+    def __init__(self, data: bytes):
+        self._data = data
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def read(self, n=None):
+        if n is None:
+            data, self._data = self._data, b""
+            return data
+        out, self._data = self._data[:n], self._data[n:]
+        return out
+
+
+class _BlobCtx(_FakeCtx):
+    def __init__(self, blobs: dict):
+        super().__init__()
+        self._blobs = blobs
+
+    def load_blob(self, file_id):
+        # Return an async-context-manager wrapping a reader.
+        return _FakeBlobReader(self._blobs[file_id])
+
+
+async def test_copy_file_objectid_source_streams_blob():
+    blob_id = ObjectId()
+    payload = b"blob-payload"
+    ctx = _BlobCtx({blob_id: payload})
+    host = _FakeCopyHost()
+    h = HookContext(ctx, host)
+    await h.copy_file(blob_id, "out.bin")
+    # The host should have received an async iterator that yields the blob bytes.
+    src = host.put_calls[0]["source"]
+    assert hasattr(src, "__aiter__")
+    collected = b"".join([chunk async for chunk in src])
+    assert collected == payload
+
+
+async def test_copy_file_objectid_skip_if_unchanged_supplies_expected_sha():
+    import hashlib
+    blob_id = ObjectId()
+    payload = b"blob-payload"
+    expected_sha = hashlib.sha256(payload).hexdigest()
+    ctx = _BlobCtx({blob_id: payload})
+    host = _FakeCopyHost()
+    h = HookContext(ctx, host)
+    await h.copy_file(blob_id, "out.bin", skip_if_unchanged=True)
+    assert host.put_calls[0]["expected_sha256"] == expected_sha
+    assert host.put_calls[0]["skip_if_unchanged"] is True

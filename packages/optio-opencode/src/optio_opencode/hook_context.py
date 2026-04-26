@@ -79,10 +79,11 @@ class HookContext:
         *,
         skip_if_unchanged: bool = False,
     ) -> None:
+        from bson import ObjectId  # local import to avoid a hard top-level dep
+
         host_home = await self._host.resolve_host_home()
         abs_target = _resolve_target_path(target, self._host.workdir, host_home)
         basename = os.path.basename(abs_target) or abs_target
-
         ctx = self._ctx
         skipped = False
 
@@ -94,6 +95,22 @@ class HookContext:
             elif percent is not None:
                 ctx.report_progress(percent, None)
 
+        # Resolve blob sources to (iterator, expected_sha) pair.
+        expected_sha: str | None = None
+        if isinstance(source, ObjectId):
+            payload = await self._read_blob_bytes(source)
+            if skip_if_unchanged:
+                import hashlib
+                expected_sha = hashlib.sha256(payload).hexdigest()
+
+            async def _gen():
+                # Yield the payload as one (or a few) chunks. For very large
+                # blobs we could stream via load_blob, but reading-then-iterating
+                # is simpler and correct.
+                yield payload
+
+            source = _gen()
+
         if skip_if_unchanged:
             ctx.report_progress(None, f"Verifying {basename}...")
         else:
@@ -102,14 +119,17 @@ class HookContext:
         await self._host.put_file_to_host(
             source,
             abs_target,
+            expected_sha256=expected_sha,
             skip_if_unchanged=skip_if_unchanged,
             progress_cb=_progress_cb,
         )
 
         if skip_if_unchanged and not skipped:
-            # Verifying revealed a mismatch; the host streamed a copy.
-            # Surface the "Copying ..." message after the fact for clarity.
             ctx.report_progress(None, f"Copying {basename}...")
+
+    async def _read_blob_bytes(self, file_id) -> bytes:
+        async with self._ctx.load_blob(file_id) as reader:
+            return await reader.read()
 
     async def read_from_host(self, path: str) -> bytes:
         host_home = await self._host.resolve_host_home()
