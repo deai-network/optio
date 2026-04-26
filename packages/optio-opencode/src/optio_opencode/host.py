@@ -1158,6 +1158,30 @@ class RemoteHost:
 
         self._opencode_exec = remote_path
 
+    async def fetch_bytes_from_host(
+        self,
+        absolute_path: str,
+        *,
+        progress_cb=None,
+    ) -> bytes:
+        assert self._conn is not None
+        sftp = await self._conn.start_sftp_client()
+        try:
+            try:
+                async with sftp.open(absolute_path, "rb") as fh:
+                    data = await fh.read()
+            except (asyncssh.SFTPError, asyncssh.SFTPNoSuchFile) as exc:
+                # asyncssh maps "no such file" to a generic SFTPError in some
+                # versions; check the message.
+                if "No such file" in str(exc):
+                    raise FileNotFoundError(absolute_path) from exc
+                raise
+            if progress_cb is not None:
+                progress_cb(100.0, None)
+            return data
+        finally:
+            sftp.exit()
+
     async def run_command(
         self,
         command: str,

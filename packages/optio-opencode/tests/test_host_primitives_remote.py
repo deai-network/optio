@@ -198,3 +198,19 @@ async def test_remote_put_file_iterator_skip_requires_expected_sha(remote_host):
         await remote_host.put_file_to_host(
             chunks(), target, skip_if_unchanged=True,
         )
+
+
+async def test_remote_fetch_bytes_reads_full(remote_host):
+    target = remote_host.workdir + "/rd.bin"
+    await remote_host.run_command(
+        f"printf 'remote-content' > {target}",
+    )
+    data = await remote_host.fetch_bytes_from_host(target)
+    assert data == b"remote-content"
+
+
+async def test_remote_fetch_bytes_missing_raises_filenotfound(remote_host):
+    with pytest.raises(FileNotFoundError):
+        await remote_host.fetch_bytes_from_host(
+            remote_host.workdir + "/no_such",
+        )
