@@ -1,26 +1,32 @@
 """Reference demo task for optio-opencode.
 
-Defaults to local mode (per the design spec, Section 10); set the
-``OPTIO_OPENCODE_DEMO_SSH_HOST`` environment variable to run the same
-task via SSH on a remote host.  Relevant env vars (all optional except
-``_HOST``):
+Defaults to local mode; set the ``OPTIO_OPENCODE_DEMO_SSH_HOST``
+environment variable to run the same task via SSH on a remote host.
+Relevant env vars (all optional except ``_HOST``):
 
 - ``OPTIO_OPENCODE_DEMO_SSH_HOST`` — enables remote mode.
 - ``OPTIO_OPENCODE_DEMO_SSH_USER`` — default: ``$USER`` on the worker.
 - ``OPTIO_OPENCODE_DEMO_SSH_KEY_PATH`` — default: ``~/.ssh/id_ed25519``.
 - ``OPTIO_OPENCODE_DEMO_SSH_PORT`` — default: ``22``.
 
-The consumer prompt is the hostname-and-color-and-42 prompt described
-in the spec.  The deliverable callback surfaces the file contents back
-into the optio log channel so the human can visually confirm
-round-trip success.
+The before_execute hook runs ``whoami`` on the host before opencode
+launches and reports the result via ``report_progress``. The
+on_deliverable callback prints the deliverable body to the worker's
+terminal — additive to the framework's auto-emitted
+``"Deliverable: <path>"`` progress message.
 """
+
+from __future__ import annotations
 
 import os
 
-from optio_core.context import ProcessContext
 from optio_core.models import TaskInstance
-from optio_opencode import OpencodeTaskConfig, SSHConfig, create_opencode_task
+from optio_opencode import (
+    HookContext,
+    OpencodeTaskConfig,
+    SSHConfig,
+    create_opencode_task,
+)
 
 
 CONSUMER_PROMPT = (
@@ -34,7 +40,6 @@ CONSUMER_PROMPT = (
 
 
 def _resolve_ssh_config() -> SSHConfig | None:
-    """Build an SSHConfig from env vars, or None for local mode."""
     host = os.environ.get("OPTIO_OPENCODE_DEMO_SSH_HOST")
     if not host:
         return None
@@ -57,43 +62,34 @@ def _resolve_ssh_config() -> SSHConfig | None:
     return SSHConfig(host=host, user=user, key_path=key_path, port=port)
 
 
-def _make_on_deliverable(ctx: ProcessContext):
-    async def _cb(path: str, text: str) -> None:
-        ctx.report_progress(
-            None,
-            f"deliverable {os.path.basename(path)}: {text[:200]}",
-        )
-    return _cb
+async def _before_execute(hook_ctx: HookContext) -> None:
+    out = await hook_ctx.run_on_host("whoami")
+    hook_ctx.report_progress(None, f"opencode will run as {out.strip()}")
+
+
+async def _on_deliverable(
+    hook_ctx: HookContext, path: str, text: str,
+) -> None:
+    print(f"[opencode-demo] deliverable {path}:\n{text}")
 
 
 def get_tasks() -> list[TaskInstance]:
-    async def _execute(ctx: ProcessContext) -> None:
-        config = OpencodeTaskConfig(
-            consumer_instructions=CONSUMER_PROMPT,
-            opencode_config={},
-            # Resolved at execution time so env-var changes between
-            # worker restarts are picked up without reinstalling the task.
-            ssh=_resolve_ssh_config(),
-            on_deliverable=_make_on_deliverable(ctx),
-        )
-        inner = create_opencode_task(
-            process_id="opencode-demo-inner",
-            name="opencode demo inner",
-            config=config,
-        )
-        await inner.execute(ctx)
-
     return [
-        TaskInstance(
-            execute=_execute,
+        create_opencode_task(
             process_id="opencode-demo",
             name="Opencode demo",
             description=(
                 "Opencode session asking for a color and shipping a "
-                "deliverable. Set OPTIO_OPENCODE_DEMO_SSH_HOST to run "
-                "remotely; otherwise runs locally."
+                "deliverable. Runs `whoami` on the host before launching "
+                "opencode, and prints any deliverable to the worker terminal. "
+                "Set OPTIO_OPENCODE_DEMO_SSH_HOST to run remotely; "
+                "otherwise runs locally."
             ),
-            ui_widget="iframe",
-            supports_resume=True,
+            config=OpencodeTaskConfig(
+                consumer_instructions=CONSUMER_PROMPT,
+                ssh=_resolve_ssh_config(),
+                before_execute=_before_execute,
+                on_deliverable=_on_deliverable,
+            ),
         )
     ]
