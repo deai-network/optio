@@ -753,12 +753,16 @@ class RemoteHost:
     async def cleanup_taskdir(self, aggressive: bool) -> None:
         if self._conn is None:
             return
-        cmd = f"rm -rf {shlex.quote(self.taskdir)}"
-        if aggressive:
-            # Fire-and-forget: schedule the exec, do not await completion.
-            asyncio.create_task(self._conn.run(cmd, check=False))
-            return
-        await self._conn.run(cmd, check=False)
+        # Always await: session.py calls host.disconnect() right after this
+        # in the finally block, and a fire-and-forget asyncio task would be
+        # aborted as soon as the SSH connection closes. The latency win
+        # from skipping the await isn't worth the resulting taskdir leak.
+        # `aggressive` is honored by terminate_opencode (SIGKILL vs SIGTERM)
+        # and is ignored here — by the time we reach cleanup, opencode is
+        # already dead.
+        await self._conn.run(
+            f"rm -rf {shlex.quote(self.taskdir)}", check=False,
+        )
 
     async def opencode_import(
         self, opencode_db_path: str, session_json: bytes,
