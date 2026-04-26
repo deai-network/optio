@@ -18,3 +18,12 @@ def test_create_opencode_task_declares_resume_support():
         config=OpencodeTaskConfig(consumer_instructions="hi"),
     )
     assert task.supports_resume is True
+
+
+def test_optio_opencode_exports_hook_context_types():
+    import optio_opencode
+    assert hasattr(optio_opencode, "HookContext")
+    assert hasattr(optio_opencode, "HookContextProtocol")
+    assert hasattr(optio_opencode, "RunResult")
+    assert hasattr(optio_opencode, "HostCommandError")
+    assert hasattr(optio_opencode, "HookCallback")

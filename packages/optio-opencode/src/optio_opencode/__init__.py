@@ -2,9 +2,16 @@
 
 import logging as _logging
 
+from optio_opencode.hook_context import (
+    HookContext,
+    HookContextProtocol,
+    HostCommandError,
+    RunResult,
+)
 from optio_opencode.session import create_opencode_task, run_opencode_session
 from optio_opencode.types import (
     DeliverableCallback,
+    HookCallback,
     OpencodeTaskConfig,
     SSHConfig,
 )
@@ -23,4 +30,9 @@ __all__ = [
     "DeliverableCallback",
     "OpencodeTaskConfig",
     "SSHConfig",
+    "HookContext",
+    "HookContextProtocol",
+    "HostCommandError",
+    "RunResult",
+    "HookCallback",
 ]
