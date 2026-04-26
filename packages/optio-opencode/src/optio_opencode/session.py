@@ -52,18 +52,32 @@ class _SessionFailed(Exception):
     """Raised by the session loop to drive the process to 'failed'."""
 
 
-async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) -> None:
-    """Execute function body for one optio-opencode task instance."""
-    # --- per-task filesystem layout ---------------------------------------
+def _build_host(config: OpencodeTaskConfig, process_id: str) -> Host:
+    """Construct the appropriate Host object for the given config.
+
+    Extracted so tests can monkeypatch ``optio_opencode.session._build_host``
+    to inject a fake host without launching real subprocesses or SSH.
+    """
     if config.ssh is None:
-        taskdir = local_taskdir(ctx.process_id)
+        taskdir = local_taskdir(process_id)
         os.makedirs(taskdir, exist_ok=True)
         host: Host = LocalHost(taskdir=taskdir)
         os.makedirs(host.workdir, exist_ok=True)
+        return host
+    else:
+        taskdir = remote_taskdir(process_id)
+        return RemoteHost(ssh_config=config.ssh, taskdir=taskdir)
+
+
+async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) -> None:
+    """Execute function body for one optio-opencode task instance."""
+    # --- per-task filesystem layout ---------------------------------------
+    host: Host = _build_host(config, ctx.process_id)
+    if config.ssh is None:
+        taskdir = local_taskdir(ctx.process_id)
         opencode_db = os.path.join(taskdir, "opencode.db")
     else:
         taskdir = remote_taskdir(ctx.process_id)
-        host = RemoteHost(ssh_config=config.ssh, taskdir=taskdir)
         opencode_db = f"{taskdir}/opencode.db"
 
     password = secrets.token_urlsafe(32)
@@ -171,6 +185,13 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             ctx.report_progress(None, "opencode binary ready")
         else:
             await host.ensure_opencode_installed(config.install_if_missing)
+
+        # --- before_execute hook -----------------------------------------
+        from optio_opencode.hook_context import HookContext  # noqa: PLC0415
+
+        hook_ctx = HookContext(ctx, host)
+        if config.before_execute is not None:
+            await config.before_execute(hook_ctx)
 
         # --- launch ------------------------------------------------------
         version = await host.opencode_version()
