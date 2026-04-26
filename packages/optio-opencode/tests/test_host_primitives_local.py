@@ -107,3 +107,71 @@ async def test_put_file_replaces_existing_atomically(local_host):
     await local_host.put_file_to_host(b"NEW", target)
     with open(target, "rb") as fh:
         assert fh.read() == b"NEW"
+
+
+async def test_put_file_skip_if_unchanged_target_missing(local_host):
+    await local_host.setup_workdir()
+    target = os.path.join(local_host.workdir, "first.bin")
+    await local_host.put_file_to_host(b"data", target, skip_if_unchanged=True)
+    with open(target, "rb") as fh:
+        assert fh.read() == b"data"
+
+
+async def test_put_file_skip_if_unchanged_matches(local_host, tmp_path):
+    await local_host.setup_workdir()
+    target = os.path.join(local_host.workdir, "same.bin")
+    with open(target, "wb") as fh:
+        fh.write(b"identical content")
+    target_mtime_before = os.stat(target).st_mtime_ns
+    # Second call must be a no-op.
+    await local_host.put_file_to_host(
+        b"identical content", target, skip_if_unchanged=True,
+    )
+    target_mtime_after = os.stat(target).st_mtime_ns
+    assert target_mtime_before == target_mtime_after  # untouched
+    with open(target, "rb") as fh:
+        assert fh.read() == b"identical content"
+
+
+async def test_put_file_skip_if_unchanged_differs(local_host):
+    await local_host.setup_workdir()
+    target = os.path.join(local_host.workdir, "differs.bin")
+    with open(target, "wb") as fh:
+        fh.write(b"OLD")
+    await local_host.put_file_to_host(b"NEW", target, skip_if_unchanged=True)
+    with open(target, "rb") as fh:
+        assert fh.read() == b"NEW"
+
+
+async def test_put_file_skip_if_unchanged_iterator_requires_expected_sha(local_host):
+    await local_host.setup_workdir()
+    target = os.path.join(local_host.workdir, "iter.bin")
+
+    async def chunks():
+        yield b"abc"
+
+    with pytest.raises(ValueError, match="expected_sha256"):
+        await local_host.put_file_to_host(
+            chunks(), target, skip_if_unchanged=True,
+        )
+
+
+async def test_put_file_skip_if_unchanged_iterator_with_expected_sha_matches(local_host):
+    await local_host.setup_workdir()
+    import hashlib
+    payload = b"streamed payload"
+    sha = hashlib.sha256(payload).hexdigest()
+    target = os.path.join(local_host.workdir, "iter2.bin")
+    with open(target, "wb") as fh:
+        fh.write(payload)
+    target_mtime_before = os.stat(target).st_mtime_ns
+
+    async def chunks():
+        yield payload
+
+    await local_host.put_file_to_host(
+        chunks(), target,
+        skip_if_unchanged=True, expected_sha256=sha,
+    )
+    target_mtime_after = os.stat(target).st_mtime_ns
+    assert target_mtime_before == target_mtime_after  # skipped

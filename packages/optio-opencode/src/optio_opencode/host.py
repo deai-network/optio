@@ -204,6 +204,7 @@ class Host(Protocol):
 # --- implementation -----------------------------------------------------
 
 import asyncio
+import hashlib
 import os
 import re
 import shlex
@@ -566,8 +567,27 @@ class LocalHost:
         skip_if_unchanged: bool = False,
         progress_cb=None,
     ) -> None:
-        # skip_if_unchanged is added in Task 5; for now ignore.
         os.makedirs(os.path.dirname(absolute_target), exist_ok=True)
+
+        if skip_if_unchanged:
+            # Validate early: AsyncIterator without expected_sha256 is always an error.
+            if (
+                not isinstance(source, (bytes, bytearray, str, os.PathLike))
+                and expected_sha256 is None
+            ):
+                raise ValueError(
+                    "skip_if_unchanged with an AsyncIterator source requires "
+                    "expected_sha256"
+                )
+
+        if skip_if_unchanged and os.path.exists(absolute_target):
+            target_sha = await asyncio.to_thread(_sha256_of_file, absolute_target)
+            source_sha = await self._compute_source_sha(source, expected_sha256)
+            if source_sha == target_sha:
+                if progress_cb is not None:
+                    progress_cb(None, "already up to date")
+                return
+
         tmp = absolute_target + ".tmp"
         try:
             await self._stream_source_to_path(source, tmp, progress_cb)
@@ -578,6 +598,19 @@ class LocalHost:
             except FileNotFoundError:
                 pass
             raise
+
+    async def _compute_source_sha(self, source, expected_sha256: str | None) -> str:
+        if isinstance(source, (bytes, bytearray)):
+            return hashlib.sha256(bytes(source)).hexdigest()
+        if isinstance(source, (str, os.PathLike)):
+            return await asyncio.to_thread(_sha256_of_file, os.fspath(source))
+        # async iterator: caller must supply expected_sha256
+        if expected_sha256 is None:
+            raise ValueError(
+                "skip_if_unchanged with an AsyncIterator source requires "
+                "expected_sha256"
+            )
+        return expected_sha256
 
     async def _stream_source_to_path(self, source, dest_path: str, progress_cb) -> None:
         """Write `source` (path, bytes, or async iterator) to `dest_path`."""
@@ -626,6 +659,17 @@ class LocalHost:
 def _write_bytes_sync(dest_path: str, data: bytes) -> None:
     with open(dest_path, "wb") as fh:
         fh.write(data)
+
+
+def _sha256_of_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        while True:
+            chunk = fh.read(1 << 20)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
 
 
 # --- RemoteHost -----------------------------------------------------
