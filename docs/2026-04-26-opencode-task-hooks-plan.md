@@ -676,6 +676,18 @@ Replace the body of `put_file_to_host` in `host.py` (LocalHost) with:
     ) -> None:
         os.makedirs(os.path.dirname(absolute_target), exist_ok=True)
 
+        # Iterator + skip_if_unchanged + no expected_sha256 is always a
+        # contract error, even if the target does not yet exist.
+        if (
+            skip_if_unchanged
+            and expected_sha256 is None
+            and not isinstance(source, (bytes, bytearray, str, os.PathLike))
+        ):
+            raise ValueError(
+                "skip_if_unchanged with an AsyncIterator source requires "
+                "expected_sha256"
+            )
+
         if skip_if_unchanged and os.path.exists(absolute_target):
             target_sha = await asyncio.to_thread(_sha256_of_file, absolute_target)
             source_sha = await self._compute_source_sha(source, expected_sha256)
@@ -700,12 +712,9 @@ Replace the body of `put_file_to_host` in `host.py` (LocalHost) with:
             return hashlib.sha256(bytes(source)).hexdigest()
         if isinstance(source, (str, os.PathLike)):
             return await asyncio.to_thread(_sha256_of_file, os.fspath(source))
-        # async iterator: caller must supply expected_sha256
-        if expected_sha256 is None:
-            raise ValueError(
-                "skip_if_unchanged with an AsyncIterator source requires "
-                "expected_sha256"
-            )
+        # async iterator: the upfront guard above ensures expected_sha256
+        # is set by this point; assert defensively.
+        assert expected_sha256 is not None
         return expected_sha256
 ```
 
@@ -1233,6 +1242,18 @@ Replace the body of `RemoteHost.put_file_to_host` with:
         if parent:
             await self._conn.run(f"mkdir -p {shlex.quote(parent)}", check=False)
 
+        # Iterator + skip_if_unchanged + no expected_sha256 is always a
+        # contract error, even if the target does not yet exist.
+        if (
+            skip_if_unchanged
+            and expected_sha256 is None
+            and not isinstance(source, (bytes, bytearray, str, os.PathLike))
+        ):
+            raise ValueError(
+                "skip_if_unchanged with an AsyncIterator source requires "
+                "expected_sha256"
+            )
+
         if skip_if_unchanged:
             target_sha = await self._sha256_of_remote(absolute_target)
             if target_sha is not None:
@@ -1290,11 +1311,8 @@ Replace the body of `RemoteHost.put_file_to_host` with:
             return hashlib.sha256(bytes(source)).hexdigest()
         if isinstance(source, (str, os.PathLike)):
             return await asyncio.to_thread(_sha256_of_file, os.fspath(source))
-        if expected_sha256 is None:
-            raise ValueError(
-                "skip_if_unchanged with an AsyncIterator source requires "
-                "expected_sha256"
-            )
+        # The upfront guard above ensures expected_sha256 is set by this point.
+        assert expected_sha256 is not None
         return expected_sha256
 ```
 
