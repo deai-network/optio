@@ -175,3 +175,20 @@ async def test_put_file_skip_if_unchanged_iterator_with_expected_sha_matches(loc
     )
     target_mtime_after = os.stat(target).st_mtime_ns
     assert target_mtime_before == target_mtime_after  # skipped
+
+
+async def test_fetch_bytes_from_host_reads_full(local_host):
+    await local_host.setup_workdir()
+    target = os.path.join(local_host.workdir, "rd.bin")
+    with open(target, "wb") as fh:
+        fh.write(b"contents")
+    out = await local_host.fetch_bytes_from_host(target)
+    assert out == b"contents"
+
+
+async def test_fetch_bytes_from_host_missing_raises_filenotfound(local_host):
+    await local_host.setup_workdir()
+    with pytest.raises(FileNotFoundError):
+        await local_host.fetch_bytes_from_host(
+            os.path.join(local_host.workdir, "no_such")
+        )

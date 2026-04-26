@@ -642,6 +642,21 @@ class LocalHost:
         if progress_cb is not None:
             progress_cb(100.0, None)
 
+    async def fetch_bytes_from_host(
+        self,
+        absolute_path: str,
+        *,
+        progress_cb=None,
+    ) -> bytes:
+        def _read() -> bytes:
+            with open(absolute_path, "rb") as fh:
+                return fh.read()
+
+        data = await asyncio.to_thread(_read)
+        if progress_cb is not None:
+            progress_cb(100.0, None)
+        return data
+
     async def install_opencode_binary(
         self,
         local_binary_path: str,
