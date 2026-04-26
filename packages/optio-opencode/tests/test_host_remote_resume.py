@@ -105,7 +105,7 @@ async def remote_host(sshd):
     await host.connect()
     await host.setup_workdir()
     yield host
-    await host.cleanup_workdir(aggressive=False)
+    await host.cleanup_taskdir(aggressive=False)
     await host.disconnect()
 
 
@@ -208,8 +208,8 @@ async def test_remote_restore_workdir_empties_then_extracts(sshd):
         assert (r_agents.stdout or "").strip() == "# instructions"
 
     finally:
-        await src.cleanup_workdir(aggressive=False)
-        await dst.cleanup_workdir(aggressive=False)
+        await src.cleanup_taskdir(aggressive=False)
+        await dst.cleanup_taskdir(aggressive=False)
         await src.disconnect()
         await dst.disconnect()
 

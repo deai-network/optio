@@ -137,8 +137,9 @@ class Host(Protocol):
         aggressive=True: SIGKILL immediately; do not wait.
         """
 
-    async def cleanup_workdir(self, aggressive: bool) -> None:
-        """Remove the workdir.
+    async def cleanup_taskdir(self, aggressive: bool) -> None:
+        """Remove the entire per-task directory (workdir + opencode.db + any
+        opencode-side stray files). Uses ``self.task_dir``.
 
         aggressive=False: wait for the rm to complete.
         aggressive=True: fire-and-forget; return as soon as the call
@@ -186,9 +187,20 @@ class LocalHost:
     """Host implementation for a local subprocess."""
 
     workdir: str
+    task_dir: str
 
-    def __init__(self, workdir: str, opencode_cmd: list[str] | None = None):
+    def __init__(
+        self,
+        workdir: str,
+        opencode_cmd: list[str] | None = None,
+        task_dir: str | None = None,
+    ):
         self.workdir = workdir
+        # task_dir is the per-process directory that holds workdir + opencode.db.
+        # Defaults to workdir when not supplied so legacy / test callers that
+        # don't track a separate task_dir keep working — cleanup_taskdir then
+        # wipes the workdir itself.
+        self.task_dir = task_dir if task_dir is not None else workdir
         # Allow tests to substitute a fake opencode binary.
         self._opencode_cmd = opencode_cmd or ["opencode"]
         self._tail_proc: asyncio.subprocess.Process | None = None
@@ -358,11 +370,12 @@ class LocalHost:
             proc.kill()
             await proc.wait()
 
-    async def cleanup_workdir(self, aggressive: bool) -> None:
+    async def cleanup_taskdir(self, aggressive: bool) -> None:
         # On local filesystems rmtree is fast enough that aggressive vs. not
-        # makes no difference.
-        if os.path.exists(self.workdir):
-            shutil.rmtree(self.workdir, ignore_errors=True)
+        # makes no difference. Wipes the whole per-task dir (workdir +
+        # opencode.db + any stray files opencode left next to the DB).
+        if os.path.exists(self.task_dir):
+            shutil.rmtree(self.task_dir, ignore_errors=True)
 
     async def opencode_import(
         self, opencode_db_path: str, session_json: bytes,
@@ -529,12 +542,23 @@ class RemoteHost:
     """
 
     workdir: str
+    task_dir: str
 
-    def __init__(self, ssh_config: SSHConfig, workdir: str | None = None):
+    def __init__(
+        self,
+        ssh_config: SSHConfig,
+        workdir: str | None = None,
+        task_dir: str | None = None,
+    ):
         self._ssh = ssh_config
         # workdir defaults to the legacy random path when not supplied so
         # existing callers (test_session_remote.py) keep working.
         self.workdir = workdir or f"/tmp/optio-opencode-{uuid.uuid4().hex[:12]}"
+        # task_dir is the per-process directory that holds workdir + opencode.db.
+        # Defaults to workdir when not supplied so legacy / test callers that
+        # don't track a separate task_dir keep working — cleanup_taskdir then
+        # wipes the workdir itself.
+        self.task_dir = task_dir if task_dir is not None else self.workdir
         self._conn: asyncssh.SSHClientConnection | None = None
         self._sftp: asyncssh.SFTPClient | None = None
         self._launch_proc: asyncssh.SSHClientProcess | None = None
@@ -725,10 +749,10 @@ class RemoteHost:
             proc.kill()
             await proc.wait()
 
-    async def cleanup_workdir(self, aggressive: bool) -> None:
+    async def cleanup_taskdir(self, aggressive: bool) -> None:
         if self._conn is None:
             return
-        cmd = f"rm -rf {self.workdir}"
+        cmd = f"rm -rf {shlex.quote(self.task_dir)}"
         if aggressive:
             # Fire-and-forget: schedule the exec, do not await completion.
             asyncio.create_task(self._conn.run(cmd, check=False))

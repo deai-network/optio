@@ -96,7 +96,9 @@ async def test_fetch_deliverable_non_utf8_raises(local_host, tmp_workdir):
         await local_host.fetch_deliverable_text(target)
 
 
-async def test_cleanup_workdir_removes_directory(local_host, tmp_workdir):
+async def test_cleanup_taskdir_removes_directory(local_host, tmp_workdir):
     await local_host.setup_workdir()
-    await local_host.cleanup_workdir(aggressive=False)
+    # local_host's task_dir defaults to its workdir when not supplied; the
+    # fixture takes that path so the cleanup wipes the test's tmp dir.
+    await local_host.cleanup_taskdir(aggressive=False)
     assert not os.path.exists(tmp_workdir)

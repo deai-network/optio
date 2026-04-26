@@ -61,12 +61,12 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         opencode_db = os.path.join(task_dir, "opencode.db")
         os.makedirs(task_dir, exist_ok=True)
         os.makedirs(workdir, exist_ok=True)
-        host: Host = LocalHost(workdir=workdir)
+        host: Host = LocalHost(workdir=workdir, task_dir=task_dir)
     else:
         task_dir = remote_task_dir(ctx.process_id)
         workdir = f"{task_dir}/workdir"
         opencode_db = f"{task_dir}/opencode.db"
-        host = RemoteHost(ssh_config=config.ssh, workdir=workdir)
+        host = RemoteHost(ssh_config=config.ssh, workdir=workdir, task_dir=task_dir)
 
     password = secrets.token_urlsafe(32)
     process: LaunchedProcess | None = None
@@ -291,9 +291,9 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                 )
 
         try:
-            await host.cleanup_workdir(aggressive=cancelled)
+            await host.cleanup_taskdir(aggressive=cancelled)
         except Exception:  # noqa: BLE001
-            _LOG.exception("cleanup_workdir failed")
+            _LOG.exception("cleanup_taskdir failed")
         try:
             await host.disconnect()
         except Exception:  # noqa: BLE001
