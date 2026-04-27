@@ -14,7 +14,9 @@ import json
 import logging
 import os
 import secrets
+import shlex
 import tempfile
+from datetime import datetime, timezone
 from typing import AsyncIterator
 
 from optio_core.context import ProcessContext
@@ -135,6 +137,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                 compose_agents_md(
                     config.consumer_instructions,
                     workdir_exclude=config.workdir_exclude,
+                    supports_resume=config.supports_resume,
                 ),
             )
             await host.write_text(
@@ -151,6 +154,9 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             # self-healing (snapshot lookup returns None → fresh-start
             # fallback) handles the rare case where the flag is true but
             # no snapshot exists.
+
+        if config.supports_resume:
+            await _append_resume_log_entry(host)
 
         # --- install ----------------------------------------------------
         # When OPTIO_OPENCODE_BINARY_DIR is set, we ship a platform-matched
@@ -551,6 +557,24 @@ async def _rotate_optio_log(host: Host) -> None:
         existing_old = ""
     await host.write_text("optio.log.old", existing_old + current)
     await host.write_text("optio.log", "")
+
+
+async def _append_resume_log_entry(host) -> None:
+    """Append one ISO 8601 UTC timestamp line to <workdir>/resume.log.
+
+    Creates the file if missing (via shell `>>`). Caller is responsible
+    for gating this on config.supports_resume.
+    """
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    target = f"{host.workdir}/resume.log"
+    result = await host.run_command(
+        f"echo {shlex.quote(ts)} >> {shlex.quote(target)}"
+    )
+    if result.exit_code != 0:
+        raise RuntimeError(
+            f"failed to append to resume.log: exit {result.exit_code}: "
+            f"{result.stderr!r}"
+        )
 
 
 def _pick_local_workdir() -> str:

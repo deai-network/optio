@@ -253,3 +253,101 @@ async def test_widget_upstream_and_data_are_set(ctx_and_captures, _supply_scenar
     padded = middle + "=" * (-len(middle) % 4)
     decoded = _b64.urlsafe_b64decode(padded).decode("utf-8")
     assert decoded.startswith("/") and "optio-opencode" in decoded
+
+
+# ---- resume log -----------------------------------------------------------
+
+
+async def test_append_resume_log_entry_writes_iso_timestamp(tmp_workdir):
+    """Calling _append_resume_log_entry once writes one ISO 8601 line."""
+    import os
+    import re
+    import sys
+    from optio_opencode.host import LocalHost
+    from optio_opencode.session import _append_resume_log_entry
+
+    host = LocalHost(taskdir=tmp_workdir, opencode_cmd=[sys.executable, "-c", "pass"])
+    await host.setup_workdir()
+
+    await _append_resume_log_entry(host)
+
+    resume_log = os.path.join(host.workdir, "resume.log")
+    assert os.path.isfile(resume_log)
+    with open(resume_log) as f:
+        content = f.read()
+    lines = [line for line in content.splitlines() if line]
+    assert len(lines) == 1
+    assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", lines[0])
+
+
+async def test_append_resume_log_entry_appends_on_repeat_call(tmp_workdir):
+    """Two calls produce two lines (append, not overwrite)."""
+    import asyncio
+    import os
+    import sys
+    from optio_opencode.host import LocalHost
+    from optio_opencode.session import _append_resume_log_entry
+
+    host = LocalHost(taskdir=tmp_workdir, opencode_cmd=[sys.executable, "-c", "pass"])
+    await host.setup_workdir()
+
+    await _append_resume_log_entry(host)
+    # Sleep just over a second so the second timestamp differs
+    # (seconds-precision format).
+    await asyncio.sleep(1.1)
+    await _append_resume_log_entry(host)
+
+    resume_log = os.path.join(host.workdir, "resume.log")
+    with open(resume_log) as f:
+        lines = [line for line in f.read().splitlines() if line]
+    assert len(lines) == 2
+    assert lines[0] != lines[1]
+
+
+async def test_session_local_supports_resume_false_skips_resume_log(
+    ctx_and_captures, _supply_scenario, tmp_workdir,
+):
+    """With supports_resume=False, no resume.log is created during the session.
+
+    We verify by patching _append_resume_log_entry and asserting it isn't called.
+    """
+    from unittest.mock import AsyncMock
+    import optio_opencode.session as session_mod
+
+    ctx, _, _ = ctx_and_captures
+    _supply_scenario["name"] = "happy"
+
+    cfg = OpencodeTaskConfig(
+        consumer_instructions="(scenario: happy)",
+        supports_resume=False,
+    )
+
+    spy = AsyncMock()
+    session_mod._append_resume_log_entry = spy  # type: ignore[attr-defined]
+    try:
+        await run_opencode_session(ctx, cfg)
+    finally:
+        # Restore original (re-import to get the unpatched ref).
+        import importlib
+        importlib.reload(session_mod)
+
+    spy.assert_not_called()
+
+
+async def test_session_local_supports_resume_true_calls_append(
+    ctx_and_captures, _supply_scenario, tmp_workdir, monkeypatch,
+):
+    """With supports_resume=True (default), _append_resume_log_entry IS called."""
+    from unittest.mock import AsyncMock
+    import optio_opencode.session as session_mod
+
+    ctx, _, _ = ctx_and_captures
+    _supply_scenario["name"] = "happy"
+
+    cfg = _config("happy")  # default supports_resume=True
+
+    spy = AsyncMock()
+    monkeypatch.setattr(session_mod, "_append_resume_log_entry", spy)
+    await run_opencode_session(ctx, cfg)
+
+    assert spy.await_count == 1
