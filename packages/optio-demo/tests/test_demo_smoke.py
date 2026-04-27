@@ -21,3 +21,16 @@ def test_demo_does_not_use_wrapper_execute_pattern():
     assert "_make_on_deliverable" not in src
     # No inner-task execute wrapping.
     assert "inner.execute(ctx)" not in src
+
+
+def test_demo_module_defines_all_three_hook_kinds():
+    """Confirm before_execute, after_execute, and on_deliverable are all wired."""
+    import optio_demo.tasks.opencode as mod
+    assert hasattr(mod, "_before_execute")
+    assert hasattr(mod, "_after_execute")
+    assert hasattr(mod, "_on_deliverable")
+    src = inspect.getsource(mod)
+    # All three are referenced in the OpencodeTaskConfig.
+    assert "before_execute=_before_execute" in src
+    assert "after_execute=_after_execute" in src
+    assert "on_deliverable=_on_deliverable" in src
