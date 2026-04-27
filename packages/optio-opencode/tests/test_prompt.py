@@ -46,3 +46,34 @@ def test_compose_agents_md_workdir_exclude_required():
     """workdir_exclude is mandatory — calling without it raises TypeError."""
     with pytest.raises(TypeError):
         compose_agents_md("hi")  # type: ignore[call-arg]
+
+
+def test_compose_agents_md_includes_resume_section_by_default():
+    """Default supports_resume=True → resume section is present."""
+    out = _compose()
+    assert "## Resumes" in out
+    assert "resume.log" in out
+
+
+def test_compose_agents_md_omits_resume_section_when_supports_resume_false():
+    """supports_resume=False → resume section is absent."""
+    out = _compose(supports_resume=False)
+    assert "## Resumes" not in out
+    assert "resume.log" not in out
+
+
+def test_compose_agents_md_renders_default_excludes_when_none():
+    """workdir_exclude=None → prompt mentions DEFAULT_WORKDIR_EXCLUDES patterns."""
+    from optio_opencode.archive import DEFAULT_WORKDIR_EXCLUDES
+    out = _compose(workdir_exclude=None, supports_resume=True)
+    for pattern in DEFAULT_WORKDIR_EXCLUDES:
+        assert f"`{pattern}`" in out
+
+
+def test_compose_agents_md_resume_section_between_deliverables_and_task():
+    """Resume section sits between Deliverables and Task in the rendered prompt."""
+    out = _compose()
+    deliverables_pos = out.index("## Deliverables")
+    resumes_pos = out.index("## Resumes")
+    task_pos = out.index("## Task")
+    assert deliverables_pos < resumes_pos < task_pos
