@@ -207,9 +207,22 @@ class Optio:
         """Dismiss a completed process (reset to idle)."""
         await self._handle_dismiss({"processId": process_id})
 
-    async def resync(self, clean: bool = False) -> None:
-        """Re-sync task definitions from the generator."""
-        await self._handle_resync({"clean": clean})
+    async def resync(
+        self,
+        clean: bool = False,
+        metadata_filter: ProcessMetadataFilter | None = None,
+    ) -> None:
+        """Re-sync task definitions from the generator.
+
+        With no `metadata_filter`, the full task set is regenerated and stale
+        records / schedules / registry entries are pruned. With a filter,
+        regeneration is scoped to tasks whose `metadata` matches; out-of-scope
+        state is preserved.
+
+        `clean=True` deletes process records before re-importing. When combined
+        with a filter, only in-scope records are deleted.
+        """
+        await self._handle_resync({"clean": clean, "metadataFilter": metadata_filter})
 
     async def get_process(self, process_id: str) -> dict | None:
         """Get a process by its process_id string."""
@@ -501,9 +514,17 @@ class Optio:
 
     async def _handle_resync(self, payload: dict) -> None:
         clean = payload.get("clean", False)
+        metadata_filter = payload.get("metadataFilter") or None  # treat {} as None
+
         if clean:
-            # Nuke all process records before re-importing
             coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
-            deleted = await coll.delete_many({})
+            if metadata_filter:
+                mongo_query: dict[str, Any] = {"parentId": None}
+                for k, v in metadata_filter.items():
+                    mongo_query[f"metadata.{k}"] = v
+                deleted = await coll.delete_many(mongo_query)
+            else:
+                deleted = await coll.delete_many({})
             logger.info(f"Nuked {deleted.deleted_count} process records")
-        await self._sync_definitions()
+
+        await self._sync_definitions(metadata_filter)
