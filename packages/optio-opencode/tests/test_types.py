@@ -85,3 +85,13 @@ def test_deliverable_callback_now_takes_three_args():
     # but we can ensure HookCallback exists and is callable type.
     assert HookCallback is not None
     assert DeliverableCallback is not None
+
+
+def test_opencode_task_config_supports_resume_default_true():
+    cfg = OpencodeTaskConfig(consumer_instructions="x")
+    assert cfg.supports_resume is True
+
+
+def test_opencode_task_config_supports_resume_can_be_disabled():
+    cfg = OpencodeTaskConfig(consumer_instructions="x", supports_resume=False)
+    assert cfg.supports_resume is False

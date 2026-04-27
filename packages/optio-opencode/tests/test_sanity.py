@@ -27,3 +27,12 @@ def test_optio_opencode_exports_hook_context_types():
     assert hasattr(optio_opencode, "RunResult")
     assert hasattr(optio_opencode, "HostCommandError")
     assert hasattr(optio_opencode, "HookCallback")
+
+
+def test_create_opencode_task_supports_resume_off():
+    from optio_opencode import create_opencode_task, OpencodeTaskConfig
+    task = create_opencode_task(
+        process_id="demo-noresume", name="DemoNoResume",
+        config=OpencodeTaskConfig(consumer_instructions="hi", supports_resume=False),
+    )
+    assert task.supports_resume is False

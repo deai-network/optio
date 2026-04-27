@@ -43,5 +43,6 @@ class OpencodeTaskConfig:
     on_deliverable: DeliverableCallback | None = None
     install_if_missing: bool = True
     workdir_exclude: list[str] | None = None
+    supports_resume: bool = True
     before_execute: HookCallback | None = None
     after_execute: HookCallback | None = None

@@ -629,5 +629,5 @@ def create_opencode_task(
         name=name,
         description=description,
         ui_widget="iframe",
-        supports_resume=True,
+        supports_resume=config.supports_resume,
     )
