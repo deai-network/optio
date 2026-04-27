@@ -305,7 +305,7 @@ async def test_append_resume_log_entry_appends_on_repeat_call(tmp_workdir):
 
 
 async def test_session_local_supports_resume_false_skips_resume_log(
-    ctx_and_captures, _supply_scenario, tmp_workdir,
+    ctx_and_captures, _supply_scenario, tmp_workdir, monkeypatch,
 ):
     """With supports_resume=False, no resume.log is created during the session.
 
@@ -323,13 +323,8 @@ async def test_session_local_supports_resume_false_skips_resume_log(
     )
 
     spy = AsyncMock()
-    session_mod._append_resume_log_entry = spy  # type: ignore[attr-defined]
-    try:
-        await run_opencode_session(ctx, cfg)
-    finally:
-        # Restore original (re-import to get the unpatched ref).
-        import importlib
-        importlib.reload(session_mod)
+    monkeypatch.setattr(session_mod, "_append_resume_log_entry", spy)
+    await run_opencode_session(ctx, cfg)
 
     spy.assert_not_called()
 
