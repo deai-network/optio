@@ -104,3 +104,80 @@ describe('Express adapter integration tests', () => {
     expect(res.body.message).toBe('Resync requested');
   });
 });
+
+describe('Express adapter auth', () => {
+  function createAppWithAuth(authenticate: (req: any) => any) {
+    const app = express();
+    app.use(express.json());
+    registerOptioApi(app, { db, redis, authenticate });
+    return app;
+  }
+
+  it('null role → 401 on REST GET', async () => {
+    await seedProcess();
+    const app = createAppWithAuth(() => null);
+    const res = await request(app).get('/api/processes?limit=10');
+    expect(res.status).toBe(401);
+  });
+
+  it('null role → 401 on REST POST', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' } });
+    const app = createAppWithAuth(() => null);
+    const res = await request(app).post(`/api/processes/${doc._id.toString()}/launch`);
+    expect(res.status).toBe(401);
+  });
+
+  it('null role → 401 on SSE list stream', async () => {
+    const app = createAppWithAuth(() => null);
+    const res = await request(app).get('/api/processes/stream');
+    expect(res.status).toBe(401);
+  });
+
+  it('null role → 401 on SSE tree stream', async () => {
+    const doc = await seedProcess();
+    const app = createAppWithAuth(() => null);
+    const res = await request(app).get(`/api/processes/${doc._id.toString()}/tree/stream`);
+    expect(res.status).toBe(401);
+  });
+
+  it('null role → 401 on /api/optio/instances', async () => {
+    const app = createAppWithAuth(() => null);
+    const res = await request(app).get('/api/optio/instances');
+    expect(res.status).toBe(401);
+  });
+
+  it('viewer → 200 on REST GET', async () => {
+    await seedProcess();
+    const app = createAppWithAuth(() => 'viewer');
+    const res = await request(app).get('/api/processes?limit=10');
+    expect(res.status).toBe(200);
+  });
+
+  it('viewer → 403 on REST POST', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' } });
+    const app = createAppWithAuth(() => 'viewer');
+    const res = await request(app).post(`/api/processes/${doc._id.toString()}/launch`);
+    expect(res.status).toBe(403);
+  });
+
+  it('operator → 200 on REST GET', async () => {
+    await seedProcess();
+    const app = createAppWithAuth(() => 'operator');
+    const res = await request(app).get('/api/processes?limit=10');
+    expect(res.status).toBe(200);
+  });
+
+  it('operator → 200 on REST POST', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' } });
+    const app = createAppWithAuth(() => 'operator');
+    const res = await request(app).post(`/api/processes/${doc._id.toString()}/launch`);
+    expect(res.status).toBe(200);
+  });
+
+  it('async authenticate works', async () => {
+    await seedProcess();
+    const app = createAppWithAuth(async () => 'operator');
+    const res = await request(app).get('/api/processes?limit=10');
+    expect(res.status).toBe(200);
+  });
+});

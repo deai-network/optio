@@ -12,6 +12,9 @@ import * as handlers from '../handlers.js';
 import { createListPoller, createTreePoller } from '../stream-poller.js';
 import { discoverInstances } from '../discovery.js';
 import { resolveDb, type DbOptions } from '../resolve-db.js';
+import type { AuthCallback } from '../auth.js';
+import { checkAuth } from '../auth.js';
+import { isWriteMethod } from '../widget-proxy-core.js';
 
 export type OptioApiOptions = {
   redis: Redis;
@@ -28,6 +31,17 @@ const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/a
 export function registerOptioApi(app: Express, opts: OptioApiOptions) {
   const { redis } = opts;
   const dbOpts: DbOptions = 'mongoClient' in opts && opts.mongoClient ? { mongoClient: opts.mongoClient } : { db: opts.db! };
+
+  // Global auth enforcement. Runs on every /api/* request before any
+  // ts-rest, SSE, or discovery handler.
+  app.use('/api', async (req, res, next) => {
+    const authResult = await checkAuth(req, opts.authenticate, isWriteMethod(req.method));
+    if (authResult) {
+      res.status(authResult.status).json(authResult.body);
+      return;
+    }
+    next();
+  });
 
   createExpressEndpoints(apiContract.processes, {
     list: async ({ query }) => {
