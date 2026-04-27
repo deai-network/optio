@@ -158,7 +158,10 @@ async def remove_stale_processes(
     metadata_filter: ProcessMetadataFilter | None = None,
 ) -> int:
     coll = db[f"{prefix}_processes"]
-    query: dict[str, Any] = {"processId": {"$nin": list(valid_ids)}}
+    query: dict[str, Any] = {
+        "processId": {"$nin": list(valid_ids)},
+        "parentId": None,  # only sweep root processes (preserve sub-trees)
+    }
     if metadata_filter:
         for k, v in metadata_filter.items():
             query[f"metadata.{k}"] = v
