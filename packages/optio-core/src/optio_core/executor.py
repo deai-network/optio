@@ -7,7 +7,9 @@ from typing import Any, Callable, Awaitable
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from optio_core.models import TaskInstance, ProcessStatus, Progress
+from optio_core.models import (
+    TaskInstance, ProcessStatus, Progress, ProcessMetadataFilter, matches_filter,
+)
 from optio_core.state_machine import LAUNCHABLE_STATES
 from optio_core.store import (
     get_process_by_process_id,
@@ -26,11 +28,30 @@ class Executor:
         self._prefix = prefix
         self._services = services
         self._cancellation_flags: dict[ObjectId, asyncio.Event] = {}
-        self._task_registry: dict[str, Callable] = {}
+        self._task_registry: dict[str, TaskInstance] = {}
 
-    def register_tasks(self, tasks: list[TaskInstance]) -> None:
-        """Register task execute functions by processId."""
-        self._task_registry = {t.process_id: t.execute for t in tasks}
+    def register_tasks(
+        self,
+        tasks: list[TaskInstance],
+        metadata_filter: ProcessMetadataFilter | None = None,
+    ) -> None:
+        """Register task definitions by processId.
+
+        With no `metadata_filter`, the registry is fully replaced (current
+        behaviour). With a filter, only entries whose existing `metadata`
+        matches the filter are eligible for removal; everything outside the
+        scope is preserved. Tasks in the new list are then upserted.
+        """
+        if not metadata_filter:
+            self._task_registry = {t.process_id: t for t in tasks}
+            return
+        new_ids = {t.process_id for t in tasks}
+        for pid in list(self._task_registry):
+            existing = self._task_registry[pid]
+            if matches_filter(existing.metadata, metadata_filter) and pid not in new_ids:
+                del self._task_registry[pid]
+        for t in tasks:
+            self._task_registry[t.process_id] = t
 
     async def _cleanup_ephemeral(self, process_id: str) -> None:
         """Delete the process if it's marked ephemeral."""
@@ -61,7 +82,10 @@ class Executor:
         )
         await append_log(self._db, self._prefix, proc["_id"], "event", "State changed to scheduled")
 
-        return await self._execute_process(proc, self._task_registry.get(process_id), resume=resume)
+        task = self._task_registry.get(process_id)
+        return await self._execute_process(
+            proc, task.execute if task else None, resume=resume,
+        )
 
     async def _execute_process(
         self, proc: dict, execute_fn: Callable | None,

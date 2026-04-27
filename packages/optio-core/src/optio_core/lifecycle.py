@@ -162,7 +162,7 @@ class Optio:
                 ephemeral=ephemeral,
             )
 
-        self._executor._task_registry[task.process_id] = task.execute
+        self._executor._task_registry[task.process_id] = task
         return proc
 
     async def adhoc_delete(self, process_id: str) -> None:

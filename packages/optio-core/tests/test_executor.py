@@ -358,3 +358,67 @@ async def test_adhoc_define_ephemeral(mongo_db, redis_url):
     assert proc["ephemeral"] is True
 
     await fw.shutdown()
+
+
+async def test_register_tasks_stores_full_taskinstance(mongo_db):
+    async def my_task(ctx):
+        pass
+
+    task = TaskInstance(
+        execute=my_task, process_id="reg1", name="Reg1",
+        metadata={"group": "ingest"},
+    )
+
+    executor = Executor(mongo_db, "test", {})
+    executor.register_tasks([task])
+
+    stored = executor._task_registry["reg1"]
+    assert stored is task
+    assert stored.metadata == {"group": "ingest"}
+    assert stored.execute is my_task
+
+
+async def test_register_tasks_partial_filter_keeps_out_of_scope(mongo_db):
+    async def t(ctx):
+        pass
+
+    in_old = TaskInstance(execute=t, process_id="in_old", name="X", metadata={"group": "ingest"})
+    out_old = TaskInstance(execute=t, process_id="out_old", name="Y", metadata={"group": "etl"})
+    executor = Executor(mongo_db, "test", {})
+    executor.register_tasks([in_old, out_old])
+
+    in_new = TaskInstance(execute=t, process_id="in_new", name="Z", metadata={"group": "ingest"})
+    executor.register_tasks([in_new], metadata_filter={"group": "ingest"})
+
+    assert "in_old" not in executor._task_registry
+    assert "out_old" in executor._task_registry
+    assert "in_new" in executor._task_registry
+
+
+async def test_register_tasks_partial_filter_with_overlap(mongo_db):
+    async def t(ctx):
+        pass
+
+    keep = TaskInstance(execute=t, process_id="keep", name="K", metadata={"group": "ingest"})
+    executor = Executor(mongo_db, "test", {})
+    executor.register_tasks([keep])
+
+    keep_v2 = TaskInstance(execute=t, process_id="keep", name="K2", metadata={"group": "ingest"})
+    executor.register_tasks([keep_v2], metadata_filter={"group": "ingest"})
+
+    assert executor._task_registry["keep"].name == "K2"
+
+
+async def test_register_tasks_no_filter_full_replace(mongo_db):
+    async def t(ctx):
+        pass
+
+    a = TaskInstance(execute=t, process_id="a", name="A", metadata={"group": "ingest"})
+    b = TaskInstance(execute=t, process_id="b", name="B", metadata={"group": "etl"})
+    executor = Executor(mongo_db, "test", {})
+    executor.register_tasks([a, b])
+
+    c = TaskInstance(execute=t, process_id="c", name="C", metadata={"group": "ingest"})
+    executor.register_tasks([c])
+
+    assert set(executor._task_registry) == {"c"}
