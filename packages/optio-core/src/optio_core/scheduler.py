@@ -21,6 +21,7 @@ class ProcessScheduler:
         self._jobs: dict[str, TaskInstance] = {}
 
     async def start(self) -> None:
+        """Start the scheduler."""
         try:
             from apscheduler import AsyncScheduler
             self._scheduler = AsyncScheduler()
@@ -31,6 +32,7 @@ class ProcessScheduler:
             self._scheduler = None
 
     async def stop(self) -> None:
+        """Stop the scheduler."""
         if self._scheduler:
             try:
                 await self._scheduler.__aexit__(None, None, None)
@@ -67,8 +69,8 @@ class ProcessScheduler:
             if should_remove:
                 try:
                     await self._scheduler.remove_job(job_id)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to remove scheduled job {job_id}: {e}")
                 del self._jobs[job_id]
 
         for task in tasks:
@@ -78,8 +80,8 @@ class ProcessScheduler:
             if job_id in self._jobs:
                 try:
                     await self._scheduler.remove_job(job_id)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to remove scheduled job {job_id} prior to replace: {e}")
             try:
                 from apscheduler.triggers.cron import CronTrigger
                 trigger = CronTrigger.from_crontab(task.schedule)

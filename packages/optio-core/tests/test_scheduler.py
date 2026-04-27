@@ -32,7 +32,7 @@ def _ps_with_fake() -> tuple[ProcessScheduler, FakeAPScheduler]:
     return ps, fake
 
 
-def _t(pid: str, *, group: str, schedule: str = "0 * * * *") -> TaskInstance:
+def _t(pid: str, *, group: str, schedule: str | None = "0 * * * *") -> TaskInstance:
     async def fn(ctx):  # pragma: no cover
         pass
     return TaskInstance(
@@ -88,8 +88,7 @@ async def test_sync_schedules_partial_replaces_existing_inscope():
 async def test_sync_schedules_skips_tasks_with_no_schedule():
     ps, fake = _ps_with_fake()
     scheduled = _t("a", group="ingest")
-    unscheduled = _t("b", group="ingest", schedule=None)  # type: ignore[arg-type]
-    unscheduled.schedule = None
+    unscheduled = _t("b", group="ingest", schedule=None)
     await ps.sync_schedules([scheduled, unscheduled])
     assert set(fake.jobs) == {"sched_a"}
     assert "sched_b" not in ps._jobs
@@ -101,4 +100,4 @@ async def test_sync_schedules_no_apscheduler_is_noop():
     # _scheduler stays None
     await ps.sync_schedules([_t("a", group="ingest")])
     # No exception, no jobs tracked.
-    assert ps._jobs == {} or not hasattr(ps, "_jobs")
+    assert ps._jobs == {}
