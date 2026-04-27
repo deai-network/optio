@@ -3,6 +3,8 @@
 import logging
 from typing import Callable, Awaitable
 
+from optio_core.models import TaskInstance, ProcessMetadataFilter, matches_filter
+
 logger = logging.getLogger("optio_core_core.scheduler")
 
 
@@ -16,10 +18,9 @@ class ProcessScheduler:
     def __init__(self, launch_fn: Callable[[str], Awaitable]):
         self._launch_fn = launch_fn
         self._scheduler = None
-        self._job_ids: set[str] = set()
+        self._jobs: dict[str, TaskInstance] = {}
 
     async def start(self) -> None:
-        """Start the scheduler."""
         try:
             from apscheduler import AsyncScheduler
             self._scheduler = AsyncScheduler()
@@ -30,7 +31,6 @@ class ProcessScheduler:
             self._scheduler = None
 
     async def stop(self) -> None:
-        """Stop the scheduler."""
         if self._scheduler:
             try:
                 await self._scheduler.__aexit__(None, None, None)
@@ -38,33 +38,58 @@ class ProcessScheduler:
                 pass
             logger.info("Scheduler stopped")
 
-    async def sync_schedules(self, tasks: list) -> None:
-        """Clear all jobs and re-register from task list."""
+    async def sync_schedules(
+        self,
+        tasks: list,
+        metadata_filter: ProcessMetadataFilter | None = None,
+    ) -> None:
+        """Sync APScheduler jobs against `tasks`.
+
+        With no `metadata_filter`, every existing job is removed and the
+        full task list is re-registered (current behaviour). With a filter,
+        only jobs whose stored `TaskInstance.metadata` matches the filter
+        are eligible for removal; out-of-scope jobs are preserved.
+        """
         if not self._scheduler:
             return
 
-        # Remove existing jobs
-        for job_id in list(self._job_ids):
-            try:
-                await self._scheduler.remove_job(job_id)
-            except Exception:
-                pass
-        self._job_ids.clear()
+        new_ids = {f"sched_{t.process_id}" for t in tasks if t.schedule}
 
-        # Register new jobs
-        for task in tasks:
-            if task.schedule:
-                job_id = f"sched_{task.process_id}"
+        for job_id in list(self._jobs):
+            existing = self._jobs[job_id]
+            if metadata_filter is None:
+                should_remove = True
+            else:
+                should_remove = (
+                    matches_filter(existing.metadata, metadata_filter)
+                    and job_id not in new_ids
+                )
+            if should_remove:
                 try:
-                    from apscheduler.triggers.cron import CronTrigger
-                    trigger = CronTrigger.from_crontab(task.schedule)
-                    await self._scheduler.add_job(
-                        self._launch_fn,
-                        trigger=trigger,
-                        id=job_id,
-                        args=[task.process_id],
-                    )
-                    self._job_ids.add(job_id)
-                    logger.info(f"Scheduled {task.process_id}: {task.schedule}")
-                except Exception as e:
-                    logger.error(f"Failed to schedule {task.process_id}: {e}")
+                    await self._scheduler.remove_job(job_id)
+                except Exception:
+                    pass
+                del self._jobs[job_id]
+
+        for task in tasks:
+            if not task.schedule:
+                continue
+            job_id = f"sched_{task.process_id}"
+            if job_id in self._jobs:
+                try:
+                    await self._scheduler.remove_job(job_id)
+                except Exception:
+                    pass
+            try:
+                from apscheduler.triggers.cron import CronTrigger
+                trigger = CronTrigger.from_crontab(task.schedule)
+                await self._scheduler.add_job(
+                    self._launch_fn,
+                    trigger=trigger,
+                    id=job_id,
+                    args=[task.process_id],
+                )
+                self._jobs[job_id] = task
+                logger.info(f"Scheduled {task.process_id}: {task.schedule}")
+            except Exception as e:
+                logger.error(f"Failed to schedule {task.process_id}: {e}")
