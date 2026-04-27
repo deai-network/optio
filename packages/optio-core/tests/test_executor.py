@@ -422,3 +422,24 @@ async def test_register_tasks_no_filter_full_replace(mongo_db):
     executor.register_tasks([c])
 
     assert set(executor._task_registry) == {"c"}
+
+
+async def test_launch_process_with_unregistered_id_fails(mongo_db):
+    """launch_process with no registered execute function transitions to failed.
+
+    Guards the `task.execute if task else None` unwrap in launch_process.
+    """
+    async def my_task(ctx):
+        pass
+
+    task = TaskInstance(execute=my_task, process_id="ghost", name="Ghost")
+    await upsert_process(mongo_db, "test", task)
+
+    executor = Executor(mongo_db, "test", {})
+    # Deliberately do NOT call register_tasks — registry is empty.
+
+    result = await executor.launch_process("ghost")
+    assert result == "failed"
+
+    proc = await get_process_by_process_id(mongo_db, "test", "ghost")
+    assert proc["status"]["state"] == "failed"
