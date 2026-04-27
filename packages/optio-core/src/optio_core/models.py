@@ -1,7 +1,7 @@
 """Core data models for optio."""
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Awaitable, Union
+from typing import Any, Callable, Awaitable, Union, TypeAlias
 from datetime import datetime
 
 
@@ -111,3 +111,19 @@ class HeaderAuth:
 
 
 InnerAuth = Union[BasicAuth, QueryAuth, HeaderAuth]
+
+
+ProcessMetadataFilter: TypeAlias = dict[str, Any]
+
+
+def matches_filter(
+    metadata: dict[str, Any],
+    filter: ProcessMetadataFilter | None,
+) -> bool:
+    """Return True iff every key in `filter` is present and equal in `metadata`.
+
+    A `None` or empty `filter` matches anything (used to mean "no filter").
+    """
+    if not filter:
+        return True
+    return all(metadata.get(k) == v for k, v in filter.items())

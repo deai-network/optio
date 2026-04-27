@@ -64,3 +64,34 @@ def test_task_instance_supports_resume_default_false():
 def test_task_instance_supports_resume_can_be_set():
     task = TaskInstance(execute=dummy_execute, process_id="t", name="T", supports_resume=True)
     assert task.supports_resume is True
+
+
+from optio_core.models import matches_filter
+
+
+def test_matches_filter_none_filter_matches_anything():
+    assert matches_filter({}, None) is True
+    assert matches_filter({"group": "ingest"}, None) is True
+
+
+def test_matches_filter_empty_filter_matches_anything():
+    assert matches_filter({}, {}) is True
+    assert matches_filter({"group": "ingest"}, {}) is True
+
+
+def test_matches_filter_equality_match():
+    assert matches_filter({"group": "ingest"}, {"group": "ingest"}) is True
+
+
+def test_matches_filter_equality_mismatch():
+    assert matches_filter({"group": "ingest"}, {"group": "etl"}) is False
+
+
+def test_matches_filter_missing_key_is_mismatch():
+    assert matches_filter({}, {"group": "ingest"}) is False
+
+
+def test_matches_filter_and_semantics():
+    metadata = {"group": "ingest", "tier": "fast"}
+    assert matches_filter(metadata, {"group": "ingest", "tier": "fast"}) is True
+    assert matches_filter(metadata, {"group": "ingest", "tier": "slow"}) is False
