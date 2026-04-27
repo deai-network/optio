@@ -14,11 +14,37 @@
 
 ```typescript
 interface OptioApiOptions {
-  db: Db;         // MongoDB Db instance
-  redis: Redis;   // ioredis Redis instance
-  prefix: string; // Collection prefix; reads/writes `{prefix}_processes`
+  db: Db;                                  // MongoDB Db instance
+  redis: Redis;                            // ioredis Redis instance
+  prefix?: string;                         // Collection prefix; default 'optio'.
+                                           // Reads/writes `{prefix}_processes`.
+  authenticate: AuthCallback<TRequest>;    // TRequest depends on adapter (FastifyRequest,
+                                           // express Request, web Request, NextApiRequest).
+                                           // Returns 'viewer' | 'operator' | null.
 }
 ```
+
+## Authentication
+
+The `authenticate` callback is invoked on every request to every route across
+all four adapters:
+
+- REST endpoints from `processesContract` under `/api/processes/...`
+- SSE streams: `/api/processes/stream` and `/api/processes/:id/tree/stream`
+- Discovery: `/api/optio/instances`
+- Widget reverse-proxy under `/api/widget/...` (Fastify only)
+
+The callback receives the framework-native request object and returns an
+`OptioRole` (`'viewer'` or `'operator'`) or `null`. Returning `null` denies
+the request with `401 Unauthorized`. `'viewer'` permits safe HTTP methods
+(`GET`, `HEAD`, `OPTIONS`); `'operator'` permits all methods. A mutating
+method with a `viewer` role yields `403 Forbidden`.
+
+Enforcement is implemented per adapter via the framework's request-lifecycle
+hook (Fastify `onRequest`, Express `app.use('/api', …)`, Next.js inline at
+the top of `GET`/`POST` or the returned Pages handler). The Fastify
+widget-proxy plugin's `preHandler` retains its own `checkAuth` call as
+defense in depth.
 
 ## Fastify Adapter
 

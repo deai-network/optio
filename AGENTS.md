@@ -500,11 +500,19 @@ export type { StreamPollerOptions, TreePollerOptions, ListPollerHandle } from 'o
 ### OptioApiOptions
 
 ```typescript
+import type { AuthCallback, OptioRole } from 'optio-api';
+
 interface OptioApiOptions {
   db: Db;       // mongodb Db instance
   redis: Redis; // ioredis Redis instance
-  prefix: string;
+  prefix?: string;                            // optional; default 'optio'
+  authenticate: AuthCallback<TRequest>;       // TRequest depends on adapter
 }
+
+// AuthCallback returns 'viewer' (read-only) | 'operator' (read+write) | null (deny).
+// Enforced on every request to every route across all four adapters: REST,
+// SSE streams, /api/optio/instances discovery, and the /api/widget/* proxy.
+// Reads (GET/HEAD/OPTIONS) require viewer or operator; writes require operator.
 ```
 
 ### Fastify Adapter
