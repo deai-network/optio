@@ -203,3 +203,91 @@ describe('Fastify adapter integration tests', () => {
     await db.collection('fake_processes').drop();
   });
 });
+
+describe('Fastify adapter auth', () => {
+  function createAppWithAuth(authenticate: (req: any) => any) {
+    const app = Fastify();
+    registerOptioApi(app, { db, redis, authenticate });
+    return app;
+  }
+
+  it('null role → 401 on REST GET', async () => {
+    await seedProcess();
+    const app = createAppWithAuth(() => null);
+    const res = await app.inject({ method: 'GET', url: '/api/processes?limit=10' });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('null role → 401 on REST POST', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' } });
+    const app = createAppWithAuth(() => null);
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/processes/${doc._id.toString()}/launch`,
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('null role → 401 on SSE list stream', async () => {
+    const app = createAppWithAuth(() => null);
+    const res = await app.inject({ method: 'GET', url: '/api/processes/stream' });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('null role → 401 on SSE tree stream', async () => {
+    const doc = await seedProcess();
+    const app = createAppWithAuth(() => null);
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/processes/${doc._id.toString()}/tree/stream`,
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('null role → 401 on /api/optio/instances', async () => {
+    const app = createAppWithAuth(() => null);
+    const res = await app.inject({ method: 'GET', url: '/api/optio/instances' });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('viewer → 200 on REST GET', async () => {
+    await seedProcess();
+    const app = createAppWithAuth(() => 'viewer');
+    const res = await app.inject({ method: 'GET', url: '/api/processes?limit=10' });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('viewer → 403 on REST POST', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' } });
+    const app = createAppWithAuth(() => 'viewer');
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/processes/${doc._id.toString()}/launch`,
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('operator → 200 on REST GET', async () => {
+    await seedProcess();
+    const app = createAppWithAuth(() => 'operator');
+    const res = await app.inject({ method: 'GET', url: '/api/processes?limit=10' });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('operator → 200 on REST POST', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' } });
+    const app = createAppWithAuth(() => 'operator');
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/processes/${doc._id.toString()}/launch`,
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('async authenticate works', async () => {
+    await seedProcess();
+    const app = createAppWithAuth(async () => 'operator');
+    const res = await app.inject({ method: 'GET', url: '/api/processes?limit=10' });
+    expect(res.statusCode).toBe(200);
+  });
+});

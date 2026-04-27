@@ -345,6 +345,17 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions) {
   const { redis } = opts;
   const dbOpts: DbOptions = 'mongoClient' in opts && opts.mongoClient ? { mongoClient: opts.mongoClient } : { db: opts.db! };
 
+  // Global auth enforcement. Runs before route handlers (and before the
+  // widget-proxy plugin's preHandler), so REST, SSE, discovery, and widget
+  // routes all pass through checkAuth here. The widget-proxy preHandler's
+  // own checkAuth call is left in place as defense in depth.
+  app.addHook('onRequest', async (req, reply) => {
+    const authResult = await checkAuth(req, opts.authenticate, isWriteMethod(req.method));
+    if (authResult) {
+      reply.code(authResult.status).send(authResult.body);
+    }
+  });
+
   // Widget reverse-proxy lives under /api/widget/<database>/<prefix>/<processId>/…
   // and is registered as an internal part of the Optio API surface so consumers
   // only need one init call.
