@@ -351,3 +351,40 @@ async def test_session_local_supports_resume_true_calls_append(
     await run_opencode_session(ctx, cfg)
 
     assert spy.await_count == 1
+
+
+async def test_session_local_supports_resume_false_skips_snapshot_capture(
+    ctx_and_captures, _supply_scenario, tmp_workdir,
+):
+    """With supports_resume=False, no entry is added to the snapshots collection."""
+    from optio_opencode.snapshots import SESSION_SNAPSHOT_COLLECTION_SUFFIX
+    ctx, _, _ = ctx_and_captures
+    _supply_scenario["name"] = "happy"
+
+    cfg = OpencodeTaskConfig(
+        consumer_instructions="(scenario: happy)",
+        supports_resume=False,
+    )
+    await run_opencode_session(ctx, cfg)
+
+    coll_name = f"{ctx._prefix}{SESSION_SNAPSHOT_COLLECTION_SUFFIX}"
+    snapshots_coll = ctx._db[coll_name]
+    count = await snapshots_coll.count_documents({"processId": "p"})
+    assert count == 0
+
+
+async def test_session_local_supports_resume_true_captures_snapshot(
+    ctx_and_captures, _supply_scenario, tmp_workdir,
+):
+    """With supports_resume=True (default), a snapshot IS captured."""
+    from optio_opencode.snapshots import SESSION_SNAPSHOT_COLLECTION_SUFFIX
+    ctx, _, _ = ctx_and_captures
+    _supply_scenario["name"] = "happy"
+
+    cfg = _config("happy")  # default supports_resume=True
+    await run_opencode_session(ctx, cfg)
+
+    coll_name = f"{ctx._prefix}{SESSION_SNAPSHOT_COLLECTION_SUFFIX}"
+    snapshots_coll = ctx._db[coll_name]
+    count = await snapshots_coll.count_documents({"processId": "p"})
+    assert count == 1

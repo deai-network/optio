@@ -336,7 +336,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                     f"after_execute callback raised: {after_exc!r}",
                 )
 
-        if session_id is not None:
+        if config.supports_resume and session_id is not None:
             try:
                 await _capture_snapshot(
                     ctx, host,
