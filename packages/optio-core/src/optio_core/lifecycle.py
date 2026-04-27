@@ -46,7 +46,10 @@ class Optio:
         prefix: str = "optio",
         redis_url: str | None = None,
         services: dict[str, Any] | None = None,
-        get_task_definitions: Callable[..., Awaitable[list[TaskInstance]]] | None = None,
+        get_task_definitions: Callable[
+            [dict[str, Any], ProcessMetadataFilter | None],
+            Awaitable[list[TaskInstance]],
+        ] | None = None,
     ) -> None:
         """Initialize optio.
 
@@ -57,7 +60,15 @@ class Optio:
                 consumer, custom commands) are disabled and processes are
                 managed via direct method calls.
             services: Custom services dict passed to task execute functions.
-            get_task_definitions: Async function returning task definitions.
+            get_task_definitions: Async function
+                ``(services, metadata_filter)`` returning task definitions.
+                ``metadata_filter`` is ``None`` for the full-sync call
+                (initial sync, or ``Optio.resync()`` with no filter); when
+                non-None it is a ``ProcessMetadataFilter`` (a flat
+                AND-equality dict) and the callback may either honor it
+                (return only matching tasks) or ignore it (return its full
+                list — the framework filters out-of-scope entries before
+                any downstream layer runs).
         """
         services = services or {}
         self._config = OptioConfig(
