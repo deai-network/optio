@@ -77,3 +77,23 @@ def test_compose_agents_md_resume_section_between_deliverables_and_task():
     resumes_pos = out.index("## Resumes")
     task_pos = out.index("## Task")
     assert deliverables_pos < resumes_pos < task_pos
+
+
+def test_compose_agents_md_renders_custom_excludes():
+    """workdir_exclude=[...] → prompt lists those patterns and NOT defaults."""
+    from optio_opencode.archive import DEFAULT_WORKDIR_EXCLUDES
+    out = _compose(workdir_exclude=["custom_a", "custom_b"])
+    assert "`custom_a`" in out
+    assert "`custom_b`" in out
+    # None of the default patterns should appear.
+    for pattern in DEFAULT_WORKDIR_EXCLUDES:
+        assert f"`{pattern}`" not in out
+
+
+def test_compose_agents_md_empty_excludes_renders_no_paths_excluded_copy():
+    """workdir_exclude=[] → 'No paths are excluded' wording."""
+    out = _compose(workdir_exclude=[])
+    assert "No paths are excluded" in out
+    # The 'inside an excluded subdirectory' clause should be absent (it's
+    # only relevant when there are exclusions to live inside).
+    assert "inside an excluded subdirectory" not in out
