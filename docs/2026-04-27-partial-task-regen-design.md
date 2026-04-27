@@ -65,13 +65,17 @@ HTTP POST /api/processes/resync
   CommandConsumer dispatches "resync" to lifecycle._handle_resync
     └─> _sync_definitions(metadata_filter)
           ├─> get_task_definitions(services, metadata_filter)   [user callback]
-          ├─> upsert_process(...)        for each returned task
+          ├─> filter returned tasks: drop any whose metadata
+          │    does not match `metadata_filter` (no-op when filter is None)
+          ├─> upsert_process(...)        for each in-scope task
           ├─> remove_stale_processes(valid_ids, metadata_filter) [Mongo]
           ├─> executor.register_tasks(tasks, metadata_filter)
           └─> scheduler.sync_schedules(tasks, metadata_filter)
 ```
 
 If `metadata_filter` is `None` (or empty), every layer is a no-op wrapper around the existing full-sync logic.
+
+**Framework-side input filter:** After the callback returns, `_sync_definitions` discards any task whose `metadata` does not match `metadata_filter`. This makes the partial-sync contract symmetric: a callback may either honor the filter (returning the subset directly) or ignore it (returning its full list); in both cases only in-scope tasks reach upsert / register / schedule. Callback authors are therefore free to ignore `metadata_filter` entirely if they prefer — the framework guarantees the input to downstream layers is in-scope.
 
 ## Component changes
 
@@ -122,6 +126,10 @@ async def _sync_definitions(
     tasks = await self._config.get_task_definitions(
         self._config.services, metadata_filter,
     )
+    # Framework guarantees only in-scope tasks reach downstream layers,
+    # so callback authors may ignore `metadata_filter` if they prefer.
+    if metadata_filter:
+        tasks = [t for t in tasks if matches_filter(t.metadata, metadata_filter)]
     for task in tasks:
         await upsert_process(self._config.mongo_db, self._config.prefix, task)
     valid_ids = {t.process_id for t in tasks}
@@ -330,7 +338,9 @@ The filter is JSON-serialized inside the Redis stream payload. Filter values mus
 ## Edge cases
 
 - **Empty filter `{}`** — treated as no filter (full sync). Documented; `matches_filter` already returns `True` for empty input. The publisher omits `metadataFilter` from the Redis payload when empty, so the consumer is symmetric.
-- **Filter matches nothing** — callback returns `[]`. Stale removal scoped to filter deletes any in-scope record (intentional: the caller declared the group empty). Executor and scheduler drop in-scope entries.
+- **Filter matches nothing** — callback returns `[]` (or any list whose tasks all fail the framework-side filter, which is then narrowed to `[]`). Stale removal scoped to filter deletes any in-scope record (intentional: the caller declared the group empty). Executor and scheduler drop in-scope entries.
+
+- **Callback over-returns** — callback ignores the filter and returns its full task list. The framework-side input filter narrows this to in-scope tasks before any downstream layer runs; out-of-scope tasks returned by the callback are silently dropped. This is the expected migration path for callbacks that don't yet have per-group logic.
 - **`clean=True` + filter** — `delete_many` is scoped to the filter. Then `_sync_definitions` re-imports the subset. Documented as "nuke and re-import for this group". `clean=True` without a filter retains current "nuke everything" semantics.
 - **Concurrent resyncs** — disjoint filters touch disjoint Mongo rows / registry keys / job ids; safe in parallel. Overlapping filters: per-row last writer wins (current behavior). No additional locking introduced.
 - **Callback raises** — exception propagates as today; partial mutation (some upserts succeeded before failure) is possible. Caller can re-run idempotently.
@@ -373,7 +383,7 @@ async def get_task_definitions(services): ...
 async def get_task_definitions(services, metadata_filter=None): ...
 ```
 
-A callback that ignores `metadata_filter` continues to work (it returns its full list; partial resync semantics still apply because `valid_ids`, `register_tasks`, `sync_schedules`, and `remove_stale_processes` all scope their cleanup correctly). No backwards-compat shim is added; the package is pre-1.0.
+A callback that ignores `metadata_filter` continues to work: it returns its full list, and `_sync_definitions` filters that list to in-scope tasks before any downstream layer (`upsert_process`, `register_tasks`, `sync_schedules`, `remove_stale_processes`) runs. No backwards-compat shim is added; the package is pre-1.0.
 
 CHANGELOG entry to call this out.
 

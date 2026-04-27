@@ -27,6 +27,11 @@
 - **Create** `packages/optio-core/tests/test_scheduler.py` — new test file for scheduler filter semantics.
 - **Create** `packages/optio-core/tests/test_resync.py` — new end-to-end test file for partial resync via `Optio.resync()`.
 
+### Downstream callback callers (Python)
+
+- **Modify** `packages/optio-demo/src/optio_demo/tasks/__init__.py` — `get_task_definitions` accepts `metadata_filter` (ignored).
+- **Modify** `examples/test-app/tasks/__init__.py` — same.
+
 ### optio-api (TypeScript)
 
 - **Create** `packages/optio-api/src/types.ts` — `ProcessMetadataFilter` type alias (or extend an existing types file if present — see Task 7).
@@ -773,6 +778,35 @@ async def test_partial_resync_clean_scopes_delete(mongo_db):
 
 
 @pytest.mark.asyncio
+async def test_partial_resync_drops_out_of_scope_returned_by_callback(mongo_db):
+    """Callback ignores the filter and returns its full list. Framework
+    must drop out-of-scope tasks before upsert/register/schedule.
+    """
+    full_set = [_t("ing1", group="ingest"), _t("etl1", group="etl")]
+
+    async def get_tasks(services, metadata_filter=None):
+        # Deliberately ignore metadata_filter — return everything.
+        return full_set
+
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, get_task_definitions=get_tasks)
+
+    # Drop ing1 from the source list, then partial-resync the ingest group.
+    full_set.pop(0)
+    await optio.resync(metadata_filter={"group": "ingest"})
+
+    # ing1 is in-scope and was absent from the (over-returned) list -> deleted.
+    assert await get_process_by_process_id(mongo_db, optio._config.prefix, "ing1") is None
+    # etl1 is out of scope; even though the callback returned it, framework
+    # must NOT have re-upserted, re-registered, or re-scheduled it. Existing
+    # row simply survives untouched.
+    assert await get_process_by_process_id(mongo_db, optio._config.prefix, "etl1") is not None
+    # And it should still be in the executor registry (not dropped, not
+    # re-added: register_tasks was called with [] under the ingest filter).
+    assert "etl1" in optio._executor._task_registry
+
+
+@pytest.mark.asyncio
 async def test_empty_filter_treated_as_full_sync(mongo_db):
     tasks = [_t("a", group="ingest"), _t("b", group="etl")]
 
@@ -805,7 +839,7 @@ Update the import block:
 
 ```python
 from optio_core.models import (
-    TaskInstance, OptioConfig, ProcessStatus, ProcessMetadataFilter,
+    TaskInstance, OptioConfig, ProcessStatus, ProcessMetadataFilter, matches_filter,
 )
 ```
 
@@ -834,6 +868,11 @@ async def _sync_definitions(
     tasks = await self._config.get_task_definitions(
         self._config.services, metadata_filter,
     )
+
+    # Framework guarantees only in-scope tasks reach downstream layers,
+    # so callback authors may ignore `metadata_filter` if they prefer.
+    if metadata_filter:
+        tasks = [t for t in tasks if matches_filter(t.metadata, metadata_filter)]
 
     for task in tasks:
         await upsert_process(self._config.mongo_db, self._config.prefix, task)
@@ -875,23 +914,32 @@ await self._sync_definitions()
 
 Leave this unchanged — initial sync is always a full sync (`metadata_filter=None`).
 
-- [ ] **Step 5: Audit existing in-tree callers of `get_task_definitions`**
+- [ ] **Step 5: Update optio-core test fixtures to the two-arg callback signature**
 
-Run: `cd packages/optio-core && grep -rn "get_task_definitions" src tests examples`
+The signature change in this task means every in-tree callback that defines `get_task_definitions(services)` (single-arg) will fail at runtime with `TypeError: ... takes 1 positional argument but 2 were given`. Update the optio-core test fixtures now so the test suite stays green for this commit. (Sibling packages `optio-demo` and `examples/test-app` are updated in Task 6b — they have their own test suites and are not run by Task 5's pytest invocation.)
 
-For every callback definition discovered, ensure it accepts a second parameter (defaulting to `None` is fine — the callback may ignore the value):
+Files to edit (3 files, ~20 callsites):
+
+- `packages/optio-core/tests/test_lifecycle_reconciliation.py`
+- `packages/optio-core/tests/test_no_redis.py`
+- `packages/optio-core/tests/test_integration.py`
+
+For each callback definition (look for `async def get_tasks(services)`, `async def _get_tasks(services)`, `async def get_defs(services)`, `async def _tasks(services)`, etc.), append a second parameter that defaults to `None` and is unused:
 
 ```python
 # Before
-async def my_get_tasks(services): ...
+async def get_tasks(services):
+    return [...]
 
 # After
-async def my_get_tasks(services, metadata_filter=None): ...
+async def get_tasks(services, metadata_filter=None):
+    return [...]
 ```
 
-If there are callers in sibling packages (`optio-demo`, `optio-api` doesn't define one, `optio-ui` doesn't either), leave those for Task 6 if they appear in tests run by this task; otherwise note them in the migration note that ships with Task 6.
+Run: `cd packages/optio-core && grep -rn "async def.*services).*:" tests/test_lifecycle_reconciliation.py tests/test_no_redis.py tests/test_integration.py`
+to enumerate every site, then edit each to the two-arg form. Body unchanged.
 
-(Quick audit at plan-write time turned up only test fixtures inside `tests/test_*.py`; update those that define a `get_task_definitions` callback to use the two-arg signature. Tests that don't define one are unaffected.)
+If `grep` reveals additional definitions that aren't called as `get_task_definitions` (e.g. internal helpers with the same shape), inspect carefully — only the callbacks passed to `Optio.init(..., get_task_definitions=...)` need updating.
 
 - [ ] **Step 6: Run the full optio-core suite to surface any drift**
 
@@ -990,6 +1038,82 @@ git commit -m "feat(optio-core): Optio.resync accepts metadata_filter; clean+fil
 BREAKING CHANGE: get_task_definitions callback signature is now
 (services, metadata_filter) — callbacks must accept a second
 parameter, even if they ignore it."
+```
+
+---
+
+## Task 6b: Update downstream `get_task_definitions` callbacks
+
+The `get_task_definitions` callback signature now takes `(services, metadata_filter)`. Tasks 5 and 6 updated optio-core itself plus its test fixtures. Two downstream call sites also define single-arg callbacks and must be updated to keep the demo / examples runnable.
+
+**Files:**
+- Modify: `packages/optio-demo/src/optio_demo/tasks/__init__.py`
+- Modify: `examples/test-app/tasks/__init__.py`
+
+These callbacks aggregate task lists and have no per-group logic. The simplest correct change is to accept the second parameter and ignore it — the framework-side input filter in `_sync_definitions` (added in Task 5) drops out-of-scope tasks before any downstream processing, so over-returning is safe.
+
+- [ ] **Step 1: Update optio-demo callback**
+
+In `packages/optio-demo/src/optio_demo/tasks/__init__.py`, replace the existing definition:
+
+```python
+"""Task definitions for the optio demo application."""
+
+from optio_core.models import TaskInstance, ProcessMetadataFilter
+
+from optio_demo.tasks.terraforming import get_tasks as terraforming_tasks
+from optio_demo.tasks.home import get_tasks as home_tasks
+from optio_demo.tasks.heist import get_tasks as heist_tasks
+from optio_demo.tasks.festival import get_tasks as festival_tasks
+from optio_demo.tasks.wakeup import get_tasks as wakeup_tasks
+from optio_demo.tasks.marimo import get_tasks as marimo_tasks
+from optio_demo.tasks.opencode import get_tasks as opencode_tasks
+
+
+async def get_task_definitions(
+    services: dict,
+    metadata_filter: ProcessMetadataFilter | None = None,
+) -> list[TaskInstance]:
+    return [
+        *terraforming_tasks(),
+        *home_tasks(),
+        *heist_tasks(),
+        *festival_tasks(),
+        *wakeup_tasks(),
+        *marimo_tasks(),
+        *opencode_tasks(),
+    ]
+```
+
+- [ ] **Step 2: Update examples/test-app callback**
+
+In `examples/test-app/tasks/__init__.py`, locate the existing `get_task_definitions(services: dict)` definition and add the second parameter the same way:
+
+```python
+from optio_core.models import TaskInstance, ProcessMetadataFilter
+
+
+async def get_task_definitions(
+    services: dict,
+    metadata_filter: ProcessMetadataFilter | None = None,
+) -> list[TaskInstance]:
+    # Body unchanged — return the same task list as before.
+    ...
+```
+
+(Read the file first to preserve any imports and the existing return body verbatim; only the signature changes.)
+
+- [ ] **Step 3: Run tests where each callback is exercised, if any**
+
+For optio-demo, the package may have its own test suite. Run: `cd packages/optio-demo && pytest -v 2>/dev/null` if a test directory exists; otherwise verify import succeeds: `cd packages/optio-demo && python -c "from optio_demo.tasks import get_task_definitions; print(get_task_definitions)"`.
+
+For examples/test-app, verify the module still imports: `cd examples/test-app && python -c "from tasks import get_task_definitions; print(get_task_definitions)"`.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add packages/optio-demo/src/optio_demo/tasks/__init__.py examples/test-app/tasks/__init__.py
+git commit -m "refactor(optio-demo,examples): accept metadata_filter param in get_task_definitions"
 ```
 
 ---
