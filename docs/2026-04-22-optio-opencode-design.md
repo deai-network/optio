@@ -3,7 +3,16 @@
 **Base revision:** `208973097c480d0af61caa5e4e0591bb36ebd707` on branch `main` (as of 2026-04-22T12:05:40Z)
 
 **Date:** 2026-04-22
-**Status:** Draft (supersedes the 2026-04-21 seed spec)
+**Status:** Partially superseded.
+
+> **Note on the consumer-facing callback shape:** Sections that describe
+> `OpencodeTaskConfig.on_deliverable` and the hook-style consumer API
+> have been superseded by `docs/2026-04-25-opencode-task-hooks-design.md`,
+> which introduces `HookContext` plus `before_execute` / `after_execute`
+> and changes `on_deliverable`'s signature from `(path, text)` to
+> `(hook_ctx, path, text)`. Consult the newer spec for the canonical
+> consumer surface; the snippets below reflect the pre-hooks shape and
+> are kept here only as historical record of this stage of the design.
 
 **Companion documents:**
 
