@@ -137,3 +137,35 @@ async def test_resume_with_no_prior_snapshot_falls_back_to_fresh_launch(mongo_db
     await _run_one_cycle(mongo_db, pid, resume=True)  # nothing to resume; takes fresh path
     snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=pid)
     assert snap is not None  # the fresh-start cycle still captures a terminal snapshot
+
+
+async def test_resume_appends_second_line_to_resume_log(mongo_db, task_root):
+    """After one resume cycle, resume.log in the latest snapshot has exactly 2 lines."""
+    import io
+    import re
+    import tarfile
+    from motor.motor_asyncio import AsyncIOMotorGridFSBucket
+
+    pid = "oc_resume_log_growth"
+    await _run_one_cycle(mongo_db, pid, resume=False)  # first launch
+    await _run_one_cycle(mongo_db, pid, resume=True)   # resume
+
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=pid)
+    assert snap is not None
+
+    # The workdir blob is a gzipped tar. Extract resume.log and read it.
+    bucket = AsyncIOMotorGridFSBucket(mongo_db)
+    stream = await bucket.open_download_stream(snap["workdirBlobId"])
+    workdir_bytes = await stream.read()
+
+    with tarfile.open(fileobj=io.BytesIO(workdir_bytes), mode="r:gz") as tar:
+        member = tar.getmember("resume.log")
+        contents = tar.extractfile(member).read().decode("utf-8")
+
+    lines = [line for line in contents.splitlines() if line]
+    assert len(lines) == 2, f"expected 2 lines, got {len(lines)}: {contents!r}"
+
+    iso_re = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+    for line in lines:
+        assert iso_re.match(line), f"non-ISO-8601 line: {line!r}"
+    assert lines[0] <= lines[1], f"timestamps not monotonic: {lines!r}"
