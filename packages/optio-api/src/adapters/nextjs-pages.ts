@@ -12,11 +12,14 @@ import * as handlers from '../handlers.js';
 import { createListPoller, createTreePoller } from '../stream-poller.js';
 import { discoverInstances } from '../discovery.js';
 import { resolveDb, type DbOptions } from '../resolve-db.js';
+import type { AuthCallback } from '../auth.js';
+import { checkAuth } from '../auth.js';
+import { isWriteMethod } from '../widget-proxy-core.js';
 
 export type OptioApiOptions = {
   redis: Redis;
   prefix?: string;
-  authenticate?: AuthCallback<NextApiRequest>;
+  authenticate: AuthCallback<NextApiRequest>;
 } & (
   | { db: Db; mongoClient?: never }
   | { mongoClient: MongoClient; db?: never }
@@ -83,6 +86,12 @@ export function createOptioHandler(opts: OptioApiOptions): (req: NextApiRequest,
   });
 
   return async (req: NextApiRequest, res: NextApiResponse) => {
+    const authResult = await checkAuth(req, opts.authenticate, isWriteMethod(req.method ?? 'GET'));
+    if (authResult) {
+      res.status(authResult.status).json(authResult.body);
+      return;
+    }
+
     const url = req.url ?? '';
     const method = req.method ?? '';
 
