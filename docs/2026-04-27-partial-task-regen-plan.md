@@ -51,7 +51,7 @@
 
 ## Tooling notes
 
-- Working directory for all Python work: `packages/optio-core/`. Run tests with `pytest tests/<file>::<test> -v` (the package's pytest config picks up the `tests/` dir; conftest provides a `mongo_db` fixture against `MONGO_URL`).
+- Working directory for all Python work: `packages/optio-core/`. Run tests with `PYTHONPATH=$(pwd)/src python -m pytest tests/<file>::<test> -v` (the package's pytest config picks up the `tests/` dir; conftest provides a `mongo_db` fixture against `MONGO_URL`). The `PYTHONPATH=$(pwd)/src` qualifier is **required when running from a worktree**: the editable install resolves `optio_core` to the main checkout, not the worktree, so without `PYTHONPATH` your worktree-local source changes are not picked up.
 - Working directory for all TS work: `packages/optio-api/`. Run tests with `pnpm test -- <pattern>` from the package directory; vitest is the runner.
 - MongoDB: must be running. The repo's standard is to run MongoDB via Docker (no local mongod). `MONGO_URL` env var defaults to `mongodb://localhost:27017`.
 - Do not use `npx` for `tsc`. Use `node_modules/.bin/tsc` directly when type-checking.
