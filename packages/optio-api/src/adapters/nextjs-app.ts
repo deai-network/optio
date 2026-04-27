@@ -11,6 +11,9 @@ import * as handlers from '../handlers.js';
 import { createListPoller, createTreePoller } from '../stream-poller.js';
 import { discoverInstances } from '../discovery.js';
 import { resolveDb, type DbOptions } from '../resolve-db.js';
+import type { AuthCallback } from '../auth.js';
+import { checkAuth } from '../auth.js';
+import { isWriteMethod } from '../widget-proxy-core.js';
 
 export type OptioApiOptions = {
   redis: Redis;
@@ -27,6 +30,15 @@ const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/a
 export function createOptioRouteHandlers(opts: OptioApiOptions) {
   const { redis } = opts;
   const dbOpts: DbOptions = 'mongoClient' in opts && opts.mongoClient ? { mongoClient: opts.mongoClient } : { db: opts.db! };
+
+  async function authGate(request: Request): Promise<Response | null> {
+    const authResult = await checkAuth(request, opts.authenticate, isWriteMethod(request.method));
+    if (!authResult) return null;
+    return new Response(JSON.stringify(authResult.body), {
+      status: authResult.status,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
 
   const tsRestHandlers = createNextHandler(
     apiContract.processes,
@@ -86,6 +98,8 @@ export function createOptioRouteHandlers(opts: OptioApiOptions) {
   );
 
   async function GET(request: Request): Promise<Response> {
+    const denied = await authGate(request);
+    if (denied) return denied;
     const url = new URL(request.url);
     const { pathname } = url;
 
@@ -193,6 +207,8 @@ export function createOptioRouteHandlers(opts: OptioApiOptions) {
   }
 
   async function POST(request: Request): Promise<Response> {
+    const denied = await authGate(request);
+    if (denied) return denied;
     return tsRestHandlers(request);
   }
 

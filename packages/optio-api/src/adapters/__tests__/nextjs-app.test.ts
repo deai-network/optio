@@ -151,3 +151,95 @@ describe('Next.js App Router adapter integration tests', () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe('Next.js App Router adapter auth', () => {
+  function makeHandlers(authenticate: (req: any) => any) {
+    return createOptioRouteHandlers({ db, redis, authenticate });
+  }
+
+  it('null role → 401 on REST GET', async () => {
+    await seedProcess();
+    const { GET } = makeHandlers(() => null);
+    const req = makeNextRequest('http://localhost/api/processes?limit=10');
+    const res = await GET(req);
+    expect(res.status).toBe(401);
+  });
+
+  it('null role → 401 on REST POST', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' } });
+    const { POST } = makeHandlers(() => null);
+    const req = makeNextRequest(`http://localhost/api/processes/${doc._id.toString()}/launch`, {
+      method: 'POST',
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(401);
+  });
+
+  it('null role → 401 on SSE list stream', async () => {
+    const { GET } = makeHandlers(() => null);
+    const req = makeNextRequest('http://localhost/api/processes/stream');
+    const res = await GET(req);
+    expect(res.status).toBe(401);
+  });
+
+  it('null role → 401 on SSE tree stream', async () => {
+    const doc = await seedProcess();
+    const { GET } = makeHandlers(() => null);
+    const req = makeNextRequest(
+      `http://localhost/api/processes/${doc._id.toString()}/tree/stream`,
+    );
+    const res = await GET(req);
+    expect(res.status).toBe(401);
+  });
+
+  it('null role → 401 on /api/optio/instances', async () => {
+    const { GET } = makeHandlers(() => null);
+    const req = makeNextRequest('http://localhost/api/optio/instances');
+    const res = await GET(req);
+    expect(res.status).toBe(401);
+  });
+
+  it('viewer → 200 on REST GET', async () => {
+    await seedProcess();
+    const { GET } = makeHandlers(() => 'viewer');
+    const req = makeNextRequest('http://localhost/api/processes?limit=10');
+    const res = await GET(req);
+    expect(res.status).toBe(200);
+  });
+
+  it('viewer → 403 on REST POST', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' } });
+    const { POST } = makeHandlers(() => 'viewer');
+    const req = makeNextRequest(`http://localhost/api/processes/${doc._id.toString()}/launch`, {
+      method: 'POST',
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(403);
+  });
+
+  it('operator → 200 on REST GET', async () => {
+    await seedProcess();
+    const { GET } = makeHandlers(() => 'operator');
+    const req = makeNextRequest('http://localhost/api/processes?limit=10');
+    const res = await GET(req);
+    expect(res.status).toBe(200);
+  });
+
+  it('operator → 200 on REST POST', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' } });
+    const { POST } = makeHandlers(() => 'operator');
+    const req = makeNextRequest(`http://localhost/api/processes/${doc._id.toString()}/launch`, {
+      method: 'POST',
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+  });
+
+  it('async authenticate works', async () => {
+    await seedProcess();
+    const { GET } = makeHandlers(async () => 'operator');
+    const req = makeNextRequest('http://localhost/api/processes?limit=10');
+    const res = await GET(req);
+    expect(res.status).toBe(200);
+  });
+});
