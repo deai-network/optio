@@ -1,10 +1,13 @@
 """MongoDB operations for process records."""
 
 from datetime import datetime, timezone
+from typing import Any
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
-from optio_core.models import TaskInstance, ProcessStatus, Progress, InnerAuth
+from optio_core.models import (
+    TaskInstance, ProcessStatus, Progress, InnerAuth, ProcessMetadataFilter,
+)
 
 
 def _collection(db: AsyncIOMotorDatabase, prefix: str):
@@ -66,16 +69,26 @@ async def upsert_process(db: AsyncIOMotorDatabase, prefix: str, task: TaskInstan
 
 
 async def remove_stale_processes(
-    db: AsyncIOMotorDatabase, prefix: str, valid_process_ids: set[str],
+    db: AsyncIOMotorDatabase,
+    prefix: str,
+    valid_process_ids: set[str],
+    metadata_filter: ProcessMetadataFilter | None = None,
 ) -> int:
     """Remove process records whose processId is not in the valid set.
-    Only removes root processes (parentId is None).
+
+    Only removes root processes (parentId is None). When `metadata_filter`
+    is provided, the deletion is scoped to records whose stored `metadata`
+    matches every key/value in the filter (flat AND-equality).
     """
     coll = _collection(db, prefix)
-    result = await coll.delete_many({
+    query: dict[str, Any] = {
         "processId": {"$nin": list(valid_process_ids)},
         "parentId": None,
-    })
+    }
+    if metadata_filter:
+        for k, v in metadata_filter.items():
+            query[f"metadata.{k}"] = v
+    result = await coll.delete_many(query)
     return result.deleted_count
 
 

@@ -237,3 +237,49 @@ async def test_clear_result_fields_preserves_resume_fields(mongo_db):
     updated = await get_process_by_process_id(mongo_db, "test", "crf_keep")
     assert updated["supportsResume"] is True
     assert updated["hasSavedState"] is True
+
+
+async def test_remove_stale_processes_with_filter(mongo_db):
+    t_in1 = TaskInstance(
+        execute=dummy_execute, process_id="in_keep", name="In Keep",
+        metadata={"group": "ingest"},
+    )
+    t_in2 = TaskInstance(
+        execute=dummy_execute, process_id="in_drop", name="In Drop",
+        metadata={"group": "ingest"},
+    )
+    t_out = TaskInstance(
+        execute=dummy_execute, process_id="other", name="Other",
+        metadata={"group": "etl"},
+    )
+    await upsert_process(mongo_db, "test", t_in1)
+    await upsert_process(mongo_db, "test", t_in2)
+    await upsert_process(mongo_db, "test", t_out)
+
+    count = await remove_stale_processes(
+        mongo_db, "test", {"in_keep"}, metadata_filter={"group": "ingest"},
+    )
+
+    assert count == 1
+    assert await get_process_by_process_id(mongo_db, "test", "in_keep") is not None
+    assert await get_process_by_process_id(mongo_db, "test", "in_drop") is None
+    assert await get_process_by_process_id(mongo_db, "test", "other") is not None
+
+
+async def test_remove_stale_processes_filter_none_is_full_sweep(mongo_db):
+    t1 = TaskInstance(
+        execute=dummy_execute, process_id="alpha", name="A",
+        metadata={"group": "ingest"},
+    )
+    t2 = TaskInstance(
+        execute=dummy_execute, process_id="beta", name="B",
+        metadata={"group": "etl"},
+    )
+    await upsert_process(mongo_db, "test", t1)
+    await upsert_process(mongo_db, "test", t2)
+
+    count = await remove_stale_processes(mongo_db, "test", {"alpha"})
+
+    assert count == 1
+    assert await get_process_by_process_id(mongo_db, "test", "alpha") is not None
+    assert await get_process_by_process_id(mongo_db, "test", "beta") is None
