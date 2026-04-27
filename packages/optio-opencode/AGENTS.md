@@ -45,6 +45,10 @@ The returned `TaskInstance` has `ui_widget="iframe"` and `supports_resume=True` 
   the body, fetching a related file via
   `hook_ctx.read_text_from_host`, etc.). **Breaking change**: prior
   to the hooks feature, this callback received `(path, text)` only.
+- `supports_resume: bool = True` — when False, the framework skips
+  snapshot capture, omits the resume-detection prompt section, and
+  doesn't write `resume.log`. The task launches fresh every time.
+  Default `True` preserves current behavior.
 
 ### OpencodeTaskConfig.workdir_exclude
 
@@ -106,6 +110,26 @@ your hooks against `HookContextProtocol`.
 - `after_execute` raising on an already-failing session → the
   exception is logged via `report_progress("after_execute callback
   raised: ...")` and does not shadow the original cause.
+
+## Resume awareness
+
+When `supports_resume=True` (default), the framework writes
+`<workdir>/resume.log` with one ISO 8601 timestamp per session start
+(fresh launch and every resume). The agent's prompt — composed by
+`compose_agents_md` — includes a section instructing the agent to
+read `./resume.log` at the start of every new user message and treat
+new lines as resume signals. The exact `workdir_exclude` patterns
+configured for the task are inlined into the prompt so the agent's
+mental model matches what the snapshot mechanism actually preserves.
+
+When `supports_resume=False`:
+- No snapshot capture occurs (no GridFS writes, no snapshots-collection
+  rows).
+- `resume.log` is never created.
+- The resume-detection section is omitted from the composed AGENTS.md.
+
+The opt-out is symmetric across the three concerns; consumers who
+disable resume don't pay any cost for it.
 
 ## Log-file contract
 
