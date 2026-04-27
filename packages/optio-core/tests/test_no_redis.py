@@ -55,7 +55,7 @@ async def _slow_task(ctx):
         ctx.report_progress((i + 1) * 10, f"step {i + 1}")
 
 
-async def _get_tasks(services):
+async def _get_tasks(services, metadata_filter=None):
     return [
         TaskInstance(execute=_dummy_task, process_id="test_task", name="Test Task"),
         TaskInstance(execute=_slow_task, process_id="slow_task", name="Slow Task",
@@ -221,7 +221,7 @@ async def test_list_processes_filter_metadata(mongo_db):
     async def _noop(ctx):
         pass
 
-    async def _tasks(services):
+    async def _tasks(services, metadata_filter=None):
         return [
             TaskInstance(execute=_noop, process_id="task_a", name="Task A",
                          metadata={"region": "eu", "priority": "high"}),

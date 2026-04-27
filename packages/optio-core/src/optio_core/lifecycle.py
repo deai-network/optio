@@ -12,7 +12,9 @@ try:
 except ImportError:
     Redis = None  # type: ignore[assignment,misc]
 
-from optio_core.models import TaskInstance, OptioConfig, ProcessStatus
+from optio_core.models import (
+    TaskInstance, OptioConfig, ProcessStatus, ProcessMetadataFilter, matches_filter,
+)
 from optio_core.store import (
     upsert_process, remove_stale_processes,
     get_process_by_process_id, update_status, clear_result_fields,
@@ -35,7 +37,6 @@ class Optio:
         self._executor: Executor | None = None
         self._consumer: CommandConsumer | None = None
         self._scheduler: ProcessScheduler | None = None
-        self._tasks: list[TaskInstance] = []
         self._running = False
         self._heartbeat_task: asyncio.Task | None = None
 
@@ -386,27 +387,38 @@ class Optio:
                 logger.warning(f"Heartbeat failed: {e}")
             await asyncio.sleep(5)
 
-    async def _sync_definitions(self) -> None:
-        """Run the task generator and sync with database."""
+    async def _sync_definitions(
+        self,
+        metadata_filter: ProcessMetadataFilter | None = None,
+    ) -> None:
+        """Run the task generator and sync with database, optionally scoped."""
         if self._config.get_task_definitions is None:
             return
 
-        self._tasks = await self._config.get_task_definitions(self._config.services)
+        tasks = await self._config.get_task_definitions(
+            self._config.services, metadata_filter,
+        )
 
-        for task in self._tasks:
+        # Framework guarantees only in-scope tasks reach downstream layers,
+        # so callback authors may ignore `metadata_filter` if they prefer.
+        if metadata_filter:
+            tasks = [t for t in tasks if matches_filter(t.metadata, metadata_filter)]
+
+        for task in tasks:
             await upsert_process(self._config.mongo_db, self._config.prefix, task)
 
-        valid_ids = {t.process_id for t in self._tasks}
+        valid_ids = {t.process_id for t in tasks}
         removed = await remove_stale_processes(
-            self._config.mongo_db, self._config.prefix, valid_ids,
+            self._config.mongo_db, self._config.prefix, valid_ids, metadata_filter,
         )
         if removed:
             logger.info(f"Removed {removed} stale process records")
 
-        self._executor.register_tasks(self._tasks)
-        await self._scheduler.sync_schedules(self._tasks)
+        self._executor.register_tasks(tasks, metadata_filter)
+        await self._scheduler.sync_schedules(tasks, metadata_filter)
 
-        logger.info(f"Synced {len(self._tasks)} task definitions")
+        scope = "(all)" if not metadata_filter else f"(filter={metadata_filter})"
+        logger.info(f"Synced {len(tasks)} task definitions {scope}")
 
     async def _handle_launch(self, payload: dict) -> None:
         process_id = payload.get("processId")

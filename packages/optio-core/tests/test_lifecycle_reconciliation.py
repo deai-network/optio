@@ -57,7 +57,7 @@ async def test_startup_reconciles_all_active_states(mongo_db):
         {**_make_active_seed("p_idle", "Idle", "running"), "status": {"state": "idle"}},
     ])
 
-    async def get_tasks(_services):
+    async def get_tasks(_services, metadata_filter=None):
         return [
             TaskInstance(execute=_noop, process_id=pid, name=pid)
             for pid in ("p_sched", "p_run", "p_creq", "p_cing", "p_done", "p_idle")
@@ -105,7 +105,7 @@ async def test_startup_reconciliation_is_noop_on_fresh_db(mongo_db):
     """Startup reconciliation does nothing when no active-state rows exist."""
     prefix = "recontest_clean"
 
-    async def get_tasks(_services):
+    async def get_tasks(_services, metadata_filter=None):
         return [TaskInstance(execute=_noop, process_id="fresh", name="Fresh")]
 
     fw = Optio()
@@ -132,7 +132,7 @@ async def test_shutdown_force_finalizes_uncooperative_task(mongo_db):
         started.set()
         await asyncio.sleep(30)  # ignore any cancellation signal
 
-    async def get_tasks(_services):
+    async def get_tasks(_services, metadata_filter=None):
         return [TaskInstance(execute=uncooperative, process_id="stuck", name="Stuck")]
 
     fw = Optio()
@@ -166,7 +166,7 @@ async def test_shutdown_leaves_cooperative_task_alone(mongo_db):
         while ctx.should_continue():
             await asyncio.sleep(0.05)
 
-    async def get_tasks(_services):
+    async def get_tasks(_services, metadata_filter=None):
         return [TaskInstance(execute=cooperative, process_id="nice", name="Nice")]
 
     fw = Optio()
@@ -203,7 +203,7 @@ async def test_shutdown_leaves_cooperative_task_widget_upstream_alone(mongo_db):
         # Teardown: the executor's normal-return path will clear
         # widgetUpstream via clear_widget_upstream in _execute_process.
 
-    async def get_tasks(_services):
+    async def get_tasks(_services, metadata_filter=None):
         return [TaskInstance(execute=cooperative, process_id="nice", name="Nice")]
 
     fw = Optio()

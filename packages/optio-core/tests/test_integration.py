@@ -30,7 +30,7 @@ async def test_full_lifecycle():
     async def my_failing_task(ctx):
         raise Exception("Intentional failure")
 
-    async def get_tasks(services):
+    async def get_tasks(services, metadata_filter=None):
         return [
             TaskInstance(execute=my_task, process_id="good_task", name="Good Task"),
             TaskInstance(execute=my_failing_task, process_id="bad_task", name="Bad Task"),
@@ -117,7 +117,7 @@ async def test_child_process_tree():
 
         ctx.report_progress(100, "All children done")
 
-    async def get_tasks(services):
+    async def get_tasks(services, metadata_filter=None):
         return [
             TaskInstance(execute=parent_task, process_id="parent", name="Parent Task"),
         ]
@@ -176,7 +176,7 @@ async def test_resume_flag_reaches_execute_function(mongo_db, redis_url):
     async def execute(ctx):
         seen["resume"] = ctx.resume
 
-    async def get_defs(_services):
+    async def get_defs(_services, metadata_filter=None):
         return [TaskInstance(
             execute=execute, process_id="r_int", name="R Int",
             supports_resume=True,
