@@ -131,7 +131,11 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
 
         if not resuming:
             await host.write_text(
-                "AGENTS.md", compose_agents_md(config.consumer_instructions),
+                "AGENTS.md",
+                compose_agents_md(
+                    config.consumer_instructions,
+                    workdir_exclude=config.workdir_exclude,
+                ),
             )
             await host.write_text(
                 "opencode.json", json.dumps(config.opencode_config, indent=2),

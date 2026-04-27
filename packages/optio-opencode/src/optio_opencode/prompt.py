@@ -3,11 +3,11 @@
 The base prompt teaches opencode (via AGENTS.md) how to coordinate with the
 host harness: which log file to append status/deliverable/done/error lines
 to, where to put deliverable files, and how the human expects to be
-addressed.  The consumer's own task description is then appended verbatim.
+addressed. The consumer's own task description is then appended verbatim.
 """
 
 
-BASE_PROMPT = """# Coordination protocol with the host (optio-opencode)
+BASE_PROMPT_PRE = """# Coordination protocol with the host (optio-opencode)
 
 You are running inside a coordination harness. Follow these conventions
 throughout the session.
@@ -43,8 +43,10 @@ Place files you want to hand back to the host under `./deliverables/`.
 For each file, write a `DELIVERABLE:` log line *after* the file exists
 and its contents are final. The host fetches files by reading these
 log lines.
+"""
 
-## Task
+
+BASE_PROMPT_POST = """## Task
 
 Here comes the description of your actual task to complete. Throughout
 the task, you are encouraged to narrate progress — both on the normal
@@ -55,7 +57,23 @@ the same goals. So:
 """
 
 
-def compose_agents_md(consumer_instructions: str) -> str:
-    """Build the full AGENTS.md body: base prompt + blank line + consumer text."""
+def compose_agents_md(
+    consumer_instructions: str,
+    *,
+    workdir_exclude: list[str] | None,
+    supports_resume: bool = True,
+) -> str:
+    """Build the full AGENTS.md body.
+
+    Parameters:
+      consumer_instructions: the task author's prompt, appended verbatim.
+      workdir_exclude: the snapshot exclude list for this task. Mandatory:
+        callers must pass it explicitly to prevent silent desync between
+        archive.py defaults and the prompt's claims about what's preserved.
+        Pass None to render with the framework defaults.
+      supports_resume: when False, the resume-detection section is omitted
+        from the prompt. Default True.
+    """
     body = consumer_instructions.rstrip()
-    return f"{BASE_PROMPT}\n{body}\n"
+    # Resume section landing here in Task 3.
+    return f"{BASE_PROMPT_PRE}\n{BASE_PROMPT_POST}\n{body}\n"
