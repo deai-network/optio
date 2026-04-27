@@ -2,6 +2,7 @@
 
 from optio_core.models import (
     TaskInstance, ChildResult, ProcessStatus, Progress,
+    matches_filter,
 )
 
 
@@ -64,9 +65,6 @@ def test_task_instance_supports_resume_default_false():
 def test_task_instance_supports_resume_can_be_set():
     task = TaskInstance(execute=dummy_execute, process_id="t", name="T", supports_resume=True)
     assert task.supports_resume is True
-
-
-from optio_core.models import matches_filter
 
 
 def test_matches_filter_none_filter_matches_anything():

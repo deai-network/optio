@@ -118,12 +118,12 @@ ProcessMetadataFilter: TypeAlias = dict[str, Any]
 
 def matches_filter(
     metadata: dict[str, Any],
-    filter: ProcessMetadataFilter | None,
+    metadata_filter: ProcessMetadataFilter | None,
 ) -> bool:
-    """Return True iff every key in `filter` is present and equal in `metadata`.
+    """Return True iff every key in `metadata_filter` is present and equal in `metadata`.
 
-    A `None` or empty `filter` matches anything (used to mean "no filter").
+    A `None` or empty `metadata_filter` matches anything (used to mean "no filter").
     """
-    if not filter:
+    if not metadata_filter:
         return True
-    return all(metadata.get(k) == v for k, v in filter.items())
+    return all(metadata.get(k) == v for k, v in metadata_filter.items())
