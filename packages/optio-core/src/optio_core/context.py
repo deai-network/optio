@@ -4,12 +4,23 @@ import asyncio
 import logging as _logging
 import os
 import time
+from collections import deque
 from contextlib import asynccontextmanager
 from typing import Any, Callable, Awaitable, TYPE_CHECKING
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorGridFSBucket
 
 from optio_core.models import Progress, ChildResult, ChildProgressInfo, InnerAuth
+
+
+# Adaptive progress throttling: only engage the flush-interval buffer when
+# `report_progress` is called more than AVALANCHE_THRESHOLD times within the
+# last AVALANCHE_WINDOW seconds. Below that rate, every message is preserved
+# in the log; above it, intermediate messages are dropped (most recent
+# survives) and the count is reported via a synthetic
+# "(N messages dropped)" line in front of the surviving message.
+AVALANCHE_THRESHOLD = 10
+AVALANCHE_WINDOW = 0.1
 
 if TYPE_CHECKING:
     from optio_core.executor import Executor
@@ -66,8 +77,20 @@ class ProcessContext:
         self._cancellation_flag = cancellation_flag
         self._child_counter = child_counter
 
-        # Progress throttling
+        # Progress throttling — adaptive.
+        # Quiet periods: each call enqueues a Progress in `_message_queue`
+        # and gets its own DB write + log entry.
+        # Avalanche periods (>AVALANCHE_THRESHOLD calls within
+        # AVALANCHE_WINDOW seconds): the latest call's value lives in
+        # `_pending_progress` and replaces any prior pending; replaced
+        # entries increment `_dropped_count`. When `_pending_progress` is
+        # eventually flushed, a synthetic "(N messages dropped)" line is
+        # written first if `_dropped_count > 0`, then the surviving
+        # message — keeping the surviving message as the last log line.
         self._pending_progress: Progress | None = None
+        self._message_queue: deque[Progress] = deque()
+        self._dropped_count: int = 0
+        self._recent_calls: deque[float] = deque()
         self._last_flush_time: float = 0
         _ms = int(os.environ.get("OPTIO_PROGRESS_FLUSH_INTERVAL_MS", "100"))
         self._flush_interval: float = _ms / 1000.0
@@ -88,11 +111,50 @@ class ProcessContext:
         self._executor: "Executor | None" = None
 
     def report_progress(self, percent: float | None, message: str | None = None) -> None:
-        """Update progress. percent=None for indeterminate. Buffered and flushed asynchronously."""
-        self._pending_progress = Progress(percent=percent, message=message)
+        """Update progress. percent=None for indeterminate.
+
+        Quiet periods: every call gets its own DB write + log entry.
+        Avalanche periods (>10 calls per 0.1s): only the latest message
+        survives; the count of replaced messages is reported alongside
+        the surviving one.
+        """
         now = time.monotonic()
-        if now - self._last_flush_time >= self._flush_interval:
+
+        # Maintain a sliding window of call timestamps.
+        self._recent_calls.append(now)
+        while self._recent_calls and now - self._recent_calls[0] > AVALANCHE_WINDOW:
+            self._recent_calls.popleft()
+
+        new_progress = Progress(percent=percent, message=message)
+
+        if len(self._recent_calls) > AVALANCHE_THRESHOLD:
+            # Avalanche: coalesce. The previous _pending_progress (if any)
+            # is being replaced and counts as a drop.
+            if self._pending_progress is not None:
+                self._dropped_count += 1
+            self._pending_progress = new_progress
+            # Schedule a flush only if the throttle interval has elapsed
+            # (current behavior — bounds DB write rate during avalanches).
+            if now - self._last_flush_time >= self._flush_interval:
+                self._schedule_flush()
+        else:
+            # Quiet: emit any leftover avalanche state first, then enqueue
+            # this new message.
+            if self._pending_progress is not None:
+                # A pending message from a recent avalanche: emit its drop
+                # summary first (if any), then the message, before this new
+                # one. Order: (N dropped) → P_avalanche_last → P_new.
+                if self._dropped_count > 0:
+                    self._message_queue.append(Progress(
+                        percent=None,
+                        message=f"({self._dropped_count} messages dropped)",
+                    ))
+                    self._dropped_count = 0
+                self._message_queue.append(self._pending_progress)
+                self._pending_progress = None
+            self._message_queue.append(new_progress)
             self._schedule_flush()
+
         # Notify parent listener if wired
         if self._parent_listener is not None:
             self._parent_listener(percent, message)
@@ -272,19 +334,35 @@ class ProcessContext:
         if self._flush_task is None or self._flush_task.done():
             self._flush_task = asyncio.create_task(self._flush_progress())
 
-    async def _flush_progress(self) -> None:
-        if self._pending_progress is not None:
-            from optio_core.store import update_progress, append_log
-            await update_progress(
-                self._db, self._prefix, self._process_oid, self._pending_progress,
+    async def _write_progress(self, progress: Progress) -> None:
+        """Write a single Progress to the DB and append to the log."""
+        from optio_core.store import update_progress, append_log
+        await update_progress(
+            self._db, self._prefix, self._process_oid, progress,
+        )
+        if progress.message:
+            await append_log(
+                self._db, self._prefix, self._process_oid,
+                "info", progress.message,
             )
-            if self._pending_progress.message:
-                await append_log(
-                    self._db, self._prefix, self._process_oid,
-                    "info", self._pending_progress.message,
-                )
-            self._last_flush_time = time.monotonic()
+
+    async def _flush_progress(self) -> None:
+        # Phase 1: drain any quiet-mode messages.
+        while self._message_queue:
+            await self._write_progress(self._message_queue.popleft())
+
+        # Phase 2: flush pending avalanche message, with drop summary first.
+        if self._pending_progress is not None:
+            if self._dropped_count > 0:
+                await self._write_progress(Progress(
+                    percent=None,
+                    message=f"({self._dropped_count} messages dropped)",
+                ))
+                self._dropped_count = 0
+            await self._write_progress(self._pending_progress)
             self._pending_progress = None
+
+        self._last_flush_time = time.monotonic()
 
     async def flush_final_progress(self) -> None:
         """Force flush any pending progress (called when process ends)."""
@@ -294,17 +372,27 @@ class ProcessContext:
                 await self._flush_task
             except asyncio.CancelledError:
                 pass
+        # Drain any remaining quiet-mode queue.
+        while self._message_queue:
+            await self._write_progress(self._message_queue.popleft())
+        # Flush any leftover avalanche state.
         if self._pending_progress is not None:
-            from optio_core.store import update_progress, append_log
-            await update_progress(
-                self._db, self._prefix, self._process_oid, self._pending_progress,
-            )
-            if self._pending_progress.message:
-                await append_log(
-                    self._db, self._prefix, self._process_oid,
-                    "info", self._pending_progress.message,
-                )
+            if self._dropped_count > 0:
+                await self._write_progress(Progress(
+                    percent=None,
+                    message=f"({self._dropped_count} messages dropped)",
+                ))
+                self._dropped_count = 0
+            await self._write_progress(self._pending_progress)
             self._pending_progress = None
+        elif self._dropped_count > 0:
+            # Avalanche ended at exactly the moment the pending was flushed
+            # but more drops accumulated after. Surface the count.
+            await self._write_progress(Progress(
+                percent=None,
+                message=f"({self._dropped_count} messages dropped)",
+            ))
+            self._dropped_count = 0
 
     def _set_child_callback(self, callback: Callable) -> None:
         """Set the on_child_progress callback for this context."""
