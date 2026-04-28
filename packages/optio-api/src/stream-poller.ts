@@ -1,10 +1,13 @@
 import { ObjectId, type Db } from 'mongodb';
+import type { ProcessMetadataFilter } from 'optio-contracts';
+import { metadataFilterToMongo } from './metadata-filter-query.js';
 
 export interface StreamPollerOptions {
   db: Db;
   prefix: string;
   sendEvent: (data: unknown) => void;
   onError: () => void;
+  metadataFilter?: ProcessMetadataFilter;
 }
 
 export interface ListPollerHandle {
@@ -13,14 +16,15 @@ export interface ListPollerHandle {
 }
 
 export function createListPoller(opts: StreamPollerOptions): ListPollerHandle {
-  const { db, prefix, sendEvent, onError } = opts;
+  const { db, prefix, sendEvent, onError, metadataFilter } = opts;
   const col = db.collection(`${prefix}_processes`);
+  const filter = metadataFilterToMongo(metadataFilter);
   let interval: ReturnType<typeof setInterval> | null = null;
   let lastSnapshot = '';
 
   async function poll() {
     try {
-      const allProcs = await col.find({}).sort({ depth: 1, order: 1, _id: 1 }).toArray();
+      const allProcs = await col.find(filter).sort({ depth: 1, order: 1, _id: 1 }).toArray();
       const snapshot = JSON.stringify(
         allProcs.map((p: any) => ({
           id: p._id,

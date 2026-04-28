@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { MongoClient, ObjectId, type Db } from 'mongodb';
-import { createTreePoller } from '../stream-poller.js';
+import { createTreePoller, createListPoller } from '../stream-poller.js';
 
 const MONGO_URL = process.env.MONGO_URL ?? 'mongodb://localhost:27017';
 const DB_NAME = 'optio_test_stream_poller';
@@ -164,5 +164,91 @@ describe('createTreePoller widgetData propagation', () => {
     for (const p of update.processes) {
       expect(Object.keys(p)).not.toContain('widgetUpstream');
     }
+  });
+});
+
+describe('createListPoller metadataFilter', () => {
+  beforeEach(async () => {
+    await db.collection(`${PREFIX}_processes`).deleteMany({});
+  });
+
+  async function insertProc(metadata: Record<string, unknown>) {
+    const oid = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertOne({
+      _id: oid,
+      processId: 'p',
+      name: 'P',
+      rootId: oid,
+      parentId: null,
+      depth: 0,
+      order: 0,
+      status: { state: 'idle' },
+      progress: { percent: null },
+      cancellable: true,
+      log: [],
+      metadata,
+    });
+    return oid;
+  }
+
+  it('emits all processes when no filter is set', async () => {
+    await insertProc({ project: 'x' });
+    await insertProc({ project: 'y' });
+
+    const events: any[] = [];
+    const poller = createListPoller({
+      db, prefix: PREFIX,
+      sendEvent: (e) => events.push(e),
+      onError: () => {},
+    });
+    poller.start();
+    await new Promise((r) => setTimeout(r, 1100));
+    poller.stop();
+
+    const update = events.find((e) => e.type === 'update');
+    expect(update).toBeDefined();
+    expect(update.processes.length).toBe(2);
+  });
+
+  it('emits only matching processes when filter is set', async () => {
+    await insertProc({ project: 'x' });
+    await insertProc({ project: 'y' });
+
+    const events: any[] = [];
+    const poller = createListPoller({
+      db, prefix: PREFIX,
+      sendEvent: (e) => events.push(e),
+      onError: () => {},
+      metadataFilter: { project: 'x' },
+    });
+    poller.start();
+    await new Promise((r) => setTimeout(r, 1100));
+    poller.stop();
+
+    const update = events.find((e) => e.type === 'update');
+    expect(update).toBeDefined();
+    expect(update.processes.length).toBe(1);
+    expect(update.processes[0].metadata.project).toBe('x');
+  });
+
+  it('AND-matches multiple keys', async () => {
+    await insertProc({ project: 'x', kind: 'a' });
+    await insertProc({ project: 'x', kind: 'b' });
+    await insertProc({ project: 'y', kind: 'a' });
+
+    const events: any[] = [];
+    const poller = createListPoller({
+      db, prefix: PREFIX,
+      sendEvent: (e) => events.push(e),
+      onError: () => {},
+      metadataFilter: { project: 'x', kind: 'a' },
+    });
+    poller.start();
+    await new Promise((r) => setTimeout(r, 1100));
+    poller.stop();
+
+    const update = events.find((e) => e.type === 'update');
+    expect(update).toBeDefined();
+    expect(update.processes.length).toBe(1);
   });
 });
