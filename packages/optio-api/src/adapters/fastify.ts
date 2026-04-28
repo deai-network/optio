@@ -23,6 +23,11 @@ import {
   applyInnerAuthQuery,
   isWriteMethod,
 } from '../widget-proxy-core.js';
+import {
+  detectLegacyMetadataParams,
+  parseMetadataFilterQuery,
+  formatLegacyMetadataMessage,
+} from '../metadata-filter-query.js';
 
 const WIDGET_CACHE_TTL_MS = 5000;
 
@@ -420,6 +425,21 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions) {
     },
   });
 
+  // Pre-check for legacy metadata.* query params on GET /api/processes (list endpoint).
+  // Must run after onRequest (auth) but before ts-rest route handlers.
+  app.addHook('preHandler', async (request: any, reply: any) => {
+    if (
+      request.method === 'GET' &&
+      (request.routerPath === '/api/processes' || request.url.split('?')[0] === '/api/processes')
+    ) {
+      const legacyKeys = detectLegacyMetadataParams(request.query ?? {});
+      if (legacyKeys.length > 0) {
+        reply.code(400).send({ message: formatLegacyMetadataMessage(legacyKeys) });
+        return reply;
+      }
+    }
+  });
+
   app.register(s.plugin(routes));
 
   app.get('/api/optio/instances', async (_request: any, reply: any) => {
@@ -465,6 +485,17 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions) {
   });
 
   app.get('/api/processes/stream', async (request: any, reply: any) => {
+    const legacyKeys = detectLegacyMetadataParams(request.query ?? {});
+    if (legacyKeys.length > 0) {
+      reply.code(400).send({ message: formatLegacyMetadataMessage(legacyKeys) });
+      return;
+    }
+    const parsed = parseMetadataFilterQuery((request.query as any)?.metadataFilter);
+    if (!parsed.ok) {
+      reply.code(400).send({ message: parsed.error });
+      return;
+    }
+
     const query = request.query as { database?: string; prefix?: string };
     const { db, prefix } = resolveDb(dbOpts, query);
 
@@ -483,6 +514,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions) {
       prefix,
       sendEvent,
       onError: () => reply.raw.end(),
+      metadataFilter: parsed.value,
     });
 
     poller.start();

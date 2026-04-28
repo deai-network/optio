@@ -312,3 +312,56 @@ describe('Fastify adapter auth', () => {
     expect(res.statusCode).toBe(200);
   });
 });
+
+describe('list metadataFilter (fastify)', () => {
+  it('REST list returns all when no filter', async () => {
+    await seedProcess({ metadata: { project: 'x' } });
+    await seedProcess({ metadata: { project: 'y' } });
+    const app = createApp();
+    const res = await app.inject({ method: 'GET', url: '/api/processes?limit=10' });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.items.length).toBe(2);
+  });
+
+  it('REST list returns scoped result with valid metadataFilter', async () => {
+    await seedProcess({ metadata: { project: 'x' } });
+    await seedProcess({ metadata: { project: 'y' } });
+    const filter = encodeURIComponent(JSON.stringify({ project: 'x' }));
+    const app = createApp();
+    const res = await app.inject({ method: 'GET', url: `/api/processes?limit=10&metadataFilter=${filter}` });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.body);
+    expect(body.items.length).toBe(1);
+    expect(body.items[0].metadata.project).toBe('x');
+  });
+
+  it('REST list returns 400 with explicit message for legacy metadata.* params', async () => {
+    const app = createApp();
+    const res = await app.inject({ method: 'GET', url: '/api/processes?limit=10&metadata.project=x' });
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.message).toContain("Legacy 'metadata.*'");
+    expect(body.message).toContain('metadata.project');
+  });
+
+  it('REST list returns 400 for malformed metadataFilter JSON', async () => {
+    const app = createApp();
+    const res = await app.inject({ method: 'GET', url: '/api/processes?limit=10&metadataFilter=not-json' });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('SSE list returns 400 for legacy metadata.* params', async () => {
+    const app = createApp();
+    const res = await app.inject({ method: 'GET', url: '/api/processes/stream?metadata.project=x' });
+    expect(res.statusCode).toBe(400);
+    const body = JSON.parse(res.body);
+    expect(body.message).toContain("Legacy 'metadata.*'");
+  });
+
+  it('SSE list returns 400 for malformed metadataFilter', async () => {
+    const app = createApp();
+    const res = await app.inject({ method: 'GET', url: '/api/processes/stream?metadataFilter=not-json' });
+    expect(res.statusCode).toBe(400);
+  });
+});
