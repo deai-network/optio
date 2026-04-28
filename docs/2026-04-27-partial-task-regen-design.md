@@ -110,7 +110,9 @@ async def _handle_resync(self, payload: dict) -> None:
     if clean:
         coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
         if metadata_filter:
-            mongo_query = {f"metadata.{k}": v for k, v in metadata_filter.items()}
+            mongo_query: dict[str, Any] = {"parentId": None}
+            for k, v in metadata_filter.items():
+                mongo_query[f"metadata.{k}"] = v
             deleted = await coll.delete_many(mongo_query)
         else:
             deleted = await coll.delete_many({})
