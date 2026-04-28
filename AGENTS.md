@@ -463,7 +463,7 @@ type LogEntry = z.infer<typeof LogEntrySchema>;
 
 | Name | Method | Path | Path Params | Query | Body | Responses |
 |------|--------|------|-------------|-------|------|-----------|
-| `list` | GET | `/processes/:prefix` | `prefix` | `cursor?, limit, rootId?, state?, metadataFilter?` | — | `200: PaginatedResponse<Process>` |
+| `list` | GET | `/processes/:prefix` | `prefix` | `cursor?, limit, rootId?, state?, metadataFilter?` (URL-encoded JSON; legacy `?metadata.<key>=<value>` form returns 400) | — | `200: PaginatedResponse<Process>` |
 | `get` | GET | `/processes/:prefix/:id` | `prefix, id` | — | — | `200: Process`, `404: Error` |
 | `getTree` | GET | `/processes/:prefix/:id/tree` | `prefix, id` | `maxDepth?: number` | — | `200: ProcessTreeNode`, `404: Error` |
 | `getLog` | GET | `/processes/:prefix/:id/log` | `prefix, id` | `cursor?, limit` | — | `200: PaginatedResponse<LogEntry>`, `404: Error` |

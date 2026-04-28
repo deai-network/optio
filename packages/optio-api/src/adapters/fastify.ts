@@ -432,6 +432,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions) {
       const legacyKeys = detectLegacyMetadataParams(request.query ?? {});
       if (legacyKeys.length > 0) {
         reply.code(400).send({ message: formatLegacyMetadataMessage(legacyKeys) });
+        return;
       }
     }
   });
