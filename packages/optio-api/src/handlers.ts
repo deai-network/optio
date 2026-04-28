@@ -1,6 +1,7 @@
 import { ObjectId, type Db } from 'mongodb';
 import type { Redis } from 'ioredis';
 import { publishLaunch, publishCancel, publishDismiss, publishResync } from './publisher.js';
+import type { ProcessMetadataFilter } from './types.js';
 
 function col(db: Db, prefix: string) {
   return db.collection(`${prefix}_processes`);
@@ -210,7 +211,13 @@ export async function dismissProcess(db: Db, redis: Redis, database: string, pre
   return { status: 200, body: toResponse(proc) };
 }
 
-export async function resyncProcesses(redis: Redis, database: string, prefix: string, clean: boolean = false): Promise<{ message: string }> {
-  await publishResync(redis, database, prefix, clean);
+export async function resyncProcesses(
+  redis: Redis,
+  database: string,
+  prefix: string,
+  clean: boolean = false,
+  metadataFilter?: ProcessMetadataFilter,
+): Promise<{ message: string }> {
+  await publishResync(redis, database, prefix, clean, metadataFilter);
   return { message: clean ? 'Nuke and resync requested' : 'Resync requested' };
 }
