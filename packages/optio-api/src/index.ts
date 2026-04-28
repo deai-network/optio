@@ -25,3 +25,11 @@ export { createListPoller, createTreePoller, type StreamPollerOptions, type Tree
 // Multi-db discovery
 export { discoverInstances } from './discovery.js';
 export { resolveDb, type DbOptions, type SingleDbOptions, type MultiDbOptions } from './resolve-db.js';
+
+// Metadata filter helpers
+export {
+  parseMetadataFilterQuery,
+  metadataFilterToMongo,
+  detectLegacyMetadataParams,
+  type ParseResult,
+} from './metadata-filter-query.js';
