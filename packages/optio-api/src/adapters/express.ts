@@ -10,6 +10,7 @@ import type { Redis } from 'ioredis';
 import { ObjectId } from 'mongodb';
 import * as handlers from '../handlers.js';
 import { createListPoller, createTreePoller } from '../stream-poller.js';
+import { detectLegacyMetadataParams, parseMetadataFilterQuery } from '../metadata-filter-query.js';
 import { discoverInstances } from '../discovery.js';
 import { resolveDb, type DbOptions } from '../resolve-db.js';
 import type { AuthCallback } from '../auth.js';
@@ -41,6 +42,63 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions) {
       return;
     }
     next();
+  });
+
+  // Reject legacy metadata.* query params with an explicit migration message.
+  // Runs before ts-rest validation so users see the helpful error rather than
+  // a generic schema-validation 400.
+  app.get('/api/processes', (req: any, res: any, next: any) => {
+    const legacyKeys = detectLegacyMetadataParams(req.query ?? {});
+    if (legacyKeys.length > 0) {
+      res.status(400).json({
+        message: `Legacy 'metadata.*' query params are no longer supported. ` +
+          `Use ?metadataFilter=<URL-encoded JSON>. Offending keys: ${legacyKeys.join(', ')}`,
+      });
+      return;
+    }
+    next();
+  });
+
+  // SSE list stream — registered before createExpressEndpoints so that the
+  // static path /api/processes/stream takes precedence over the ts-rest
+  // GET /api/processes/:id parameterised route.
+  app.get('/api/processes/stream', async (req: any, res: any) => {
+    const legacyKeys = detectLegacyMetadataParams(req.query ?? {});
+    if (legacyKeys.length > 0) {
+      res.status(400).json({
+        message: `Legacy 'metadata.*' query params are no longer supported. ` +
+          `Use ?metadataFilter=<URL-encoded JSON>. Offending keys: ${legacyKeys.join(', ')}`,
+      });
+      return;
+    }
+    const parsed = parseMetadataFilterQuery(req.query?.metadataFilter);
+    if (!parsed.ok) {
+      res.status(400).json({ message: parsed.error });
+      return;
+    }
+
+    const query = req.query as { database?: string; prefix?: string };
+    const { db, prefix } = resolveDb(dbOpts, query);
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    });
+
+    const sendEvent = (data: unknown) => {
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    const poller = createListPoller({
+      db,
+      prefix,
+      sendEvent,
+      onError: () => res.end(),
+      metadataFilter: parsed.value,
+    });
+    poller.start();
+    req.on('close', () => poller.stop());
   });
 
   createExpressEndpoints(apiContract.processes, {
@@ -138,28 +196,4 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions) {
     req.on('close', () => poller.stop());
   });
 
-  // SSE list stream
-  app.get('/api/processes/stream', async (req: any, res: any) => {
-    const query = req.query as { database?: string; prefix?: string };
-    const { db, prefix } = resolveDb(dbOpts, query);
-
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-    });
-
-    const sendEvent = (data: unknown) => {
-      res.write(`data: ${JSON.stringify(data)}\n\n`);
-    };
-
-    const poller = createListPoller({
-      db,
-      prefix,
-      sendEvent,
-      onError: () => res.end(),
-    });
-    poller.start();
-    req.on('close', () => poller.stop());
-  });
 }
