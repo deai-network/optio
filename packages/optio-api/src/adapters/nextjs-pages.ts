@@ -15,6 +15,11 @@ import { resolveDb, type DbOptions } from '../resolve-db.js';
 import type { AuthCallback } from '../auth.js';
 import { checkAuth } from '../auth.js';
 import { isWriteMethod } from '../widget-proxy-core.js';
+import {
+  detectLegacyMetadataParams,
+  parseMetadataFilterQuery,
+  formatLegacyMetadataMessage,
+} from '../metadata-filter-query.js';
 
 export type OptioApiOptions = {
   redis: Redis;
@@ -94,6 +99,17 @@ export function createOptioHandler(opts: OptioApiOptions): (req: NextApiRequest,
 
     const url = req.url ?? '';
     const method = req.method ?? '';
+    // Strip query string for path comparisons — req.url includes it on Pages Router.
+    const path = url.split('?')[0];
+
+    // Reject legacy metadata.* query params on REST list with explicit migration message.
+    if (path === '/api/processes' && method === 'GET') {
+      const legacyKeys = detectLegacyMetadataParams(req.query as Record<string, unknown>);
+      if (legacyKeys.length > 0) {
+        res.status(400).json({ message: formatLegacyMetadataMessage(legacyKeys) });
+        return;
+      }
+    }
 
     // Discovery endpoint: /api/optio/instances
     if (url === '/api/optio/instances' && method === 'GET') {
@@ -144,8 +160,21 @@ export function createOptioHandler(opts: OptioApiOptions): (req: NextApiRequest,
       return;
     }
 
-    // Match list stream: /api/processes/stream (exact)
-    if (url.match(/^\/api\/processes\/stream$/) && method === 'GET') {
+    // Match list stream: /api/processes/stream (path only; req.url includes query string)
+    if (path === '/api/processes/stream' && method === 'GET') {
+      const legacyKeys = detectLegacyMetadataParams(req.query as Record<string, unknown>);
+      if (legacyKeys.length > 0) {
+        res.status(400).json({ message: formatLegacyMetadataMessage(legacyKeys) });
+        return;
+      }
+      const parsed = parseMetadataFilterQuery(
+        typeof req.query.metadataFilter === 'string' ? req.query.metadataFilter : undefined,
+      );
+      if (!parsed.ok) {
+        res.status(400).json({ message: parsed.error });
+        return;
+      }
+
       const { db, prefix } = resolveDb(dbOpts, {
         database: req.query.database as string | undefined,
         prefix: req.query.prefix as string | undefined,
@@ -166,6 +195,7 @@ export function createOptioHandler(opts: OptioApiOptions): (req: NextApiRequest,
         prefix,
         sendEvent,
         onError: () => res.end(),
+        metadataFilter: parsed.value,
       });
 
       poller.start();

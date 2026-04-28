@@ -215,3 +215,52 @@ describe('Next.js Pages Router adapter auth', () => {
     expect(res.status).toBe(200);
   });
 });
+
+describe('list metadataFilter (nextjs-pages)', () => {
+  it('REST list returns all when no filter', async () => {
+    await seedProcess({ metadata: { project: 'x' } });
+    await seedProcess({ metadata: { project: 'y' } });
+    const app = createApp();
+    const res = await request(app).get('/api/processes?limit=10');
+    expect(res.status).toBe(200);
+    expect(res.body.items.length).toBe(2);
+  });
+
+  it('REST list returns scoped result with valid metadataFilter', async () => {
+    await seedProcess({ metadata: { project: 'x' } });
+    await seedProcess({ metadata: { project: 'y' } });
+    const filter = encodeURIComponent(JSON.stringify({ project: 'x' }));
+    const app = createApp();
+    const res = await request(app).get(`/api/processes?limit=10&metadataFilter=${filter}`);
+    expect(res.status).toBe(200);
+    expect(res.body.items.length).toBe(1);
+    expect(res.body.items[0].metadata.project).toBe('x');
+  });
+
+  it('REST list returns 400 with explicit message for legacy metadata.* params', async () => {
+    const app = createApp();
+    const res = await request(app).get('/api/processes?limit=10&metadata.project=x');
+    expect(res.status).toBe(400);
+    expect(res.body.message).toContain("Legacy 'metadata.*'");
+    expect(res.body.message).toContain('metadata.project');
+  });
+
+  it('REST list returns 400 for malformed metadataFilter JSON', async () => {
+    const app = createApp();
+    const res = await request(app).get('/api/processes?limit=10&metadataFilter=not-json');
+    expect(res.status).toBe(400);
+  });
+
+  it('SSE list returns 400 for legacy metadata.* params', async () => {
+    const app = createApp();
+    const res = await request(app).get('/api/processes/stream?metadata.project=x');
+    expect(res.status).toBe(400);
+    expect(res.body.message).toContain("Legacy 'metadata.*'");
+  });
+
+  it('SSE list returns 400 for malformed metadataFilter', async () => {
+    const app = createApp();
+    const res = await request(app).get('/api/processes/stream?metadataFilter=not-json');
+    expect(res.status).toBe(400);
+  });
+});
