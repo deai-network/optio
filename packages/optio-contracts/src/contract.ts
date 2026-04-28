@@ -1,7 +1,7 @@
 import { initContract } from '@ts-rest/core';
 import { z } from 'zod';
 import { PaginationQuerySchema, PaginatedResponseSchema, ErrorSchema, ObjectIdSchema } from './schemas/common.js';
-import { ProcessSchema, ProcessStateSchema, LogEntrySchema, ProcessMetadataFilterSchema } from './schemas/process.js';
+import { ProcessSchema, ProcessStateSchema, LogEntrySchema, ProcessMetadataFilterSchema, MetadataFilterQueryParamSchema } from './schemas/process.js';
 
 const c = initContract();
 
@@ -23,7 +23,8 @@ export const processesContract = c.router({
       state: ProcessStateSchema.optional(),
       database: z.string().optional(),
       prefix: z.string().optional(),
-    }).passthrough(),
+      metadataFilter: MetadataFilterQueryParamSchema,
+    }),
     responses: {
       200: PaginatedResponseSchema(ProcessSchema),
     },
