@@ -338,7 +338,7 @@ function useProcessList(options?: {
 }
 ```
 
-Query key: `['processes', prefix]`. Fetches up to 50 items. When `metadataFilter` is provided it is forwarded as a `?metadataFilter=<URL-encoded JSON>` query param.
+Query key: `['processes', database, prefix, filterKey]` where `filterKey` is `JSON.stringify(metadataFilter)` or `''` when absent — so different filters get separate cache entries. Fetches up to 50 items. When `metadataFilter` is provided it is forwarded as a `?metadataFilter=<URL-encoded JSON>` query param.
 
 ---
 
@@ -432,9 +432,13 @@ function useProcessListStream(options?: {
 SSE endpoint: `{baseUrl}/api/processes/{prefix}/stream`.
 
 Uses a **module-level singleton** `EventSource` shared across all hook instances
-(via `useSyncExternalStore`). Reconnects after 3 seconds on error. Only one connection
-is maintained per `baseUrl|prefix` combination. Only one `metadataFilter` can be active
-at a time — the last value passed wins for the shared connection.
+(via `useSyncExternalStore`). Reconnects after 3 seconds on error. The singleton is
+keyed on `(baseUrl, database, prefix, metadataFilter)` — supplying a different
+`metadataFilter` from the same component closes the old EventSource and opens a
+new one with the new query. Two components mounted concurrently with different
+filters will fight: the most recent render wins, the other gets data for the wrong
+filter. Hoist filter state above all consumers, or use a single top-level filter
+selector.
 
 ## Types
 

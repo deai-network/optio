@@ -539,7 +539,7 @@ registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): void
 interface ListQuery {
   cursor?: string; limit: number; rootId?: string;
   state?: string;
-  metadataFilter?: ProcessMetadataFilter; // URL-encoded JSON; the contract parses it on the server
+  metadataFilter?: ProcessMetadataFilter; // exact-match map { key: value }; URL-encoded JSON form is for the wire
 }
 interface PaginationQuery { cursor?: string; limit: number; }
 interface TreeLogQuery extends PaginationQuery { maxDepth?: number; }

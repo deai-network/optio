@@ -130,7 +130,7 @@ with an explicit migration message.
 
 ## SSE Streams
 
-- `GET /api/processes/:prefix/stream` — live flat process list, polls every 1 s
+- `GET /api/processes/:prefix/stream` — live flat process list, polls every 1 s. Accepts the same optional `?metadataFilter=<URL-encoded JSON>` query param as the REST list endpoint; the legacy `?metadata.<key>=<value>` form returns 400.
 - `GET /api/processes/:prefix/:id/tree/stream` — live process tree with log deltas, polls every 1 s
 
 ## Exported Publishers
