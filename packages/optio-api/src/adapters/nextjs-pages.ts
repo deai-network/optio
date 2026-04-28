@@ -119,7 +119,7 @@ export function createOptioHandler(opts: OptioApiOptions): (req: NextApiRequest,
     }
 
     // Match tree stream: /api/processes/<id>/tree/stream
-    const treeStreamMatch = url.match(/^\/api\/processes\/([^/]+)\/tree\/stream$/);
+    const treeStreamMatch = path.match(/^\/api\/processes\/([^/]+)\/tree\/stream$/);
     if (treeStreamMatch && method === 'GET') {
       const id = treeStreamMatch[1];
       const { db, prefix } = resolveDb(dbOpts, {
