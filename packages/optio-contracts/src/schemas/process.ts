@@ -66,6 +66,19 @@ export const ProcessSchema = z.object({
 
 export const ProcessMetadataFilterSchema = z.record(z.unknown());
 
+export const MetadataFilterQueryParamSchema = z
+  .string()
+  .transform((s, ctx) => {
+    try {
+      return JSON.parse(s);
+    } catch {
+      ctx.addIssue({ code: 'custom', message: 'metadataFilter must be valid JSON' });
+      return z.NEVER;
+    }
+  })
+  .pipe(ProcessMetadataFilterSchema)
+  .optional();
+
 export type Process = z.infer<typeof ProcessSchema>;
 export type ProcessState = z.infer<typeof ProcessStateSchema>;
 export type LogEntry = z.infer<typeof LogEntrySchema>;

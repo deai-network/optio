@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { ProcessSchema } from '../schemas/process.js';
+import { MetadataFilterQueryParamSchema } from '../schemas/process.js';
 
 function baseProcess() {
   return {
@@ -51,5 +52,40 @@ describe('ProcessSchema widget fields', () => {
       widgetUpstream: { url: 'http://x' },
     } as any);
     expect((parsed as any).widgetUpstream).toBeUndefined();
+  });
+});
+
+describe('MetadataFilterQueryParamSchema', () => {
+  it('parses a valid URL-decoded JSON object', () => {
+    const parsed = MetadataFilterQueryParamSchema.parse('{"targetId":"abc"}');
+    expect(parsed).toEqual({ targetId: 'abc' });
+  });
+
+  it('parses a multi-key object', () => {
+    const parsed = MetadataFilterQueryParamSchema.parse('{"a":"x","b":"y"}');
+    expect(parsed).toEqual({ a: 'x', b: 'y' });
+  });
+
+  it('returns undefined for undefined input', () => {
+    const parsed = MetadataFilterQueryParamSchema.parse(undefined);
+    expect(parsed).toBeUndefined();
+  });
+
+  it('rejects malformed JSON', () => {
+    const result = MetadataFilterQueryParamSchema.safeParse('not json');
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0].message).toContain('valid JSON');
+    }
+  });
+
+  it('rejects a JSON value that is not an object', () => {
+    const result = MetadataFilterQueryParamSchema.safeParse('"foo"');
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a JSON array', () => {
+    const result = MetadataFilterQueryParamSchema.safeParse('[1,2,3]');
+    expect(result.success).toBe(false);
   });
 });
