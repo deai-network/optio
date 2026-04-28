@@ -76,7 +76,7 @@ export function createListPoller(opts: StreamPollerOptions): ListPollerHandle {
   return { start, stop };
 }
 
-export interface TreePollerOptions extends StreamPollerOptions {
+export interface TreePollerOptions extends Omit<StreamPollerOptions, 'metadataFilter'> {
   rootId: string;
   baseDepth: number;
   maxDepth?: number;
