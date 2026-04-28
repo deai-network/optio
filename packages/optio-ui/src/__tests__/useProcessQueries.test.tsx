@@ -72,5 +72,8 @@ describe('useProcessList metadataFilter', () => {
 
     rerender({ f: { project: 'y' } });
     await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(initialCallCount));
+    const lastRaw = String((fetchMock.mock.calls.at(-1) as [string | URL, ...unknown[]])[0]);
+    const lastUrl = new URL(lastRaw, 'http://localhost');
+    expect(lastUrl.searchParams.get('metadataFilter')).toBe('{"project":"y"}');
   });
 });
