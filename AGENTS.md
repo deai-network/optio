@@ -463,7 +463,7 @@ type LogEntry = z.infer<typeof LogEntrySchema>;
 
 | Name | Method | Path | Path Params | Query | Body | Responses |
 |------|--------|------|-------------|-------|------|-----------|
-| `list` | GET | `/processes/:prefix` | `prefix` | `cursor?, limit, rootId?, state?, metadata.*` | — | `200: PaginatedResponse<Process>` |
+| `list` | GET | `/processes/:prefix` | `prefix` | `cursor?, limit, rootId?, state?, metadataFilter?` | — | `200: PaginatedResponse<Process>` |
 | `get` | GET | `/processes/:prefix/:id` | `prefix, id` | — | — | `200: Process`, `404: Error` |
 | `getTree` | GET | `/processes/:prefix/:id/tree` | `prefix, id` | `maxDepth?: number` | — | `200: ProcessTreeNode`, `404: Error` |
 | `getLog` | GET | `/processes/:prefix/:id/log` | `prefix, id` | `cursor?, limit` | — | `200: PaginatedResponse<LogEntry>`, `404: Error` |
@@ -538,7 +538,8 @@ registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): void
 ```typescript
 interface ListQuery {
   cursor?: string; limit: number; rootId?: string;
-  state?: string; // Plus any metadata.* query params for metadata filtering
+  state?: string;
+  metadataFilter?: ProcessMetadataFilter; // URL-encoded JSON; the contract parses it on the server
 }
 interface PaginationQuery { cursor?: string; limit: number; }
 interface TreeLogQuery extends PaginationQuery { maxDepth?: number; }
@@ -826,7 +827,10 @@ Note: `processId` arguments are MongoDB `_id` strings (ObjectId hex), not `proce
 **`useProcessList(options?)`**
 
 ```typescript
-useProcessList(options?: { refetchInterval?: number | false }): {
+useProcessList(options?: {
+  refetchInterval?: number | false;
+  metadataFilter?: ProcessMetadataFilter;
+}): {
   processes: Process[];
   totalCount: number;
   isLoading: boolean;
@@ -876,15 +880,17 @@ useProcessStream(processId: string | undefined, maxDepth?: number): {
 // maxDepth default: 10
 ```
 
-**`useProcessListStream()`**
+**`useProcessListStream(options?)`**
 
 ```typescript
-useProcessListStream(): {
+useProcessListStream(options?: {
+  metadataFilter?: ProcessMetadataFilter;
+}): {
   processes: any[];
   connected: boolean;
 }
 // SSE connection to /api/processes/:prefix/stream (module-level singleton — one connection per prefix/baseUrl pair)
-// Reconnects automatically after 3s on error.
+// Reconnects automatically after 3s on error. Only one filter active at a time.
 ```
 
 ---

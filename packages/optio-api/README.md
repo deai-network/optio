@@ -114,6 +114,20 @@ All adapters mount the same endpoints under `/api/processes/:prefix/...`:
 | POST | `/api/processes/:prefix/:id/dismiss` | Dismiss a process |
 | POST | `/api/processes/:prefix/resync` | Re-sync task definitions |
 
+### List Query Parameters
+
+The list endpoint (`GET /api/processes/:prefix`) accepts an optional `metadataFilter` query
+parameter for metadata-based filtering. Pass it as a URL-encoded JSON string, e.g.
+`?metadataFilter=%7B%22project%22%3A%22x%22%7D`.
+
+## Breaking Changes
+
+### Metadata filter query parameter
+
+The legacy `?metadata.<key>=<value>` query param style has been replaced by
+`?metadataFilter=<URL-encoded JSON>`. Requests using the legacy form return 400
+with an explicit migration message.
+
 ## SSE Streams
 
 - `GET /api/processes/:prefix/stream` — live flat process list, polls every 1 s

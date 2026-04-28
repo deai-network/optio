@@ -330,6 +330,7 @@ All mutations invalidate the `['processes']` query key on success.
 ```ts
 function useProcessList(options?: {
   refetchInterval?: number | false;  // default 5000ms
+  metadataFilter?: ProcessMetadataFilter;
 }): {
   processes: any[];
   totalCount: number;
@@ -337,7 +338,7 @@ function useProcessList(options?: {
 }
 ```
 
-Query key: `['processes', prefix]`. Fetches up to 50 items.
+Query key: `['processes', prefix]`. Fetches up to 50 items. When `metadataFilter` is provided it is forwarded as a `?metadataFilter=<URL-encoded JSON>` query param.
 
 ---
 
@@ -420,7 +421,9 @@ from the flat `processes` array using `parentId` linkage; root is the node with 
 ### useProcessListStream
 
 ```ts
-function useProcessListStream(): {
+function useProcessListStream(options?: {
+  metadataFilter?: ProcessMetadataFilter;
+}): {
   processes: any[];
   connected: boolean;
 }
@@ -430,7 +433,8 @@ SSE endpoint: `{baseUrl}/api/processes/{prefix}/stream`.
 
 Uses a **module-level singleton** `EventSource` shared across all hook instances
 (via `useSyncExternalStore`). Reconnects after 3 seconds on error. Only one connection
-is maintained per `baseUrl|prefix` combination.
+is maintained per `baseUrl|prefix` combination. Only one `metadataFilter` can be active
+at a time — the last value passed wins for the shared connection.
 
 ## Types
 

@@ -77,13 +77,13 @@ need a custom namespace to avoid collection name collisions in a shared database
 
 | Hook | Description |
 |------|-------------|
-| `useProcessList` | Polls the process list endpoint; returns `{ processes, totalCount, isLoading }` |
+| `useProcessList` | Polls the process list endpoint with optional metadata filtering; returns `{ processes, totalCount, isLoading }` |
 | `useProcess` | Polls a single process by ID; returns `{ process, isLoading }` |
 | `useProcessTree` | Polls the tree endpoint for a process; returns the tree body or `null` |
 | `useProcessTreeLog` | Polls the tree log endpoint for a process; returns an array of log entries |
 | `useProcessActions` | Returns imperative action functions: `launch`, `cancel`, `dismiss`, `resync`, `resyncClean` |
 | `useProcessStream` | Opens an SSE connection to a single process tree stream; returns live `{ processes, tree, rootProcess, logs, connected }` |
-| `useProcessListStream` | Opens a module-level singleton SSE connection to the process list stream; returns `{ processes, connected }` |
+| `useProcessListStream` | Opens a module-level singleton SSE connection with optional metadata filtering; returns `{ processes, connected }`. Only one filter active at a time. |
 
 ## i18n
 

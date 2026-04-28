@@ -176,12 +176,13 @@ State guards enforced by command handlers:
 
 ```typescript
 interface ListQuery {
-  cursor?: string;    // ObjectId string; cursor-based pagination
+  cursor?: string;              // ObjectId string; cursor-based pagination
   limit: number;
-  rootId?: string;    // filter by root process ObjectId
-  type?: string;      // filter by process type
-  state?: string;     // filter by status.state
-  targetId?: string;  // filter by metadata.targetId
+  rootId?: string;              // filter by root process ObjectId
+  type?: string;                // filter by process type
+  state?: string;               // filter by status.state
+  targetId?: string;            // filter by metadata.targetId
+  metadataFilter?: ProcessMetadataFilter;  // exact-match metadata filter; parsed from URL-encoded JSON
 }
 
 interface PaginationQuery {
