@@ -90,7 +90,7 @@ optio_core.on_command(command_type: str, handler: Callable[..., Awaitable]) -> N
 | `prefix` | `str` | required | Namespace for collections (`{prefix}_processes`) and Redis streams (`{prefix}:commands`) |
 | `redis_url` | `str \| None` | `None` | If None: command bus disabled; use direct method calls |
 | `services` | `dict[str, Any] \| None` | `{}` | Passed as `ctx.services` to all task execute functions |
-| `get_task_definitions` | `Callable[..., Awaitable[list[TaskInstance]]] \| None` | `None` | Async function returning task list; called on init and resync |
+| `get_task_definitions` | `Callable[..., Awaitable[list[TaskInstance]]] \| None` | `None` | Async function `(services, metadata_filter) -> list[TaskInstance]`; called on init and resync. `metadata_filter` is `None` for a full sync. |
 
 ---
 
@@ -471,7 +471,7 @@ type LogEntry = z.infer<typeof LogEntrySchema>;
 | `launch` | POST | `/processes/:prefix/:id/launch` | `prefix, id` | — | `{ resume?: boolean }` (optional; body may be omitted entirely) | `200: Process`, `404: Error`, `409: Error` |
 | `cancel` | POST | `/processes/:prefix/:id/cancel` | `prefix, id` | — | (none) | `200: Process`, `404: Error`, `409: Error` |
 | `dismiss` | POST | `/processes/:prefix/:id/dismiss` | `prefix, id` | — | (none) | `200: Process`, `404: Error`, `409: Error` |
-| `resync` | POST | `/processes/:prefix/resync` | `prefix` | — | `{ clean?: boolean }` | `200: { message: string }` |
+| `resync` | POST | `/processes/:prefix/resync` | `prefix` | — | `{ clean?: boolean; metadataFilter?: ProcessMetadataFilter }` (omit or send `{}` for full sync) | `200: { message: string }` |
 
 Note: The Fastify adapter mounts the entire contract under `/api`, so effective paths are `/api/processes/:prefix/...`.
 
@@ -557,7 +557,7 @@ async function launchProcess(db: Db, redis: Redis, database: string, prefix: str
 // Returns 409 "This task does not support resume" when resume=true and supportsResume=false.
 async function cancelProcess(db: Db, redis: Redis, prefix: string, id: string): Promise<CommandResult>
 async function dismissProcess(db: Db, redis: Redis, prefix: string, id: string): Promise<CommandResult>
-async function resyncProcesses(redis: Redis, prefix: string, clean?: boolean): Promise<{ message: string }>
+async function resyncProcesses(redis: Redis, prefix: string, clean?: boolean, metadataFilter?: ProcessMetadataFilter): Promise<{ message: string }>
 ```
 
 ### Publishers
@@ -567,7 +567,7 @@ Write commands to Redis stream `{prefix}:commands`. Used by domain code that nee
 ```typescript
 async function publishLaunch(redis: Redis, database: string, prefix: string, processId: string, resume?: boolean): Promise<void>
 // resume=true is included in the Redis launch payload.
-async function publishResync(redis: Redis, prefix: string, clean?: boolean): Promise<void>
+async function publishResync(redis: Redis, prefix: string, clean?: boolean, metadataFilter?: ProcessMetadataFilter): Promise<void>
 ```
 
 Note: `publishCancel` and `publishDismiss` exist in the source but are not re-exported from the package entry point. Use the REST API or handler functions for cancel/dismiss.

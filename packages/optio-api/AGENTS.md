@@ -159,6 +159,7 @@ async function resyncProcesses(
   redis: Redis,
   prefix: string,
   clean?: boolean,  // default: false
+  metadataFilter?: ProcessMetadataFilter,  // omit or pass {} for full sync
 ): Promise<{ message: string }>
 ```
 
@@ -205,7 +206,7 @@ Imported from `optio-api` (main entry point). Write to the `{prefix}:commands` R
 ```typescript
 async function publishLaunch(redis: Redis, database: string, prefix: string, processId: string, resume?: boolean): Promise<void>
 // resume=true is included in the Redis launch payload; the consumer forwards it to the executor.
-async function publishResync(redis: Redis, prefix: string, clean?: boolean): Promise<void>
+async function publishResync(redis: Redis, prefix: string, clean?: boolean, metadataFilter?: ProcessMetadataFilter): Promise<void>
 ```
 
 Internal-only (not exported from index, only used by handlers):

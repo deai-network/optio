@@ -126,7 +126,7 @@ Use these in domain code to send commands to the Optio worker via Redis streams.
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `publishLaunch` | `(redis: Redis, prefix: string, processId: string) => Promise<void>` | Request launch of a process |
-| `publishResync` | `(redis: Redis, prefix: string, clean?: boolean) => Promise<void>` | Request a resync; pass `clean: true` for a nuke-and-resync |
+| `publishResync` | `(redis: Redis, prefix: string, clean?: boolean, metadataFilter?: ProcessMetadataFilter) => Promise<void>` | Request a resync; pass `clean: true` for a nuke-and-resync; pass `metadataFilter` to restrict regeneration to matching tasks only |
 
 `prefix` defaults to `"optio"` when not specified in `OptioApiOptions`.
 

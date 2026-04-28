@@ -32,7 +32,7 @@ Makefile               # install / run / run-dashboard targets
 Each module exports a synchronous `get_tasks() -> list[TaskInstance]` function. The aggregator in `tasks/__init__.py` calls all of them and combines the results:
 
 ```python
-async def get_task_definitions(services: dict) -> list[TaskInstance]:
+async def get_task_definitions(services: dict, metadata_filter: dict | None = None) -> list[TaskInstance]:
     return [
         *terraforming_tasks(),
         *home_tasks(),

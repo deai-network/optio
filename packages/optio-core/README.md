@@ -84,7 +84,7 @@ Initialize Optio. Must be called before any other function.
 | `prefix` | `str` | `"optio"` | Namespace for collections (`{prefix}_processes`) and Redis streams (`{database}/{prefix}:commands`). Override if you need to avoid name collisions in a shared database. Redis streams are automatically scoped by both database name and prefix, so instances using different databases won't collide even on a shared Redis server. |
 | `redis_url` | `str \| None` | `None` | If `None`, Redis features are disabled; use direct method calls only |
 | `services` | `dict[str, Any] \| None` | `{}` | Passed as `ctx.services` to all task execute functions |
-| `get_task_definitions` | `Callable[..., Awaitable[list[TaskInstance]]] \| None` | `None` | Async function `(services) -> list[TaskInstance]`; called on init and resync. **This is the most important part — this is where you declare the tasks that Optio will manage.** See the [TaskInstance definition](#taskinstance) under Data Types. |
+| `get_task_definitions` | `Callable[..., Awaitable[list[TaskInstance]]] \| None` | `None` | Async function `(services, metadata_filter) -> list[TaskInstance]`; called on init and resync. `metadata_filter` is `None` for a full sync, or a dict of metadata key/value pairs to restrict which task definitions are regenerated. **This is the most important part — this is where you declare the tasks that Optio will manage.** See the [TaskInstance definition](#taskinstance) under Data Types. |
 
 ### `run()`
 
