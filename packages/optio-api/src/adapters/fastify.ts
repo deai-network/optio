@@ -428,14 +428,10 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions) {
   // Pre-check for legacy metadata.* query params on GET /api/processes (list endpoint).
   // Must run after onRequest (auth) but before ts-rest route handlers.
   app.addHook('preHandler', async (request: any, reply: any) => {
-    if (
-      request.method === 'GET' &&
-      (request.routerPath === '/api/processes' || request.url.split('?')[0] === '/api/processes')
-    ) {
+    if (request.method === 'GET' && request.url.split('?')[0] === '/api/processes') {
       const legacyKeys = detectLegacyMetadataParams(request.query ?? {});
       if (legacyKeys.length > 0) {
         reply.code(400).send({ message: formatLegacyMetadataMessage(legacyKeys) });
-        return reply;
       }
     }
   });
