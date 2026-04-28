@@ -264,3 +264,56 @@ describe('Next.js App Router adapter auth', () => {
     expect(res.status).toBe(200);
   });
 });
+
+describe('list metadataFilter (nextjs-app)', () => {
+  it('REST list returns all when no filter', async () => {
+    await seedProcess({ metadata: { project: 'x' } });
+    await seedProcess({ metadata: { project: 'y' } });
+    const { GET } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
+    const res = await GET(makeNextRequest('http://localhost/api/processes?limit=10'));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.items.length).toBe(2);
+  });
+
+  it('REST list returns scoped result with valid metadataFilter', async () => {
+    await seedProcess({ metadata: { project: 'x' } });
+    await seedProcess({ metadata: { project: 'y' } });
+    const { GET } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
+    const filter = encodeURIComponent(JSON.stringify({ project: 'x' }));
+    const res = await GET(makeNextRequest(`http://localhost/api/processes?limit=10&metadataFilter=${filter}`));
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.items.length).toBe(1);
+    expect(body.items[0].metadata.project).toBe('x');
+  });
+
+  it('REST list returns 400 with explicit message for legacy metadata.* params', async () => {
+    const { GET } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
+    const res = await GET(makeNextRequest('http://localhost/api/processes?limit=10&metadata.project=x'));
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.message).toContain("Legacy 'metadata.*'");
+    expect(body.message).toContain('metadata.project');
+  });
+
+  it('REST list returns 400 for malformed metadataFilter JSON', async () => {
+    const { GET } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
+    const res = await GET(makeNextRequest('http://localhost/api/processes?limit=10&metadataFilter=not-json'));
+    expect(res.status).toBe(400);
+  });
+
+  it('SSE list returns 400 for legacy metadata.* params', async () => {
+    const { GET } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
+    const res = await GET(makeNextRequest('http://localhost/api/processes/stream?metadata.project=x'));
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.message).toContain("Legacy 'metadata.*'");
+  });
+
+  it('SSE list returns 400 for malformed metadataFilter', async () => {
+    const { GET } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
+    const res = await GET(makeNextRequest('http://localhost/api/processes/stream?metadataFilter=not-json'));
+    expect(res.status).toBe(400);
+  });
+});

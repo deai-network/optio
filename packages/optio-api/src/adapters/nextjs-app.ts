@@ -14,6 +14,11 @@ import { resolveDb, type DbOptions } from '../resolve-db.js';
 import type { AuthCallback } from '../auth.js';
 import { checkAuth } from '../auth.js';
 import { isWriteMethod } from '../widget-proxy-core.js';
+import {
+  detectLegacyMetadataParams,
+  parseMetadataFilterQuery,
+  formatLegacyMetadataMessage,
+} from '../metadata-filter-query.js';
 
 export type OptioApiOptions = {
   redis: Redis;
@@ -166,8 +171,36 @@ export function createOptioRouteHandlers(opts: OptioApiOptions) {
       });
     }
 
+    // Reject legacy metadata.* query params on REST list with explicit migration message.
+    if (pathname === '/api/processes') {
+      const queryObj = Object.fromEntries(url.searchParams.entries());
+      const legacyKeys = detectLegacyMetadataParams(queryObj);
+      if (legacyKeys.length > 0) {
+        return new Response(
+          JSON.stringify({ message: formatLegacyMetadataMessage(legacyKeys) }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+    }
+
     // List stream: /api/processes/stream
     if (pathname === '/api/processes/stream') {
+      const queryObj = Object.fromEntries(url.searchParams.entries());
+      const legacyKeys = detectLegacyMetadataParams(queryObj);
+      if (legacyKeys.length > 0) {
+        return new Response(
+          JSON.stringify({ message: formatLegacyMetadataMessage(legacyKeys) }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+      const parsed = parseMetadataFilterQuery(queryObj.metadataFilter);
+      if (!parsed.ok) {
+        return new Response(
+          JSON.stringify({ message: parsed.error }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } },
+        );
+      }
+
       const database = url.searchParams.get('database') ?? undefined;
       const prefix = url.searchParams.get('prefix') ?? undefined;
       const { db, prefix: resolvedPrefix } = resolveDb(dbOpts, { database, prefix });
@@ -183,6 +216,7 @@ export function createOptioRouteHandlers(opts: OptioApiOptions) {
             prefix: resolvedPrefix,
             sendEvent,
             onError: () => controller.close(),
+            metadataFilter: parsed.value,
           });
 
           poller.start();
