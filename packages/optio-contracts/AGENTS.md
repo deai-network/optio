@@ -168,7 +168,7 @@ processes to a named domain (e.g., a specific application or worker).
 | `launch` | POST | `/processes/:prefix/:id/launch` | `prefix: string`, `id: ObjectId` | — | 200: `Process`, 404: `Error`, 409: `Error` (body: `{ resume?: boolean }` — optional; omitting the body entirely is valid) |
 | `cancel` | POST | `/processes/:prefix/:id/cancel` | `prefix: string`, `id: ObjectId` | — | 200: `Process`, 404: `Error`, 409: `Error` |
 | `dismiss` | POST | `/processes/:prefix/:id/dismiss` | `prefix: string`, `id: ObjectId` | — | 200: `Process`, 404: `Error`, 409: `Error` |
-| `resync` | POST | `/processes/:prefix/resync` | `prefix: string` | — | 200: `{ message: string }` |
+| `resync` | POST | `/processes/:prefix/resync` | `prefix: string` | — | 200: `{ message: string }` (body: `{ clean?: boolean; metadataFilter?: ProcessMetadataFilter }` — both optional) |
 
 **Notes on specific endpoints:**
 
@@ -177,4 +177,4 @@ processes to a named domain (e.g., a specific application or worker).
 - `getTreeLog` — returns merged log entries across the process subtree, each augmented with `processId` (ObjectId) and `processLabel` (string) to identify the source process.
 - `launch` — optional body `{ resume?: boolean }`. Clients may omit the body entirely; setting `resume: true` requests a resume. 409 indicates a state conflict (e.g., launching an already-running process) **or** `resume: true` against a task whose `supportsResume` is `false`.
 - `cancel` / `dismiss` — no request body. 409 indicates a state conflict.
-- `resync` — body: `{ clean?: boolean }`. Triggers re-sync of process definitions from the server-side registry.
+- `resync` — body: `{ clean?: boolean; metadataFilter?: ProcessMetadataFilter }`. Triggers re-sync of process definitions from the server-side registry. `metadataFilter` (when present) scopes the re-sync to tasks whose stored metadata matches.
