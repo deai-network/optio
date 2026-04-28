@@ -1,12 +1,26 @@
+import type { ProcessMetadataFilter } from 'optio-contracts';
 import { useOptioPrefix, useOptioClient, useOptioDatabase } from '../context/useOptioContext.js';
 
-export function useProcessList(options?: { refetchInterval?: number | false }) {
+export function useProcessList(options?: {
+  refetchInterval?: number | false;
+  metadataFilter?: ProcessMetadataFilter;
+}) {
   const prefix = useOptioPrefix();
   const database = useOptioDatabase();
   const api = useOptioClient();
+
+  const filterKey = options?.metadataFilter
+    ? JSON.stringify(options.metadataFilter)
+    : '';
+
   const { data, isLoading } = api.processes.list.useQuery({
-    queryKey: ['processes', database, prefix],
-    queryData: { query: { database, prefix, limit: 50 } },
+    queryKey: ['processes', database, prefix, filterKey],
+    queryData: {
+      query: {
+        database, prefix, limit: 50,
+        ...(filterKey ? { metadataFilter: filterKey } : {}),
+      },
+    },
     refetchInterval: options?.refetchInterval ?? 5000,
   });
   return {
