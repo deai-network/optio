@@ -10,7 +10,7 @@ import type { Redis } from 'ioredis';
 import { ObjectId } from 'mongodb';
 import * as handlers from '../handlers.js';
 import { createListPoller, createTreePoller } from '../stream-poller.js';
-import { detectLegacyMetadataParams, parseMetadataFilterQuery } from '../metadata-filter-query.js';
+import { detectLegacyMetadataParams, parseMetadataFilterQuery, formatLegacyMetadataMessage } from '../metadata-filter-query.js';
 import { discoverInstances } from '../discovery.js';
 import { resolveDb, type DbOptions } from '../resolve-db.js';
 import type { AuthCallback } from '../auth.js';
@@ -50,10 +50,7 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions) {
   app.get('/api/processes', (req: any, res: any, next: any) => {
     const legacyKeys = detectLegacyMetadataParams(req.query ?? {});
     if (legacyKeys.length > 0) {
-      res.status(400).json({
-        message: `Legacy 'metadata.*' query params are no longer supported. ` +
-          `Use ?metadataFilter=<URL-encoded JSON>. Offending keys: ${legacyKeys.join(', ')}`,
-      });
+      res.status(400).json({ message: formatLegacyMetadataMessage(legacyKeys) });
       return;
     }
     next();
@@ -65,10 +62,7 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions) {
   app.get('/api/processes/stream', async (req: any, res: any) => {
     const legacyKeys = detectLegacyMetadataParams(req.query ?? {});
     if (legacyKeys.length > 0) {
-      res.status(400).json({
-        message: `Legacy 'metadata.*' query params are no longer supported. ` +
-          `Use ?metadataFilter=<URL-encoded JSON>. Offending keys: ${legacyKeys.join(', ')}`,
-      });
+      res.status(400).json({ message: formatLegacyMetadataMessage(legacyKeys) });
       return;
     }
     const parsed = parseMetadataFilterQuery(req.query?.metadataFilter);

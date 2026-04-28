@@ -3,6 +3,7 @@ import {
   parseMetadataFilterQuery,
   metadataFilterToMongo,
   detectLegacyMetadataParams,
+  formatLegacyMetadataMessage,
 } from '../metadata-filter-query.js';
 
 describe('parseMetadataFilterQuery', () => {
@@ -79,5 +80,20 @@ describe('detectLegacyMetadataParams', () => {
       rootId: 'r',
       'metadata.alpha': 'a',
     })).toEqual(['metadata.alpha', 'metadata.zeta']);
+  });
+});
+
+describe('formatLegacyMetadataMessage', () => {
+  it('formats message with single key', () => {
+    expect(formatLegacyMetadataMessage(['metadata.foo'])).toBe(
+      "Legacy 'metadata.*' query params are no longer supported. " +
+      "Use ?metadataFilter=<URL-encoded JSON>. Offending keys: metadata.foo",
+    );
+  });
+
+  it('formats message with multiple keys joined by comma', () => {
+    expect(formatLegacyMetadataMessage(['metadata.a', 'metadata.b'])).toContain(
+      'Offending keys: metadata.a, metadata.b',
+    );
   });
 });

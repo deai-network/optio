@@ -31,5 +31,6 @@ export {
   parseMetadataFilterQuery,
   metadataFilterToMongo,
   detectLegacyMetadataParams,
+  formatLegacyMetadataMessage,
   type ParseResult,
 } from './metadata-filter-query.js';

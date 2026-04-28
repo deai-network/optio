@@ -37,3 +37,8 @@ export function detectLegacyMetadataParams(rawQuery: Record<string, unknown>): s
     .filter(k => k.startsWith('metadata.'))
     .sort();
 }
+
+export function formatLegacyMetadataMessage(legacyKeys: string[]): string {
+  return `Legacy 'metadata.*' query params are no longer supported. ` +
+    `Use ?metadataFilter=<URL-encoded JSON>. Offending keys: ${legacyKeys.join(', ')}`;
+}
