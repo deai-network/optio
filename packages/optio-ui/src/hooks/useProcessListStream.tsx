@@ -65,6 +65,13 @@ function getSnapshot(): ProcessListStreamState {
   return _state;
 }
 
+/**
+ * Single-stream hook: only one EventSource is active per app instance. If two
+ * components mount concurrently with different `metadataFilter` values they
+ * will fight — the most recent render wins and the other gets data for the
+ * wrong filter. Use with a single top-level filter selector, or hoist filter
+ * state above all consumers.
+ */
 export function useProcessListStream(
   options?: { metadataFilter?: ProcessMetadataFilter },
 ): ProcessListStreamState {

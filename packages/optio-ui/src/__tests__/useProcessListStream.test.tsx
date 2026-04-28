@@ -108,4 +108,31 @@ describe('useProcessListStream metadataFilter', () => {
     const url = new URL(second.url, 'http://localhost');
     expect(url.searchParams.get('metadataFilter')).toBe('{"project":"y"}');
   });
+
+  it('does not reconnect when filter is unchanged across re-renders', async () => {
+    const { useProcessListStream } = await import('../hooks/useProcessListStream.js');
+    const { OptioProvider } = await import('../context/OptioProvider.js');
+    const { QueryClient: QC, QueryClientProvider: QCP } =
+      await import('@tanstack/react-query');
+    function wrapper({ children }: { children: ReactNode }) {
+      const client = new QC({ defaultOptions: { queries: { retry: false } } });
+      return (
+        <QCP client={client}>
+          <OptioProvider prefix="test" database="test-db" baseUrl="http://localhost:0">
+            {children}
+          </OptioProvider>
+        </QCP>
+      );
+    }
+    const { rerender } = renderHook(
+      ({ f }: { f?: Record<string, string> }) => useProcessListStream({ metadataFilter: f }),
+      { wrapper, initialProps: { f: { project: 'x' } } },
+    );
+    expect(MockEventSource.instances.length).toBe(1);
+
+    rerender({ f: { project: 'x' } });
+
+    expect(MockEventSource.instances.length).toBe(1);
+    expect(MockEventSource.last!.closed).toBe(false);
+  });
 });
