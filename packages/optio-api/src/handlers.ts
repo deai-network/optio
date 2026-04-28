@@ -2,6 +2,7 @@ import { ObjectId, type Db } from 'mongodb';
 import type { Redis } from 'ioredis';
 import { publishLaunch, publishCancel, publishDismiss, publishResync } from './publisher.js';
 import type { ProcessMetadataFilter } from './types.js';
+import { metadataFilterToMongo } from './metadata-filter-query.js';
 
 function col(db: Db, prefix: string) {
   return db.collection(`${prefix}_processes`);
@@ -29,23 +30,18 @@ export interface ListQuery {
   limit: number;
   rootId?: string;
   state?: string;
-  [key: string]: unknown;
+  metadataFilter?: ProcessMetadataFilter;
 }
 
 export async function listProcesses(db: Db, prefix: string, query: ListQuery) {
-  const { cursor, limit, rootId, state, ...rest } = query;
-  const filter: Record<string, unknown> = {};
+  const { cursor, limit, rootId, state, metadataFilter } = query;
+  const filter: Record<string, unknown> = {
+    ...metadataFilterToMongo(metadataFilter),
+  };
 
   if (rootId) filter.rootId = new ObjectId(rootId);
   if (state) filter['status.state'] = state;
   if (cursor) filter._id = { $gt: new ObjectId(cursor) };
-
-  // Extract metadata.* query params
-  for (const [key, value] of Object.entries(rest)) {
-    if (key.startsWith('metadata.') && typeof value === 'string') {
-      filter[key] = value;
-    }
-  }
 
   const [items, totalCount] = await Promise.all([
     col(db, prefix).find(filter).sort({ _id: 1 }).limit(limit + 1).toArray(),

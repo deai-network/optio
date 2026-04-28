@@ -134,3 +134,64 @@ describe('launchProcess — resume validation', () => {
     expect(payload.resume ?? false).toBe(false);
   });
 });
+
+describe('listProcesses metadataFilter', () => {
+  beforeEach(async () => {
+    await db.collection(`${PREFIX}_processes`).deleteMany({});
+  });
+
+  async function insert(metadata: Record<string, unknown>) {
+    const oid = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertOne({
+      _id: oid,
+      processId: 'p',
+      name: 'P',
+      rootId: oid,
+      parentId: null,
+      depth: 0,
+      order: 0,
+      status: { state: 'idle' },
+      progress: { percent: null },
+      cancellable: true,
+      log: [],
+      metadata,
+    });
+    return oid.toString();
+  }
+
+  it('returns all processes when no filter', async () => {
+    await insert({ project: 'x' });
+    await insert({ project: 'y' });
+    const r = await listProcesses(db, PREFIX, { limit: 50 });
+    expect(r.items.length).toBe(2);
+    expect(r.totalCount).toBe(2);
+  });
+
+  it('filters processes by metadata key', async () => {
+    await insert({ project: 'x' });
+    await insert({ project: 'y' });
+    const r = await listProcesses(db, PREFIX, { limit: 50, metadataFilter: { project: 'x' } });
+    expect(r.items.length).toBe(1);
+    expect((r.items[0] as any).metadata.project).toBe('x');
+    expect(r.totalCount).toBe(1);
+  });
+
+  it('AND-matches multiple keys', async () => {
+    await insert({ project: 'x', kind: 'a' });
+    await insert({ project: 'x', kind: 'b' });
+    await insert({ project: 'y', kind: 'a' });
+    const r = await listProcesses(db, PREFIX, {
+      limit: 50,
+      metadataFilter: { project: 'x', kind: 'a' },
+    });
+    expect(r.items.length).toBe(1);
+    expect((r.items[0] as any).metadata).toEqual({ project: 'x', kind: 'a' });
+  });
+
+  it('returns empty when filter matches nothing', async () => {
+    await insert({ project: 'x' });
+    const r = await listProcesses(db, PREFIX, { limit: 50, metadataFilter: { project: 'nope' } });
+    expect(r.items.length).toBe(0);
+    expect(r.totalCount).toBe(0);
+  });
+});
