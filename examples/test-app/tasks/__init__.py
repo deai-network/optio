@@ -1,6 +1,6 @@
 """Task definitions for the optio test application."""
 
-from optio_core.models import TaskInstance
+from optio_core.models import TaskInstance, ProcessMetadataFilter
 
 from tasks.basic import get_tasks as basic_tasks
 from tasks.progress import get_tasks as progress_tasks
@@ -11,7 +11,10 @@ from tasks.adhoc_ephemeral import get_tasks as adhoc_ephemeral_tasks
 from tasks.scheduled import get_tasks as scheduled_tasks
 
 
-async def get_task_definitions(services: dict) -> list[TaskInstance]:
+async def get_task_definitions(
+    services: dict,
+    metadata_filter: ProcessMetadataFilter | None = None,
+) -> list[TaskInstance]:
     return [
         *basic_tasks(),
         *progress_tasks(),

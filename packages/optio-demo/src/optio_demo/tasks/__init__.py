@@ -1,6 +1,6 @@
 """Task definitions for the optio demo application."""
 
-from optio_core.models import TaskInstance
+from optio_core.models import TaskInstance, ProcessMetadataFilter
 
 from optio_demo.tasks.terraforming import get_tasks as terraforming_tasks
 from optio_demo.tasks.home import get_tasks as home_tasks
@@ -11,7 +11,10 @@ from optio_demo.tasks.marimo import get_tasks as marimo_tasks
 from optio_demo.tasks.opencode import get_tasks as opencode_tasks
 
 
-async def get_task_definitions(services: dict) -> list[TaskInstance]:
+async def get_task_definitions(
+    services: dict,
+    metadata_filter: ProcessMetadataFilter | None = None,
+) -> list[TaskInstance]:
     return [
         *terraforming_tasks(),
         *home_tasks(),
