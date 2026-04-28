@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import type { ProcessMetadataFilter } from 'optio-contracts';
 import { useOptioPrefix, useOptioBaseUrl, useOptioDatabase } from '../context/useOptioContext.js';
 
 interface ProcessListStreamState {
@@ -15,12 +16,17 @@ function notify() {
   _listeners.forEach((fn) => fn());
 }
 
-function connect(baseUrl: string, prefix: string, database?: string) {
-  const key = `${baseUrl}|${database}|${prefix}`;
+function connect(baseUrl: string, prefix: string, database: string | undefined, filterKey: string) {
+  const key = `${baseUrl}|${database}|${prefix}|${filterKey}`;
   if (_eventSource && _connectedKey === key) return;
   _eventSource?.close();
 
-  const url = `${baseUrl}/api/processes/stream?prefix=${encodeURIComponent(prefix)}${database ? `&database=${encodeURIComponent(database)}` : ''}`;
+  const params = new URLSearchParams();
+  params.set('prefix', prefix);
+  if (database) params.set('database', database);
+  if (filterKey) params.set('metadataFilter', filterKey);
+  const url = `${baseUrl}/api/processes/stream?${params.toString()}`;
+
   const es = new EventSource(url);
   _connectedKey = key;
   _eventSource = es;
@@ -46,7 +52,7 @@ function connect(baseUrl: string, prefix: string, database?: string) {
     es.close();
     _eventSource = null;
     _connectedKey = null;
-    setTimeout(() => connect(baseUrl, prefix, database), 3000);
+    setTimeout(() => connect(baseUrl, prefix, database, filterKey), 3000);
   };
 }
 
@@ -59,10 +65,17 @@ function getSnapshot(): ProcessListStreamState {
   return _state;
 }
 
-export function useProcessListStream(): ProcessListStreamState {
+export function useProcessListStream(
+  options?: { metadataFilter?: ProcessMetadataFilter },
+): ProcessListStreamState {
   const prefix = useOptioPrefix();
   const database = useOptioDatabase();
   const baseUrl = useOptioBaseUrl();
-  connect(baseUrl, prefix, database);
+
+  const filterKey = options?.metadataFilter
+    ? JSON.stringify(options.metadataFilter)
+    : '';
+
+  connect(baseUrl, prefix, database, filterKey);
   return useSyncExternalStore(subscribe, getSnapshot);
 }
