@@ -101,3 +101,39 @@ describe('publishResync', () => {
     expect(b).toHaveLength(1);
   });
 });
+
+describe('publishResync — metadataFilter', () => {
+  it('omits metadataFilter from the payload when not provided', async () => {
+    await publishResync(redis, 'mydb', 'optio');
+    const entries = await redis.xrange('mydb/optio:commands', '-', '+');
+    const [, fields] = entries[0];
+    const payload = JSON.parse(fields[fields.indexOf('payload') + 1]);
+    expect(payload.metadataFilter).toBeUndefined();
+  });
+
+  it('omits metadataFilter when filter is an empty object', async () => {
+    await publishResync(redis, 'mydb', 'optio', false, {});
+    const entries = await redis.xrange('mydb/optio:commands', '-', '+');
+    const [, fields] = entries[0];
+    const payload = JSON.parse(fields[fields.indexOf('payload') + 1]);
+    expect(payload.metadataFilter).toBeUndefined();
+  });
+
+  it('includes metadataFilter when provided and non-empty', async () => {
+    await publishResync(redis, 'mydb', 'optio', false, { group: 'ingest' });
+    const entries = await redis.xrange('mydb/optio:commands', '-', '+');
+    const [, fields] = entries[0];
+    const payload = JSON.parse(fields[fields.indexOf('payload') + 1]);
+    expect(payload.metadataFilter).toEqual({ group: 'ingest' });
+    expect(payload.clean).toBe(false);
+  });
+
+  it('combines metadataFilter with clean=true', async () => {
+    await publishResync(redis, 'mydb', 'optio', true, { group: 'ingest' });
+    const entries = await redis.xrange('mydb/optio:commands', '-', '+');
+    const [, fields] = entries[0];
+    const payload = JSON.parse(fields[fields.indexOf('payload') + 1]);
+    expect(payload.metadataFilter).toEqual({ group: 'ingest' });
+    expect(payload.clean).toBe(true);
+  });
+});
