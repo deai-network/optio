@@ -78,9 +78,9 @@ export function createOptioHandler(opts: OptioApiOptions): (req: NextApiRequest,
       const result = await handlers.dismissProcess(db, redis, database, prefix, params.id);
       return result as any;
     },
-    resync: async ({ query, body }: { query: { database?: string; prefix?: string }; body: { clean?: boolean } }) => {
+    resync: async ({ query, body }: { query: { database?: string; prefix?: string }; body: { clean?: boolean; metadataFilter?: import('../types.js').ProcessMetadataFilter } }) => {
       const { database, prefix } = resolveDb(dbOpts, query);
-      const result = await handlers.resyncProcesses(redis, database, prefix, body.clean ?? false);
+      const result = await handlers.resyncProcesses(redis, database, prefix, body.clean ?? false, body.metadataFilter);
       return { status: 200 as const, body: result };
     },
   });

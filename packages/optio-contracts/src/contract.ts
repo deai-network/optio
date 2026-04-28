@@ -130,7 +130,7 @@ export const processesContract = c.router({
     method: 'POST',
     path: '/processes/resync',
     query: InstanceQuerySchema,
-    body: z.object({ clean: z.boolean().optional() }),
+    body: z.object({ clean: z.boolean().optional(), metadataFilter: z.record(z.unknown()).optional() }),
     responses: {
       200: z.object({ message: z.string() }),
     },

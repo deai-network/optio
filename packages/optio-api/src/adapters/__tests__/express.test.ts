@@ -103,6 +103,24 @@ describe('Express adapter integration tests', () => {
     expect(res.status).toBe(200);
     expect(res.body.message).toBe('Resync requested');
   });
+
+  it('POST /api/processes/resync — forwards metadataFilter to Redis', async () => {
+    const app = createApp();
+
+    const res = await request(app)
+      .post('/api/processes/resync')
+      .send({ metadataFilter: { group: 'ingest' } });
+
+    expect(res.status).toBe(200);
+
+    // Inspect redis mock for the published payload.
+    const entries = await (redis as any).xrange(
+      'optio_test_express/optio:commands', '-', '+',
+    );
+    const [, fields] = entries[entries.length - 1];
+    const payload = JSON.parse(fields[fields.indexOf('payload') + 1]);
+    expect(payload.metadataFilter).toEqual({ group: 'ingest' });
+  });
 });
 
 describe('Express adapter auth', () => {

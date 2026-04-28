@@ -122,6 +122,27 @@ describe('Next.js App Router adapter integration tests', () => {
     expect(body.message).toBe('Resync requested');
   });
 
+  it('POST /api/processes/resync — forwards metadataFilter to Redis', async () => {
+    const { POST } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
+
+    const req = makeNextRequest('http://localhost/api/processes/resync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ metadataFilter: { group: 'ingest' } }),
+    });
+    const res = await POST(req);
+
+    expect(res.status).toBe(200);
+
+    // Inspect redis mock for the published payload.
+    const entries = await (redis as any).xrange(
+      'optio_test_nextjs_app/optio:commands', '-', '+',
+    );
+    const [, fields] = entries[entries.length - 1];
+    const payload = JSON.parse(fields[fields.indexOf('payload') + 1]);
+    expect(payload.metadataFilter).toEqual({ group: 'ingest' });
+  });
+
   it('GET /api/processes/:id/tree/stream — returns event stream', async () => {
     const doc = await seedProcess();
     const { GET } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });

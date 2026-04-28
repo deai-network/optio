@@ -148,6 +148,27 @@ describe('Fastify adapter integration tests', () => {
     expect(body.message).toBe('Resync requested');
   });
 
+  it('POST /api/processes/resync — forwards metadataFilter to Redis', async () => {
+    const app = createApp();
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/processes/resync',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadataFilter: { group: 'ingest' } }),
+    });
+
+    expect(res.statusCode).toBe(200);
+
+    // Inspect redis mock for the published payload.
+    const entries = await (redis as any).xrange(
+      'optio_test_fastify/optio:commands', '-', '+',
+    );
+    const [, fields] = entries[entries.length - 1];
+    const payload = JSON.parse(fields[fields.indexOf('payload') + 1]);
+    expect(payload.metadataFilter).toEqual({ group: 'ingest' });
+  });
+
   it('GET /api/processes?prefix=optio&limit=10 — lists with explicit prefix', async () => {
     await seedProcess();
     const app = createApp();
