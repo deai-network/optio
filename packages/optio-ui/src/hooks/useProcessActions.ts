@@ -1,4 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
+import type { ProcessMetadataFilter } from 'optio-contracts';
 import { useOptioPrefix, useOptioClient, useOptioDatabase } from '../context/useOptioContext.js';
 
 interface ProcessActionsOptions {
@@ -32,8 +33,16 @@ export function useProcessActions(options?: ProcessActionsOptions) {
       }),
     cancel: (processId: string) => cancelMutation.mutate({ params: { id: processId }, query: { database, prefix } }),
     dismiss: (processId: string) => dismissMutation.mutate({ params: { id: processId }, query: { database, prefix } }),
-    resync: () => resyncMutation.mutate({ query: { database, prefix }, body: {} }),
-    resyncClean: () => resyncMutation.mutate({ query: { database, prefix }, body: { clean: true } }),
+    resync: (metadataFilter?: ProcessMetadataFilter) =>
+      resyncMutation.mutate({
+        query: { database, prefix },
+        body: metadataFilter ? { metadataFilter } : {},
+      }),
+    resyncClean: (metadataFilter?: ProcessMetadataFilter) =>
+      resyncMutation.mutate({
+        query: { database, prefix },
+        body: metadataFilter ? { clean: true, metadataFilter } : { clean: true },
+      }),
     isResyncing: resyncMutation.isPending,
   };
 }

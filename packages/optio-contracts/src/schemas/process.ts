@@ -64,6 +64,9 @@ export const ProcessSchema = z.object({
   createdAt: DateSchema,
 });
 
+export const ProcessMetadataFilterSchema = z.record(z.unknown());
+
 export type Process = z.infer<typeof ProcessSchema>;
 export type ProcessState = z.infer<typeof ProcessStateSchema>;
 export type LogEntry = z.infer<typeof LogEntrySchema>;
+export type ProcessMetadataFilter = z.infer<typeof ProcessMetadataFilterSchema>;

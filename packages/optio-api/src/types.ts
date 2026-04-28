@@ -1,1 +1,1 @@
-export type ProcessMetadataFilter = Record<string, unknown>;
+export type { ProcessMetadataFilter } from 'optio-contracts';

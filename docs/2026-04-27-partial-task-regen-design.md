@@ -332,6 +332,53 @@ resync: async ({
 }
 ```
 
+### `optio-contracts/src/schemas/process.ts` and `contract.ts`
+
+`optio-contracts` is the single source of truth for the wire shape across the TypeScript packages. Add a zod schema and inferred type, and use the schema directly in the resync body:
+
+```typescript
+// schemas/process.ts
+export const ProcessMetadataFilterSchema = z.record(z.unknown());
+export type ProcessMetadataFilter = z.infer<typeof ProcessMetadataFilterSchema>;
+
+// contract.ts (resync route)
+body: z.object({
+  clean: z.boolean().optional(),
+  metadataFilter: ProcessMetadataFilterSchema.optional(),
+}),
+```
+
+`optio-contracts/src/index.ts` re-exports `ProcessMetadataFilterSchema` and `ProcessMetadataFilter` alongside the existing `Process`/`ProcessState`/`LogEntry` types.
+
+`optio-api/src/types.ts` becomes a thin re-export so existing `import { ProcessMetadataFilter } from './types.js'` sites in handlers/publisher/adapters keep working without touching downstream packages:
+
+```typescript
+export type { ProcessMetadataFilter } from 'optio-contracts';
+```
+
+### `optio-ui/src/hooks/useProcessActions.ts`
+
+The hook surface exposes the optional filter to UI callers so a consumer can scope a resync from the dashboard the same way a programmatic caller can. Type imported directly from `optio-contracts` (already a workspace dep — no new edge to `optio-api`, which exports server-side code):
+
+```typescript
+import type { ProcessMetadataFilter } from 'optio-contracts';
+
+resync: (metadataFilter?: ProcessMetadataFilter) =>
+  resyncMutation.mutate({
+    query: { database, prefix },
+    body: metadataFilter ? { metadataFilter } : {},
+  }),
+resyncClean: (metadataFilter?: ProcessMetadataFilter) =>
+  resyncMutation.mutate({
+    query: { database, prefix },
+    body: metadataFilter ? { clean: true, metadataFilter } : { clean: true },
+  }),
+```
+
+Existing call sites that pass no argument continue to perform a full resync (current behavior).
+
+> **Lesson — caller audit.** The first revision of this design framed the change as `HTTP → Redis → core` and listed only `optio-core` and `optio-api` files under "Component changes". `optio-contracts` and `optio-ui` were omitted. The contracts edit was forced by TypeScript when adapters wouldn't typecheck without the new body field; the UI hook had no such pressure (the new field is optional on an optional body) and was silently missed end-to-end. For any future change that adds an optional parameter to a public API, the design must enumerate every monorepo caller — `grep` for the symbol across all packages — before locking scope. Optional + additive = no compiler signal; the audit must be explicit.
+
 ## Initial sync
 
 The startup call in `Optio.init` (currently `lifecycle.py:106`) continues to invoke `_sync_definitions()` with no filter — initial sync is always a full sync. Partial regeneration is exclusively a runtime operation.

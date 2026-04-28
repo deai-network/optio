@@ -1,10 +1,11 @@
 // Schemas
 export { ObjectIdSchema, PaginationQuerySchema, PaginatedResponseSchema,
          ErrorSchema, DateSchema } from './schemas/common.js';
-export { ProcessSchema, ProcessStateSchema, LogEntrySchema } from './schemas/process.js';
+export { ProcessSchema, ProcessStateSchema, LogEntrySchema,
+         ProcessMetadataFilterSchema } from './schemas/process.js';
 
 // Types
-export type { Process, ProcessState, LogEntry } from './schemas/process.js';
+export type { Process, ProcessState, LogEntry, ProcessMetadataFilter } from './schemas/process.js';
 
 // Contract
 export { processesContract, discoveryContract } from './contract.js';

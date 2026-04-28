@@ -1,7 +1,7 @@
 import { initContract } from '@ts-rest/core';
 import { z } from 'zod';
 import { PaginationQuerySchema, PaginatedResponseSchema, ErrorSchema, ObjectIdSchema } from './schemas/common.js';
-import { ProcessSchema, ProcessStateSchema, LogEntrySchema } from './schemas/process.js';
+import { ProcessSchema, ProcessStateSchema, LogEntrySchema, ProcessMetadataFilterSchema } from './schemas/process.js';
 
 const c = initContract();
 
@@ -130,7 +130,7 @@ export const processesContract = c.router({
     method: 'POST',
     path: '/processes/resync',
     query: InstanceQuerySchema,
-    body: z.object({ clean: z.boolean().optional(), metadataFilter: z.record(z.unknown()).optional() }),
+    body: z.object({ clean: z.boolean().optional(), metadataFilter: ProcessMetadataFilterSchema.optional() }),
     responses: {
       200: z.object({ message: z.string() }),
     },
