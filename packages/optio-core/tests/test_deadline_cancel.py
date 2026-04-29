@@ -97,3 +97,53 @@ async def test_request_cancel_with_deadline_returns_false_when_unknown(mongo_db)
     fake_oid = __import__("bson").ObjectId()
     found = executor.request_cancel_with_deadline(fake_oid, deadline=1.0)
     assert found is False
+
+
+async def test_write_force_cancelled_state_updates_active_process(mongo_db):
+    """Conditional update flips active->failed and writes canonical error."""
+    from optio_core._force_cancel import _write_force_cancelled_state
+    from datetime import datetime, timezone
+    from bson import ObjectId
+
+    prefix = "wfcs"
+    coll = mongo_db[f"{prefix}_processes"]
+    oid = ObjectId()
+    await coll.insert_one({
+        "_id": oid,
+        "processId": "p.fc",
+        "name": "FC",
+        "status": {"state": "running", "runningSince": datetime.now(timezone.utc)},
+        "widgetUpstream": {"url": "http://x", "innerAuth": None},
+        "log": [],
+    })
+
+    updated = await _write_force_cancelled_state(mongo_db, prefix, oid)
+    assert updated is True
+    doc = await coll.find_one({"_id": oid})
+    assert doc["status"]["state"] == "failed"
+    assert "Task did not unwind within cancellation grace period" in doc["status"]["error"]
+    assert doc["widgetUpstream"] is None
+
+
+async def test_write_force_cancelled_state_no_op_on_terminal_process(mongo_db):
+    """If the process is already terminal, the conditional update is a no-op."""
+    from optio_core._force_cancel import _write_force_cancelled_state
+    from datetime import datetime, timezone
+    from bson import ObjectId
+
+    prefix = "wfcs2"
+    coll = mongo_db[f"{prefix}_processes"]
+    oid = ObjectId()
+    await coll.insert_one({
+        "_id": oid,
+        "processId": "p.done",
+        "name": "Done",
+        "status": {"state": "done", "doneAt": datetime.now(timezone.utc)},
+        "widgetUpstream": None,
+        "log": [],
+    })
+
+    updated = await _write_force_cancelled_state(mongo_db, prefix, oid)
+    assert updated is False
+    doc = await coll.find_one({"_id": oid})
+    assert doc["status"]["state"] == "done"
