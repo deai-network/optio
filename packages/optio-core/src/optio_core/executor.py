@@ -258,10 +258,19 @@ class Executor:
 
         return end_state
 
-    def request_cancel(self, process_oid: ObjectId) -> bool:
-        """Request cancellation of a running process. (Legacy — Task 4 replaces.)"""
+    def request_cancel_with_deadline(
+        self, process_oid: ObjectId, deadline: float
+    ) -> bool:
+        """Request cooperative cancel and record a force-cancel deadline.
+
+        Sets the cooperative cancel flag. Records `deadline` (a monotonic
+        timestamp) in the entry only if no deadline is set yet — first wins.
+        Returns True if an entry was found, False otherwise.
+        """
         entry = self._cancellation_flags.get(process_oid)
-        if entry is not None:
-            entry.flag.set()
-            return True
-        return False
+        if entry is None:
+            return False
+        entry.flag.set()
+        if entry.deadline is None:
+            entry.deadline = deadline
+        return True

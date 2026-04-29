@@ -62,7 +62,8 @@ async def test_cooperative_cancellation(mongo_db):
     async def cancel_after_delay():
         await asyncio.sleep(0.05)
         proc = await get_process_by_process_id(mongo_db, "test", "cancel_me")
-        executor.request_cancel(proc["_id"])
+        import time as _time
+        executor.request_cancel_with_deadline(proc["_id"], deadline=_time.monotonic() + 60.0)
 
     result, _ = await asyncio.gather(
         executor.launch_process("cancel_me"),
@@ -161,7 +162,8 @@ async def test_idempotent_launch(mongo_db):
 
     # Clean up
     proc = await get_process_by_process_id(mongo_db, "test", "idem")
-    executor.request_cancel(proc["_id"])
+    import time as _time
+    executor.request_cancel_with_deadline(proc["_id"], deadline=_time.monotonic() + 60.0)
     await launch_task
 
 

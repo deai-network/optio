@@ -542,7 +542,11 @@ class Optio:
             ProcessStatus(state="cancel_requested"),
         )
 
-        found = self._executor.request_cancel(proc["_id"])
+        import time
+        found = self._executor.request_cancel_with_deadline(
+            proc["_id"],
+            deadline=time.monotonic() + self._config.cancel_grace_seconds,
+        )
         if found:
             await update_status(
                 self._config.mongo_db, self._config.prefix, proc["_id"],

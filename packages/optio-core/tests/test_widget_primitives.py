@@ -244,7 +244,8 @@ async def test_widget_upstream_cleared_on_cancelled(mongo_db):
     run = asyncio.create_task(executor.launch_process("t-cancel"))
     await started.wait()
     doc = await mongo_db["test_processes"].find_one({"processId": "t-cancel"})
-    executor.request_cancel(doc["_id"])
+    import time as _time
+    executor.request_cancel_with_deadline(doc["_id"], deadline=_time.monotonic() + 60.0)
     result = await run
     assert result == "cancelled"
 

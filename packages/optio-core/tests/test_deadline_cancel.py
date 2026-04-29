@@ -66,3 +66,34 @@ async def test_executor_tracks_running_task_and_cancel_entry(mongo_db):
     # After completion both registries are empty.
     assert executor._running_tasks == {}
     assert executor._cancellation_flags == {}
+
+
+async def test_request_cancel_with_deadline_records_first_deadline(mongo_db):
+    """First call records a deadline; second call is a no-op on the deadline."""
+    from optio_core.executor import Executor, _CancelEntry
+    import time as _time
+
+    executor = Executor(mongo_db, "rcwd", services={})
+    fake_oid = __import__("bson").ObjectId()
+    flag = asyncio.Event()
+    executor._cancellation_flags[fake_oid] = _CancelEntry(flag=flag, deadline=None)
+
+    first = _time.monotonic() + 1.0
+    found = executor.request_cancel_with_deadline(fake_oid, deadline=first)
+    assert found is True
+    assert flag.is_set()
+    assert executor._cancellation_flags[fake_oid].deadline == first
+
+    second = _time.monotonic() + 99.0
+    found2 = executor.request_cancel_with_deadline(fake_oid, deadline=second)
+    assert found2 is True
+    assert executor._cancellation_flags[fake_oid].deadline == first  # not refreshed
+
+
+async def test_request_cancel_with_deadline_returns_false_when_unknown(mongo_db):
+    from optio_core.executor import Executor
+
+    executor = Executor(mongo_db, "rcwd2", services={})
+    fake_oid = __import__("bson").ObjectId()
+    found = executor.request_cancel_with_deadline(fake_oid, deadline=1.0)
+    assert found is False
