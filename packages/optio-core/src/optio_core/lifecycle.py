@@ -131,7 +131,7 @@ class Optio:
         self._consumer.on(command_type, handler)
 
     @asynccontextmanager
-    async def block_launches(self, filter: ProcessMetadataFilter):
+    async def block_launches(self, launch_filter: ProcessMetadataFilter) -> None:
         """Async context manager: while active, reject launches whose
         task metadata matches `filter` (raises LaunchBlocked).
 
@@ -143,7 +143,7 @@ class Optio:
         it blocks all launches.
         """
         token = uuid.uuid4()
-        self._launch_blocks[token] = filter
+        self._launch_blocks[token] = launch_filter
         try:
             yield
         finally:
@@ -157,10 +157,10 @@ class Optio:
         if not self._launch_blocks:
             return
         md = metadata or {}
-        for filter in self._launch_blocks.values():
-            if matches_filter(md, filter):
+        for launch_filter in self._launch_blocks.values():
+            if matches_filter(md, launch_filter):
                 raise LaunchBlocked(
-                    f"Launch blocked by filter {filter}; task metadata={md}"
+                    f"Launch blocked by filter {launch_filter}; task metadata={md}"
                 )
 
     async def adhoc_define(
