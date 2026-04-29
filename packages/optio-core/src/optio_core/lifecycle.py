@@ -4,6 +4,7 @@ import asyncio
 import logging
 import signal
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Callable, Awaitable
@@ -131,9 +132,9 @@ class Optio:
         self._consumer.on(command_type, handler)
 
     @asynccontextmanager
-    async def block_launches(self, launch_filter: ProcessMetadataFilter) -> None:
+    async def block_launches(self, launch_filter: ProcessMetadataFilter) -> AsyncIterator[None]:
         """Async context manager: while active, reject launches whose
-        task metadata matches `filter` (raises LaunchBlocked).
+        task metadata matches `launch_filter` (raises LaunchBlocked).
 
         Multiple concurrent block_launches() calls — overlapping or
         identical filters — stack independently. Each context owns
