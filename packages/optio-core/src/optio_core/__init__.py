@@ -18,6 +18,7 @@ dismiss = _instance.dismiss
 resync = _instance.resync
 get_process = _instance.get_process
 list_processes = _instance.list_processes
+block_launches = _instance.block_launches
 
 __all__ = [
     "TaskInstance", "ChildResult", "LaunchBlocked",
@@ -25,4 +26,5 @@ __all__ = [
     "adhoc_define", "adhoc_delete",
     "launch", "launch_and_wait", "cancel", "dismiss", "resync",
     "get_process", "list_processes",
+    "block_launches",
 ]

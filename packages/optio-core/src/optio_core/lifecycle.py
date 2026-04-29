@@ -3,6 +3,8 @@
 import asyncio
 import logging
 import signal
+import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Callable, Awaitable
 from bson import ObjectId
@@ -39,6 +41,7 @@ class Optio:
         self._scheduler: ProcessScheduler | None = None
         self._running = False
         self._heartbeat_task: asyncio.Task | None = None
+        self._launch_blocks: dict[uuid.UUID, ProcessMetadataFilter] = {}
 
     async def init(
         self,
@@ -125,6 +128,25 @@ class Optio:
         if self._consumer is None:
             raise RuntimeError("Custom commands require Redis")
         self._consumer.on(command_type, handler)
+
+    @asynccontextmanager
+    async def block_launches(self, filter: ProcessMetadataFilter):
+        """Async context manager: while active, reject launches whose
+        task metadata matches `filter` (raises LaunchBlocked).
+
+        Multiple concurrent block_launches() calls — overlapping or
+        identical filters — stack independently. Each context owns
+        its own block; exiting one does not lift another's block.
+
+        An empty filter `{}` matches every task metadata — registering
+        it blocks all launches.
+        """
+        token = uuid.uuid4()
+        self._launch_blocks[token] = filter
+        try:
+            yield
+        finally:
+            self._launch_blocks.pop(token, None)
 
     async def adhoc_define(
         self,

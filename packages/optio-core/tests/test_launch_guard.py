@@ -1,6 +1,8 @@
 """Tests for the launch-guard mechanism."""
 
+import pytest
 from optio_core.models import LaunchBlocked
+from optio_core.lifecycle import Optio
 
 
 def test_launch_blocked_is_runtime_error():
@@ -14,3 +16,50 @@ def test_launch_blocked_exported_from_package():
     """LaunchBlocked is exported from the top-level optio_core package."""
     import optio_core
     assert optio_core.LaunchBlocked is LaunchBlocked
+
+
+async def test_block_launches_registers_and_unregisters():
+    """block_launches() adds a token to _launch_blocks on enter and removes it on exit."""
+    optio = Optio()
+    assert optio._launch_blocks == {}
+
+    async with optio.block_launches({"project": "p1"}):
+        # Inside: exactly one block registered with the given filter.
+        assert len(optio._launch_blocks) == 1
+        (token,) = optio._launch_blocks.keys()
+        assert optio._launch_blocks[token] == {"project": "p1"}
+
+    # After exit: dict is empty again.
+    assert optio._launch_blocks == {}
+
+
+async def test_block_launches_two_concurrent_same_filter():
+    """Two simultaneous block_launches() with the same filter create two distinct tokens."""
+    optio = Optio()
+    async with optio.block_launches({"project": "p1"}):
+        async with optio.block_launches({"project": "p1"}):
+            assert len(optio._launch_blocks) == 2
+        # Inner exited; one block remains.
+        assert len(optio._launch_blocks) == 1
+    # Outer exited; empty.
+    assert optio._launch_blocks == {}
+
+
+async def test_block_launches_lifted_on_body_exception():
+    """The block is removed even when the body raises."""
+    optio = Optio()
+    with pytest.raises(ValueError, match="boom"):
+        async with optio.block_launches({"project": "p1"}):
+            assert len(optio._launch_blocks) == 1
+            raise ValueError("boom")
+    # Block was lifted regardless of the exception.
+    assert optio._launch_blocks == {}
+
+
+async def test_block_launches_exported_from_package():
+    """block_launches is exported from the top-level optio_core package."""
+    import optio_core
+    async with optio_core.block_launches({"project": "p1"}):
+        # Uses the module-level _instance singleton.
+        assert len(optio_core._instance._launch_blocks) == 1
+    assert optio_core._instance._launch_blocks == {}
