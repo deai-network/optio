@@ -127,3 +127,11 @@ def matches_filter(
     if not metadata_filter:
         return True
     return all(metadata.get(k) == v for k, v in metadata_filter.items())
+
+
+class LaunchBlocked(RuntimeError):
+    """Raised when a launch is rejected by an active launch block.
+
+    The exception message includes both the matching filter and the
+    task metadata so the rejection is traceable from logs alone.
+    """
