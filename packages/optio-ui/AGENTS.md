@@ -44,6 +44,7 @@ Do:
 - Use `isLaunchable(process)` / `isLaunchableState(state)`,
   `isActive(process)` / `isActiveState(state)`,
   `isTerminal(process)` / `isTerminalState(state)`,
+  `isWidgetLive(process)` / `isWidgetLiveState(state)`,
   `isResumable(process)`.
 - If you genuinely need a new state-derived concept (e.g. "show widget UI" —
   which is *almost* `isActive` but excludes `scheduled`), add a named
@@ -298,6 +299,39 @@ Self-fetching detail panel. Uses `useProcessStream` internally. Rendering branch
 (trailing slash is load-bearing for relative URLs inside iframes).
 
 Exported from `optio-ui`.
+
+---
+
+### ProcessWidget / useProcessWidget
+
+```ts
+function useProcessWidget(tree: ProcessTreeNode | null | undefined): ReactNode | null
+
+interface ProcessWidgetProps {
+  tree: ProcessTreeNode | null | undefined;
+}
+function ProcessWidget({ tree }: ProcessWidgetProps): ReactNode  // null when not ready
+```
+
+Layout-free widget primitive (`packages/optio-ui/src/components/ProcessWidget.tsx`).
+The hook owns:
+
+- Readiness gate: `tree.uiWidget` set, state is widget-live (`isWidgetLive`), `tree.widgetData != null`.
+- Registry lookup via `getWidget(uiWidget)`. If unregistered → emits `console.warn` and returns `null`.
+- Database check (from `OptioProvider` / instance discovery). If unknown → emits `console.warn` and returns `null` (widget URLs need the database segment).
+- `widgetProxyUrl` build: `${baseUrl}/api/widget/${database}/${prefix}/${tree._id}/` (trailing slash load-bearing).
+
+What the hook does **not** own: layout. It returns the bare widget element (the registered component invoked with `{ process, apiBaseUrl, widgetProxyUrl, prefix, database }`) or `null`. The caller decides what to render around it (log strip, tabs, full-bleed, collapsible drawer, etc.).
+
+Typical usage:
+```tsx
+const widget = useProcessWidget(tree);
+return widget
+  ? <MyWidgetLayout>{widget}</MyWidgetLayout>
+  : <MyFallback />;
+```
+
+`ProcessDetailView` consumes the hook internally and wraps the widget in a log-strip-on-top + widget-fill layout. Other consumers (e.g. an external app's process detail page) are free to choose their own layout.
 
 ---
 

@@ -29,6 +29,8 @@ export { IframeWidget } from './widgets/IframeWidget.js';
 // Components
 export { ProcessDetailView } from './components/ProcessDetailView.js';
 export type { ProcessDetailViewProps } from './components/ProcessDetailView.js';
+export { ProcessWidget, useProcessWidget } from './components/ProcessWidget.js';
+export type { ProcessWidgetProps } from './components/ProcessWidget.js';
 
 // Process state predicates
 export {
@@ -38,6 +40,8 @@ export {
   isActiveState,
   isTerminal,
   isTerminalState,
+  isWidgetLive,
+  isWidgetLiveState,
   isResumable,
 } from './process-state.js';
 export type { ProcessStateLike } from './process-state.js';

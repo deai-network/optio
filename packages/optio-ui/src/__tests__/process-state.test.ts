@@ -6,8 +6,33 @@ import {
   isActiveState,
   isTerminal,
   isTerminalState,
+  isWidgetLive,
+  isWidgetLiveState,
   isResumable,
 } from '../process-state.js';
+
+describe('isWidgetLiveState', () => {
+  it.each(['running', 'cancel_requested', 'cancelling'])('true for %s', (state) => {
+    expect(isWidgetLiveState(state)).toBe(true);
+  });
+  it.each(['scheduled', 'idle', 'done', 'failed', 'cancelled'])('false for %s', (state) => {
+    expect(isWidgetLiveState(state)).toBe(false);
+  });
+  it('scheduled is active but not widget-live', () => {
+    expect(isActiveState('scheduled')).toBe(true);
+    expect(isWidgetLiveState('scheduled')).toBe(false);
+  });
+});
+
+describe('isWidgetLive', () => {
+  it.each(['running', 'cancel_requested', 'cancelling'])('true for state=%s', (state) => {
+    expect(isWidgetLive({ status: { state } })).toBe(true);
+  });
+  it('false for missing process / state', () => {
+    expect(isWidgetLive(null)).toBe(false);
+    expect(isWidgetLive({})).toBe(false);
+  });
+});
 
 describe('isLaunchableState', () => {
   it.each(['idle', 'done', 'failed', 'cancelled'])('true for %s', (state) => {
