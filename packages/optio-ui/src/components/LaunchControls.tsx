@@ -2,8 +2,7 @@ import { Button, Dropdown, Space, Tooltip, Popconfirm } from 'antd';
 import type { MenuProps, ButtonProps } from 'antd';
 import { DownOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-
-const LAUNCHABLE_STATES = new Set(['idle', 'done', 'failed', 'cancelled']);
+import { isLaunchable, isResumable } from '../process-state.js';
 
 export interface LaunchControlsProps {
   process: any;
@@ -24,14 +23,10 @@ export interface LaunchControlsProps {
  */
 export function LaunchControls({ process, onLaunch, size = 'small' }: LaunchControlsProps) {
   const { t } = useTranslation();
-  const state = process?.status?.state ?? 'idle';
-  if (!LAUNCHABLE_STATES.has(state) || !onLaunch) return null;
-
-  const supportsResume = process.supportsResume === true;
-  const hasSavedState = process.hasSavedState === true;
+  if (!isLaunchable(process) || !onLaunch) return null;
 
   // Case 1: single play button (fresh start semantics — no opts).
-  if (!supportsResume || !hasSavedState) {
+  if (!isResumable(process)) {
     const button = (
       <Button
         type="text"

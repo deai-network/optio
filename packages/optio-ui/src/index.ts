@@ -29,3 +29,7 @@ export { IframeWidget } from './widgets/IframeWidget.js';
 // Components
 export { ProcessDetailView } from './components/ProcessDetailView.js';
 export type { ProcessDetailViewProps } from './components/ProcessDetailView.js';
+
+// Process state predicates
+export { isLaunchable, isActive, isResumable } from './process-state.js';
+export type { ProcessStateLike } from './process-state.js';
