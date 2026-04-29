@@ -55,6 +55,7 @@ class Optio:
             [dict[str, Any], ProcessMetadataFilter | None],
             Awaitable[list[TaskInstance]],
         ] | None = None,
+        cancel_grace_seconds: float = 5.0,
     ) -> None:
         """Initialize optio.
 
@@ -65,15 +66,13 @@ class Optio:
                 consumer, custom commands) are disabled and processes are
                 managed via direct method calls.
             services: Custom services dict passed to task execute functions.
-            get_task_definitions: Async function
-                ``(services, metadata_filter)`` returning task definitions.
-                ``metadata_filter`` is ``None`` for the full-sync call
-                (initial sync, or ``Optio.resync()`` with no filter); when
-                non-None it is a ``ProcessMetadataFilter`` (a flat
-                AND-equality dict) and the callback may either honor it
-                (return only matching tasks) or ignore it (return its full
-                list — the framework filters out-of-scope entries before
-                any downstream layer runs).
+            get_task_definitions: Async function (services, metadata_filter)
+                returning task definitions.
+            cancel_grace_seconds: Cooperative-cancel deadline (seconds). After
+                this elapses without the task unwinding, the supervisor
+                force-cancels via asyncio.Task.cancel() and writes a terminal
+                'failed' state. Default 5.0. Same value applies to every
+                cancel during this Optio lifetime.
         """
         services = services or {}
         self._config = OptioConfig(
@@ -82,6 +81,7 @@ class Optio:
             redis_url=redis_url,
             services=services,
             get_task_definitions=get_task_definitions,
+            cancel_grace_seconds=cancel_grace_seconds,
         )
 
         # Connect to Redis (if configured)
