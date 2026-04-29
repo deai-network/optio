@@ -553,3 +553,118 @@ async def test_shutdown_grace_seconds_override_honoured(mongo_db):
             await run_task
         except (asyncio.CancelledError, Exception):
             pass
+
+
+async def test_re_entry_idempotency_does_not_refresh_deadline(mongo_db):
+    """Two cancel() calls 1s apart: deadline set by the first stays in force."""
+    from optio_core.lifecycle import Optio
+    from optio_core.models import TaskInstance
+
+    prefix = "reidem"
+
+    async def stubborn(ctx):  # noqa: ARG001
+        while True:
+            await asyncio.sleep(0.05)
+
+    task_inst = TaskInstance(
+        process_id="p.stub", name="Stub", params={}, execute=stubborn,
+    )
+    async def gen(_s, _f):
+        return [task_inst]
+
+    optio = Optio()
+    await optio.init(
+        mongo_db=mongo_db, prefix=prefix,
+        get_task_definitions=gen, cancel_grace_seconds=1.0,
+    )
+    run_task = asyncio.create_task(optio.run())
+    try:
+        await optio.launch("p.stub")
+        await asyncio.sleep(0.2)
+
+        await optio.cancel("p.stub")
+        oid = next(iter(optio._executor._cancellation_flags))
+        first_deadline = optio._executor._cancellation_flags[oid].deadline
+
+        await asyncio.sleep(1.0)  # past the first deadline; supervisor may fire
+        # Refresh the entry pointer; it may already be gone if force-cancelled.
+        # Either way, calling cancel again must not raise and must be a no-op
+        # on the deadline (if entry still exists).
+        await optio.cancel("p.stub")
+        if oid in optio._executor._cancellation_flags:
+            assert optio._executor._cancellation_flags[oid].deadline == first_deadline
+
+        # Eventually terminal.
+        import time as _time
+        ceil = _time.monotonic() + 4.0
+        while _time.monotonic() < ceil:
+            proc = await optio.get_process("p.stub")
+            if proc and proc["status"]["state"] in ("failed", "cancelled"):
+                break
+            await asyncio.sleep(0.1)
+        proc = await optio.get_process("p.stub")
+        assert proc["status"]["state"] == "failed"
+    finally:
+        await optio.shutdown()
+        run_task.cancel()
+        try:
+            await run_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+async def test_to_thread_blocked_task_reaches_failed_state(mongo_db):
+    """Task blocked inside asyncio.to_thread: Mongo state still goes to 'failed'.
+
+    The thread is allowed to outlive the test. We use a short sleep so the
+    underlying thread terminates before pytest tears down the event loop.
+    """
+    from optio_core.lifecycle import Optio
+    from optio_core.models import TaskInstance
+
+    prefix = "thrblk"
+
+    def _block_briefly() -> None:
+        import time as _t
+        _t.sleep(2.0)
+
+    async def thread_blocked(ctx):  # noqa: ARG001
+        await asyncio.to_thread(_block_briefly)
+
+    task_inst = TaskInstance(
+        process_id="p.thr", name="Thr", params={}, execute=thread_blocked,
+    )
+    async def gen(_s, _f):
+        return [task_inst]
+
+    optio = Optio()
+    await optio.init(
+        mongo_db=mongo_db, prefix=prefix,
+        get_task_definitions=gen, cancel_grace_seconds=0.3,
+    )
+    run_task = asyncio.create_task(optio.run())
+    try:
+        await optio.launch("p.thr")
+        await asyncio.sleep(0.2)
+
+        await optio.cancel("p.thr")
+
+        import time as _time
+        ceil = _time.monotonic() + 4.0
+        while _time.monotonic() < ceil:
+            proc = await optio.get_process("p.thr")
+            if proc and proc["status"]["state"] == "failed":
+                break
+            await asyncio.sleep(0.1)
+        proc = await optio.get_process("p.thr")
+        assert proc["status"]["state"] == "failed"
+        assert "Task did not unwind within cancellation grace period" in proc["status"]["error"]
+    finally:
+        await optio.shutdown()
+        run_task.cancel()
+        try:
+            await run_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        # Let the orphaned thread finish before the loop tears down.
+        await asyncio.sleep(2.5)
