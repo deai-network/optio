@@ -1,7 +1,7 @@
 """Tests for the launch-guard mechanism."""
 
 import pytest
-from optio_core.models import LaunchBlocked
+from optio_core.models import LaunchBlocked, TaskInstance
 from optio_core.lifecycle import Optio
 
 
@@ -119,9 +119,6 @@ async def test_check_launch_blocks_message_includes_filter_and_metadata():
             assert "project" in msg
         else:
             pytest.fail("LaunchBlocked not raised")
-
-
-from optio_core.models import TaskInstance
 
 
 async def test_adhoc_define_blocked_when_metadata_matches(mongo_db):
