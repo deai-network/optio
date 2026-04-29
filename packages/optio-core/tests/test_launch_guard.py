@@ -342,3 +342,77 @@ async def test_handle_launch_blocked_logs_warning_and_does_not_launch(mongo_db, 
         rec.levelno == logging.WARNING and "consumer1" in rec.message
         for rec in caplog.records
     ), [rec.message for rec in caplog.records]
+
+
+async def test_two_concurrent_blocks_both_required_to_unblock(mongo_db):
+    """Two concurrent block_launches() with the same filter — exiting one
+    keeps the block in force; both must exit before launches are accepted.
+    """
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix="test")
+
+    async def noop(ctx):
+        pass
+
+    task = TaskInstance(
+        execute=noop,
+        process_id="conc1",
+        name="conc1",
+        metadata={"project": "p1"},
+    )
+    await optio.adhoc_define(task)
+
+    outer = optio.block_launches({"project": "p1"})
+    inner = optio.block_launches({"project": "p1"})
+    await outer.__aenter__()
+    await inner.__aenter__()
+    try:
+        # Both registered.
+        with pytest.raises(LaunchBlocked):
+            await optio.launch_and_wait("conc1")
+    finally:
+        await inner.__aexit__(None, None, None)
+
+    # Inner exited, outer still in force — still blocked.
+    with pytest.raises(LaunchBlocked):
+        await optio.launch_and_wait("conc1")
+
+    await outer.__aexit__(None, None, None)
+    # Both exited — launch succeeds.
+    await optio.launch_and_wait("conc1")
+
+
+async def test_nested_block_in_same_coroutine(mongo_db):
+    """Nested `async with` adds a second token; both exits required."""
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix="test")
+
+    async with optio.block_launches({"project": "p1"}):
+        async with optio.block_launches({"project": "p1"}):
+            assert len(optio._launch_blocks) == 2
+        # Inner exited.
+        assert len(optio._launch_blocks) == 1
+    assert optio._launch_blocks == {}
+
+
+async def test_overlapping_filters(mongo_db):
+    """A launch is blocked iff matches_filter is True for ANY registered filter."""
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix="test")
+
+    async def noop(ctx):
+        pass
+
+    task = TaskInstance(
+        execute=noop,
+        process_id="ovl1",
+        name="ovl1",
+        metadata={"project": "p1", "tenant": "t2"},
+    )
+    await optio.adhoc_define(task)
+
+    # Two non-overlapping filters; the task matches the second.
+    async with optio.block_launches({"tenant": "t1"}):
+        async with optio.block_launches({"tenant": "t2"}):
+            with pytest.raises(LaunchBlocked):
+                await optio.launch_and_wait("ovl1")
