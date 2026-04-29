@@ -103,7 +103,7 @@ class Optio:
             await self._consumer.setup()
 
         # Create executor
-        self._executor = Executor(mongo_db, prefix, services)
+        self._executor = Executor(mongo_db, prefix, services, optio=self)
 
         # Run migrations
         from optio_core.migrations import fw_migrations

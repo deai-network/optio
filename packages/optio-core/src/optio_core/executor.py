@@ -23,10 +23,17 @@ from optio_core.context import ProcessContext
 class Executor:
     """Executes task functions with lifecycle management."""
 
-    def __init__(self, db: AsyncIOMotorDatabase, prefix: str, services: dict[str, Any]):
+    def __init__(
+        self,
+        db: AsyncIOMotorDatabase,
+        prefix: str,
+        services: dict[str, Any],
+        optio: "Optio | None" = None,
+    ):
         self._db = db
         self._prefix = prefix
         self._services = services
+        self._optio = optio
         self._cancellation_flags: dict[ObjectId, asyncio.Event] = {}
         self._task_registry: dict[str, TaskInstance] = {}
 
@@ -204,6 +211,8 @@ class Executor:
         description: str | None = None,
     ) -> str:
         """Execute a child process (called from ProcessContext.run_child)."""
+        if self._optio is not None:
+            self._optio._check_launch_blocks(parent_ctx.metadata)
         order = parent_ctx._next_child_order()
 
         child_doc = await create_child_process(

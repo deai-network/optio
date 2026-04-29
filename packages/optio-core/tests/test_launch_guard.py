@@ -167,3 +167,47 @@ async def test_adhoc_define_passes_when_metadata_does_not_match(mongo_db):
     async with optio.block_launches({"project": "p1"}):
         proc = await optio.adhoc_define(task)
         assert proc["processId"] == "adhoc2"
+
+
+async def test_execute_child_blocked_when_parent_metadata_matches(mongo_db):
+    """A parent task with matching metadata observes LaunchBlocked from run_child.
+
+    Children inherit parent metadata; the block matches the parent's project
+    so the run_child call is rejected.
+    """
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix="test")
+
+    observed = {}
+
+    async def child_task(ctx):
+        observed["child_ran"] = True
+
+    async def parent_task(ctx):
+        try:
+            await ctx.run_child(
+                execute=child_task,
+                process_id="child1",
+                name="child1",
+                params={},
+            )
+        except LaunchBlocked as e:
+            observed["blocked"] = str(e)
+
+    parent = TaskInstance(
+        execute=parent_task,
+        process_id="parent1",
+        name="parent1",
+        metadata={"project": "p1"},
+    )
+    optio._executor.register_tasks([parent])
+    await optio.adhoc_define(parent)
+
+    async with optio.block_launches({"project": "p1"}):
+        # The parent itself was defined BEFORE the block (above), so it
+        # can run; but its run_child will be blocked because the child
+        # inherits {"project": "p1"} from parent_ctx.metadata.
+        await optio.launch_and_wait("parent1")
+
+    assert "blocked" in observed
+    assert "child_ran" not in observed
