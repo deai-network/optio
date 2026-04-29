@@ -44,6 +44,7 @@ class Optio:
         self._scheduler: ProcessScheduler | None = None
         self._running = False
         self._heartbeat_task: asyncio.Task | None = None
+        self._supervisor_task: asyncio.Task | None = None
         self._launch_blocks: dict[uuid.UUID, ProcessMetadataFilter] = {}
 
     async def init(
@@ -319,6 +320,8 @@ class Optio:
         if self._redis:
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
+        self._supervisor_task = asyncio.create_task(self._supervisor_loop())
+
         try:
             if self._consumer:
                 await self._consumer.run()
@@ -370,6 +373,14 @@ class Optio:
             remaining = list(self._executor._cancellation_flags.keys())
             if remaining:
                 await self._force_finalize_stuck_processes(remaining)
+
+        if self._supervisor_task:
+            self._supervisor_task.cancel()
+            try:
+                await self._supervisor_task
+            except asyncio.CancelledError:
+                pass
+            self._supervisor_task = None
 
         if self._redis:
             await self._redis.aclose()
@@ -448,6 +459,22 @@ class Optio:
             logger.warning(
                 f"Force-finalized {forced} process(es) that did not exit within grace period"
             )
+
+    async def _supervisor_loop(self) -> None:
+        """Scan for past-deadline cancellations every 500 ms; force-cancel them."""
+        while self._running:
+            try:
+                now = time.monotonic()
+                if self._executor is not None:
+                    for oid, entry in list(self._executor._cancellation_flags.items()):
+                        if entry.deadline is None:
+                            continue
+                        if now < entry.deadline:
+                            continue
+                        await self._executor.force_cancel(oid)
+            except Exception as e:
+                logger.exception(f"Supervisor loop error: {e}")
+            await asyncio.sleep(0.5)
 
     async def _heartbeat_loop(self) -> None:
         """Periodically set a heartbeat key in Redis with TTL."""

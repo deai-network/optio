@@ -186,3 +186,56 @@ async def test_force_cancel_writes_failed_state_for_stubborn_task(mongo_db):
     # The asyncio task is finished one way or another.
     with pytest.raises(asyncio.CancelledError):
         await runner
+
+
+async def test_supervisor_force_cancels_past_deadline_entries(mongo_db):
+    """A stubborn task whose deadline has passed is force-cancelled by the supervisor."""
+    from optio_core.lifecycle import Optio
+    from optio_core.models import TaskInstance
+    import time as _time
+
+    prefix = "supv"
+    started = asyncio.Event()
+
+    async def stubborn(ctx):  # noqa: ARG001
+        started.set()
+        while True:
+            await asyncio.sleep(0.05)
+
+    task_inst = TaskInstance(
+        process_id="p.supv", name="Supv", params={}, execute=stubborn,
+    )
+
+    async def gen(_services, _filter):
+        return [task_inst]
+
+    optio = Optio()
+    await optio.init(
+        mongo_db=mongo_db, prefix=prefix,
+        get_task_definitions=gen, cancel_grace_seconds=0.3,
+    )
+    run_task = asyncio.create_task(optio.run())
+    try:
+        await optio.launch("p.supv")
+        await started.wait()
+        # Cancel — record the deadline.
+        await optio.cancel("p.supv")
+
+        # Within ~3s the supervisor should have force-cancelled.
+        deadline = _time.monotonic() + 3.0
+        while _time.monotonic() < deadline:
+            proc = await optio.get_process("p.supv")
+            if proc and proc["status"]["state"] == "failed":
+                break
+            await asyncio.sleep(0.1)
+
+        proc = await optio.get_process("p.supv")
+        assert proc["status"]["state"] == "failed"
+        assert "Task did not unwind within cancellation grace period" in proc["status"]["error"]
+    finally:
+        await optio.shutdown()
+        run_task.cancel()
+        try:
+            await run_task
+        except (asyncio.CancelledError, Exception):
+            pass
