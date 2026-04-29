@@ -131,3 +131,47 @@ def test_validate_escape_via_dotdot_rejected(tmp_workdir):
 def test_validate_absolute_outside_workdir_rejected(tmp_workdir):
     with pytest.raises(ValueError):
         validate_deliverable_path("/etc/passwd", tmp_workdir)
+
+
+# ---- relativize_deliverable_path ----
+
+from optio_opencode.logparse import relativize_deliverable_path
+
+
+def test_relativize_direct_child_of_deliverables(tmp_workdir):
+    import os
+    abs_path = os.path.join(tmp_workdir, "deliverables", "foo.md")
+    assert relativize_deliverable_path(abs_path, tmp_workdir) == "foo.md"
+
+
+def test_relativize_nested_under_deliverables(tmp_workdir):
+    import os
+    abs_path = os.path.join(tmp_workdir, "deliverables", "sub", "foo.md")
+    expected = os.path.join("sub", "foo.md")
+    assert relativize_deliverable_path(abs_path, tmp_workdir) == expected
+
+
+def test_relativize_inside_workdir_but_not_deliverables_rejected(tmp_workdir):
+    import os
+    abs_path = os.path.join(tmp_workdir, "foo.md")
+    with pytest.raises(ValueError):
+        relativize_deliverable_path(abs_path, tmp_workdir)
+
+
+def test_relativize_sibling_dir_with_deliverables_prefix_rejected(tmp_workdir):
+    import os
+    abs_path = os.path.join(tmp_workdir, "deliverables_other", "foo.md")
+    with pytest.raises(ValueError):
+        relativize_deliverable_path(abs_path, tmp_workdir)
+
+
+def test_relativize_deliverables_root_itself_rejected(tmp_workdir):
+    import os
+    abs_path = os.path.join(tmp_workdir, "deliverables")
+    with pytest.raises(ValueError):
+        relativize_deliverable_path(abs_path, tmp_workdir)
+
+
+def test_relativize_outside_workdir_rejected(tmp_workdir):
+    with pytest.raises(ValueError):
+        relativize_deliverable_path("/etc/passwd", tmp_workdir)

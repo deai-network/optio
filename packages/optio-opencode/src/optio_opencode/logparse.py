@@ -95,3 +95,31 @@ def validate_deliverable_path(path: str, workdir: str) -> str:
             f"workdir={workdir_abs!r})"
         )
     return candidate
+
+
+DELIVERABLES_SUBDIR = "deliverables"
+
+
+def relativize_deliverable_path(absolute_path: str, workdir: str) -> str:
+    """Return ``absolute_path`` made relative to ``<workdir>/deliverables/``.
+
+    Precondition: ``absolute_path`` has already been validated to be
+    inside ``workdir`` (via :func:`validate_deliverable_path`). Both
+    arguments may be any absolute paths; this function realpaths them
+    internally before relativizing.
+
+    Raises ``ValueError`` if ``absolute_path`` is not strictly under
+    ``<workdir>/deliverables/`` (including when it equals the
+    deliverables root itself or escapes outside it).
+    """
+    deliverables_root = os.path.realpath(
+        os.path.join(workdir, DELIVERABLES_SUBDIR)
+    )
+    target = os.path.realpath(absolute_path)
+    rel = os.path.relpath(target, deliverables_root)
+    if rel == "." or rel == ".." or rel.startswith(".." + os.sep):
+        raise ValueError(
+            f"deliverable path is not under <workdir>/{DELIVERABLES_SUBDIR}/: "
+            f"{absolute_path!r} (workdir={workdir!r})"
+        )
+    return rel
