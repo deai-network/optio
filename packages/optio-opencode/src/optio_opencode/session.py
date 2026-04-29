@@ -31,6 +31,7 @@ from optio_opencode.logparse import (
     StatusEvent,
     UnknownLine,
     parse_log_line,
+    relativize_deliverable_path,
     validate_deliverable_path,
 )
 from optio_opencode.paths import local_taskdir, remote_taskdir
@@ -256,7 +257,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         ctx.report_progress(None, "opencode is live")
 
         # --- run --------------------------------------------------------
-        deliverable_queue: asyncio.Queue[str] = asyncio.Queue(
+        deliverable_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue(
             maxsize=DELIVERABLE_QUEUE_BOUND
         )
         done_flag = asyncio.Event()
@@ -448,7 +449,7 @@ async def _capture_snapshot(
 async def _tail_and_dispatch(
     host: Host,
     ctx: ProcessContext,
-    deliverable_queue: asyncio.Queue[str],
+    deliverable_queue: asyncio.Queue[tuple[str, str]],
     done_flag: asyncio.Event,
     error_flag: list,
 ) -> None:
@@ -458,18 +459,28 @@ async def _tail_and_dispatch(
         if isinstance(ev, StatusEvent):
             ctx.report_progress(ev.percent, ev.message)
         elif isinstance(ev, DeliverableEvent):
-            ctx.report_progress(None, f"Deliverable: {ev.path}")
             try:
-                resolved = validate_deliverable_path(ev.path, host.workdir)
+                absolute = validate_deliverable_path(ev.path, host.workdir)
             except ValueError:
                 ctx.report_progress(
                     None, f"invalid deliverable path {ev.path!r}, skipping"
                 )
                 continue
             try:
-                deliverable_queue.put_nowait(resolved)
+                display = relativize_deliverable_path(absolute, host.workdir)
+            except ValueError:
+                ctx.report_progress(
+                    None,
+                    f"deliverable {ev.path!r}: not under deliverables/, "
+                    f"skipping (malfunction)",
+                )
+                continue
+            ctx.report_progress(None, f"Deliverable: {display}")
+            item = (absolute, display)
+            try:
+                deliverable_queue.put_nowait(item)
             except asyncio.QueueFull:
-                await deliverable_queue.put(resolved)
+                await deliverable_queue.put(item)
         elif isinstance(ev, DoneEvent):
             if ev.summary:
                 ctx.report_progress(None, ev.summary)
@@ -487,36 +498,36 @@ async def _tail_and_dispatch(
 async def _deliverable_fetch_loop(
     host: Host,
     callback: DeliverableCallback | None,
-    queue: asyncio.Queue[str],
+    queue: asyncio.Queue[tuple[str, str]],
     ctx: ProcessContext,
     hook_ctx: "HookContext",
 ) -> None:
     """Consume resolved deliverable paths and invoke the callback."""
     while True:
-        path = await queue.get()
+        absolute, display = await queue.get()
         try:
             try:
-                text = await host.fetch_deliverable_text(path)
+                text = await host.fetch_deliverable_text(absolute)
             except UnicodeDecodeError:
                 ctx.report_progress(
-                    None, f"Deliverable {path}: not valid UTF-8, skipping callback"
+                    None,
+                    f"Deliverable {display}: not valid UTF-8, skipping callback",
                 )
                 continue
             except FileNotFoundError:
-                ctx.report_progress(None, f"Deliverable {path}: not found")
+                ctx.report_progress(None, f"Deliverable {display}: not found")
                 continue
             except Exception as exc:  # noqa: BLE001
-                # Unexpected fetch error (SFTP drop, permission, etc.).  Log
-                # and continue so the main loop's queue.join() does not hang.
                 ctx.report_progress(
-                    None, f"Deliverable {path}: fetch failed: {exc!r}, skipping"
+                    None,
+                    f"Deliverable {display}: fetch failed: {exc!r}, skipping",
                 )
                 continue
 
             if callback is None:
                 continue
             try:
-                await callback(hook_ctx, path, text)
+                await callback(hook_ctx, display, text)
             except Exception as exc:  # noqa: BLE001
                 ctx.report_progress(
                     None, f"on_deliverable callback raised: {exc!r}"

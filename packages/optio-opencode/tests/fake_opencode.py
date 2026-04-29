@@ -123,6 +123,12 @@ SCENARIOS = {
         ("sleep", 0.05),
         ("log", "DONE"),
     ],
+    "inside_workdir_not_deliverables": [
+        ("write", "stray.txt", "hi"),
+        ("log", "DELIVERABLE: ./stray.txt"),
+        ("sleep", 0.05),
+        ("log", "DONE"),
+    ],
     "non_utf8": [
         ("write_bytes", "deliverables/bad.bin", b"\xff\xfe\x00\x01"),
         ("log", "DELIVERABLE: ./deliverables/bad.bin"),

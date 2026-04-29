@@ -140,7 +140,7 @@ async def test_happy_path(ctx_and_captures, _supply_scenario):
 
     assert len(received) == 1
     p, text = received[0]
-    assert "deliverables/out.txt" in p
+    assert p == "out.txt"
     assert text == "hello 42 blue"
 
 
@@ -180,6 +180,25 @@ async def test_invalid_deliverable_path_is_skipped(ctx_and_captures, _supply_sce
     assert received == []
     messages = [m for (_p, m) in cap.progress if m is not None]
     assert any("invalid deliverable path" in m for m in messages)
+
+
+async def test_deliverable_outside_deliverables_dir_is_skipped(
+    ctx_and_captures, _supply_scenario,
+):
+    ctx, cap, _ = ctx_and_captures
+    _supply_scenario["name"] = "inside_workdir_not_deliverables"
+
+    received: list = []
+    async def on_d(hook_ctx, path, text):
+        received.append((path, text))
+
+    await run_opencode_session(
+        ctx,
+        _config("inside_workdir_not_deliverables", deliverable_cb=on_d),
+    )
+    assert received == []
+    messages = [m for (_p, m) in cap.progress if m is not None]
+    assert any("not under deliverables/" in m for m in messages)
 
 
 async def test_non_utf8_deliverable_is_skipped(ctx_and_captures, _supply_scenario):
