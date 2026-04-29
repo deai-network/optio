@@ -458,3 +458,98 @@ async def test_handle_cancel_records_deadline_on_running_process(mongo_db):
             await run_task
         except (asyncio.CancelledError, Exception):
             pass
+
+
+async def test_shutdown_finalizes_mixed_cooperative_and_stubborn_tasks(mongo_db):
+    """Mixed tasks: cooperators -> 'cancelled', stubborn -> 'failed'."""
+    from optio_core.lifecycle import Optio
+    from optio_core.models import TaskInstance
+
+    prefix = "shutmix"
+
+    async def cooperative(ctx):
+        for _ in range(200):
+            if ctx.cancellation_flag.is_set():
+                return
+            await asyncio.sleep(0.05)
+
+    async def stubborn(ctx):  # noqa: ARG001
+        while True:
+            await asyncio.sleep(0.05)
+
+    tasks = [
+        TaskInstance(process_id="p.coop", name="Coop", params={}, execute=cooperative),
+        TaskInstance(process_id="p.stub", name="Stub", params={}, execute=stubborn),
+    ]
+    async def gen(_s, _f):
+        return tasks
+
+    optio = Optio()
+    await optio.init(
+        mongo_db=mongo_db, prefix=prefix,
+        get_task_definitions=gen, cancel_grace_seconds=0.4,
+    )
+    run_task = asyncio.create_task(optio.run())
+    try:
+        await optio.launch("p.coop")
+        await optio.launch("p.stub")
+        await asyncio.sleep(0.3)
+
+        await optio.shutdown()
+
+        coop = await optio.get_process("p.coop")
+        stub = await optio.get_process("p.stub")
+        assert coop["status"]["state"] == "cancelled"
+        assert stub["status"]["state"] == "failed"
+        assert "Task did not unwind within cancellation grace period" in stub["status"]["error"]
+    finally:
+        run_task.cancel()
+        try:
+            await run_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+async def test_shutdown_grace_seconds_override_honoured(mongo_db):
+    """shutdown(grace_seconds=X) overrides the configured default for that call."""
+    from optio_core.lifecycle import Optio
+    from optio_core.models import TaskInstance
+
+    prefix = "shutov"
+
+    async def stubborn(ctx):  # noqa: ARG001
+        while True:
+            await asyncio.sleep(0.05)
+
+    task_inst = TaskInstance(
+        process_id="p.stub", name="Stub", params={}, execute=stubborn,
+    )
+    async def gen(_s, _f):
+        return [task_inst]
+
+    optio = Optio()
+    await optio.init(
+        mongo_db=mongo_db, prefix=prefix,
+        get_task_definitions=gen, cancel_grace_seconds=10.0,
+    )
+    run_task = asyncio.create_task(optio.run())
+    try:
+        await optio.launch("p.stub")
+        await asyncio.sleep(0.3)
+
+        # Even though the config grace is 10s, override to 0.3s.
+        import time as _time
+        t0 = _time.monotonic()
+        await optio.shutdown(grace_seconds=0.3)
+        elapsed = _time.monotonic() - t0
+        # Should finish well under 10 seconds.
+        assert elapsed < 6.0
+
+        proc = await optio.get_process("p.stub")
+        assert proc["status"]["state"] == "failed"
+    finally:
+        run_task.cancel()
+        try:
+            await run_task
+        except (asyncio.CancelledError, Exception):
+            pass

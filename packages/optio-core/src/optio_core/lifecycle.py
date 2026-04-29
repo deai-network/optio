@@ -364,17 +364,20 @@ class Optio:
         finally:
             await self._scheduler.stop()
 
-    async def shutdown(self, grace_seconds: float = 5.0) -> None:
-        """Graceful shutdown.
+    async def shutdown(self, grace_seconds: float | None = None) -> None:
+        """Graceful shutdown unified on the deadline-cancel mechanism.
 
         Args:
-            grace_seconds: how long to wait for cooperating tasks to unwind
-                after their cancellation flag is set. Tasks still running after
-                the grace period are force-finalized to 'failed' in Mongo.
+            grace_seconds: How long to wait for cooperating tasks to unwind
+                after the cooperative flag + deadline are set. Defaults to
+                config.cancel_grace_seconds. Tasks past their deadline are
+                force-cancelled by the supervisor (or, if the supervisor has
+                already stopped, by direct executor.force_cancel calls below).
         """
         logger.info("Shutdown requested")
         self._running = False
 
+        # 1. Heartbeat
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
             try:
@@ -383,31 +386,39 @@ class Optio:
                 pass
             self._heartbeat_task = None
 
+        # 2. Consumer
         if self._consumer:
             self._consumer.stop()
-
         if hasattr(self, '_shutdown_event'):
             self._shutdown_event.set()
 
-        # Cancel all running processes
+        # 3. Cancel everything via the unified mechanism.
+        grace = (
+            grace_seconds
+            if grace_seconds is not None
+            else self._config.cancel_grace_seconds
+        )
         if self._executor:
-            for oid, entry in list(self._executor._cancellation_flags.items()):
+            now_mono = time.monotonic()
+            for oid in list(self._executor._cancellation_flags.keys()):
+                entry = self._executor._cancellation_flags.get(oid)
+                if entry is None:
+                    continue
                 entry.flag.set()
+                if entry.deadline is None:
+                    entry.deadline = now_mono + grace
 
-            # Wait for cooperating processes to exit
-            step = 0.1
-            steps = max(1, int(grace_seconds / step))
-            for _ in range(steps):
-                if not self._executor._cancellation_flags:
-                    break
-                await asyncio.sleep(step)
+            # Wait for entries to drain. The supervisor handles force-cancel.
+            ceiling = time.monotonic() + grace + 5.0
+            while self._executor._cancellation_flags and time.monotonic() < ceiling:
+                await asyncio.sleep(0.1)
 
-            # Force-finalize any task that did not unwind in time.
-            # Spec: docs/2026-04-22-process-reconciliation-design.md
-            remaining = list(self._executor._cancellation_flags.keys())
-            if remaining:
-                await self._force_finalize_stuck_processes(remaining)
+            # Belt and braces: anything still left, force-cancel directly.
+            # (Handles the case where the supervisor was slow or already stopped.)
+            for oid in list(self._executor._cancellation_flags.keys()):
+                await self._executor.force_cancel(oid)
 
+        # 4. Stop supervisor (after final force-cancel pass).
         if self._supervisor_task:
             self._supervisor_task.cancel()
             try:
@@ -416,6 +427,7 @@ class Optio:
                 pass
             self._supervisor_task = None
 
+        # 5. Redis
         if self._redis:
             await self._redis.aclose()
 
@@ -456,43 +468,6 @@ class Optio:
                 "event", f"State reconciled: {prev_state} -> failed (server restart)",
             )
         logger.info(f"Reconciled {len(stale)} interrupted process(es) to 'failed'")
-
-    async def _force_finalize_stuck_processes(self, oids: list[ObjectId]) -> None:
-        """Mark processes that did not unwind during shutdown as failed.
-
-        Spec: docs/2026-04-22-process-reconciliation-design.md (Rule 2).
-
-        Uses a conditional Mongo update so we do not overwrite a terminal
-        state a task may have flushed at the last moment. The same
-        conditional scopes the widgetUpstream clearing — a task that won
-        the race to terminal owns its widgetUpstream transition (via the
-        executor's teardown path).
-        """
-        coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
-        now = datetime.now(timezone.utc)
-        error_msg = "Task did not exit within shutdown grace period"
-        status_doc = ProcessStatus(
-            state="failed", error=error_msg, failed_at=now,
-        ).to_dict()
-
-        forced = 0
-        for oid in oids:
-            result = await coll.update_one(
-                {"_id": oid, "status.state": {"$in": list(ACTIVE_STATES)}},
-                {"$set": {"status": status_doc, "widgetUpstream": None}},
-            )
-            if result.modified_count:
-                forced += 1
-                await append_log(
-                    self._config.mongo_db, self._config.prefix, oid,
-                    "event", "State forced: running -> failed (shutdown grace period exceeded)",
-                )
-            self._executor._cancellation_flags.pop(oid, None)
-
-        if forced:
-            logger.warning(
-                f"Force-finalized {forced} process(es) that did not exit within grace period"
-            )
 
     async def _supervisor_loop(self) -> None:
         """Scan for past-deadline cancellations every 500 ms; force-cancel them."""

@@ -187,7 +187,7 @@ async def test_shutdown_leaves_cooperative_task_widget_upstream_alone(mongo_db):
     for a task that flushed its own terminal state inside the grace period.
 
     This pins the invariant that widgetUpstream clearing by
-    _force_finalize_stuck_processes is scoped to the same conditional
+    _write_force_cancelled_state is scoped to the same conditional
     (status.state in ACTIVE_STATES) as the state write — we must not
     race a cooperative task's own teardown.
     """
