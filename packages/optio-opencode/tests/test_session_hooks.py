@@ -246,7 +246,7 @@ async def test_on_deliverable_receives_hook_ctx_and_can_use_host_primitives(tmp_
     from optio_opencode.hook_context import HookContext
 
     queue = asyncio.Queue()
-    await queue.put("/wd/deliverables/x.txt")
+    await queue.put(("/wd/deliverables/x.txt", "x.txt"))
 
     # Patch host.fetch_deliverable_text to return canned content.
     async def _fake_fetch(_path):
@@ -262,5 +262,5 @@ async def test_on_deliverable_receives_hook_ctx_and_can_use_host_primitives(tmp_
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    assert received == [("/wd/deliverables/x.txt", "deliverable text")]
+    assert received == [("x.txt", "deliverable text")]
     assert "run_command:noop" in host.timeline
