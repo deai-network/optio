@@ -218,6 +218,10 @@ async def test_supervisor_force_cancels_past_deadline_entries(mongo_db):
     try:
         await optio.launch("p.supv")
         await started.wait()
+        # Capture the inner asyncio.Task before force-cancel pops the registry.
+        inner_oid = next(iter(optio._executor._running_tasks))
+        inner_task = optio._executor._running_tasks[inner_oid]
+
         # Cancel — record the deadline.
         await optio.cancel("p.supv")
 
@@ -232,6 +236,8 @@ async def test_supervisor_force_cancels_past_deadline_entries(mongo_db):
         proc = await optio.get_process("p.supv")
         assert proc["status"]["state"] == "failed"
         assert "Task did not unwind within cancellation grace period" in proc["status"]["error"]
+        # Spec scenario 2: the asyncio Task object reports cancelled.
+        assert inner_task.cancelled()
     finally:
         await optio.shutdown()
         run_task.cancel()
