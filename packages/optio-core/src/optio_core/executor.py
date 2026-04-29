@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Awaitable
 from bson import ObjectId
@@ -20,6 +21,18 @@ from optio_core.store import (
 from optio_core.context import ProcessContext
 
 
+@dataclass
+class _CancelEntry:
+    """Tracks cooperative-cancel state for one running process.
+
+    `flag` is the cooperative cancellation Event consumed by ProcessContext.
+    `deadline` is a monotonic timestamp; None until cancel() is called. Once
+    set, it is not refreshed by subsequent calls (first wins).
+    """
+    flag: asyncio.Event
+    deadline: float | None = None
+
+
 class Executor:
     """Executes task functions with lifecycle management."""
 
@@ -34,7 +47,8 @@ class Executor:
         self._prefix = prefix
         self._services = services
         self._optio = optio
-        self._cancellation_flags: dict[ObjectId, asyncio.Event] = {}
+        self._cancellation_flags: dict[ObjectId, _CancelEntry] = {}
+        self._running_tasks: dict[ObjectId, asyncio.Task] = {}
         self._task_registry: dict[str, TaskInstance] = {}
 
     def register_tasks(
@@ -104,100 +118,102 @@ class Executor:
         root_oid = proc.get("rootId", oid)
 
         cancel_flag = asyncio.Event()
-        self._cancellation_flags[oid] = cancel_flag
-
-        # Transition to running
-        now = datetime.now(timezone.utc)
-        await update_status(
-            self._db, self._prefix, oid,
-            ProcessStatus(state="running", running_since=now),
-        )
-        await append_log(self._db, self._prefix, oid, "event", "State changed to running")
-
-        # Create context
-        ctx = ProcessContext(
-            process_oid=oid,
-            process_id=proc["processId"],
-            root_oid=root_oid,
-            depth=proc.get("depth", 0),
-            params=proc.get("params", {}),
-            metadata=proc.get("metadata", {}),
-            services=self._services,
-            db=self._db,
-            prefix=self._prefix,
-            cancellation_flag=cancel_flag,
-            child_counter={"next": 0},
-            resume=resume,
-        )
-        ctx._executor = self
-
-        if parent_ctx is not None and parent_ctx._on_child_progress is not None:
-            child_process_id = proc["processId"]
-            child_name = proc["name"]
-            def _listener(percent, message, _pid=child_process_id, _name=child_name):
-                parent_ctx._notify_child_progress(_pid, _name, "running", percent, message)
-            ctx._parent_listener = _listener
-
-        if execute_fn is None:
-            await update_status(
-                self._db, self._prefix, oid,
-                ProcessStatus(
-                    state="failed", error="No execute function found",
-                    failed_at=datetime.now(timezone.utc),
-                ),
-            )
-            self._cancellation_flags.pop(oid, None)
-            return "failed"
-
-        start_time = time.monotonic()
-        end_state = "done"
+        self._cancellation_flags[oid] = _CancelEntry(flag=cancel_flag, deadline=None)
+        current = asyncio.current_task()
+        if current is not None:
+            self._running_tasks[oid] = current
 
         try:
-            await execute_fn(ctx)
-            if cancel_flag.is_set():
-                end_state = "cancelled"
-        except Exception as e:
+            now = datetime.now(timezone.utc)
+            await update_status(
+                self._db, self._prefix, oid,
+                ProcessStatus(state="running", running_since=now),
+            )
+            await append_log(self._db, self._prefix, oid, "event", "State changed to running")
+
+            ctx = ProcessContext(
+                process_oid=oid,
+                process_id=proc["processId"],
+                root_oid=root_oid,
+                depth=proc.get("depth", 0),
+                params=proc.get("params", {}),
+                metadata=proc.get("metadata", {}),
+                services=self._services,
+                db=self._db,
+                prefix=self._prefix,
+                cancellation_flag=cancel_flag,
+                child_counter={"next": 0},
+                resume=resume,
+            )
+            ctx._executor = self
+
+            if parent_ctx is not None and parent_ctx._on_child_progress is not None:
+                child_process_id = proc["processId"]
+                child_name = proc["name"]
+                def _listener(percent, message, _pid=child_process_id, _name=child_name):
+                    parent_ctx._notify_child_progress(_pid, _name, "running", percent, message)
+                ctx._parent_listener = _listener
+
+            if execute_fn is None:
+                await update_status(
+                    self._db, self._prefix, oid,
+                    ProcessStatus(
+                        state="failed", error="No execute function found",
+                        failed_at=datetime.now(timezone.utc),
+                    ),
+                )
+                return "failed"
+
+            start_time = time.monotonic()
+            end_state = "done"
+
+            try:
+                await execute_fn(ctx)
+                if cancel_flag.is_set():
+                    end_state = "cancelled"
+            except Exception as e:
+                await ctx.flush_final_progress()
+                await update_status(
+                    self._db, self._prefix, oid,
+                    ProcessStatus(
+                        state="failed", error=str(e),
+                        failed_at=datetime.now(timezone.utc),
+                    ),
+                )
+                await append_log(self._db, self._prefix, oid, "error", str(e))
+                await clear_widget_upstream(self._db, self._prefix, oid)
+                await self._cleanup_ephemeral(proc["processId"])
+                return "failed"
+
             await ctx.flush_final_progress()
-            await update_status(
-                self._db, self._prefix, oid,
-                ProcessStatus(
-                    state="failed", error=str(e),
-                    failed_at=datetime.now(timezone.utc),
-                ),
-            )
-            await append_log(self._db, self._prefix, oid, "error", str(e))
+            elapsed = time.monotonic() - start_time
+
+            if end_state == "done":
+                await update_status(
+                    self._db, self._prefix, oid,
+                    ProcessStatus(
+                        state="done",
+                        done_at=datetime.now(timezone.utc),
+                        duration=round(elapsed, 2),
+                    ),
+                )
+                await append_log(self._db, self._prefix, oid, "event", "State changed to done")
+            elif end_state == "cancelled":
+                await update_status(
+                    self._db, self._prefix, oid,
+                    ProcessStatus(
+                        state="cancelled",
+                        stopped_at=datetime.now(timezone.utc),
+                    ),
+                )
+                await append_log(self._db, self._prefix, oid, "event", "State changed to cancelled")
+
             await clear_widget_upstream(self._db, self._prefix, oid)
-            self._cancellation_flags.pop(oid, None)
             await self._cleanup_ephemeral(proc["processId"])
-            return "failed"
-
-        await ctx.flush_final_progress()
-        elapsed = time.monotonic() - start_time
-
-        if end_state == "done":
-            await update_status(
-                self._db, self._prefix, oid,
-                ProcessStatus(
-                    state="done",
-                    done_at=datetime.now(timezone.utc),
-                    duration=round(elapsed, 2),
-                ),
-            )
-            await append_log(self._db, self._prefix, oid, "event", "State changed to done")
-        elif end_state == "cancelled":
-            await update_status(
-                self._db, self._prefix, oid,
-                ProcessStatus(
-                    state="cancelled",
-                    stopped_at=datetime.now(timezone.utc),
-                ),
-            )
-            await append_log(self._db, self._prefix, oid, "event", "State changed to cancelled")
-
-        await clear_widget_upstream(self._db, self._prefix, oid)
-        self._cancellation_flags.pop(oid, None)
-        await self._cleanup_ephemeral(proc["processId"])
-        return end_state
+            return end_state
+        finally:
+            self._cancellation_flags.pop(oid, None)
+            self._running_tasks.pop(oid, None)
 
     async def execute_child(
         self,
@@ -243,9 +259,9 @@ class Executor:
         return end_state
 
     def request_cancel(self, process_oid: ObjectId) -> bool:
-        """Request cancellation of a running process."""
-        flag = self._cancellation_flags.get(process_oid)
-        if flag is not None:
-            flag.set()
+        """Request cancellation of a running process. (Legacy — Task 4 replaces.)"""
+        entry = self._cancellation_flags.get(process_oid)
+        if entry is not None:
+            entry.flag.set()
             return True
         return False

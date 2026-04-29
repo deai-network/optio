@@ -353,8 +353,8 @@ class Optio:
 
         # Cancel all running processes
         if self._executor:
-            for oid, flag in list(self._executor._cancellation_flags.items()):
-                flag.set()
+            for oid, entry in list(self._executor._cancellation_flags.items()):
+                entry.flag.set()
 
             # Wait for cooperating processes to exit
             step = 0.1
