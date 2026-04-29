@@ -226,7 +226,12 @@ class Optio:
 
         If resume is True, the task is launched with ctx.resume=True so it can
         restore previous state rather than start fresh.
+
+        Raises LaunchBlocked if a registered launch block matches the task's metadata.
         """
+        task = self._executor._task_registry.get(process_id)
+        if task is not None:
+            self._check_launch_blocks(task.metadata)
         asyncio.create_task(self._executor.launch_process(process_id, resume=resume))
 
     async def launch_and_wait(self, process_id: str, resume: bool = False) -> None:
@@ -234,7 +239,12 @@ class Optio:
 
         If resume is True, the task is launched with ctx.resume=True so it can
         restore previous state rather than start fresh.
+
+        Raises LaunchBlocked if a registered launch block matches the task's metadata.
         """
+        task = self._executor._task_registry.get(process_id)
+        if task is not None:
+            self._check_launch_blocks(task.metadata)
         await self._executor.launch_process(process_id, resume=resume)
 
     async def cancel(self, process_id: str) -> None:

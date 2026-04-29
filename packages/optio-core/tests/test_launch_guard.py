@@ -1,5 +1,6 @@
 """Tests for the launch-guard mechanism."""
 
+import asyncio
 import pytest
 from optio_core.models import LaunchBlocked, TaskInstance
 from optio_core.lifecycle import Optio
@@ -174,16 +175,24 @@ async def test_execute_child_blocked_when_parent_metadata_matches(mongo_db):
 
     Children inherit parent metadata; the block matches the parent's project
     so the run_child call is rejected.
+
+    The parent is launched BEFORE the block is registered so that
+    Optio.launch_and_wait does not itself raise LaunchBlocked.  An asyncio
+    Event is used to make the parent hold off on spawning its child until the
+    block is active, ensuring the run_child call is the one that gets rejected.
     """
     optio = Optio()
     await optio.init(mongo_db=mongo_db, prefix="test")
 
     observed = {}
+    block_active = asyncio.Event()
 
     async def child_task(ctx):
         observed["child_ran"] = True
 
     async def parent_task(ctx):
+        # Wait until the launch block is registered before attempting run_child.
+        await block_active.wait()
         try:
             await ctx.run_child(
                 execute=child_task,
@@ -203,11 +212,103 @@ async def test_execute_child_blocked_when_parent_metadata_matches(mongo_db):
     optio._executor.register_tasks([parent])
     await optio.adhoc_define(parent)
 
+    # Launch parent before the block is activated so launch_and_wait itself
+    # does not raise (the block check at launch time would also reject it).
+    parent_future = asyncio.ensure_future(
+        optio._executor.launch_process("parent1")
+    )
+
     async with optio.block_launches({"project": "p1"}):
-        # The parent itself was defined BEFORE the block (above), so it
-        # can run; but its run_child will be blocked because the child
-        # inherits {"project": "p1"} from parent_ctx.metadata.
-        await optio.launch_and_wait("parent1")
+        # Signal the running parent that the block is now in force.
+        block_active.set()
+        # Wait for the parent to finish (it will observe LaunchBlocked on run_child).
+        await parent_future
 
     assert "blocked" in observed
     assert "child_ran" not in observed
+
+
+async def test_launch_blocked_when_task_metadata_matches(mongo_db):
+    """Optio.launch raises LaunchBlocked synchronously for a task whose metadata matches a block.
+
+    The check happens before the asyncio Task is scheduled, so the caller
+    observes the exception directly.
+    """
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix="test")
+
+    async def noop(ctx):
+        pass
+
+    task = TaskInstance(
+        execute=noop,
+        process_id="launch1",
+        name="launch1",
+        metadata={"project": "p1"},
+    )
+    optio._executor.register_tasks([task])
+    # Use upsert_process to create the record so launch can find it.
+    from optio_core.store import upsert_process
+    await upsert_process(mongo_db, "test", task)
+
+    async with optio.block_launches({"project": "p1"}):
+        with pytest.raises(LaunchBlocked):
+            await optio.launch("launch1")
+
+
+async def test_launch_and_wait_blocked_when_task_metadata_matches(mongo_db):
+    """Optio.launch_and_wait raises LaunchBlocked for a blocked task."""
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix="test")
+
+    async def noop(ctx):
+        pass
+
+    task = TaskInstance(
+        execute=noop,
+        process_id="launch2",
+        name="launch2",
+        metadata={"project": "p1"},
+    )
+    optio._executor.register_tasks([task])
+    from optio_core.store import upsert_process
+    await upsert_process(mongo_db, "test", task)
+
+    async with optio.block_launches({"project": "p1"}):
+        with pytest.raises(LaunchBlocked):
+            await optio.launch_and_wait("launch2")
+
+
+async def test_launch_passes_when_task_metadata_does_not_match(mongo_db):
+    """Launches with non-matching metadata succeed normally."""
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix="test")
+
+    async def noop(ctx):
+        pass
+
+    task = TaskInstance(
+        execute=noop,
+        process_id="launch3",
+        name="launch3",
+        metadata={"project": "p2"},
+    )
+    optio._executor.register_tasks([task])
+    from optio_core.store import upsert_process
+    await upsert_process(mongo_db, "test", task)
+
+    async with optio.block_launches({"project": "p1"}):
+        # No exception; awaitable returns normally.
+        await optio.launch_and_wait("launch3")
+
+
+async def test_launch_passes_when_pid_unknown(mongo_db):
+    """An unknown process_id has no metadata to match — falls through to the
+    existing 'no execute function found' failure path inside the executor.
+    """
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix="test")
+
+    async with optio.block_launches({"project": "p1"}):
+        # No raise; the launch is harmless because no record exists.
+        await optio.launch("nope")
