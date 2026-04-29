@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { WidgetProps } from './registry.js';
 import { registerWidget } from './registry.js';
+import { isTerminalState } from '../process-state.js';
 
 interface IframeWidgetData {
   localStorageOverrides?: Record<string, string>;
@@ -10,12 +11,10 @@ interface IframeWidgetData {
   title?: string;
 }
 
-const TERMINAL_STATES = new Set(['done', 'failed', 'cancelled']);
-
 export function IframeWidget(props: WidgetProps) {
   const widgetData = (props.process.widgetData ?? undefined) as IframeWidgetData | undefined;
   const state: string | undefined = props.process.status?.state;
-  const isTerminal = state !== undefined && TERMINAL_STATES.has(state);
+  const isTerminal = isTerminalState(state);
   const [bannerDismissed, setBannerDismissed] = useState(false);
 
   useEffect(() => {

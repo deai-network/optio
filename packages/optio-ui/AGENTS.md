@@ -21,6 +21,45 @@
 - `react-i18next: >=15`
 - `i18next: >=24`
 
+## Conventions
+
+### Process state — single source of truth
+
+**The only acceptable way to make decisions about task lifecycle state is by
+calling a predicate from `src/process-state.ts`.** That file is the single
+source of truth for what counts as "launchable", "active", "terminal", or
+"resumable".
+
+Do **not**:
+
+- Compare state strings inline (`state === 'running'`, `state in [...]`,
+  `[...].includes(state)`).
+- Define a local `Set` of state names (`LAUNCHABLE_STATES`, `ACTIVE_STATES`,
+  `TERMINAL_STATES`, etc.) inside a component or hook.
+- Re-derive these in consuming apps (e.g. `excavator`'s `ProcessDetailPage`) —
+  import the predicate instead.
+
+Do:
+
+- Use `isLaunchable(process)` / `isLaunchableState(state)`,
+  `isActive(process)` / `isActiveState(state)`,
+  `isTerminal(process)` / `isTerminalState(state)`,
+  `isResumable(process)`.
+- If you genuinely need a new state-derived concept (e.g. "show widget UI" —
+  which is *almost* `isActive` but excludes `scheduled`), add a named
+  predicate to `process-state.ts` rather than spelling out the set at the
+  callsite. Give it a name that says *what it gates*, not what states it
+  contains.
+- Add a unit test next to the existing ones in
+  `src/__tests__/process-state.test.ts`.
+
+Reason: state-set duplication has bitten us before. The state vocabulary
+evolves (e.g. `cancel_requested` was added later than `cancelling`), and any
+inline copy is a latent bug waiting for the next vocabulary change. A single
+file, fully tested, fixes this once.
+
+If in doubt: add a predicate, don't inline the check.
+
 ## OptioProvider
 
 ```ts

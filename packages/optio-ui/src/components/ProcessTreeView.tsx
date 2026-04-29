@@ -4,11 +4,10 @@ import { CloseCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { ProcessStatusBadge } from './ProcessStatusBadge.js';
 import { LaunchControls } from './LaunchControls.js';
+import { isActive as isProcessActive } from '../process-state.js';
 import type { DataNode } from 'antd/es/tree';
 
 const { Text } = Typography;
-
-const ACTIVE_STATES = new Set(['running', 'scheduled', 'cancel_requested', 'cancelling']);
 
 interface ProcessNode {
   _id: string;
@@ -57,7 +56,7 @@ function treeNodeToDataNode(
   onLaunch: ((id: string, opts?: { resume?: boolean }) => void) | undefined,
   t: (key: string) => string,
 ): DataNode {
-  const isActive = ACTIVE_STATES.has(node.status.state);
+  const isActive = isProcessActive(node);
   const isCancellable = isActive && node.cancellable;
   const hasPercent = node.progress.percent != null;
 

@@ -4,10 +4,9 @@ import { useTranslation } from 'react-i18next';
 import { HighlightedText } from '@quaesitor-textus/core';
 import { ProcessStatusBadge } from './ProcessStatusBadge.js';
 import { LaunchControls } from './LaunchControls.js';
+import { isActive as isProcessActive } from '../process-state.js';
 
 const { Text } = Typography;
-
-const ACTIVE_STATES = new Set(['running', 'scheduled', 'cancel_requested', 'cancelling']);
 
 interface ProcessListProps {
   processes: any[];
@@ -20,7 +19,7 @@ interface ProcessListProps {
 export function ProcessItem({ process, onLaunch, onCancel, readonly, onProcessClick }: { process: any; onLaunch?: (id: string, opts?: { resume?: boolean }) => void; onCancel?: (id: string) => void; readonly?: boolean; onProcessClick?: (id: string) => void }) {
   const { t } = useTranslation();
   const state = process.status?.state ?? 'idle';
-  const isActive = ACTIVE_STATES.has(state);
+  const isActive = isProcessActive(process);
   const isCancellable = !readonly && isActive && process.cancellable;
   const hasPercent = process.progress?.percent != null;
 

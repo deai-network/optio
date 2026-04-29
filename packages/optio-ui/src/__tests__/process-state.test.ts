@@ -1,5 +1,64 @@
 import { describe, it, expect } from 'vitest';
-import { isLaunchable, isActive, isResumable } from '../process-state.js';
+import {
+  isLaunchable,
+  isLaunchableState,
+  isActive,
+  isActiveState,
+  isTerminal,
+  isTerminalState,
+  isResumable,
+} from '../process-state.js';
+
+describe('isLaunchableState', () => {
+  it.each(['idle', 'done', 'failed', 'cancelled'])('true for %s', (state) => {
+    expect(isLaunchableState(state)).toBe(true);
+  });
+  it.each(['running', 'scheduled', 'cancel_requested', 'cancelling'])('false for %s', (state) => {
+    expect(isLaunchableState(state)).toBe(false);
+  });
+  it('false for null/undefined/empty', () => {
+    expect(isLaunchableState(null)).toBe(false);
+    expect(isLaunchableState(undefined)).toBe(false);
+    expect(isLaunchableState('')).toBe(false);
+  });
+});
+
+describe('isActiveState', () => {
+  it.each(['running', 'scheduled', 'cancel_requested', 'cancelling'])('true for %s', (state) => {
+    expect(isActiveState(state)).toBe(true);
+  });
+  it.each(['idle', 'done', 'failed', 'cancelled'])('false for %s', (state) => {
+    expect(isActiveState(state)).toBe(false);
+  });
+  it('false for null/undefined/empty', () => {
+    expect(isActiveState(null)).toBe(false);
+    expect(isActiveState(undefined)).toBe(false);
+    expect(isActiveState('')).toBe(false);
+  });
+});
+
+describe('isTerminalState', () => {
+  it.each(['done', 'failed', 'cancelled'])('true for %s', (state) => {
+    expect(isTerminalState(state)).toBe(true);
+  });
+  it.each(['idle', 'running', 'scheduled', 'cancel_requested', 'cancelling'])('false for %s', (state) => {
+    expect(isTerminalState(state)).toBe(false);
+  });
+  it('idle is launchable but not terminal', () => {
+    expect(isLaunchableState('idle')).toBe(true);
+    expect(isTerminalState('idle')).toBe(false);
+  });
+});
+
+describe('isTerminal', () => {
+  it.each(['done', 'failed', 'cancelled'])('true for state=%s', (state) => {
+    expect(isTerminal({ status: { state } })).toBe(true);
+  });
+  it('false for missing process / state', () => {
+    expect(isTerminal(null)).toBe(false);
+    expect(isTerminal({})).toBe(false);
+  });
+});
 
 describe('isLaunchable', () => {
   it.each(['idle', 'done', 'failed', 'cancelled'])('true for state=%s', (state) => {
