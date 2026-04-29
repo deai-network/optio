@@ -15,7 +15,8 @@ except ImportError:
     Redis = None  # type: ignore[assignment,misc]
 
 from optio_core.models import (
-    TaskInstance, OptioConfig, ProcessStatus, ProcessMetadataFilter, matches_filter,
+    TaskInstance, OptioConfig, ProcessStatus, ProcessMetadataFilter,
+    matches_filter, LaunchBlocked,
 )
 from optio_core.store import (
     upsert_process, remove_stale_processes,
@@ -147,6 +148,20 @@ class Optio:
             yield
         finally:
             self._launch_blocks.pop(token, None)
+
+    def _check_launch_blocks(self, metadata: ProcessMetadataFilter | None) -> None:
+        """Raise LaunchBlocked if `metadata` matches any registered block.
+
+        Fast path: empty `_launch_blocks` returns immediately.
+        """
+        if not self._launch_blocks:
+            return
+        md = metadata or {}
+        for filter in self._launch_blocks.values():
+            if matches_filter(md, filter):
+                raise LaunchBlocked(
+                    f"Launch blocked by filter {filter}; task metadata={md}"
+                )
 
     async def adhoc_define(
         self,

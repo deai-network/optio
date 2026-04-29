@@ -63,3 +63,59 @@ async def test_block_launches_exported_from_package():
         # Uses the module-level _instance singleton.
         assert len(optio_core._instance._launch_blocks) == 1
     assert optio_core._instance._launch_blocks == {}
+
+
+async def test_check_launch_blocks_passes_when_no_blocks_registered():
+    """No registered blocks → check is a fast no-op."""
+    optio = Optio()
+    # Should not raise.
+    optio._check_launch_blocks({"project": "p1"})
+
+
+async def test_check_launch_blocks_raises_when_metadata_matches():
+    """Registered block whose filter matches the metadata raises LaunchBlocked."""
+    optio = Optio()
+    async with optio.block_launches({"project": "p1"}):
+        with pytest.raises(LaunchBlocked, match="project"):
+            optio._check_launch_blocks({"project": "p1", "sourceId": "s1"})
+
+
+async def test_check_launch_blocks_passes_when_metadata_does_not_match():
+    """Registered block whose filter does not match the metadata is a no-op."""
+    optio = Optio()
+    async with optio.block_launches({"project": "p1"}):
+        optio._check_launch_blocks({"project": "p2"})
+        optio._check_launch_blocks({"unrelated": "x"})
+
+
+async def test_check_launch_blocks_handles_none_metadata():
+    """metadata=None is treated as empty dict — empty filter still matches."""
+    optio = Optio()
+    async with optio.block_launches({}):
+        with pytest.raises(LaunchBlocked):
+            optio._check_launch_blocks(None)
+
+
+async def test_check_launch_blocks_empty_filter_blocks_everything():
+    """An empty filter `{}` matches every task metadata."""
+    optio = Optio()
+    async with optio.block_launches({}):
+        with pytest.raises(LaunchBlocked):
+            optio._check_launch_blocks({"project": "p1"})
+        with pytest.raises(LaunchBlocked):
+            optio._check_launch_blocks({"anything": "else"})
+
+
+async def test_check_launch_blocks_message_includes_filter_and_metadata():
+    """The LaunchBlocked message contains both the matching filter and the rejected metadata."""
+    optio = Optio()
+    async with optio.block_launches({"project": "p1"}):
+        try:
+            optio._check_launch_blocks({"project": "p1", "sourceId": "s1"})
+        except LaunchBlocked as e:
+            msg = str(e)
+            assert "p1" in msg
+            assert "s1" in msg
+            assert "project" in msg
+        else:
+            pytest.fail("LaunchBlocked not raised")
