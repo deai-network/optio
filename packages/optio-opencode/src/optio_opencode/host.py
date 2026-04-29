@@ -959,19 +959,38 @@ class RemoteHost:
     async def opencode_export(
         self, opencode_db_path: str, session_id: str,
     ) -> bytes:
-        assert self._conn is not None
-        r = await self._conn.run(
-            f"OPENCODE_DB={shlex.quote(opencode_db_path)} "
-            f"bash -lc '{self._opencode_exec} export {shlex.quote(session_id)}'",
-            check=False,
-        )
-        if r.exit_status != 0:
-            raise RuntimeError(
-                f"remote opencode export failed "
-                f"(exit {r.exit_status}): {r.stderr}"
+        # Stream the export to a remote temp file via shell redirect, then
+        # SFTP-fetch it. Collecting stdout via `_conn.run(...).stdout` is
+        # subject to truncation under cancellation: when the surrounding
+        # task is cancelled mid-collection, asyncssh's recv buffer is
+        # observable as "complete output", and the partial bytes get
+        # persisted as a snapshot. We saw this produce a blob committed at
+        # exactly 65 536 bytes (the local recv buffer size at cancel time)
+        # which then failed to load on the next resume. The redirect+fetch
+        # path makes the full export observable as a file once the export
+        # process exits, so a cancellation either aborts before the file
+        # exists (we'll see exit_status != 0) or after it's complete.
+        assert self._conn is not None and self._sftp is not None
+        remote_path = f"{self.workdir}/.opencode-export.json"
+        try:
+            r = await self._conn.run(
+                f"OPENCODE_DB={shlex.quote(opencode_db_path)} "
+                f"bash -lc '{self._opencode_exec} export "
+                f"{shlex.quote(session_id)} > {shlex.quote(remote_path)}'",
+                check=False,
             )
-        out = r.stdout or b""
-        return out if isinstance(out, bytes) else out.encode("utf-8")
+            if r.exit_status != 0:
+                raise RuntimeError(
+                    f"remote opencode export failed "
+                    f"(exit {r.exit_status}): {r.stderr}"
+                )
+            async with self._sftp.open(remote_path, "rb") as fh:
+                data = await fh.read()
+            return data
+        finally:
+            await self._conn.run(
+                f"rm -f {shlex.quote(remote_path)}", check=False,
+            )
 
     def archive_workdir(
         self, exclude: list[str] | None,

@@ -393,6 +393,11 @@ async def _capture_snapshot(
     workdir_exclude: list[str] | None,
 ) -> None:
     session_json = await host.opencode_export(opencode_db, session_id)
+    expected_len = len(session_json)
+    _LOG.info(
+        "snapshot capture: session_json bytes=%d session_id=%s",
+        expected_len, session_id,
+    )
 
     async with ctx.store_blob("workdir") as wwriter:
         async for chunk in host.archive_workdir(workdir_exclude):
@@ -402,6 +407,17 @@ async def _capture_snapshot(
     async with ctx.store_blob("session") as swriter:
         await swriter.write(session_json)
         session_blob_id = swriter.file_id
+        # Belt-and-braces: GridIn._position is the byte count actually
+        # written so far. After a single write of `session_json`, this
+        # must equal len(session_json). Mismatch indicates the write was
+        # truncated (we hit this once when asyncssh's stdout collection
+        # was cut short by cancellation; see RemoteHost.opencode_export).
+        written = getattr(swriter, "_position", None)
+        if written is not None and written != expected_len:
+            raise RuntimeError(
+                f"snapshot session blob short-write: expected "
+                f"{expected_len} bytes, GridIn._position is {written}"
+            )
 
     await insert_snapshot(
         ctx._db,
