@@ -39,12 +39,16 @@ The returned `TaskInstance` has `ui_widget="iframe"` and `supports_resume=True` 
 - `after_execute: Callable | None` — see **Hooks** below.
 - `on_deliverable: Callable[[HookContext, str, str], Awaitable[None]] | None`
   — invoked once per fetched DELIVERABLE with `(hook_ctx,
-  remote_path, decoded_text)`. The framework already auto-emits a
-  `"Deliverable: <path>"` progress message before the callback fires,
-  so callbacks only need to add behavior beyond that (e.g. parsing
-  the body, fetching a related file via
-  `hook_ctx.read_text_from_host`, etc.). **Breaking change**: prior
-  to the hooks feature, this callback received `(path, text)` only.
+  deliverable_path, decoded_text)`. `deliverable_path` is relative
+  to `<workdir>/deliverables/` (e.g. `summary.md` or
+  `sub/summary.md`). The framework already auto-emits a
+  `"Deliverable: <path>"` progress message (using the same relative
+  path) before the callback fires, so callbacks only need to add
+  behavior beyond that (e.g. parsing the body, fetching a related
+  file via `hook_ctx.read_text_from_host`, etc.). **Breaking change**:
+  prior to the hooks feature, this callback received `(path, text)`
+  only; prior to this change, the path was absolute on the remote
+  host.
 - `supports_resume: bool = True` — when False, the framework skips
   snapshot capture, omits the resume-detection prompt section, and
   doesn't write `resume.log`. The task launches fresh every time.

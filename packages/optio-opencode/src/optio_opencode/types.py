@@ -7,13 +7,18 @@ if TYPE_CHECKING:
     from optio_opencode.hook_context import HookContext
 
 
-# DeliverableCallback now receives the same HookContext as before/after_execute,
+# DeliverableCallback receives the same HookContext as before/after_execute,
 # so callbacks no longer need to close over ctx. Breaking change vs. the
 # pre-hooks signature `Callable[[str, str], Awaitable[None]]`.
 DeliverableCallback = Callable[["HookContext", str, str], Awaitable[None]]
 """Consumer callback invoked per fetched DELIVERABLE.
 
-Arguments: (hook_ctx, remote_path, decoded_text).
+Arguments: ``(hook_ctx, deliverable_path, decoded_text)``.
+
+``deliverable_path`` is the path of the deliverable file relative to
+``<workdir>/deliverables/`` (e.g. ``"summary.md"`` or
+``"sub/summary.md"``). It is the same value that appears in the
+auto-emitted ``"Deliverable: <path>"`` progress message.
 """
 
 
