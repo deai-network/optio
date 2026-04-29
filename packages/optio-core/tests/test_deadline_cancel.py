@@ -247,6 +247,169 @@ async def test_supervisor_force_cancels_past_deadline_entries(mongo_db):
             pass
 
 
+async def test_cancel_and_wait_cooperative(mongo_db):
+    """Cooperative task ends 'cancelled'; cancel_and_wait returns 'cancelled'."""
+    from optio_core.lifecycle import Optio
+    from optio_core.models import TaskInstance
+
+    prefix = "caw1"
+
+    async def cooperative(ctx):
+        # Honour the flag promptly.
+        for _ in range(200):
+            if ctx.cancellation_flag.is_set():
+                return
+            await asyncio.sleep(0.05)
+
+    task_inst = TaskInstance(
+        process_id="p.coop", name="Coop", params={}, execute=cooperative,
+    )
+    async def gen(_s, _f):
+        return [task_inst]
+
+    optio = Optio()
+    await optio.init(
+        mongo_db=mongo_db, prefix=prefix,
+        get_task_definitions=gen, cancel_grace_seconds=2.0,
+    )
+    run_task = asyncio.create_task(optio.run())
+    try:
+        await optio.launch("p.coop")
+        await asyncio.sleep(0.2)  # let it transition to running
+        state = await optio.cancel_and_wait("p.coop")
+        assert state == "cancelled"
+    finally:
+        await optio.shutdown()
+        run_task.cancel()
+        try:
+            await run_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+async def test_cancel_and_wait_stubborn_returns_failed(mongo_db):
+    """Stubborn task force-cancelled; cancel_and_wait returns 'failed'."""
+    from optio_core.lifecycle import Optio
+    from optio_core.models import TaskInstance
+
+    prefix = "caw2"
+
+    async def stubborn(ctx):  # noqa: ARG001
+        while True:
+            await asyncio.sleep(0.05)
+
+    task_inst = TaskInstance(
+        process_id="p.stub", name="Stub", params={}, execute=stubborn,
+    )
+    async def gen(_s, _f):
+        return [task_inst]
+
+    optio = Optio()
+    await optio.init(
+        mongo_db=mongo_db, prefix=prefix,
+        get_task_definitions=gen, cancel_grace_seconds=0.3,
+    )
+    run_task = asyncio.create_task(optio.run())
+    try:
+        await optio.launch("p.stub")
+        await asyncio.sleep(0.2)
+        state = await optio.cancel_and_wait("p.stub")
+        assert state == "failed"
+    finally:
+        await optio.shutdown()
+        run_task.cancel()
+        try:
+            await run_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+async def test_cancel_and_wait_returns_none_for_missing(mongo_db):
+    from optio_core.lifecycle import Optio
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix="cawnone")
+    state = await optio.cancel_and_wait("nope.does.not.exist")
+    assert state is None
+
+
+async def test_cancel_and_wait_short_circuits_for_already_terminal(mongo_db):
+    """A done/failed/cancelled process returns its state immediately."""
+    from optio_core.lifecycle import Optio
+    from optio_core.models import TaskInstance
+
+    prefix = "cawterm"
+
+    async def quick(ctx):  # noqa: ARG001
+        return
+
+    task_inst = TaskInstance(
+        process_id="p.quick", name="Quick", params={}, execute=quick,
+    )
+    async def gen(_s, _f):
+        return [task_inst]
+
+    optio = Optio()
+    await optio.init(
+        mongo_db=mongo_db, prefix=prefix, get_task_definitions=gen,
+    )
+    run_task = asyncio.create_task(optio.run())
+    try:
+        await optio.launch_and_wait("p.quick")
+        state = await optio.cancel_and_wait("p.quick")
+        assert state == "done"
+    finally:
+        await optio.shutdown()
+        run_task.cancel()
+        try:
+            await run_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+async def test_cancel_and_wait_raises_timeout_when_force_cancel_neutered(mongo_db):
+    """If force_cancel never converges, the internal ceiling fires."""
+    from optio_core.lifecycle import Optio
+    from optio_core.models import TaskInstance
+
+    prefix = "cawto"
+
+    async def stubborn(ctx):  # noqa: ARG001
+        while True:
+            await asyncio.sleep(0.05)
+
+    task_inst = TaskInstance(
+        process_id="p.stub", name="Stub", params={}, execute=stubborn,
+    )
+    async def gen(_s, _f):
+        return [task_inst]
+
+    optio = Optio()
+    await optio.init(
+        mongo_db=mongo_db, prefix=prefix,
+        get_task_definitions=gen, cancel_grace_seconds=0.2,
+    )
+
+    # Patch force_cancel to be a no-op so the supervisor never actually
+    # transitions the task. The ceiling should fire.
+    async def _noop(_oid):
+        return
+    optio._executor.force_cancel = _noop  # type: ignore[assignment]
+
+    run_task = asyncio.create_task(optio.run())
+    try:
+        await optio.launch("p.stub")
+        await asyncio.sleep(0.2)
+        with pytest.raises(asyncio.TimeoutError):
+            await optio.cancel_and_wait("p.stub")
+    finally:
+        await optio.shutdown()
+        run_task.cancel()
+        try:
+            await run_task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
 async def test_handle_cancel_records_deadline_on_running_process(mongo_db):
     """Calling cancel() on a running process records monotonic deadline."""
     from optio_core.lifecycle import Optio

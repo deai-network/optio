@@ -159,6 +159,11 @@ class ProcessContext:
         if self._parent_listener is not None:
             self._parent_listener(percent, message)
 
+    @property
+    def cancellation_flag(self) -> asyncio.Event:
+        """The cooperative cancellation Event. Set when cancel has been requested."""
+        return self._cancellation_flag
+
     def should_continue(self) -> bool:
         """Returns False if cancellation has been requested."""
         return not self._cancellation_flag.is_set()

@@ -254,6 +254,40 @@ class Optio:
         """Cancel a running or scheduled process."""
         await self._handle_cancel({"processId": process_id})
 
+    async def cancel_and_wait(self, process_id: str) -> str | None:
+        """Cancel and wait until the process reaches a terminal state.
+
+        Returns the terminal state ('cancelled', 'failed', 'done', ...) or
+        None if the process does not exist. Raises asyncio.TimeoutError if
+        the process has not reached a terminal state within
+        cancel_grace_seconds + 25s — strictly a backstop against supervisor
+        or DB anomalies.
+        """
+        proc = await get_process_by_process_id(
+            self._config.mongo_db, self._config.prefix, process_id,
+        )
+        if proc is None:
+            return None
+
+        await self.cancel(process_id)
+
+        ceiling = self._config.cancel_grace_seconds + 25.0
+        deadline = time.monotonic() + ceiling
+        while True:
+            proc = await get_process_by_process_id(
+                self._config.mongo_db, self._config.prefix, process_id,
+            )
+            if proc is None:
+                return None
+            state = proc["status"]["state"]
+            if state not in ACTIVE_STATES:
+                return state
+            if time.monotonic() >= deadline:
+                raise asyncio.TimeoutError(
+                    f"Process {process_id} did not reach terminal state within {ceiling}s"
+                )
+            await asyncio.sleep(0.1)
+
     async def dismiss(self, process_id: str) -> None:
         """Dismiss a completed process (reset to idle)."""
         await self._handle_dismiss({"processId": process_id})
