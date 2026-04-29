@@ -147,3 +147,42 @@ async def test_write_force_cancelled_state_no_op_on_terminal_process(mongo_db):
     assert updated is False
     doc = await coll.find_one({"_id": oid})
     assert doc["status"]["state"] == "done"
+
+
+async def test_force_cancel_writes_failed_state_for_stubborn_task(mongo_db):
+    """Stubborn task ignores the cooperative flag; force_cancel terminates it."""
+    from optio_core.executor import Executor
+    from optio_core.models import TaskInstance
+    from optio_core.store import upsert_process
+
+    prefix = "fc"
+    started = asyncio.Event()
+
+    async def stubborn(ctx):  # noqa: ARG001
+        started.set()
+        # Ignore the flag entirely — busy-await to give cancellation a hook.
+        while True:
+            await asyncio.sleep(0.05)
+
+    task_inst = TaskInstance(
+        process_id="p.stub", name="Stubborn", params={}, execute=stubborn,
+    )
+    await upsert_process(mongo_db, prefix, task_inst)
+    executor = Executor(mongo_db, prefix, services={})
+    executor.register_tasks([task_inst])
+
+    runner = asyncio.create_task(executor.launch_process("p.stub"))
+    await started.wait()
+
+    oid = next(iter(executor._running_tasks))
+    await executor.force_cancel(oid)
+
+    # Mongo state: failed with canonical error.
+    coll = mongo_db[f"{prefix}_processes"]
+    doc = await coll.find_one({"_id": oid})
+    assert doc["status"]["state"] == "failed"
+    assert "Task did not unwind within cancellation grace period" in doc["status"]["error"]
+
+    # The asyncio task is finished one way or another.
+    with pytest.raises(asyncio.CancelledError):
+        await runner

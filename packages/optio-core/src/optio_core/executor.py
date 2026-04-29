@@ -274,3 +274,26 @@ class Executor:
         if entry.deadline is None:
             entry.deadline = deadline
         return True
+
+    async def force_cancel(self, oid: ObjectId) -> None:
+        """Hard-cancel a process whose cooperative deadline has expired.
+
+        Calls Task.cancel() on the tracked asyncio Task, awaits a bounded
+        unwind, then writes the conditional 'failed' terminal state to
+        Mongo via _write_force_cancelled_state. Used only by the
+        Optio-level supervisor and by shutdown.
+        """
+        from optio_core._force_cancel import _write_force_cancelled_state
+
+        task = self._running_tasks.get(oid)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                # TimeoutError: thread-blocked or stubborn — proceed regardless.
+                # CancelledError: task acknowledged cancellation — proceed.
+                # Other exceptions are not our concern; the conditional Mongo
+                # update below is the source of truth.
+                pass
+        await _write_force_cancelled_state(self._db, self._prefix, oid)
