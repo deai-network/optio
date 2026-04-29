@@ -214,7 +214,7 @@ async def test_execute_child_blocked_when_parent_metadata_matches(mongo_db):
 
     # Launch parent before the block is activated so launch_and_wait itself
     # does not raise (the block check at launch time would also reject it).
-    parent_future = asyncio.ensure_future(
+    parent_future = asyncio.create_task(
         optio._executor.launch_process("parent1")
     )
 
@@ -246,10 +246,7 @@ async def test_launch_blocked_when_task_metadata_matches(mongo_db):
         name="launch1",
         metadata={"project": "p1"},
     )
-    optio._executor.register_tasks([task])
-    # Use upsert_process to create the record so launch can find it.
-    from optio_core.store import upsert_process
-    await upsert_process(mongo_db, "test", task)
+    await optio.adhoc_define(task)
 
     async with optio.block_launches({"project": "p1"}):
         with pytest.raises(LaunchBlocked):
@@ -270,9 +267,7 @@ async def test_launch_and_wait_blocked_when_task_metadata_matches(mongo_db):
         name="launch2",
         metadata={"project": "p1"},
     )
-    optio._executor.register_tasks([task])
-    from optio_core.store import upsert_process
-    await upsert_process(mongo_db, "test", task)
+    await optio.adhoc_define(task)
 
     async with optio.block_launches({"project": "p1"}):
         with pytest.raises(LaunchBlocked):
@@ -293,9 +288,7 @@ async def test_launch_passes_when_task_metadata_does_not_match(mongo_db):
         name="launch3",
         metadata={"project": "p2"},
     )
-    optio._executor.register_tasks([task])
-    from optio_core.store import upsert_process
-    await upsert_process(mongo_db, "test", task)
+    await optio.adhoc_define(task)
 
     async with optio.block_launches({"project": "p1"}):
         # No exception; awaitable returns normally.
