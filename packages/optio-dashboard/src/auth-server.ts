@@ -19,7 +19,11 @@ export function createAuth(db: Db, password: string, baseURL: string) {
     },
     secret,
     baseURL,
-    trustedOrigins: ['http://localhost:5173'],
+    trustedOrigins: [
+      'http://localhost:5173',
+      'http://localhost:5174',
+      'http://localhost:5175',
+    ],
   });
 }
 
