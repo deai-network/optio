@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import signal
+import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -542,7 +543,6 @@ class Optio:
             ProcessStatus(state="cancel_requested"),
         )
 
-        import time
         found = self._executor.request_cancel_with_deadline(
             proc["_id"],
             deadline=time.monotonic() + self._config.cancel_grace_seconds,
