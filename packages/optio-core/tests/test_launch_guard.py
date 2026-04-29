@@ -119,3 +119,54 @@ async def test_check_launch_blocks_message_includes_filter_and_metadata():
             assert "project" in msg
         else:
             pytest.fail("LaunchBlocked not raised")
+
+
+from optio_core.models import TaskInstance
+
+
+async def test_adhoc_define_blocked_when_metadata_matches(mongo_db):
+    """adhoc_define raises LaunchBlocked for a task whose metadata matches a registered block.
+
+    Critically, NO process record is created in Mongo — the check happens
+    before any DB write.
+    """
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix="test")
+
+    async def noop(ctx):
+        pass
+
+    task = TaskInstance(
+        execute=noop,
+        process_id="adhoc1",
+        name="adhoc1",
+        metadata={"project": "p1", "sourceId": "s1"},
+    )
+
+    async with optio.block_launches({"project": "p1"}):
+        with pytest.raises(LaunchBlocked):
+            await optio.adhoc_define(task)
+
+    # Verify no record was created.
+    coll = mongo_db["test_processes"]
+    assert await coll.find_one({"processId": "adhoc1"}) is None
+
+
+async def test_adhoc_define_passes_when_metadata_does_not_match(mongo_db):
+    """adhoc_define succeeds when the task metadata does not match any block."""
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix="test")
+
+    async def noop(ctx):
+        pass
+
+    task = TaskInstance(
+        execute=noop,
+        process_id="adhoc2",
+        name="adhoc2",
+        metadata={"project": "p2"},
+    )
+
+    async with optio.block_launches({"project": "p1"}):
+        proc = await optio.adhoc_define(task)
+        assert proc["processId"] == "adhoc2"

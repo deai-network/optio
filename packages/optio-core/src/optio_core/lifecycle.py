@@ -175,6 +175,7 @@ class Optio:
         The process starts in 'idle' state — use the standard 'launch'
         command to start it.
         """
+        self._check_launch_blocks(task.metadata)
         from optio_core.store import (
             upsert_process, get_process_by_id, create_child_process,
         )
