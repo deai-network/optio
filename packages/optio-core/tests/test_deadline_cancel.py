@@ -245,3 +245,53 @@ async def test_supervisor_force_cancels_past_deadline_entries(mongo_db):
             await run_task
         except (asyncio.CancelledError, Exception):
             pass
+
+
+async def test_handle_cancel_records_deadline_on_running_process(mongo_db):
+    """Calling cancel() on a running process records monotonic deadline."""
+    from optio_core.lifecycle import Optio
+    from optio_core.models import TaskInstance
+    import time as _time
+
+    prefix = "hcdl"
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hold(ctx):  # noqa: ARG001
+        started.set()
+        await release.wait()
+
+    task_inst = TaskInstance(
+        process_id="p.hold", name="Hold", params={}, execute=hold,
+    )
+    async def gen(_services, _filter):
+        return [task_inst]
+
+    optio = Optio()
+    await optio.init(
+        mongo_db=mongo_db, prefix=prefix,
+        get_task_definitions=gen, cancel_grace_seconds=10.0,
+    )
+    run_task = asyncio.create_task(optio.run())
+    try:
+        await optio.launch("p.hold")
+        await started.wait()
+
+        before = _time.monotonic()
+        await optio.cancel("p.hold")
+        after = _time.monotonic()
+
+        oid = next(iter(optio._executor._cancellation_flags))
+        entry = optio._executor._cancellation_flags[oid]
+        assert entry.flag.is_set()
+        assert entry.deadline is not None
+        # deadline is in the future, within [before+10, after+10] inclusive
+        assert before + 10.0 - 0.5 <= entry.deadline <= after + 10.0 + 0.5
+    finally:
+        release.set()
+        await optio.shutdown()
+        run_task.cancel()
+        try:
+            await run_task
+        except (asyncio.CancelledError, Exception):
+            pass
