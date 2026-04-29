@@ -120,8 +120,8 @@ class Executor:
         cancel_flag = asyncio.Event()
         self._cancellation_flags[oid] = _CancelEntry(flag=cancel_flag, deadline=None)
         current = asyncio.current_task()
-        if current is not None:
-            self._running_tasks[oid] = current
+        assert current is not None, "_execute_process must be called from within an asyncio Task"
+        self._running_tasks[oid] = current
 
         try:
             now = datetime.now(timezone.utc)
