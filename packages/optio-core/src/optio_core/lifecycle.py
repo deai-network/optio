@@ -494,9 +494,19 @@ class Optio:
 
     async def _handle_launch(self, payload: dict) -> None:
         process_id = payload.get("processId")
-        if process_id:
-            resume = payload.get("resume", False)
-            await self._handle_launch_by_process_id(process_id, resume=resume)
+        if not process_id:
+            return
+        task = self._executor._task_registry.get(process_id)
+        if task is not None:
+            try:
+                self._check_launch_blocks(task.metadata)
+            except LaunchBlocked as e:
+                logger.warning(
+                    f"Launch rejected for processId={process_id!r}: {e}"
+                )
+                return
+        resume = payload.get("resume", False)
+        await self._handle_launch_by_process_id(process_id, resume=resume)
 
     async def _handle_launch_by_process_id(self, process_id: str, resume: bool = False) -> None:
         # Run in a background task so the consumer can continue
