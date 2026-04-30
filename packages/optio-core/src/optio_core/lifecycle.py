@@ -6,7 +6,7 @@ import signal
 import time
 import uuid
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, AsyncExitStack
 from datetime import datetime, timezone
 from typing import Any, Callable, Awaitable
 from bson import ObjectId
@@ -323,8 +323,12 @@ class Optio:
                 "group_cancel requires a non-empty metadata_filter; "
                 "use Optio.shutdown() to drain everything."
             )
-        # Guard not yet wired up — added in a later task.
-        await self._group_cancel_issue(metadata_filter, block_new_launches)
+        async with AsyncExitStack() as stack:
+            if block_new_launches:
+                await stack.enter_async_context(
+                    self.block_launches(metadata_filter)
+                )
+            await self._group_cancel_issue(metadata_filter, block_new_launches)
 
     async def group_cancel_and_wait(
         self,
@@ -343,30 +347,33 @@ class Optio:
                 "group_cancel_and_wait requires a non-empty metadata_filter; "
                 "use Optio.shutdown() to drain everything."
             )
-        # Guard not yet wired up — added in a later task.
-        pending = await self._group_cancel_issue(metadata_filter, block_new_launches)
-        if not pending:
-            return
-
-        # Pointer-walk wait loop. Helper's contract is "wait for ALL
-        # terminal" so total wall time = max(t_i) regardless of check
-        # order. One Mongo find_one per tick in the steady state.
-        ceiling = self._config.cancel_grace_seconds + 25.0
-        deadline = time.monotonic() + ceiling
-        i = 0
-        while i < len(pending):
-            proc = await self.get_process(pending[i])
-            if proc is None or proc["status"]["state"] not in ACTIVE_STATES:
-                i += 1
-                continue
-            if time.monotonic() >= deadline:
-                remaining = len(pending) - i
-                raise asyncio.TimeoutError(
-                    f"group_cancel_and_wait: {remaining} process(es) "
-                    f"did not reach a terminal state within {ceiling}s "
-                    f"(filter={metadata_filter})"
+        async with AsyncExitStack() as stack:
+            if block_new_launches:
+                await stack.enter_async_context(
+                    self.block_launches(metadata_filter)
                 )
-            await asyncio.sleep(0.1)
+            pending = await self._group_cancel_issue(
+                metadata_filter, block_new_launches,
+            )
+            if not pending:
+                return
+
+            ceiling = self._config.cancel_grace_seconds + 25.0
+            deadline = time.monotonic() + ceiling
+            i = 0
+            while i < len(pending):
+                proc = await self.get_process(pending[i])
+                if proc is None or proc["status"]["state"] not in ACTIVE_STATES:
+                    i += 1
+                    continue
+                if time.monotonic() >= deadline:
+                    remaining = len(pending) - i
+                    raise asyncio.TimeoutError(
+                        f"group_cancel_and_wait: {remaining} process(es) "
+                        f"did not reach a terminal state within {ceiling}s "
+                        f"(filter={metadata_filter})"
+                    )
+                await asyncio.sleep(0.1)
 
     async def dismiss(self, process_id: str) -> None:
         """Dismiss a completed process (reset to idle)."""

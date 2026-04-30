@@ -284,3 +284,60 @@ async def test_group_cancel_and_wait_raises_on_internal_ceiling(mongo_db, monkey
         # Reset before shutdown so shutdown's grace logic doesn't go wild.
         optio._config.cancel_grace_seconds = 0.2
         await _stop_optio(optio, run_task)
+
+
+# ---------- block_new_launches=True ----------
+
+async def test_block_new_launches_rejects_during_call(mongo_db):
+    """While group_cancel_and_wait runs with block_new_launches=True,
+    a concurrent launch matching the filter raises LaunchBlocked.
+    After the helper returns, the guard is gone."""
+    started = asyncio.Event()
+
+    async def cooperative(ctx):
+        started.set()
+        for _ in range(200):
+            if ctx.cancellation_flag.is_set():
+                return
+            await asyncio.sleep(0.02)
+
+    target_task = TaskInstance(
+        process_id="p.target", name="Target", params={}, execute=cooperative,
+        metadata={"team": "alpha"},
+    )
+    intruder_task = TaskInstance(
+        process_id="p.intruder", name="Intruder", params={}, execute=cooperative,
+        metadata={"team": "alpha"},
+    )
+
+    optio, run_task = await _start_optio(
+        mongo_db, "gcw_guard", [target_task, intruder_task],
+    )
+    try:
+        await optio.launch("p.target")
+        await started.wait()
+
+        # We need the intruder launch to race with the helper. Spawn a
+        # coroutine that waits briefly then attempts to launch.
+        intruder_blocked = asyncio.Event()
+
+        async def attempt_intruder():
+            # Wait long enough that the helper has registered the guard.
+            await asyncio.sleep(0.05)
+            with pytest.raises(LaunchBlocked):
+                await optio.launch_and_wait("p.intruder")
+            intruder_blocked.set()
+
+        intruder_task_handle = asyncio.create_task(attempt_intruder())
+
+        await optio.group_cancel_and_wait(
+            {"team": "alpha"}, block_new_launches=True,
+        )
+
+        await intruder_task_handle
+        assert intruder_blocked.is_set()
+
+        # Guard lifted on return.
+        assert optio._launch_blocks == {}
+    finally:
+        await _stop_optio(optio, run_task)
