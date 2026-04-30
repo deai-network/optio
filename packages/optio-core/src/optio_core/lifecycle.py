@@ -33,6 +33,16 @@ from optio_core.scheduler import ProcessScheduler
 logger = logging.getLogger("optio_core_core")
 
 
+from dataclasses import dataclass
+
+
+@dataclass
+class _BlockEntry:
+    """One in-memory launch-block entry."""
+    filter: ProcessMetadataFilter
+    reason: str | None
+
+
 class Optio:
     """Main orchestration class tying all components together."""
 
@@ -45,7 +55,7 @@ class Optio:
         self._running = False
         self._heartbeat_task: asyncio.Task | None = None
         self._supervisor_task: asyncio.Task | None = None
-        self._launch_blocks: dict[uuid.UUID, ProcessMetadataFilter] = {}
+        self._launch_blocks: dict[uuid.UUID, _BlockEntry] = {}
 
     async def init(
         self,
@@ -112,6 +122,10 @@ class Optio:
         from optio_core.migrations import fw_migrations
         await fw_migrations.run(mongo_db, prefix=f"{prefix}_fw")
 
+        # Load persisted launch blocks ("perma-bans"). Spec:
+        # docs/2026-04-30-persistent-launch-blocks-design.md.
+        await self._load_persisted_blocks()
+
         # Create scheduler
         self._scheduler = ProcessScheduler(
             launch_fn=self._handle_launch_by_process_id,
@@ -134,7 +148,13 @@ class Optio:
         self._consumer.on(command_type, handler)
 
     @asynccontextmanager
-    async def block_launches(self, launch_filter: ProcessMetadataFilter) -> AsyncIterator[None]:
+    async def block_launches(
+        self,
+        launch_filter: ProcessMetadataFilter,
+        *,
+        persist: bool = False,
+        reason: str | None = None,
+    ) -> AsyncIterator[None]:
         """Async context manager: while active, reject launches whose
         task metadata matches `launch_filter` (raises LaunchBlocked).
 
@@ -144,13 +164,49 @@ class Optio:
 
         An empty filter `{}` matches every task metadata — registering
         it blocks all launches.
+
+        When `persist=True`, a Mongo record is written on entry and the
+        block remains active after the context manager exits. `reason`
+        is stored on the record (default None). Spec:
+        docs/2026-04-30-persistent-launch-blocks-design.md.
         """
+        if persist:
+            from optio_core import _launch_block_store as _lb_store
+            coll = _lb_store.collection(
+                self._config.mongo_db, self._config.prefix,
+            )
+            await _lb_store.upsert_block(coll, launch_filter, reason)
         token = uuid.uuid4()
-        self._launch_blocks[token] = launch_filter
+        self._launch_blocks[token] = _BlockEntry(filter=launch_filter, reason=reason)
         try:
             yield
         finally:
-            self._launch_blocks.pop(token, None)
+            if not persist:
+                self._launch_blocks.pop(token, None)
+
+    async def unblock_launches(
+        self,
+        launch_filter: ProcessMetadataFilter,
+    ) -> int:
+        """Remove every persistent record and every in-memory block entry
+        whose filter equals `launch_filter` by exact dict equality. Returns
+        the count of in-memory entries removed.
+
+        Spec: docs/2026-04-30-persistent-launch-blocks-design.md.
+        """
+        from optio_core import _launch_block_store as _lb_store
+        coll = _lb_store.collection(
+            self._config.mongo_db, self._config.prefix,
+        )
+        await _lb_store.delete_by_filter(coll, launch_filter)
+
+        tokens = [
+            t for t, entry in self._launch_blocks.items()
+            if entry.filter == launch_filter
+        ]
+        for t in tokens:
+            self._launch_blocks.pop(t, None)
+        return len(tokens)
 
     def _check_launch_blocks(self, metadata: ProcessMetadataFilter | None) -> None:
         """Raise LaunchBlocked if `metadata` matches any registered block.
@@ -160,11 +216,30 @@ class Optio:
         if not self._launch_blocks:
             return
         md = metadata or {}
-        for launch_filter in self._launch_blocks.values():
-            if matches_filter(md, launch_filter):
-                raise LaunchBlocked(
-                    f"Launch blocked by filter {launch_filter}; task metadata={md}"
-                )
+        for entry in self._launch_blocks.values():
+            if matches_filter(md, entry.filter):
+                msg = f"Launch blocked by filter {entry.filter}; task metadata={md}"
+                if entry.reason is not None:
+                    msg += f"; reason={entry.reason}"
+                raise LaunchBlocked(msg)
+
+    async def _load_persisted_blocks(self) -> None:
+        """Load every record from `{prefix}_launch_blocks` into the in-memory
+        `_launch_blocks` dict. Each record gets a fresh UUID token. Empty or
+        missing collection produces an empty load.
+        """
+        from optio_core import _launch_block_store as _lb_store
+        coll = _lb_store.collection(
+            self._config.mongo_db, self._config.prefix,
+        )
+        rows = await _lb_store.load_all(coll)
+        for row in rows:
+            token = uuid.uuid4()
+            self._launch_blocks[token] = _BlockEntry(
+                filter=row.filter, reason=row.reason,
+            )
+        if rows:
+            logger.info(f"Loaded {len(rows)} persistent launch block(s)")
 
     async def adhoc_define(
         self,
@@ -337,18 +412,31 @@ class Optio:
         self,
         metadata_filter: ProcessMetadataFilter,
         block_new_launches: bool = False,
+        *,
+        persist: bool = False,
+        reason: str | None = None,
     ) -> None:
         """Cancel every active process matching `metadata_filter`. Does NOT
-        wait for terminal state. See docs/2026-04-30-group-cancel-design.md."""
+        wait for terminal state.
+
+        See docs/2026-04-30-group-cancel-design.md and
+        docs/2026-04-30-persistent-launch-blocks-design.md (for `persist`).
+        """
         if not metadata_filter:
             raise ValueError(
                 "group_cancel requires a non-empty metadata_filter; "
                 "use Optio.shutdown() to drain everything."
             )
+        if persist and not block_new_launches:
+            raise ValueError(
+                "group_cancel: persist=True requires block_new_launches=True"
+            )
         async with AsyncExitStack() as stack:
             if block_new_launches:
                 await stack.enter_async_context(
-                    self.block_launches(metadata_filter)
+                    self.block_launches(
+                        metadata_filter, persist=persist, reason=reason,
+                    )
                 )
             await self._group_cancel_issue(metadata_filter, block_new_launches)
 
@@ -356,10 +444,14 @@ class Optio:
         self,
         metadata_filter: ProcessMetadataFilter,
         block_new_launches: bool = False,
+        *,
+        persist: bool = False,
+        reason: str | None = None,
     ) -> None:
         """Cancel every active process matching `metadata_filter` and wait
         for all of them to reach a terminal state. See
-        docs/2026-04-30-group-cancel-design.md.
+        docs/2026-04-30-group-cancel-design.md and
+        docs/2026-04-30-persistent-launch-blocks-design.md (for `persist`).
 
         Do not call from inside a task whose metadata matches the filter —
         use group_cancel for self-cancel.
@@ -369,10 +461,16 @@ class Optio:
                 "group_cancel_and_wait requires a non-empty metadata_filter; "
                 "use Optio.shutdown() to drain everything."
             )
+        if persist and not block_new_launches:
+            raise ValueError(
+                "group_cancel_and_wait: persist=True requires block_new_launches=True"
+            )
         async with AsyncExitStack() as stack:
             if block_new_launches:
                 await stack.enter_async_context(
-                    self.block_launches(metadata_filter)
+                    self.block_launches(
+                        metadata_filter, persist=persist, reason=reason,
+                    )
                 )
             pending = await self._group_cancel_issue(
                 metadata_filter, block_new_launches,

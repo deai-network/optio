@@ -19,6 +19,7 @@ resync = _instance.resync
 get_process = _instance.get_process
 list_processes = _instance.list_processes
 block_launches = _instance.block_launches
+unblock_launches = _instance.unblock_launches
 group_cancel = _instance.group_cancel
 group_cancel_and_wait = _instance.group_cancel_and_wait
 
@@ -28,6 +29,6 @@ __all__ = [
     "adhoc_define", "adhoc_delete",
     "launch", "launch_and_wait", "cancel", "dismiss", "resync",
     "get_process", "list_processes",
-    "block_launches",
+    "block_launches", "unblock_launches",
     "group_cancel", "group_cancel_and_wait",
 ]

@@ -165,6 +165,9 @@ both fire-and-forget and wait-for-terminal variants:
 await optio_core.group_cancel(
     metadata_filter: ProcessMetadataFilter,    # required, non-empty
     block_new_launches: bool = False,
+    *,
+    persist: bool = False,                     # requires block_new_launches=True
+    reason: str | None = None,                 # stored on the persistent record
 ) -> None  # fire-and-forget; returns once cancels are issued (and, if
            # block_new_launches=True, after the leak sweep). Safe to call
            # from inside a task whose own metadata matches the filter.
@@ -172,6 +175,9 @@ await optio_core.group_cancel(
 await optio_core.group_cancel_and_wait(
     metadata_filter: ProcessMetadataFilter,
     block_new_launches: bool = False,
+    *,
+    persist: bool = False,                     # requires block_new_launches=True
+    reason: str | None = None,                 # stored on the persistent record
 ) -> None  # blocks until every matching process is in a terminal state.
            # Raises asyncio.TimeoutError on the internal ceiling
            # (cancel_grace_seconds + 25s). Do NOT call from inside a task
@@ -188,7 +194,58 @@ the duration of the call (released on return or exception, even on the
 post-snapshot leak sweep (100 ms settling delay then re-list) to catch launches
 that raced past `_check_launch_blocks` before the guard registered.
 
-Spec: `docs/2026-04-30-group-cancel-design.md`.
+`persist=True` makes the installed launch block persistent — the block is
+written to `{prefix}_launch_blocks` and remains in effect after the call
+returns (and across restarts). `persist=True` requires `block_new_launches=True`,
+otherwise `ValueError` is raised. Remove later via `unblock_launches(metadata_filter)`.
+
+Specs: `docs/2026-04-30-group-cancel-design.md`,
+`docs/2026-04-30-persistent-launch-blocks-design.md` (for `persist` / `reason`).
+
+---
+
+### Optio.block_launches / Optio.unblock_launches
+
+Reject launches whose task metadata matches a filter. `block_launches` is the
+async context manager primitive; `unblock_launches` is the symmetric removal
+operation for the persistent variant.
+
+```python
+async with optio_core.block_launches(
+    launch_filter: ProcessMetadataFilter,
+    *,
+    persist: bool = False,
+    reason: str | None = None,
+):
+    ...  # while the CM is active, any launch whose task metadata matches
+         # `launch_filter` raises LaunchBlocked. Multiple concurrent
+         # block_launches() calls — overlapping or identical filters —
+         # stack independently. An empty filter `{}` matches every task
+         # metadata (blocks all launches).
+
+await optio_core.unblock_launches(
+    launch_filter: ProcessMetadataFilter,
+) -> int  # remove every persistent record AND every in-memory block entry
+          # whose filter equals `launch_filter` by exact dict equality.
+          # Returns the number of in-memory entries removed.
+```
+
+`persist=False` (default) keeps the in-memory-only behaviour: the block is
+released when the context manager exits.
+
+`persist=True` writes a record to `{prefix}_launch_blocks` on entry and **does
+not remove it on exit** — the block remains active after the CM returns and is
+reloaded into `_launch_blocks` on every `init()`. `reason` is stored on the
+persistent record (default `None`). Remove a persistent block with
+`unblock_launches(launch_filter)`; the match is exact-dict equality (not filter
+subsumption).
+
+When a non-null `reason` is set, it is also appended to the `LaunchBlocked`
+exception message raised by matching launches (`...; reason={reason}`). Set on
+either transient or persistent blocks; null reason leaves the message
+unchanged.
+
+Spec: `docs/2026-04-30-persistent-launch-blocks-design.md`.
 
 ---
 
