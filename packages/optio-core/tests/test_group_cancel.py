@@ -546,3 +546,53 @@ async def test_guard_lifted_on_exception(mongo_db, monkeypatch):
     finally:
         optio._config.cancel_grace_seconds = 0.2
         await _stop_optio(optio, run_task)
+
+
+async def test_no_block_new_launches_post_snapshot_not_cancelled(mongo_db):
+    """With block_new_launches=False, a launch that lands during the
+    wait phase is NOT cancelled by the helper (snapshot semantics)."""
+    started_a = asyncio.Event()
+    started_b = asyncio.Event()
+
+    async def cooperative(ctx):
+        started_a.set()
+        for _ in range(200):
+            if ctx.cancellation_flag.is_set():
+                return
+            await asyncio.sleep(0.02)
+
+    async def long_runner(ctx):  # noqa: ARG001
+        started_b.set()
+        await asyncio.sleep(2.0)
+
+    task_a = TaskInstance(
+        process_id="p.a", name="A", params={}, execute=cooperative,
+        metadata={"team": "alpha"},
+    )
+    task_b = TaskInstance(
+        process_id="p.b", name="B", params={}, execute=long_runner,
+        metadata={"team": "alpha"},
+    )
+
+    optio, run_task = await _start_optio(mongo_db, "gcw_noblock_post", [task_a, task_b])
+    try:
+        await optio.launch("p.a")
+        await started_a.wait()
+
+        # Stage task_b to launch after the helper's snapshot. The helper
+        # snapshots almost immediately on entry; the wait loop polls every
+        # 100 ms. A 50 ms delay reliably lands b's upsert during the wait.
+        async def stage_b():
+            await asyncio.sleep(0.05)
+            await optio.launch("p.b")
+
+        b_handle = asyncio.create_task(stage_b())
+
+        await optio.group_cancel_and_wait({"team": "alpha"})  # default False
+        await b_handle
+
+        # b is still running — was not in the snapshot.
+        proc_b = await optio.get_process("p.b")
+        assert proc_b["status"]["state"] == "running"
+    finally:
+        await _stop_optio(optio, run_task)
