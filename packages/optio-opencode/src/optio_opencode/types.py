@@ -3,8 +3,10 @@
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
+from optio_host.types import SSHConfig
+
 if TYPE_CHECKING:
-    from optio_opencode.hook_context import HookContext
+    from optio_host.context import HookContext
 
 
 # DeliverableCallback receives the same HookContext as before/after_execute,
@@ -26,17 +28,9 @@ HookCallback = Callable[["HookContext"], Awaitable[None]]
 """Hook callback receiving a HookContext. Used by before_execute and after_execute."""
 
 
-@dataclass
-class SSHConfig:
-    """SSH connection parameters for remote-mode optio-opencode.
-
-    Known-hosts verification is disabled in MVP; asyncssh's
-    ``known_hosts=None`` equivalent is used by the host layer.
-    """
-    host: str
-    user: str
-    key_path: str
-    port: int = 22
+# Re-export SSHConfig for back-compat: existing optio_opencode consumers
+# (excavator engine, others) import SSHConfig from optio_opencode.types.
+__all__ = ["DeliverableCallback", "HookCallback", "SSHConfig", "OpencodeTaskConfig"]
 
 
 @dataclass

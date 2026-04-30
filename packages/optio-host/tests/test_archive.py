@@ -4,7 +4,7 @@ import os
 
 import pytest
 
-from optio_opencode.archive import (
+from optio_host.archive import (
     DEFAULT_WORKDIR_EXCLUDES,
     consume_workdir_archive,
     yield_workdir_archive,

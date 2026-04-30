@@ -2,7 +2,7 @@
 
 import pytest
 
-from optio_opencode.hook_context import (
+from optio_host.context import (
     HostCommandError,
     RunResult,
     _resolve_target_path,
@@ -71,7 +71,7 @@ def test_resolve_target_path_dotdot_allowed_in_home_relative():
 
 import asyncio
 
-from optio_opencode.hook_context import HookContext, HookContextProtocol
+from optio_host.context import HookContext, HookContextProtocol
 
 
 class _FakeCtx:
@@ -122,7 +122,7 @@ class _FakeRunHost:
 
 
 async def test_run_on_host_check_true_returns_stdout_on_success():
-    from optio_opencode.hook_context import RunResult
+    from optio_host.context import RunResult
     host = _FakeRunHost([RunResult(stdout="hi\n", stderr="", exit_code=0)])
     h = HookContext(_FakeCtx(), host)
     out = await h.run_on_host("echo hi")
@@ -130,7 +130,7 @@ async def test_run_on_host_check_true_returns_stdout_on_success():
 
 
 async def test_run_on_host_check_true_raises_on_nonzero():
-    from optio_opencode.hook_context import HostCommandError, RunResult
+    from optio_host.context import HostCommandError, RunResult
     host = _FakeRunHost([RunResult(stdout="", stderr="boom", exit_code=2)])
     h = HookContext(_FakeCtx(), host)
     with pytest.raises(HostCommandError) as ei:
@@ -140,7 +140,7 @@ async def test_run_on_host_check_true_raises_on_nonzero():
 
 
 async def test_run_on_host_check_false_returns_result_object():
-    from optio_opencode.hook_context import RunResult
+    from optio_host.context import RunResult
     host = _FakeRunHost([RunResult(stdout="", stderr="oops", exit_code=3)])
     h = HookContext(_FakeCtx(), host)
     res = await h.run_on_host("false", check=False)
@@ -149,7 +149,7 @@ async def test_run_on_host_check_false_returns_result_object():
 
 
 async def test_run_on_host_capture_stderr_merges_into_returned_stdout():
-    from optio_opencode.hook_context import RunResult
+    from optio_host.context import RunResult
     host = _FakeRunHost([RunResult(stdout="o", stderr="e", exit_code=0)])
     h = HookContext(_FakeCtx(), host)
     out = await h.run_on_host("cmd", capture_stderr=True)
@@ -157,7 +157,7 @@ async def test_run_on_host_capture_stderr_merges_into_returned_stdout():
 
 
 async def test_run_on_host_cwd_is_forwarded():
-    from optio_opencode.hook_context import RunResult
+    from optio_host.context import RunResult
     host = _FakeRunHost([RunResult(stdout="", stderr="", exit_code=0)])
     h = HookContext(_FakeCtx(), host)
     await h.run_on_host("pwd", cwd="/elsewhere")

@@ -34,7 +34,7 @@ from optio_opencode.logparse import (
     relativize_deliverable_path,
     validate_deliverable_path,
 )
-from optio_opencode.paths import local_taskdir, remote_taskdir
+from optio_host.paths import task_dir
 from optio_opencode.prompt import compose_agents_md
 from optio_opencode.snapshots import (
     insert_snapshot,
@@ -61,14 +61,15 @@ def _build_host(config: OpencodeTaskConfig, process_id: str) -> Host:
     Extracted so tests can monkeypatch ``optio_opencode.session._build_host``
     to inject a fake host without launching real subprocesses or SSH.
     """
+    taskdir = task_dir(
+        ssh=config.ssh, process_id=process_id, consumer_name="optio-opencode",
+    )
     if config.ssh is None:
-        taskdir = local_taskdir(process_id)
         os.makedirs(taskdir, exist_ok=True)
         host: Host = LocalHost(taskdir=taskdir)
         os.makedirs(host.workdir, exist_ok=True)
         return host
     else:
-        taskdir = remote_taskdir(process_id)
         return RemoteHost(ssh_config=config.ssh, taskdir=taskdir)
 
 
@@ -76,12 +77,10 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
     """Execute function body for one optio-opencode task instance."""
     # --- per-task filesystem layout ---------------------------------------
     host: Host = _build_host(config, ctx.process_id)
-    if config.ssh is None:
-        taskdir = local_taskdir(ctx.process_id)
-        opencode_db = os.path.join(taskdir, "opencode.db")
-    else:
-        taskdir = remote_taskdir(ctx.process_id)
-        opencode_db = f"{taskdir}/opencode.db"
+    taskdir = task_dir(
+        ssh=config.ssh, process_id=ctx.process_id, consumer_name="optio-opencode",
+    )
+    opencode_db = f"{taskdir}/opencode.db"
 
     password = secrets.token_urlsafe(32)
     process: LaunchedProcess | None = None
@@ -89,7 +88,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
     preserved_session_id: str | None = None
     session_id: str | None = None
 
-    from optio_opencode.hook_context import HookContext  # noqa: PLC0415
+    from optio_host.context import HookContext  # noqa: PLC0415
 
     hook_ctx: HookContext | None = None
     session_error: BaseException | None = None

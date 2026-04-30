@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import AsyncIterator, Callable, Protocol
 
-from optio_opencode.hook_context import RunResult
+from optio_host.context import RunResult
 from optio_opencode.install import (
     OpencodeTarget,
     make_target,
@@ -476,13 +476,13 @@ class LocalHost:
     def archive_workdir(
         self, exclude: list[str] | None,
     ) -> "AsyncIterator[bytes]":
-        from optio_opencode.archive import yield_workdir_archive
+        from optio_host.archive import yield_workdir_archive
         return yield_workdir_archive(self.workdir, exclude=exclude)
 
     async def restore_workdir(
         self, stream: "AsyncIterator[bytes]",
     ) -> None:
-        from optio_opencode.archive import consume_workdir_archive
+        from optio_host.archive import consume_workdir_archive
         await consume_workdir_archive(stream, self.workdir)
 
     async def remove_file(self, path: str) -> None:
@@ -995,7 +995,7 @@ class RemoteHost:
     def archive_workdir(
         self, exclude: list[str] | None,
     ) -> "AsyncIterator[bytes]":
-        from optio_opencode.archive import DEFAULT_WORKDIR_EXCLUDES
+        from optio_host.archive import DEFAULT_WORKDIR_EXCLUDES
         assert self._conn is not None
         patterns = list(DEFAULT_WORKDIR_EXCLUDES) if exclude is None else list(exclude)
         excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in patterns)

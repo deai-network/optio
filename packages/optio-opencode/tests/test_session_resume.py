@@ -15,7 +15,7 @@ from optio_core.models import TaskInstance
 from optio_core.store import upsert_process
 
 from optio_opencode import OpencodeTaskConfig
-from optio_opencode.paths import local_taskdir
+from optio_host.paths import task_dir
 from optio_opencode.session import run_opencode_session
 from optio_opencode.snapshots import (
     SESSION_SNAPSHOT_COLLECTION_SUFFIX,
@@ -118,7 +118,7 @@ async def test_terminal_flow_captures_snapshot_and_wipes_workdir(mongo_db, task_
     proc = await mongo_db["test_processes"].find_one({"processId": pid})
     assert proc["hasSavedState"] is True
 
-    wd = Path(local_taskdir(pid)) / "workdir"
+    wd = Path(task_dir(ssh=None, process_id=pid, consumer_name="optio-opencode")) / "workdir"
     assert not wd.exists() or not any(wd.iterdir())
 
 
