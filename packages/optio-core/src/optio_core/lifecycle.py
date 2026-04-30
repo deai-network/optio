@@ -144,7 +144,13 @@ class Optio:
         self._consumer.on(command_type, handler)
 
     @asynccontextmanager
-    async def block_launches(self, launch_filter: ProcessMetadataFilter) -> AsyncIterator[None]:
+    async def block_launches(
+        self,
+        launch_filter: ProcessMetadataFilter,
+        *,
+        persist: bool = False,
+        reason: str | None = None,
+    ) -> AsyncIterator[None]:
         """Async context manager: while active, reject launches whose
         task metadata matches `launch_filter` (raises LaunchBlocked).
 
@@ -154,13 +160,25 @@ class Optio:
 
         An empty filter `{}` matches every task metadata — registering
         it blocks all launches.
+
+        When `persist=True`, a Mongo record is written on entry and the
+        block remains active after the context manager exits. `reason`
+        is stored on the record (default None). Spec:
+        docs/2026-04-30-persistent-launch-blocks-design.md.
         """
         token = uuid.uuid4()
-        self._launch_blocks[token] = _BlockEntry(filter=launch_filter, reason=None)
+        self._launch_blocks[token] = _BlockEntry(filter=launch_filter, reason=reason)
+        if persist:
+            from optio_core import _launch_block_store as _lb_store
+            coll = _lb_store.collection(
+                self._config.mongo_db, self._config.prefix,
+            )
+            await _lb_store.upsert_block(coll, launch_filter, reason)
         try:
             yield
         finally:
-            self._launch_blocks.pop(token, None)
+            if not persist:
+                self._launch_blocks.pop(token, None)
 
     def _check_launch_blocks(self, metadata: ProcessMetadataFilter | None) -> None:
         """Raise LaunchBlocked if `metadata` matches any registered block.

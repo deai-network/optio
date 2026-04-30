@@ -12,6 +12,29 @@ from optio_core.models import TaskInstance, LaunchBlocked
 pytestmark = pytest.mark.asyncio
 
 
+async def _start_optio(mongo_db, prefix, tasks=(), cancel_grace_seconds=2.0):
+    """Helper: init an Optio with the given tasks, return (optio, run_task)."""
+    async def gen(_s, _f):
+        return list(tasks)
+    optio = Optio()
+    await optio.init(
+        mongo_db=mongo_db, prefix=prefix,
+        get_task_definitions=gen,
+        cancel_grace_seconds=cancel_grace_seconds,
+    )
+    run_task = asyncio.create_task(optio.run())
+    return optio, run_task
+
+
+async def _stop_optio(optio, run_task):
+    await optio.shutdown()
+    run_task.cancel()
+    try:
+        await run_task
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
 # ---------- Store-level tests ----------
 
 def _coll(mongo_db, prefix="optio_test"):
@@ -101,3 +124,78 @@ async def test_delete_by_filter_no_match_is_noop(mongo_db):
     assert deleted == 0
     rows = await store.load_all(coll)
     assert len(rows) == 1
+
+
+# ---------- block_launches(persist=True) ----------
+
+async def test_block_launches_persist_writes_record_and_blocks(mongo_db):
+    """persist=True writes a Mongo record and the block stays after exit."""
+    optio, run_task = await _start_optio(mongo_db, "optio_p1", tasks=())
+    try:
+        async with optio.block_launches({"tenant": "acme"}, persist=True, reason="r"):
+            pass  # exit immediately
+        # Memory: block is still there.
+        assert any(
+            entry.filter == {"tenant": "acme"} and entry.reason == "r"
+            for entry in optio._launch_blocks.values()
+        )
+        # DB: one record.
+        rows = await store.load_all(store.collection(mongo_db, "optio_p1"))
+        assert len(rows) == 1
+        assert rows[0].reason == "r"
+    finally:
+        await _stop_optio(optio, run_task)
+
+
+async def test_block_launches_persist_false_unchanged(mongo_db):
+    """persist=False (default) behaves exactly as today: block lifted on exit, no DB record."""
+    optio, run_task = await _start_optio(mongo_db, "optio_p2", tasks=())
+    try:
+        async with optio.block_launches({"tenant": "acme"}):
+            assert len(optio._launch_blocks) == 1
+        assert len(optio._launch_blocks) == 0
+        rows = await store.load_all(store.collection(mongo_db, "optio_p2"))
+        assert rows == []
+    finally:
+        await _stop_optio(optio, run_task)
+
+
+async def test_block_launches_persist_dedupes_db_keeps_memory(mongo_db):
+    """Two persist calls with same filter -> one DB row, two memory entries."""
+    optio, run_task = await _start_optio(mongo_db, "optio_p3", tasks=())
+    try:
+        async with optio.block_launches({"tenant": "acme"}, persist=True, reason="a"):
+            pass
+        async with optio.block_launches({"tenant": "acme"}, persist=True, reason="b"):
+            pass
+        rows = await store.load_all(store.collection(mongo_db, "optio_p3"))
+        assert len(rows) == 1
+        assert rows[0].reason == "a AND b"
+        # Memory: two entries (one per call).
+        matching = [e for e in optio._launch_blocks.values() if e.filter == {"tenant": "acme"}]
+        assert len(matching) == 2
+    finally:
+        await _stop_optio(optio, run_task)
+
+
+async def test_launch_blocked_message_includes_reason(mongo_db):
+    """LaunchBlocked.args[0] includes '; reason=...' when block has a reason."""
+    async def _noop_execute(ctx):  # pragma: no cover - never reached
+        return
+
+    task = TaskInstance(
+        execute=_noop_execute,
+        process_id="p_banned",
+        name="banned task",
+        metadata={"tenant": "acme"},
+    )
+
+    optio, run_task = await _start_optio(mongo_db, "optio_p4", tasks=(task,))
+    try:
+        async with optio.block_launches({"tenant": "acme"}, persist=True, reason="r"):
+            pass  # block stays
+        with pytest.raises(LaunchBlocked) as excinfo:
+            await optio.launch("p_banned")
+        assert "; reason=r" in str(excinfo.value)
+    finally:
+        await _stop_optio(optio, run_task)
