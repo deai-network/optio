@@ -22,7 +22,7 @@ from typing import AsyncIterator
 from optio_core.context import ProcessContext
 from optio_core.models import BasicAuth, TaskInstance
 
-from optio_opencode.host import Host, LocalHost, LaunchedProcess, RemoteHost
+from optio_host.host import Host, LocalHost, LaunchedProcess, RemoteHost
 from optio_opencode.logparse import (
     DeliverableEvent,
     DoneEvent,
@@ -168,7 +168,8 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         # fixes land upstream.
         binary_dir = os.environ.get("OPTIO_OPENCODE_BINARY_DIR")
         if binary_dir:
-            target = await host.detect_target()
+            from optio_opencode import host_actions
+            target = await host_actions.detect_target(host)
             candidate = os.path.join(
                 binary_dir, target.directory_name, "bin", "opencode"
             )

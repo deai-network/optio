@@ -30,7 +30,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from optio_opencode.host import RemoteHost
+from optio_host.host import RemoteHost
 from optio_opencode.types import SSHConfig
 
 
@@ -116,7 +116,7 @@ async def test_remote_launch_env_is_propagated(remote_host: RemoteHost):
     without modifying it, so we verify that passing env does not break the
     launch and that the returned object has a non-zero port.
     """
-    from optio_opencode.host import LaunchedProcess
+    from optio_host.host import LaunchedProcess
 
     proc = await remote_host.launch_opencode(
         password="test-pw",

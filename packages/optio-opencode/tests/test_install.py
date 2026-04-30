@@ -6,7 +6,7 @@ import tempfile
 
 import pytest
 
-from optio_opencode.host import LocalHost
+from optio_host.host import LocalHost
 from optio_opencode.install import (
     OpencodeTarget,
     is_supported,
@@ -103,8 +103,9 @@ def test_make_target_rejects_unsupported():
 
 
 async def test_local_host_detect_target_matches_platform(tmp_workdir):
+    from optio_opencode import host_actions
     host = LocalHost(taskdir=tmp_workdir)
-    t = await host.detect_target()
+    t = await host_actions.detect_target(host)
     # The combination must be supported.
     assert is_supported(t.os, t.arch), (t.os, t.arch)
     # Sanity: on CI / dev boxes the directory_name should be parseable back.

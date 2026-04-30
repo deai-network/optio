@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from optio_opencode.host import LocalHost
+from optio_host.host import LocalHost
 
 
 pytestmark = pytest.mark.asyncio

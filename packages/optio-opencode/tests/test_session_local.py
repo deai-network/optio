@@ -95,7 +95,7 @@ def _config(scenario: str, deliverable_cb=None, raises: bool = False) -> Opencod
 @pytest.fixture(autouse=True)
 def _patch_localhost_to_use_fake(monkeypatch):
     """Point LocalHost at fake_opencode.py for the duration of the test."""
-    import optio_opencode.host as host_mod
+    import optio_host.host as host_mod
     orig_init = host_mod.LocalHost.__init__
 
     def _init(self, taskdir: str, opencode_cmd=None):
@@ -111,7 +111,7 @@ def _patch_localhost_to_use_fake(monkeypatch):
 @pytest.fixture(autouse=True)
 def _supply_scenario(monkeypatch):
     """fake_opencode expects --scenario; inject via launch_opencode's extra_args."""
-    import optio_opencode.host as host_mod
+    import optio_host.host as host_mod
     orig_launch = host_mod.LocalHost.launch_opencode
     scenario_holder: dict = {"name": "happy"}
 
@@ -282,7 +282,7 @@ async def test_append_resume_log_entry_writes_iso_timestamp(tmp_workdir):
     import os
     import re
     import sys
-    from optio_opencode.host import LocalHost
+    from optio_host.host import LocalHost
     from optio_opencode.session import _append_resume_log_entry
 
     host = LocalHost(taskdir=tmp_workdir, opencode_cmd=[sys.executable, "-c", "pass"])
@@ -304,7 +304,7 @@ async def test_append_resume_log_entry_appends_on_repeat_call(tmp_workdir):
     import asyncio
     import os
     import sys
-    from optio_opencode.host import LocalHost
+    from optio_host.host import LocalHost
     from optio_opencode.session import _append_resume_log_entry
 
     host = LocalHost(taskdir=tmp_workdir, opencode_cmd=[sys.executable, "-c", "pass"])

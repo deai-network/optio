@@ -45,7 +45,7 @@ def task_root(tmp_path, monkeypatch):
 @pytest.fixture(autouse=True)
 def _patch_localhost_to_use_fake(monkeypatch):
     """Mirror test_session_local.py: redirect LocalHost at fake_opencode.py."""
-    import optio_opencode.host as host_mod
+    import optio_host.host as host_mod
     orig_init = host_mod.LocalHost.__init__
 
     def _init(self, taskdir, opencode_cmd=None):
@@ -61,7 +61,7 @@ def _patch_localhost_to_use_fake(monkeypatch):
 @pytest.fixture(autouse=True)
 def _supply_scenario(monkeypatch):
     """Inject `--scenario happy` into LocalHost.launch_opencode."""
-    import optio_opencode.host as host_mod
+    import optio_host.host as host_mod
     orig_launch = host_mod.LocalHost.launch_opencode
     holder = {"name": "happy"}
 

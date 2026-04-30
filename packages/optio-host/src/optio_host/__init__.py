@@ -11,9 +11,15 @@ from optio_host.context import (
     HostCommandError,
     RunResult,
 )
+from optio_host.host import Host, LaunchedProcess, LocalHost, RemoteHost, make_host
 from optio_host.types import SSHConfig
 
 __all__ = [
+    "Host",
+    "LocalHost",
+    "RemoteHost",
+    "LaunchedProcess",
+    "make_host",
     "HookContext",
     "HookContextProtocol",
     "HostCommandError",

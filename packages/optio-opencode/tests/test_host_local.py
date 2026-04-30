@@ -4,7 +4,7 @@ import sys
 
 import pytest
 
-from optio_opencode.host import LocalHost
+from optio_host.host import LocalHost
 
 
 FAKE_OPENCODE = os.path.join(os.path.dirname(__file__), "fake_opencode.py")

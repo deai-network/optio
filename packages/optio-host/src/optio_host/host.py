@@ -1,4 +1,4 @@
-"""Host abstraction for optio-opencode.
+"""Host abstraction for optio task types.
 
 Two concrete implementations:
 
@@ -9,7 +9,10 @@ Two concrete implementations:
 
 From the caller's perspective the two are indistinguishable except that
 ``ensure_opencode_installed`` may install opencode on remote hosts but
-never on local hosts.
+never on local hosts. (That method, along with several other opencode-
+named methods, is transient on these classes — see the optio-host split
+spec, sections 4-5; later phases extract them into
+``optio_opencode.host_actions`` as free functions taking ``Host``.)
 """
 
 from __future__ import annotations
@@ -18,12 +21,6 @@ from dataclasses import dataclass
 from typing import AsyncIterator, Callable, Protocol
 
 from optio_host.context import RunResult
-from optio_opencode.install import (
-    OpencodeTarget,
-    make_target,
-    normalize_arch,
-    normalize_os,
-)
 
 
 @dataclass
@@ -57,15 +54,6 @@ class Host(Protocol):
         """Raise RuntimeError if opencode is not available (and install_if_missing is False
         or an install attempt failed).  Remote hosts may run the curl installer;
         local hosts never install — they raise if missing regardless of the flag."""
-
-    async def detect_target(self) -> "OpencodeTarget":
-        """Detect the opencode build target (os/arch/musl/baseline) for this host.
-
-        Uses platform / ``uname`` plus libc and CPU-feature probes.  The
-        logic mirrors opencode's upstream installer so the resulting
-        triple maps directly to a ``opencode-<os>-<arch>[-baseline][-musl]``
-        subdirectory of the build output.
-        """
 
     async def install_opencode_binary(
         self,
@@ -511,53 +499,6 @@ class LocalHost:
         text = stdout.decode("utf-8", errors="replace").strip()
         return text or None
 
-    async def detect_target(self) -> OpencodeTarget:
-        import platform
-
-        os_ = normalize_os(platform.system())
-        arch = normalize_arch(platform.machine())
-        rosetta = False
-        if os_ == "darwin" and arch == "x64":
-            proc = await asyncio.create_subprocess_exec(
-                "sysctl", "-n", "sysctl.proc_translated",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            out, _ = await proc.communicate()
-            rosetta = out.strip() == b"1"
-        musl = False
-        baseline = False
-        if os_ == "linux":
-            if os.path.isfile("/etc/alpine-release"):
-                musl = True
-            else:
-                proc = await asyncio.create_subprocess_exec(
-                    "sh", "-c", "ldd --version 2>&1 || true",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
-                )
-                out, _ = await proc.communicate()
-                if b"musl" in out.lower():
-                    musl = True
-            if arch == "x64":
-                try:
-                    with open("/proc/cpuinfo", "rb") as fh:
-                        cpuinfo = fh.read()
-                except OSError:
-                    cpuinfo = b""
-                if b" avx2 " not in b" " + cpuinfo.lower() + b" ":
-                    baseline = True
-        elif os_ == "darwin" and arch == "x64":
-            proc = await asyncio.create_subprocess_exec(
-                "sysctl", "-n", "hw.optional.avx2_0",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            out, _ = await proc.communicate()
-            if out.strip() != b"1":
-                baseline = True
-        return make_target(os_, arch, rosetta=rosetta, musl=musl, baseline=baseline)
-
     async def put_file_to_host(
         self,
         source,
@@ -696,7 +637,7 @@ import uuid
 
 import asyncssh
 
-from optio_opencode.types import SSHConfig
+from optio_host.types import SSHConfig
 
 
 class RemoteHost:
@@ -1053,56 +994,6 @@ class RemoteHost:
         text = (out if isinstance(out, str) else out.decode("utf-8", errors="replace")).strip()
         return text or None
 
-    async def detect_target(self) -> OpencodeTarget:
-        assert self._conn is not None
-
-        async def _run(cmd: str, *, check: bool = False) -> tuple[int, str]:
-            """Run a trivial command on the remote; return (exit_status, stdout).
-
-            Kept plain-vanilla (no shell-embedded substitutions) to avoid any
-            quoting subtleties over SSH.
-            """
-            r = await self._conn.run(cmd, check=check)  # type: ignore[union-attr]
-            return (r.exit_status or 0, str(r.stdout or ""))
-
-        _, uname_s = await _run("uname -s", check=True)
-        _, uname_m = await _run("uname -m", check=True)
-        os_ = normalize_os(uname_s)
-        arch = normalize_arch(uname_m)
-
-        musl = False
-        rosetta = False
-        baseline = False
-
-        if os_ == "linux":
-            rc, _ = await _run("test -f /etc/alpine-release")
-            if rc == 0:
-                musl = True
-            else:
-                # `ldd --version` prints either to stdout (glibc) or stderr
-                # (musl).  2>&1 merges; we do not care about exit status.
-                _, ldd_out = await _run("ldd --version 2>&1 || true")
-                if "musl" in ldd_out.lower():
-                    musl = True
-            if arch == "x64":
-                # /proc/cpuinfo may be unreadable in containers; absence =>
-                # assume baseline to be safe.
-                rc, cpuinfo = await _run("cat /proc/cpuinfo 2>/dev/null || true")
-                if rc != 0 or " avx2 " not in " " + cpuinfo.lower() + " ":
-                    baseline = True
-        elif os_ == "darwin":
-            if arch == "x64":
-                _, ros = await _run(
-                    "sysctl -n sysctl.proc_translated 2>/dev/null || echo 0"
-                )
-                rosetta = ros.strip() == "1"
-                _, avx2 = await _run(
-                    "sysctl -n hw.optional.avx2_0 2>/dev/null || echo 0"
-                )
-                baseline = avx2.strip() != "1"
-
-        return make_target(os_, arch, rosetta=rosetta, musl=musl, baseline=baseline)
-
     async def _resolve_install_path(self) -> str:
         """Return the absolute remote path where opencode should be installed."""
         home = await self.resolve_host_home()
@@ -1339,3 +1230,18 @@ class RemoteHost:
                 progress_cb(100.0, None)
         finally:
             sftp.exit()
+
+
+# --- factory --------------------------------------------------------------
+
+
+def make_host(*, ssh: SSHConfig | None, taskdir: str) -> Host:
+    """Construct ``LocalHost`` (when ``ssh is None``) or ``RemoteHost``.
+
+    Use this from consumer code instead of naming the implementation
+    classes directly. Keeps the local-vs-remote choice in one place
+    rather than scattered across the consumer.
+    """
+    if ssh is None:
+        return LocalHost(taskdir=taskdir)
+    return RemoteHost(ssh_config=ssh, taskdir=taskdir)
