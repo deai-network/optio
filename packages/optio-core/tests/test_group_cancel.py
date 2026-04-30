@@ -596,3 +596,17 @@ async def test_no_block_new_launches_post_snapshot_not_cancelled(mongo_db):
         assert proc_b["status"]["state"] == "running"
     finally:
         await _stop_optio(optio, run_task)
+
+
+@pytest.mark.parametrize("method_name", ["group_cancel", "group_cancel_and_wait"])
+async def test_no_active_processes_match(mongo_db, method_name):
+    """No matching tasks → both helpers return without error."""
+    optio, run_task = await _start_optio(mongo_db, f"gc_empty_{method_name}", [])
+    try:
+        method = getattr(optio, method_name)
+        # Default block_new_launches=False: trivial return.
+        await method({"team": "alpha"})
+        # block_new_launches=True: leak sweep runs but adds 0 pids.
+        await method({"team": "alpha"}, block_new_launches=True)
+    finally:
+        await _stop_optio(optio, run_task)
