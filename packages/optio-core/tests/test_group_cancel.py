@@ -428,3 +428,36 @@ async def test_leak_sweep_catches_post_snapshot_launch(mongo_db, monkeypatch):
         )
     finally:
         await _stop_optio(optio, run_task)
+
+
+async def test_leak_sweep_noop_when_no_concurrent_launch(mongo_db):
+    """With block_new_launches=True and no in-flight launches, the leak
+    sweep adds zero pids; helper returns normally."""
+    started = asyncio.Event()
+
+    async def cooperative(ctx):
+        started.set()
+        for _ in range(200):
+            if ctx.cancellation_flag.is_set():
+                return
+            await asyncio.sleep(0.02)
+
+    task = TaskInstance(
+        process_id="p.solo", name="Solo", params={}, execute=cooperative,
+        metadata={"team": "alpha"},
+    )
+
+    optio, run_task = await _start_optio(mongo_db, "gcw_noleak", [task])
+    try:
+        await optio.launch("p.solo")
+        await started.wait()
+
+        # No concurrent stage_intruder; just call the helper.
+        await optio.group_cancel_and_wait(
+            {"team": "alpha"}, block_new_launches=True,
+        )
+
+        proc = await optio.get_process("p.solo")
+        assert proc["status"]["state"] == "cancelled"
+    finally:
+        await _stop_optio(optio, run_task)
