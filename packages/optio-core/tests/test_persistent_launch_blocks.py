@@ -240,3 +240,92 @@ async def test_init_with_no_blocks_works(mongo_db):
         assert optio._launch_blocks == {}
     finally:
         await _stop_optio(optio, run_task)
+
+
+# ---------- unblock_launches ----------
+
+async def test_unblock_launches_removes_memory_and_db(mongo_db):
+    """unblock_launches removes matching memory entries and DB rows; returns count."""
+    optio, run_task = await _start_optio(mongo_db, "optio_u1", tasks=())
+    try:
+        async with optio.block_launches({"a": 1}, persist=True, reason="r1"):
+            pass
+        async with optio.block_launches({"a": 1}, persist=True, reason="r2"):
+            pass
+        async with optio.block_launches({"b": 2}, persist=True, reason=None):
+            pass
+        # Sanity: 3 memory entries, 2 DB rows ({a:1} dedup'd, {b:2} separate).
+        assert len(optio._launch_blocks) == 3
+        rows = await store.load_all(store.collection(mongo_db, "optio_u1"))
+        assert len(rows) == 2
+
+        removed = await optio.unblock_launches({"a": 1})
+        assert removed == 2  # two memory entries with filter {a:1}
+
+        # Memory: only {b:2} remains.
+        assert all(e.filter != {"a": 1} for e in optio._launch_blocks.values())
+        # DB: only {b:2} remains.
+        rows = await store.load_all(store.collection(mongo_db, "optio_u1"))
+        assert len(rows) == 1
+        assert rows[0].filter == {"b": 2}
+    finally:
+        await _stop_optio(optio, run_task)
+
+
+async def test_unblock_launches_no_match_returns_zero(mongo_db):
+    """No match -> 0; no error."""
+    optio, run_task = await _start_optio(mongo_db, "optio_u2", tasks=())
+    try:
+        removed = await optio.unblock_launches({"never": "set"})
+        assert removed == 0
+    finally:
+        await _stop_optio(optio, run_task)
+
+
+async def test_unblock_removes_transient_block_too(mongo_db):
+    """Transient (persist=False) blocks with the same filter are also removed."""
+    optio, run_task = await _start_optio(mongo_db, "optio_u3", tasks=())
+    try:
+        # Install a persistent and a transient block with same filter.
+        async with optio.block_launches({"x": 1}, persist=True, reason=None):
+            pass
+        async with optio.block_launches({"x": 1}):
+            assert len(optio._launch_blocks) == 2
+
+            removed = await optio.unblock_launches({"x": 1})
+            # Both removed (persistent + transient).
+            assert removed == 2
+            assert len(optio._launch_blocks) == 0
+        # Transient CM exit tolerates the missing token (pop with default).
+        assert len(optio._launch_blocks) == 0
+    finally:
+        await _stop_optio(optio, run_task)
+
+
+async def test_unblock_persisted_block_then_launch_succeeds(mongo_db):
+    """After unblock, matching launches go through."""
+    completed = asyncio.Event()
+
+    async def _execute(ctx):
+        completed.set()
+
+    task = TaskInstance(
+        execute=_execute,
+        process_id="p_y",
+        name="y",
+        metadata={"tenant": "banned"},
+    )
+
+    optio, run_task = await _start_optio(mongo_db, "optio_u4", tasks=(task,))
+    try:
+        async with optio.block_launches({"tenant": "banned"}, persist=True, reason=None):
+            pass
+        with pytest.raises(LaunchBlocked):
+            await optio.launch("p_y")
+
+        await optio.unblock_launches({"tenant": "banned"})
+
+        await optio.launch_and_wait("p_y")
+        assert completed.is_set()
+    finally:
+        await _stop_optio(optio, run_task)

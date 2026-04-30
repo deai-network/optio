@@ -184,6 +184,30 @@ class Optio:
             if not persist:
                 self._launch_blocks.pop(token, None)
 
+    async def unblock_launches(
+        self,
+        launch_filter: ProcessMetadataFilter,
+    ) -> int:
+        """Remove every persistent record and every in-memory block entry
+        whose filter equals `launch_filter` by exact dict equality. Returns
+        the count of in-memory entries removed.
+
+        Spec: docs/2026-04-30-persistent-launch-blocks-design.md.
+        """
+        from optio_core import _launch_block_store as _lb_store
+        coll = _lb_store.collection(
+            self._config.mongo_db, self._config.prefix,
+        )
+        await _lb_store.delete_by_filter(coll, launch_filter)
+
+        tokens = [
+            t for t, entry in self._launch_blocks.items()
+            if entry.filter == launch_filter
+        ]
+        for t in tokens:
+            self._launch_blocks.pop(t, None)
+        return len(tokens)
+
     def _check_launch_blocks(self, metadata: ProcessMetadataFilter | None) -> None:
         """Raise LaunchBlocked if `metadata` matches any registered block.
 
