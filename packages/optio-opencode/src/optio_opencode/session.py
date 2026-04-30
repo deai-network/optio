@@ -119,7 +119,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                 # previous run; without this `tail -F -n +1` would re-emit
                 # every old DELIVERABLE / DONE / ERROR line and the resumed
                 # process would terminate within seconds of launch (see
-                # LocalHost.tail_log's "-n +1" choice). We preserve the
+                # LocalHost.tail_file's "-n +1" choice). We preserve the
                 # historical content by appending it to optio.log.old so
                 # nothing is lost across consecutive resumes.
                 await _rotate_optio_log(host)

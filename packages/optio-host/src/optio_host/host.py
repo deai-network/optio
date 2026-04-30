@@ -34,17 +34,6 @@ class ProcessHandle:
     stdout: AsyncIterator[bytes]
 
 
-@dataclass
-class LaunchedProcess:
-    """Legacy handle returned by the (now-removed) ``Host.launch_opencode``.
-
-    Kept temporarily because ``test_host_remote_resume.py`` imports it.
-    Future work: drop this entirely once tests stop referencing the type.
-    """
-    pid_like: object
-    opencode_port: int
-
-
 class Host(Protocol):
     """Generic local-or-remote host primitives — no opencode awareness."""
 
@@ -56,19 +45,19 @@ class Host(Protocol):
     async def disconnect(self) -> None: ...
 
     async def setup_workdir(self) -> None:
-        """Create workdir, workdir/deliverables, and an empty workdir/optio.log."""
+        """Create the workdir directory if it does not exist."""
 
     async def write_text(self, relpath: str, content: str) -> None:
         """Write a UTF-8 text file inside the workdir."""
 
-    async def establish_tunnel(self, opencode_port: int) -> int:
+    async def establish_tunnel(self, remote_port: int) -> int:
         """Return the port on the worker machine at which the upstream
-        is reachable.  Local hosts return ``opencode_port`` unchanged;
+        is reachable.  Local hosts return ``remote_port`` unchanged;
         remote hosts open an SSH local forward and return the local port."""
 
-    def tail_log(self) -> AsyncIterator[str]:
+    def tail_file(self, absolute_path: str) -> AsyncIterator[str]:
         """Async iterator yielding lines (without trailing newlines) from
-        workdir/optio.log as they are appended.  Terminates when the
+        ``absolute_path`` as they are appended.  Terminates when the
         underlying tail process ends or the host disconnects."""
 
     async def cleanup_taskdir(self, aggressive: bool) -> None:
@@ -194,10 +183,8 @@ class LocalHost:
             self._tail_proc = None
 
     async def setup_workdir(self) -> None:
+        """Create the workdir directory if it does not exist."""
         os.makedirs(self.workdir, exist_ok=True)
-        os.makedirs(os.path.join(self.workdir, "deliverables"), exist_ok=True)
-        log_path = os.path.join(self.workdir, "optio.log")
-        open(log_path, "a").close()
 
     async def write_text(self, relpath: str, content: str) -> None:
         full = os.path.join(self.workdir, relpath)
@@ -205,21 +192,21 @@ class LocalHost:
         with open(full, "w", encoding="utf-8") as fh:
             fh.write(content)
 
-    async def establish_tunnel(self, opencode_port: int) -> int:
-        return opencode_port
+    async def establish_tunnel(self, remote_port: int) -> int:
+        return remote_port
 
-    async def tail_log(self) -> AsyncIterator[str]:
-        log_path = os.path.join(self.workdir, "optio.log")
+    async def tail_file(self, absolute_path: str) -> AsyncIterator[str]:
+        """Async iterator yielding appended lines from ``absolute_path``."""
         # `-n +1` reads from line 1, not EOF.  The design spec suggested
         # `-n 0` (EOF) to avoid reprocessing a truncated earlier run, but
-        # our workdir is always fresh (setup_workdir creates the log
+        # our workdir is always fresh (the protocol driver creates the log
         # empty just before this) so there's nothing to reprocess, and
         # `-n 0` has a race: lines written to the log before tail
         # subscribes (e.g. opencode eagerly appending STATUS right after
         # launch) are silently skipped.  `-n +1` + always-empty initial
         # log gives us at-least-once delivery.
         self._tail_proc = await asyncio.create_subprocess_exec(
-            "tail", "-F", "-n", "+1", log_path,
+            "tail", "-F", "-n", "+1", absolute_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -470,9 +457,9 @@ class RemoteHost:
     """Host implementation backed by a single asyncssh connection.
 
     The connection multiplexes:
-      * command exec (install, launch, tail -F, rm -rf)
-      * SFTP (write AGENTS.md, write opencode.json, fetch deliverables)
-      * local port forward (the browser → opencode tunnel)
+      * command exec (run_command, launch_subprocess, tail -F, rm -rf)
+      * SFTP (put_file_to_host, write_text, fetch_bytes_from_host)
+      * local port forward (establish_tunnel)
     """
 
     workdir: str
@@ -525,9 +512,9 @@ class RemoteHost:
                 self._conn = None
 
     async def setup_workdir(self) -> None:
+        """Create the workdir directory if it does not exist."""
         assert self._conn is not None and self._sftp is not None
-        await self._conn.run(f"mkdir -p {self.workdir}/deliverables", check=True)
-        await self._conn.run(f"touch {self.workdir}/optio.log", check=True)
+        await self._conn.run(f"mkdir -p {shlex.quote(self.workdir)}", check=True)
 
     async def write_text(self, relpath: str, content: str) -> None:
         assert self._sftp is not None
@@ -539,20 +526,20 @@ class RemoteHost:
         async with self._sftp.open(remote_path, "w", encoding="utf-8") as fh:
             await fh.write(content)
 
-    async def establish_tunnel(self, opencode_port: int) -> int:
+    async def establish_tunnel(self, remote_port: int) -> int:
         assert self._conn is not None
         self._forward = await self._conn.forward_local_port(
-            "127.0.0.1", 0, "127.0.0.1", opencode_port
+            "127.0.0.1", 0, "127.0.0.1", remote_port
         )
         return self._forward.get_port()
 
-    async def tail_log(self) -> AsyncIterator[str]:
+    async def tail_file(self, absolute_path: str) -> AsyncIterator[str]:
+        """Async iterator yielding appended lines from ``absolute_path``."""
         assert self._conn is not None
-        log_path = f"{self.workdir}/optio.log"
-        # See LocalHost.tail_log for why `-n +1` rather than the spec's
+        # See LocalHost.tail_file for why `-n +1` rather than the spec's
         # `-n 0`: fresh workdir + race-free at-least-once delivery.
         self._tail_proc = await self._conn.create_process(
-            f"tail -F -n +1 {log_path}"
+            f"tail -F -n +1 {shlex.quote(absolute_path)}"
         )
         async for raw in self._tail_proc.stdout:
             yield raw.rstrip("\r\n")

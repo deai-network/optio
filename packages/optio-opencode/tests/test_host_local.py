@@ -59,12 +59,16 @@ async def test_launch_times_out_on_no_url(tmp_path):
         )
 
 
-async def test_tail_log_yields_appended_lines(local_host):
+async def test_tail_file_yields_appended_lines(local_host):
     await local_host.setup_workdir()
+    log_path = os.path.join(local_host.workdir, "optio.log")
+    # setup_workdir no longer creates optio.log; the protocol driver does.
+    # The test exercises tail_file directly, so create the file ourselves.
+    open(log_path, "a", encoding="utf-8").close()
 
     async def append_later():
         await asyncio.sleep(0.05)
-        with open(os.path.join(local_host.workdir, "optio.log"), "a", encoding="utf-8") as fh:
+        with open(log_path, "a", encoding="utf-8") as fh:
             fh.write("hello\n")
             fh.flush()
 
@@ -72,7 +76,7 @@ async def test_tail_log_yields_appended_lines(local_host):
     collected: list[str] = []
 
     async def _collect() -> None:
-        async for line in local_host.tail_log():
+        async for line in local_host.tail_file(log_path):
             collected.append(line)
             if collected == ["hello"]:
                 break

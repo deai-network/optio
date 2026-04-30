@@ -13,7 +13,6 @@ from optio_host.context import (
 )
 from optio_host.host import (
     Host,
-    LaunchedProcess,
     LocalHost,
     ProcessHandle,
     RemoteHost,
@@ -26,7 +25,6 @@ __all__ = [
     "LocalHost",
     "RemoteHost",
     "ProcessHandle",
-    "LaunchedProcess",
     "make_host",
     "HookContext",
     "HookContextProtocol",

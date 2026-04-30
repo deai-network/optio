@@ -132,12 +132,11 @@ async def run_log_protocol_session(
     """
     hook_ctx = HookContext(ctx, host)
 
-    # Workdir + protocol artifacts.
+    # Workdir + protocol artifacts. ``setup_workdir`` mkdirs the workdir
+    # only; the protocol-specific deliverables/ dir + empty optio.log
+    # channel are owned by the protocol driver itself.
     await host.setup_workdir()
     deliverables_dir = f"{host.workdir}/deliverables"
-    optio_log_path = f"{host.workdir}/optio.log"
-    # ``host.setup_workdir`` currently also creates these (transient
-    # behavior pending Phase 6 slim-down); the calls below are idempotent.
     await host.run_command(f"mkdir -p {deliverables_dir}")
     await host.write_text("optio.log", "")
 
@@ -223,8 +222,8 @@ async def _tail_and_dispatch(
     done_flag: asyncio.Event,
     error_flag: list,
 ) -> None:
-    """Consume tail_log, parse each line, dispatch by keyword."""
-    async for line in host.tail_log():
+    """Consume tail_file(optio.log), parse each line, dispatch by keyword."""
+    async for line in host.tail_file(f"{host.workdir}/optio.log"):
         ev: LogEvent = parse_log_line(line)
         if isinstance(ev, StatusEvent):
             ctx.report_progress(ev.percent, ev.message)
