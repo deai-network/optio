@@ -504,3 +504,45 @@ async def test_self_cancel_via_group_cancel(mongo_db):
         assert reached_after_call.is_set()  # the call returned
     finally:
         await _stop_optio(optio, run_task)
+
+
+async def test_guard_lifted_on_exception(mongo_db, monkeypatch):
+    """When group_cancel_and_wait raises asyncio.TimeoutError with
+    block_new_launches=True, the launch guard is lifted on the way out
+    (capture-and-compare _launch_blocks)."""
+    started = asyncio.Event()
+
+    async def stubborn(ctx):  # noqa: ARG001
+        started.set()
+        while True:
+            await asyncio.sleep(0.05)
+
+    task = TaskInstance(
+        process_id="p.stub", name="Stub", params={}, execute=stubborn,
+        metadata={"team": "alpha"},
+    )
+
+    optio, run_task = await _start_optio(
+        mongo_db, "gcw_lift", [task], cancel_grace_seconds=0.2,
+    )
+    try:
+        await optio.launch("p.stub")
+        await started.wait()
+
+        # Patch out force_cancel + shrink the ceiling — same trick as
+        # Task 6, so the helper raises TimeoutError.
+        async def noop(*a, **k):
+            return None
+        monkeypatch.setattr(optio._executor, "force_cancel", noop)
+        optio._config.cancel_grace_seconds = -24.5  # ceiling = 0.5
+
+        before = set(optio._launch_blocks.keys())
+        with pytest.raises(asyncio.TimeoutError):
+            await optio.group_cancel_and_wait(
+                {"team": "alpha"}, block_new_launches=True,
+            )
+        after = set(optio._launch_blocks.keys())
+        assert before == after  # guard lifted on raise
+    finally:
+        optio._config.cancel_grace_seconds = 0.2
+        await _stop_optio(optio, run_task)
