@@ -461,3 +461,46 @@ async def test_leak_sweep_noop_when_no_concurrent_launch(mongo_db):
         assert proc["status"]["state"] == "cancelled"
     finally:
         await _stop_optio(optio, run_task)
+
+
+# ---------- Self-cancel ----------
+
+async def test_self_cancel_via_group_cancel(mongo_db):
+    """A task that calls group_cancel matching its own metadata returns
+    from the call cleanly, then unwinds cooperatively."""
+    reached_after_call = asyncio.Event()
+
+    async def self_canceller(ctx):
+        # Cancel my own group, including myself.
+        await optio_handle["optio"].group_cancel({"team": "alpha"})
+        reached_after_call.set()
+        # Now keep checking the flag. Should see it set very soon.
+        for _ in range(200):
+            if ctx.cancellation_flag.is_set():
+                return
+            await asyncio.sleep(0.02)
+
+    task = TaskInstance(
+        process_id="p.self", name="Self", params={}, execute=self_canceller,
+        metadata={"team": "alpha"},
+    )
+
+    # Trick: stash the optio reference where the task body can reach it.
+    optio_handle = {}
+
+    optio, run_task = await _start_optio(mongo_db, "gc_self", [task])
+    optio_handle["optio"] = optio
+    try:
+        await optio.launch("p.self")
+
+        # Wait for the task to reach the post-call point and then unwind.
+        for _ in range(200):
+            await asyncio.sleep(0.05)
+            proc = await optio.get_process("p.self")
+            if proc["status"]["state"] == "cancelled":
+                break
+        proc = await optio.get_process("p.self")
+        assert proc["status"]["state"] == "cancelled"
+        assert reached_after_call.is_set()  # the call returned
+    finally:
+        await _stop_optio(optio, run_task)
