@@ -236,3 +236,51 @@ async def test_group_cancel_and_wait_mixed_cooperative_and_stubborn(mongo_db):
         )
     finally:
         await _stop_optio(optio, run_task)
+
+
+async def test_group_cancel_and_wait_raises_on_internal_ceiling(mongo_db, monkeypatch):
+    """Patch the executor's force_cancel to a no-op so the supervisor never
+    finalizes the stubborn task. group_cancel_and_wait must raise
+    asyncio.TimeoutError once the internal ceiling expires."""
+    started = asyncio.Event()
+
+    async def stubborn(ctx):  # noqa: ARG001
+        started.set()
+        while True:
+            await asyncio.sleep(0.05)
+
+    task = TaskInstance(
+        process_id="p.stub", name="Stub", params={}, execute=stubborn,
+        metadata={"team": "alpha"},
+    )
+
+    # Use a very small grace + ceiling buffer so the test is fast. The
+    # ceiling = cancel_grace_seconds + 25 in production; we patch that
+    # constant via a small monkeypatch on the helper at the call site.
+    optio, run_task = await _start_optio(
+        mongo_db, "gcw_ceil", [task], cancel_grace_seconds=0.2,
+    )
+    try:
+        await optio.launch("p.stub")
+        await started.wait()
+
+        # No-op the executor's force_cancel so the supervisor cannot
+        # finalize the stubborn task.
+        async def noop(*a, **k):
+            return None
+        monkeypatch.setattr(optio._executor, "force_cancel", noop)
+
+        # Patch the +25.0 buffer to something tiny by monkeypatching the
+        # helper to use a smaller ceiling. Cleanest: temporarily mutate
+        # the config's cancel_grace_seconds to make the formula evaluate
+        # to a small number, e.g. set to a negative value so total ≈ 0.5.
+        # But: cancel_grace_seconds also controls when the supervisor
+        # would force-cancel — which is patched out. So we can shrink it.
+        optio._config.cancel_grace_seconds = -24.5  # ceiling = 0.5
+
+        with pytest.raises(asyncio.TimeoutError, match="did not reach a terminal state"):
+            await optio.group_cancel_and_wait({"team": "alpha"})
+    finally:
+        # Reset before shutdown so shutdown's grace logic doesn't go wild.
+        optio._config.cancel_grace_seconds = 0.2
+        await _stop_optio(optio, run_task)
