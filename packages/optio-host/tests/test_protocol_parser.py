@@ -1,6 +1,6 @@
 import pytest
 
-from optio_opencode.logparse import (
+from optio_host.protocol.parser import (
     DeliverableEvent,
     DoneEvent,
     ErrorEvent,
@@ -135,7 +135,7 @@ def test_validate_absolute_outside_workdir_rejected(tmp_workdir):
 
 # ---- relativize_deliverable_path ----
 
-from optio_opencode.logparse import relativize_deliverable_path
+from optio_host.protocol.parser import relativize_deliverable_path
 
 
 def test_relativize_direct_child_of_deliverables(tmp_workdir):

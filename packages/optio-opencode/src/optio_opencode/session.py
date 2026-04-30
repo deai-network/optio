@@ -23,7 +23,7 @@ from optio_core.context import ProcessContext
 from optio_core.models import BasicAuth, TaskInstance
 
 from optio_host.host import Host, LocalHost, LaunchedProcess, RemoteHost
-from optio_opencode.logparse import (
+from optio_host.protocol.parser import (
     DeliverableEvent,
     DoneEvent,
     ErrorEvent,
