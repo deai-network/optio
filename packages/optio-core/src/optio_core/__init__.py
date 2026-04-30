@@ -19,6 +19,8 @@ resync = _instance.resync
 get_process = _instance.get_process
 list_processes = _instance.list_processes
 block_launches = _instance.block_launches
+group_cancel = _instance.group_cancel
+group_cancel_and_wait = _instance.group_cancel_and_wait
 
 __all__ = [
     "TaskInstance", "ChildResult", "LaunchBlocked",
@@ -27,4 +29,5 @@ __all__ = [
     "launch", "launch_and_wait", "cancel", "dismiss", "resync",
     "get_process", "list_processes",
     "block_launches",
+    "group_cancel", "group_cancel_and_wait",
 ]

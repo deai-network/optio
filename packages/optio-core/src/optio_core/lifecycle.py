@@ -288,6 +288,53 @@ class Optio:
                 )
             await asyncio.sleep(0.1)
 
+    async def _group_cancel_issue(
+        self,
+        metadata_filter: ProcessMetadataFilter,
+        block_new_launches: bool,
+    ) -> list[str]:
+        """Snapshot, cancel, optionally leak-sweep. Returns the list of
+        process_ids that were cancelled (snapshot + leaked).
+
+        Caller is responsible for the launch guard's AsyncExitStack —
+        this helper assumes the guard is already active when called with
+        block_new_launches=True.
+        """
+        raise NotImplementedError  # filled in later tasks
+
+    async def group_cancel(
+        self,
+        metadata_filter: ProcessMetadataFilter,
+        block_new_launches: bool = False,
+    ) -> None:
+        """Cancel every active process matching `metadata_filter`. Does NOT
+        wait for terminal state. See docs/2026-04-30-group-cancel-design.md."""
+        if not metadata_filter:
+            raise ValueError(
+                "group_cancel requires a non-empty metadata_filter; "
+                "use Optio.shutdown() to drain everything."
+            )
+        raise NotImplementedError
+
+    async def group_cancel_and_wait(
+        self,
+        metadata_filter: ProcessMetadataFilter,
+        block_new_launches: bool = False,
+    ) -> None:
+        """Cancel every active process matching `metadata_filter` and wait
+        for all of them to reach a terminal state. See
+        docs/2026-04-30-group-cancel-design.md.
+
+        Do not call from inside a task whose metadata matches the filter —
+        use group_cancel for self-cancel.
+        """
+        if not metadata_filter:
+            raise ValueError(
+                "group_cancel_and_wait requires a non-empty metadata_filter; "
+                "use Optio.shutdown() to drain everything."
+            )
+        raise NotImplementedError
+
     async def dismiss(self, process_id: str) -> None:
         """Dismiss a completed process (reset to idle)."""
         await self._handle_dismiss({"processId": process_id})
