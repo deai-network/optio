@@ -4,13 +4,13 @@
 
 ## Summary
 
-Extend the existing in-memory launch-block mechanism in `LifecycleManager` so that selected blocks can be persisted to MongoDB and survive process restarts. Persistent blocks (informally "perma-bans") are loaded into memory at `LifecycleManager` initialization and matched against incoming launches via the existing `_check_launch_blocks` pipeline. A new admin operation removes them.
+Extend the existing in-memory launch-block mechanism on the `Optio` class (`optio_core/lifecycle.py`) so that selected blocks can be persisted to MongoDB and survive process restarts. Persistent blocks (informally "perma-bans") are loaded into memory during `Optio.init()` and matched against incoming launches via the existing `_check_launch_blocks` pipeline. A new admin operation removes them.
 
 The feature is exposed on the existing public API by adding a `persist` flag (and a `reason` kwarg) to three functions and introducing one new function (`unblock_launches`). No Redis-stream commands are added.
 
 ## Motivation
 
-Today, `LifecycleManager.block_launches(filter)` registers an in-memory block whose lifetime equals the caller's `async with` scope. After process restart, all blocks are lost. There is no persistent way to express "do not ever launch processes whose metadata matches this filter, until I explicitly say otherwise".
+Today, `Optio.block_launches(filter)` registers an in-memory block whose lifetime equals the caller's `async with` scope. After process restart, all blocks are lost. There is no persistent way to express "do not ever launch processes whose metadata matches this filter, until I explicitly say otherwise".
 
 Operators need a durable form of this guard for situations such as:
 
@@ -21,7 +21,7 @@ The existing `block_launches` primitive is already the correct shape; we extend 
 
 ## Public API
 
-All additions live on `LifecycleManager` in `optio_core/lifecycle.py`. Signatures use keyword-only kwargs for the new options.
+All additions live on the `Optio` class in `optio_core/lifecycle.py`. Signatures use keyword-only kwargs for the new options.
 
 ### Modified — `block_launches`
 
@@ -95,13 +95,13 @@ The exception class itself is unchanged. The message constructed at the raise si
 
 ### Load on initialization
 
-During `LifecycleManager` async initialization, before `run()` accepts any work:
+During `Optio.init()`, before `run()` accepts any work:
 
 - All records in the persistent-blocks collection are read.
 - Each record is registered as an in-memory block (fresh UUID token, filter and reason populated from the record).
 - An empty or missing collection produces an empty load. No migration is required; MongoDB creates the collection lazily on first insert.
 
-After load completes, the manager behaves identically to today with respect to launch matching: `_check_launch_blocks` walks the in-memory dict and raises `LaunchBlocked` on a match.
+After load completes, `Optio` behaves identically to today with respect to launch matching: `_check_launch_blocks` walks the in-memory dict and raises `LaunchBlocked` on a match.
 
 ### Write-through on persist
 
@@ -181,7 +181,7 @@ A new file `tests/test_persistent_launch_blocks.py` covers:
 - Reason concatenation: existing non-null + new non-null → `"existing AND new"`; either side null → reason unchanged.
 - `delete_by_filter` deletes all matching rows; returns the count; non-matching is a no-op.
 
-### LifecycleManager-level (integration with mongo)
+### Optio-level (integration with mongo)
 
 - After init with persistent records present, matching launches are blocked from the start.
 - `block_launches(F, persist=True)` exit does **not** remove the block; the record is present after `async with` exits.
@@ -191,7 +191,7 @@ A new file `tests/test_persistent_launch_blocks.py` covers:
 - `group_cancel(F, persist=True, block_new_launches=False)` raises `ValueError`.
 - `group_cancel_and_wait(F, ..., persist=True)` matches `group_cancel` semantics plus wait.
 - `unblock_launches(F)` removes the record and all in-memory entries; subsequent launches matching `F` succeed; the returned count is correct.
-- Restart simulation: install a persistent block, dispose the manager, instantiate a new manager against the same database — the block is reloaded and matching launches remain blocked.
+- Restart simulation: install a persistent block, dispose the `Optio` instance, instantiate a new `Optio` against the same database — the block is reloaded and matching launches remain blocked.
 - A transient and a persistent block with the same filter coexist; `unblock_launches(F)` removes both.
 
 The existing `tests/test_group_cancel.py` is left untouched; persist-flag cases for `group_cancel*` live in the new file for cohesion with the rest of this feature.
