@@ -378,3 +378,58 @@ async def test_group_cancel_persist_installs_persistent_block(mongo_db):
             await optio.launch("p_gc")
     finally:
         await _stop_optio(optio, run_task)
+
+
+# ---------- group_cancel_and_wait(persist=...) ----------
+
+async def test_group_cancel_and_wait_persist_requires_block_new_launches(mongo_db):
+    """persist=True with block_new_launches=False raises ValueError."""
+    optio = Optio()
+    with pytest.raises(ValueError, match="block_new_launches"):
+        await optio.group_cancel_and_wait(
+            {"tenant": "x"}, block_new_launches=False, persist=True, reason=None,
+        )
+
+
+async def test_group_cancel_and_wait_persist_installs_persistent_block(mongo_db):
+    """persist=True + block_new_launches=True: blocks survives the wait, record written."""
+    started = asyncio.Event()
+
+    async def _execute(ctx):
+        started.set()
+        try:
+            await asyncio.sleep(60)  # will be cancelled
+        except asyncio.CancelledError:
+            raise
+
+    task = TaskInstance(
+        execute=_execute,
+        process_id="p_gcw",
+        name="gcw",
+        metadata={"tenant": "acme"},
+    )
+    optio, run_task = await _start_optio(mongo_db, "optio_gcw1", tasks=(task,))
+    try:
+        # Launch one process; wait for it to start.
+        await optio.launch("p_gcw")
+        await asyncio.wait_for(started.wait(), timeout=5.0)
+
+        await optio.group_cancel_and_wait(
+            {"tenant": "acme"},
+            block_new_launches=True,
+            persist=True,
+            reason="bw",
+        )
+        # Persistent block survives the wait.
+        assert any(
+            e.filter == {"tenant": "acme"} and e.reason == "bw"
+            for e in optio._launch_blocks.values()
+        )
+        rows = await store.load_all(store.collection(mongo_db, "optio_gcw1"))
+        assert len(rows) == 1
+
+        # Subsequent launch blocked.
+        with pytest.raises(LaunchBlocked):
+            await optio.launch("p_gcw")
+    finally:
+        await _stop_optio(optio, run_task)

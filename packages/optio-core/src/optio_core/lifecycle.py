@@ -444,10 +444,14 @@ class Optio:
         self,
         metadata_filter: ProcessMetadataFilter,
         block_new_launches: bool = False,
+        *,
+        persist: bool = False,
+        reason: str | None = None,
     ) -> None:
         """Cancel every active process matching `metadata_filter` and wait
         for all of them to reach a terminal state. See
-        docs/2026-04-30-group-cancel-design.md.
+        docs/2026-04-30-group-cancel-design.md and
+        docs/2026-04-30-persistent-launch-blocks-design.md (for `persist`).
 
         Do not call from inside a task whose metadata matches the filter —
         use group_cancel for self-cancel.
@@ -457,10 +461,16 @@ class Optio:
                 "group_cancel_and_wait requires a non-empty metadata_filter; "
                 "use Optio.shutdown() to drain everything."
             )
+        if persist and not block_new_launches:
+            raise ValueError(
+                "group_cancel_and_wait: persist=True requires block_new_launches=True"
+            )
         async with AsyncExitStack() as stack:
             if block_new_launches:
                 await stack.enter_async_context(
-                    self.block_launches(metadata_filter)
+                    self.block_launches(
+                        metadata_filter, persist=persist, reason=reason,
+                    )
                 )
             pending = await self._group_cancel_issue(
                 metadata_filter, block_new_launches,
