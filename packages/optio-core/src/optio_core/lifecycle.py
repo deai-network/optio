@@ -294,13 +294,22 @@ class Optio:
         block_new_launches: bool,
     ) -> list[str]:
         """Snapshot, cancel, optionally leak-sweep. Returns the list of
-        process_ids that were cancelled (snapshot + leaked).
+        process_ids that were cancelled (snapshot + leaked)."""
+        # 1. Snapshot active processes matching the filter.
+        procs = await self.list_processes(metadata=metadata_filter)
+        active = [p for p in procs if p["status"]["state"] in ACTIVE_STATES]
 
-        Caller is responsible for the launch guard's AsyncExitStack —
-        this helper assumes the guard is already active when called with
-        block_new_launches=True.
-        """
-        raise NotImplementedError  # filled in later tasks
+        # 2. Issue cancellations in parallel. cancel() is non-blocking
+        #    and idempotent.
+        if active:
+            await asyncio.gather(
+                *(self.cancel(p["processId"]) for p in active)
+            )
+
+        pending_ids = [p["processId"] for p in active]
+
+        # 3. Leak sweep — implemented in a later task.
+        return pending_ids
 
     async def group_cancel(
         self,
@@ -314,7 +323,8 @@ class Optio:
                 "group_cancel requires a non-empty metadata_filter; "
                 "use Optio.shutdown() to drain everything."
             )
-        raise NotImplementedError
+        # Guard not yet wired up — added in a later task.
+        await self._group_cancel_issue(metadata_filter, block_new_launches)
 
     async def group_cancel_and_wait(
         self,
