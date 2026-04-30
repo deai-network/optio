@@ -610,3 +610,14 @@ async def test_no_active_processes_match(mongo_db, method_name):
         await method({"team": "alpha"}, block_new_launches=True)
     finally:
         await _stop_optio(optio, run_task)
+
+
+# ---------- Public API export ----------
+
+def test_group_cancel_pair_exported_from_package():
+    """Both helpers are exported from optio_core, bound to the singleton."""
+    import optio_core
+    assert optio_core.group_cancel == optio_core._instance.group_cancel
+    assert optio_core.group_cancel_and_wait == optio_core._instance.group_cancel_and_wait
+    assert "group_cancel" in optio_core.__all__
+    assert "group_cancel_and_wait" in optio_core.__all__
