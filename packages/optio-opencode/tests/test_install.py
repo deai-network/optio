@@ -112,18 +112,23 @@ async def test_local_host_detect_target_matches_platform(tmp_workdir):
     assert t.directory_name.startswith(f"opencode-{t.os}-{t.arch}")
 
 
-async def test_local_host_install_opencode_binary_sets_opencode_cmd(tmp_workdir):
+async def test_local_host_install_opencode_binary_returns_path_verbatim(tmp_workdir):
+    from optio_opencode import host_actions
     host = LocalHost(taskdir=tmp_workdir)
     # Create a dummy executable and install it.
     dummy = os.path.join(tmp_workdir, "my-opencode")
     with open(dummy, "w") as fh:
         fh.write("#!/bin/sh\nexit 0\n")
     os.chmod(dummy, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP)
-    await host.install_opencode_binary(dummy)
-    assert host._opencode_cmd == [dummy]
+    installed = await host_actions.install_opencode_binary(host, dummy)
+    # Local install returns the path verbatim — no copy occurred.
+    assert installed == dummy
 
 
 async def test_local_host_install_opencode_binary_raises_on_missing(tmp_workdir):
+    from optio_opencode import host_actions
     host = LocalHost(taskdir=tmp_workdir)
     with pytest.raises(RuntimeError, match="not found"):
-        await host.install_opencode_binary("/nonexistent/path/to/opencode")
+        await host_actions.install_opencode_binary(
+            host, "/nonexistent/path/to/opencode",
+        )

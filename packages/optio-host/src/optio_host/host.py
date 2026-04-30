@@ -7,38 +7,49 @@ Two concrete implementations:
   multiplexing command exec + SFTP + local port forwarding over a single
   connection.
 
-From the caller's perspective the two are indistinguishable except that
-``ensure_opencode_installed`` may install opencode on remote hosts but
-never on local hosts. (That method, along with several other opencode-
-named methods, is transient on these classes — see the optio-host split
-spec, sections 4-5; later phases extract them into
-``optio_opencode.host_actions`` as free functions taking ``Host``.)
+This module only knows about generic remote-execution primitives. All
+opencode-specific actions (binary install, launch, opencode_import/export,
+etc.) live in ``optio_opencode.host_actions`` as free functions taking
+``Host`` — see the optio-host split spec, sections 4-5.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import AsyncIterator, Callable, Protocol
+from typing import AsyncIterator, Protocol
 
 from optio_host.context import RunResult
 
 
 @dataclass
-class LaunchedProcess:
-    """Handle returned by ``Host.launch_opencode``."""
-    # Implementations are free to use their own process type; this object
-    # only carries the data the session state machine needs.
-    pid_like: object
-    """Opaque handle the host uses to terminate the process later."""
+class ProcessHandle:
+    """Generic handle for a subprocess started via ``Host.launch_subprocess``.
 
+    ``pid_like`` is opaque (``asyncio.subprocess.Process`` for LocalHost,
+    ``asyncssh.SSHClientProcess`` for RemoteHost). ``stdout`` yields bytes
+    chunks (typically lines) as the subprocess emits them; the iterator
+    completes when the subprocess closes its stdout.
+    """
+    pid_like: object
+    stdout: AsyncIterator[bytes]
+
+
+@dataclass
+class LaunchedProcess:
+    """Legacy handle returned by the (now-removed) ``Host.launch_opencode``.
+
+    Kept temporarily because ``test_host_remote_resume.py`` imports it.
+    Future work: drop this entirely once tests stop referencing the type.
+    """
+    pid_like: object
     opencode_port: int
-    """The port opencode is listening on, on the host where it runs."""
 
 
 class Host(Protocol):
-    """Everything optio-opencode needs from a host."""
+    """Generic local-or-remote host primitives — no opencode awareness."""
 
-    workdir: str  # absolute path on the host where opencode runs
+    workdir: str  # absolute path on the host where work runs
+    taskdir: str  # absolute path of per-process taskdir (workdir's parent)
 
     async def connect(self) -> None: ...
 
@@ -50,56 +61,6 @@ class Host(Protocol):
     async def write_text(self, relpath: str, content: str) -> None:
         """Write a UTF-8 text file inside the workdir."""
 
-    async def ensure_opencode_installed(self, install_if_missing: bool) -> None:
-        """Raise RuntimeError if opencode is not available (and install_if_missing is False
-        or an install attempt failed).  Remote hosts may run the curl installer;
-        local hosts never install — they raise if missing regardless of the flag."""
-
-    async def install_opencode_binary(
-        self,
-        local_binary_path: str,
-        progress: "Callable[[int, int], None] | None" = None,
-    ) -> None:
-        """Install an opencode binary from the worker's filesystem.
-
-        For LocalHost: remembers the binary path and uses it as the
-        opencode command, bypassing any ``opencode`` on PATH.
-
-        For RemoteHost: SFTP-uploads the binary to
-        ``~/.local/bin/opencode`` (mode 0755, atomic rename), skipping
-        the upload when the remote file's SHA-256 already matches.
-        Subsequent ``launch_opencode`` calls run it by absolute path.
-
-        If ``progress`` is given and an upload actually occurs (i.e. the
-        remote does not already have a byte-identical file), it is
-        invoked periodically with ``(bytes_transferred, total_bytes)``.
-        Local installs are effectively instant so the callback is not
-        invoked for LocalHost.
-
-        Called in place of ``ensure_opencode_installed`` when the
-        ``OPTIO_OPENCODE_BINARY_DIR`` env var is set.
-        """
-
-    async def launch_opencode(
-        self,
-        password: str,
-        ready_timeout_s: float,
-        extra_args: list[str] | None = None,
-        env: dict[str, str] | None = None,
-    ) -> LaunchedProcess:
-        """Launch ``opencode web`` in the workdir with the given password.
-
-        Blocks until opencode prints a ``Listening on http://...`` URL
-        or ``ready_timeout_s`` elapses.  Raises TimeoutError on timeout
-        (opencode is left killed/cleaned up).
-
-        ``extra_args`` is a test-only hook for substituting a test-double
-        binary for opencode; production callers omit it.
-
-        ``env`` is an optional dict of extra environment variables to
-        merge into the subprocess environment (after the defaults).
-        """
-
     async def establish_tunnel(self, opencode_port: int) -> int:
         """Return the port on the worker machine at which the upstream
         is reachable.  Local hosts return ``opencode_port`` unchanged;
@@ -110,56 +71,54 @@ class Host(Protocol):
         workdir/optio.log as they are appended.  Terminates when the
         underlying tail process ends or the host disconnects."""
 
-    async def fetch_deliverable_text(self, absolute_path: str) -> str:
-        """Fetch ``absolute_path`` (already validated to live inside workdir)
-        and return the UTF-8 decoded contents.  Raises UnicodeDecodeError
-        on non-UTF-8 content; raises FileNotFoundError on missing file."""
-
-    async def terminate_opencode(
-        self,
-        process: LaunchedProcess,
-        aggressive: bool,
-    ) -> None:
-        """Terminate opencode.
-
-        aggressive=False: SIGTERM, wait up to 5 s, then SIGKILL.
-        aggressive=True: SIGKILL immediately; do not wait.
-        """
-
     async def cleanup_taskdir(self, aggressive: bool) -> None:
-        """Remove the entire per-task directory (workdir + opencode.db + any
-        opencode-side stray files). Uses ``self.task_dir``.
+        """Remove the entire per-task directory.
 
         aggressive=False: wait for the rm to complete.
         aggressive=True: fire-and-forget; return as soon as the call
         has been dispatched.
         """
 
-    async def opencode_import(
-        self, opencode_db_path: str, session_json: bytes,
-    ) -> None: ...
+    async def launch_subprocess(
+        self,
+        command: str,
+        *,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> ProcessHandle:
+        """Spawn ``command`` (interpreted by ``/bin/sh -c`` semantics) and
+        return a handle whose ``stdout`` iterator yields bytes as they arrive.
 
-    async def opencode_export(
-        self, opencode_db_path: str, session_id: str,
-    ) -> bytes: ...
+        Returns BEFORE the subprocess exits; caller is responsible for
+        terminating it via ``terminate_subprocess`` (or letting it exit).
+        Stderr is merged into stdout via ``2>&1`` (caller may wrap further).
+        """
 
-    def archive_workdir(
-        self, exclude: list[str] | None,
-    ) -> AsyncIterator[bytes]: ...
-    # NB: archive_workdir is a *plain* method that returns an AsyncIterator,
-    # not an async method. Callers iterate via `async for chunk in host.archive_workdir(...)`.
+    async def terminate_subprocess(
+        self,
+        handle: ProcessHandle,
+        *,
+        aggressive: bool,
+    ) -> None:
+        """Terminate the subprocess associated with ``handle``.
 
-    async def restore_workdir(
-        self, stream: AsyncIterator[bytes],
-    ) -> None: ...
+        aggressive=False: SIGTERM, wait up to 5 s, then SIGKILL.
+        aggressive=True: SIGKILL immediately; do not wait.
+        """
+
+    async def fetch_deliverable_text(self, absolute_path: str) -> str:
+        """Fetch ``absolute_path`` and return the UTF-8 decoded contents.
+
+        Raises ``UnicodeDecodeError`` on non-UTF-8 content; raises
+        ``FileNotFoundError`` on missing file.
+
+        NB: this method exists transiently while ``run_log_protocol_session``'s
+        deliverable-fetch loop still calls it. Equivalent free helper
+        ``optio_host.protocol.session.fetch_deliverable_text(host, path)``
+        is the going-forward API; see spec section 2.
+        """
 
     async def remove_file(self, path: str) -> None: ...
-
-    async def opencode_version(self) -> str | None: ...
-    # Run `<opencode_cmd> --version` on the host and return stripped stdout.
-    # Returns None on any failure — best-effort, used only for status messages.
-
-    # --- new primitives for HookContext (Task 3+ implement these) ---
 
     async def put_file_to_host(
         self,
@@ -188,18 +147,24 @@ class Host(Protocol):
 
     async def resolve_host_home(self) -> str: ...
 
+    def archive_workdir(
+        self, exclude: list[str] | None,
+    ) -> AsyncIterator[bytes]: ...
+    # NB: archive_workdir is a *plain* method that returns an AsyncIterator,
+    # not an async method. Callers iterate via `async for chunk in host.archive_workdir(...)`.
+
+    async def restore_workdir(
+        self, stream: AsyncIterator[bytes],
+    ) -> None: ...
+
 
 # --- implementation -----------------------------------------------------
 
 import asyncio
 import hashlib
 import os
-import re
 import shlex
 import shutil
-
-
-_READY_RE = re.compile(r"(http://[^\s]+)")
 
 
 class LocalHost:
@@ -208,17 +173,11 @@ class LocalHost:
     workdir: str
     taskdir: str
 
-    def __init__(
-        self,
-        taskdir: str,
-        opencode_cmd: list[str] | None = None,
-    ):
+    def __init__(self, taskdir: str):
         # taskdir is the per-process directory that holds workdir + opencode.db.
         # workdir is always taskdir/workdir.
         self.taskdir = taskdir
         self.workdir = os.path.join(taskdir, "workdir")
-        # Allow tests to substitute a fake opencode binary.
-        self._opencode_cmd = opencode_cmd or ["opencode"]
         self._tail_proc: asyncio.subprocess.Process | None = None
 
     async def connect(self) -> None:
@@ -245,93 +204,6 @@ class LocalHost:
         os.makedirs(os.path.dirname(full) or self.workdir, exist_ok=True)
         with open(full, "w", encoding="utf-8") as fh:
             fh.write(content)
-
-    async def ensure_opencode_installed(self, install_if_missing: bool) -> None:
-        # Local mode: always expects pre-install.  Spec Section 1/9.
-        # For tests the _opencode_cmd points at fake_opencode.py which always exists.
-        if self._opencode_cmd[0] == "opencode" and shutil.which("opencode") is None:
-            raise RuntimeError(
-                "opencode is not available on this local host.  "
-                "Install it first (e.g. `curl -fsSL opencode.ai/install | bash`); "
-                "optio-opencode does not install opencode in local mode."
-            )
-
-    async def launch_opencode(
-        self,
-        password: str,
-        ready_timeout_s: float,
-        extra_args: list[str] | None = None,
-        env: dict[str, str] | None = None,
-    ) -> LaunchedProcess:
-        proc_env = os.environ.copy()
-        proc_env["OPENCODE_SERVER_PASSWORD"] = password
-        # Suppress opencode's automatic browser-open.  The `open` npm package
-        # on Linux defers to xdg-open, which on GNOME/KDE ignores $BROWSER and
-        # uses the desktop environment's default handler.  Shadow xdg-open in
-        # the subprocess PATH with a no-op script so whatever opener opencode
-        # tries first exits silently.
-        _bin = os.path.join(self.workdir, "bin")
-        os.makedirs(_bin, exist_ok=True)
-        for _noop in ("xdg-open", "gio", "open", "sensible-browser"):
-            _p = os.path.join(_bin, _noop)
-            with open(_p, "w") as _fh:
-                _fh.write("#!/bin/sh\nexit 0\n")
-            os.chmod(_p, 0o755)
-        proc_env["PATH"] = _bin + os.pathsep + proc_env.get("PATH", "")
-        # Defense in depth: $BROWSER is honored by xdg-open only in
-        # non-desktop sessions, but setting it costs nothing.
-        proc_env["BROWSER"] = "true"
-        if env:
-            proc_env.update(env)
-        # When using the real opencode binary, "web" is a subcommand.
-        # When using the fake_opencode.py test double, there is no "web".
-        # Discriminator is the basename of the executable: "opencode" (or
-        # an absolute path ending in /opencode) is real; anything else
-        # (python3, a shim script, ...) is a test double.
-        is_real_opencode = os.path.basename(self._opencode_cmd[0]) == "opencode"
-        if is_real_opencode:
-            cmd = [*self._opencode_cmd, "web", "--port=0", "--hostname=127.0.0.1"]
-        else:
-            cmd = [*self._opencode_cmd, *(extra_args or [])]
-
-        # opencode's UI.println writes the "Web interface:" URL line to
-        # STDERR, not stdout.  Merge stderr into stdout so readline() sees it.
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            cwd=self.workdir,
-            env=proc_env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-
-        async def _read_url() -> int:
-            assert proc.stdout is not None
-            while True:
-                raw = await proc.stdout.readline()
-                if not raw:
-                    raise RuntimeError("opencode exited before printing a URL")
-                line = raw.decode("utf-8", errors="replace").rstrip()
-                m = _READY_RE.search(line)
-                if m:
-                    url = m.group(1)
-                    # Parse out the port.
-                    m2 = re.search(r":(\d+)", url)
-                    if not m2:
-                        raise RuntimeError(f"could not find port in URL: {url}")
-                    return int(m2.group(1))
-
-        try:
-            port = await asyncio.wait_for(_read_url(), timeout=ready_timeout_s)
-        except (asyncio.TimeoutError, Exception) as exc:
-            proc.kill()
-            await proc.wait()
-            if isinstance(exc, asyncio.TimeoutError):
-                raise TimeoutError(
-                    f"opencode did not print a listening URL within {ready_timeout_s}s"
-                ) from None
-            raise
-
-        return LaunchedProcess(pid_like=proc, opencode_port=port)
 
     async def establish_tunnel(self, opencode_port: int) -> int:
         return opencode_port
@@ -364,12 +236,48 @@ class LocalHost:
             data = fh.read()
         return data.decode("utf-8")
 
-    async def terminate_opencode(
+    async def cleanup_taskdir(self, aggressive: bool) -> None:
+        # On local filesystems rmtree is fast enough that aggressive vs. not
+        # makes no difference. Wipes the whole per-task dir (workdir +
+        # opencode.db + any stray files opencode left next to the DB).
+        if os.path.exists(self.taskdir):
+            shutil.rmtree(self.taskdir, ignore_errors=True)
+
+    async def launch_subprocess(
         self,
-        process: LaunchedProcess,
+        command: str,
+        *,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> ProcessHandle:
+        proc_env = os.environ.copy()
+        if env:
+            proc_env.update(env)
+        proc = await asyncio.create_subprocess_exec(
+            "/bin/sh", "-c", command,
+            cwd=cwd if cwd is not None else self.workdir,
+            env=proc_env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+
+        async def _stream() -> AsyncIterator[bytes]:
+            assert proc.stdout is not None
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                yield line
+
+        return ProcessHandle(pid_like=proc, stdout=_stream())
+
+    async def terminate_subprocess(
+        self,
+        handle: ProcessHandle,
+        *,
         aggressive: bool,
     ) -> None:
-        proc: asyncio.subprocess.Process = process.pid_like  # type: ignore[assignment]
+        proc: asyncio.subprocess.Process = handle.pid_like  # type: ignore[assignment]
         if proc.returncode is not None:
             return
         if aggressive:
@@ -385,60 +293,6 @@ class LocalHost:
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
-
-    async def cleanup_taskdir(self, aggressive: bool) -> None:
-        # On local filesystems rmtree is fast enough that aggressive vs. not
-        # makes no difference. Wipes the whole per-task dir (workdir +
-        # opencode.db + any stray files opencode left next to the DB).
-        if os.path.exists(self.taskdir):
-            shutil.rmtree(self.taskdir, ignore_errors=True)
-
-    async def opencode_import(
-        self, opencode_db_path: str, session_json: bytes,
-    ) -> None:
-        """Write `session_json` to a scratch file and run `opencode import`."""
-        scratch = os.path.join(os.path.dirname(opencode_db_path), "snapshot.json")
-        with open(scratch, "wb") as fh:
-            fh.write(session_json)
-        try:
-            env = os.environ.copy()
-            env["OPENCODE_DB"] = opencode_db_path
-            proc = await asyncio.create_subprocess_exec(
-                *self._opencode_cmd, "import", scratch,
-                env=env,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                raise RuntimeError(
-                    f"opencode import failed (exit {proc.returncode}): "
-                    f"{stderr.decode('utf-8', 'replace')}"
-                )
-        finally:
-            try:
-                os.unlink(scratch)
-            except OSError:
-                pass
-
-    async def opencode_export(
-        self, opencode_db_path: str, session_id: str,
-    ) -> bytes:
-        env = os.environ.copy()
-        env["OPENCODE_DB"] = opencode_db_path
-        proc = await asyncio.create_subprocess_exec(
-            *self._opencode_cmd, "export", session_id,
-            env=env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"opencode export failed (exit {proc.returncode}): "
-                f"{stderr.decode('utf-8', 'replace')}"
-            )
-        return stdout
 
     async def run_command(
         self,
@@ -483,21 +337,6 @@ class LocalHost:
             logging.getLogger(__name__).warning(
                 "LocalHost.remove_file(%r) failed: %r", path, exc,
             )
-
-    async def opencode_version(self) -> str | None:
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *self._opencode_cmd, "--version",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
-        except Exception:
-            return None
-        if proc.returncode != 0:
-            return None
-        text = stdout.decode("utf-8", errors="replace").strip()
-        return text or None
 
     async def put_file_to_host(
         self,
@@ -601,19 +440,6 @@ class LocalHost:
     async def resolve_host_home(self) -> str:
         return os.path.expanduser("~")
 
-    async def install_opencode_binary(
-        self,
-        local_binary_path: str,
-        progress: Callable[[int, int], None] | None = None,
-    ) -> None:
-        if not os.path.isfile(local_binary_path):
-            raise RuntimeError(
-                f"opencode binary not found at {local_binary_path!r}"
-            )
-        # Simply point _opencode_cmd at the absolute path; we don't copy.
-        self._opencode_cmd = [local_binary_path]
-        # No actual transfer happens locally, so `progress` is not called.
-
 
 def _write_bytes_sync(dest_path: str, data: bytes) -> None:
     with open(dest_path, "wb") as fh:
@@ -669,10 +495,6 @@ class RemoteHost:
         self._launch_proc: asyncssh.SSHClientProcess | None = None
         self._tail_proc: asyncssh.SSHClientProcess | None = None
         self._forward: asyncssh.SSHListener | None = None
-        # Set by install_opencode_binary() to an absolute path under the
-        # remote workdir; launch_opencode uses it instead of `opencode` on
-        # PATH when not None.
-        self._opencode_exec: str = "opencode"
         self._host_home_cache: str | None = None
 
     async def connect(self) -> None:
@@ -717,98 +539,6 @@ class RemoteHost:
         async with self._sftp.open(remote_path, "w", encoding="utf-8") as fh:
             await fh.write(content)
 
-    async def ensure_opencode_installed(self, install_if_missing: bool) -> None:
-        assert self._conn is not None
-        # Use bash -lc so that $HOME/.local/bin (where the opencode install
-        # script puts the binary) is on PATH; a plain `command -v opencode`
-        # via a non-login shell would miss it.
-        check = await self._conn.run(
-            "bash -lc 'command -v opencode'", check=False
-        )
-        if check.exit_status == 0:
-            return
-        if not install_if_missing:
-            raise RuntimeError(
-                f"opencode is not installed on {self._ssh.host} and "
-                "install_if_missing=False was requested."
-            )
-        # Use the official install script.  PATH is usually not updated in
-        # the non-login shell that ssh exec uses, so opencode may land in
-        # ~/.local/bin — the launcher below runs through `bash -lc` to pick
-        # that up.
-        install = await self._conn.run(
-            "curl -fsSL https://opencode.ai/install | bash",
-            check=False,
-        )
-        if install.exit_status != 0:
-            raise RuntimeError(
-                f"opencode install on {self._ssh.host} failed "
-                f"(exit {install.exit_status}): {install.stderr}"
-            )
-
-    async def launch_opencode(
-        self,
-        password: str,
-        ready_timeout_s: float,
-        extra_args: list[str] | None = None,
-        env: dict[str, str] | None = None,
-    ) -> LaunchedProcess:
-        assert self._conn is not None and self._sftp is not None
-        # Write the password to a mode-0600 file in the workdir and have
-        # the remote shell read it via command substitution at launch
-        # time.  Interpolating the literal password into the command
-        # string would leak it to any local user on the remote host who
-        # runs `ps` — the bash process executing our command has the full
-        # command line (including the password) in its argv.  With `$(cat
-        # .opencode-password)`, the command line only shows the expansion
-        # syntax, not the value; the file itself is readable only by our
-        # user.  The file is swept with the rest of the workdir on
-        # teardown.
-        pw_file = ".opencode-password"
-        await self.write_text(pw_file, password)
-        await self._conn.run(f"chmod 600 {self.workdir}/{pw_file}", check=True)
-        env_prefix = ""
-        if env:
-            env_prefix = " ".join(
-                f"{k}={shlex.quote(v)}" for k, v in env.items()
-            ) + " "
-        cmd = (
-            f"cd {self.workdir} && "
-            f"OPENCODE_SERVER_PASSWORD=\"$(cat ./{pw_file})\" "
-            f"BROWSER=true {env_prefix}"
-            # 2>&1 merges stderr into stdout because opencode prints the
-            # "Web interface:" URL line via UI.println → stderr.
-            # Single-quote the inner command.  `$opencode` is safely
-            # substituted here (Python f-string) before the remote shell
-            # sees anything; the remote bash just sees the absolute path
-            # or the literal word "opencode".
-            f"bash -lc '{self._opencode_exec} web --port=0 --hostname=127.0.0.1 2>&1'"
-        )
-        self._launch_proc = await self._conn.create_process(cmd)
-
-        async def _read_url() -> int:
-            assert self._launch_proc is not None
-            async for raw in self._launch_proc.stdout:
-                line = raw.rstrip()
-                m = _READY_RE.search(line)
-                if m:
-                    m2 = re.search(r":(\d+)", m.group(1))
-                    if not m2:
-                        raise RuntimeError(f"could not find port in URL: {line}")
-                    return int(m2.group(1))
-            raise RuntimeError("opencode exited before printing a URL")
-
-        try:
-            port = await asyncio.wait_for(_read_url(), timeout=ready_timeout_s)
-        except asyncio.TimeoutError:
-            if self._launch_proc is not None:
-                self._launch_proc.kill()
-                # Don't await — teardown will close the connection.
-            raise TimeoutError(
-                f"opencode did not print a listening URL within {ready_timeout_s}s"
-            )
-        return LaunchedProcess(pid_like=self._launch_proc, opencode_port=port)
-
     async def establish_tunnel(self, opencode_port: int) -> int:
         assert self._conn is not None
         self._forward = await self._conn.forward_local_port(
@@ -840,18 +570,60 @@ class RemoteHost:
             raise FileNotFoundError(absolute_path) from exc
         return data.decode("utf-8")
 
-    async def terminate_opencode(
+    async def cleanup_taskdir(self, aggressive: bool) -> None:
+        if self._conn is None:
+            return
+        # Always await: session.py calls host.disconnect() right after this
+        # in the finally block, and a fire-and-forget asyncio task would be
+        # aborted as soon as the SSH connection closes. The latency win
+        # from skipping the await isn't worth the resulting taskdir leak.
+        # `aggressive` is honored by terminate_subprocess (SIGKILL vs SIGTERM)
+        # and is ignored here — by the time we reach cleanup, the subprocess
+        # is already dead.
+        await self._conn.run(
+            f"rm -rf {shlex.quote(self.taskdir)}", check=False,
+        )
+
+    async def launch_subprocess(
         self,
-        process: LaunchedProcess,
+        command: str,
+        *,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> ProcessHandle:
+        assert self._conn is not None
+        env_prefix = ""
+        if env:
+            env_prefix = " ".join(
+                f"export {k}={shlex.quote(v)};" for k, v in env.items()
+            ) + " "
+        cd_prefix = ""
+        if cwd is not None:
+            cd_prefix = f"cd {shlex.quote(cwd)} && "
+        # Merge stderr into stdout so caller iterating handle.stdout sees both.
+        full = f"{cd_prefix}{env_prefix}{command} 2>&1"
+        proc = await self._conn.create_process(full, encoding=None)
+
+        async def _stream() -> AsyncIterator[bytes]:
+            async for chunk in proc.stdout:
+                if chunk:
+                    yield chunk
+
+        return ProcessHandle(pid_like=proc, stdout=_stream())
+
+    async def terminate_subprocess(
+        self,
+        handle: ProcessHandle,
+        *,
         aggressive: bool,
     ) -> None:
-        proc: asyncssh.SSHClientProcess = process.pid_like  # type: ignore[assignment]
+        proc: asyncssh.SSHClientProcess = handle.pid_like  # type: ignore[assignment]
         if proc.returncode is not None:
             return
         if aggressive:
             # Spec requires SIGKILL in the cancellation path — .terminate()
-            # sends SIGTERM, which opencode may handle and block on, blowing
-            # our shutdown grace budget.
+            # sends SIGTERM, which the subprocess may handle and block on,
+            # blowing our shutdown grace budget.
             proc.kill()
             # Best-effort: do not wait.
             return
@@ -861,77 +633,6 @@ class RemoteHost:
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
-
-    async def cleanup_taskdir(self, aggressive: bool) -> None:
-        if self._conn is None:
-            return
-        # Always await: session.py calls host.disconnect() right after this
-        # in the finally block, and a fire-and-forget asyncio task would be
-        # aborted as soon as the SSH connection closes. The latency win
-        # from skipping the await isn't worth the resulting taskdir leak.
-        # `aggressive` is honored by terminate_opencode (SIGKILL vs SIGTERM)
-        # and is ignored here — by the time we reach cleanup, opencode is
-        # already dead.
-        await self._conn.run(
-            f"rm -rf {shlex.quote(self.taskdir)}", check=False,
-        )
-
-    async def opencode_import(
-        self, opencode_db_path: str, session_json: bytes,
-    ) -> None:
-        assert self._conn is not None and self._sftp is not None
-        scratch = f"{self.workdir}/snapshot.json"
-        async with self._sftp.open(scratch, "wb") as fh:
-            await fh.write(session_json)
-        try:
-            r = await self._conn.run(
-                f"OPENCODE_DB={shlex.quote(opencode_db_path)} "
-                f"bash -lc '{self._opencode_exec} import {shlex.quote(scratch)}'",
-                check=False,
-            )
-            if r.exit_status != 0:
-                raise RuntimeError(
-                    f"remote opencode import failed "
-                    f"(exit {r.exit_status}): {r.stderr}"
-                )
-        finally:
-            await self._conn.run(f"rm -f {shlex.quote(scratch)}", check=False)
-
-    async def opencode_export(
-        self, opencode_db_path: str, session_id: str,
-    ) -> bytes:
-        # Stream the export to a remote temp file via shell redirect, then
-        # SFTP-fetch it. Collecting stdout via `_conn.run(...).stdout` is
-        # subject to truncation under cancellation: when the surrounding
-        # task is cancelled mid-collection, asyncssh's recv buffer is
-        # observable as "complete output", and the partial bytes get
-        # persisted as a snapshot. We saw this produce a blob committed at
-        # exactly 65 536 bytes (the local recv buffer size at cancel time)
-        # which then failed to load on the next resume. The redirect+fetch
-        # path makes the full export observable as a file once the export
-        # process exits, so a cancellation either aborts before the file
-        # exists (we'll see exit_status != 0) or after it's complete.
-        assert self._conn is not None and self._sftp is not None
-        remote_path = f"{self.workdir}/.opencode-export.json"
-        try:
-            r = await self._conn.run(
-                f"OPENCODE_DB={shlex.quote(opencode_db_path)} "
-                f"bash -lc '{self._opencode_exec} export "
-                f"{shlex.quote(session_id)} > {shlex.quote(remote_path)}'",
-                check=False,
-            )
-            if r.exit_status != 0:
-                raise RuntimeError(
-                    f"remote opencode export failed "
-                    f"(exit {r.exit_status}): {r.stderr}"
-                )
-            async with self._sftp.open(remote_path, "rb") as fh:
-                data = await fh.read()
-            return data
-        finally:
-            await self._conn.run(
-                f"rm -f {shlex.quote(remote_path)}", check=False,
-            )
 
     def archive_workdir(
         self, exclude: list[str] | None,
@@ -977,77 +678,6 @@ class RemoteHost:
         assert self._conn is not None
         # `rm -f` is idempotent: missing files are not an error.
         await self._conn.run(f"rm -f {shlex.quote(path)}", check=False)
-
-    async def opencode_version(self) -> str | None:
-        if self._conn is None:
-            return None
-        try:
-            r = await self._conn.run(
-                f"bash -lc '{self._opencode_exec} --version'",
-                check=False,
-            )
-        except Exception:
-            return None
-        if r.exit_status != 0:
-            return None
-        out = r.stdout or ""
-        text = (out if isinstance(out, str) else out.decode("utf-8", errors="replace")).strip()
-        return text or None
-
-    async def _resolve_install_path(self) -> str:
-        """Return the absolute remote path where opencode should be installed."""
-        home = await self.resolve_host_home()
-        return f"{home}/.local/bin/opencode"
-
-    async def install_opencode_binary(
-        self,
-        local_binary_path: str,
-        progress: Callable[[int, int], None] | None = None,
-    ) -> None:
-        """Install the binary to ``~/.local/bin/opencode`` on the remote.
-
-        Persistent (survives the workdir's rm -rf on teardown) and — if the
-        remote user has ``~/.local/bin`` on PATH — discoverable by future
-        manual invocations too.  Idempotent: delegates to put_file_to_host
-        which skips the upload when the remote file's SHA-256 already matches.
-
-        If ``progress`` is given and an upload actually happens, it is
-        called periodically with ``(bytes_transferred, total_bytes)``.
-        """
-        assert self._conn is not None
-        if not os.path.isfile(local_binary_path):
-            raise RuntimeError(
-                f"opencode binary not found at {local_binary_path!r}"
-            )
-
-        install_path = await self._resolve_install_path()
-
-        # Adapt the public progress(transferred, total) signature to the
-        # progress_cb(pct_or_None, msg_or_None) interface used internally.
-        progress_cb = None
-        if progress is not None:
-            _file_size = os.path.getsize(local_binary_path)
-
-            def progress_cb(pct, _msg):
-                if pct is not None and _file_size > 0:
-                    progress(int(pct * _file_size / 100), _file_size)
-
-        # Delegate the transfer (with skip-if-unchanged + atomic rename + progress)
-        # to the generic primitive.
-        await self.put_file_to_host(
-            local_binary_path,
-            install_path,
-            skip_if_unchanged=True,
-            progress_cb=progress_cb,
-        )
-        # Make sure the binary is executable. chmod is idempotent.
-        result = await self.run_command(f"chmod +x {shlex.quote(install_path)}")
-        if result.exit_code != 0:
-            raise RuntimeError(
-                f"chmod +x {install_path} failed: exit {result.exit_code}: {result.stderr!r}"
-            )
-
-        self._opencode_exec = install_path
 
     async def fetch_bytes_from_host(
         self,

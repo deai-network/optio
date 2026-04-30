@@ -5,19 +5,18 @@ import sys
 import pytest
 
 from optio_host.host import LocalHost
+from optio_opencode import host_actions
 
 
 FAKE_OPENCODE = os.path.join(os.path.dirname(__file__), "fake_opencode.py")
+FAKE_EXEC = f"{sys.executable} {FAKE_OPENCODE}"
 
 
 @pytest.fixture
 def local_host(tmp_workdir):
     # tmp_workdir is the per-test pytest tmp directory; we use it as the
     # host's taskdir. The host then derives workdir = taskdir/workdir.
-    return LocalHost(
-        taskdir=tmp_workdir,
-        opencode_cmd=[sys.executable, FAKE_OPENCODE],
-    )
+    return LocalHost(taskdir=tmp_workdir)
 
 
 async def test_setup_workdir_creates_expected_layout(local_host):
@@ -35,27 +34,28 @@ async def test_write_text_writes_utf8(local_host):
 
 async def test_launch_prints_url_and_reports_port(local_host):
     await local_host.setup_workdir()
-    proc = await local_host.launch_opencode(
+    handle, port = await host_actions.launch_opencode(
+        local_host,
         password="unused-by-fake",
         ready_timeout_s=5.0,
-        extra_args=["--scenario", "sleep_forever"],
+        opencode_executable=f"{FAKE_EXEC} --scenario sleep_forever",
     )
     try:
-        assert 1024 <= proc.opencode_port < 65536
+        assert 1024 <= port < 65536
     finally:
-        await local_host.terminate_opencode(proc, aggressive=True)
+        await local_host.terminate_subprocess(handle, aggressive=True)
 
 
 async def test_launch_times_out_on_no_url(tmp_path):
     # Use /bin/sleep — it never prints a URL.  readiness should time out.
-    host = LocalHost(
-        taskdir=str(tmp_path),
-        opencode_cmd=["/bin/sleep", "60"],
-    )
+    host = LocalHost(taskdir=str(tmp_path))
     await host.setup_workdir()  # cwd for the subprocess must exist
     with pytest.raises(TimeoutError):
-        await host.launch_opencode(
-            password="x", ready_timeout_s=0.5, extra_args=[]
+        await host_actions.launch_opencode(
+            host,
+            password="x",
+            ready_timeout_s=0.5,
+            opencode_executable="/bin/sleep 60",
         )
 
 

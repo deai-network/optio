@@ -22,7 +22,7 @@ from typing import AsyncIterator
 from optio_core.context import ProcessContext
 from optio_core.models import BasicAuth, TaskInstance
 
-from optio_host.host import Host, LocalHost, LaunchedProcess, RemoteHost
+from optio_host.host import Host, LocalHost, ProcessHandle, RemoteHost
 from optio_host.protocol.parser import (
     DeliverableEvent,
     DoneEvent,
@@ -35,6 +35,7 @@ from optio_host.protocol.parser import (
     validate_deliverable_path,
 )
 from optio_host.paths import task_dir
+from optio_opencode import host_actions
 from optio_opencode.prompt import compose_agents_md
 from optio_opencode.snapshots import (
     insert_snapshot,
@@ -83,7 +84,9 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
     opencode_db = f"{taskdir}/opencode.db"
 
     password = secrets.token_urlsafe(32)
-    process: LaunchedProcess | None = None
+    launched_handle: ProcessHandle | None = None
+    opencode_port: int | None = None
+    opencode_exec: str = "opencode"
     cancelled = False
     preserved_session_id: str | None = None
     session_id: str | None = None
@@ -111,7 +114,10 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             try:
                 await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
                 session_bytes = await _read_blob_bytes(ctx, snapshot["sessionBlobId"])
-                await host.opencode_import(opencode_db, session_bytes)
+                await host_actions.opencode_import(
+                    host, opencode_db, session_bytes,
+                    opencode_executable=opencode_exec,
+                )
                 # Move the restored log channel out of the way before tail
                 # subscribes. The snapshot tar includes optio.log from the
                 # previous run; without this `tail -F -n +1` would re-emit
@@ -168,7 +174,6 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         # fixes land upstream.
         binary_dir = os.environ.get("OPTIO_OPENCODE_BINARY_DIR")
         if binary_dir:
-            from optio_opencode import host_actions
             target = await host_actions.detect_target(host)
             candidate = os.path.join(
                 binary_dir, target.directory_name, "bin", "opencode"
@@ -197,10 +202,14 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                 # advance the progress bar without appending a log entry.
                 ctx.report_progress(pct)
 
-            await host.install_opencode_binary(candidate, progress=_on_progress)
+            opencode_exec = await host_actions.install_opencode_binary(
+                host, candidate, progress=_on_progress,
+            )
             ctx.report_progress(None, "opencode binary ready")
         else:
-            await host.ensure_opencode_installed(config.install_if_missing)
+            await host_actions.ensure_opencode_installed(
+                host, config.install_if_missing,
+            )
 
         # --- before_execute hook -----------------------------------------
         hook_ctx = HookContext(ctx, host)
@@ -208,17 +217,19 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             await config.before_execute(hook_ctx)
 
         # --- launch ------------------------------------------------------
-        version = await host.opencode_version()
+        version = await host_actions.opencode_version(
+            host, opencode_executable=opencode_exec,
+        )
         version_suffix = f" {version}" if version else ""
         ctx.report_progress(None, f"Launching opencode{version_suffix}…")
-        process = await host.launch_opencode(
-            password=password,
+        launched_handle, opencode_port = await host_actions.launch_opencode(
+            host, password,
             ready_timeout_s=READY_TIMEOUT_S,
-            env={"OPENCODE_DB": opencode_db},
+            opencode_executable=opencode_exec,
         )
 
         # --- tunnel + widget registration --------------------------------
-        worker_port = await host.establish_tunnel(process.opencode_port)
+        worker_port = await host.establish_tunnel(opencode_port)
 
         if preserved_session_id is not None:
             session_id = preserved_session_id
@@ -272,7 +283,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                 host, ctx, deliverable_queue, done_flag, error_flag
             )
         )
-        exit_task = asyncio.create_task(_await_subprocess_exit(host, process, subprocess_exit))
+        exit_task = asyncio.create_task(_await_subprocess_exit(host, launched_handle, subprocess_exit))
         cancel_task = asyncio.create_task(_watch_cancellation(ctx))
 
         done, _ = await asyncio.wait(
@@ -317,11 +328,11 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         raise
 
     finally:
-        if process is not None:
+        if launched_handle is not None:
             try:
-                await host.terminate_opencode(process, aggressive=cancelled)
+                await host.terminate_subprocess(launched_handle, aggressive=cancelled)
             except Exception:  # noqa: BLE001
-                _LOG.exception("terminate_opencode failed")
+                _LOG.exception("terminate_subprocess failed")
 
         # after_execute: runs whenever hook_ctx exists (i.e. setup_workdir
         # succeeded), regardless of success/failure/cancellation.  Its side
@@ -345,6 +356,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                     opencode_db=opencode_db,
                     end_state="cancelled" if cancelled else "done",
                     workdir_exclude=config.workdir_exclude,
+                    opencode_executable=opencode_exec,
                 )
             except Exception:  # noqa: BLE001
                 _LOG.exception(
@@ -392,8 +404,12 @@ async def _capture_snapshot(
     opencode_db: str,
     end_state: str,
     workdir_exclude: list[str] | None,
+    opencode_executable: str = "opencode",
 ) -> None:
-    session_json = await host.opencode_export(opencode_db, session_id)
+    session_json = await host_actions.opencode_export(
+        host, opencode_db, session_id,
+        opencode_executable=opencode_executable,
+    )
     expected_len = len(session_json)
     _LOG.info(
         "snapshot capture: session_json bytes=%d session_id=%s",
@@ -536,14 +552,14 @@ async def _deliverable_fetch_loop(
             queue.task_done()
 
 
-async def _await_subprocess_exit(host: Host, process: LaunchedProcess, out: list) -> None:
+async def _await_subprocess_exit(host: Host, handle: ProcessHandle, out: list) -> None:
     """Wait for the opencode process to exit and record its exit code."""
     # LocalHost's pid_like is an asyncio.subprocess.Process whose wait() returns int.
     # RemoteHost's pid_like is an asyncssh.SSHClientProcess whose wait() returns
     # an SSHCompletedProcess with .exit_status.
-    proc = process.pid_like
+    proc = handle.pid_like
     if not hasattr(proc, "wait"):
-        raise TypeError(f"LaunchedProcess.pid_like {proc!r} does not expose .wait()")
+        raise TypeError(f"ProcessHandle.pid_like {proc!r} does not expose .wait()")
     result = await proc.wait()  # type: ignore[union-attr]
     if hasattr(result, "exit_status"):
         out.append(result.exit_status)

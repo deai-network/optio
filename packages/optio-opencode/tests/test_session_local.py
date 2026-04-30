@@ -93,35 +93,59 @@ def _config(scenario: str, deliverable_cb=None, raises: bool = False) -> Opencod
 
 
 @pytest.fixture(autouse=True)
-def _patch_localhost_to_use_fake(monkeypatch):
-    """Point LocalHost at fake_opencode.py for the duration of the test."""
-    import optio_host.host as host_mod
-    orig_init = host_mod.LocalHost.__init__
-
-    def _init(self, taskdir: str, opencode_cmd=None):
-        return orig_init(
-            self,
-            taskdir=taskdir,
-            opencode_cmd=[sys.executable, FAKE_OPENCODE],
-        )
-
-    monkeypatch.setattr(host_mod.LocalHost, "__init__", _init)
-
-
-@pytest.fixture(autouse=True)
 def _supply_scenario(monkeypatch):
-    """fake_opencode expects --scenario; inject via launch_opencode's extra_args."""
-    import optio_host.host as host_mod
-    orig_launch = host_mod.LocalHost.launch_opencode
+    """Substitute fake_opencode.py for the real opencode binary.
+
+    fake_opencode.py uses argparse.parse_known_args, so the trailing
+    ``web --port=0 --hostname=127.0.0.1`` from launch_opencode is harmless
+    — only ``--scenario <name>`` is required. We bake the scenario into
+    the opencode_executable string itself.
+    """
+    from optio_opencode import host_actions
+    orig_launch = host_actions.launch_opencode
     scenario_holder: dict = {"name": "happy"}
 
-    async def _launch(self, password, ready_timeout_s, extra_args=None, env=None):
+    async def _launch(host, password, *, ready_timeout_s=30.0, opencode_executable="opencode"):
+        del opencode_executable  # we substitute fully
         return await orig_launch(
-            self, password, ready_timeout_s,
-            extra_args=["--scenario", scenario_holder["name"]],
-            env=env,
+            host, password,
+            ready_timeout_s=ready_timeout_s,
+            opencode_executable=(
+                f"{sys.executable} {FAKE_OPENCODE} "
+                f"--scenario {scenario_holder['name']}"
+            ),
         )
-    monkeypatch.setattr(host_mod.LocalHost, "launch_opencode", _launch)
+    monkeypatch.setattr(host_actions, "launch_opencode", _launch)
+
+    # Also short-circuit ensure_opencode_installed and opencode_version
+    # so we don't try to invoke a real `opencode` binary.
+    async def _ensure(host, install_if_missing):
+        return None
+    monkeypatch.setattr(host_actions, "ensure_opencode_installed", _ensure)
+
+    async def _version(host, *, opencode_executable="opencode"):
+        return None
+    monkeypatch.setattr(host_actions, "opencode_version", _version)
+
+    # Snapshot capture calls opencode_export — patch it to use the fake.
+    orig_export = host_actions.opencode_export
+
+    async def _export(host, opencode_db_path, session_id, *, opencode_executable="opencode"):
+        return await orig_export(
+            host, opencode_db_path, session_id,
+            opencode_executable=f"{sys.executable} {FAKE_OPENCODE}",
+        )
+    monkeypatch.setattr(host_actions, "opencode_export", _export)
+
+    orig_import = host_actions.opencode_import
+
+    async def _import(host, opencode_db_path, session_json, *, opencode_executable="opencode"):
+        return await orig_import(
+            host, opencode_db_path, session_json,
+            opencode_executable=f"{sys.executable} {FAKE_OPENCODE}",
+        )
+    monkeypatch.setattr(host_actions, "opencode_import", _import)
+
     return scenario_holder
 
 
@@ -285,7 +309,7 @@ async def test_append_resume_log_entry_writes_iso_timestamp(tmp_workdir):
     from optio_host.host import LocalHost
     from optio_opencode.session import _append_resume_log_entry
 
-    host = LocalHost(taskdir=tmp_workdir, opencode_cmd=[sys.executable, "-c", "pass"])
+    host = LocalHost(taskdir=tmp_workdir)
     await host.setup_workdir()
 
     await _append_resume_log_entry(host)
@@ -307,7 +331,7 @@ async def test_append_resume_log_entry_appends_on_repeat_call(tmp_workdir):
     from optio_host.host import LocalHost
     from optio_opencode.session import _append_resume_log_entry
 
-    host = LocalHost(taskdir=tmp_workdir, opencode_cmd=[sys.executable, "-c", "pass"])
+    host = LocalHost(taskdir=tmp_workdir)
     await host.setup_workdir()
 
     await _append_resume_log_entry(host)

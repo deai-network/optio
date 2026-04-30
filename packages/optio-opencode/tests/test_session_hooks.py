@@ -76,24 +76,8 @@ class _RecordingFakeHost:
         self.timeline.append(f"write_text:{a[0]}")
         self._maybe_fail("write_text")
 
-    async def install_opencode_binary(self, *a, **kw):
-        self.timeline.append("install_binary")
-        self._maybe_fail("install_binary")
-
-    async def ensure_opencode_installed(self, *a, **kw):
-        self.timeline.append("install_binary")
-        self._maybe_fail("install_binary")
-
     async def remove_file(self, *a, **kw):
         self.timeline.append("remove_file")
-
-    async def opencode_version(self, *a, **kw):
-        return None
-
-    async def launch_opencode(self, *a, **kw):
-        self.timeline.append("launch_opencode")
-        self._maybe_fail("launch_opencode")
-        raise RuntimeError("test never gets past launch")
 
     async def cleanup_taskdir(self, *a, **kw):
         self.timeline.append("cleanup_taskdir")
@@ -118,6 +102,35 @@ class _RecordingFakeHost:
         return RunResult(stdout="", stderr="", exit_code=0)
 
 
+def _patch_host_actions(monkeypatch, host):
+    """Patch host_actions free functions to record on the fake host's timeline.
+
+    Replaces the bits that would otherwise need a real Host implementation
+    with appends-and-fail stubs. ``launch_opencode`` always raises so the
+    session terminates early — sufficient to validate hook ordering.
+    """
+    from optio_opencode import host_actions
+
+    async def _ensure(_host, _install_if_missing):
+        host.timeline.append("install_binary")
+
+    async def _install(_host, _local_path, progress=None):
+        host.timeline.append("install_binary")
+        return "opencode"
+
+    async def _version(_host, *, opencode_executable="opencode"):
+        return None
+
+    async def _launch(_host, _password, *, ready_timeout_s=30.0, opencode_executable="opencode"):
+        host.timeline.append("launch_opencode")
+        raise RuntimeError("test never gets past launch")
+
+    monkeypatch.setattr(host_actions, "ensure_opencode_installed", _ensure)
+    monkeypatch.setattr(host_actions, "install_opencode_binary", _install)
+    monkeypatch.setattr(host_actions, "opencode_version", _version)
+    monkeypatch.setattr(host_actions, "launch_opencode", _launch)
+
+
 async def test_before_execute_runs_after_install_before_launch(tmp_workdir, monkeypatch):
     host = _RecordingFakeHost()
     ctx = _MinimalCtx()
@@ -133,6 +146,7 @@ async def test_before_execute_runs_after_install_before_launch(tmp_workdir, monk
     monkeypatch.setattr(
         "optio_opencode.session._build_host", lambda config, process_id: host,
     )
+    _patch_host_actions(monkeypatch, host)
 
     with pytest.raises(RuntimeError, match="never gets past launch"):
         await run_opencode_session(ctx, config)
@@ -162,6 +176,7 @@ async def test_after_execute_runs_when_before_execute_raises(tmp_workdir, monkey
     monkeypatch.setattr(
         "optio_opencode.session._build_host", lambda config, process_id: host,
     )
+    _patch_host_actions(monkeypatch, host)
 
     with pytest.raises(RuntimeError, match="before fails"):
         await run_opencode_session(ctx, config)
@@ -187,6 +202,7 @@ async def test_after_execute_skipped_when_failure_before_host_connect(tmp_workdi
     monkeypatch.setattr(
         "optio_opencode.session._build_host", lambda config, process_id: host,
     )
+    _patch_host_actions(monkeypatch, host)
 
     with pytest.raises(RuntimeError, match="injected failure"):
         await run_opencode_session(ctx, config)
@@ -215,6 +231,7 @@ async def test_after_execute_failure_does_not_shadow_session_error(tmp_workdir, 
     monkeypatch.setattr(
         "optio_opencode.session._build_host", lambda config, process_id: host,
     )
+    _patch_host_actions(monkeypatch, host)
 
     with pytest.raises(RuntimeError, match="primary failure"):
         await run_opencode_session(ctx, config)
