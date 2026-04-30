@@ -185,3 +185,54 @@ async def test_group_cancel_and_wait_all_cooperative(mongo_db):
             )
     finally:
         await _stop_optio(optio, run_task)
+
+
+async def test_group_cancel_and_wait_mixed_cooperative_and_stubborn(mongo_db):
+    """Cooperative tasks end 'cancelled'; stubborn tasks (ignore the flag)
+    are force-cancelled by the supervisor and end 'failed' with the
+    canonical error string."""
+    started_coop = asyncio.Event()
+    started_stub = asyncio.Event()
+
+    async def cooperative(ctx):
+        started_coop.set()
+        for _ in range(200):
+            if ctx.cancellation_flag.is_set():
+                return
+            await asyncio.sleep(0.02)
+
+    async def stubborn(ctx):  # noqa: ARG001
+        started_stub.set()
+        while True:
+            await asyncio.sleep(0.05)  # ignores the flag
+
+    task_coop = TaskInstance(
+        process_id="p.coop", name="Coop", params={}, execute=cooperative,
+        metadata={"team": "alpha"},
+    )
+    task_stub = TaskInstance(
+        process_id="p.stub", name="Stub", params={}, execute=stubborn,
+        metadata={"team": "alpha"},
+    )
+
+    optio, run_task = await _start_optio(
+        mongo_db, "gcw_mixed", [task_coop, task_stub], cancel_grace_seconds=0.5,
+    )
+    try:
+        await optio.launch("p.coop")
+        await optio.launch("p.stub")
+        await started_coop.wait()
+        await started_stub.wait()
+
+        await optio.group_cancel_and_wait({"team": "alpha"})
+
+        proc_coop = await optio.get_process("p.coop")
+        proc_stub = await optio.get_process("p.stub")
+        assert proc_coop["status"]["state"] == "cancelled"
+        assert proc_stub["status"]["state"] == "failed"
+        assert (
+            "Task did not unwind within cancellation grace period"
+            in (proc_stub["status"].get("error") or "")
+        )
+    finally:
+        await _stop_optio(optio, run_task)
