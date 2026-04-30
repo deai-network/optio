@@ -67,6 +67,8 @@ await optio_core.shutdown(grace_seconds=5.0)  # graceful shutdown; force-finaliz
 await optio_core.launch(process_id: str, resume: bool = False) -> None           # fire-and-forget
 await optio_core.launch_and_wait(process_id: str, resume: bool = False) -> None  # blocks until done
 await optio_core.cancel(process_id: str) -> None
+await optio_core.group_cancel(metadata_filter: dict, block_new_launches: bool = False) -> None             # fire-and-forget; cancels every active process matching the filter
+await optio_core.group_cancel_and_wait(metadata_filter: dict, block_new_launches: bool = False) -> None    # blocks until every matching process is terminal
 await optio_core.dismiss(process_id: str) -> None          # reset done/failed/cancelled → idle
 await optio_core.resync(clean: bool = False) -> None       # re-sync task definitions; clean=True nukes all records first
 

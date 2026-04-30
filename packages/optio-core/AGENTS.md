@@ -156,6 +156,42 @@ executor sets `ctx.resume = True` when the task starts.
 
 ---
 
+### Optio.group_cancel / Optio.group_cancel_and_wait
+
+Cancel every active process whose metadata matches a filter. Pair mirrors
+`cancel` / `cancel_and_wait` for groups:
+
+```python
+await optio_core.group_cancel(
+    metadata_filter: ProcessMetadataFilter,    # required, non-empty
+    block_new_launches: bool = False,
+) -> None  # fire-and-forget; returns once cancels are issued (and, if
+           # block_new_launches=True, after the leak sweep). Safe to call
+           # from inside a task whose own metadata matches the filter.
+
+await optio_core.group_cancel_and_wait(
+    metadata_filter: ProcessMetadataFilter,
+    block_new_launches: bool = False,
+) -> None  # blocks until every matching process is in a terminal state.
+           # Raises asyncio.TimeoutError on the internal ceiling
+           # (cancel_grace_seconds + 25s). Do NOT call from inside a task
+           # whose metadata matches the filter — use group_cancel instead.
+```
+
+`metadata_filter` is a non-empty `dict[str, Any]` (AND-equality match against task
+metadata); `{}` / `None` is rejected with `ValueError` (use `Optio.shutdown()` to
+drain everything).
+
+`block_new_launches=True` registers a `block_launches(metadata_filter)` guard for
+the duration of the call (released on return or exception, even on the
+`group_cancel_and_wait` `TimeoutError` path). When True, both helpers also run a
+post-snapshot leak sweep (100 ms settling delay then re-list) to catch launches
+that raced past `_check_launch_blocks` before the guard registered.
+
+Spec: `docs/2026-04-30-group-cancel-design.md`.
+
+---
+
 ### Automatic lifecycle guarantees
 
 - **Terminal states** (`done`, `failed`, `cancelled`): executor clears `widgetUpstream`
