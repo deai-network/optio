@@ -199,3 +199,44 @@ async def test_launch_blocked_message_includes_reason(mongo_db):
         assert "; reason=r" in str(excinfo.value)
     finally:
         await _stop_optio(optio, run_task)
+
+
+# ---------- Load-on-init ----------
+
+async def test_init_loads_persisted_blocks(mongo_db):
+    """Pre-existing records in `{prefix}_launch_blocks` block matching launches after init."""
+    # Seed the DB before init.
+    coll = store.collection(mongo_db, "optio_init1")
+    await store.upsert_block(coll, {"tenant": "banned"}, reason="precooked")
+
+    async def _noop_execute(ctx):  # pragma: no cover - never reached
+        return
+
+    task = TaskInstance(
+        execute=_noop_execute,
+        process_id="p_x",
+        name="x",
+        metadata={"tenant": "banned"},
+    )
+
+    optio, run_task = await _start_optio(mongo_db, "optio_init1", tasks=(task,))
+    try:
+        # The pre-existing block must be loaded.
+        assert any(
+            entry.filter == {"tenant": "banned"} and entry.reason == "precooked"
+            for entry in optio._launch_blocks.values()
+        )
+        with pytest.raises(LaunchBlocked) as excinfo:
+            await optio.launch("p_x")
+        assert "; reason=precooked" in str(excinfo.value)
+    finally:
+        await _stop_optio(optio, run_task)
+
+
+async def test_init_with_no_blocks_works(mongo_db):
+    """Empty / missing collection produces an empty load."""
+    optio, run_task = await _start_optio(mongo_db, "optio_init2", tasks=())
+    try:
+        assert optio._launch_blocks == {}
+    finally:
+        await _stop_optio(optio, run_task)

@@ -122,6 +122,10 @@ class Optio:
         from optio_core.migrations import fw_migrations
         await fw_migrations.run(mongo_db, prefix=f"{prefix}_fw")
 
+        # Load persisted launch blocks ("perma-bans"). Spec:
+        # docs/2026-04-30-persistent-launch-blocks-design.md.
+        await self._load_persisted_blocks()
+
         # Create scheduler
         self._scheduler = ProcessScheduler(
             launch_fn=self._handle_launch_by_process_id,
@@ -194,6 +198,24 @@ class Optio:
                 if entry.reason is not None:
                     msg += f"; reason={entry.reason}"
                 raise LaunchBlocked(msg)
+
+    async def _load_persisted_blocks(self) -> None:
+        """Load every record from `{prefix}_launch_blocks` into the in-memory
+        `_launch_blocks` dict. Each record gets a fresh UUID token. Empty or
+        missing collection produces an empty load.
+        """
+        from optio_core import _launch_block_store as _lb_store
+        coll = _lb_store.collection(
+            self._config.mongo_db, self._config.prefix,
+        )
+        rows = await _lb_store.load_all(coll)
+        for row in rows:
+            token = uuid.uuid4()
+            self._launch_blocks[token] = _BlockEntry(
+                filter=row.filter, reason=row.reason,
+            )
+        if rows:
+            logger.info(f"Loaded {len(rows)} persistent launch block(s)")
 
     async def adhoc_define(
         self,
