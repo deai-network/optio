@@ -433,3 +433,44 @@ async def test_group_cancel_and_wait_persist_installs_persistent_block(mongo_db)
             await optio.launch("p_gcw")
     finally:
         await _stop_optio(optio, run_task)
+
+
+# ---------- Restart survives ----------
+
+async def test_persistent_block_survives_restart(mongo_db):
+    """Install a persistent block, dispose Optio, instantiate a new one
+    against the same DB — block is reloaded and matching launches stay blocked.
+    """
+    async def _noop_execute(ctx):  # pragma: no cover
+        return
+
+    task = TaskInstance(
+        execute=_noop_execute,
+        process_id="p_z",
+        name="z",
+        metadata={"tenant": "banned"},
+    )
+
+    # First run: install the block.
+    optio, run_task = await _start_optio(mongo_db, "optio_restart1", tasks=(task,))
+    try:
+        async with optio.block_launches(
+            {"tenant": "banned"}, persist=True, reason="bad",
+        ):
+            pass
+    finally:
+        await _stop_optio(optio, run_task)
+
+    # Second run: same DB, fresh Optio instance.
+    optio2, run_task2 = await _start_optio(mongo_db, "optio_restart1", tasks=(task,))
+    try:
+        # Block is reloaded.
+        assert any(
+            e.filter == {"tenant": "banned"} and e.reason == "bad"
+            for e in optio2._launch_blocks.values()
+        )
+        with pytest.raises(LaunchBlocked) as excinfo:
+            await optio2.launch("p_z")
+        assert "; reason=bad" in str(excinfo.value)
+    finally:
+        await _stop_optio(optio2, run_task2)
