@@ -166,14 +166,14 @@ class Optio:
         is stored on the record (default None). Spec:
         docs/2026-04-30-persistent-launch-blocks-design.md.
         """
-        token = uuid.uuid4()
-        self._launch_blocks[token] = _BlockEntry(filter=launch_filter, reason=reason)
         if persist:
             from optio_core import _launch_block_store as _lb_store
             coll = _lb_store.collection(
                 self._config.mongo_db, self._config.prefix,
             )
             await _lb_store.upsert_block(coll, launch_filter, reason)
+        token = uuid.uuid4()
+        self._launch_blocks[token] = _BlockEntry(filter=launch_filter, reason=reason)
         try:
             yield
         finally:
