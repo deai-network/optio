@@ -33,6 +33,16 @@ from optio_core.scheduler import ProcessScheduler
 logger = logging.getLogger("optio_core_core")
 
 
+from dataclasses import dataclass
+
+
+@dataclass
+class _BlockEntry:
+    """One in-memory launch-block entry."""
+    filter: ProcessMetadataFilter
+    reason: str | None
+
+
 class Optio:
     """Main orchestration class tying all components together."""
 
@@ -45,7 +55,7 @@ class Optio:
         self._running = False
         self._heartbeat_task: asyncio.Task | None = None
         self._supervisor_task: asyncio.Task | None = None
-        self._launch_blocks: dict[uuid.UUID, ProcessMetadataFilter] = {}
+        self._launch_blocks: dict[uuid.UUID, _BlockEntry] = {}
 
     async def init(
         self,
@@ -146,7 +156,7 @@ class Optio:
         it blocks all launches.
         """
         token = uuid.uuid4()
-        self._launch_blocks[token] = launch_filter
+        self._launch_blocks[token] = _BlockEntry(filter=launch_filter, reason=None)
         try:
             yield
         finally:
@@ -160,11 +170,12 @@ class Optio:
         if not self._launch_blocks:
             return
         md = metadata or {}
-        for launch_filter in self._launch_blocks.values():
-            if matches_filter(md, launch_filter):
-                raise LaunchBlocked(
-                    f"Launch blocked by filter {launch_filter}; task metadata={md}"
-                )
+        for entry in self._launch_blocks.values():
+            if matches_filter(md, entry.filter):
+                msg = f"Launch blocked by filter {entry.filter}; task metadata={md}"
+                if entry.reason is not None:
+                    msg += f"; reason={entry.reason}"
+                raise LaunchBlocked(msg)
 
     async def adhoc_define(
         self,

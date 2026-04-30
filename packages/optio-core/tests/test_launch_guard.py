@@ -29,7 +29,9 @@ async def test_block_launches_registers_and_unregisters():
         # Inside: exactly one block registered with the given filter.
         assert len(optio._launch_blocks) == 1
         (token,) = optio._launch_blocks.keys()
-        assert optio._launch_blocks[token] == {"project": "p1"}
+        entry = optio._launch_blocks[token]
+        assert entry.filter == {"project": "p1"}
+        assert entry.reason is None
 
     # After exit: dict is empty again.
     assert optio._launch_blocks == {}
