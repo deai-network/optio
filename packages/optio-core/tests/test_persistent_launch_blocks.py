@@ -329,3 +329,52 @@ async def test_unblock_persisted_block_then_launch_succeeds(mongo_db):
         assert completed.is_set()
     finally:
         await _stop_optio(optio, run_task)
+
+
+# ---------- group_cancel(persist=...) ----------
+
+async def test_group_cancel_persist_requires_block_new_launches(mongo_db):
+    """persist=True with block_new_launches=False raises ValueError."""
+    optio = Optio()
+    with pytest.raises(ValueError, match="block_new_launches"):
+        await optio.group_cancel(
+            {"tenant": "x"}, block_new_launches=False, persist=True, reason=None,
+        )
+
+
+async def test_group_cancel_persist_installs_persistent_block(mongo_db):
+    """persist=True + block_new_launches=True writes a record and the block survives."""
+    completed = asyncio.Event()
+
+    async def _execute(ctx):
+        completed.set()
+
+    task = TaskInstance(
+        execute=_execute,
+        process_id="p_gc",
+        name="gc",
+        metadata={"tenant": "acme"},
+    )
+    optio, run_task = await _start_optio(mongo_db, "optio_gc1", tasks=(task,))
+    try:
+        await optio.group_cancel(
+            {"tenant": "acme"},
+            block_new_launches=True,
+            persist=True,
+            reason="banned",
+        )
+        # After group_cancel returns, the block must still be in memory.
+        assert any(
+            e.filter == {"tenant": "acme"} and e.reason == "banned"
+            for e in optio._launch_blocks.values()
+        )
+        # And in the DB.
+        rows = await store.load_all(store.collection(mongo_db, "optio_gc1"))
+        assert len(rows) == 1
+        assert rows[0].reason == "banned"
+
+        # Subsequent launches blocked.
+        with pytest.raises(LaunchBlocked):
+            await optio.launch("p_gc")
+    finally:
+        await _stop_optio(optio, run_task)
