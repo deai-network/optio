@@ -341,3 +341,36 @@ async def test_block_new_launches_rejects_during_call(mongo_db):
         assert optio._launch_blocks == {}
     finally:
         await _stop_optio(optio, run_task)
+
+
+@pytest.mark.parametrize("method_name", ["group_cancel", "group_cancel_and_wait"])
+async def test_block_new_launches_false_no_guard_registered(mongo_db, method_name):
+    """With block_new_launches=False, _launch_blocks does not gain a token
+    during the call. Capture-and-compare so unrelated guards don't break
+    the assertion."""
+    started = asyncio.Event()
+
+    async def cooperative(ctx):
+        started.set()
+        for _ in range(200):
+            if ctx.cancellation_flag.is_set():
+                return
+            await asyncio.sleep(0.02)
+
+    task = TaskInstance(
+        process_id="p.x", name="X", params={}, execute=cooperative,
+        metadata={"team": "alpha"},
+    )
+
+    optio, run_task = await _start_optio(mongo_db, f"gc_noguard_{method_name}", [task])
+    try:
+        await optio.launch("p.x")
+        await started.wait()
+
+        before = set(optio._launch_blocks.keys())
+        method = getattr(optio, method_name)
+        await method({"team": "alpha"}, block_new_launches=False)
+        after = set(optio._launch_blocks.keys())
+        assert before == after
+    finally:
+        await _stop_optio(optio, run_task)
