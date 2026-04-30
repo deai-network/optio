@@ -143,3 +143,45 @@ async def test_group_cancel_returns_before_terminal(mongo_db):
         assert proc["status"]["state"] in ("running", "cancel_requested", "cancelling")
     finally:
         await _stop_optio(optio, run_task)
+
+
+# ---------- group_cancel_and_wait wait loop ----------
+
+async def test_group_cancel_and_wait_all_cooperative(mongo_db):
+    """All cooperative tasks reach terminal state 'cancelled' by the time
+    group_cancel_and_wait returns; the call blocks until they do."""
+    started = [asyncio.Event() for _ in range(3)]
+
+    def make_cooperative(idx):
+        async def fn(ctx):
+            started[idx].set()
+            for _ in range(200):
+                if ctx.cancellation_flag.is_set():
+                    return
+                await asyncio.sleep(0.02)
+        return fn
+
+    tasks = [
+        TaskInstance(
+            process_id=f"p.coop.{i}", name=f"Coop{i}", params={},
+            execute=make_cooperative(i), metadata={"team": "alpha"},
+        )
+        for i in range(3)
+    ]
+
+    optio, run_task = await _start_optio(mongo_db, "gcw_coop", tasks)
+    try:
+        for i in range(3):
+            await optio.launch(f"p.coop.{i}")
+        for ev in started:
+            await ev.wait()
+
+        await optio.group_cancel_and_wait({"team": "alpha"})
+
+        for i in range(3):
+            proc = await optio.get_process(f"p.coop.{i}")
+            assert proc["status"]["state"] == "cancelled", (
+                f"task {i} ended in {proc['status']['state']}"
+            )
+    finally:
+        await _stop_optio(optio, run_task)
