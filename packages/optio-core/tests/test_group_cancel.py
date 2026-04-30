@@ -614,7 +614,7 @@ async def test_no_active_processes_match(mongo_db, method_name):
 
 # ---------- Public API export ----------
 
-def test_group_cancel_pair_exported_from_package():
+async def test_group_cancel_pair_exported_from_package():
     """Both helpers are exported from optio_core, bound to the singleton."""
     import optio_core
     assert optio_core.group_cancel == optio_core._instance.group_cancel

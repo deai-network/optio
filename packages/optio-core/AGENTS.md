@@ -158,8 +158,8 @@ executor sets `ctx.resume = True` when the task starts.
 
 ### Optio.group_cancel / Optio.group_cancel_and_wait
 
-Cancel every active process whose metadata matches a filter. Pair mirrors
-`cancel` / `cancel_and_wait` for groups:
+Cancel every active process whose metadata matches a filter. The pair offers
+both fire-and-forget and wait-for-terminal variants:
 
 ```python
 await optio_core.group_cancel(
