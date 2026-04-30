@@ -67,8 +67,10 @@ await optio_core.shutdown(grace_seconds=5.0)  # graceful shutdown; force-finaliz
 await optio_core.launch(process_id: str, resume: bool = False) -> None           # fire-and-forget
 await optio_core.launch_and_wait(process_id: str, resume: bool = False) -> None  # blocks until done
 await optio_core.cancel(process_id: str) -> None
-await optio_core.group_cancel(metadata_filter: dict, block_new_launches: bool = False) -> None             # fire-and-forget; cancels every active process matching the filter
-await optio_core.group_cancel_and_wait(metadata_filter: dict, block_new_launches: bool = False) -> None    # blocks until every matching process is terminal
+await optio_core.group_cancel(metadata_filter: dict, block_new_launches: bool = False, *, persist: bool = False, reason: str | None = None) -> None             # fire-and-forget; cancels every active process matching the filter (persist=True requires block_new_launches=True)
+await optio_core.group_cancel_and_wait(metadata_filter: dict, block_new_launches: bool = False, *, persist: bool = False, reason: str | None = None) -> None    # blocks until every matching process is terminal (persist=True requires block_new_launches=True)
+async with optio_core.block_launches(launch_filter: dict, *, persist: bool = False, reason: str | None = None): ...   # async CM; rejects matching launches with LaunchBlocked. persist=True writes a Mongo record and the block survives the CM
+await optio_core.unblock_launches(launch_filter: dict) -> int                                              # remove every persistent record + in-memory block whose filter equals launch_filter exactly; returns count of in-memory entries removed
 await optio_core.dismiss(process_id: str) -> None          # reset done/failed/cancelled → idle
 await optio_core.resync(clean: bool = False) -> None       # re-sync task definitions; clean=True nukes all records first
 
@@ -958,3 +960,4 @@ All components use `react-i18next`. Required keys:
 - **Migrations**: run automatically on `init()` via quaestor; migrations live in `packages/optio-core/src/optio_core/migrations/`
 - **Scheduler**: APScheduler-backed; cron schedules defined on `TaskInstance.schedule` are synced on init and resync
 - **Process state reconciliation**: on `init()`, any process still in an active state (`scheduled`, `running`, `cancel_requested`, `cancelling`) from a previous session is reset to `failed` with `error="Process was interrupted by server restart"`. On `shutdown(grace_seconds=5.0)`, tasks that do not unwind within the grace period are force-finalized to `failed` with `error="Task did not exit within shutdown grace period"`. Spec: `docs/2026-04-22-process-reconciliation-design.md`
+- **Persistent launch blocks**: `block_launches(..., persist=True)` and `group_cancel*(..., block_new_launches=True, persist=True)` write a record to `{prefix}_launch_blocks` (Mongo); records are reloaded into the in-memory block list on every `init()` so the block survives restarts. Removed only by `unblock_launches(launch_filter)` (exact filter match). When set, `reason` is stored on the record and appended to the `LaunchBlocked` exception message (`...; reason={reason}`). Spec: `docs/2026-04-30-persistent-launch-blocks-design.md`
