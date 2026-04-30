@@ -102,3 +102,85 @@ async def test_child_launchblocked_propagates_and_parent_cancellable(mongo_db):
             await run_task
         except (asyncio.CancelledError, Exception):
             pass
+
+
+async def test_force_cancel_with_active_block_does_not_leak(mongo_db):
+    """Stubborn task force-cancelled while a block_launches context is active.
+
+    Verifies:
+    - The stubborn task ends 'failed' with the canonical error
+    - The async with block_launches body exits cleanly (block popped)
+    - _launch_blocks is empty after teardown
+    """
+    prefix = "intg2"
+
+    started = asyncio.Event()
+    block_active = asyncio.Event()
+    block_holder_done = asyncio.Event()
+
+    async def stubborn(ctx):  # noqa: ARG001
+        started.set()
+        while True:
+            await asyncio.sleep(0.05)
+
+    stub_task = TaskInstance(
+        process_id="p.stub", name="Stub", params={}, execute=stubborn,
+    )
+
+    async def gen(_s, _f):
+        return [stub_task]
+
+    optio = Optio()
+    await optio.init(
+        mongo_db=mongo_db, prefix=prefix,
+        get_task_definitions=gen, cancel_grace_seconds=0.3,
+    )
+    run_task = asyncio.create_task(optio.run())
+
+    async def hold_block_until_cancelled():
+        try:
+            async with optio.block_launches({"some": "filter"}):
+                block_active.set()
+                # Hold indefinitely until cancelled
+                while True:
+                    await asyncio.sleep(0.1)
+        finally:
+            block_holder_done.set()
+
+    holder = asyncio.create_task(hold_block_until_cancelled())
+
+    try:
+        await block_active.wait()
+        assert len(optio._launch_blocks) == 1
+
+        await optio.launch("p.stub")
+        await started.wait()
+
+        state = await optio.cancel_and_wait("p.stub")
+        assert state == "failed"
+        proc = await optio.get_process("p.stub")
+        assert "Task did not unwind within cancellation grace period" in proc["status"]["error"]
+
+        # Cancel the block-holder so the async with body exits.
+        holder.cancel()
+        try:
+            await holder
+        except asyncio.CancelledError:
+            pass
+        await block_holder_done.wait()
+
+        # _launch_blocks must be empty.
+        assert optio._launch_blocks == {}
+    finally:
+        if not holder.done():
+            holder.cancel()
+            try:
+                await holder
+            except (asyncio.CancelledError, Exception):
+                pass
+        await optio.shutdown()
+        run_task.cancel()
+        try:
+            await run_task
+        except (asyncio.CancelledError, Exception):
+            pass
