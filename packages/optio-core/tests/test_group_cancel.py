@@ -374,3 +374,57 @@ async def test_block_new_launches_false_no_guard_registered(mongo_db, method_nam
         assert before == after
     finally:
         await _stop_optio(optio, run_task)
+
+
+# ---------- Leak sweep ----------
+
+async def test_leak_sweep_catches_post_snapshot_launch(mongo_db, monkeypatch):
+    """A launch that passed _check_launch_blocks before the guard
+    registered but completed its upsert AFTER the helper's initial
+    snapshot is caught by the leak sweep and cancelled."""
+    started_intruder = asyncio.Event()
+
+    async def cooperative(ctx):
+        started_intruder.set()
+        for _ in range(200):
+            if ctx.cancellation_flag.is_set():
+                return
+            await asyncio.sleep(0.02)
+
+    intruder_task = TaskInstance(
+        process_id="p.intruder", name="Intruder", params={}, execute=cooperative,
+        metadata={"team": "alpha"},
+    )
+
+    optio, run_task = await _start_optio(
+        mongo_db, "gcw_leak", [intruder_task],
+    )
+    try:
+        # Patch _check_launch_blocks to a no-op for this test — simulates
+        # the racing launch that passed the check before the guard arrived.
+        monkeypatch.setattr(optio, "_check_launch_blocks", lambda _md: None)
+
+        # Helper that launches the intruder concurrently with the helper.
+        async def stage_intruder():
+            # Wait until we're confident the helper has snapshotted (which
+            # happens almost immediately on entry). The 100 ms leak-sweep
+            # delay then gives us plenty of time to land the upsert.
+            await asyncio.sleep(0.02)
+            await optio.launch("p.intruder")
+
+        intruder_handle = asyncio.create_task(stage_intruder())
+
+        await optio.group_cancel_and_wait(
+            {"team": "alpha"}, block_new_launches=True,
+        )
+        await intruder_handle
+
+        # Intruder must have been cancelled (caught by the leak sweep)
+        # and reached a terminal state by the time the call returned.
+        proc = await optio.get_process("p.intruder")
+        assert proc["status"]["state"] in ("cancelled", "failed"), (
+            f"intruder ended in {proc['status']['state']} "
+            "(should have been caught by leak sweep)"
+        )
+    finally:
+        await _stop_optio(optio, run_task)
