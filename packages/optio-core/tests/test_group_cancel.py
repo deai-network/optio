@@ -3,6 +3,8 @@
 Spec: docs/2026-04-30-group-cancel-design.md
 """
 import asyncio
+import time
+
 import pytest
 
 from optio_core.lifecycle import Optio
@@ -100,5 +102,44 @@ async def test_group_cancel_only_cancels_in_scope(mongo_db):
 
         release_b.set()
         await asyncio.sleep(0.1)
+    finally:
+        await _stop_optio(optio, run_task)
+
+
+async def test_group_cancel_returns_before_terminal(mongo_db):
+    """group_cancel returns once cancels are issued — not once tasks are terminal.
+
+    The cooperative task here observes the flag only after a delay; if
+    group_cancel waited for terminal state, the call would block for that
+    delay. Since it doesn't, the call returns quickly and the task is
+    still in cancel_requested / cancelling / running when we check.
+    """
+    started = asyncio.Event()
+
+    async def slow_cooperative(ctx):
+        started.set()
+        # Don't check the flag until well after group_cancel has had a
+        # chance to issue and return.
+        await asyncio.sleep(2.0)
+
+    task = TaskInstance(
+        process_id="p.slow", name="Slow", params={}, execute=slow_cooperative,
+        metadata={"team": "alpha"},
+    )
+
+    optio, run_task = await _start_optio(mongo_db, "gc_fire", [task])
+    try:
+        await optio.launch("p.slow")
+        await started.wait()
+
+        # group_cancel should return almost immediately.
+        t0 = time.monotonic()
+        await optio.group_cancel({"team": "alpha"})
+        elapsed = time.monotonic() - t0
+        assert elapsed < 0.4, f"group_cancel took {elapsed:.3f}s — should be fast"
+
+        # Task is not terminal yet.
+        proc = await optio.get_process("p.slow")
+        assert proc["status"]["state"] in ("running", "cancel_requested", "cancelling")
     finally:
         await _stop_optio(optio, run_task)
