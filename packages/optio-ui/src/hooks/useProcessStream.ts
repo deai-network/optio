@@ -57,9 +57,11 @@ export function useProcessStream(processId: string | undefined, maxDepth = 10): 
     processes: [], connected: false, logs: [],
   });
   const eventSourceRef = useRef<EventSource | null>(null);
+  const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const connect = useCallback(() => {
     if (!processId) return;
+    retryTimeoutRef.current = null;
     const url = `${baseUrl}/api/processes/${processId}/tree/stream?prefix=${encodeURIComponent(prefix)}&maxDepth=${maxDepth}${database ? `&database=${encodeURIComponent(database)}` : ''}`;
     const es = new EventSource(url);
     eventSourceRef.current = es;
@@ -75,7 +77,12 @@ export function useProcessStream(processId: string | undefined, maxDepth = 10): 
     es.onerror = () => {
       setState((s) => ({ ...s, connected: false }));
       es.close();
-      setTimeout(() => connect(), 3000);
+      // Track the retry timer so the cleanup below can cancel it. Without
+      // this, switching processId leaves the old closure's setTimeout
+      // queued; when it fires it spawns a fresh EventSource at the OLD
+      // URL and any failure (e.g. 404 because the prior id is no longer
+      // valid in the current instance) loops forever.
+      retryTimeoutRef.current = setTimeout(() => connect(), 3000);
     };
   }, [processId, maxDepth, prefix, database, baseUrl]);
 
@@ -86,7 +93,13 @@ export function useProcessStream(processId: string | undefined, maxDepth = 10): 
     // stale entries persist for several seconds after switching.
     setState({ processes: [], connected: false, logs: [] });
     connect();
-    return () => { eventSourceRef.current?.close(); };
+    return () => {
+      eventSourceRef.current?.close();
+      if (retryTimeoutRef.current !== null) {
+        clearTimeout(retryTimeoutRef.current);
+        retryTimeoutRef.current = null;
+      }
+    };
   }, [connect]);
 
   const tree = useMemo(() => buildTree(state.processes), [state.processes]);

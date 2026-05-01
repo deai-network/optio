@@ -11,15 +11,29 @@ let _state: ProcessListStreamState = { processes: [], connected: false };
 let _listeners: Set<() => void> = new Set();
 let _eventSource: EventSource | null = null;
 let _connectedKey: string | null = null;
+let _retryTimeout: ReturnType<typeof setTimeout> | null = null;
 
 function notify() {
   _listeners.forEach((fn) => fn());
 }
 
+function closeAndReset() {
+  _eventSource?.close();
+  _eventSource = null;
+  _connectedKey = null;
+  if (_retryTimeout !== null) {
+    clearTimeout(_retryTimeout);
+    _retryTimeout = null;
+  }
+}
+
 function connect(baseUrl: string, prefix: string, database: string | undefined, filterKey: string) {
   const key = `${baseUrl}|${database}|${prefix}|${filterKey}`;
   if (_eventSource && _connectedKey === key) return;
-  _eventSource?.close();
+  // Cancel any pending retry from a previous (now-stale) key before
+  // wiring up the new one — otherwise the old retry can fire later and
+  // either reopen with stale params or shadow this one.
+  closeAndReset();
 
   const params = new URLSearchParams();
   params.set('prefix', prefix);
@@ -52,7 +66,13 @@ function connect(baseUrl: string, prefix: string, database: string | undefined, 
     es.close();
     _eventSource = null;
     _connectedKey = null;
-    setTimeout(() => connect(baseUrl, prefix, database, filterKey), 3000);
+    // Track the retry timer so closeAndReset() / a new connect() with a
+    // different key can cancel it. Without this the old retry fires
+    // later with stale params and ricochets between connections.
+    _retryTimeout = setTimeout(() => {
+      _retryTimeout = null;
+      connect(baseUrl, prefix, database, filterKey);
+    }, 3000);
   };
 }
 
