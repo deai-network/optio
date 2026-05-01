@@ -101,7 +101,7 @@ next-best signal — re-check `./resume.log` then.
 
 def _render_resume_section(workdir_exclude: list[str] | None) -> str:
     """Render the RESUME_SECTION_TEMPLATE with the effective exclude list."""
-    from optio_opencode.archive import DEFAULT_WORKDIR_EXCLUDES
+    from optio_host.archive import DEFAULT_WORKDIR_EXCLUDES
     effective = workdir_exclude if workdir_exclude is not None else DEFAULT_WORKDIR_EXCLUDES
     if not effective:
         excludes_clause = (

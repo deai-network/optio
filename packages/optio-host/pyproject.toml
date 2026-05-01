@@ -3,14 +3,13 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "optio-opencode"
+name = "optio-host"
 version = "0.1.0"
-description = "Run opencode web as an optio task; local subprocess or remote via SSH."
+description = "Local-or-remote host abstraction + log/deliverables coordination protocol for optio task types."
 license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
     "optio-core",
-    "optio-host",
     "asyncssh>=2.14",
 ]
 

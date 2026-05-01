@@ -1,6 +1,8 @@
-"""Parse lines from the optio.log file that opencode (driven by the LLM) appends to.
+"""Parse lines from the optio.log file that the on-host agent appends to.
 
-The format is keyword-prefixed, one line per event. See the design spec Section 6.
+The format is keyword-prefixed, one line per event. See the design spec
+Section 6 of the optio-opencode design (the protocol's original home;
+unchanged after the optio-host split).
 """
 
 from __future__ import annotations

@@ -8,7 +8,7 @@ def test_tmp_workdir_fixture(tmp_workdir):
 
 
 def test_hosts_importable():
-    from optio_opencode.host import Host, LocalHost, RemoteHost  # noqa
+    from optio_host.host import Host, LocalHost, RemoteHost  # noqa
 
 
 def test_create_opencode_task_declares_resume_support():

@@ -2,18 +2,18 @@
 
 import logging as _logging
 
-from optio_opencode.hook_context import (
+from optio_host import (
     HookContext,
     HookContextProtocol,
     HostCommandError,
     RunResult,
+    SSHConfig,
 )
 from optio_opencode.session import create_opencode_task, run_opencode_session
 from optio_opencode.types import (
     DeliverableCallback,
     HookCallback,
     OpencodeTaskConfig,
-    SSHConfig,
 )
 
 # asyncssh emits per-connection / per-channel INFO lines ("Opening SSH

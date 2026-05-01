@@ -1,9 +1,16 @@
 """The state machine that runs one optio-opencode session.
 
 Orchestrates a Host (local or remote) through the lifecycle described in
-Section 5 of the design spec.  The public entry point is the factory
+Section 4 of the design spec.  The public entry point is the factory
 ``create_opencode_task(...)`` which wraps ``run_opencode_session`` in a
 ``TaskInstance`` and sets ``ui_widget="iframe"``.
+
+Most of the per-session work is generic log/deliverables protocol
+plumbing (parse ``optio.log``, fetch deliverables, watch for cancel) and
+lives in ``optio_host.protocol.run_log_protocol_session``.  This module
+keeps only the opencode-specific work — write AGENTS.md / opencode.json,
+install/launch the opencode binary, set up tunnel and widget, and the
+resume/snapshot brackets around the protocol session.
 """
 
 from __future__ import annotations
@@ -22,37 +29,24 @@ from typing import AsyncIterator
 from optio_core.context import ProcessContext
 from optio_core.models import BasicAuth, TaskInstance
 
-from optio_opencode.host import Host, LocalHost, LaunchedProcess, RemoteHost
-from optio_opencode.logparse import (
-    DeliverableEvent,
-    DoneEvent,
-    ErrorEvent,
-    LogEvent,
-    StatusEvent,
-    UnknownLine,
-    parse_log_line,
-    relativize_deliverable_path,
-    validate_deliverable_path,
-)
-from optio_opencode.paths import local_taskdir, remote_taskdir
+from optio_host.context import HookContext
+from optio_host.host import Host, LocalHost, ProcessHandle, RemoteHost
+from optio_host.paths import task_dir
+from optio_host.protocol.session import _SessionFailed, run_log_protocol_session
+from optio_opencode import host_actions
 from optio_opencode.prompt import compose_agents_md
 from optio_opencode.snapshots import (
     insert_snapshot,
     load_latest_snapshot,
     prune_snapshots,
 )
-from optio_opencode.types import DeliverableCallback, OpencodeTaskConfig
+from optio_opencode.types import OpencodeTaskConfig
 
 
 _LOG = logging.getLogger(__name__)
 
 
 READY_TIMEOUT_S = 30.0
-DELIVERABLE_QUEUE_BOUND = 64
-
-
-class _SessionFailed(Exception):
-    """Raised by the session loop to drive the process to 'failed'."""
 
 
 def _build_host(config: OpencodeTaskConfig, process_id: str) -> Host:
@@ -61,14 +55,15 @@ def _build_host(config: OpencodeTaskConfig, process_id: str) -> Host:
     Extracted so tests can monkeypatch ``optio_opencode.session._build_host``
     to inject a fake host without launching real subprocesses or SSH.
     """
+    taskdir = task_dir(
+        ssh=config.ssh, process_id=process_id, consumer_name="optio-opencode",
+    )
     if config.ssh is None:
-        taskdir = local_taskdir(process_id)
         os.makedirs(taskdir, exist_ok=True)
         host: Host = LocalHost(taskdir=taskdir)
         os.makedirs(host.workdir, exist_ok=True)
         return host
     else:
-        taskdir = remote_taskdir(process_id)
         return RemoteHost(ssh_config=config.ssh, taskdir=taskdir)
 
 
@@ -76,63 +71,75 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
     """Execute function body for one optio-opencode task instance."""
     # --- per-task filesystem layout ---------------------------------------
     host: Host = _build_host(config, ctx.process_id)
-    if config.ssh is None:
-        taskdir = local_taskdir(ctx.process_id)
-        opencode_db = os.path.join(taskdir, "opencode.db")
-    else:
-        taskdir = remote_taskdir(ctx.process_id)
-        opencode_db = f"{taskdir}/opencode.db"
+    taskdir = task_dir(
+        ssh=config.ssh, process_id=ctx.process_id, consumer_name="optio-opencode",
+    )
+    opencode_db = f"{taskdir}/opencode.db"
 
     password = secrets.token_urlsafe(32)
-    process: LaunchedProcess | None = None
     cancelled = False
-    preserved_session_id: str | None = None
+    launched_handle: ProcessHandle | None = None
+    opencode_exec: str = "opencode"
     session_id: str | None = None
+    preserved_session_id: str | None = None
 
-    from optio_opencode.hook_context import HookContext  # noqa: PLC0415
-
-    hook_ctx: HookContext | None = None
-    session_error: BaseException | None = None
-
-    # --- resume decision --------------------------------------------------
+    # --- resume decision (BEFORE the protocol session starts) -------------
     resume_requested = bool(getattr(ctx, "resume", False))
     snapshot: dict | None = None
     if resume_requested:
         snapshot = await load_latest_snapshot(
             ctx._db, prefix=ctx._prefix, process_id=ctx.process_id,
         )
-    resuming = snapshot is not None
 
-    try:
+    # Resume restore must run BEFORE the protocol session begins, so the
+    # driver's tail_task does not subscribe to the restored stale optio.log
+    # (which contains last run's DONE / ERROR events). The body below sees
+    # ``resuming`` already decided.
+    resuming = snapshot is not None
+    if resuming:
         await host.connect()
         await host.setup_workdir()
         await host.remove_file(opencode_db)
+        try:
+            await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
+            session_bytes = await _read_blob_bytes(ctx, snapshot["sessionBlobId"])
+            await host_actions.opencode_import(
+                host, opencode_db, session_bytes,
+                opencode_executable=opencode_exec,
+            )
+            # Move the restored log channel out of the way BEFORE the
+            # protocol driver subscribes its tail. The snapshot tar
+            # includes optio.log from the previous run; without rotation,
+            # ``tail -F -n +1`` would re-emit every old DELIVERABLE /
+            # DONE / ERROR line and the resumed process would terminate
+            # within seconds of launch.  Preserve the historical content
+            # by appending it to optio.log.old.
+            await _rotate_optio_log(host)
+            preserved_session_id = snapshot["sessionId"]
+        except Exception:
+            _LOG.exception(
+                "resume restore failed; falling back to fresh-start path "
+                "(Mongo blob preserved for inspection)",
+            )
+            await host.remove_file(opencode_db)
+            resuming = False
+            preserved_session_id = None
 
-        if resuming:
-            try:
-                await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
-                session_bytes = await _read_blob_bytes(ctx, snapshot["sessionBlobId"])
-                await host.opencode_import(opencode_db, session_bytes)
-                # Move the restored log channel out of the way before tail
-                # subscribes. The snapshot tar includes optio.log from the
-                # previous run; without this `tail -F -n +1` would re-emit
-                # every old DELIVERABLE / DONE / ERROR line and the resumed
-                # process would terminate within seconds of launch (see
-                # LocalHost.tail_log's "-n +1" choice). We preserve the
-                # historical content by appending it to optio.log.old so
-                # nothing is lost across consecutive resumes.
-                await _rotate_optio_log(host)
-                preserved_session_id = snapshot["sessionId"]
-            except Exception:
-                _LOG.exception(
-                    "resume restore failed; falling back to fresh-start path "
-                    "(Mongo blob preserved for inspection)",
-                )
-                await host.remove_file(opencode_db)
-                resuming = False
-                preserved_session_id = None
+    async def _opencode_body(host: Host, hook_ctx: HookContext) -> None:
+        """Opencode-specific body that runs inside the protocol driver.
+
+        Captures launch state via nonlocal so the outer ``finally`` can
+        terminate the subprocess and capture the snapshot.
+        """
+        nonlocal launched_handle, opencode_exec, session_id, preserved_session_id
 
         if not resuming:
+            # Fresh start: the protocol driver has already created the
+            # workdir, deliverables/ subdir, and empty optio.log. Ensure
+            # any stale opencode db from a prior crashed run is gone, then
+            # write the fresh AGENTS.md and opencode.json that the agent
+            # consumes.
+            await host.remove_file(opencode_db)
             await host.write_text(
                 "AGENTS.md",
                 compose_agents_md(
@@ -169,7 +176,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         # fixes land upstream.
         binary_dir = os.environ.get("OPTIO_OPENCODE_BINARY_DIR")
         if binary_dir:
-            target = await host.detect_target()
+            target = await host_actions.detect_target(host)
             candidate = os.path.join(
                 binary_dir, target.directory_name, "bin", "opencode"
             )
@@ -197,28 +204,37 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                 # advance the progress bar without appending a log entry.
                 ctx.report_progress(pct)
 
-            await host.install_opencode_binary(candidate, progress=_on_progress)
+            opencode_exec = await host_actions.install_opencode_binary(
+                host, candidate, progress=_on_progress,
+            )
             ctx.report_progress(None, "opencode binary ready")
         else:
-            await host.ensure_opencode_installed(config.install_if_missing)
+            await host_actions.ensure_opencode_installed(
+                host, config.install_if_missing,
+            )
 
-        # --- before_execute hook -----------------------------------------
-        hook_ctx = HookContext(ctx, host)
+        # --- before_execute hook ----------------------------------------
+        # Fires after the binary is in place and before opencode launches,
+        # so consumer hooks can ship per-task files via hook_ctx.copy_file
+        # and run setup commands via hook_ctx.run_on_host.
         if config.before_execute is not None:
             await config.before_execute(hook_ctx)
 
         # --- launch ------------------------------------------------------
-        version = await host.opencode_version()
+        version = await host_actions.opencode_version(
+            host, opencode_executable=opencode_exec,
+        )
         version_suffix = f" {version}" if version else ""
         ctx.report_progress(None, f"Launching opencode{version_suffix}…")
-        process = await host.launch_opencode(
-            password=password,
+        handle, opencode_port = await host_actions.launch_opencode(
+            host, password,
             ready_timeout_s=READY_TIMEOUT_S,
-            env={"OPENCODE_DB": opencode_db},
+            opencode_executable=opencode_exec,
         )
+        launched_handle = handle
 
         # --- tunnel + widget registration --------------------------------
-        worker_port = await host.establish_tunnel(process.opencode_port)
+        worker_port = await host.establish_tunnel(opencode_port)
 
         if preserved_session_id is not None:
             session_id = preserved_session_id
@@ -256,59 +272,35 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         })
         ctx.report_progress(None, "opencode is live")
 
-        # --- run --------------------------------------------------------
-        deliverable_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue(
-            maxsize=DELIVERABLE_QUEUE_BOUND
+        # --- await opencode subprocess exit -----------------------------
+        # The protocol driver runs this body alongside the tail dispatcher
+        # and a cancel watcher.  When the user cancels, the driver cancels
+        # this body's task; when the agent emits DONE/ERROR, the driver
+        # returns / raises and again cancels this body.  In either case the
+        # await below is interrupted via CancelledError before proc exits.
+        # If, however, opencode exits on its own without emitting DONE
+        # first, the body returns normally and the driver detects this as
+        # "premature body exit" and raises _SessionFailed.
+        proc = launched_handle.pid_like
+        await proc.wait()  # type: ignore[union-attr]
+
+    # --- run the protocol session -----------------------------------------
+    session_error: BaseException | None = None
+    if not resuming:
+        # Resume path already connected above to do the restore.
+        await host.connect()
+    try:
+        # before_execute is wired manually inside _opencode_body (after
+        # install, before launch) per opencode's documented timing.
+        # after_execute is left to the protocol driver — it fires after
+        # the body terminates and before the outer finally runs the
+        # snapshot capture, matching the documented contract.
+        await run_log_protocol_session(
+            host, ctx,
+            body=_opencode_body,
+            on_deliverable=config.on_deliverable,
+            after_execute=config.after_execute,
         )
-        done_flag = asyncio.Event()
-        error_flag: list[str | None] = []  # [message] or [] if not fired
-        subprocess_exit: list[int | None] = []  # [exit_code] when seen
-
-        fetch_task = asyncio.create_task(
-            _deliverable_fetch_loop(host, config.on_deliverable, deliverable_queue, ctx, hook_ctx)
-        )
-        tail_task = asyncio.create_task(
-            _tail_and_dispatch(
-                host, ctx, deliverable_queue, done_flag, error_flag
-            )
-        )
-        exit_task = asyncio.create_task(_await_subprocess_exit(host, process, subprocess_exit))
-        cancel_task = asyncio.create_task(_watch_cancellation(ctx))
-
-        done, _ = await asyncio.wait(
-            {tail_task, exit_task, cancel_task},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-
-        cancelled = (
-            cancel_task in done
-            and not cancel_task.cancelled()
-            and cancel_task.exception() is None
-            and cancel_task.result() is True
-        )
-
-        if error_flag:
-            raise _SessionFailed(error_flag[0] or "opencode reported ERROR")
-        # Any subprocess exit without a DONE is a failure, regardless of exit
-        # code (opencode web is designed to run indefinitely until the LLM
-        # writes DONE or ERROR). Cancellation is handled separately via
-        # ``cancelled`` — if the user cancelled, we return cleanly.
-        if subprocess_exit and not done_flag.is_set() and not cancelled:
-            raise _SessionFailed(
-                f"opencode exited with code {subprocess_exit[0]} before DONE"
-            )
-
-        # Drain remaining deliverables before returning.
-        await deliverable_queue.join()
-
-        # Cancel the still-running watchers.
-        for t in (tail_task, exit_task, cancel_task, fetch_task):
-            if not t.done():
-                t.cancel()
-        await asyncio.gather(
-            tail_task, exit_task, cancel_task, fetch_task, return_exceptions=True
-        )
-
     except _SessionFailed as fail:
         session_error = fail
         raise RuntimeError(str(fail)) from None
@@ -317,25 +309,18 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         raise
 
     finally:
-        if process is not None:
-            try:
-                await host.terminate_opencode(process, aggressive=cancelled)
-            except Exception:  # noqa: BLE001
-                _LOG.exception("terminate_opencode failed")
+        # Cancellation detection. The protocol driver swallows cancellation
+        # cleanly and returns; we observe it here via the ProcessContext
+        # flag.  ``aggressive=True`` triggers SIGKILL behaviour for a
+        # cancelled session vs. a clean SIGTERM for a normal exit.
+        if not ctx.should_continue():
+            cancelled = True
 
-        # after_execute: runs whenever hook_ctx exists (i.e. setup_workdir
-        # succeeded), regardless of success/failure/cancellation.  Its side
-        # effects become part of the workdir that is snapshotted next.
-        if config.after_execute is not None and hook_ctx is not None:
+        if launched_handle is not None:
             try:
-                await config.after_execute(hook_ctx)
-            except BaseException as after_exc:
-                if session_error is None:
-                    raise
-                ctx.report_progress(
-                    None,
-                    f"after_execute callback raised: {after_exc!r}",
-                )
+                await host.terminate_subprocess(launched_handle, aggressive=cancelled)
+            except Exception:  # noqa: BLE001
+                _LOG.exception("terminate_subprocess failed")
 
         if config.supports_resume and session_id is not None:
             try:
@@ -345,6 +330,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                     opencode_db=opencode_db,
                     end_state="cancelled" if cancelled else "done",
                     workdir_exclude=config.workdir_exclude,
+                    opencode_executable=opencode_exec,
                 )
             except Exception:  # noqa: BLE001
                 _LOG.exception(
@@ -392,8 +378,12 @@ async def _capture_snapshot(
     opencode_db: str,
     end_state: str,
     workdir_exclude: list[str] | None,
+    opencode_executable: str = "opencode",
 ) -> None:
-    session_json = await host.opencode_export(opencode_db, session_id)
+    session_json = await host_actions.opencode_export(
+        host, opencode_db, session_id,
+        opencode_executable=opencode_executable,
+    )
     expected_len = len(session_json)
     _LOG.info(
         "snapshot capture: session_json bytes=%d session_id=%s",
@@ -446,119 +436,6 @@ async def _capture_snapshot(
     await ctx.mark_has_saved_state()
 
 
-async def _tail_and_dispatch(
-    host: Host,
-    ctx: ProcessContext,
-    deliverable_queue: asyncio.Queue[tuple[str, str]],
-    done_flag: asyncio.Event,
-    error_flag: list,
-) -> None:
-    """Consume tail_log, parse each line, dispatch by keyword."""
-    async for line in host.tail_log():
-        ev: LogEvent = parse_log_line(line)
-        if isinstance(ev, StatusEvent):
-            ctx.report_progress(ev.percent, ev.message)
-        elif isinstance(ev, DeliverableEvent):
-            try:
-                absolute = validate_deliverable_path(ev.path, host.workdir)
-            except ValueError:
-                ctx.report_progress(
-                    None, f"invalid deliverable path {ev.path!r}, skipping"
-                )
-                continue
-            try:
-                display = relativize_deliverable_path(absolute, host.workdir)
-            except ValueError:
-                ctx.report_progress(
-                    None,
-                    f"deliverable {ev.path!r}: not under deliverables/, "
-                    f"skipping (malfunction)",
-                )
-                continue
-            ctx.report_progress(None, f"Deliverable: {display}")
-            item = (absolute, display)
-            try:
-                deliverable_queue.put_nowait(item)
-            except asyncio.QueueFull:
-                await deliverable_queue.put(item)
-        elif isinstance(ev, DoneEvent):
-            if ev.summary:
-                ctx.report_progress(None, ev.summary)
-            done_flag.set()
-            return
-        elif isinstance(ev, ErrorEvent):
-            error_flag.append(ev.message)
-            return
-        else:
-            assert isinstance(ev, UnknownLine)
-            if ev.text:
-                ctx.report_progress(None, ev.text)
-
-
-async def _deliverable_fetch_loop(
-    host: Host,
-    callback: DeliverableCallback | None,
-    queue: asyncio.Queue[tuple[str, str]],
-    ctx: ProcessContext,
-    hook_ctx: "HookContext",
-) -> None:
-    """Consume resolved deliverable paths and invoke the callback."""
-    while True:
-        absolute, display = await queue.get()
-        try:
-            try:
-                text = await host.fetch_deliverable_text(absolute)
-            except UnicodeDecodeError:
-                ctx.report_progress(
-                    None,
-                    f"Deliverable {display}: not valid UTF-8, skipping callback",
-                )
-                continue
-            except FileNotFoundError:
-                ctx.report_progress(None, f"Deliverable {display}: not found")
-                continue
-            except Exception as exc:  # noqa: BLE001
-                ctx.report_progress(
-                    None,
-                    f"Deliverable {display}: fetch failed: {exc!r}, skipping",
-                )
-                continue
-
-            if callback is None:
-                continue
-            try:
-                await callback(hook_ctx, display, text)
-            except Exception as exc:  # noqa: BLE001
-                ctx.report_progress(
-                    None, f"on_deliverable callback raised: {exc!r}"
-                )
-        finally:
-            queue.task_done()
-
-
-async def _await_subprocess_exit(host: Host, process: LaunchedProcess, out: list) -> None:
-    """Wait for the opencode process to exit and record its exit code."""
-    # LocalHost's pid_like is an asyncio.subprocess.Process whose wait() returns int.
-    # RemoteHost's pid_like is an asyncssh.SSHClientProcess whose wait() returns
-    # an SSHCompletedProcess with .exit_status.
-    proc = process.pid_like
-    if not hasattr(proc, "wait"):
-        raise TypeError(f"LaunchedProcess.pid_like {proc!r} does not expose .wait()")
-    result = await proc.wait()  # type: ignore[union-attr]
-    if hasattr(result, "exit_status"):
-        out.append(result.exit_status)
-    else:
-        # asyncio case: result is already the exit code (int).
-        out.append(result)
-
-
-async def _watch_cancellation(ctx: ProcessContext) -> bool:
-    """Return True when the process is cancelled."""
-    while ctx.should_continue():
-        await asyncio.sleep(0.1)
-    return True
-
-
 async def _rotate_optio_log(host: Host) -> None:
     """Append the restored optio.log to optio.log.old, then truncate optio.log.
 
@@ -570,7 +447,7 @@ async def _rotate_optio_log(host: Host) -> None:
     log_abs = f"{workdir}/optio.log"
     old_abs = f"{workdir}/optio.log.old"
     try:
-        current = await host.fetch_deliverable_text(log_abs)
+        current = (await host.fetch_bytes_from_host(log_abs)).decode("utf-8")
     except FileNotFoundError:
         current = ""
     if not current:
@@ -579,7 +456,7 @@ async def _rotate_optio_log(host: Host) -> None:
         await host.write_text("optio.log", "")
         return
     try:
-        existing_old = await host.fetch_deliverable_text(old_abs)
+        existing_old = (await host.fetch_bytes_from_host(old_abs)).decode("utf-8")
     except FileNotFoundError:
         existing_old = ""
     await host.write_text("optio.log.old", existing_old + current)

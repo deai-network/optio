@@ -15,7 +15,7 @@ from optio_core.models import TaskInstance
 from optio_core.store import upsert_process
 
 from optio_opencode import OpencodeTaskConfig
-from optio_opencode.paths import local_taskdir
+from optio_host.paths import task_dir
 from optio_opencode.session import run_opencode_session
 from optio_opencode.snapshots import (
     SESSION_SNAPSHOT_COLLECTION_SUFFIX,
@@ -43,35 +43,53 @@ def task_root(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _patch_localhost_to_use_fake(monkeypatch):
-    """Mirror test_session_local.py: redirect LocalHost at fake_opencode.py."""
-    import optio_opencode.host as host_mod
-    orig_init = host_mod.LocalHost.__init__
-
-    def _init(self, taskdir, opencode_cmd=None):
-        return orig_init(
-            self,
-            taskdir=taskdir,
-            opencode_cmd=[sys.executable, FAKE_OPENCODE],
-        )
-
-    monkeypatch.setattr(host_mod.LocalHost, "__init__", _init)
-
-
-@pytest.fixture(autouse=True)
 def _supply_scenario(monkeypatch):
-    """Inject `--scenario happy` into LocalHost.launch_opencode."""
-    import optio_opencode.host as host_mod
-    orig_launch = host_mod.LocalHost.launch_opencode
+    """Substitute fake_opencode.py for the real opencode binary.
+
+    Mirrors the substitution in test_session_local.py — see comments
+    there for why this is the right shape post-host-split.
+    """
+    from optio_opencode import host_actions
+    orig_launch = host_actions.launch_opencode
     holder = {"name": "happy"}
 
-    async def _launch(self, password, ready_timeout_s, extra_args=None, env=None):
+    async def _launch(host, password, *, ready_timeout_s=30.0, opencode_executable="opencode"):
+        del opencode_executable
         return await orig_launch(
-            self, password, ready_timeout_s,
-            extra_args=["--scenario", holder["name"]],
-            env=env,
+            host, password,
+            ready_timeout_s=ready_timeout_s,
+            opencode_executable=(
+                f"{sys.executable} {FAKE_OPENCODE} --scenario {holder['name']}"
+            ),
         )
-    monkeypatch.setattr(host_mod.LocalHost, "launch_opencode", _launch)
+    monkeypatch.setattr(host_actions, "launch_opencode", _launch)
+
+    async def _ensure(host, install_if_missing):
+        return None
+    monkeypatch.setattr(host_actions, "ensure_opencode_installed", _ensure)
+
+    async def _version(host, *, opencode_executable="opencode"):
+        return None
+    monkeypatch.setattr(host_actions, "opencode_version", _version)
+
+    orig_export = host_actions.opencode_export
+
+    async def _export(host, opencode_db_path, session_id, *, opencode_executable="opencode"):
+        return await orig_export(
+            host, opencode_db_path, session_id,
+            opencode_executable=f"{sys.executable} {FAKE_OPENCODE}",
+        )
+    monkeypatch.setattr(host_actions, "opencode_export", _export)
+
+    orig_import = host_actions.opencode_import
+
+    async def _import(host, opencode_db_path, session_json, *, opencode_executable="opencode"):
+        return await orig_import(
+            host, opencode_db_path, session_json,
+            opencode_executable=f"{sys.executable} {FAKE_OPENCODE}",
+        )
+    monkeypatch.setattr(host_actions, "opencode_import", _import)
+
     return holder
 
 
@@ -118,7 +136,7 @@ async def test_terminal_flow_captures_snapshot_and_wipes_workdir(mongo_db, task_
     proc = await mongo_db["test_processes"].find_one({"processId": pid})
     assert proc["hasSavedState"] is True
 
-    wd = Path(local_taskdir(pid)) / "workdir"
+    wd = Path(task_dir(ssh=None, process_id=pid, consumer_name="optio-opencode")) / "workdir"
     assert not wd.exists() or not any(wd.iterdir())
 
 

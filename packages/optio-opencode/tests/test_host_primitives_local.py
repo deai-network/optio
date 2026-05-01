@@ -1,11 +1,10 @@
 """Tests for LocalHost.run_command / put_file_to_host / fetch_bytes_from_host / resolve_host_home."""
 
 import os
-import sys
 
 import pytest
 
-from optio_opencode.host import LocalHost
+from optio_host.host import LocalHost
 
 
 pytestmark = pytest.mark.asyncio
@@ -13,7 +12,7 @@ pytestmark = pytest.mark.asyncio
 
 @pytest.fixture
 def local_host(tmp_workdir):
-    return LocalHost(taskdir=tmp_workdir, opencode_cmd=[sys.executable, "-c", "pass"])
+    return LocalHost(taskdir=tmp_workdir)
 
 
 async def test_run_command_captures_stdout(local_host):

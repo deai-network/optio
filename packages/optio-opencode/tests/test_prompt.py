@@ -64,7 +64,7 @@ def test_compose_agents_md_omits_resume_section_when_supports_resume_false():
 
 def test_compose_agents_md_renders_default_excludes_when_none():
     """workdir_exclude=None → prompt mentions DEFAULT_WORKDIR_EXCLUDES patterns."""
-    from optio_opencode.archive import DEFAULT_WORKDIR_EXCLUDES
+    from optio_host.archive import DEFAULT_WORKDIR_EXCLUDES
     out = _compose(workdir_exclude=None, supports_resume=True)
     for pattern in DEFAULT_WORKDIR_EXCLUDES:
         assert f"`{pattern}`" in out
@@ -81,7 +81,7 @@ def test_compose_agents_md_resume_section_between_deliverables_and_task():
 
 def test_compose_agents_md_renders_custom_excludes():
     """workdir_exclude=[...] → prompt lists those patterns and NOT defaults."""
-    from optio_opencode.archive import DEFAULT_WORKDIR_EXCLUDES
+    from optio_host.archive import DEFAULT_WORKDIR_EXCLUDES
     out = _compose(workdir_exclude=["custom_a", "custom_b"])
     assert "`custom_a`" in out
     assert "`custom_b`" in out

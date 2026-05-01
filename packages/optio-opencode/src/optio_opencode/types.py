@@ -1,42 +1,20 @@
-"""Public data types for optio-opencode consumers."""
+"""Public data types for optio-opencode consumers.
 
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
-
-if TYPE_CHECKING:
-    from optio_opencode.hook_context import HookContext
-
-
-# DeliverableCallback receives the same HookContext as before/after_execute,
-# so callbacks no longer need to close over ctx. Breaking change vs. the
-# pre-hooks signature `Callable[[str, str], Awaitable[None]]`.
-DeliverableCallback = Callable[["HookContext", str, str], Awaitable[None]]
-"""Consumer callback invoked per fetched DELIVERABLE.
-
-Arguments: ``(hook_ctx, deliverable_path, decoded_text)``.
-
-``deliverable_path`` is the path of the deliverable file relative to
-``<workdir>/deliverables/`` (e.g. ``"summary.md"`` or
-``"sub/summary.md"``). It is the same value that appears in the
-auto-emitted ``"Deliverable: <path>"`` progress message.
+The generic ``DeliverableCallback`` / ``HookCallback`` types and
+``SSHConfig`` are owned by ``optio-host`` (since they describe the
+log/deliverables protocol and SSH config in general). This module
+re-exports them so existing ``from optio_opencode.types import ...``
+imports keep working unchanged.
 """
 
+from dataclasses import dataclass, field
+from typing import Any
 
-HookCallback = Callable[["HookContext"], Awaitable[None]]
-"""Hook callback receiving a HookContext. Used by before_execute and after_execute."""
+from optio_host.protocol.session import DeliverableCallback, HookCallback
+from optio_host.types import SSHConfig
 
 
-@dataclass
-class SSHConfig:
-    """SSH connection parameters for remote-mode optio-opencode.
-
-    Known-hosts verification is disabled in MVP; asyncssh's
-    ``known_hosts=None`` equivalent is used by the host layer.
-    """
-    host: str
-    user: str
-    key_path: str
-    port: int = 22
+__all__ = ["DeliverableCallback", "HookCallback", "SSHConfig", "OpencodeTaskConfig"]
 
 
 @dataclass
