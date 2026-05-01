@@ -188,7 +188,7 @@ async def test_error_triggers_failure(ctx_and_captures, _supply_scenario):
 async def test_subprocess_exit_before_done_is_failure(ctx_and_captures, _supply_scenario):
     ctx, _cap, _ = ctx_and_captures
     _supply_scenario["name"] = "no_done_then_exit"
-    with pytest.raises(RuntimeError, match=r"exited with code 0 before DONE"):
+    with pytest.raises(RuntimeError, match=r"body returned before DONE"):
         await run_opencode_session(ctx, _config("no_done_then_exit"))
 
 

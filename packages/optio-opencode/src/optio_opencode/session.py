@@ -91,6 +91,40 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             ctx._db, prefix=ctx._prefix, process_id=ctx.process_id,
         )
 
+    # Resume restore must run BEFORE the protocol session begins, so the
+    # driver's tail_task does not subscribe to the restored stale optio.log
+    # (which contains last run's DONE / ERROR events). The body below sees
+    # ``resuming`` already decided.
+    resuming = snapshot is not None
+    if resuming:
+        await host.connect()
+        await host.setup_workdir()
+        await host.remove_file(opencode_db)
+        try:
+            await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
+            session_bytes = await _read_blob_bytes(ctx, snapshot["sessionBlobId"])
+            await host_actions.opencode_import(
+                host, opencode_db, session_bytes,
+                opencode_executable=opencode_exec,
+            )
+            # Move the restored log channel out of the way BEFORE the
+            # protocol driver subscribes its tail. The snapshot tar
+            # includes optio.log from the previous run; without rotation,
+            # ``tail -F -n +1`` would re-emit every old DELIVERABLE /
+            # DONE / ERROR line and the resumed process would terminate
+            # within seconds of launch.  Preserve the historical content
+            # by appending it to optio.log.old.
+            await _rotate_optio_log(host)
+            preserved_session_id = snapshot["sessionId"]
+        except Exception:
+            _LOG.exception(
+                "resume restore failed; falling back to fresh-start path "
+                "(Mongo blob preserved for inspection)",
+            )
+            await host.remove_file(opencode_db)
+            resuming = False
+            preserved_session_id = None
+
     async def _opencode_body(host: Host, hook_ctx: HookContext) -> None:
         """Opencode-specific body that runs inside the protocol driver.
 
@@ -99,41 +133,13 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         """
         nonlocal launched_handle, opencode_exec, session_id, preserved_session_id
 
-        # The protocol driver has already created the workdir, deliverables/
-        # subdirectory and an empty optio.log.  Ensure the opencode db from a
-        # prior run (if any) is gone before we either restore a snapshot or
-        # start fresh.
-        await host.remove_file(opencode_db)
-
-        resuming = snapshot is not None
-        if resuming:
-            try:
-                await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
-                session_bytes = await _read_blob_bytes(ctx, snapshot["sessionBlobId"])
-                await host_actions.opencode_import(
-                    host, opencode_db, session_bytes,
-                    opencode_executable=opencode_exec,
-                )
-                # Move the restored log channel out of the way before tail
-                # subscribes. The snapshot tar includes optio.log from the
-                # previous run; without this `tail -F -n +1` would re-emit
-                # every old DELIVERABLE / DONE / ERROR line and the resumed
-                # process would terminate within seconds of launch (see
-                # LocalHost.tail_file's "-n +1" choice). We preserve the
-                # historical content by appending it to optio.log.old so
-                # nothing is lost across consecutive resumes.
-                await _rotate_optio_log(host)
-                preserved_session_id = snapshot["sessionId"]
-            except Exception:
-                _LOG.exception(
-                    "resume restore failed; falling back to fresh-start path "
-                    "(Mongo blob preserved for inspection)",
-                )
-                await host.remove_file(opencode_db)
-                resuming = False
-                preserved_session_id = None
-
         if not resuming:
+            # Fresh start: the protocol driver has already created the
+            # workdir, deliverables/ subdir, and empty optio.log. Ensure
+            # any stale opencode db from a prior crashed run is gone, then
+            # write the fresh AGENTS.md and opencode.json that the agent
+            # consumes.
+            await host.remove_file(opencode_db)
             await host.write_text(
                 "AGENTS.md",
                 compose_agents_md(
@@ -207,6 +213,13 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                 host, config.install_if_missing,
             )
 
+        # --- before_execute hook ----------------------------------------
+        # Fires after the binary is in place and before opencode launches,
+        # so consumer hooks can ship per-task files via hook_ctx.copy_file
+        # and run setup commands via hook_ctx.run_on_host.
+        if config.before_execute is not None:
+            await config.before_execute(hook_ctx)
+
         # --- launch ------------------------------------------------------
         version = await host_actions.opencode_version(
             host, opencode_executable=opencode_exec,
@@ -273,13 +286,19 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
 
     # --- run the protocol session -----------------------------------------
     session_error: BaseException | None = None
-    await host.connect()
+    if not resuming:
+        # Resume path already connected above to do the restore.
+        await host.connect()
     try:
+        # before_execute is wired manually inside _opencode_body (after
+        # install, before launch) per opencode's documented timing.
+        # after_execute is left to the protocol driver — it fires after
+        # the body terminates and before the outer finally runs the
+        # snapshot capture, matching the documented contract.
         await run_log_protocol_session(
             host, ctx,
             body=_opencode_body,
             on_deliverable=config.on_deliverable,
-            before_execute=config.before_execute,
             after_execute=config.after_execute,
         )
     except _SessionFailed as fail:

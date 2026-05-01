@@ -140,28 +140,34 @@ async def run_log_protocol_session(
     await host.run_command(f"mkdir -p {deliverables_dir}")
     await host.write_text("optio.log", "")
 
-    if before_execute is not None:
-        await before_execute(hook_ctx)
-
-    deliverable_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue(
-        maxsize=DELIVERABLE_QUEUE_BOUND,
-    )
-    done_flag = asyncio.Event()
-    error_flag: list[str | None] = []  # [message] or [] if not fired
-
-    fetch_task = asyncio.create_task(
-        _deliverable_fetch_loop(host, on_deliverable, deliverable_queue, ctx, hook_ctx),
-    )
-    tail_task = asyncio.create_task(
-        _tail_and_dispatch(host, ctx, deliverable_queue, done_flag, error_flag),
-    )
-    body_task = asyncio.create_task(body(host, hook_ctx))
-    cancel_task = asyncio.create_task(_watch_cancellation(ctx))
-
     session_error: BaseException | None = None
     cancelled = False
+    fetch_task: asyncio.Task | None = None
+    tail_task: asyncio.Task | None = None
+    body_task: asyncio.Task | None = None
+    cancel_task: asyncio.Task | None = None
 
     try:
+        # before_execute runs inside the try so a failure here still
+        # triggers the after_execute cleanup in the outer finally.
+        if before_execute is not None:
+            await before_execute(hook_ctx)
+
+        deliverable_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue(
+            maxsize=DELIVERABLE_QUEUE_BOUND,
+        )
+        done_flag = asyncio.Event()
+        error_flag: list[str | None] = []  # [message] or [] if not fired
+
+        fetch_task = asyncio.create_task(
+            _deliverable_fetch_loop(host, on_deliverable, deliverable_queue, ctx, hook_ctx),
+        )
+        tail_task = asyncio.create_task(
+            _tail_and_dispatch(host, ctx, deliverable_queue, done_flag, error_flag),
+        )
+        body_task = asyncio.create_task(body(host, hook_ctx))
+        cancel_task = asyncio.create_task(_watch_cancellation(ctx))
+
         done, _pending = await asyncio.wait(
             {tail_task, body_task, cancel_task},
             return_when=asyncio.FIRST_COMPLETED,
@@ -192,13 +198,15 @@ async def run_log_protocol_session(
         raise
 
     finally:
-        for t in (tail_task, body_task, cancel_task, fetch_task):
+        active_tasks = [
+            t for t in (tail_task, body_task, cancel_task, fetch_task)
+            if t is not None
+        ]
+        for t in active_tasks:
             if not t.done():
                 t.cancel()
-        await asyncio.gather(
-            tail_task, body_task, cancel_task, fetch_task,
-            return_exceptions=True,
-        )
+        if active_tasks:
+            await asyncio.gather(*active_tasks, return_exceptions=True)
 
         if after_execute is not None:
             try:

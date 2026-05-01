@@ -105,6 +105,7 @@ def test_make_target_rejects_unsupported():
 async def test_local_host_detect_target_matches_platform(tmp_workdir):
     from optio_opencode import host_actions
     host = LocalHost(taskdir=tmp_workdir)
+    await host.setup_workdir()  # detect_target uses host.run_command (cwd=workdir)
     t = await host_actions.detect_target(host)
     # The combination must be supported.
     assert is_supported(t.os, t.arch), (t.os, t.arch)
