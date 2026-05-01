@@ -27,6 +27,16 @@ async def test_setup_workdir_creates_workdir(local_host):
     # protocol session driver in optio_host.protocol.session.
 
 
+@pytest.mark.asyncio
+async def test_setup_workdir_sets_taskdir_and_workdir_mode_0o700(local_host):
+    """taskdir + workdir must be operator-private (0o700) so that opencode.db
+    (transcript) and workdir/.env are not readable by other UNIX users."""
+    await local_host.setup_workdir()
+    import os
+    assert (os.stat(local_host.taskdir).st_mode & 0o777) == 0o700
+    assert (os.stat(local_host.workdir).st_mode & 0o777) == 0o700
+
+
 async def test_write_text_writes_utf8(local_host):
     await local_host.setup_workdir()
     await local_host.write_text("AGENTS.md", "héllo")

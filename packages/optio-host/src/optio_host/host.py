@@ -172,8 +172,16 @@ class LocalHost:
             self._tail_proc = None
 
     async def setup_workdir(self) -> None:
-        """Create the workdir directory if it does not exist."""
+        """Create the workdir directory if it does not exist.
+
+        Sets taskdir + workdir to mode 0o700 so that only the engine UID
+        can traverse them. opencode.db (session transcript) and
+        workdir/.env are both inside taskdir and inherit this protection.
+        """
+        os.makedirs(self.taskdir, exist_ok=True)
+        os.chmod(self.taskdir, 0o700)
         os.makedirs(self.workdir, exist_ok=True)
+        os.chmod(self.workdir, 0o700)
 
     async def write_text(self, relpath: str, content: str) -> None:
         full = os.path.join(self.workdir, relpath)
