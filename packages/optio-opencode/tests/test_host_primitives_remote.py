@@ -71,6 +71,7 @@ async def sshd():
 @pytest_asyncio.fixture
 async def remote_host(sshd):
     """A connected RemoteHost with a stable, fresh taskdir."""
+    import uuid as _uuid
     h = RemoteHost(
         ssh_config=SSHConfig(
             host=sshd["host"],
@@ -78,6 +79,7 @@ async def remote_host(sshd):
             key_path=sshd["key_path"],
             port=sshd["port"],
         ),
+        taskdir=f"/tmp/optio-host-test-{_uuid.uuid4().hex[:12]}",
     )
     await h.connect()
     await h.setup_workdir()

@@ -95,18 +95,6 @@ class Host(Protocol):
         aggressive=True: SIGKILL immediately; do not wait.
         """
 
-    async def fetch_deliverable_text(self, absolute_path: str) -> str:
-        """Fetch ``absolute_path`` and return the UTF-8 decoded contents.
-
-        Raises ``UnicodeDecodeError`` on non-UTF-8 content; raises
-        ``FileNotFoundError`` on missing file.
-
-        NB: this method exists transiently while ``run_log_protocol_session``'s
-        deliverable-fetch loop still calls it. Equivalent free helper
-        ``optio_host.protocol.session.fetch_deliverable_text(host, path)``
-        is the going-forward API; see spec section 2.
-        """
-
     async def remove_file(self, path: str) -> None: ...
 
     async def put_file_to_host(
@@ -163,8 +151,9 @@ class LocalHost:
     taskdir: str
 
     def __init__(self, taskdir: str):
-        # taskdir is the per-process directory that holds workdir + opencode.db.
-        # workdir is always taskdir/workdir.
+        # taskdir is the per-process directory that holds workdir plus
+        # any consumer-specific sidecars (e.g. opencode.db). workdir is
+        # always taskdir/workdir.
         self.taskdir = taskdir
         self.workdir = os.path.join(taskdir, "workdir")
         self._tail_proc: asyncio.subprocess.Process | None = None
@@ -202,9 +191,9 @@ class LocalHost:
         # our workdir is always fresh (the protocol driver creates the log
         # empty just before this) so there's nothing to reprocess, and
         # `-n 0` has a race: lines written to the log before tail
-        # subscribes (e.g. opencode eagerly appending STATUS right after
-        # launch) are silently skipped.  `-n +1` + always-empty initial
-        # log gives us at-least-once delivery.
+        # subscribes (e.g. the consumer eagerly appending STATUS right
+        # after launch) are silently skipped.  `-n +1` + always-empty
+        # initial log gives us at-least-once delivery.
         self._tail_proc = await asyncio.create_subprocess_exec(
             "tail", "-F", "-n", "+1", absolute_path,
             stdout=asyncio.subprocess.PIPE,
@@ -217,16 +206,10 @@ class LocalHost:
                 break
             yield raw.decode("utf-8", errors="replace").rstrip("\r\n")
 
-    async def fetch_deliverable_text(self, absolute_path: str) -> str:
-        # Read bytes first so we can raise UnicodeDecodeError on bad content.
-        with open(absolute_path, "rb") as fh:
-            data = fh.read()
-        return data.decode("utf-8")
-
     async def cleanup_taskdir(self, aggressive: bool) -> None:
         # On local filesystems rmtree is fast enough that aggressive vs. not
-        # makes no difference. Wipes the whole per-task dir (workdir +
-        # opencode.db + any stray files opencode left next to the DB).
+        # makes no difference. Wipes the whole per-task dir (workdir plus
+        # any consumer-specific sidecars).
         if os.path.exists(self.taskdir):
             shutil.rmtree(self.taskdir, ignore_errors=True)
 
@@ -446,8 +429,6 @@ def _sha256_of_file(path: str) -> str:
 
 # --- RemoteHost -----------------------------------------------------
 
-import uuid
-
 import asyncssh
 
 from optio_host.types import SSHConfig
@@ -465,21 +446,14 @@ class RemoteHost:
     workdir: str
     taskdir: str
 
-    def __init__(
-        self,
-        ssh_config: SSHConfig,
-        taskdir: str | None = None,
-    ):
+    def __init__(self, ssh_config: SSHConfig, taskdir: str):
         self._ssh = ssh_config
-        # taskdir is the per-process directory that holds workdir + opencode.db.
-        # Defaults to a legacy random /tmp path when not supplied so existing
-        # callers (test_session_remote.py) keep working. workdir is always
-        # taskdir/workdir.
-        self.taskdir = taskdir or f"/tmp/optio-opencode-{uuid.uuid4().hex[:12]}"
+        # taskdir is the per-process directory that holds workdir plus
+        # any consumer-specific sidecars. workdir is always taskdir/workdir.
+        self.taskdir = taskdir
         self.workdir = f"{self.taskdir}/workdir"
         self._conn: asyncssh.SSHClientConnection | None = None
         self._sftp: asyncssh.SFTPClient | None = None
-        self._launch_proc: asyncssh.SSHClientProcess | None = None
         self._tail_proc: asyncssh.SSHClientProcess | None = None
         self._forward: asyncssh.SSHListener | None = None
         self._host_home_cache: str | None = None
@@ -543,19 +517,6 @@ class RemoteHost:
         )
         async for raw in self._tail_proc.stdout:
             yield raw.rstrip("\r\n")
-
-    async def fetch_deliverable_text(self, absolute_path: str) -> str:
-        assert self._sftp is not None
-        try:
-            async with self._sftp.open(absolute_path, "rb") as fh:
-                data = await fh.read()
-        except asyncssh.SFTPNoSuchFile as exc:
-            # Honor the Host protocol contract: missing file → FileNotFoundError.
-            # asyncssh raises its own SFTPNoSuchFile which is NOT a subclass of
-            # OSError / FileNotFoundError, so callers expecting the contract
-            # would otherwise see this exception bubble out unhandled.
-            raise FileNotFoundError(absolute_path) from exc
-        return data.decode("utf-8")
 
     async def cleanup_taskdir(self, aggressive: bool) -> None:
         if self._conn is None:

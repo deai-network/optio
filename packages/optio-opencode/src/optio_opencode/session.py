@@ -447,7 +447,7 @@ async def _rotate_optio_log(host: Host) -> None:
     log_abs = f"{workdir}/optio.log"
     old_abs = f"{workdir}/optio.log.old"
     try:
-        current = await host.fetch_deliverable_text(log_abs)
+        current = (await host.fetch_bytes_from_host(log_abs)).decode("utf-8")
     except FileNotFoundError:
         current = ""
     if not current:
@@ -456,7 +456,7 @@ async def _rotate_optio_log(host: Host) -> None:
         await host.write_text("optio.log", "")
         return
     try:
-        existing_old = await host.fetch_deliverable_text(old_abs)
+        existing_old = (await host.fetch_bytes_from_host(old_abs)).decode("utf-8")
     except FileNotFoundError:
         existing_old = ""
     await host.write_text("optio.log.old", existing_old + current)

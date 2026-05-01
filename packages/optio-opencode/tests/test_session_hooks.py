@@ -265,10 +265,12 @@ async def test_on_deliverable_receives_hook_ctx_and_can_use_host_primitives(tmp_
     queue = asyncio.Queue()
     await queue.put(("/wd/deliverables/x.txt", "x.txt"))
 
-    # Patch host.fetch_deliverable_text to return canned content.
+    # Patch host.fetch_bytes_from_host to return canned content; the
+    # free fetch_deliverable_text helper used by _deliverable_fetch_loop
+    # decodes those bytes as UTF-8.
     async def _fake_fetch(_path):
-        return "deliverable text"
-    host.fetch_deliverable_text = _fake_fetch  # type: ignore[attr-defined]
+        return b"deliverable text"
+    host.fetch_bytes_from_host = _fake_fetch  # type: ignore[attr-defined]
 
     hook_ctx = HookContext(ctx, host)
     task = asyncio.create_task(

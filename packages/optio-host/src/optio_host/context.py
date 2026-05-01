@@ -1,4 +1,4 @@
-"""HookContext: ProcessContext + host primitives for opencode-task hooks."""
+"""HookContext: ProcessContext + host primitives for task-body hooks."""
 
 from __future__ import annotations
 

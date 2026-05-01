@@ -285,7 +285,7 @@ async def _deliverable_fetch_loop(
         absolute, display = await queue.get()
         try:
             try:
-                text = await host.fetch_deliverable_text(absolute)
+                text = await fetch_deliverable_text(host, absolute)
             except UnicodeDecodeError:
                 ctx.report_progress(
                     None,
