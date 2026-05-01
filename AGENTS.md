@@ -49,6 +49,36 @@ Dependencies: Python requires `motor>=3.3.0`, `apscheduler>=4.0.0a5`, `quaestor`
 
 ---
 
+## Debug tools
+
+### MongoDB CLI
+
+`mongosh` and `mongodump` may not be installed on the host. Do NOT search for
+them or fail back to alternative install paths — use the tools shipped inside
+the running MongoDB Docker container instead. Container name varies by
+docker-compose project (e.g. `optio-demo-mongodb-1` from
+`packages/optio-demo/docker-compose.yml`, or `excavator-mongodb-1` when
+running against the excavator stack); resolve via `docker ps --format
+'{{.Names}}' | grep mongo`.
+
+```bash
+# One-off query:
+docker exec <mongo-container> mongosh --quiet <db> \
+  --eval 'db.<collection>.findOne({...})'
+
+# Interactive shell:
+docker exec -it <mongo-container> mongosh <db>
+
+# Dump:
+docker exec <mongo-container> mongodump --db <db> --out /data/dump
+docker cp <mongo-container>:/data/dump /tmp/dump
+```
+
+If `docker ps` does not show a mongo container, bring it up via the relevant
+package's `docker-compose.yml` (`packages/optio-demo` for development).
+
+---
+
 ## Python: optio-core
 
 ### Public API
