@@ -116,22 +116,24 @@ async def test_capture_writes_through_session_blob_encrypt(monkeypatch):
     )
 
 
-@pytest.mark.asyncio
-async def test_resume_decrypt_hook_invocation_smoke(tmp_path):
-    """Smoke: the decrypt hook configured on OpencodeTaskConfig is invoked on
-    raw blob bytes during resume. Asserted via direct call shape rather than
-    a full run_opencode_session integration (which is exercised by
-    test_session_resume.py with the default identity transform)."""
-    from optio_opencode.types import OpencodeTaskConfig
+def test_resume_body_invokes_decrypt_hook_in_source():
+    """Belt-and-braces: confirm the resume body in session.py actually
+    invokes the decrypt hook between reading the blob and importing the
+    session. Catches regressions that drop the decrypt() call.
 
-    encrypted_blob = _reverse(b"recovered-session-bytes")
-
-    cfg = OpencodeTaskConfig(
-        consumer_instructions="x",
-        session_blob_encrypt=_reverse,
-        session_blob_decrypt=_reverse,
+    This is a source-string check, not a behavioral one, because the
+    integration-level fake-driven test would re-implement the resume
+    body and miss the same regression. Future end-to-end coverage in
+    excavator's T7 will exercise the full wire-up with real callables."""
+    import inspect
+    from optio_opencode import session as session_mod
+    src = inspect.getsource(session_mod.run_opencode_session)
+    assert "decrypt = config.session_blob_decrypt or (lambda b: b)" in src, (
+        "resume body must invoke config.session_blob_decrypt; if this assertion "
+        "fires, the wiring at session.py around the resume restore block was "
+        "removed or refactored. See T4 of the credential-plaintext-containment plan."
     )
-
-    decrypted = cfg.session_blob_decrypt(encrypted_blob)
-    assert decrypted == b"recovered-session-bytes"
-    assert decrypted not in encrypted_blob
+    assert "decrypt(session_bytes_raw)" in src, (
+        "resume body must apply decrypt() to the raw blob bytes before "
+        "passing them to opencode_import. See T4 of the plan."
+    )
