@@ -496,7 +496,10 @@ class RemoteHost:
     async def setup_workdir(self) -> None:
         """Create the workdir directory if it does not exist."""
         assert self._conn is not None and self._sftp is not None
-        await self._conn.run(f"mkdir -p {shlex.quote(self.workdir)}", check=True)
+        qt = shlex.quote(self.taskdir)
+        qw = shlex.quote(self.workdir)
+        await self._conn.run(f"mkdir -p {qw}", check=True)
+        await self._conn.run(f"chmod 700 {qt} {qw}", check=True)
 
     async def write_text(self, relpath: str, content: str) -> None:
         assert self._sftp is not None

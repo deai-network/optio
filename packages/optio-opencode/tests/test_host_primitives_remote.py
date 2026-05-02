@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import shlex
 import shutil
 import subprocess
 import time
@@ -227,3 +228,15 @@ async def test_remote_resolve_host_home_resolves_and_caches(remote_host):
     # Second call uses cache; just verifies same return value.
     home2 = await remote_host.resolve_host_home()
     assert home2 == home1
+
+
+@pytest.mark.asyncio
+async def test_remote_setup_workdir_sets_taskdir_and_workdir_mode_0o700(remote_host: RemoteHost):
+    """Same invariant as the local test, asserted via stat over SSH."""
+    await remote_host.setup_workdir()
+    qt = shlex.quote(remote_host.taskdir)
+    qw = shlex.quote(remote_host.workdir)
+    res_t = await remote_host._conn.run(f"stat -c %a {qt}", check=True)
+    res_w = await remote_host._conn.run(f"stat -c %a {qw}", check=True)
+    assert res_t.stdout.strip() == "700", f"taskdir mode is {res_t.stdout!r}"
+    assert res_w.stdout.strip() == "700", f"workdir mode is {res_w.stdout!r}"
