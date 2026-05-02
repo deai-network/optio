@@ -8,7 +8,7 @@ imports keep working unchanged.
 """
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from optio_host.protocol.session import DeliverableCallback, HookCallback
 from optio_host.types import SSHConfig
@@ -29,3 +29,20 @@ class OpencodeTaskConfig:
     supports_resume: bool = True
     before_execute: HookCallback | None = None
     after_execute: HookCallback | None = None
+    # Optional pair of synchronous bytes->bytes transforms wrapping the
+    # opencode session JSON blob at GridFS write/read. When both are set,
+    # the snapshot session blob is encrypted at rest. When both are None
+    # (default), plaintext is used (backward-compatible). Setting only one
+    # raises a config error: asymmetric usage is always a mistake.
+    session_blob_encrypt: Callable[[bytes], bytes] | None = None
+    session_blob_decrypt: Callable[[bytes], bytes] | None = None
+
+    def __post_init__(self) -> None:
+        e = self.session_blob_encrypt is not None
+        d = self.session_blob_decrypt is not None
+        if e != d:
+            raise ValueError(
+                "OpencodeTaskConfig: session_blob_encrypt and "
+                "session_blob_decrypt must be set together (both callables) "
+                "or both left as None; one without the other is a config error."
+            )
