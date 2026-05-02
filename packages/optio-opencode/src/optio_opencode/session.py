@@ -24,7 +24,7 @@ import secrets
 import shlex
 import tempfile
 from datetime import datetime, timezone
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 
 from optio_core.context import ProcessContext
 from optio_core.models import BasicAuth, TaskInstance
@@ -102,7 +102,9 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         await host.remove_file(opencode_db)
         try:
             await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
-            session_bytes = await _read_blob_bytes(ctx, snapshot["sessionBlobId"])
+            session_bytes_raw = await _read_blob_bytes(ctx, snapshot["sessionBlobId"])
+            decrypt = config.session_blob_decrypt or (lambda b: b)
+            session_bytes = decrypt(session_bytes_raw)
             await host_actions.opencode_import(
                 host, opencode_db, session_bytes,
                 opencode_executable=opencode_exec,
@@ -116,7 +118,18 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             # by appending it to optio.log.old.
             await _rotate_optio_log(host)
             preserved_session_id = snapshot["sessionId"]
-        except Exception:
+        except Exception as resume_exc:
+            # If the failure was the session-blob decrypt hook raising,
+            # this indicates the snapshot was tampered with or the
+            # consumer's keypair changed. Fail loud — silently dropping
+            # to fresh-start would mask the security-relevant signal.
+            if "decrypt" in repr(resume_exc).lower() and "blob" in repr(resume_exc).lower():
+                _LOG.error(
+                    "resume restore failed inside session_blob_decrypt; "
+                    "refusing to fall through to fresh-start. Operator must "
+                    "investigate the snapshot blob.",
+                )
+                raise
             _LOG.exception(
                 "resume restore failed; falling back to fresh-start path "
                 "(Mongo blob preserved for inspection)",
@@ -331,6 +344,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                     end_state="cancelled" if cancelled else "done",
                     workdir_exclude=config.workdir_exclude,
                     opencode_executable=opencode_exec,
+                    session_blob_encrypt=config.session_blob_encrypt,
                 )
             except Exception:  # noqa: BLE001
                 _LOG.exception(
@@ -379,16 +393,21 @@ async def _capture_snapshot(
     end_state: str,
     workdir_exclude: list[str] | None,
     opencode_executable: str = "opencode",
+    session_blob_encrypt: "Callable[[bytes], bytes] | None" = None,
 ) -> None:
     session_json = await host_actions.opencode_export(
         host, opencode_db, session_id,
         opencode_executable=opencode_executable,
     )
-    expected_len = len(session_json)
+    expected_len_plain = len(session_json)
     _LOG.info(
-        "snapshot capture: session_json bytes=%d session_id=%s",
-        expected_len, session_id,
+        "snapshot capture: session_json plaintext bytes=%d session_id=%s",
+        expected_len_plain, session_id,
     )
+
+    encrypt = session_blob_encrypt or (lambda b: b)
+    session_blob_payload = encrypt(session_json)
+    expected_len_payload = len(session_blob_payload)
 
     async with ctx.store_blob("workdir") as wwriter:
         async for chunk in host.archive_workdir(workdir_exclude):
@@ -396,18 +415,16 @@ async def _capture_snapshot(
         workdir_blob_id = wwriter.file_id
 
     async with ctx.store_blob("session") as swriter:
-        await swriter.write(session_json)
+        await swriter.write(session_blob_payload)
         session_blob_id = swriter.file_id
         # Belt-and-braces: GridIn._position is the byte count actually
-        # written so far. After a single write of `session_json`, this
-        # must equal len(session_json). Mismatch indicates the write was
-        # truncated (we hit this once when asyncssh's stdout collection
-        # was cut short by cancellation; see RemoteHost.opencode_export).
+        # written so far. Compare against the encrypted payload length
+        # (NOT the plaintext length) — short-write would be a real failure.
         written = getattr(swriter, "_position", None)
-        if written is not None and written != expected_len:
+        if written is not None and written != expected_len_payload:
             raise RuntimeError(
                 f"snapshot session blob short-write: expected "
-                f"{expected_len} bytes, GridIn._position is {written}"
+                f"{expected_len_payload} bytes, GridIn._position is {written}"
             )
 
     await insert_snapshot(
