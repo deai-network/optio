@@ -836,7 +836,6 @@ class Optio:
 
         if current_state == "scheduled":
             # Not yet running — go directly to cancelled.
-            from datetime import datetime, timezone
             now = datetime.now(timezone.utc)
             ttl = proc.get("ttlSeconds")
             expire_at = (now + timedelta(seconds=ttl)) if ttl is not None else None
