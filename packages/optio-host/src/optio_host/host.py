@@ -28,10 +28,14 @@ class ProcessHandle:
     ``pid_like`` is opaque (``asyncio.subprocess.Process`` for LocalHost,
     ``asyncssh.SSHClientProcess`` for RemoteHost). ``stdout`` yields bytes
     chunks (typically lines) as the subprocess emits them; the iterator
-    completes when the subprocess closes its stdout.
+    completes when the subprocess closes its stdout. When ``merge_stderr=True``
+    (the default in ``Host.launch_subprocess``), ``stderr`` is ``None`` and
+    stderr bytes are merged into ``stdout``. When ``merge_stderr=False``,
+    ``stderr`` is a separate iterator over stderr-only bytes.
     """
     pid_like: object
     stdout: AsyncIterator[bytes]
+    stderr: AsyncIterator[bytes] | None = None
 
 
 class Host(Protocol):
@@ -74,13 +78,18 @@ class Host(Protocol):
         *,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
+        merge_stderr: bool = True,
     ) -> ProcessHandle:
         """Spawn ``command`` (interpreted by ``/bin/sh -c`` semantics) and
         return a handle whose ``stdout`` iterator yields bytes as they arrive.
 
         Returns BEFORE the subprocess exits; caller is responsible for
         terminating it via ``terminate_subprocess`` (or letting it exit).
-        Stderr is merged into stdout via ``2>&1`` (caller may wrap further).
+
+        ``merge_stderr`` (default True): stderr bytes are merged into stdout
+        via ``2>&1`` semantics; ``ProcessHandle.stderr`` is ``None``. When
+        False, stderr is captured separately and exposed as
+        ``ProcessHandle.stderr`` -- caller iterates both streams.
         """
 
     async def terminate_subprocess(
@@ -227,6 +236,7 @@ class LocalHost:
         *,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
+        merge_stderr: bool = True,
     ) -> ProcessHandle:
         proc_env = os.environ.copy()
         if env:
@@ -236,18 +246,30 @@ class LocalHost:
             cwd=cwd if cwd is not None else self.workdir,
             env=proc_env,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
+            stderr=(
+                asyncio.subprocess.STDOUT if merge_stderr
+                else asyncio.subprocess.PIPE
+            ),
         )
 
-        async def _stream() -> AsyncIterator[bytes]:
-            assert proc.stdout is not None
+        async def _stream(reader) -> AsyncIterator[bytes]:
             while True:
-                line = await proc.stdout.readline()
+                line = await reader.readline()
                 if not line:
                     break
                 yield line
 
-        return ProcessHandle(pid_like=proc, stdout=_stream())
+        if merge_stderr:
+            assert proc.stdout is not None
+            return ProcessHandle(
+                pid_like=proc, stdout=_stream(proc.stdout), stderr=None,
+            )
+        assert proc.stdout is not None and proc.stderr is not None
+        return ProcessHandle(
+            pid_like=proc,
+            stdout=_stream(proc.stdout),
+            stderr=_stream(proc.stderr),
+        )
 
     async def terminate_subprocess(
         self,
@@ -549,6 +571,7 @@ class RemoteHost:
         *,
         env: dict[str, str] | None = None,
         cwd: str | None = None,
+        merge_stderr: bool = True,
     ) -> ProcessHandle:
         assert self._conn is not None
         env_prefix = ""
@@ -559,16 +582,27 @@ class RemoteHost:
         cd_prefix = ""
         if cwd is not None:
             cd_prefix = f"cd {shlex.quote(cwd)} && "
-        # Merge stderr into stdout so caller iterating handle.stdout sees both.
-        full = f"{cd_prefix}{env_prefix}{command} 2>&1"
+        if merge_stderr:
+            # Merge stderr into stdout so caller iterating handle.stdout sees both.
+            full = f"{cd_prefix}{env_prefix}{command} 2>&1"
+        else:
+            full = f"{cd_prefix}{env_prefix}{command}"
         proc = await self._conn.create_process(full, encoding=None)
 
-        async def _stream() -> AsyncIterator[bytes]:
-            async for chunk in proc.stdout:
+        async def _stream(reader) -> AsyncIterator[bytes]:
+            async for chunk in reader:
                 if chunk:
                     yield chunk
 
-        return ProcessHandle(pid_like=proc, stdout=_stream())
+        if merge_stderr:
+            return ProcessHandle(
+                pid_like=proc, stdout=_stream(proc.stdout), stderr=None,
+            )
+        return ProcessHandle(
+            pid_like=proc,
+            stdout=_stream(proc.stdout),
+            stderr=_stream(proc.stderr),
+        )
 
     async def terminate_subprocess(
         self,
