@@ -1,6 +1,7 @@
 """Tests for cancel-stale-on-resync (B1)."""
 
 import asyncio
+import logging
 
 from optio_core.lifecycle import Optio
 from optio_core.models import TaskInstance
@@ -184,3 +185,82 @@ async def test_resync_does_not_cancel_non_stale_running_task(mongo_db):
         assert not entry.flag.is_set(), "non-stale task must not be cancelled"
     finally:
         await optio.shutdown(grace_seconds=1.0)
+
+
+async def test_resync_cancels_scheduled_stale_task(mongo_db, caplog):
+    """A stale task whose DB state is `scheduled` is processed by the
+    cancel-stale path before deletion.
+
+    In production, the `scheduled`-state window between `update_status`
+    and the executor's in-memory `_cancellation_flags` entry is racy and
+    typically tiny, so the deterministic way to pin the contract is to
+    seed the DB record directly into `scheduled` (mirroring the pattern
+    used by `tests/test_task_ttl.py::test_early_cancel_scheduled_task_with_ttl_sets_expire_at`).
+    The cancel-stale helper still classifies `scheduled` as non-terminal
+    and routes the record through the cancel path (a cooperative-cancel
+    request followed by a bounded wait for terminal). Without scheduled
+    in the helper's `non_terminal` set, the record would be deleted
+    directly like an idle one — bypassing the cancel-stale contract.
+
+    With no executor entry (the seeded record was never launched), the
+    cooperative cancel is a no-op and the helper's grace timeout fires;
+    the resulting warning is the observable proof the helper picked up
+    the scheduled-stale record. The record is then deleted as usual.
+    """
+    from optio_core.models import ProcessStatus
+    from optio_core.store import update_status
+
+    async def quick(ctx):
+        return
+
+    task1 = TaskInstance(execute=quick, process_id="t1", name="t1")
+
+    state = {"tasks": [task1]}
+
+    async def gen(services, metadata_filter=None):
+        return state["tasks"]
+
+    optio = Optio()
+    await optio.init(
+        mongo_db=mongo_db, prefix="test",
+        get_task_definitions=gen, cancel_grace_seconds=0.3,
+    )
+    try:
+        # Seed the DB record into `scheduled` state directly — no executor
+        # entry, no asyncio task. This mirrors test_task_ttl.py's approach
+        # for exercising the scheduled-state window.
+        proc = await mongo_db["test_processes"].find_one({"processId": "t1"})
+        assert proc is not None and proc["status"]["state"] == "idle"
+        await update_status(
+            mongo_db, "test", proc["_id"], ProcessStatus(state="scheduled"),
+        )
+
+        # Drop t1 from the registered set, then resync with caplog active.
+        state["tasks"] = []
+        with caplog.at_level(logging.WARNING, logger="optio_core_core"):
+            await optio.resync()
+
+        # Record is gone — cancel-stale-then-delete completed.
+        assert await mongo_db["test_processes"].find_one({"processId": "t1"}) is None
+
+        # Observable proof the helper picked up the scheduled-stale record:
+        # `_cancel_stale_processes` emits a `cancel-stale grace exceeded`
+        # warning when the record fails to reach a terminal state within
+        # `cancel_grace_seconds`. An idle-stale record skips the helper
+        # entirely (per the regression in test_resync_deletes_idle_stale_directly)
+        # and never produces this warning. So this assertion pins
+        # "scheduled is in the helper's non_terminal set".
+        warnings = [
+            rec.getMessage() for rec in caplog.records
+            if rec.levelno == logging.WARNING
+        ]
+        assert any(
+            "cancel-stale grace exceeded" in msg and "'t1'" in msg
+            for msg in warnings
+        ), (
+            f"expected cancel-stale grace warning naming 't1'; "
+            f"got: {warnings!r}"
+        )
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
