@@ -92,6 +92,33 @@ async def remove_stale_processes(
     return result.deleted_count
 
 
+async def find_stale_process_ids(
+    db: AsyncIOMotorDatabase,
+    prefix: str,
+    valid_process_ids: set[str],
+    metadata_filter: ProcessMetadataFilter | None = None,
+) -> list[tuple[ObjectId, str, str]]:
+    """Find root process records that are stale (not in the valid set).
+
+    Returns a list of (oid, processId, state) tuples. Mirrors the query
+    used by `remove_stale_processes` but reads instead of deletes. Used by
+    the resync flow to cooperatively cancel stale non-terminal tasks
+    before their records are deleted (see lifecycle._cancel_stale_processes).
+    """
+    coll = _collection(db, prefix)
+    query: dict[str, Any] = {
+        "processId": {"$nin": list(valid_process_ids)},
+        "parentId": None,
+    }
+    if metadata_filter:
+        for k, v in metadata_filter.items():
+            query[f"metadata.{k}"] = v
+    out: list[tuple[ObjectId, str, str]] = []
+    async for doc in coll.find(query, {"processId": 1, "status.state": 1}):
+        out.append((doc["_id"], doc["processId"], doc["status"]["state"]))
+    return out
+
+
 async def get_process_by_id(
     db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId,
 ) -> dict | None:

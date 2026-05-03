@@ -21,7 +21,7 @@ from optio_core.models import (
     matches_filter, LaunchBlocked,
 )
 from optio_core.store import (
-    upsert_process, remove_stale_processes,
+    upsert_process, remove_stale_processes, find_stale_process_ids,
     get_process_by_process_id, update_status, clear_result_fields,
     append_log,
 )
@@ -704,6 +704,51 @@ class Optio:
                 logger.warning(f"Heartbeat failed: {e}")
             await asyncio.sleep(5)
 
+    async def _cancel_stale_processes(
+        self,
+        stale: list[tuple[ObjectId, str, str]],
+        grace_seconds: float,
+    ) -> None:
+        """Cooperatively cancel stale non-terminal tasks; wait until terminal or grace.
+
+        For each (oid, process_id, state) whose state is non-terminal, set the
+        cooperative cancel flag with a deadline. Then poll Mongo until either
+        the record reaches a terminal state (done/failed/cancelled), the
+        record disappears, or `grace_seconds` elapses. On grace timeout, log
+        a warning; the caller (resync) proceeds with deletion regardless.
+        """
+        non_terminal = {"scheduled", "running", "cancel_requested", "cancelling"}
+        targets = [(oid, pid) for (oid, pid, st) in stale if st in non_terminal]
+        if not targets:
+            return
+
+        deadline = time.monotonic() + grace_seconds
+        for oid, _pid in targets:
+            self._executor.request_cancel_with_deadline(oid, deadline=deadline)
+
+        coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
+
+        async def _wait_for_terminal(oid: ObjectId) -> bool:
+            while time.monotonic() < deadline:
+                doc = await coll.find_one({"_id": oid}, {"status.state": 1})
+                if doc is None:
+                    return True  # already gone
+                state = doc["status"]["state"]
+                if state in ("done", "failed", "cancelled"):
+                    return True
+                await asyncio.sleep(0.05)
+            return False
+
+        results = await asyncio.gather(
+            *[_wait_for_terminal(oid) for (oid, _pid) in targets]
+        )
+        timed_out = [pid for ((_oid, pid), ok) in zip(targets, results) if not ok]
+        if timed_out:
+            logger.warning(
+                f"cancel-stale grace exceeded for processIds={timed_out!r}; "
+                f"deletion will proceed regardless"
+            )
+
     async def _sync_definitions(
         self,
         metadata_filter: ProcessMetadataFilter | None = None,
@@ -725,6 +770,18 @@ class Optio:
             await upsert_process(self._config.mongo_db, self._config.prefix, task)
 
         valid_ids = {t.process_id for t in tasks}
+
+        # B1: cooperatively cancel stale non-terminal tasks before their
+        # records are deleted, so running tasks don't continue writing
+        # log/status updates to a record that no longer exists.
+        stale = await find_stale_process_ids(
+            self._config.mongo_db, self._config.prefix, valid_ids, metadata_filter,
+        )
+        if stale:
+            await self._cancel_stale_processes(
+                stale, self._config.cancel_grace_seconds,
+            )
+
         removed = await remove_stale_processes(
             self._config.mongo_db, self._config.prefix, valid_ids, metadata_filter,
         )
