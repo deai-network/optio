@@ -5,7 +5,7 @@ module to avoid a circular import between executor.py and lifecycle.py.
 
 Spec: docs/2026-04-29-deadline-driven-cancel-design.md
 """
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -26,15 +26,28 @@ async def _write_force_cancelled_state(
     Only updates rows whose current state is in ACTIVE_STATES. A task that
     won the race to a terminal state owns its own transition and is left
     alone. Returns True if the row was updated, False otherwise.
+
+    If the row carries a `ttlSeconds` field, also $set `expireAt = now + ttl`
+    so the TTL index evicts it at the same point a cooperative-cancel
+    record would have been evicted (B2 invariant: every terminal-state
+    writer honours TTL).
     """
     coll = db[f"{prefix}_processes"]
     now = datetime.now(timezone.utc)
     status_doc = ProcessStatus(
         state="failed", error=FORCE_CANCEL_ERROR, failed_at=now,
     ).to_dict()
+
+    # Read ttlSeconds so we can compute expireAt for the TTL index.
+    ttl_doc = await coll.find_one({"_id": oid}, {"ttlSeconds": 1})
+    ttl = (ttl_doc or {}).get("ttlSeconds")
+    set_doc: dict = {"status": status_doc, "widgetUpstream": None}
+    if ttl is not None:
+        set_doc["expireAt"] = now + timedelta(seconds=ttl)
+
     result = await coll.update_one(
         {"_id": oid, "status.state": {"$in": list(ACTIVE_STATES)}},
-        {"$set": {"status": status_doc, "widgetUpstream": None}},
+        {"$set": set_doc},
     )
     if result.modified_count:
         await append_log(

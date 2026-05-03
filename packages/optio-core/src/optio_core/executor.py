@@ -3,7 +3,7 @@
 import asyncio
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Awaitable
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -117,6 +117,16 @@ class Executor:
         oid = proc["_id"]
         root_oid = proc.get("rootId", oid)
 
+        # B2: TTL — read ttl_seconds from the process record (DB is source of
+        # truth; survives task-registry churn). Each terminal-state writer
+        # below passes _expire_at_now() to update_status.
+        ttl_seconds = proc.get("ttlSeconds")
+
+        def _expire_at_now() -> "datetime | None":
+            if ttl_seconds is None:
+                return None
+            return datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
+
         cancel_flag = asyncio.Event()
         self._cancellation_flags[oid] = _CancelEntry(flag=cancel_flag, deadline=None)
         current = asyncio.current_task()
@@ -162,6 +172,7 @@ class Executor:
                         state="failed", error="No execute function found",
                         failed_at=datetime.now(timezone.utc),
                     ),
+                    expire_at=_expire_at_now(),
                 )
                 return "failed"
 
@@ -180,6 +191,7 @@ class Executor:
                         state="failed", error=str(e),
                         failed_at=datetime.now(timezone.utc),
                     ),
+                    expire_at=_expire_at_now(),
                 )
                 await append_log(self._db, self._prefix, oid, "error", str(e))
                 await clear_widget_upstream(self._db, self._prefix, oid)
@@ -197,6 +209,7 @@ class Executor:
                         done_at=datetime.now(timezone.utc),
                         duration=round(elapsed, 2),
                     ),
+                    expire_at=_expire_at_now(),
                 )
                 await append_log(self._db, self._prefix, oid, "event", "State changed to done")
             elif end_state == "cancelled":
@@ -206,6 +219,7 @@ class Executor:
                         state="cancelled",
                         stopped_at=datetime.now(timezone.utc),
                     ),
+                    expire_at=_expire_at_now(),
                 )
                 await append_log(self._db, self._prefix, oid, "event", "State changed to cancelled")
 

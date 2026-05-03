@@ -7,7 +7,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, AsyncExitStack
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Awaitable
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -664,10 +664,15 @@ class Optio:
 
         now = datetime.now(timezone.utc)
         error_msg = "Process was interrupted by server restart"
+        # Re-read each record for ttlSeconds so we can set expireAt for TTL eviction.
         for oid, prev_state in stale:
+            ttl_doc = await coll.find_one({"_id": oid}, {"ttlSeconds": 1})
+            ttl = (ttl_doc or {}).get("ttlSeconds")
+            expire_at = (now + timedelta(seconds=ttl)) if ttl is not None else None
             await update_status(
                 self._config.mongo_db, self._config.prefix, oid,
                 ProcessStatus(state="failed", error=error_msg, failed_at=now),
+                expire_at=expire_at,
             )
             await coll.update_one({"_id": oid}, {"$set": {"widgetUpstream": None}})
             await append_log(
@@ -830,11 +835,15 @@ class Optio:
             return
 
         if current_state == "scheduled":
-            # Not yet running — go directly to cancelled
+            # Not yet running — go directly to cancelled.
             from datetime import datetime, timezone
+            now = datetime.now(timezone.utc)
+            ttl = proc.get("ttlSeconds")
+            expire_at = (now + timedelta(seconds=ttl)) if ttl is not None else None
             await update_status(
                 self._config.mongo_db, self._config.prefix, proc["_id"],
-                ProcessStatus(state="cancelled", stopped_at=datetime.now(timezone.utc)),
+                ProcessStatus(state="cancelled", stopped_at=now),
+                expire_at=expire_at,
             )
             return
 

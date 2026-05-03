@@ -38,6 +38,7 @@ async def upsert_process(db: AsyncIOMotorDatabase, prefix: str, task: TaskInstan
                 "warning": task.warning,
                 "uiWidget": task.ui_widget,
                 "supportsResume": task.supports_resume,
+                "ttlSeconds": task.ttl_seconds,
             },
             "$setOnInsert": {
                 "parentId": None,
@@ -135,11 +136,22 @@ async def get_process_by_process_id(
 
 async def update_status(
     db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId, status: ProcessStatus,
+    expire_at: datetime | None = None,
 ) -> None:
-    """Update the status sub-document of a process."""
+    """Update the status sub-document of a process.
+
+    When `expire_at` is provided, also $set `expireAt` alongside the status.
+    The TTL index on `expireAt` (created by migration m004) will then evict
+    the record after `expire_at` passes. Callers in terminal-state writers
+    pass `now + ttl_seconds` when the process record carries a `ttlSeconds`
+    field.
+    """
+    update: dict[str, Any] = {"status": status.to_dict()}
+    if expire_at is not None:
+        update["expireAt"] = expire_at
     await _collection(db, prefix).update_one(
         {"_id": process_oid},
-        {"$set": {"status": status.to_dict()}},
+        {"$set": update},
     )
 
 

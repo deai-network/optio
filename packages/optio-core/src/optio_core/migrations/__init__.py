@@ -8,3 +8,4 @@ fw_migrations = MigrationRegistry()
 import optio_core.migrations.m001_status_subdocument  # noqa: F401
 import optio_core.migrations.m002_backfill_child_metadata  # noqa: F401
 import optio_core.migrations.m003_backfill_has_saved_state  # noqa: F401
+import optio_core.migrations.m004_create_expire_at_ttl_index  # noqa: F401

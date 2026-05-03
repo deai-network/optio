@@ -20,6 +20,7 @@ class TaskInstance:
     cancellable: bool = True
     ui_widget: str | None = None
     supports_resume: bool = False
+    ttl_seconds: int | None = None
 
 
 @dataclass
