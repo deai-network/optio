@@ -7,7 +7,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, AsyncExitStack
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Any, Callable, Awaitable
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -23,7 +23,7 @@ from optio_core.models import (
 from optio_core.store import (
     upsert_process, remove_stale_processes, find_stale_process_ids,
     get_process_by_process_id, update_status, clear_result_fields,
-    append_log,
+    append_log, compute_expire_at,
 )
 from optio_core.state_machine import ACTIVE_STATES, CANCELLABLE_STATES
 from optio_core.executor import Executor
@@ -667,8 +667,7 @@ class Optio:
         # Re-read each record for ttlSeconds so we can set expireAt for TTL eviction.
         for oid, prev_state in stale:
             ttl_doc = await coll.find_one({"_id": oid}, {"ttlSeconds": 1})
-            ttl = (ttl_doc or {}).get("ttlSeconds")
-            expire_at = (now + timedelta(seconds=ttl)) if ttl is not None else None
+            expire_at = compute_expire_at((ttl_doc or {}).get("ttlSeconds"), now=now)
             await update_status(
                 self._config.mongo_db, self._config.prefix, oid,
                 ProcessStatus(state="failed", error=error_msg, failed_at=now),
@@ -837,8 +836,7 @@ class Optio:
         if current_state == "scheduled":
             # Not yet running — go directly to cancelled.
             now = datetime.now(timezone.utc)
-            ttl = proc.get("ttlSeconds")
-            expire_at = (now + timedelta(seconds=ttl)) if ttl is not None else None
+            expire_at = compute_expire_at(proc.get("ttlSeconds"), now=now)
             await update_status(
                 self._config.mongo_db, self._config.prefix, proc["_id"],
                 ProcessStatus(state="cancelled", stopped_at=now),

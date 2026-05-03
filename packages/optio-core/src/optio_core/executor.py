@@ -3,7 +3,7 @@
 import asyncio
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Any, Callable, Awaitable
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -16,7 +16,7 @@ from optio_core.store import (
     get_process_by_process_id,
     update_status, clear_result_fields,
     create_child_process, append_log,
-    clear_widget_upstream,
+    clear_widget_upstream, compute_expire_at,
 )
 from optio_core.context import ProcessContext
 
@@ -119,13 +119,8 @@ class Executor:
 
         # B2: TTL — read ttl_seconds from the process record (DB is source of
         # truth; survives task-registry churn). Each terminal-state writer
-        # below passes _expire_at_now() to update_status.
+        # below passes compute_expire_at(ttl_seconds) to update_status.
         ttl_seconds = proc.get("ttlSeconds")
-
-        def _expire_at_now() -> "datetime | None":
-            if ttl_seconds is None:
-                return None
-            return datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds)
 
         cancel_flag = asyncio.Event()
         self._cancellation_flags[oid] = _CancelEntry(flag=cancel_flag, deadline=None)
@@ -172,7 +167,7 @@ class Executor:
                         state="failed", error="No execute function found",
                         failed_at=datetime.now(timezone.utc),
                     ),
-                    expire_at=_expire_at_now(),
+                    expire_at=compute_expire_at(ttl_seconds),
                 )
                 return "failed"
 
@@ -191,7 +186,7 @@ class Executor:
                         state="failed", error=str(e),
                         failed_at=datetime.now(timezone.utc),
                     ),
-                    expire_at=_expire_at_now(),
+                    expire_at=compute_expire_at(ttl_seconds),
                 )
                 await append_log(self._db, self._prefix, oid, "error", str(e))
                 await clear_widget_upstream(self._db, self._prefix, oid)
@@ -209,7 +204,7 @@ class Executor:
                         done_at=datetime.now(timezone.utc),
                         duration=round(elapsed, 2),
                     ),
-                    expire_at=_expire_at_now(),
+                    expire_at=compute_expire_at(ttl_seconds),
                 )
                 await append_log(self._db, self._prefix, oid, "event", "State changed to done")
             elif end_state == "cancelled":
@@ -219,7 +214,7 @@ class Executor:
                         state="cancelled",
                         stopped_at=datetime.now(timezone.utc),
                     ),
-                    expire_at=_expire_at_now(),
+                    expire_at=compute_expire_at(ttl_seconds),
                 )
                 await append_log(self._db, self._prefix, oid, "event", "State changed to cancelled")
 

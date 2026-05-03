@@ -1,6 +1,6 @@
 """MongoDB operations for process records."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -13,6 +13,20 @@ from optio_core.models import (
 def _collection(db: AsyncIOMotorDatabase, prefix: str):
     """Get the process collection for a given prefix."""
     return db[f"{prefix}_processes"]
+
+
+def compute_expire_at(
+    ttl_seconds: int | None, now: datetime | None = None,
+) -> datetime | None:
+    """Return absolute expiry time given a TTL in seconds, or None if no TTL.
+
+    Used by every terminal-state writer that respects TaskInstance.ttl_seconds.
+    Centralized here so all writers share one definition of "what does
+    ttl_seconds mean" — clock-skew handling, type coercion, etc.
+    """
+    if ttl_seconds is None:
+        return None
+    return (now or datetime.now(timezone.utc)) + timedelta(seconds=ttl_seconds)
 
 
 async def upsert_process(db: AsyncIOMotorDatabase, prefix: str, task: TaskInstance) -> dict:

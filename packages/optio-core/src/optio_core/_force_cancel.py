@@ -5,14 +5,14 @@ module to avoid a circular import between executor.py and lifecycle.py.
 
 Spec: docs/2026-04-29-deadline-driven-cancel-design.md
 """
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from optio_core.models import ProcessStatus
 from optio_core.state_machine import ACTIVE_STATES
-from optio_core.store import append_log
+from optio_core.store import append_log, compute_expire_at
 
 
 FORCE_CANCEL_ERROR = "Task did not unwind within cancellation grace period"
@@ -40,10 +40,10 @@ async def _write_force_cancelled_state(
 
     # Read ttlSeconds so we can compute expireAt for the TTL index.
     ttl_doc = await coll.find_one({"_id": oid}, {"ttlSeconds": 1})
-    ttl = (ttl_doc or {}).get("ttlSeconds")
+    expire_at = compute_expire_at((ttl_doc or {}).get("ttlSeconds"), now=now)
     set_doc: dict = {"status": status_doc, "widgetUpstream": None}
-    if ttl is not None:
-        set_doc["expireAt"] = now + timedelta(seconds=ttl)
+    if expire_at is not None:
+        set_doc["expireAt"] = expire_at
 
     result = await coll.update_one(
         {"_id": oid, "status.state": {"$in": list(ACTIVE_STATES)}},
