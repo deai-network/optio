@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { MongoClient, ObjectId, type Db } from 'mongodb';
 import Redis from 'ioredis-mock';
-import { getProcess, getProcessTree, listProcesses, launchProcess } from '../handlers.js';
+import {
+  getProcess, getProcessTree, getProcessLog, getProcessTreeLog,
+  listProcesses, launchProcess, cancelProcess, dismissProcess,
+} from '../handlers.js';
 
 const MONGO_URL = process.env.MONGO_URL ?? 'mongodb://localhost:27017';
 const DB_NAME = 'optio_test_handlers';
@@ -132,6 +135,98 @@ describe('launchProcess — resume validation', () => {
     const [, fields] = entries[0];
     const payload = JSON.parse(fields[fields.indexOf('payload') + 1]);
     expect(payload.resume ?? false).toBe(false);
+  });
+});
+
+describe('dual-form id resolution (ObjectId hex OR processId string)', () => {
+  // The mkPid-style processId is the form excavator's recipe-debug
+  // flow returns to the frontend at submit time, before the engine
+  // creates the row. The frontend then hands it to optio-ui's
+  // useProcessStream, which calls these handlers with the string.
+  // Without dual-form lookup, every per-process route 500'd when
+  // `new ObjectId(string)` threw on the non-hex input.
+  const PROCESS_ID_STRING = 'someproject__recipe-debug_abc_def';
+
+  async function insertProcess(state: string = 'idle') {
+    const oid = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertOne({
+      _id: oid,
+      processId: PROCESS_ID_STRING,
+      name: 'P',
+      rootId: oid,
+      parentId: null,
+      depth: 0,
+      order: 0,
+      status: { state },
+      progress: { percent: null },
+      cancellable: true,
+      log: [
+        { timestamp: '2026-05-06T00:00:00.000Z', level: 'info', message: 'one' },
+        { timestamp: '2026-05-06T00:00:01.000Z', level: 'info', message: 'two' },
+      ],
+      supportsResume: false,
+      hasSavedState: false,
+    });
+    return { oid: oid.toString(), processIdString: PROCESS_ID_STRING };
+  }
+
+  it('getProcess resolves both ObjectId hex and processId string to the same row', async () => {
+    const { oid, processIdString } = await insertProcess();
+    const byOid = await getProcess(db, PREFIX, oid);
+    const byString = await getProcess(db, PREFIX, processIdString);
+    expect(byOid).not.toBeNull();
+    expect(byString).not.toBeNull();
+    expect((byOid as any)._id).toBe((byString as any)._id);
+  });
+
+  it('getProcess returns null on unknown processId string (no throw)', async () => {
+    const result = await getProcess(db, PREFIX, 'unknown__processid_string');
+    expect(result).toBeNull();
+  });
+
+  it('getProcessTree accepts the processId string form', async () => {
+    const { processIdString } = await insertProcess();
+    const tree = await getProcessTree(db, PREFIX, processIdString);
+    expect(tree).not.toBeNull();
+    expect((tree as any).processId).toBe(processIdString);
+  });
+
+  it('getProcessLog accepts the processId string form', async () => {
+    const { processIdString } = await insertProcess();
+    const log = await getProcessLog(db, PREFIX, processIdString, { limit: 10 });
+    expect(log).not.toBeNull();
+    expect((log as any).items.length).toBe(2);
+  });
+
+  it('getProcessTreeLog accepts the processId string form', async () => {
+    const { processIdString } = await insertProcess();
+    const log = await getProcessTreeLog(db, PREFIX, processIdString, { limit: 10 });
+    expect(log).not.toBeNull();
+    expect((log as any).items.length).toBe(2);
+  });
+
+  it('launchProcess accepts the processId string form', async () => {
+    const redis = new Redis();
+    await redis.flushall();
+    const { processIdString } = await insertProcess('idle');
+    const result = await launchProcess(db, redis, 'mydb', PREFIX, processIdString);
+    expect(result.status).toBe(200);
+  });
+
+  it('cancelProcess accepts the processId string form', async () => {
+    const redis = new Redis();
+    await redis.flushall();
+    const { processIdString } = await insertProcess('running');
+    const result = await cancelProcess(db, redis, 'mydb', PREFIX, processIdString);
+    expect(result.status).toBe(200);
+  });
+
+  it('dismissProcess accepts the processId string form', async () => {
+    const redis = new Redis();
+    await redis.flushall();
+    const { processIdString } = await insertProcess('done');
+    const result = await dismissProcess(db, redis, 'mydb', PREFIX, processIdString);
+    expect(result.status).toBe(200);
   });
 });
 

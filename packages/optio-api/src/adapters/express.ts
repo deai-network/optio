@@ -7,8 +7,8 @@ import type { Express } from 'express';
 import type { Db } from 'mongodb';
 import type { MongoClient } from 'mongodb';
 import type { Redis } from 'ioredis';
-import { ObjectId } from 'mongodb';
 import * as handlers from '../handlers.js';
+import { findProcessByEitherId } from '../process-id-resolver.js';
 import { createListPoller, createTreePoller } from '../stream-poller.js';
 import { detectLegacyMetadataParams, parseMetadataFilterQuery, formatLegacyMetadataMessage } from '../metadata-filter-query.js';
 import { discoverInstances } from '../discovery.js';
@@ -161,7 +161,7 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions) {
     const maxDepthNum = query.maxDepth !== undefined ? parseInt(query.maxDepth, 10) : undefined;
 
     const col = db.collection(`${prefix}_processes`);
-    const proc = await col.findOne({ _id: new ObjectId(id) });
+    const proc = await findProcessByEitherId(col, id);
     if (!proc) {
       res.status(404).json({ message: 'Process not found' });
       return;

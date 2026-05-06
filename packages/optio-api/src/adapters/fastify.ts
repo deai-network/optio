@@ -7,8 +7,8 @@ import type { FastifyInstance } from 'fastify';
 import type { Db } from 'mongodb';
 import type { MongoClient } from 'mongodb';
 import type { Redis } from 'ioredis';
-import { ObjectId } from 'mongodb';
 import * as handlers from '../handlers.js';
+import { findProcessByEitherId } from '../process-id-resolver.js';
 import { createListPoller, createTreePoller } from '../stream-poller.js';
 import { discoverInstances } from '../discovery.js';
 import { resolveDb, type DbOptions } from '../resolve-db.js';
@@ -451,7 +451,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions) {
     const maxDepthNum = query.maxDepth !== undefined ? parseInt(query.maxDepth, 10) : undefined;
 
     const col = db.collection(`${prefix}_processes`);
-    const proc = await col.findOne({ _id: new ObjectId(id) });
+    const proc = await findProcessByEitherId(col, id);
     if (!proc) {
       reply.code(404).send({ message: 'Process not found' });
       return;

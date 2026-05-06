@@ -1,6 +1,6 @@
 import { initContract } from '@ts-rest/core';
 import { z } from 'zod';
-import { PaginationQuerySchema, PaginatedResponseSchema, ErrorSchema, ObjectIdSchema } from './schemas/common.js';
+import { PaginationQuerySchema, PaginatedResponseSchema, ErrorSchema, ObjectIdSchema, ProcessIdParamSchema } from './schemas/common.js';
 import { ProcessSchema, ProcessStateSchema, LogEntrySchema, ProcessMetadataFilterSchema, MetadataFilterQueryParamSchema } from './schemas/process.js';
 
 const c = initContract();
@@ -33,7 +33,7 @@ export const processesContract = c.router({
   get: {
     method: 'GET',
     path: '/processes/:id',
-    pathParams: z.object({ id: ObjectIdSchema }),
+    pathParams: z.object({ id: ProcessIdParamSchema }),
     query: InstanceQuerySchema,
     responses: {
       200: ProcessSchema,
@@ -44,7 +44,7 @@ export const processesContract = c.router({
   getTree: {
     method: 'GET',
     path: '/processes/:id/tree',
-    pathParams: z.object({ id: ObjectIdSchema }),
+    pathParams: z.object({ id: ProcessIdParamSchema }),
     query: z.object({
       maxDepth: z.coerce.number().int().min(0).optional(),
       database: z.string().optional(),
@@ -59,7 +59,7 @@ export const processesContract = c.router({
   getLog: {
     method: 'GET',
     path: '/processes/:id/log',
-    pathParams: z.object({ id: ObjectIdSchema }),
+    pathParams: z.object({ id: ProcessIdParamSchema }),
     query: PaginationQuerySchema.extend({
       database: z.string().optional(),
       prefix: z.string().optional(),
@@ -73,7 +73,7 @@ export const processesContract = c.router({
   getTreeLog: {
     method: 'GET',
     path: '/processes/:id/tree/log',
-    pathParams: z.object({ id: ObjectIdSchema }),
+    pathParams: z.object({ id: ProcessIdParamSchema }),
     query: PaginationQuerySchema.extend({
       maxDepth: z.coerce.number().int().min(0).optional(),
       database: z.string().optional(),
@@ -91,7 +91,7 @@ export const processesContract = c.router({
   launch: {
     method: 'POST',
     path: '/processes/:id/launch',
-    pathParams: z.object({ id: ObjectIdSchema }),
+    pathParams: z.object({ id: ProcessIdParamSchema }),
     query: InstanceQuerySchema,
     body: z.object({ resume: z.boolean().optional() }).optional(),
     responses: {
@@ -104,7 +104,7 @@ export const processesContract = c.router({
   cancel: {
     method: 'POST',
     path: '/processes/:id/cancel',
-    pathParams: z.object({ id: ObjectIdSchema }),
+    pathParams: z.object({ id: ProcessIdParamSchema }),
     query: InstanceQuerySchema,
     body: c.noBody(),
     responses: {
@@ -117,7 +117,7 @@ export const processesContract = c.router({
   dismiss: {
     method: 'POST',
     path: '/processes/:id/dismiss',
-    pathParams: z.object({ id: ObjectIdSchema }),
+    pathParams: z.object({ id: ProcessIdParamSchema }),
     query: InstanceQuerySchema,
     body: c.noBody(),
     responses: {

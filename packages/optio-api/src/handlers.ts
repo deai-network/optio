@@ -3,6 +3,7 @@ import type { Redis } from 'ioredis';
 import { publishLaunch, publishCancel, publishDismiss, publishResync } from './publisher.js';
 import type { ProcessMetadataFilter } from './types.js';
 import { metadataFilterToMongo } from './metadata-filter-query.js';
+import { findProcessByEitherId } from './process-id-resolver.js';
 
 function col(db: Db, prefix: string) {
   return db.collection(`${prefix}_processes`);
@@ -59,7 +60,7 @@ export async function listProcesses(db: Db, prefix: string, query: ListQuery) {
 }
 
 export async function getProcess(db: Db, prefix: string, id: string) {
-  const proc = await col(db, prefix).findOne({ _id: new ObjectId(id) });
+  const proc = await findProcessByEitherId(col(db, prefix), id);
   if (!proc) return null;
   return toResponse(proc);
 }
@@ -93,7 +94,12 @@ async function buildTree(db: Db, prefix: string, processId: ObjectId, maxDepth?:
 }
 
 export async function getProcessTree(db: Db, prefix: string, id: string, maxDepth?: number) {
-  return buildTree(db, prefix, new ObjectId(id), maxDepth);
+  // Resolve the entry-point doc first so we can accept either id form.
+  // Internal recursion in `buildTree` walks via `parentId` ObjectId
+  // references and does not need the lookup helper.
+  const entry = await findProcessByEitherId(col(db, prefix), id);
+  if (!entry) return null;
+  return buildTree(db, prefix, entry._id as ObjectId, maxDepth);
 }
 
 export interface PaginationQuery {
@@ -102,7 +108,7 @@ export interface PaginationQuery {
 }
 
 export async function getProcessLog(db: Db, prefix: string, id: string, query: PaginationQuery) {
-  const proc = await col(db, prefix).findOne({ _id: new ObjectId(id) });
+  const proc = await findProcessByEitherId(col(db, prefix), id);
   if (!proc) return null;
 
   const { cursor, limit } = query;
@@ -123,7 +129,7 @@ export interface TreeLogQuery extends PaginationQuery {
 }
 
 export async function getProcessTreeLog(db: Db, prefix: string, id: string, query: TreeLogQuery) {
-  const proc = await col(db, prefix).findOne({ _id: new ObjectId(id) });
+  const proc = await findProcessByEitherId(col(db, prefix), id);
   if (!proc) return null;
 
   const { maxDepth, cursor, limit } = query;
@@ -166,7 +172,7 @@ export type CommandResult =
   | { status: 409; body: { message: string } };
 
 export async function launchProcess(db: Db, redis: Redis, database: string, prefix: string, id: string, resume: boolean = false): Promise<CommandResult> {
-  const proc = await col(db, prefix).findOne({ _id: new ObjectId(id) });
+  const proc = await findProcessByEitherId(col(db, prefix), id);
   if (!proc) {
     return { status: 404, body: { message: 'Process not found' } };
   }
@@ -181,7 +187,7 @@ export async function launchProcess(db: Db, redis: Redis, database: string, pref
 }
 
 export async function cancelProcess(db: Db, redis: Redis, database: string, prefix: string, id: string): Promise<CommandResult> {
-  const proc = await col(db, prefix).findOne({ _id: new ObjectId(id) });
+  const proc = await findProcessByEitherId(col(db, prefix), id);
   if (!proc) {
     return { status: 404, body: { message: 'Process not found' } };
   }
@@ -196,7 +202,7 @@ export async function cancelProcess(db: Db, redis: Redis, database: string, pref
 }
 
 export async function dismissProcess(db: Db, redis: Redis, database: string, prefix: string, id: string): Promise<CommandResult> {
-  const proc = await col(db, prefix).findOne({ _id: new ObjectId(id) });
+  const proc = await findProcessByEitherId(col(db, prefix), id);
   if (!proc) {
     return { status: 404, body: { message: 'Process not found' } };
   }

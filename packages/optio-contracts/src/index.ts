@@ -1,6 +1,6 @@
 // Schemas
-export { ObjectIdSchema, PaginationQuerySchema, PaginatedResponseSchema,
-         ErrorSchema, DateSchema } from './schemas/common.js';
+export { ObjectIdSchema, ProcessIdParamSchema, PaginationQuerySchema,
+         PaginatedResponseSchema, ErrorSchema, DateSchema } from './schemas/common.js';
 export { ProcessSchema, ProcessStateSchema, LogEntrySchema,
          ProcessMetadataFilterSchema, MetadataFilterQueryParamSchema } from './schemas/process.js';
 
