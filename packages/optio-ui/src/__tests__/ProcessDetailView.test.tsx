@@ -228,6 +228,39 @@ describe('ProcessDetailView', () => {
     expect(screen.getByText('State changed to running')).toBeTruthy();
   });
 
+  it('renders the LaunchControls play icon for a launchable process by default', () => {
+    // 'done' is in LAUNCHABLE_STATES (idle/done/failed/cancelled), so
+    // LaunchControls produces a play button when onLaunch is provided.
+    mockProcessStream.mockReturnValue({
+      tree: {
+        _id: 'abc', name: 'P', status: { state: 'done' },
+        progress: { percent: null }, cancellable: false,
+        depth: 0, order: 0, parentId: null, children: [],
+      },
+      logs: [],
+      connected: true,
+    });
+    const { container } = render(<ProcessDetailView processId="abc" />);
+    expect(container.querySelector('.anticon-play-circle')).not.toBeNull();
+  });
+
+  it('hides the LaunchControls when readOnly is true', () => {
+    // Same launchable process, but the embed is read-only — no actions
+    // should appear (today: launch; future actions are gated by the
+    // same flag).
+    mockProcessStream.mockReturnValue({
+      tree: {
+        _id: 'abc', name: 'P', status: { state: 'done' },
+        progress: { percent: null }, cancellable: false,
+        depth: 0, order: 0, parentId: null, children: [],
+      },
+      logs: [],
+      connected: true,
+    });
+    const { container } = render(<ProcessDetailView processId="abc" readOnly />);
+    expect(container.querySelector('.anticon-play-circle')).toBeNull();
+  });
+
   it('falls back to default tree+log rendering while widgetData is not yet set', () => {
     // Covers the period between process launch and the worker's
     // set_widget_data call (e.g. optio-opencode uploading its binary).
