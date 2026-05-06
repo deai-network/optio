@@ -309,7 +309,16 @@ async def launch_opencode(
     # Prepend the noop-browsers bin dir to PATH via env on launch_subprocess.
     workdir_bin = f"{host.workdir}/bin"
     extra_path = workdir_bin + ":" + os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
-    env = {"PATH": extra_path}
+    # OPENCODE_DB must point at the same per-task db file used by the
+    # subsequent export/import CLI calls. Without this, the server falls
+    # back to opencode's global default db while export/import target the
+    # taskdir-local file — causing snapshot capture to "Session not found"
+    # against an empty file. Convention: opencode.db is a sibling of the
+    # workdir under taskdir (session.py: opencode_db = f"{taskdir}/opencode.db").
+    env = {
+        "PATH": extra_path,
+        "OPENCODE_DB": f"{host.taskdir}/opencode.db",
+    }
 
     handle = await host.launch_subprocess(cmd, env=env, cwd=host.workdir)
 
