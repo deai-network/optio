@@ -283,6 +283,26 @@ async def test_read_from_host_emits_reading_message():
     assert any("Reading x" in (m or "") for m in msgs)
 
 
+async def test_read_from_host_silent_suppresses_reading_message():
+    ctx = _FakeCtx()
+    host = _FakeCopyHost()
+    host.fetch_returns = b"abc"
+    h = HookContext(ctx, host)
+    await h.read_from_host("data/x", silent=True)
+    msgs = [c[2] for c in ctx.calls]
+    assert not any("Reading" in (m or "") for m in msgs)
+
+
+async def test_read_text_from_host_silent_suppresses_reading_message():
+    ctx = _FakeCtx()
+    host = _FakeCopyHost()
+    host.fetch_returns = b"abc"
+    h = HookContext(ctx, host)
+    await h.read_text_from_host("data/x", silent=True)
+    msgs = [c[2] for c in ctx.calls]
+    assert not any("Reading" in (m or "") for m in msgs)
+
+
 from bson import ObjectId
 
 

@@ -131,11 +131,12 @@ class HookContext:
         async with self._ctx.load_blob(file_id) as reader:
             return await reader.read()
 
-    async def read_from_host(self, path: str) -> bytes:
+    async def read_from_host(self, path: str, *, silent: bool = False) -> bytes:
         host_home = await self._host.resolve_host_home()
         abs_path = _resolve_target_path(path, self._host.workdir, host_home)
-        basename = os.path.basename(abs_path) or abs_path
-        self._ctx.report_progress(None, f"Reading {basename}...")
+        if not silent:
+            basename = os.path.basename(abs_path) or abs_path
+            self._ctx.report_progress(None, f"Reading {basename}...")
 
         def _progress_cb(percent, message):
             if percent is not None:
@@ -145,8 +146,8 @@ class HookContext:
             abs_path, progress_cb=_progress_cb,
         )
 
-    async def read_text_from_host(self, path: str) -> str:
-        data = await self.read_from_host(path)
+    async def read_text_from_host(self, path: str, *, silent: bool = False) -> str:
+        data = await self.read_from_host(path, silent=silent)
         return data.decode("utf-8")
 
 
@@ -181,8 +182,8 @@ class HookContextProtocol(Protocol):
         capture_stderr: bool = False,
         cwd: str | None = None,
     ) -> "str | RunResult": ...
-    async def read_from_host(self, path: str) -> bytes: ...
-    async def read_text_from_host(self, path: str) -> str: ...
+    async def read_from_host(self, path: str, *, silent: bool = False) -> bytes: ...
+    async def read_text_from_host(self, path: str, *, silent: bool = False) -> str: ...
 
 
 def _resolve_target_path(path: str, workdir: str, host_home: str) -> str:
