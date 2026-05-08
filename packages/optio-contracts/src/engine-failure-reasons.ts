@@ -1,3 +1,10 @@
+// Browser-safe Zod enums for engine RPC failure reasons.
+//
+// This module exists so failure-reason enums can be re-exported from
+// `optio-contracts` to browser bundles (optio-ui, optio-dashboard) without
+// pulling in `@clamator/protocol`, which uses node:crypto. The contract source
+// (engine-to-api.ts) imports from here; index.ts re-exports from here.
+
 import { z } from 'zod';
 
 export const LaunchFailureReason = z.enum([
