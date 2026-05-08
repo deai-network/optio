@@ -155,6 +155,12 @@ async function getProcessTreeLog(
 ): Promise<{ items: any[]; nextCursor: string | null; totalCount: number } | null>
 
 // Command handlers
+// **Phase-2 status note:** `launchProcess`, `cancelProcess`, `dismissProcess`, and
+// `resyncProcesses` continue to publish to the legacy `${database}/${prefix}:commands`
+// redis stream via `publisher.ts`. Phase 3 of the engine-RPC migration replaces these
+// `publishX` calls with direct `engine.X(...)` clamator RPC calls (the engine is
+// already serving them in phase 2; only the API caller side hasn't switched yet). See
+// `docs/2026-05-08-engine-rpc-migration-design.md`.
 async function launchProcess(
   db: Db,
   redis: Redis,

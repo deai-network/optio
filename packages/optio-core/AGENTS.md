@@ -261,12 +261,13 @@ Spec: `docs/2026-04-30-persistent-launch-blocks-design.md`.
 ### optio_core.rpc_server
 
 ```python
-optio_core.rpc_server: RedisRpcServer | None
+optio_core.rpc_server: RpcServerCore | None
 ```
 
-The `RedisRpcServer` constructed during `init(redis_url=...)`, or the server passed
-via `init(rpc_server=...)`, or `None` if no Redis is configured. Apps register
-additional clamator services on this attribute before calling `optio_core.run()`.
+The `RpcServerCore` constructed (a `RedisRpcServer` when `redis_url` is provided, or
+whatever the caller supplied via `init(rpc_server=...)`), or `None` if no Redis is
+configured. Apps register additional clamator services on this attribute before calling
+`optio_core.run()`.
 
 ---
 
@@ -290,5 +291,6 @@ await optio_core.init(
     rpc_server: RpcServerCore | None = None,
     services: dict[str, Any] | None = None,
     get_task_definitions: Callable[..., Awaitable[list[TaskInstance]]] | None = None,
+    cancel_grace_seconds: float = 5.0,
 ) -> None
 ```

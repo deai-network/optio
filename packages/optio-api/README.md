@@ -189,6 +189,9 @@ automatically. Express and Next.js have no equivalent; callers wire
 `closeAll` into their shutdown handler manually:
 
 ```typescript
+// Express:
+import { registerOptioApi } from 'optio-api/express';
+
 const { engine, closeAll } = registerOptioApi(app, { db, redis });
 const server = app.listen(3000);
 process.on('SIGTERM', async () => {
@@ -196,6 +199,8 @@ process.on('SIGTERM', async () => {
   await closeAll();
 });
 ```
+
+Next.js: `closeAll` is exposed on the same handle returned from `createOptioRouteHandlers` / `createOptioHandler`. Wire it into whatever shutdown hook your deployment provides (typically not needed for serverless, since process death drops the Redis socket).
 
 The returned `engine` (or `getEngine(...)`) can be shared with non-HTTP
 code paths (custom RPC integrations, server-side scheduled jobs) so

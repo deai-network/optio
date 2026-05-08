@@ -116,7 +116,7 @@ await optio_core.list_processes(state=None, root_id=None, metadata=None) -> list
 optio_core.on_command(command_type: str, handler: Callable[..., Awaitable]) -> None
 
 # RPC server (set after init(); None if no Redis configured)
-optio_core.rpc_server: RedisRpcServer | None
+optio_core.rpc_server: RpcServerCore | None
 ```
 
 **`init()` parameters:**
@@ -130,9 +130,10 @@ optio_core.rpc_server: RedisRpcServer | None
 | `services` | `dict[str, Any] \| None` | `{}` | Passed as `ctx.services` to all task execute functions |
 | `get_task_definitions` | `Callable[..., Awaitable[list[TaskInstance]]] \| None` | `None` | Async function `(services, metadata_filter) -> list[TaskInstance]`; called on init and resync. `metadata_filter` is `None` for a full sync. |
 
-**`optio_core.rpc_server`** (`RedisRpcServer | None`): The clamator `RedisRpcServer`
-constructed during `init(redis_url=...)` or supplied via `init(rpc_server=...)`. Apps
-register extra services here before `optio_core.run()`. `None` if no Redis is configured.
+**`optio_core.rpc_server`** (`RpcServerCore | None`): The clamator `RpcServerCore`
+constructed (a `RedisRpcServer` when `redis_url` is provided, or whatever the caller
+supplied via `init(rpc_server=...)`). Apps register extra services here before
+`optio_core.run()`. `None` if no Redis is configured.
 
 ---
 
