@@ -33,22 +33,34 @@ echo "[interop] starting mongodb on port $MONGO_PORT..."
 MONGO_CID=$(docker run -d -p "${MONGO_PORT}:27017" --tmpfs /data/db:rw,noexec,nosuid mongo:7)
 
 echo "[interop] waiting for redis ready..."
+REDIS_READY=0
 for i in {1..50}; do
   if docker exec "$REDIS_CID" redis-cli ping 2>/dev/null | grep -q PONG; then
+    REDIS_READY=1
     echo "[interop] redis ready."
     break
   fi
   sleep 0.2
 done
+if [[ "$REDIS_READY" -eq 0 ]]; then
+  echo "[interop] ERROR: redis did not become ready within 10s" >&2
+  exit 1
+fi
 
 echo "[interop] waiting for mongodb ready..."
+MONGO_READY=0
 for i in {1..75}; do
-  if docker exec "$MONGO_CID" mongosh --eval "db.adminCommand('ping')" --quiet 2>/dev/null | grep -q '"ok": 1'; then
+  if docker exec "$MONGO_CID" mongosh --eval 'quit(db.adminCommand("ping").ok ? 0 : 1)' --quiet 2>/dev/null; then
+    MONGO_READY=1
     echo "[interop] mongodb ready."
     break
   fi
   sleep 0.4
 done
+if [[ "$MONGO_READY" -eq 0 ]]; then
+  echo "[interop] ERROR: mongodb did not become ready within 30s" >&2
+  exit 1
+fi
 
 echo "[interop] starting optio-demo engine..."
 MONGODB_URL="mongodb://localhost:${MONGO_PORT}/optio-demo" \
