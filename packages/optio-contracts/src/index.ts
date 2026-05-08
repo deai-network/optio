@@ -8,4 +8,4 @@ export { ProcessSchema, ProcessStateSchema, LogEntrySchema,
 export type { Process, ProcessState, LogEntry, ProcessMetadataFilter } from './schemas/process.js';
 
 // Contract
-export { processesContract, discoveryContract } from './contract.js';
+export { processesContract, discoveryContract } from './api-to-frontend.js';

@@ -155,7 +155,7 @@ Full inferred type from `ProcessSchema` — see schema table above for all field
 
 ## Contract: processesContract
 
-ts-rest router exported from `contract.ts`. All paths use a `:prefix` segment that scopes
+ts-rest router exported from `api-to-frontend.ts`. All paths use a `:prefix` segment that scopes
 processes to a named domain (e.g., a specific application or worker).
 
 | Name | Method | Path | Path Params | Query Params | Response Codes |
