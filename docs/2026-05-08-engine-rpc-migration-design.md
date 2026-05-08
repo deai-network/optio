@@ -282,18 +282,18 @@ export const engineContract = defineContract('engine', {
 - The API never checks `cancellable` directly. If `proc.cancellable=false`, the engine returns `{ ok: false, reason: 'not-cancellable' }`.
 - Discriminated unions codegen cleanly to Pydantic `Field(discriminator='ok')` unions. Both languages get exhaustive switch coverage.
 
-### What `api-to-frontend.ts` reuses
+### Failure-reason enums and `api-to-frontend.ts` reuse
 
-Within `optio-contracts`, `api-to-frontend.ts` imports failure-reason enums from `./engine-failure-reasons.js`. External consumers (`optio-api/src/handlers.ts`, `optio-ui` error UI, custom adapters) import the same enums from the package root: `import { LaunchFailureReason } from 'optio-contracts'`. The package root re-exports the enum values and types from the same browser-safe `engine-failure-reasons.ts` module, but not `engineContract` (Q9). Note: the failure-reason enums live in `engine-failure-reasons.ts` rather than inline in `engine-to-api.ts` so browser bundles can re-export them without pulling in `@clamator/protocol` (which uses `node:crypto` and is Node-only).
+The five failure-reason enums (`LaunchFailureReason`, `CancelFailureReason`, `DismissFailureReason`, `GroupCancelFailureReason`, `BlockLaunchesFailureReason`) live in `packages/optio-contracts/src/engine-failure-reasons.ts` and import only `zod`. `engine-to-api.ts` imports them from there to use as discriminator values inside the result schemas. `packages/optio-contracts/src/index.ts` re-exports them from `engine-failure-reasons.ts`, so external consumers (`optio-api/src/handlers.ts`, `optio-ui` error UI, custom adapters) import them from the package root: `import { LaunchFailureReason } from 'optio-contracts'`. The split exists so browser bundles can re-export the enums without pulling in `@clamator/protocol` (which uses `node:crypto` and is Node-only). The package root does not re-export `engineContract` (Q9).
 
-The new `LaunchErrorBody` / `CancelErrorBody` / `DismissErrorBody` schemas land in phase 4, not phase 1.
+`api-to-frontend.ts` (the ts-rest HTTP contract) does not import the failure-reason enums in phase 1; the new `LaunchErrorBody` / `CancelErrorBody` / `DismissErrorBody` response schemas — which would consume the enums — land in phase 4 alongside the handler rewrite.
 
 ```typescript
 import {
   LaunchFailureReason,
   CancelFailureReason,
   DismissFailureReason,
-} from './engine-to-api.js';
+} from './engine-failure-reasons.js';
 
 const LaunchErrorBody  = z.object({ reason: LaunchFailureReason,  message: z.string() });
 const CancelErrorBody  = z.object({ reason: CancelFailureReason,  message: z.string() });
@@ -904,8 +904,10 @@ Five phases, each a separate implementation plan executable independently. Tests
 
 **Deliverables.**
 
-- `packages/optio-contracts/src/engine-to-api.ts` — full clamator engine contract per §3.
-- `packages/optio-contracts/src/api-to-frontend.ts` — renamed from `contract.ts`. Imports failure-reason enums from `engine-to-api.ts` and re-exports them from `index.ts`; HTTP error-body schema unchanged in phase 1 (flips in phase 4 alongside handler rewrite).
+- `packages/optio-contracts/src/engine-failure-reasons.ts` — browser-safe Zod enums (`LaunchFailureReason` etc.); imports only `zod`.
+- `packages/optio-contracts/src/engine-to-api.ts` — full clamator engine contract per §3; imports the failure-reason enums from `engine-failure-reasons.ts`.
+- `packages/optio-contracts/src/api-to-frontend.ts` — renamed from `contract.ts`. HTTP error-body schema unchanged in phase 1 (flips in phase 4 alongside handler rewrite); does not yet consume failure-reason enums.
+- `packages/optio-contracts/src/index.ts` — re-exports failure-reason enums from `engine-failure-reasons.ts` for package-root consumers (does not re-export `engineContract`).
 - `packages/optio-api/src/_generated/engine.ts` — codegen output, committed.
 - `packages/optio-core/src/optio_core/_generated/engine.py` — codegen output, committed.
 - Top-level `Makefile` per §7.
