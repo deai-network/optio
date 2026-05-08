@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Drift-check hook for clamator RPC codegen output.
+# Re-runs codegen and asserts that committed _generated/ paths match the source.
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+# Run codegen quietly. If make is missing or codegen fails, surface the error.
+if ! make -s codegen >/dev/null 2>&1; then
+  echo "pre-commit: 'make codegen' failed. Run it manually for output." >&2
+  exit 1
+fi
+
+if ! git diff --exit-code --quiet -- \
+    packages/optio-api/src/_generated \
+    packages/optio-core/src/optio_core/_generated; then
+  echo "pre-commit: generated stubs drifted from contract source." >&2
+  echo "Run 'make codegen', stage the result, and commit again." >&2
+  exit 1
+fi
