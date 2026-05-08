@@ -9,3 +9,12 @@ export type { Process, ProcessState, LogEntry, ProcessMetadataFilter } from './s
 
 // Contract
 export { processesContract, discoveryContract } from './api-to-frontend.js';
+
+// Engine contract failure-reason enums (Zod schemas + types) — browser-safe re-exports
+export {
+  LaunchFailureReason,
+  CancelFailureReason,
+  DismissFailureReason,
+  GroupCancelFailureReason,
+  BlockLaunchesFailureReason,
+} from './engine-failure-reasons.js';
