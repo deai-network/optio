@@ -77,6 +77,24 @@ def fake_optio(sample_idle_proc):
 
 
 @pytest.mark.asyncio
+async def test_launch_by_objectid_hex(fake_optio, sample_idle_proc):
+    """Verify _resolve accepts a 24-char hex ObjectId and queries _id, not processId."""
+    from optio_core._engine_service import EngineService
+    running = dict(sample_idle_proc)
+    running["status"] = {"state": "scheduled"}
+    fake_optio.collection.find_one = AsyncMock(side_effect=[sample_idle_proc, running])
+
+    svc = EngineService(fake_optio)
+    hex_id = str(sample_idle_proc["_id"])
+    result = await svc.launch(LaunchParams.model_validate({"processId": hex_id}))
+
+    assert result.root.ok is True
+    # First find_one query mentions _id (ObjectId branch), not processId (string branch).
+    first_query = fake_optio.collection.find_one.call_args_list[0][0][0]
+    assert "_id" in first_query
+
+
+@pytest.mark.asyncio
 async def test_launch_success(fake_optio, sample_idle_proc):
     """launch on an idle process returns ok=True with the post-mutation doc."""
     from optio_core._engine_service import EngineService
@@ -277,6 +295,7 @@ async def test_group_cancel_and_wait_invalid_persist(fake_optio):
     ))
     assert result.root.ok is False
     assert result.root.reason == "invalid-persist-without-block"
+    fake_optio.group_cancel_and_wait.assert_not_awaited()
 
 
 @pytest.mark.asyncio
