@@ -23,8 +23,8 @@ import { createEngineCache } from '../engine-cache.js';
 import type { EngineClient } from '../_generated/engine.js';
 
 export type OptioApiHandle =
-  | { engine: EngineClient; closeAll: () => Promise<void>; getEngine?: never }
-  | { getEngine: (database: string, prefix: string) => EngineClient; closeAll: () => Promise<void>; engine?: never };
+  | { GET: (request: Request) => Promise<Response>; POST: (request: Request) => Promise<Response>; engine: EngineClient; closeAll: () => Promise<void>; getEngine?: never }
+  | { GET: (request: Request) => Promise<Response>; POST: (request: Request) => Promise<Response>; getEngine: (database: string, prefix: string) => EngineClient; closeAll: () => Promise<void>; engine?: never };
 
 export type OptioApiOptions = {
   redis: Redis;
@@ -38,7 +38,7 @@ export type OptioApiOptions = {
 const c = initContract();
 const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/api' });
 
-export function createOptioRouteHandlers(opts: OptioApiOptions) {
+export function createOptioRouteHandlers(opts: OptioApiOptions): OptioApiHandle {
   const { redis } = opts;
   const cache = createEngineCache(redis);
   const dbOpts: DbOptions = 'mongoClient' in opts && opts.mongoClient ? { mongoClient: opts.mongoClient } : { db: opts.db! };

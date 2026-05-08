@@ -268,16 +268,17 @@ describe('list metadataFilter (nextjs-pages)', () => {
 import { EngineClient } from '../../_generated/engine.js';
 
 describe('createOptioHandler return shape', () => {
-  it('single-db mode returns { handler, engine, closeAll }', () => {
+  it('single-db mode returns { handler, engine, closeAll }', async () => {
     const result = createOptioHandler({ db, redis, authenticate: () => 'operator' });
     expect(result).toBeDefined();
     expect(typeof result.handler).toBe('function');
     expect(result.engine).toBeInstanceOf(EngineClient);
     expect(typeof result.closeAll).toBe('function');
     expect((result as any).getEngine).toBeUndefined();
+    await result.closeAll();
   });
 
-  it('multi-db mode returns { handler, getEngine, closeAll }', () => {
+  it('multi-db mode returns { handler, getEngine, closeAll }', async () => {
     const result = createOptioHandler({ mongoClient, redis, authenticate: () => 'operator' });
     expect(result).toBeDefined();
     expect(typeof result.handler).toBe('function');
@@ -288,6 +289,7 @@ describe('createOptioHandler return shape', () => {
     const a = result.getEngine!('db1', 'optio');
     const b = result.getEngine!('db1', 'optio');
     expect(a).toBe(b);
+    await result.closeAll();
   });
 
   it('closeAll called twice succeeds', async () => {

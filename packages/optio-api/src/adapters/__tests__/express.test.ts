@@ -252,7 +252,7 @@ describe('list metadataFilter (express)', () => {
 import { EngineClient } from '../../_generated/engine.js';
 
 describe('registerOptioApi return shape', () => {
-  it('single-db mode returns { engine, closeAll }', () => {
+  it('single-db mode returns { engine, closeAll }', async () => {
     const app = express();
     app.use(express.json());
     const result = registerOptioApi(app, { db, redis, authenticate: () => 'operator' });
@@ -260,9 +260,10 @@ describe('registerOptioApi return shape', () => {
     expect(result.engine).toBeInstanceOf(EngineClient);
     expect(typeof result.closeAll).toBe('function');
     expect((result as any).getEngine).toBeUndefined();
+    await result.closeAll();
   });
 
-  it('multi-db mode returns { getEngine, closeAll }', () => {
+  it('multi-db mode returns { getEngine, closeAll }', async () => {
     const app = express();
     app.use(express.json());
     const result = registerOptioApi(app, { mongoClient, redis, authenticate: () => 'operator' });
@@ -274,6 +275,7 @@ describe('registerOptioApi return shape', () => {
     const a = result.getEngine!('db1', 'optio');
     const b = result.getEngine!('db1', 'optio');
     expect(a).toBe(b);
+    await result.closeAll();
   });
 
   it('closeAll called twice succeeds', async () => {

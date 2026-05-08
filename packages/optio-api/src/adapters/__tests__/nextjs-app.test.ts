@@ -321,15 +321,16 @@ describe('list metadataFilter (nextjs-app)', () => {
 import { EngineClient } from '../../_generated/engine.js';
 
 describe('createOptioRouteHandlers return shape', () => {
-  it('single-db mode returns { engine, closeAll }', () => {
+  it('single-db mode returns { engine, closeAll }', async () => {
     const result = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
     expect(result).toBeDefined();
     expect(result.engine).toBeInstanceOf(EngineClient);
     expect(typeof result.closeAll).toBe('function');
     expect((result as any).getEngine).toBeUndefined();
+    await result.closeAll();
   });
 
-  it('multi-db mode returns { getEngine, closeAll }', () => {
+  it('multi-db mode returns { getEngine, closeAll }', async () => {
     const result = createOptioRouteHandlers({ mongoClient, redis, authenticate: () => 'operator' });
     expect(result).toBeDefined();
     expect(typeof result.getEngine).toBe('function');
@@ -339,6 +340,7 @@ describe('createOptioRouteHandlers return shape', () => {
     const a = result.getEngine!('db1', 'optio');
     const b = result.getEngine!('db1', 'optio');
     expect(a).toBe(b);
+    await result.closeAll();
   });
 
   it('closeAll called twice succeeds', async () => {
