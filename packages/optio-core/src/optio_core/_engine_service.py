@@ -7,6 +7,8 @@ the legacy stream until phase 3.
 
 from __future__ import annotations
 
+import asyncio
+import datetime
 from typing import TYPE_CHECKING
 
 from bson import ObjectId
@@ -41,17 +43,46 @@ def _is_objectid(s: str) -> bool:
     return bool(_OBJECTID_RE.match(s))
 
 
+_UTC = datetime.timezone.utc
+
+# Allowed top-level keys in the Process wire model (by-alias names).
+_PROCESS_WIRE_KEYS = frozenset({
+    "_id", "processId", "name", "params", "metadata", "parentId", "rootId",
+    "depth", "order", "cancellable", "special", "warning", "description",
+    "status", "progress", "log", "uiWidget", "widgetData", "supportsResume",
+    "hasSavedState", "createdAt",
+})
+
+
+def _fix_value(v: object) -> object:
+    """Recursively normalize a Mongo value to a wire-safe value."""
+    if isinstance(v, ObjectId):
+        return str(v)
+    if isinstance(v, datetime.datetime) and v.tzinfo is None:
+        return v.replace(tzinfo=_UTC)
+    if isinstance(v, dict):
+        return {k2: _fix_value(v2) for k2, v2 in v.items()}
+    if isinstance(v, list):
+        return [_fix_value(item) for item in v]
+    return v
+
+
 def _to_process_dict(doc: dict) -> dict:
     """Render a Mongo process doc as the wire-shape Process payload.
 
     Returns a dict that LaunchResult1.process / CancelResult1.process /
     DismissResult1.process etc. can validate. Generated Process model uses
-    by-alias field names (e.g. _id, processId, supportsResume), so we just
-    pass the doc through after stringifying the ObjectId.
+    by-alias field names (e.g. _id, processId, supportsResume).
+
+    Strips fields unknown to the contract (e.g. adhoc, ephemeral, ttlSeconds
+    stored by the scheduler), stringifies ObjectIds, and makes naive datetimes
+    UTC-aware so Pydantic AwareDatetime validation passes.
     """
-    out = dict(doc)
-    if "_id" in out and isinstance(out["_id"], ObjectId):
-        out["_id"] = str(out["_id"])
+    out = {
+        k: _fix_value(v)
+        for k, v in doc.items()
+        if k in _PROCESS_WIRE_KEYS
+    }
     return out
 
 
@@ -76,6 +107,9 @@ class EngineService(EngineServiceBase):
         except LaunchBlocked:
             return LaunchResult.model_validate({"ok": False, "reason": "launch-blocked"})
 
+        # The executor runs asynchronously; yield once so the state transition
+        # (idle → scheduled) can be written before we read it back.
+        await asyncio.sleep(0)
         updated = await self._resolve(proc["processId"])
         return LaunchResult.model_validate({"ok": True, "process": _to_process_dict(updated)})
 

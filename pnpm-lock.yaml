@@ -196,6 +196,28 @@ importers:
         specifier: ^6.0.0
         version: 6.4.1(@types/node@22.19.15)(tsx@4.21.0)
 
+  packages/optio-demo/interop:
+    dependencies:
+      '@clamator/over-redis':
+        specifier: ^0.1.5
+        version: 0.1.5(zod@4.3.6)
+      '@clamator/protocol':
+        specifier: ^0.1.5
+        version: 0.1.5(zod@4.3.6)
+      ioredis:
+        specifier: ^5.3.0
+        version: 5.10.1
+      optio-api:
+        specifier: workspace:*
+        version: link:../../optio-api
+    devDependencies:
+      tsx:
+        specifier: ^4.7.0
+        version: 4.21.0
+      typescript:
+        specifier: ^5.4.0
+        version: 5.9.3
+
   packages/optio-ui:
     dependencies:
       '@ant-design/icons':
@@ -3689,6 +3711,14 @@ snapshots:
       '@clamator/protocol': 0.1.5(zod@3.25.76)
       ioredis: 5.10.1
       zod: 3.25.76
+    transitivePeerDependencies:
+      - supports-color
+
+  '@clamator/over-redis@0.1.5(zod@4.3.6)':
+    dependencies:
+      '@clamator/protocol': 0.1.5(zod@4.3.6)
+      ioredis: 5.10.1
+      zod: 4.3.6
     transitivePeerDependencies:
       - supports-color
 

@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install build codegen test lint clean clean-codegen clean-deep
+.PHONY: help install build codegen test test-interop lint clean clean-codegen clean-deep
 
 PY_PACKAGES := optio-core optio-host optio-opencode
 
@@ -30,6 +30,9 @@ test:  ## Run all tests (TS + Python; per-package, no docker)
 	for pkg in $(PY_PACKAGES); do \
 	  (cd packages/$$pkg && pytest); \
 	done
+
+test-interop:  ## End-to-end test: TS clamator client ↔ Py engine over real redis (clamator wire verification)
+	bash packages/optio-demo/run-interop.sh
 
 lint:  ## Lint all packages
 	pnpm -r lint 2>/dev/null || true

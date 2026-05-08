@@ -1,0 +1,209 @@
+/**
+ * Phase-2 interop scenarios. Direct clamator client → optio-demo engine.
+ * Verifies the wire works end-to-end and the legacy ${prefix}:commands
+ * stream still functions during co-existence.
+ *
+ * Assumptions (set up by run-interop.sh before this script runs):
+ *  - Redis is reachable at REDIS_URL (default redis://localhost:6379).
+ *  - An optio-demo engine subprocess has been started with prefix=optio
+ *    and database=optio-demo. Heartbeat key optio-demo/optio:heartbeat
+ *    has been written.
+ *  - At least one task in optio-demo declares processId=opencode-demo.
+ */
+import IORedis from 'ioredis';
+import { RedisRpcClient } from '@clamator/over-redis';
+import { EngineClient } from 'optio-api';
+
+const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
+const DATABASE = 'optio-demo';
+const PREFIX = 'optio';
+const KEY_PREFIX = `${DATABASE}/${PREFIX}`;
+const PROC = 'opencode-demo';
+
+const redis = new IORedis(REDIS_URL);
+const rpc = new RedisRpcClient({ redis, keyPrefix: KEY_PREFIX });
+const engine = new EngineClient(rpc);
+
+let exitCode = 0;
+function fail(scenario: string, msg: string) {
+  console.error(`✗ ${scenario}: ${msg}`);
+  exitCode = 1;
+}
+function ok(scenario: string) {
+  console.log(`✓ ${scenario}`);
+}
+
+async function dismissIfTerminal() {
+  // Helper: leave the proc in 'idle' between scenarios.
+  await engine.dismiss({ processId: PROC }).catch(() => null);
+}
+
+async function main() {
+  await rpc.start();
+
+  try {
+    // Reset state baseline.
+    await dismissIfTerminal();
+
+    // 1. Launch success
+    {
+      const r = await engine.launch({ processId: PROC });
+      if (!r.ok) fail('launch success', `expected ok=true, got reason=${r.reason}`);
+      else ok('launch success');
+    }
+
+    // 2. Launch on running → not-launchable
+    {
+      const r = await engine.launch({ processId: PROC });
+      if (r.ok) fail('launch not-launchable', 'expected ok=false');
+      else if (r.reason !== 'not-launchable')
+        fail('launch not-launchable', `expected reason=not-launchable, got ${r.reason}`);
+      else ok('launch not-launchable');
+    }
+
+    // 3. Cancel success
+    {
+      const r = await engine.cancel({ processId: PROC });
+      if (!r.ok) fail('cancel success', `expected ok=true, got reason=${r.reason}`);
+      else ok('cancel success');
+    }
+
+    // Allow the cancel to fully propagate (scheduled→cancelled or
+    // running→cancel_requested→cancelling→cancelled may take a few frames).
+    await new Promise((res) => setTimeout(res, 500));
+
+    // 4. Dismiss success
+    {
+      const r = await engine.dismiss({ processId: PROC });
+      if (!r.ok) fail('dismiss success', `expected ok=true, got reason=${r.reason}`);
+      else ok('dismiss success');
+    }
+
+    // 5. Cancel idle → not-cancellable
+    {
+      const r = await engine.cancel({ processId: PROC });
+      if (r.ok) fail('cancel not-cancellable', 'expected ok=false');
+      else if (r.reason !== 'not-cancellable')
+        fail('cancel not-cancellable', `expected not-cancellable, got ${r.reason}`);
+      else ok('cancel not-cancellable');
+    }
+
+    // 6. Dismiss idle → not-dismissable
+    {
+      const r = await engine.dismiss({ processId: PROC });
+      if (r.ok) fail('dismiss not-dismissable', 'expected ok=false');
+      else if (r.reason !== 'not-dismissable')
+        fail('dismiss not-dismissable', `expected not-dismissable, got ${r.reason}`);
+      else ok('dismiss not-dismissable');
+    }
+
+    // 7. Launch nonexistent
+    {
+      const r = await engine.launch({ processId: 'no-such-process' });
+      if (r.ok) fail('launch not-found', 'expected ok=false');
+      else if (r.reason !== 'not-found')
+        fail('launch not-found', `expected not-found, got ${r.reason}`);
+      else ok('launch not-found');
+    }
+
+    // 8. Block / unblock cycle. Uses an empty filter ({}) which matches every
+    // task — works regardless of whether opencode-demo carries metadata.
+    {
+      await dismissIfTerminal(); // ensure proc is idle / launchable.
+      const block = await engine.blockLaunches({
+        launchFilter: {},
+        reason: 'phase-2-interop',
+      });
+      if (!block.ok) {
+        fail('blockLaunches', `expected ok=true, got reason=${block.reason}`);
+      } else {
+        ok('blockLaunches');
+        const launchBlocked = await engine.launch({ processId: PROC });
+        if (launchBlocked.ok) {
+          fail('launch-blocked', 'expected ok=false');
+        } else if (launchBlocked.reason !== 'launch-blocked') {
+          fail(
+            'launch-blocked',
+            `expected reason=launch-blocked, got ${launchBlocked.reason}`,
+          );
+        } else {
+          ok('launch-blocked');
+        }
+        const unblock = await engine.unblockLaunches({ launchFilter: {} });
+        if (unblock.removed < 1) fail('unblockLaunches', `expected removed>=1, got ${unblock.removed}`);
+        else ok('unblockLaunches');
+
+        // Re-launch should now succeed.
+        const relaunch = await engine.launch({ processId: PROC });
+        if (!relaunch.ok) fail('relaunch after unblock', `got reason=${relaunch.reason}`);
+        else ok('relaunch after unblock');
+      }
+    }
+
+    // 9. Resync notification
+    {
+      await engine.resync({});
+      ok('resync notification (no-throw)');
+    }
+
+    // 10. groupCancel invalid persist
+    {
+      const r = await engine.groupCancel({
+        metadataFilter: { tag: 'demo' },
+        persist: true,
+      });
+      if (r.ok) fail('groupCancel invalid-persist', 'expected ok=false');
+      else if (r.reason !== 'invalid-persist-without-block')
+        fail('groupCancel invalid-persist', `expected invalid-persist-without-block, got ${r.reason}`);
+      else ok('groupCancel invalid-persist');
+    }
+
+    // 11. Legacy stream regression — XADD a launch command and confirm engine consumed.
+    {
+      // Ensure the process is in a launchable state before the legacy test:
+      // cancel if running/scheduled, then dismiss to idle.
+      await engine.cancel({ processId: PROC }).catch(() => null);
+      await new Promise((res) => setTimeout(res, 500));
+      await dismissIfTerminal();
+      const id = await redis.xadd(
+        `${KEY_PREFIX}:commands`,
+        '*',
+        'type',
+        'launch',
+        'payload',
+        JSON.stringify({ processId: PROC }),
+      );
+      if (!id) {
+        fail('legacy stream regression', 'xadd to legacy stream returned null id');
+      } else {
+        // Allow the engine consumer a brief window to consume the entry.
+        await new Promise((res) => setTimeout(res, 500));
+        // Verify that the legacy stream entry was consumed (acknowledged) by the engine.
+        // We read the pending-entry-list for the consumer group; if the entry id
+        // is no longer pending, it was processed.
+        const pending = await redis.xpending(
+          `${KEY_PREFIX}:commands`,
+          'optio_core',
+          id,
+          id,
+          1,
+        );
+        if (pending.length > 0) {
+          fail('legacy stream regression', `legacy stream entry ${id} is still pending — engine did not consume it`);
+        } else {
+          ok(`legacy stream regression (xadd id=${id})`);
+        }
+      }
+    }
+  } finally {
+    await rpc.stop();
+    await redis.quit();
+  }
+
+  process.exit(exitCode);
+}
+
+main().catch((e) => {
+  console.error('fatal:', e);
+  process.exit(2);
+});
