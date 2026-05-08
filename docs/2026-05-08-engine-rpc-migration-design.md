@@ -1146,3 +1146,118 @@ Tests:
 
 - Existing `optio-api` tests in `__tests__/` may have mocks tied to `publisher.ts` shape. Phase 4 cleanup updates these alongside the handler signature change.
 - Existing `optio-core` tests for `CommandConsumer` deleted in phase 5 alongside the consumer code.
+
+## Appendix A — Verbatim documentation prose for phase 1
+
+The blocks below are ready-to-paste prose for the doc updates that ship in phase 1. They describe the post-phase-1 state of optio's architectural-rule documentation. Copy each block into the corresponding file when executing phase 1; no further drafting needed.
+
+### A.1 Top-level `README.md` — Architecture section
+
+The current section contains only the architecture image. Insert the following after the image (keep the image line as-is):
+
+```markdown
+### Authority and data flow
+
+Optio enforces a clean separation between writes and reads:
+
+- **`optio-core` (the engine) is the sole writer to MongoDB.** All state transitions, validation, scheduling, and policy decisions happen in the engine process. The engine is the single source of truth for what commands are allowed and what state results.
+- **`optio-api` (the REST API) is read-only against MongoDB.** It serves REST GETs, SSE streams, the widget proxy, and instance discovery by reading directly from MongoDB and from redis heartbeat keys. It performs no DB writes.
+- **Mutating operations (launch, cancel, dismiss, resync, group-cancel, launch blocks) flow from the API to the engine via clamator RPC over redis.** The API translates an HTTP request into a typed RPC call; the engine validates, acts, and returns a typed result; the API translates the result back into an HTTP response. The API enforces no state machine, no `cancellable` policy, no command-acceptance rules of its own.
+- **External applications** that need to control the engine without going through HTTP can use the engine's Python API directly (in-process), or register as a clamator RPC client (cross-process). They never write to MongoDB themselves.
+```
+
+### A.2 Top-level `AGENTS.md` — Architecture Notes section
+
+Replace the existing "Redis stream" bullet with the new "Engine RPC" bullet, insert the new "Authority rule" bullet at the very top of the section, and adjust the "No Redis mode" bullet text to mention `rpc_server`. All other bullets in the section remain unchanged.
+
+```markdown
+- **Authority rule.** `optio-core` is the sole writer to MongoDB. `optio-api` reads MongoDB directly for queries (REST GETs, SSE, widget proxy, discovery) and forwards every mutating operation to the engine via clamator RPC. The API enforces no state machine, no policy, no command-acceptance rules. Engine is single source of truth for what commands are allowed and what state results. Full statement: top-level README "Authority and data flow".
+- **Engine RPC.** clamator over-redis. Engine hosts a `RedisRpcServer` constructed by `optio_core.init()` with `key_prefix=f"{database}/{prefix}"`, registering the `engine` service defined in `optio-contracts/src/engine-to-api.ts`. API uses a `RedisRpcClient` per `(database, prefix)` constructed by `registerOptioApi`. Apps can register additional services on `optio_core.rpc_server` before calling `optio_core.run()`.
+- **Collection name**: `{prefix}_processes` (MongoDB)
+- **No Redis mode**: `init()` with `redis_url=None` and no `rpc_server` disables the command surface; use direct Python API calls (`optio.launch()`, etc.) instead.
+```
+
+(The remaining bullets — "Progress flushing", "Child processes", "Ephemeral processes", "Migrations", "Scheduler", "Process state reconciliation", "Persistent launch blocks" — are unchanged from today's content.)
+
+### A.3 `packages/optio-contracts/AGENTS.md` — new "Package structure" section
+
+Insert this section between the existing "## Package" block and the existing "## Schemas" block:
+
+```markdown
+## Package structure
+
+The package hosts two typed contracts that define optio's internal communication surfaces:
+
+| File | Contract type | Purpose |
+|------|---------------|---------|
+| `src/api-to-frontend.ts` | ts-rest HTTP contract | What `optio-api` exposes to its REST clients (UI, external integrations). Used by `optio-ui` to construct typed clients and by `optio-api` to register typed handlers. |
+| `src/engine-to-api.ts` | clamator RPC contract | What `optio-core` (the engine) exposes to its RPC callers (typically `optio-api`). Used by `optio-api` to issue typed RPC calls and by `optio-core` to implement typed handlers. |
+| `src/schemas.ts` | Shared Zod schemas | Common types used by both contracts (`ProcessSchema`, `LogEntrySchema`, etc.). |
+
+### Naming convention
+
+Contract files follow `<server>-to-<client>.ts`, where the **server** is the side that exposes the contract and the **client** is the side that consumes it. For example, in `engine-to-api.ts`, the engine exposes methods that the API calls. The "to" indicates exposure, not call direction.
+
+### Codegen
+
+The clamator contract (`engine-to-api.ts`) is the single source of truth for the RPC surface. clamator's codegen produces matching wrappers in both languages:
+
+- **TypeScript output:** `packages/optio-api/src/_generated/engine.ts` — `EngineClient` class, params/result types.
+- **Python output:** `packages/optio-core/src/optio_core/_generated/engine.py` — Pydantic models, `EngineService` ABC.
+
+Generated files are committed. Regenerate via `make codegen` at the repo root. A pre-commit hook runs codegen and fails on `git diff` non-empty under `_generated/` paths to catch drift.
+
+The HTTP contract (`api-to-frontend.ts`) does not require codegen: ts-rest builds typed clients and handlers from the contract object via TypeScript's type system at the consumer's compile time.
+```
+
+Plus one inline edit elsewhere in the same file: line 158 currently reads `ts-rest router exported from contract.ts`. Change to `ts-rest router exported from api-to-frontend.ts`.
+
+### A.4 `packages/optio-contracts/README.md` — replace "## Contract" section
+
+Replace the current "## Contract" section (lines 28-43 in the present file) with:
+
+```markdown
+## Contracts
+
+The package hosts two typed contracts. Contract files follow `<server>-to-<client>.ts` naming: the server side is the one that exposes the contract; the client side calls it.
+
+- `processesContract` (in `src/api-to-frontend.ts`) — ts-rest HTTP contract that `optio-api` exposes to its REST clients.
+- `engineContract` (in `src/engine-to-api.ts`) — clamator RPC contract that `optio-core` exposes to its RPC callers.
+
+### `processesContract` (HTTP, ts-rest)
+
+ts-rest router with 9 endpoints, used by `optio-ui` to call `optio-api`:
+
+| Name | Method | Path |
+|------|--------|------|
+| `list` | GET | `/processes/:prefix` |
+| `get` | GET | `/processes/:prefix/:id` |
+| `getTree` | GET | `/processes/:prefix/:id/tree` |
+| `getLog` | GET | `/processes/:prefix/:id/log` |
+| `getTreeLog` | GET | `/processes/:prefix/:id/tree/log` |
+| `launch` | POST | `/processes/:prefix/:id/launch` |
+| `cancel` | POST | `/processes/:prefix/:id/cancel` |
+| `dismiss` | POST | `/processes/:prefix/:id/dismiss` |
+| `resync` | POST | `/processes/:prefix/resync` |
+
+Used at runtime by ts-rest; no codegen step.
+
+### `engineContract` (RPC, clamator)
+
+clamator service named `engine`, used by `optio-api` to call `optio-core`. Methods:
+
+| Method | Kind | Purpose |
+|--------|------|---------|
+| `launch` | request/reply | Launch a process; returns post-command process state or typed failure reason. |
+| `cancel` | request/reply | Cancel a running or scheduled process; returns post-command state or typed failure reason. |
+| `dismiss` | request/reply | Reset a terminal process to idle; returns post-command state or typed failure reason. |
+| `groupCancel` | request/reply | Cancel all processes matching a metadata filter; returns count. |
+| `groupCancelAndWait` | request/reply | Cancel all matching processes and wait until they reach a terminal state. |
+| `blockLaunches` | request/reply | Add a persistent launch block. |
+| `unblockLaunches` | request/reply | Remove a persistent launch block; returns count removed. |
+| `resync` | notification | Re-sync task definitions. Fire-and-forget; no reply. |
+
+Failure modes use discriminated-union result types (e.g. `{ ok: true, process } | { ok: false, reason: 'not-found' | 'not-launchable' | … }`) so consumers get exhaustive type coverage on success and failure branches.
+
+Generated wrappers ship next to consumers: `packages/optio-api/src/_generated/engine.ts` for TypeScript, `packages/optio-core/src/optio_core/_generated/engine.py` for Python. Regenerate via `make codegen` at the repo root.
+```
