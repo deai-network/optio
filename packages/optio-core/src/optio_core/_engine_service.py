@@ -136,7 +136,7 @@ class EngineService(EngineServiceBase):
             persist=bool(params.persist),
             reason=params.reason,
         )
-        return GroupCancelResult.model_validate({"ok": True, "cancelledCount": count or 0})
+        return GroupCancelResult.model_validate({"ok": True, "cancelledCount": count})
 
     async def group_cancel_and_wait(
         self, params: GroupCancelAndWaitParams
@@ -151,7 +151,7 @@ class EngineService(EngineServiceBase):
             persist=bool(params.persist),
             reason=params.reason,
         )
-        return GroupCancelAndWaitResult.model_validate({"ok": True, "cancelledCount": count or 0})
+        return GroupCancelAndWaitResult.model_validate({"ok": True, "cancelledCount": count})
 
     # --------------------------------------------------------------- block_launches / unblock_launches
     async def block_launches(self, params: BlockLaunchesParams) -> BlockLaunchesResult:

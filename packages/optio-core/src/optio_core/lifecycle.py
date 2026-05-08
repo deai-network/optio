@@ -454,9 +454,11 @@ class Optio:
         *,
         persist: bool = False,
         reason: str | None = None,
-    ) -> None:
+    ) -> int:
         """Cancel every active process matching `metadata_filter`. Does NOT
         wait for terminal state.
+
+        Returns the count of processes for which cancellation was issued.
 
         See docs/2026-04-30-group-cancel-design.md and
         docs/2026-04-30-persistent-launch-blocks-design.md (for `persist`).
@@ -477,7 +479,8 @@ class Optio:
                         metadata_filter, persist=persist, reason=reason,
                     )
                 )
-            await self._group_cancel_issue(metadata_filter, block_new_launches)
+            pending_ids = await self._group_cancel_issue(metadata_filter, block_new_launches)
+            return len(pending_ids)
 
     async def group_cancel_and_wait(
         self,
@@ -486,11 +489,13 @@ class Optio:
         *,
         persist: bool = False,
         reason: str | None = None,
-    ) -> None:
+    ) -> int:
         """Cancel every active process matching `metadata_filter` and wait
         for all of them to reach a terminal state. See
         docs/2026-04-30-group-cancel-design.md and
         docs/2026-04-30-persistent-launch-blocks-design.md (for `persist`).
+
+        Returns the count of processes for which cancellation was issued.
 
         Do not call from inside a task whose metadata matches the filter —
         use group_cancel for self-cancel.
@@ -515,7 +520,7 @@ class Optio:
                 metadata_filter, block_new_launches,
             )
             if not pending:
-                return
+                return 0
 
             ceiling = self._config.cancel_grace_seconds + 25.0
             deadline = time.monotonic() + ceiling
@@ -533,6 +538,7 @@ class Optio:
                         f"(filter={metadata_filter})"
                     )
                 await asyncio.sleep(0.1)
+            return len(pending)
 
     async def dismiss(self, process_id: str) -> None:
         """Dismiss a completed process (reset to idle)."""
