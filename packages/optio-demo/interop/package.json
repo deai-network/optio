@@ -8,8 +8,8 @@
   },
   "dependencies": {
     "optio-api": "workspace:*",
-    "@clamator/over-redis": "^0.1.5",
-    "@clamator/protocol": "^0.1.5",
+    "@clamator/over-redis": "^0.1.7",
+    "@clamator/protocol": "^0.1.7",
     "ioredis": "^5.3.0"
   },
   "devDependencies": {
