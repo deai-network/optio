@@ -105,7 +105,7 @@ git commit -m "refactor(optio-contracts): rename contract.ts to api-to-frontend.
 
 - [ ] **Step 1: Add `@clamator/protocol` runtime dep to optio-contracts**
 
-Edit `packages/optio-contracts/package.json` `dependencies` block to add `"@clamator/protocol": "^0.1.0"` (alphabetical placement after `@ts-rest/core`). Keep zod and the others.
+Edit `packages/optio-contracts/package.json` `dependencies` block to add `"@clamator/protocol": "^0.1.1"` (alphabetical placement after `@ts-rest/core`). Keep zod and the others.
 
 - [ ] **Step 2: Install**
 
@@ -394,8 +394,8 @@ Edit root `package.json`:
 Edit `packages/optio-api/package.json` `dependencies` to add (alphabetical):
 
 ```json
-"@clamator/over-redis": "^0.1.0",
-"@clamator/protocol": "^0.1.0",
+"@clamator/over-redis": "^0.1.1",
+"@clamator/protocol": "^0.1.1",
 ```
 
 - [ ] **Step 3: Install TS deps**
@@ -414,8 +414,8 @@ dependencies = [
     "motor>=3.3.0",
     "apscheduler>=4.0.0a5",
     "quaestor",
-    "clamator-protocol>=0.1.0",
-    "clamator-over-redis>=0.1.0",
+    "clamator-protocol>=0.1.1",
+    "clamator-over-redis>=0.1.1",
     "pydantic>=2.0",
 ]
 ```
