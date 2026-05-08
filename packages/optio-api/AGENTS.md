@@ -6,7 +6,8 @@
 - **entry points**:
   - `optio-api` → `dist/index.js` / `dist/index.d.ts`
   - `optio-api/fastify` → `dist/adapters/fastify.js` / `dist/adapters/fastify.d.ts`
-- **dependencies**: `optio-contracts`, `@ts-rest/core`, `mongodb`, `ioredis`
+- **dependencies**: `optio-contracts`, `@ts-rest/core`, `mongodb`, `ioredis`, `@clamator/protocol`, `@clamator/over-redis`, `zod`
+- **note**: `zod` is declared explicitly here even though `optio-api` does not import it directly. `@clamator/protocol` declares `zod` as a peerDependency; without an explicit declaration in this package, pnpm can resolve `@clamator/protocol`'s peer requirement against a different physical `zod` copy than the one used by `optio-contracts`, which causes TypeScript to reject the codegenned `_generated/engine.ts`. See `@clamator/protocol`'s README for the canonical statement of this consumer requirement.
 - **optionalDependencies**: `@ts-rest/fastify`
 - **peerDependencies**: `fastify ^5.2.0` (optional)
 

@@ -10,6 +10,6 @@
     "node": ">=20"
   },
   "devDependencies": {
-    "@clamator/codegen": "^0.1.3"
+    "@clamator/codegen": "^0.1.5"
   }
 }

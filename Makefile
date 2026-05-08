@@ -19,7 +19,7 @@ build:  ## Build all packages
 	done
 
 codegen:  ## Regenerate clamator RPC client/server stubs from optio-contracts source
-	node scripts/codegen.mjs \
+	pnpm exec clamator-codegen \
 	  --src packages/optio-contracts/src \
 	  --out-ts packages/optio-api/src/_generated \
 	  --out-py packages/optio-core/src/optio_core/_generated \

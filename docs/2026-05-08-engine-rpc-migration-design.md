@@ -637,6 +637,8 @@ async function launchProcess(engine: EngineClient,
 
 The cache that maps `(database, prefix)` to a long-lived `EngineClient` belongs in a framework-agnostic module so all four adapters consume the same logic. New file: `packages/optio-api/src/engine-cache.ts`.
 
+**Consumer dep note (zod).** `@clamator/protocol` declares `zod` as a `peerDependency`. Any package consuming the codegenned `_generated/engine.ts` (so: `optio-api` here, plus any external adapter) must declare a compatible `zod` (currently `^3.x`) in its own `dependencies` even if it does not import `zod` directly. Without it, pnpm/npm can resolve the peer requirement against a different physical zod copy than `optio-contracts` uses, and TypeScript will reject the generated discriminated-union types with hard-to-read dual-instance errors. See `@clamator/protocol`'s README for the canonical statement of this requirement. Phase 1 added the necessary `"zod": "^3"` declaration to `packages/optio-api/package.json`.
+
 ```typescript
 import type { Redis } from 'ioredis';
 import { RedisRpcClient } from '@clamator/over-redis';
@@ -910,8 +912,9 @@ Five phases, each a separate implementation plan executable independently. Tests
 - `packages/optio-contracts/src/index.ts` — re-exports failure-reason enums from `engine-failure-reasons.ts` for package-root consumers (does not re-export `engineContract`).
 - `packages/optio-api/src/_generated/engine.ts` — codegen output, committed.
 - `packages/optio-core/src/optio_core/_generated/engine.py` — codegen output, committed.
+- Clamator runtime deps added: `@clamator/protocol`, `@clamator/over-redis`, and `zod` (consumer requirement per §5) in `packages/optio-api/package.json`; `clamator-protocol`, `clamator-over-redis`, `pydantic` in `packages/optio-core/pyproject.toml`. `@clamator/codegen` as root devDep.
+- Pre-commit hook installed via `git config core.hooksPath scripts/git-hooks` (`scripts/git-hooks/pre-commit` runs `make codegen` + drift check; `scripts/install-hooks.sh` is the one-line installer).
 - Top-level `Makefile` per §7.
-- Pre-commit hook running `make codegen && git diff --exit-code`.
 - Top-level `README.md` Architecture section: canonical architectural-rule statement.
 - Top-level `AGENTS.md` Architecture Notes: rule statement.
 - `packages/optio-contracts/AGENTS.md` — created or updated per §6.
