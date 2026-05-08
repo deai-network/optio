@@ -255,3 +255,40 @@ Spec: `docs/2026-04-30-persistent-launch-blocks-design.md`.
   automatically so the proxy returns 404 after the process ends.
 - **Dismiss / relaunch**: both `widgetData` and `widgetUpstream` are cleared when a
   process is dismissed or re-launched.
+
+---
+
+### optio_core.rpc_server
+
+```python
+optio_core.rpc_server: RedisRpcServer | None
+```
+
+The `RedisRpcServer` constructed during `init(redis_url=...)`, or the server passed
+via `init(rpc_server=...)`, or `None` if no Redis is configured. Apps register
+additional clamator services on this attribute before calling `optio_core.run()`.
+
+---
+
+### init() — RPC server parameters (phase 2+)
+
+Two new keyword arguments added to `optio_core.init()`:
+
+- `rpc_server` (`RpcServerCore | None`): Pre-built clamator RPC server. Mutually
+  exclusive with `redis_url`. When supplied, optio-core registers `EngineService` on
+  it but does not own its lifecycle.
+- `redis_url` (existing): When supplied, optio-core constructs a `RedisRpcServer`
+  internally, registers `EngineService`, and exposes it at `optio_core.rpc_server`.
+
+Full `init()` signature (as of phase 2):
+
+```python
+await optio_core.init(
+    mongo_db: AsyncIOMotorDatabase,
+    prefix: str = "optio",
+    redis_url: str | None = None,
+    rpc_server: RpcServerCore | None = None,
+    services: dict[str, Any] | None = None,
+    get_task_definitions: Callable[..., Awaitable[list[TaskInstance]]] | None = None,
+) -> None
+```

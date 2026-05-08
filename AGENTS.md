@@ -114,6 +114,9 @@ await optio_core.list_processes(state=None, root_id=None, metadata=None) -> list
 
 # Custom Redis command handler (call before run())
 optio_core.on_command(command_type: str, handler: Callable[..., Awaitable]) -> None
+
+# RPC server (set after init(); None if no Redis configured)
+optio_core.rpc_server: RedisRpcServer | None
 ```
 
 **`init()` parameters:**
@@ -123,8 +126,13 @@ optio_core.on_command(command_type: str, handler: Callable[..., Awaitable]) -> N
 | `mongo_db` | `AsyncIOMotorDatabase` | required | Motor async database object |
 | `prefix` | `str` | required | Namespace for collections (`{prefix}_processes`) and Redis streams (`{prefix}:commands`) |
 | `redis_url` | `str \| None` | `None` | If None: command bus disabled; use direct method calls |
+| `rpc_server` | `RpcServerCore \| None` | `None` | Pre-built clamator RPC server. Mutually exclusive with `redis_url`. When supplied, optio-core registers `EngineService` on it but does not own its lifecycle. |
 | `services` | `dict[str, Any] \| None` | `{}` | Passed as `ctx.services` to all task execute functions |
 | `get_task_definitions` | `Callable[..., Awaitable[list[TaskInstance]]] \| None` | `None` | Async function `(services, metadata_filter) -> list[TaskInstance]`; called on init and resync. `metadata_filter` is `None` for a full sync. |
+
+**`optio_core.rpc_server`** (`RedisRpcServer | None`): The clamator `RedisRpcServer`
+constructed during `init(redis_url=...)` or supplied via `init(rpc_server=...)`. Apps
+register extra services here before `optio_core.run()`. `None` if no Redis is configured.
 
 ---
 
@@ -526,6 +534,11 @@ export type { ListQuery, PaginationQuery, TreeLogQuery, CommandResult } from 'op
 // Publishers (for domain code to trigger commands via Redis)
 export { publishLaunch, publishResync } from 'optio-api';
 
+// Engine client (phase 2+)
+export { EngineClient, createEngineCache } from 'optio-api';
+export type { EngineCache } from 'optio-api';
+// EngineCache: { get(database, prefix): EngineClient; closeAll(): Promise<void> }
+
 // Stream poller (for custom SSE adapters)
 export { createListPoller, createTreePoller } from 'optio-api';
 export type { StreamPollerOptions, TreePollerOptions, ListPollerHandle } from 'optio-api';
@@ -554,7 +567,8 @@ interface OptioApiOptions {
 ```typescript
 import { registerOptioApi } from 'optio-api/fastify';
 
-registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): void
+registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): { engine: EngineClient, closeAll: () => Promise<void> }
+// (multi-db mode returns { getEngine, closeAll } instead — see packages/optio-api/README.md)
 // Single entry point for the Fastify integration. Registers:
 //   - REST endpoints from processesContract under /api/processes/...
 //   - SSE endpoints GET /api/processes/:id/tree/stream and GET /api/processes/stream
@@ -983,6 +997,7 @@ All components use `react-i18next`. Required keys:
 
 - **Authority rule.** `optio-core` is the sole writer to MongoDB. `optio-api` reads MongoDB directly for queries (REST GETs, SSE, widget proxy, discovery) and forwards every mutating operation to the engine via clamator RPC. The API enforces no state machine, no policy, no command-acceptance rules. Engine is single source of truth for what commands are allowed and what state results. Full statement: top-level README "Authority and data flow".
 - **Engine RPC.** clamator over-redis. Engine hosts a `RedisRpcServer` constructed by `optio_core.init()` with `key_prefix=f"{database}/{prefix}"`, registering the `engine` service defined in `optio-contracts/src/engine-to-api.ts`. API uses a `RedisRpcClient` per `(database, prefix)` constructed by `registerOptioApi`. Apps can register additional services on `optio_core.rpc_server` before calling `optio_core.run()`.
+- **registerOptioApi return handle.** `registerOptioApi` (and the Next.js equivalents `createOptioRouteHandlers` / `createOptioHandler`) return a handle exposing the underlying `EngineClient`(s) and a `closeAll` teardown. Single-db mode: `{ engine: EngineClient, closeAll }`. Multi-db mode: `{ getEngine, closeAll }`. See `packages/optio-api/README.md` for details.
 - **Collection name**: `{prefix}_processes` (MongoDB)
 - **No Redis mode**: `init()` with `redis_url=None` and no `rpc_server` disables the command surface; use direct Python API calls (`optio.launch()`, etc.) instead.
 - **Progress flushing**: buffered every 100ms; override with `OPTIO_PROGRESS_FLUSH_INTERVAL_MS` env var

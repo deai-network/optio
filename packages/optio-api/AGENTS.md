@@ -11,6 +11,20 @@
 - **optionalDependencies**: `@ts-rest/fastify`
 - **peerDependencies**: `fastify ^5.2.0` (optional)
 
+## Exports (phase 2+)
+
+In addition to the handler functions and stream pollers listed below, the following
+symbols are re-exported from the main `optio-api` entry point:
+
+- `EngineClient` (re-exported from `_generated/engine.ts`) — typed clamator client
+  for the engine RPC contract. Use to call engine methods from non-HTTP code paths.
+- `createEngineCache(redis: Redis): EngineCache` — framework-agnostic factory that
+  lazily constructs and caches `EngineClient` instances per `(database, prefix)`.
+  Custom adapters consume this rather than rolling their own cache.
+- `EngineCache` — the type returned by `createEngineCache`. Interface:
+  `get(database: string, prefix: string): EngineClient` and
+  `closeAll(): Promise<void>`.
+
 ## OptioApiOptions
 
 ```typescript
@@ -50,6 +64,17 @@ defense in depth.
 ## Fastify Adapter
 
 Imported from `optio-api/fastify`.
+
+**Return shape (phase 2+):**
+
+`registerOptioApi(app, opts)` returns:
+
+- `{ engine: EngineClient, closeAll: () => Promise<void> }` in single-db mode (`db` supplied).
+- `{ getEngine: (database: string, prefix: string) => EngineClient, closeAll: () => Promise<void> }` in multi-db mode (`mongoClient` supplied).
+
+Fastify wires `closeAll` into its `onClose` hook automatically. The returned `engine`
+(or result of `getEngine(...)`) can be shared with non-HTTP code paths so they do not
+need to construct their own clamator client.
 
 ```typescript
 function registerProcessRoutes(app: FastifyInstance, opts: OptioApiOptions): void
@@ -260,3 +285,36 @@ function createTreePoller(opts: TreePollerOptions): ListPollerHandle
 The `widgetData` field is included in tree-stream `update` events and is part of the snapshot fingerprint, so worker-side mutations (via `ctx.set_widget_data`) trigger a new SSE event. The list stream (`createListPoller`) does **not** include `widgetData` — it is omitted from sidebar payloads.
 
 `widgetUpstream` is **never** included in any client-facing payload (list stream, tree stream, or REST responses).
+
+## Building Custom Adapters
+
+When writing a custom framework adapter (not Fastify/Express/Next.js), follow these rules:
+
+1. **Use `createEngineCache(opts.redis)`** to obtain an `EngineCache`. Do NOT construct
+   `RedisRpcClient` or `EngineClient` directly — the cache ensures one client instance
+   per `(database, prefix)` pair and handles connection lifecycle.
+
+2. **Wire `cache.closeAll()` into your framework's shutdown hook** (where the framework
+   provides one). If it does not, expose `closeAll` on the adapter's return value so
+   callers can wire it into their own `SIGTERM` / `onClose` handler.
+
+3. **Return the cache (or a `getEngine` wrapper)** from your adapter function so callers
+   can share the `EngineClient` with non-HTTP code paths (scheduled jobs, custom RPC
+   integrations, etc.) without constructing a second client.
+
+Example skeleton:
+
+```typescript
+import { createEngineCache, type EngineClient } from 'optio-api';
+
+export function registerOptioApiMyFramework(app: MyApp, opts: OptioApiOptions) {
+  const cache = createEngineCache(opts.redis);
+  const engine: EngineClient = cache.get(opts.db.databaseName!, opts.prefix ?? 'optio');
+
+  // ... mount routes using handler functions from optio-api ...
+
+  app.onClose(async () => cache.closeAll());
+
+  return { engine, closeAll: () => cache.closeAll() };
+}
+```

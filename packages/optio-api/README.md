@@ -169,6 +169,38 @@ followed by any query or command parameters. Command handlers (`launchProcess`,
 Stream pollers expose a `{ start(), stop() }` handle; call `start()` when the
 client connects and `stop()` when they disconnect.
 
+## Return value
+
+`registerOptioApi`, `createOptioRouteHandlers`, and `createOptioHandler`
+return an object that exposes the underlying clamator engine client(s)
+plus a teardown function:
+
+- **Single-db mode** (`db` supplied): `{ engine, closeAll }`
+  - `engine: EngineClient` — typed client ready to call engine RPC methods.
+  - `closeAll(): Promise<void>` — drains every cached client. Idempotent.
+- **Multi-db mode** (`mongoClient` supplied): `{ getEngine, closeAll }`
+  - `getEngine(database, prefix): EngineClient` — looks up or lazily
+    constructs the client for `(database, prefix)`. Repeat lookups
+    return the same instance.
+  - `closeAll(): Promise<void>` — same as above.
+
+Fastify wires `closeAll` into its `onClose` lifecycle hook
+automatically. Express and Next.js have no equivalent; callers wire
+`closeAll` into their shutdown handler manually:
+
+```typescript
+const { engine, closeAll } = registerOptioApi(app, { db, redis });
+const server = app.listen(3000);
+process.on('SIGTERM', async () => {
+  server.close();
+  await closeAll();
+});
+```
+
+The returned `engine` (or `getEngine(...)`) can be shared with non-HTTP
+code paths (custom RPC integrations, server-side scheduled jobs) so
+they do not need to construct their own clamator client.
+
 ## See Also
 
 - [Optio Overview](../../README.md)

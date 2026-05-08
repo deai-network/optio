@@ -78,7 +78,7 @@ packages/optio-core/src/optio_core/
 │   └── engine.py                       # NEW — clamator codegen output (committed)
 ├── _engine_service.py                  # NEW — EngineService impl
 ├── lifecycle.py                        # updated — init() creates RedisRpcServer, exposes optio_core.rpc_server
-├── _command_consumer.py                # DELETED in phase 5
+├── consumer.py                         # DELETED in phase 5
 ├── store.py                            # unchanged
 ├── migrations/                         # unchanged
 └── … (other existing files unchanged)
@@ -518,7 +518,7 @@ App-provided `rpc_server` (test mode) is the app's responsibility to start and s
 
 ### Phase 5 deletions
 
-- `_command_consumer.py` (entire file).
+- `consumer.py` (entire file).
 - `_handle_launch`, `_handle_cancel`, `_handle_dismiss`, `_handle_resync` if their only call site was the consumer dispatch (the inner methods they delegate to — `optio.launch()` etc. — stay).
 - `on_command(...)` public method on `Optio`.
 - The `optio_core.on_command` re-export.
@@ -1057,7 +1057,7 @@ Code:
   - Delete `_consumer` field and lifecycle calls in `run()` / `shutdown()`.
   - Delete `on_command(command_type, handler)` public method.
   - Delete `_handle_launch`, `_handle_cancel`, `_handle_dismiss`, `_handle_resync` if their only call site was the consumer dispatch (the inner methods they delegate to stay).
-- Delete `packages/optio-core/src/optio_core/_command_consumer.py`.
+- Delete `packages/optio-core/src/optio_core/consumer.py`.
 - `packages/optio-core/src/optio_core/__init__.py` — remove `on_command` re-export.
 
 Docs: per §6 phase 5 entries.

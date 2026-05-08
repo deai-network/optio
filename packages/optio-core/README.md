@@ -496,6 +496,33 @@ proc = await adhoc_define(
 await launch("one-off-123")
 ```
 
+## RPC service
+
+In addition to the legacy `${prefix}:commands` redis stream consumer
+(see "Remote Control via Redis"), `optio-core` hosts a clamator
+`RedisRpcServer` listening on `${database}/${prefix}:cmds:engine`.
+The server exposes the `engine` service whose contract lives in
+`packages/optio-contracts/src/engine-to-api.ts`. The Python ABC and
+Pydantic models are codegenned to
+`src/optio_core/_generated/engine.py`.
+
+The server is constructed automatically by `optio_core.init(...)` when
+`redis_url` is supplied, and is exposed at `optio_core.rpc_server` for
+applications that need to register additional services on the same
+server before calling `optio_core.run()`:
+
+```python
+import optio_core
+
+await optio_core.init(mongo_db=db, redis_url=URL, prefix='myapp')
+optio_core.rpc_server.register_service(my_domain_contract, MyDomainService())
+await optio_core.run()
+```
+
+During phases 2-4 of the engine-RPC migration the legacy
+`${prefix}:commands` stream and the new RPC server co-exist; both
+ingress paths are functional. Phase 5 retires the legacy stream.
+
 ## Remote Control via Redis
 
 When Redis is enabled (by passing `redis_url` to `init()`), Optio listens for commands on the `{prefix}:commands` Redis stream. This allows external systems — other services, the REST API layer, or scripts — to control processes remotely. The `run()` method blocks and processes incoming commands until `shutdown()` is called.
