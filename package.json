@@ -8,5 +8,8 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "@clamator/codegen": "^0.1.3"
   }
 }
