@@ -19,7 +19,8 @@
 ## File map
 
 **Created**
-- `packages/optio-contracts/src/engine-to-api.ts` — clamator engine RPC contract.
+- `packages/optio-contracts/src/engine-failure-reasons.ts` — browser-safe Zod enums for engine RPC failure reasons. Imported by `engine-to-api.ts` (Node-only) and re-exported from package root for browser consumers.
+- `packages/optio-contracts/src/engine-to-api.ts` — clamator engine RPC contract. Node-only (imports `@clamator/protocol`).
 - `packages/optio-contracts/src/__tests__/engine-contract.test.ts` — parse-shape tests for discriminated unions.
 - `packages/optio-api/src/_generated/engine.ts` — codegen output (committed).
 - `packages/optio-core/src/optio_core/_generated/engine.py` — codegen output (committed).
@@ -97,8 +98,11 @@ git commit -m "refactor(optio-contracts): rename contract.ts to api-to-frontend.
 
 ## Task 2: Add engine RPC contract
 
+**Browser-compatibility note.** `@clamator/protocol` imports `node:crypto` and is Node-only — it will not load in a browser bundle. Both the contract source file (which calls `defineContract(...)`) and any module that re-exports from it transitively depend on `@clamator/protocol`. To let browser consumers (e.g. `optio-ui`, `optio-dashboard`) safely import failure-reason enums via the package root, the enums live in a separate browser-safe module (`src/engine-failure-reasons.ts`) that `engine-to-api.ts` and `index.ts` both import from. Browser barrels never reach the contract file. (This guidance also applies upstream and should be reflected in the clamator design doc — handled separately.)
+
 **Files:**
 - Modify: `packages/optio-contracts/package.json`
+- Create: `packages/optio-contracts/src/engine-failure-reasons.ts`
 - Create: `packages/optio-contracts/src/engine-to-api.ts`
 - Create: `packages/optio-contracts/src/__tests__/engine-contract.test.ts`
 - Modify: `packages/optio-contracts/src/index.ts`
@@ -114,7 +118,48 @@ pnpm install
 ```
 Expected: `@clamator/protocol` resolves; lockfile updated.
 
-- [ ] **Step 3: Write the failing test for engine contract parse shape**
+- [ ] **Step 3: Create `engine-failure-reasons.ts` (browser-safe, no clamator import)**
+
+Create `packages/optio-contracts/src/engine-failure-reasons.ts`:
+
+```typescript
+import { z } from 'zod';
+
+export const LaunchFailureReason = z.enum([
+  'not-found',
+  'not-launchable',
+  'no-resume-support',
+  'launch-blocked',
+]);
+
+export const CancelFailureReason = z.enum([
+  'not-found',
+  'not-cancellable',
+]);
+
+export const DismissFailureReason = z.enum([
+  'not-found',
+  'not-dismissable',
+]);
+
+export const GroupCancelFailureReason = z.enum([
+  'invalid-persist-without-block',
+]);
+
+export const BlockLaunchesFailureReason = z.enum([
+  'invalid-filter',
+]);
+
+export type LaunchFailureReason = z.infer<typeof LaunchFailureReason>;
+export type CancelFailureReason = z.infer<typeof CancelFailureReason>;
+export type DismissFailureReason = z.infer<typeof DismissFailureReason>;
+export type GroupCancelFailureReason = z.infer<typeof GroupCancelFailureReason>;
+export type BlockLaunchesFailureReason = z.infer<typeof BlockLaunchesFailureReason>;
+```
+
+This module imports only `zod`. Safe to bundle for browser.
+
+- [ ] **Step 4: Write the failing test for engine contract parse shape**
 
 Create `packages/optio-contracts/src/__tests__/engine-contract.test.ts`:
 
@@ -164,52 +209,28 @@ describe('engineContract', () => {
 });
 ```
 
-- [ ] **Step 4: Run test, verify it fails**
+- [ ] **Step 5: Run test, verify it fails**
 
 ```bash
 cd packages/optio-contracts && pnpm vitest run src/__tests__/engine-contract.test.ts
 ```
 Expected: FAIL — module `../engine-to-api.js` not found.
 
-- [ ] **Step 5: Create `packages/optio-contracts/src/engine-to-api.ts`**
+- [ ] **Step 6: Create `packages/optio-contracts/src/engine-to-api.ts`**
 
 ```typescript
 import { z } from 'zod';
 import { defineContract, defineMethod, defineNotification } from '@clamator/protocol';
 import { ProcessSchema, ProcessMetadataFilterSchema } from './schemas/process.js';
+import {
+  LaunchFailureReason,
+  CancelFailureReason,
+  DismissFailureReason,
+  GroupCancelFailureReason,
+  BlockLaunchesFailureReason,
+} from './engine-failure-reasons.js';
 
 const ProcessIdParam = z.string().min(1);
-
-export const LaunchFailureReason = z.enum([
-  'not-found',
-  'not-launchable',
-  'no-resume-support',
-  'launch-blocked',
-]);
-
-export const CancelFailureReason = z.enum([
-  'not-found',
-  'not-cancellable',
-]);
-
-export const DismissFailureReason = z.enum([
-  'not-found',
-  'not-dismissable',
-]);
-
-export const GroupCancelFailureReason = z.enum([
-  'invalid-persist-without-block',
-]);
-
-export const BlockLaunchesFailureReason = z.enum([
-  'invalid-filter',
-]);
-
-export type LaunchFailureReason = z.infer<typeof LaunchFailureReason>;
-export type CancelFailureReason = z.infer<typeof CancelFailureReason>;
-export type DismissFailureReason = z.infer<typeof DismissFailureReason>;
-export type GroupCancelFailureReason = z.infer<typeof GroupCancelFailureReason>;
-export type BlockLaunchesFailureReason = z.infer<typeof BlockLaunchesFailureReason>;
 
 const launchResult = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true), process: ProcessSchema }),
@@ -299,14 +320,14 @@ export const engineContract = defineContract('engine', {
 });
 ```
 
-- [ ] **Step 6: Run test, verify it passes**
+- [ ] **Step 7: Run test, verify it passes**
 
 ```bash
 cd packages/optio-contracts && pnpm vitest run src/__tests__/engine-contract.test.ts
 ```
 Expected: PASS — all four `it` blocks green.
 
-- [ ] **Step 7: Re-export failure-reason enums from optio-contracts root**
+- [ ] **Step 8: Re-export failure-reason enums from optio-contracts root**
 
 Edit `packages/optio-contracts/src/index.ts`. Append:
 
@@ -318,12 +339,12 @@ export {
   DismissFailureReason,
   GroupCancelFailureReason,
   BlockLaunchesFailureReason,
-} from './engine-to-api.js';
+} from './engine-failure-reasons.js';
 ```
 
-Note: do NOT re-export `engineContract` itself — codegen consumes it via the subpath added in step 8.
+Note: re-exports come from the **browser-safe** `engine-failure-reasons.js` file, not from `engine-to-api.js`. Re-exporting from `engine-to-api.js` would pull `@clamator/protocol` into any browser bundle that imports from the package root, breaking `optio-ui` and `optio-dashboard` builds. Do NOT re-export `engineContract` itself — codegen consumes it via the subpath added in step 9.
 
-- [ ] **Step 8: Add subpath export to optio-contracts package.json**
+- [ ] **Step 9: Add subpath export to optio-contracts package.json**
 
 Edit `packages/optio-contracts/package.json` `exports` block:
 
@@ -340,16 +361,16 @@ Edit `packages/optio-contracts/package.json` `exports` block:
 }
 ```
 
-- [ ] **Step 9: Build + full test suite green**
+- [ ] **Step 10: Build + full test suite green**
 
 ```bash
 cd /home/csillag/deai/optio/.worktrees/redis-migration-1
 pnpm -r build
 pnpm -r test
 ```
-Expected: all builds and tests pass.
+Expected: all builds and tests pass — including `optio-dashboard`'s vite build (no `@clamator/protocol` externalization needed because browser barrel only re-exports from `engine-failure-reasons.js`).
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
 git add -A
