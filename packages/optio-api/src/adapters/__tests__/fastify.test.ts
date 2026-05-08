@@ -365,3 +365,39 @@ describe('list metadataFilter (fastify)', () => {
     expect(res.statusCode).toBe(400);
   });
 });
+
+import { EngineClient } from '../../_generated/engine.js';
+
+describe('registerOptioApi return shape', () => {
+  it('single-db mode returns { engine, closeAll }', async () => {
+    const app = Fastify();
+    const result = registerOptioApi(app, { db, redis, authenticate: () => 'operator' });
+    expect(result).toBeDefined();
+    expect(result.engine).toBeInstanceOf(EngineClient);
+    expect(typeof result.closeAll).toBe('function');
+    expect((result as any).getEngine).toBeUndefined();
+    await app.close();
+  });
+
+  it('multi-db mode returns { getEngine, closeAll }', async () => {
+    const app = Fastify();
+    const result = registerOptioApi(app, { mongoClient, redis, authenticate: () => 'operator' });
+    expect(result).toBeDefined();
+    expect(typeof result.getEngine).toBe('function');
+    expect(typeof result.closeAll).toBe('function');
+    expect((result as any).engine).toBeUndefined();
+    // Cache reuse:
+    const a = result.getEngine!('db1', 'optio');
+    const b = result.getEngine!('db1', 'optio');
+    expect(a).toBe(b);
+    await app.close();
+  });
+
+  it('closeAll called twice succeeds', async () => {
+    const app = Fastify();
+    const result = registerOptioApi(app, { db, redis, authenticate: () => 'operator' });
+    await result.closeAll!();
+    await expect(result.closeAll!()).resolves.toBeUndefined();
+    await app.close();
+  });
+});

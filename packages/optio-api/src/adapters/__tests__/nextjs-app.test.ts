@@ -317,3 +317,33 @@ describe('list metadataFilter (nextjs-app)', () => {
     expect(res.status).toBe(400);
   });
 });
+
+import { EngineClient } from '../../_generated/engine.js';
+
+describe('createOptioRouteHandlers return shape', () => {
+  it('single-db mode returns { engine, closeAll }', () => {
+    const result = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
+    expect(result).toBeDefined();
+    expect(result.engine).toBeInstanceOf(EngineClient);
+    expect(typeof result.closeAll).toBe('function');
+    expect((result as any).getEngine).toBeUndefined();
+  });
+
+  it('multi-db mode returns { getEngine, closeAll }', () => {
+    const result = createOptioRouteHandlers({ mongoClient, redis, authenticate: () => 'operator' });
+    expect(result).toBeDefined();
+    expect(typeof result.getEngine).toBe('function');
+    expect(typeof result.closeAll).toBe('function');
+    expect((result as any).engine).toBeUndefined();
+    // Cache reuse:
+    const a = result.getEngine!('db1', 'optio');
+    const b = result.getEngine!('db1', 'optio');
+    expect(a).toBe(b);
+  });
+
+  it('closeAll called twice succeeds', async () => {
+    const result = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
+    await result.closeAll!();
+    await expect(result.closeAll!()).resolves.toBeUndefined();
+  });
+});

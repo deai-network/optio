@@ -28,6 +28,12 @@ import {
   parseMetadataFilterQuery,
   formatLegacyMetadataMessage,
 } from '../metadata-filter-query.js';
+import { createEngineCache } from '../engine-cache.js';
+import type { EngineClient } from '../_generated/engine.js';
+
+export type OptioApiHandle =
+  | { engine: EngineClient; closeAll: () => Promise<void>; getEngine?: never }
+  | { getEngine: (database: string, prefix: string) => EngineClient; closeAll: () => Promise<void>; engine?: never };
 
 const WIDGET_CACHE_TTL_MS = 5000;
 
@@ -346,8 +352,10 @@ export type OptioApiOptions = {
 const c = initContract();
 const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/api' });
 
-export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions) {
+export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): OptioApiHandle {
   const { redis } = opts;
+  const cache = createEngineCache(redis);
+  app.addHook('onClose', () => cache.closeAll());
   const dbOpts: DbOptions = 'mongoClient' in opts && opts.mongoClient ? { mongoClient: opts.mongoClient } : { db: opts.db! };
 
   // Global auth enforcement. Runs before route handlers (and before the
@@ -517,4 +525,16 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions) {
     poller.start();
     request.raw.on('close', () => poller.stop());
   });
+
+  if ('db' in opts && opts.db) {
+    const prefix = opts.prefix ?? 'optio';
+    return {
+      engine: cache.get(opts.db.databaseName, prefix) as EngineClient,
+      closeAll: () => cache.closeAll(),
+    };
+  }
+  return {
+    getEngine: (database: string, prefix: string) => cache.get(database, prefix) as EngineClient,
+    closeAll: () => cache.closeAll(),
+  };
 }

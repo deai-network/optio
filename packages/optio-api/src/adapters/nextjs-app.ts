@@ -19,6 +19,12 @@ import {
   parseMetadataFilterQuery,
   formatLegacyMetadataMessage,
 } from '../metadata-filter-query.js';
+import { createEngineCache } from '../engine-cache.js';
+import type { EngineClient } from '../_generated/engine.js';
+
+export type OptioApiHandle =
+  | { engine: EngineClient; closeAll: () => Promise<void>; getEngine?: never }
+  | { getEngine: (database: string, prefix: string) => EngineClient; closeAll: () => Promise<void>; engine?: never };
 
 export type OptioApiOptions = {
   redis: Redis;
@@ -34,6 +40,7 @@ const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/a
 
 export function createOptioRouteHandlers(opts: OptioApiOptions) {
   const { redis } = opts;
+  const cache = createEngineCache(redis);
   const dbOpts: DbOptions = 'mongoClient' in opts && opts.mongoClient ? { mongoClient: opts.mongoClient } : { db: opts.db! };
 
   async function authGate(request: Request): Promise<Response | null> {
@@ -246,5 +253,19 @@ export function createOptioRouteHandlers(opts: OptioApiOptions) {
     return tsRestHandlers(request);
   }
 
-  return { GET, POST };
+  if ('db' in opts && opts.db) {
+    const prefix = opts.prefix ?? 'optio';
+    return {
+      GET,
+      POST,
+      engine: cache.get(opts.db.databaseName, prefix) as EngineClient,
+      closeAll: () => cache.closeAll(),
+    };
+  }
+  return {
+    GET,
+    POST,
+    getEngine: (database: string, prefix: string) => cache.get(database, prefix) as EngineClient,
+    closeAll: () => cache.closeAll(),
+  };
 }

@@ -38,7 +38,7 @@ async function seedProcess(overrides: Record<string, unknown> = {}) {
 }
 
 function createApp() {
-  const handler = createOptioHandler({ db, redis, authenticate: () => 'operator' });
+  const { handler } = createOptioHandler({ db, redis, authenticate: () => 'operator' });
   const app = express();
   app.use(express.json());
   // ts-rest's createNextRouter uses req.query['ts-rest'] as path segments for routing.
@@ -129,7 +129,7 @@ describe('Next.js Pages Router adapter integration tests', () => {
 
 describe('Next.js Pages Router adapter auth', () => {
   function createAppWithAuth(authenticate: (req: any) => any) {
-    const handler = createOptioHandler({ db, redis, authenticate });
+    const { handler } = createOptioHandler({ db, redis, authenticate });
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
@@ -262,5 +262,37 @@ describe('list metadataFilter (nextjs-pages)', () => {
     const app = createApp();
     const res = await request(app).get('/api/processes/stream?metadataFilter=not-json');
     expect(res.status).toBe(400);
+  });
+});
+
+import { EngineClient } from '../../_generated/engine.js';
+
+describe('createOptioHandler return shape', () => {
+  it('single-db mode returns { handler, engine, closeAll }', () => {
+    const result = createOptioHandler({ db, redis, authenticate: () => 'operator' });
+    expect(result).toBeDefined();
+    expect(typeof result.handler).toBe('function');
+    expect(result.engine).toBeInstanceOf(EngineClient);
+    expect(typeof result.closeAll).toBe('function');
+    expect((result as any).getEngine).toBeUndefined();
+  });
+
+  it('multi-db mode returns { handler, getEngine, closeAll }', () => {
+    const result = createOptioHandler({ mongoClient, redis, authenticate: () => 'operator' });
+    expect(result).toBeDefined();
+    expect(typeof result.handler).toBe('function');
+    expect(typeof result.getEngine).toBe('function');
+    expect(typeof result.closeAll).toBe('function');
+    expect((result as any).engine).toBeUndefined();
+    // Cache reuse:
+    const a = result.getEngine!('db1', 'optio');
+    const b = result.getEngine!('db1', 'optio');
+    expect(a).toBe(b);
+  });
+
+  it('closeAll called twice succeeds', async () => {
+    const result = createOptioHandler({ db, redis, authenticate: () => 'operator' });
+    await result.closeAll!();
+    await expect(result.closeAll!()).resolves.toBeUndefined();
   });
 });

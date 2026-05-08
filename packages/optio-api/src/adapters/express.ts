@@ -16,6 +16,12 @@ import { resolveDb, type DbOptions } from '../resolve-db.js';
 import type { AuthCallback } from '../auth.js';
 import { checkAuth } from '../auth.js';
 import { isWriteMethod } from '../widget-proxy-core.js';
+import { createEngineCache } from '../engine-cache.js';
+import type { EngineClient } from '../_generated/engine.js';
+
+export type OptioApiHandle =
+  | { engine: EngineClient; closeAll: () => Promise<void>; getEngine?: never }
+  | { getEngine: (database: string, prefix: string) => EngineClient; closeAll: () => Promise<void>; engine?: never };
 
 export type OptioApiOptions = {
   redis: Redis;
@@ -29,8 +35,9 @@ export type OptioApiOptions = {
 const c = initContract();
 const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/api' });
 
-export function registerOptioApi(app: Express, opts: OptioApiOptions) {
+export function registerOptioApi(app: Express, opts: OptioApiOptions): OptioApiHandle {
   const { redis } = opts;
+  const cache = createEngineCache(redis);
   const dbOpts: DbOptions = 'mongoClient' in opts && opts.mongoClient ? { mongoClient: opts.mongoClient } : { db: opts.db! };
 
   // Global auth enforcement. Runs on every /api/* request before any
@@ -190,4 +197,15 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions) {
     req.on('close', () => poller.stop());
   });
 
+  if ('db' in opts && opts.db) {
+    const prefix = opts.prefix ?? 'optio';
+    return {
+      engine: cache.get(opts.db.databaseName, prefix) as EngineClient,
+      closeAll: () => cache.closeAll(),
+    };
+  }
+  return {
+    getEngine: (database: string, prefix: string) => cache.get(database, prefix) as EngineClient,
+    closeAll: () => cache.closeAll(),
+  };
 }
