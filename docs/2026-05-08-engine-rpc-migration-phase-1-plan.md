@@ -41,7 +41,7 @@
 - `package.json` (root) — `@clamator/codegen` devDep.
 - `README.md` (root) — Authority and data flow section.
 - `AGENTS.md` (root) — Architecture Notes update.
-- `docs/2026-05-08-engine-rpc-migration-design.md` — Q10 path corrections (commit 5).
+- `docs/2026-05-08-engine-rpc-migration-design.md` — fold phase-1 decisions Q2, Q5, Q7, Q9, Q10 back into parent spec (commit 5).
 
 ---
 
@@ -759,14 +759,34 @@ Failure modes use discriminated-union result types (e.g. `{ ok: true, process } 
 Generated wrappers ship next to consumers: `packages/optio-api/src/_generated/engine.ts` for TypeScript, `packages/optio-core/src/optio_core/_generated/engine.py` for Python. Regenerate via `make codegen` at the repo root.
 ```
 
-- [ ] **Step 5: Apply parent-spec corrections (Q10 path fixes)**
+- [ ] **Step 5: Apply parent-spec corrections (decisions Q2, Q5, Q7, Q9, Q10)**
 
-Edit `docs/2026-05-08-engine-rpc-migration-design.md`:
+Edit `docs/2026-05-08-engine-rpc-migration-design.md` to fold phase-1 brainstorming decisions back into the authoritative end-state document. Phase-1 design doc retains the journey; parent spec captures the answers.
 
+**Q10 — schemas/ subdir kept (path corrections):**
 - §2 file layout: locate the `schemas.ts` row in the optio-contracts tree and replace it with two rows — `schemas/common.ts # generic primitives (ObjectId, Pagination, Error)` and `schemas/process.ts # process-domain types (Process, ProcessState, LogEntry, ProcessMetadataFilter)`.
 - §3 Imports block: change `from './schemas.js'` to `from './schemas/process.js'`.
 - §6 `packages/optio-contracts/AGENTS.md` row: change `src/schemas.ts` to `src/schemas/`.
 - Appendix A.3 Package structure table: same `src/schemas/` fix as §6.
+
+**Q9 — engineContract consumed only via subpath:**
+- §3 — after the contract definition block, insert a one-line note:
+
+  > `engineContract` is consumed via the `optio-contracts/engine-to-api` subpath export only. `packages/optio-contracts/src/index.ts` re-exports failure-reason enums (`LaunchFailureReason`, `CancelFailureReason`, `DismissFailureReason`, `GroupCancelFailureReason`, `BlockLaunchesFailureReason`) for direct import by consumers, but does not re-export `engineContract` itself.
+
+**Q2 — failure-reason imports direct from `optio-contracts`:**
+- §3 "What `api-to-frontend.ts` reuses": directly above the import block, add:
+
+  > Within `optio-contracts`, `api-to-frontend.ts` imports failure-reason enums from `./engine-to-api.js`. External consumers (`optio-api/src/handlers.ts`, `optio-ui` error UI, custom adapters) import the same enums from the package root: `import { LaunchFailureReason } from 'optio-contracts'`. The package root re-exports the enum values and types, but not `engineContract` (Q9).
+
+**Q5 — error-body shape change moves from phase 1 to phase 4:**
+- §8 phase 1 "Deliverables": delete the bullet `Error response bodies extended to '{ reason, message }'.` from the `api-to-frontend.ts` line. Replace with: `Imports failure-reason enums from 'engine-to-api.ts' and re-exports them from 'index.ts'; HTTP error-body schema unchanged in phase 1 (flips in phase 4 alongside handler rewrite).`
+- §8 phase 4 "Deliverables", `packages/optio-api/src/handlers.ts` block: add a new bullet `Update 'api-to-frontend.ts' error response schemas (404 / 409 bodies) to '{ reason, message }'. Either extend 'ErrorSchema' or introduce per-command error bodies (LaunchErrorBody, CancelErrorBody, DismissErrorBody) per §3.`
+- §3 "What `api-to-frontend.ts` reuses": add a one-line note that the new `LaunchErrorBody` / `CancelErrorBody` / `DismissErrorBody` schemas land in phase 4, not phase 1.
+
+**Q7 — CI deferred:**
+- §6 "Pre-commit / CI": delete the line `CI step: 'make codegen && git diff --exit-code'. Phase 1.`. Replace with: `CI bootstrapping (running 'make lint && make test' and the codegen drift check on PRs) is out of scope for this migration. Tracked separately. The pre-commit hook is the sole drift guard until CI exists.`
+- §10 "CI structure": prefix the section with: `Note: this section describes the target CI shape once CI infrastructure exists in the repo. CI bootstrapping is not part of this migration.` Bullet list otherwise unchanged.
 
 - [ ] **Step 6: Acceptance verification — all green**
 
