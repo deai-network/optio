@@ -9,6 +9,31 @@
 - **Runtime deps:** `@ts-rest/core ^3.51.0`, `zod ^3.24.0`
 - **Install note:** Internal monorepo package — referenced via workspace path, never installed from a registry.
 
+## Package structure
+
+The package hosts two typed contracts that define optio's internal communication surfaces:
+
+| File | Contract type | Purpose |
+|------|---------------|---------|
+| `src/api-to-frontend.ts` | ts-rest HTTP contract | What `optio-api` exposes to its REST clients (UI, external integrations). Used by `optio-ui` to construct typed clients and by `optio-api` to register typed handlers. |
+| `src/engine-to-api.ts` | clamator RPC contract | What `optio-core` (the engine) exposes to its RPC callers (typically `optio-api`). Used by `optio-api` to issue typed RPC calls and by `optio-core` to implement typed handlers. |
+| `src/schemas/` | Shared Zod schemas | Common types used by both contracts. `common.ts` holds generic primitives (ObjectId, Pagination, Error). `process.ts` holds process-domain types (Process, ProcessState, LogEntry, ProcessMetadataFilter). |
+
+### Naming convention
+
+Contract files follow `<server>-to-<client>.ts`, where the **server** is the side that exposes the contract and the **client** is the side that consumes it. For example, in `engine-to-api.ts`, the engine exposes methods that the API calls. The "to" indicates exposure, not call direction.
+
+### Codegen
+
+The clamator contract (`engine-to-api.ts`) is the single source of truth for the RPC surface. clamator's codegen produces matching wrappers in both languages:
+
+- **TypeScript output:** `packages/optio-api/src/_generated/engine.ts` — `EngineClient` class, params/result types.
+- **Python output:** `packages/optio-core/src/optio_core/_generated/engine.py` — Pydantic models, `EngineService` ABC.
+
+Generated files are committed. Regenerate via `make codegen` at the repo root. A pre-commit hook runs codegen and fails on `git diff` non-empty under `_generated/` paths to catch drift.
+
+The HTTP contract (`api-to-frontend.ts`) does not require codegen: ts-rest builds typed clients and handlers from the contract object via TypeScript's type system at the consumer's compile time.
+
 ## Schemas
 
 ### `ObjectIdSchema`

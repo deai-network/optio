@@ -25,9 +25,16 @@ Zod schemas and ts-rest contract for the Optio process management API.
 | `ProcessState` | Union of state strings: `idle`, `scheduled`, `running`, `done`, `failed`, `cancel_requested`, `cancelling`, `cancelled` |
 | `LogEntry` | TypeScript type inferred from `LogEntrySchema` |
 
-## Contract
+## Contracts
 
-`processesContract` — ts-rest router with 9 endpoints:
+The package hosts two typed contracts. Contract files follow `<server>-to-<client>.ts` naming: the server side is the one that exposes the contract; the client side calls it.
+
+- `processesContract` (in `src/api-to-frontend.ts`) — ts-rest HTTP contract that `optio-api` exposes to its REST clients.
+- `engineContract` (in `src/engine-to-api.ts`) — clamator RPC contract that `optio-core` exposes to its RPC callers.
+
+### `processesContract` (HTTP, ts-rest)
+
+ts-rest router with 9 endpoints, used by `optio-ui` to call `optio-api`:
 
 | Name | Method | Path |
 |------|--------|------|
@@ -40,6 +47,27 @@ Zod schemas and ts-rest contract for the Optio process management API.
 | `cancel` | POST | `/processes/:prefix/:id/cancel` |
 | `dismiss` | POST | `/processes/:prefix/:id/dismiss` |
 | `resync` | POST | `/processes/:prefix/resync` |
+
+Used at runtime by ts-rest; no codegen step.
+
+### `engineContract` (RPC, clamator)
+
+clamator service named `engine`, used by `optio-api` to call `optio-core`. Methods:
+
+| Method | Kind | Purpose |
+|--------|------|---------|
+| `launch` | request/reply | Launch a process; returns post-command process state or typed failure reason. |
+| `cancel` | request/reply | Cancel a running or scheduled process; returns post-command state or typed failure reason. |
+| `dismiss` | request/reply | Reset a terminal process to idle; returns post-command state or typed failure reason. |
+| `groupCancel` | request/reply | Cancel all processes matching a metadata filter; returns count. |
+| `groupCancelAndWait` | request/reply | Cancel all matching processes and wait until they reach a terminal state. |
+| `blockLaunches` | request/reply | Add a persistent launch block. |
+| `unblockLaunches` | request/reply | Remove a persistent launch block; returns count removed. |
+| `resync` | notification | Re-sync task definitions. Fire-and-forget; no reply. |
+
+Failure modes use discriminated-union result types (e.g. `{ ok: true, process } | { ok: false, reason: 'not-found' | 'not-launchable' | … }`) so consumers get exhaustive type coverage on success and failure branches.
+
+Generated wrappers ship next to consumers: `packages/optio-api/src/_generated/engine.ts` for TypeScript, `packages/optio-core/src/optio_core/_generated/engine.py` for Python. Regenerate via `make codegen` at the repo root.
 
 ## See Also
 

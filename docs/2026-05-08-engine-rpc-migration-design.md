@@ -48,7 +48,9 @@ After full migration:
 
 ```
 packages/optio-contracts/src/
-├── schemas.ts                          # existing — shared Zod (Process, LogEntry, ObjectId, ProcessMetadataFilter, etc.)
+├── schemas/
+│   ├── common.ts                       # generic primitives (ObjectId, Pagination, Error)
+│   └── process.ts                      # process-domain types (Process, ProcessState, LogEntry, ProcessMetadataFilter)
 ├── api-to-frontend.ts                  # renamed from contract.ts — ts-rest HTTP contract
 └── engine-to-api.ts                    # NEW — clamator engine RPC contract
 
@@ -117,7 +119,7 @@ A single Zod source. All engine RPC methods. Discriminated-union results carry t
 ```typescript
 import { z } from 'zod';
 import { defineContract, defineMethod, defineNotification } from '@clamator/protocol';
-import { ProcessSchema, ProcessMetadataFilterSchema } from './schemas.js';
+import { ProcessSchema, ProcessMetadataFilterSchema } from './schemas/process.js';
 ```
 
 ### Process identifier
@@ -269,6 +271,8 @@ export const engineContract = defineContract('engine', {
 });
 ```
 
+`engineContract` is consumed via the `optio-contracts/engine-to-api` subpath export only. `packages/optio-contracts/src/index.ts` re-exports failure-reason enums (`LaunchFailureReason`, `CancelFailureReason`, `DismissFailureReason`, `GroupCancelFailureReason`, `BlockLaunchesFailureReason`) for direct import by consumers, but does not re-export `engineContract` itself.
+
 ### Design notes
 
 - The `{ ok: true | false }` envelope is universal across methods that can fail with a typed reason. Even single-failure-mode methods carry it for shape consistency.
@@ -279,6 +283,10 @@ export const engineContract = defineContract('engine', {
 - Discriminated unions codegen cleanly to Pydantic `Field(discriminator='ok')` unions. Both languages get exhaustive switch coverage.
 
 ### What `api-to-frontend.ts` reuses
+
+Within `optio-contracts`, `api-to-frontend.ts` imports failure-reason enums from `./engine-failure-reasons.js`. External consumers (`optio-api/src/handlers.ts`, `optio-ui` error UI, custom adapters) import the same enums from the package root: `import { LaunchFailureReason } from 'optio-contracts'`. The package root re-exports the enum values and types from the same browser-safe `engine-failure-reasons.ts` module, but not `engineContract` (Q9). Note: the failure-reason enums live in `engine-failure-reasons.ts` rather than inline in `engine-to-api.ts` so browser bundles can re-export them without pulling in `@clamator/protocol` (which uses `node:crypto` and is Node-only).
+
+The new `LaunchErrorBody` / `CancelErrorBody` / `DismissErrorBody` schemas land in phase 4, not phase 1.
 
 ```typescript
 import {
@@ -757,7 +765,7 @@ This section enumerates what each doc needs across the migration. Per-phase plan
 
 Create if missing.
 
-- **Phase 1.** Document file structure: `schemas.ts`, `api-to-frontend.ts`, `engine-to-api.ts`. Document the `<server>-to-<client>.ts` naming convention. Document codegen output destinations and invocation. Document the pre-commit drift check.
+- **Phase 1.** Document file structure: `src/schemas/`, `api-to-frontend.ts`, `engine-to-api.ts`. Document the `<server>-to-<client>.ts` naming convention. Document codegen output destinations and invocation. Document the pre-commit drift check.
 
 ### `packages/optio-contracts/README.md`
 
@@ -807,7 +815,7 @@ Create if missing.
 ### Pre-commit / CI
 
 - Pre-commit hook: re-run `make codegen`, fail on `git diff` non-empty under `_generated/` paths. Phase 1.
-- CI step: `make codegen && git diff --exit-code`. Phase 1.
+- CI bootstrapping (running `make lint && make test` and the codegen drift check on PRs) is out of scope for this migration. Tracked separately. The pre-commit hook is the sole drift guard until CI exists.
 
 ## 7. Top-level Makefile
 
@@ -897,7 +905,7 @@ Five phases, each a separate implementation plan executable independently. Tests
 **Deliverables.**
 
 - `packages/optio-contracts/src/engine-to-api.ts` — full clamator engine contract per §3.
-- `packages/optio-contracts/src/api-to-frontend.ts` — renamed from `contract.ts`. Imports failure-reason enums from `engine-to-api.ts`. Error response bodies extended to `{ reason, message }`.
+- `packages/optio-contracts/src/api-to-frontend.ts` — renamed from `contract.ts`. Imports failure-reason enums from `engine-to-api.ts` and re-exports them from `index.ts`; HTTP error-body schema unchanged in phase 1 (flips in phase 4 alongside handler rewrite).
 - `packages/optio-api/src/_generated/engine.ts` — codegen output, committed.
 - `packages/optio-core/src/optio_core/_generated/engine.py` — codegen output, committed.
 - Top-level `Makefile` per §7.
@@ -1006,6 +1014,7 @@ Code:
   - Delete `cancellable` and `supportsResume` precondition checks.
   - Delete pre-RPC `findProcessByEitherId(...)` calls in command handlers.
   - Handler signatures change to `(engine, id, ...)` per §5.
+  - Update `api-to-frontend.ts` error response schemas (404 / 409 bodies) to `{ reason, message }`. Either extend `ErrorSchema` or introduce per-command error bodies (`LaunchErrorBody`, `CancelErrorBody`, `DismissErrorBody`) per §3.
 - `packages/optio-api/src/process-id-resolver.ts` — kept (query-side callers remain).
 - `packages/optio-api/src/publisher.ts` — deleted.
 - Adapter call-sites updated.
@@ -1169,6 +1178,8 @@ Tests:
 
 ### CI structure
 
+Note: this section describes the target CI shape once CI infrastructure exists in the repo. CI bootstrapping is not part of this migration.
+
 - **Per-PR.** `make lint && make test` (fast; no docker).
 - **Per-PR.** `make codegen && git diff --exit-code` (drift check).
 - **Per-PR or post-merge.** `make test-interop` (slower; docker required). Decision deferred to phase 1 plan based on CI cost budget.
@@ -1229,7 +1240,7 @@ The package hosts two typed contracts that define optio's internal communication
 |------|---------------|---------|
 | `src/api-to-frontend.ts` | ts-rest HTTP contract | What `optio-api` exposes to its REST clients (UI, external integrations). Used by `optio-ui` to construct typed clients and by `optio-api` to register typed handlers. |
 | `src/engine-to-api.ts` | clamator RPC contract | What `optio-core` (the engine) exposes to its RPC callers (typically `optio-api`). Used by `optio-api` to issue typed RPC calls and by `optio-core` to implement typed handlers. |
-| `src/schemas.ts` | Shared Zod schemas | Common types used by both contracts (`ProcessSchema`, `LogEntrySchema`, etc.). |
+| `src/schemas/` | Shared Zod schemas | Common types used by both contracts. `common.ts` holds generic primitives (ObjectId, Pagination, Error). `process.ts` holds process-domain types (Process, ProcessState, LogEntry, ProcessMetadataFilter). |
 
 ### Naming convention
 

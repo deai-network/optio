@@ -981,9 +981,10 @@ All components use `react-i18next`. Required keys:
 
 ## Architecture Notes
 
+- **Authority rule.** `optio-core` is the sole writer to MongoDB. `optio-api` reads MongoDB directly for queries (REST GETs, SSE, widget proxy, discovery) and forwards every mutating operation to the engine via clamator RPC. The API enforces no state machine, no policy, no command-acceptance rules. Engine is single source of truth for what commands are allowed and what state results. Full statement: top-level README "Authority and data flow".
+- **Engine RPC.** clamator over-redis. Engine hosts a `RedisRpcServer` constructed by `optio_core.init()` with `key_prefix=f"{database}/{prefix}"`, registering the `engine` service defined in `optio-contracts/src/engine-to-api.ts`. API uses a `RedisRpcClient` per `(database, prefix)` constructed by `registerOptioApi`. Apps can register additional services on `optio_core.rpc_server` before calling `optio_core.run()`.
 - **Collection name**: `{prefix}_processes` (MongoDB)
-- **Redis stream**: `{prefix}:commands` — messages have `type` and `payload` (JSON string) fields
-- **No Redis mode**: `init()` with `redis_url=None` disables command consumer; use direct Python API calls (`optio.launch()`, etc.) instead of REST
+- **No Redis mode**: `init()` with `redis_url=None` and no `rpc_server` disables the command surface; use direct Python API calls (`optio.launch()`, etc.) instead.
 - **Progress flushing**: buffered every 100ms; override with `OPTIO_PROGRESS_FLUSH_INTERVAL_MS` env var
 - **Child processes**: stored as MongoDB documents with `parentId`/`rootId`; automatically deleted on parent re-launch (`clear_result_fields`)
 - **Ephemeral processes**: deleted from DB after reaching an end state

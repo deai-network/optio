@@ -23,6 +23,15 @@ Optio is designed as a progressive stack: you start simple with just Python and 
 
 ![Architecture](docs/images/architecture-future.png)
 
+### Authority and data flow
+
+Optio enforces a clean separation between writes and reads:
+
+- **`optio-core` (the engine) is the sole writer to MongoDB.** All state transitions, validation, scheduling, and policy decisions happen in the engine process. The engine is the single source of truth for what commands are allowed and what state results.
+- **`optio-api` (the REST API) is read-only against MongoDB.** It serves REST GETs, SSE streams, the widget proxy, and instance discovery by reading directly from MongoDB and from redis heartbeat keys. It performs no DB writes.
+- **Mutating operations (launch, cancel, dismiss, resync, group-cancel, launch blocks) flow from the API to the engine via clamator RPC over redis.** The API translates an HTTP request into a typed RPC call; the engine validates, acts, and returns a typed result; the API translates the result back into an HTTP response. The API enforces no state machine, no `cancellable` policy, no command-acceptance rules of its own.
+- **External applications** that need to control the engine without going through HTTP can use the engine's Python API directly (in-process), or register as a clamator RPC client (cross-process). They never write to MongoDB themselves.
+
 ## Key Concepts
 
 ### Process State Machine
@@ -211,3 +220,7 @@ Configuration is handled entirely through environment variables (`MONGODB_URL`, 
 | **[optio-api](packages/optio-api)** | Node.js REST API handlers + SSE streams | [`README`](packages/optio-api/README.md) |
 | **[optio-ui](packages/optio-ui)** | React components & hooks for monitoring | [`README`](packages/optio-ui/README.md) |
 | **[optio-dashboard](packages/optio-dashboard)** | Standalone management UI — no code required | [`README`](packages/optio-dashboard/README.md) |
+
+## Development
+
+Contributors: run `bash scripts/install-hooks.sh` once after cloning to install the pre-commit hook.
