@@ -28,6 +28,8 @@ from optio_core.store import (
 from optio_core.state_machine import ACTIVE_STATES, CANCELLABLE_STATES
 from optio_core.executor import Executor
 from optio_core.consumer import CommandConsumer
+from clamator_protocol import RpcServerCore
+from clamator_over_redis import RedisRpcServer
 from optio_core.scheduler import ProcessScheduler
 
 logger = logging.getLogger("optio_core_core")
@@ -51,6 +53,9 @@ class Optio:
         self._redis: Redis | None = None
         self._executor: Executor | None = None
         self._consumer: CommandConsumer | None = None
+        self.rpc_server: "RpcServerCore | None" = None
+        self._engine_service = None  # Set by init() when an rpc_server exists.
+        self._owned_rpc_server: bool = False
         self._scheduler: ProcessScheduler | None = None
         self._running = False
         self._heartbeat_task: asyncio.Task | None = None
@@ -62,6 +67,7 @@ class Optio:
         mongo_db: AsyncIOMotorDatabase,
         prefix: str = "optio",
         redis_url: str | None = None,
+        rpc_server: "RpcServerCore | None" = None,
         services: dict[str, Any] | None = None,
         get_task_definitions: Callable[
             [dict[str, Any], ProcessMetadataFilter | None],
@@ -74,9 +80,14 @@ class Optio:
         Args:
             mongo_db: Motor async MongoDB database.
             prefix: Namespace for collections and streams.
-            redis_url: Redis connection URL. If None, Redis features (command
-                consumer, custom commands) are disabled and processes are
-                managed via direct method calls.
+            redis_url: Redis connection URL. If None and rpc_server is None,
+                Redis features (command consumer, RPC server) are disabled and
+                processes are managed via direct method calls. Mutually
+                exclusive with rpc_server.
+            rpc_server: Pre-built clamator RpcServerCore. If supplied, optio
+                does not construct one itself; the caller owns its lifecycle
+                (start/stop). Mutually exclusive with redis_url. Used by
+                tests and apps that share a server across services.
             services: Custom services dict passed to task execute functions.
             get_task_definitions: Async function (services, metadata_filter)
                 returning task definitions.
@@ -86,6 +97,11 @@ class Optio:
                 'failed' state. Default 5.0. Same value applies to every
                 cancel during this Optio lifetime.
         """
+        if redis_url is not None and rpc_server is not None:
+            raise ValueError(
+                "redis_url and rpc_server are mutually exclusive — pass only one"
+            )
+
         services = services or {}
         self._config = OptioConfig(
             mongo_db=mongo_db,
@@ -105,7 +121,7 @@ class Optio:
                 )
             self._redis = Redis.from_url(redis_url)
 
-            # Create consumer
+            # Legacy command stream (phase-2 co-existence; phase 5 removes).
             db_name = mongo_db.name
             stream_name = f"{db_name}/{prefix}:commands"
             self._consumer = CommandConsumer(self._redis, stream_name)
@@ -114,6 +130,29 @@ class Optio:
             self._consumer.on("dismiss", self._handle_dismiss)
             self._consumer.on("resync", self._handle_resync)
             await self._consumer.setup()
+
+            # New clamator RPC server (phase 2 of engine-RPC migration).
+            self.rpc_server = RedisRpcServer(
+                redis=self._redis,
+                key_prefix=f"{db_name}/{prefix}",
+                consumer_claim_idle_ms=600_000,  # 10 min — accommodates groupCancelAndWait
+            )
+            self._owned_rpc_server = True
+
+            # Defer EngineService import to avoid circular module load.
+            from optio_core._engine_service import EngineService
+            from optio_core._generated.engine import engine_contract
+            self._engine_service = EngineService(self)
+            self.rpc_server.register_service(engine_contract, self._engine_service)
+
+        elif rpc_server is not None:
+            # App-provided server (test or shared-server mode). No legacy consumer.
+            self.rpc_server = rpc_server
+            self._owned_rpc_server = False
+            from optio_core._engine_service import EngineService
+            from optio_core._generated.engine import engine_contract
+            self._engine_service = EngineService(self)
+            self.rpc_server.register_service(engine_contract, self._engine_service)
 
         # Create executor
         self._executor = Executor(mongo_db, prefix, services, optio=self)
@@ -554,6 +593,10 @@ class Optio:
         except (NotImplementedError, RuntimeError):
             pass  # Signal handlers not available (e.g., in tests)
 
+        # Start the clamator RPC server first (non-blocking; spawns its own tasks)
+        if self.rpc_server is not None and self._owned_rpc_server:
+            await self.rpc_server.start()
+
         # Start scheduler
         await self._scheduler.start()
 
@@ -598,6 +641,13 @@ class Optio:
             self._consumer.stop()
         if hasattr(self, '_shutdown_event'):
             self._shutdown_event.set()
+
+        # 2b. RPC server (clamator)
+        if self.rpc_server is not None and self._owned_rpc_server:
+            grace_ms = int(
+                (grace_seconds if grace_seconds is not None else self._config.cancel_grace_seconds) * 1000
+            )
+            await self.rpc_server.stop(grace_ms=grace_ms)
 
         # 3. Cancel everything via the unified mechanism.
         grace = (

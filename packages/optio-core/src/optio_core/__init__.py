@@ -31,4 +31,17 @@ __all__ = [
     "get_process", "list_processes",
     "block_launches", "unblock_launches",
     "group_cancel", "group_cancel_and_wait",
+    "rpc_server",
 ]
+
+
+def __getattr__(name: str):
+    """Module-level attribute lookup for runtime-populated attributes.
+
+    `rpc_server` is set on the singleton _instance during init(); a normal
+    `rpc_server = _instance.rpc_server` binding at module import time would
+    capture None forever. PEP 562 __getattr__ forwards reads on access.
+    """
+    if name == "rpc_server":
+        return _instance.rpc_server
+    raise AttributeError(f"module 'optio_core' has no attribute {name!r}")
