@@ -6,7 +6,7 @@
 
 **Architecture:** Phase 1 introduces `engine-to-api.ts` (clamator contract), renames `contract.ts` to `api-to-frontend.ts`, ships committed codegen output for both languages, adds a top-level `Makefile` and `git config core.hooksPath`-style pre-commit hook for drift detection, and updates docs to declare the authority rule. Engine and API still talk via the legacy redis stream after phase 1.
 
-**Tech Stack:** TypeScript (pnpm workspace, vitest, ts-rest, zod), Python (setuptools, pytest, pydantic), `@clamator/codegen` 0.1.1, `@clamator/protocol`, `@clamator/over-redis`, `clamator-protocol`, `clamator-over-redis`, GNU make, bash.
+**Tech Stack:** TypeScript (pnpm workspace, vitest, ts-rest, zod), Python (setuptools, pytest, pydantic), `@clamator/codegen` 0.1.2, `@clamator/protocol`, `@clamator/over-redis`, `clamator-protocol`, `clamator-over-redis`, GNU make, bash.
 
 **Working dir:** `/home/csillag/deai/optio/.worktrees/redis-migration-1` (branch `redis-migration-1`, off `csillag/rpc-migration-1`).
 
@@ -105,7 +105,7 @@ git commit -m "refactor(optio-contracts): rename contract.ts to api-to-frontend.
 
 - [ ] **Step 1: Add `@clamator/protocol` runtime dep to optio-contracts**
 
-Edit `packages/optio-contracts/package.json` `dependencies` block to add `"@clamator/protocol": "^0.1.1"` (alphabetical placement after `@ts-rest/core`). Keep zod and the others.
+Edit `packages/optio-contracts/package.json` `dependencies` block to add `"@clamator/protocol": "^0.1.2"` (alphabetical placement after `@ts-rest/core`). Keep zod and the others.
 
 - [ ] **Step 2: Install**
 
@@ -384,7 +384,7 @@ Edit root `package.json`:
   },
   "engines": { "node": ">=20" },
   "devDependencies": {
-    "@clamator/codegen": "^0.1.1"
+    "@clamator/codegen": "^0.1.2"
   }
 }
 ```
@@ -394,8 +394,8 @@ Edit root `package.json`:
 Edit `packages/optio-api/package.json` `dependencies` to add (alphabetical):
 
 ```json
-"@clamator/over-redis": "^0.1.1",
-"@clamator/protocol": "^0.1.1",
+"@clamator/over-redis": "^0.1.2",
+"@clamator/protocol": "^0.1.2",
 ```
 
 - [ ] **Step 3: Install TS deps**
@@ -414,8 +414,8 @@ dependencies = [
     "motor>=3.3.0",
     "apscheduler>=4.0.0a5",
     "quaestor",
-    "clamator-protocol>=0.1.1",
-    "clamator-over-redis>=0.1.1",
+    "clamator-protocol>=0.1.2",
+    "clamator-over-redis>=0.1.2",
     "pydantic>=2.0",
 ]
 ```
