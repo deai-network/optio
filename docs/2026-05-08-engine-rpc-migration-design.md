@@ -56,8 +56,9 @@ packages/optio-api/src/
 ├── _generated/
 │   └── engine.ts                       # NEW — clamator codegen output (committed)
 ├── handlers.ts                         # rewritten — thin RPC translators, no validation, no DB read for commands
+├── engine-cache.ts                     # NEW — framework-agnostic EngineClient cache + lifecycle
 ├── adapters/
-│   ├── express.ts                      # updated — engine cache + return shape
+│   ├── express.ts                      # updated — uses engine-cache, framework-specific shutdown hook + return shape
 │   ├── fastify.ts                      # updated
 │   ├── nextjs-app.ts                   # updated
 │   └── nextjs-pages.ts                 # updated
@@ -624,49 +625,81 @@ async function launchProcess(engine: EngineClient,
 
 `cancelProcess`, `dismissProcess`, `resyncProcesses` similarly drop `db`, `redis`, `database`, `prefix`. The engine carries all of that internally via its keyPrefix-bound RPC client.
 
+### Engine cache (shared, framework-agnostic)
+
+The cache that maps `(database, prefix)` to a long-lived `EngineClient` belongs in a framework-agnostic module so all four adapters consume the same logic. New file: `packages/optio-api/src/engine-cache.ts`.
+
+```typescript
+import type { Redis } from 'ioredis';
+import { RedisRpcClient } from '@clamator/over-redis';
+import { EngineClient } from './_generated/engine.js';
+
+export interface EngineCache {
+  get(database: string, prefix: string): EngineClient;
+  closeAll(): Promise<void>;
+}
+
+export function createEngineCache(redis: Redis): EngineCache {
+  const map = new Map<string, EngineClient>();
+
+  return {
+    get(database, prefix) {
+      const key = `${database}/${prefix}`;
+      let engine = map.get(key);
+      if (!engine) {
+        engine = new EngineClient(new RedisRpcClient({ redis, keyPrefix: key }));
+        engine.start();
+        map.set(key, engine);
+      }
+      return engine;
+    },
+
+    async closeAll() {
+      await Promise.all([...map.values()].map(e => e.stop()));
+      map.clear();
+    },
+  };
+}
+```
+
+The cache owns the `EngineClient` lifecycle (`start()` on lazy create, `stop()` via `closeAll()`). It does not know about HTTP frameworks, request shapes, or shutdown semantics. Each adapter consumes it identically.
+
 ### Adapter updates
 
-Each adapter (`express.ts`, `fastify.ts`, `nextjs-app.ts`, `nextjs-pages.ts`):
+Each adapter (`express.ts`, `fastify.ts`, `nextjs-app.ts`, `nextjs-pages.ts`) does only the framework-specific work:
 
-1. On registration: build an `EngineClient` cache keyed by `${database}/${prefix}`. Lazy-create on first request.
-2. Per request to a command endpoint: resolve `(db, database, prefix)` via `resolveDb`, look up or create the engine, call the handler with the engine.
-3. Return value: single-db mode returns `{ engine }`; multi-db mode returns `{ getEngine }`.
+1. On registration: instantiate the shared cache via `createEngineCache(opts.redis)`.
+2. Per command-endpoint request: resolve `(db, database, prefix)` via `resolveDb`, look up the engine via `cache.get(database, prefix)`, call the handler with the engine.
+3. Wire the framework's shutdown hook to call `cache.closeAll()`.
+4. Return value: single-db mode returns `{ engine }`; multi-db mode returns `{ getEngine }`.
 
 Sketch (fastify):
 
 ```typescript
+import { createEngineCache } from '../engine-cache.js';
+
 export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions) {
-  const engineCache = new Map<string, EngineClient>();
+  const cache = createEngineCache(opts.redis);
 
-  function getEngine(database: string, prefix: string): EngineClient {
-    const key = `${database}/${prefix}`;
-    let engine = engineCache.get(key);
-    if (!engine) {
-      engine = new EngineClient(new RedisRpcClient({ redis: opts.redis, keyPrefix: key }));
-      engine.start();
-      engineCache.set(key, engine);
-    }
-    return engine;
-  }
-
-  // ... existing route registration ...
-  // Inside command handlers:
+  // ... route registration; command-route bodies call e.g.:
   //   const { database, prefix } = resolveDb(opts, query);
-  //   const result = await launchProcess(getEngine(database, prefix), params.id, body?.resume);
+  //   const result = await launchProcess(cache.get(database, prefix), params.id, body?.resume);
 
-  app.addHook('onClose', async () => {
-    await Promise.all([...engineCache.values()].map(e => e.stop()));
-  });
+  app.addHook('onClose', () => cache.closeAll());
 
   if ('db' in opts && opts.db) {
     const prefix = opts.prefix ?? 'optio';
-    return { engine: getEngine(opts.db.databaseName, prefix) };
+    return { engine: cache.get(opts.db.databaseName, prefix) };
   }
-  return { getEngine };
+  return { getEngine: cache.get.bind(cache) };
 }
 ```
 
-Same shape for the express adapter, with a framework-appropriate shutdown hook (express: caller's `server.close` callback). Next.js adapters: `createOptioRouteHandlers` and `createOptioHandler` return the handle alongside the existing handler exports.
+Per-adapter shutdown wiring:
+
+- **Fastify:** `app.addHook('onClose', () => cache.closeAll())`.
+- **Express:** no built-in close hook; expose `closeAll` on the return value (e.g. `{ engine, closeAll }` or `{ getEngine, closeAll }`) for the caller to invoke from their `server.close` callback.
+- **Next.js (both adapters):** no framework lifecycle hook — clients stop implicitly when the redis connection closes on process termination. Acceptable for serverless; the return value still exposes `closeAll` for callers that want to invoke it explicitly.
 
 ### Engine lifecycle (`start()` / `stop()`)
 
@@ -689,6 +722,9 @@ export {
 
 // Engine client — re-exported from generated for app convenience
 export { EngineClient } from './_generated/engine.js';
+
+// Engine cache (used internally by adapters; exported for custom adapters)
+export { createEngineCache, type EngineCache } from './engine-cache.js';
 
 // SSE pollers (unchanged)
 export {
@@ -746,7 +782,7 @@ Create if missing.
 ### `packages/optio-api/AGENTS.md`
 
 - **Phase 1.** Update file paths if `contract.ts` is referenced.
-- **Phase 2.** Document the new return shape of `registerOptioApi`. Note the `EngineClient` export.
+- **Phase 2.** Document the new return shape of `registerOptioApi`. Note the `EngineClient` and `createEngineCache` exports. Add `engine-cache.ts` to the "Building Custom Adapters" section so custom-adapter authors know to use the shared cache rather than rolling their own.
 - **Phase 4.**
   - Delete the "State guards enforced by command handlers" block.
   - Rewrite Handler Functions section with new signatures.
@@ -904,13 +940,14 @@ Engine side:
 
 API side:
 
-- All four adapters updated:
-  - Internal `Map<string, EngineClient>` keyed by `${database}/${prefix}`.
-  - Lazy-create on first lookup; `start()` fired immediately.
-  - Framework shutdown hook stops all cached clients.
-  - Return value: single-db mode returns `{ engine }`; multi-db mode returns `{ getEngine }`.
+- New file `packages/optio-api/src/engine-cache.ts` per §5: framework-agnostic `createEngineCache(redis): EngineCache` factory. Owns `EngineClient` lifecycle (lazy create + `start()` on first lookup, `closeAll()` on teardown). No framework dependencies.
+- All four adapters updated to use the shared cache:
+  - On registration: `const cache = createEngineCache(opts.redis)`.
+  - Per request: `cache.get(database, prefix)` to obtain the `EngineClient`.
+  - Framework-specific shutdown hook calls `cache.closeAll()` (fastify `onClose`; express / nextjs expose `closeAll` on the return handle for callers to invoke).
+  - Return value: single-db mode returns `{ engine }`; multi-db mode returns `{ getEngine }`. Express and nextjs adapters additionally expose `closeAll` since their frameworks lack a built-in close hook.
   - HTTP command handlers continue to call legacy `handlers.launchProcess(db, redis, ...)` etc. — no behavior change for HTTP yet.
-- `packages/optio-api/src/index.ts` re-exports `EngineClient`.
+- `packages/optio-api/src/index.ts` re-exports `EngineClient` and `createEngineCache` (plus the `EngineCache` type).
 
 Tests / interop:
 
