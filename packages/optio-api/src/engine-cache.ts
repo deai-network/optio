@@ -32,15 +32,23 @@ export function createEngineCache(redis: Redis): EngineCache {
           start: () => rpc.start(),
           stop: () => rpc.stop(),
         });
-        engine.start();
+        engine.start().catch((err) => {
+          console.error(`[engine-cache] start failed for ${key}:`, err);
+        });
         map.set(key, engine);
       }
       return engine;
     },
 
     async closeAll() {
-      await Promise.all([...map.values()].map((e) => e.stop()));
+      const results = await Promise.allSettled([...map.values()].map((e) => e.stop()));
       map.clear();
+      const rejections = results
+        .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+        .map((r) => r.reason);
+      if (rejections.length > 0) {
+        throw new AggregateError(rejections, 'closeAll: some clients failed to stop');
+      }
     },
   };
 }

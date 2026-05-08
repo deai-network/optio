@@ -35,6 +35,19 @@ describe('createEngineCache', () => {
     expect(stopB).toHaveBeenCalledOnce();
   });
 
+  it('closeAll() clears map even if a client stop() rejects', async () => {
+    const cache = createEngineCache(fakeRedis);
+    const a = cache.get('db1', 'optio');
+    const b = cache.get('db2', 'optio');
+    vi.spyOn(a, 'stop').mockRejectedValue(new Error('boom'));
+    vi.spyOn(b, 'stop').mockResolvedValue(undefined);
+
+    await expect(cache.closeAll()).rejects.toThrow();
+
+    // Map was cleared despite the rejection — second closeAll is a no-op.
+    await expect(cache.closeAll()).resolves.toBeUndefined();
+  });
+
   it('closeAll() called twice succeeds (idempotent)', async () => {
     const cache = createEngineCache(fakeRedis);
     cache.get('db1', 'optio');
