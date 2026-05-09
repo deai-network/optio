@@ -149,7 +149,7 @@ export const processesContract = c.router({
     query: InstanceQuerySchema,
     body: z.object({ clean: z.boolean().optional(), metadataFilter: ProcessMetadataFilterSchema.optional() }),
     responses: {
-      200: z.object({ message: z.string() }),
+      202: z.object({ message: z.string() }),
     },
     summary: 'Re-sync process definitions',
   },

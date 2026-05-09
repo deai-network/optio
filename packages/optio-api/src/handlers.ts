@@ -1,5 +1,4 @@
 import { ObjectId, type Db } from 'mongodb';
-import { publishResync } from './publisher.js';
 import type { ProcessMetadataFilter } from './types.js';
 import { metadataFilterToMongo } from './metadata-filter-query.js';
 import { findProcessByEitherId } from './process-id-resolver.js';
@@ -239,7 +238,10 @@ const DISMISS_STATUS: Record<DismissFailureReasonType, 404 | 409> = {
   'not-dismissable': 409,
 };
 
-const MESSAGES: Record<string, string> = {
+const MESSAGES: Record<
+  LaunchFailureReasonType | CancelFailureReasonType | DismissFailureReasonType,
+  string
+> = {
   'not-found': 'Process not found',
   'not-launchable': 'Process is not in a launchable state',
   'no-resume-support': 'This task does not support resume',
@@ -321,6 +323,7 @@ export async function resyncProcesses(
   metadataFilter?: ProcessMetadataFilter,
 ): Promise<{ message: string }> {
   const { database, prefix } = resolveDb(ctx.dbOpts, query);
-  await publishResync(ctx.redis, database, prefix, clean, metadataFilter);
+  const engine = ctx.engineCache.get(database, prefix);
+  await engine.resync({ clean, metadataFilter });
   return { message: clean ? 'Nuke and resync requested' : 'Resync requested' };
 }

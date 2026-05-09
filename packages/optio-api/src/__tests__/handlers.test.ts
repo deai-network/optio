@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import { MongoClient, ObjectId, type Db } from 'mongodb';
 import {
   getProcess, getProcessTree, getProcessLog, getProcessTreeLog,
-  listProcesses, launchProcess, cancelProcess, dismissProcess,
+  listProcesses, launchProcess, cancelProcess, dismissProcess, resyncProcesses,
 } from '../handlers.js';
 import { createOptioContext } from '../context.js';
 import type { OptioContext } from '../context.js';
@@ -601,6 +601,24 @@ describe('dual-form id resolution (ObjectId hex OR processId string)', () => {
     const result = await dismissProcess(ctx, { prefix: PREFIX }, processIdString);
     expect(result.status).toBe(200);
     expect(engine.dismiss).toHaveBeenCalledWith({ processId: processIdString });
+  });
+});
+
+describe('resyncProcesses — RPC notification', () => {
+  it('calls engine.resync with the clean flag and metadataFilter', async () => {
+    const engine = { resync: vi.fn().mockResolvedValue(undefined) };
+    const ctx = makeCtxWithMockEngine(db, engine);
+    const result = await resyncProcesses(ctx, { prefix: PREFIX }, true, { tag: ['demo'] });
+    expect(engine.resync).toHaveBeenCalledWith({ clean: true, metadataFilter: { tag: ['demo'] } });
+    expect(result).toEqual({ message: 'Nuke and resync requested' });
+  });
+
+  it('passes clean=false when omitted', async () => {
+    const engine = { resync: vi.fn().mockResolvedValue(undefined) };
+    const ctx = makeCtxWithMockEngine(db, engine);
+    const result = await resyncProcesses(ctx, { prefix: PREFIX });
+    expect(engine.resync).toHaveBeenCalledWith({ clean: false, metadataFilter: undefined });
+    expect(result).toEqual({ message: 'Resync requested' });
   });
 });
 

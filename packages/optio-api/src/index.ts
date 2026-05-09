@@ -15,8 +15,6 @@ export {
   type CommandResult,
 } from './handlers.js';
 
-// Publishers (for domain code to import)
-export { publishLaunch, publishResync } from './publisher.js';
 export type { ProcessMetadataFilter } from './types.js';
 
 // Stream poller (for custom adapters)

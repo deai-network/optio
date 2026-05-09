@@ -147,7 +147,7 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions): OptioApiH
     },
     resync: async ({ query, body }: { query: { database?: string; prefix?: string }; body: { clean?: boolean; metadataFilter?: import('../types.js').ProcessMetadataFilter } }) => {
       const result = await handlers.resyncProcesses(ctx, query, body.clean, body.metadataFilter);
-      return { status: 200 as const, body: result };
+      return { status: 202 as const, body: result };
     },
   }, app);
 

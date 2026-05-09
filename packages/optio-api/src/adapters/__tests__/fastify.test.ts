@@ -6,8 +6,10 @@ import { registerOptioApi } from '../fastify.js';
 import { EngineClient } from '../../_generated/engine.js';
 
 // Stub the engine RPC at the prototype level so handlers that now call
-// engine.launch / engine.cancel / engine.dismiss (and later engine.resync)
-// don't try to reach a real engine over the redis-mock.
+// engine.launch / engine.cancel / engine.dismiss / engine.resync don't
+// try to reach a real engine over the redis-mock.
+vi.spyOn(EngineClient.prototype, 'resync').mockResolvedValue(undefined);
+
 vi.spyOn(EngineClient.prototype, 'launch').mockImplementation(async (params: any) => ({
   ok: true,
   process: {
@@ -253,7 +255,8 @@ describe('Fastify adapter integration tests', () => {
     expect(JSON.parse(res.body)).toEqual({ reason: 'not-found', message: 'Process not found' });
   });
 
-  it('POST /api/processes/resync — triggers resync (200)', async () => {
+  it('POST /api/processes/resync — triggers resync (202)', async () => {
+    const resyncSpy = vi.spyOn(EngineClient.prototype, 'resync').mockResolvedValue(undefined);
     const app = createApp();
 
     const res = await app.inject({
@@ -263,12 +266,14 @@ describe('Fastify adapter integration tests', () => {
       body: JSON.stringify({}),
     });
 
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode).toBe(202);
     const body = JSON.parse(res.body);
     expect(body.message).toBe('Resync requested');
+    expect(resyncSpy).toHaveBeenCalledWith({ clean: false, metadataFilter: undefined });
   });
 
-  it('POST /api/processes/resync — forwards metadataFilter to Redis', async () => {
+  it('POST /api/processes/resync — forwards metadataFilter to engine.resync', async () => {
+    const resyncSpy = vi.spyOn(EngineClient.prototype, 'resync').mockResolvedValue(undefined);
     const app = createApp();
 
     const res = await app.inject({
@@ -278,15 +283,8 @@ describe('Fastify adapter integration tests', () => {
       body: JSON.stringify({ metadataFilter: { group: 'ingest' } }),
     });
 
-    expect(res.statusCode).toBe(200);
-
-    // Inspect redis mock for the published payload.
-    const entries = await (redis as any).xrange(
-      'optio_test_fastify/optio:commands', '-', '+',
-    );
-    const [, fields] = entries[entries.length - 1];
-    const payload = JSON.parse(fields[fields.indexOf('payload') + 1]);
-    expect(payload.metadataFilter).toEqual({ group: 'ingest' });
+    expect(res.statusCode).toBe(202);
+    expect(resyncSpy).toHaveBeenCalledWith({ clean: false, metadataFilter: { group: 'ingest' } });
   });
 
   it('GET /api/processes?prefix=optio&limit=10 — lists with explicit prefix', async () => {

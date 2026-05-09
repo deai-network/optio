@@ -7,8 +7,10 @@ import { createOptioHandler } from '../nextjs-pages.js';
 import { EngineClient } from '../../_generated/engine.js';
 
 // Stub the engine RPC at the prototype level so handlers that now call
-// engine.launch / engine.cancel / engine.dismiss (and later engine.resync)
-// don't try to reach a real engine over the redis-mock.
+// engine.launch / engine.cancel / engine.dismiss / engine.resync don't
+// try to reach a real engine over the redis-mock.
+vi.spyOn(EngineClient.prototype, 'resync').mockResolvedValue(undefined);
+
 vi.spyOn(EngineClient.prototype, 'launch').mockImplementation(async (params: any) => ({
   ok: true,
   process: {
@@ -225,31 +227,27 @@ describe('Next.js Pages Router adapter integration tests', () => {
     expect(res.body).toEqual({ reason: 'not-found', message: 'Process not found' });
   });
 
-  it('POST /api/processes/resync — triggers resync (200, body.message = "Resync requested")', async () => {
+  it('POST /api/processes/resync — triggers resync (202, body.message = "Resync requested")', async () => {
+    const resyncSpy = vi.spyOn(EngineClient.prototype, 'resync').mockResolvedValue(undefined);
     const app = createApp();
 
     const res = await request(app).post('/api/processes/resync').send({});
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     expect(res.body.message).toBe('Resync requested');
+    expect(resyncSpy).toHaveBeenCalledWith({ clean: false, metadataFilter: undefined });
   });
 
-  it('POST /api/processes/resync — forwards metadataFilter to Redis', async () => {
+  it('POST /api/processes/resync — forwards metadataFilter to engine.resync', async () => {
+    const resyncSpy = vi.spyOn(EngineClient.prototype, 'resync').mockResolvedValue(undefined);
     const app = createApp();
 
     const res = await request(app)
       .post('/api/processes/resync')
       .send({ metadataFilter: { group: 'ingest' } });
 
-    expect(res.status).toBe(200);
-
-    // Inspect redis mock for the published payload.
-    const entries = await (redis as any).xrange(
-      'optio_test_nextjs_pages/optio:commands', '-', '+',
-    );
-    const [, fields] = entries[entries.length - 1];
-    const payload = JSON.parse(fields[fields.indexOf('payload') + 1]);
-    expect(payload.metadataFilter).toEqual({ group: 'ingest' });
+    expect(res.status).toBe(202);
+    expect(resyncSpy).toHaveBeenCalledWith({ clean: false, metadataFilter: { group: 'ingest' } });
   });
 });
 

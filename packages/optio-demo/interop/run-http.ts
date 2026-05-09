@@ -190,17 +190,14 @@ async function main() {
       await dismissIfTerminal();
       await waitForState(['idle', 'done', 'failed', 'cancelled']);
       await http('POST', `/processes/${PROC}/launch`, {});
-      let observedNonTerminal = false;
       try {
         await waitForState(['running', 'scheduled', 'cancelling'], 1000);
-        observedNonTerminal = true;
       } catch {
         // proc raced into a terminal state too fast — skip and rely on unit tests.
         console.log('[scenario] http-dismiss-not-dismissable: skipped (proc reached terminal state too fast)');
         ok('http-dismiss-not-dismissable', 'skipped (terminal-fast)');
         return;
       }
-      if (!observedNonTerminal) return;
       const r = await http('POST', `/processes/${PROC}/dismiss`, {});
       if (r.status !== 409) return fail('http-dismiss-not-dismissable', `expected 409, got ${r.status} ${JSON.stringify(r.body)}`);
       if (r.body?.reason !== 'not-dismissable')
@@ -214,6 +211,22 @@ async function main() {
       if (r.status !== 404) return fail('http-dismiss-not-found', `expected 404, got ${r.status}`);
       if (r.body?.reason !== 'not-found') return fail('http-dismiss-not-found', `expected reason 'not-found'`);
       ok('http-dismiss-not-found');
+    });
+
+    // 11. Resync notification.
+    await withTimeout('http-resync', async () => {
+      const r = await http('POST', `/processes/resync`, {});
+      if (r.status !== 202) return fail('http-resync', `expected 202, got ${r.status}`);
+      if (r.body?.message !== 'Resync requested') return fail('http-resync', `unexpected body ${JSON.stringify(r.body)}`);
+      ok('http-resync');
+    });
+
+    // 12. Resync clean.
+    await withTimeout('http-resync-clean', async () => {
+      const r = await http('POST', `/processes/resync`, { clean: true });
+      if (r.status !== 202) return fail('http-resync-clean', `expected 202, got ${r.status}`);
+      if (r.body?.message !== 'Nuke and resync requested') return fail('http-resync-clean', `unexpected body ${JSON.stringify(r.body)}`);
+      ok('http-resync-clean');
     });
   } finally {
     await app.close();
