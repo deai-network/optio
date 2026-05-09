@@ -68,7 +68,7 @@ class ProcessScheduler:
                 )
             if should_remove:
                 try:
-                    await self._scheduler.remove_job(job_id)
+                    await self._scheduler.remove_schedule(job_id)
                 except Exception as e:
                     logger.warning(f"Failed to remove scheduled job {job_id}: {e}")
                 del self._jobs[job_id]
@@ -79,15 +79,15 @@ class ProcessScheduler:
             job_id = f"sched_{task.process_id}"
             if job_id in self._jobs:
                 try:
-                    await self._scheduler.remove_job(job_id)
+                    await self._scheduler.remove_schedule(job_id)
                 except Exception as e:
                     logger.warning(f"Failed to remove scheduled job {job_id} prior to replace: {e}")
             try:
                 from apscheduler.triggers.cron import CronTrigger
                 trigger = CronTrigger.from_crontab(task.schedule)
-                await self._scheduler.add_job(
+                await self._scheduler.add_schedule(
                     self._launch_fn,
-                    trigger=trigger,
+                    trigger,
                     id=job_id,
                     args=[task.process_id],
                 )

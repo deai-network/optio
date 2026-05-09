@@ -11,14 +11,15 @@ class FakeAPScheduler:
     def __init__(self):
         self.jobs: dict[str, dict] = {}
 
-    async def add_job(self, fn, trigger=None, id=None, args=None):
+    async def add_schedule(self, fn, trigger, *, id=None, args=None, **kwargs):
         self.jobs[id] = {"fn": fn, "trigger": trigger, "args": args}
+        return id
 
-    async def remove_job(self, job_id: str):
-        if job_id in self.jobs:
-            del self.jobs[job_id]
+    async def remove_schedule(self, id: str):
+        if id in self.jobs:
+            del self.jobs[id]
         else:
-            raise KeyError(job_id)
+            raise KeyError(id)
 
 
 async def _noop(_pid: str):
