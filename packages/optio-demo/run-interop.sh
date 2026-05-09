@@ -87,7 +87,7 @@ while (( $(date +%s) < DEADLINE )); do
   sleep 0.2
 done
 if ! docker exec "$REDIS_CID" redis-cli ping 2>/dev/null | grep -q PONG; then
-  docker logs --tail 50 "$REDIS_CID" >&2 2>/dev/null
+  { docker logs --tail 50 "$REDIS_CID" 2>&1 || true; } >&2
   die 11 "redis not ready within ${REDIS_TIMEOUT}s"
 fi
 
@@ -103,7 +103,7 @@ while (( $(date +%s) < DEADLINE )); do
   sleep 0.4
 done
 if ! docker exec "$MONGO_CID" mongosh --eval 'quit(db.adminCommand("ping").ok ? 0 : 1)' --quiet >/dev/null 2>&1; then
-  docker logs --tail 50 "$MONGO_CID" >&2 2>/dev/null
+  { docker logs --tail 50 "$MONGO_CID" 2>&1 || true; } >&2
   die 12 "mongo not ready within ${MONGO_TIMEOUT}s"
 fi
 
