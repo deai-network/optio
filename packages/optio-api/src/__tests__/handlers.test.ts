@@ -224,6 +224,119 @@ describe('launchProcess — pre-checks + engine RPC', () => {
   });
 });
 
+describe('cancelProcess — pre-checks + engine RPC', () => {
+  // Builds a mock engine. By default `cancel` resolves with
+  // `{ ok: true, process: <minimal-process> }` so the 200 path works
+  // without per-test setup. Tests that need a failure response pass
+  // an override via `cancelImpl`.
+  function makeMockEngine(cancelImpl?: (params: any) => any) {
+    return {
+      cancel: vi.fn(cancelImpl ?? ((params: any) => ({
+        ok: true,
+        process: {
+          _id: new ObjectId(),
+          processId: params.processId,
+          name: 'P',
+          rootId: new ObjectId(),
+          parentId: null,
+          depth: 0,
+          order: 0,
+          status: { state: 'cancelled' },
+          progress: { percent: null },
+          cancellable: true,
+          log: [],
+        },
+      }))),
+    };
+  }
+
+  async function insertCancellable(extra: Record<string, unknown> = {}) {
+    const oid = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertOne({
+      _id: oid,
+      processId: 'p',
+      name: 'P',
+      rootId: oid,
+      parentId: null,
+      depth: 0,
+      order: 0,
+      status: { state: 'running' },
+      progress: { percent: null },
+      cancellable: true,
+      log: [],
+      ...extra,
+    });
+    return oid.toString();
+  }
+
+  it('200 on success: returns toResponse(result.process) and calls engine.cancel with {processId}', async () => {
+    const id = await insertCancellable({ processId: 'p' });
+    const engine = makeMockEngine();
+    const result = await cancelProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
+    expect(result.status).toBe(200);
+    expect(engine.cancel).toHaveBeenCalledTimes(1);
+    expect(engine.cancel).toHaveBeenCalledWith({ processId: 'p' });
+    expect((result as any).body._id).toBeDefined();
+  });
+
+  it('404 not-found from pre-check: engine.cancel never called', async () => {
+    const engine = makeMockEngine();
+    const fakeId = new ObjectId().toString();
+    const result = await cancelProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, fakeId);
+    expect(result.status).toBe(404);
+    expect((result as any).body).toEqual({ reason: 'not-found', message: 'Process not found' });
+    expect(engine.cancel).not.toHaveBeenCalled();
+  });
+
+  it('409 not-cancellable from pre-check (cancellable=false): engine.cancel never called', async () => {
+    const id = await insertCancellable({ cancellable: false });
+    const engine = makeMockEngine();
+    const result = await cancelProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
+    expect(result.status).toBe(409);
+    expect((result as any).body).toEqual({
+      reason: 'not-cancellable',
+      message: 'Process is not cancellable in its current state',
+    });
+    expect(engine.cancel).not.toHaveBeenCalled();
+  });
+
+  it('409 not-cancellable from pre-check (state=idle): engine.cancel never called', async () => {
+    const id = await insertCancellable({ status: { state: 'idle' } });
+    const engine = makeMockEngine();
+    const result = await cancelProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
+    expect(result.status).toBe(409);
+    expect((result as any).body).toEqual({
+      reason: 'not-cancellable',
+      message: 'Process is not cancellable in its current state',
+    });
+    expect(engine.cancel).not.toHaveBeenCalled();
+  });
+
+  it('409 not-cancellable from engine (race): pre-check passes, engine returns ok=false reason=not-cancellable', async () => {
+    const id = await insertCancellable();
+    const engine = makeMockEngine(() => ({ ok: false, reason: 'not-cancellable' }));
+    const result = await cancelProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
+    expect(result.status).toBe(409);
+    expect((result as any).body).toEqual({
+      reason: 'not-cancellable',
+      message: 'Process is not cancellable in its current state',
+    });
+    expect(engine.cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('404 not-found from engine (race): pre-check passes, engine returns ok=false reason=not-found', async () => {
+    const id = await insertCancellable();
+    const engine = makeMockEngine(() => ({ ok: false, reason: 'not-found' }));
+    const result = await cancelProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
+    expect(result.status).toBe(404);
+    expect((result as any).body).toEqual({
+      reason: 'not-found',
+      message: 'Process not found',
+    });
+    expect(engine.cancel).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('dual-form id resolution (ObjectId hex OR processId string)', () => {
   // The mkPid-style processId is the form excavator's recipe-debug
   // flow returns to the frontend at submit time, before the engine
@@ -325,11 +438,36 @@ describe('dual-form id resolution (ObjectId hex OR processId string)', () => {
   });
 
   it('cancelProcess accepts the processId string form', async () => {
-    const redis = new Redis();
-    await redis.flushall();
     const { processIdString } = await insertProcess('running');
-    const result = await cancelProcess(makeCtx(db, redis), { prefix: PREFIX }, processIdString);
+    const engine = {
+      cancel: vi.fn((params: any) => ({
+        ok: true,
+        process: {
+          _id: new ObjectId(),
+          processId: params.processId,
+          name: 'P',
+          rootId: new ObjectId(),
+          parentId: null,
+          depth: 0,
+          order: 0,
+          status: { state: 'cancelled' },
+          progress: { percent: null },
+          cancellable: true,
+          log: [],
+        },
+      })),
+    };
+    const ctx: OptioContext = {
+      dbOpts: { db },
+      redis: fakeRedis,
+      engineCache: {
+        get: () => engine,
+        closeAll: async () => {},
+      },
+    } as any;
+    const result = await cancelProcess(ctx, { prefix: PREFIX }, processIdString);
     expect(result.status).toBe(200);
+    expect(engine.cancel).toHaveBeenCalledWith({ processId: processIdString });
   });
 
   it('dismissProcess accepts the processId string form', async () => {

@@ -7,8 +7,8 @@ import { createOptioHandler } from '../nextjs-pages.js';
 import { EngineClient } from '../../_generated/engine.js';
 
 // Stub the engine RPC at the prototype level so handlers that now call
-// engine.launch (and later engine.cancel/dismiss/resync) don't try to
-// reach a real engine over the redis-mock.
+// engine.launch / engine.cancel (and later engine.dismiss/resync) don't
+// try to reach a real engine over the redis-mock.
 vi.spyOn(EngineClient.prototype, 'launch').mockImplementation(async (params: any) => ({
   ok: true,
   process: {
@@ -20,6 +20,23 @@ vi.spyOn(EngineClient.prototype, 'launch').mockImplementation(async (params: any
     depth: 0,
     order: 0,
     status: { state: 'scheduled' },
+    progress: { percent: 0, message: '' },
+    cancellable: true,
+    log: [],
+  },
+} as any));
+
+vi.spyOn(EngineClient.prototype, 'cancel').mockImplementation(async (params: any) => ({
+  ok: true,
+  process: {
+    _id: new ObjectId(),
+    processId: params.processId,
+    name: 'Test Task',
+    rootId: new ObjectId(),
+    parentId: null,
+    depth: 0,
+    order: 0,
+    status: { state: 'cancelled' },
     progress: { percent: 0, message: '' },
     cancellable: true,
     log: [],
@@ -118,6 +135,51 @@ describe('Next.js Pages Router adapter integration tests', () => {
     const res = await request(app).post(`/api/processes/${doc._id.toString()}/launch`);
 
     expect(res.status).toBe(200);
+  });
+
+  it('POST /api/processes/:id/launch — returns 409 for running process', async () => {
+    const doc = await seedProcess({ status: { state: 'running' } });
+    const app = createApp();
+    const res = await request(app).post(`/api/processes/${doc._id.toString()}/launch`);
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({
+      reason: 'not-launchable',
+      message: 'Process is not in a launchable state',
+    });
+  });
+
+  it('POST /api/processes/:id/launch — returns 404 for nonexistent id', async () => {
+    const app = createApp();
+    const fakeId = new ObjectId().toString();
+    const res = await request(app).post(`/api/processes/${fakeId}/launch`);
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ reason: 'not-found', message: 'Process not found' });
+  });
+
+  it('POST /api/processes/:id/cancel — cancels running cancellable process (200)', async () => {
+    const doc = await seedProcess({ status: { state: 'running' }, cancellable: true });
+    const app = createApp();
+    const res = await request(app).post(`/api/processes/${doc._id.toString()}/cancel`);
+    expect(res.status).toBe(200);
+  });
+
+  it('POST /api/processes/:id/cancel — returns 409 for non-cancellable process', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' }, cancellable: true });
+    const app = createApp();
+    const res = await request(app).post(`/api/processes/${doc._id.toString()}/cancel`);
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({
+      reason: 'not-cancellable',
+      message: 'Process is not cancellable in its current state',
+    });
+  });
+
+  it('POST /api/processes/:id/cancel — returns 404 for nonexistent id', async () => {
+    const app = createApp();
+    const fakeId = new ObjectId().toString();
+    const res = await request(app).post(`/api/processes/${fakeId}/cancel`);
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ reason: 'not-found', message: 'Process not found' });
   });
 
   it('POST /api/processes/resync — triggers resync (200, body.message = "Resync requested")', async () => {

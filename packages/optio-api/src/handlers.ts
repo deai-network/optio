@@ -1,11 +1,14 @@
 import { ObjectId, type Db } from 'mongodb';
-import { publishLaunch, publishCancel, publishDismiss, publishResync } from './publisher.js';
+import { publishDismiss, publishResync } from './publisher.js';
 import type { ProcessMetadataFilter } from './types.js';
 import { metadataFilterToMongo } from './metadata-filter-query.js';
 import { findProcessByEitherId } from './process-id-resolver.js';
 import type { OptioContext } from './context.js';
 import { resolveDb } from './resolve-db.js';
-import type { LaunchFailureReason as LaunchFailureReasonType } from 'optio-contracts';
+import type {
+  LaunchFailureReason as LaunchFailureReasonType,
+  CancelFailureReason as CancelFailureReasonType,
+} from 'optio-contracts';
 
 function col(db: Db, prefix: string) {
   return db.collection(`${prefix}_processes`);
@@ -210,6 +213,10 @@ export type LaunchCommandResult =
   | { status: 200; body: any }
   | { status: 404 | 409; body: { reason: LaunchFailureReasonType; message: string } };
 
+export type CancelCommandResult =
+  | { status: 200; body: any }
+  | { status: 404 | 409; body: { reason: CancelFailureReasonType; message: string } };
+
 const LAUNCH_STATUS: Record<LaunchFailureReasonType, 404 | 409> = {
   'not-found': 404,
   'not-launchable': 409,
@@ -217,15 +224,25 @@ const LAUNCH_STATUS: Record<LaunchFailureReasonType, 404 | 409> = {
   'launch-blocked': 409,
 };
 
+const CANCEL_STATUS: Record<CancelFailureReasonType, 404 | 409> = {
+  'not-found': 404,
+  'not-cancellable': 409,
+};
+
 const MESSAGES: Record<string, string> = {
   'not-found': 'Process not found',
   'not-launchable': 'Process is not in a launchable state',
   'no-resume-support': 'This task does not support resume',
   'launch-blocked': 'Launches matching this filter are currently blocked',
+  'not-cancellable': 'Process is not cancellable in its current state',
 };
 
 function launchFail(reason: LaunchFailureReasonType): LaunchCommandResult {
   return { status: LAUNCH_STATUS[reason], body: { reason, message: MESSAGES[reason] } };
+}
+
+function cancelFail(reason: CancelFailureReasonType): CancelCommandResult {
+  return { status: CANCEL_STATUS[reason], body: { reason, message: MESSAGES[reason] } };
 }
 
 export async function launchProcess(
@@ -251,20 +268,18 @@ export async function cancelProcess(
   ctx: OptioContext,
   query: { database?: string; prefix?: string },
   id: string,
-): Promise<CommandResult> {
+): Promise<CancelCommandResult> {
   const { db, database, prefix } = resolveDb(ctx.dbOpts, query);
+  const engine = ctx.engineCache.get(database, prefix);
+
   const proc = await findProcessByEitherId(col(db, prefix), id);
-  if (!proc) {
-    return { status: 404, body: { message: 'Process not found' } };
-  }
-  if (!proc.cancellable) {
-    return { status: 409, body: { message: 'Process is not cancellable' } };
-  }
-  if (!CANCELLABLE_STATES.includes(proc.status.state)) {
-    return { status: 409, body: { message: `Cannot cancel process in state: ${proc.status.state}` } };
-  }
-  await publishCancel(ctx.redis, database, prefix, proc.processId);
-  return { status: 200, body: toResponse(proc) };
+  if (!proc) return cancelFail('not-found');
+  if (!proc.cancellable) return cancelFail('not-cancellable');
+  if (!CANCELLABLE_STATES.includes(proc.status.state)) return cancelFail('not-cancellable');
+
+  const result = await engine.cancel({ processId: proc.processId });
+  if (result.ok) return { status: 200, body: toResponse(result.process) };
+  return cancelFail(result.reason);
 }
 
 export async function dismissProcess(

@@ -128,6 +128,42 @@ async function main() {
       if (r.status !== 200) return fail('http-launch-baseline-reset', `expected 200, got ${r.status} ${JSON.stringify(r.body)}`);
       ok('http-launch-baseline-reset');
     });
+
+    // 5. Cancel success: launch then cancel immediately, while the proc is
+    // still in scheduled/running. Cancel takes no body, but fastify rejects
+    // empty bodies with application/json content-type, so pass {} like launch.
+    // The opencode-demo task fails fast in the interop env (no SSH host), so
+    // any delay between launch and cancel risks racing into a terminal state.
+    await withTimeout('http-cancel-success', async () => {
+      await dismissIfTerminal();
+      await waitForState(['idle', 'done', 'failed', 'cancelled']);
+      const launchRes = await http('POST', `/processes/${PROC}/launch`, {});
+      if (launchRes.status !== 200) {
+        return fail('http-cancel-success', `pre-launch failed: ${launchRes.status} ${JSON.stringify(launchRes.body)}`);
+      }
+      const r = await http('POST', `/processes/${PROC}/cancel`, {});
+      if (r.status !== 200) return fail('http-cancel-success', `expected 200, got ${r.status} ${JSON.stringify(r.body)}`);
+      ok('http-cancel-success', `state=${r.body.status?.state}`);
+    });
+
+    // 6. Cancel idle proc -> 409 not-cancellable.
+    await withTimeout('http-cancel-not-cancellable', async () => {
+      await dismissIfTerminal();
+      await waitForState(['idle', 'done', 'failed', 'cancelled']);
+      const r = await http('POST', `/processes/${PROC}/cancel`, {});
+      if (r.status !== 409) return fail('http-cancel-not-cancellable', `expected 409, got ${r.status}`);
+      if (r.body?.reason !== 'not-cancellable')
+        return fail('http-cancel-not-cancellable', `expected reason 'not-cancellable', got ${r.body?.reason}`);
+      ok('http-cancel-not-cancellable');
+    });
+
+    // 7. Cancel nonexistent -> 404 not-found.
+    await withTimeout('http-cancel-not-found', async () => {
+      const r = await http('POST', `/processes/bogus-cancel-id/cancel`, {});
+      if (r.status !== 404) return fail('http-cancel-not-found', `expected 404, got ${r.status}`);
+      if (r.body?.reason !== 'not-found') return fail('http-cancel-not-found', `expected reason 'not-found'`);
+      ok('http-cancel-not-found');
+    });
   } finally {
     await app.close();
     await redis.quit();

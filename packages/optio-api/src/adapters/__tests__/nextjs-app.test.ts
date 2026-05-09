@@ -5,8 +5,8 @@ import { createOptioRouteHandlers } from '../nextjs-app.js';
 import { EngineClient } from '../../_generated/engine.js';
 
 // Stub the engine RPC at the prototype level so handlers that now call
-// engine.launch (and later engine.cancel/dismiss/resync) don't try to
-// reach a real engine over the redis-mock.
+// engine.launch / engine.cancel (and later engine.dismiss/resync) don't
+// try to reach a real engine over the redis-mock.
 vi.spyOn(EngineClient.prototype, 'launch').mockImplementation(async (params: any) => ({
   ok: true,
   process: {
@@ -18,6 +18,23 @@ vi.spyOn(EngineClient.prototype, 'launch').mockImplementation(async (params: any
     depth: 0,
     order: 0,
     status: { state: 'scheduled' },
+    progress: { percent: 0, message: '' },
+    cancellable: true,
+    log: [],
+  },
+} as any));
+
+vi.spyOn(EngineClient.prototype, 'cancel').mockImplementation(async (params: any) => ({
+  ok: true,
+  process: {
+    _id: new ObjectId(),
+    processId: params.processId,
+    name: 'Test Task',
+    rootId: new ObjectId(),
+    parentId: null,
+    depth: 0,
+    order: 0,
+    status: { state: 'cancelled' },
     progress: { percent: 0, message: '' },
     cancellable: true,
     log: [],
@@ -126,6 +143,56 @@ describe('Next.js App Router adapter integration tests', () => {
     const res = await POST(req);
 
     expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      reason: 'not-launchable',
+      message: 'Process is not in a launchable state',
+    });
+  });
+
+  it('POST /api/processes/:id/launch — returns 404 for nonexistent id', async () => {
+    const { POST } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
+    const fakeId = new ObjectId().toString();
+    const req = makeNextRequest(`http://localhost/api/processes/${fakeId}/launch`, {
+      method: 'POST',
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ reason: 'not-found', message: 'Process not found' });
+  });
+
+  it('POST /api/processes/:id/cancel — cancels running cancellable process (200)', async () => {
+    const doc = await seedProcess({ status: { state: 'running' }, cancellable: true });
+    const { POST } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
+    const req = makeNextRequest(`http://localhost/api/processes/${doc._id.toString()}/cancel`, {
+      method: 'POST',
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(200);
+  });
+
+  it('POST /api/processes/:id/cancel — returns 409 for non-cancellable process', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' }, cancellable: true });
+    const { POST } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
+    const req = makeNextRequest(`http://localhost/api/processes/${doc._id.toString()}/cancel`, {
+      method: 'POST',
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      reason: 'not-cancellable',
+      message: 'Process is not cancellable in its current state',
+    });
+  });
+
+  it('POST /api/processes/:id/cancel — returns 404 for nonexistent id', async () => {
+    const { POST } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
+    const fakeId = new ObjectId().toString();
+    const req = makeNextRequest(`http://localhost/api/processes/${fakeId}/cancel`, {
+      method: 'POST',
+    });
+    const res = await POST(req);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ reason: 'not-found', message: 'Process not found' });
   });
 
   it('POST /api/processes/resync — triggers resync (200)', async () => {

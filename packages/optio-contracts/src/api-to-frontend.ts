@@ -2,12 +2,17 @@ import { initContract } from '@ts-rest/core';
 import { z } from 'zod';
 import { PaginationQuerySchema, PaginatedResponseSchema, ErrorSchema, ObjectIdSchema, ProcessIdParamSchema } from './schemas/common.js';
 import { ProcessSchema, ProcessStateSchema, LogEntrySchema, ProcessMetadataFilterSchema, MetadataFilterQueryParamSchema } from './schemas/process.js';
-import { LaunchFailureReason } from './engine-failure-reasons.js';
+import { LaunchFailureReason, CancelFailureReason } from './engine-failure-reasons.js';
 
 const c = initContract();
 
 const LaunchErrorBody = z.object({
   reason: LaunchFailureReason,
+  message: z.string(),
+});
+
+const CancelErrorBody = z.object({
+  reason: CancelFailureReason,
   message: z.string(),
 });
 
@@ -115,8 +120,8 @@ export const processesContract = c.router({
     body: c.noBody(),
     responses: {
       200: ProcessSchema,
-      404: ErrorSchema,
-      409: ErrorSchema,
+      404: CancelErrorBody,
+      409: CancelErrorBody,
     },
     summary: 'Request process cancellation',
   },
