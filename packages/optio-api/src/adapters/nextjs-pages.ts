@@ -17,9 +17,13 @@ import { checkAuth } from '../auth.js';
 import { isWriteMethod } from '../widget-proxy-core.js';
 import {
   detectLegacyMetadataParams,
-  parseMetadataFilterQuery,
   formatLegacyMetadataMessage,
 } from '../metadata-filter-query.js';
+import {
+  parseSseOptions,
+  checkLegacyMetadataParams,
+  LegacyMetadataParamError,
+} from '../sse-options.js';
 import type { EngineClient } from '../_generated/engine.js';
 import { createOptioContext } from '../context.js';
 
@@ -119,11 +123,14 @@ export function createOptioHandler(opts: OptioApiOptions): OptioApiHandle {
     const treeStreamMatch = path.match(/^\/api\/processes\/([^/]+)\/tree\/stream$/);
     if (treeStreamMatch && method === 'GET') {
       const id = treeStreamMatch[1];
-      const { db, prefix } = resolveDb(dbOpts, {
-        database: req.query.database as string | undefined,
-        prefix: req.query.prefix as string | undefined,
-      });
-      const maxDepth = req.query.maxDepth !== undefined ? parseInt(req.query.maxDepth as string, 10) : undefined;
+      let sseOpts;
+      try {
+        sseOpts = parseSseOptions(req.query as Record<string, unknown>);
+      } catch (e) {
+        res.status(400).json({ message: (e as Error).message });
+        return;
+      }
+      const { db, prefix } = resolveDb(dbOpts, sseOpts);
 
       const col = db.collection(`${prefix}_processes`);
       const proc = await col.findOne({ _id: new ObjectId(id) });
@@ -149,7 +156,7 @@ export function createOptioHandler(opts: OptioApiOptions): OptioApiHandle {
         onError: () => res.end(),
         rootId: proc.rootId.toString(),
         baseDepth: proc.depth,
-        maxDepth,
+        maxDepth: sseOpts.maxDepth,
       });
 
       poller.start();
@@ -159,23 +166,24 @@ export function createOptioHandler(opts: OptioApiOptions): OptioApiHandle {
 
     // Match list stream: /api/processes/stream (path only; req.url includes query string)
     if (path === '/api/processes/stream' && method === 'GET') {
-      const legacyKeys = detectLegacyMetadataParams(req.query as Record<string, unknown>);
-      if (legacyKeys.length > 0) {
-        res.status(400).json({ message: formatLegacyMetadataMessage(legacyKeys) });
+      const rawQuery = req.query as Record<string, unknown>;
+      try {
+        checkLegacyMetadataParams(rawQuery);
+      } catch (e) {
+        if (e instanceof LegacyMetadataParamError) {
+          res.status(400).json({ message: e.message });
+          return;
+        }
+        throw e;
+      }
+      let sseOpts;
+      try {
+        sseOpts = parseSseOptions(rawQuery);
+      } catch (e) {
+        res.status(400).json({ message: (e as Error).message });
         return;
       }
-      const parsed = parseMetadataFilterQuery(
-        typeof req.query.metadataFilter === 'string' ? req.query.metadataFilter : undefined,
-      );
-      if (!parsed.ok) {
-        res.status(400).json({ message: parsed.error });
-        return;
-      }
-
-      const { db, prefix } = resolveDb(dbOpts, {
-        database: req.query.database as string | undefined,
-        prefix: req.query.prefix as string | undefined,
-      });
+      const { db, prefix } = resolveDb(dbOpts, sseOpts);
 
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
@@ -192,7 +200,7 @@ export function createOptioHandler(opts: OptioApiOptions): OptioApiHandle {
         prefix,
         sendEvent,
         onError: () => res.end(),
-        metadataFilter: parsed.value,
+        metadataFilter: sseOpts.metadataFilter,
       });
 
       poller.start();

@@ -10,7 +10,8 @@ import type { Redis } from 'ioredis';
 import * as handlers from '../handlers.js';
 import { findProcessByEitherId } from '../process-id-resolver.js';
 import { createListPoller, createTreePoller } from '../stream-poller.js';
-import { detectLegacyMetadataParams, parseMetadataFilterQuery, formatLegacyMetadataMessage } from '../metadata-filter-query.js';
+import { detectLegacyMetadataParams, formatLegacyMetadataMessage } from '../metadata-filter-query.js';
+import { parseSseOptions, checkLegacyMetadataParams, LegacyMetadataParamError } from '../sse-options.js';
 import { discoverInstances } from '../discovery.js';
 import { resolveDb, type DbOptions } from '../resolve-db.js';
 import type { AuthCallback } from '../auth.js';
@@ -67,19 +68,24 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions): OptioApiH
   // static path /api/processes/stream takes precedence over the ts-rest
   // GET /api/processes/:id parameterised route.
   app.get('/api/processes/stream', async (req: any, res: any) => {
-    const legacyKeys = detectLegacyMetadataParams(req.query ?? {});
-    if (legacyKeys.length > 0) {
-      res.status(400).json({ message: formatLegacyMetadataMessage(legacyKeys) });
+    const rawQuery = (req.query as Record<string, unknown>) ?? {};
+    try {
+      checkLegacyMetadataParams(rawQuery);
+    } catch (e) {
+      if (e instanceof LegacyMetadataParamError) {
+        res.status(400).json({ message: e.message });
+        return;
+      }
+      throw e;
+    }
+    let sseOpts;
+    try {
+      sseOpts = parseSseOptions(rawQuery);
+    } catch (e) {
+      res.status(400).json({ message: (e as Error).message });
       return;
     }
-    const parsed = parseMetadataFilterQuery(req.query?.metadataFilter);
-    if (!parsed.ok) {
-      res.status(400).json({ message: parsed.error });
-      return;
-    }
-
-    const query = req.query as { database?: string; prefix?: string };
-    const { db, prefix } = resolveDb(dbOpts, query);
+    const { db, prefix } = resolveDb(dbOpts, sseOpts);
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -96,7 +102,7 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions): OptioApiH
       prefix,
       sendEvent,
       onError: () => res.end(),
-      metadataFilter: parsed.value,
+      metadataFilter: sseOpts.metadataFilter,
     });
     poller.start();
     req.on('close', () => poller.stop());
@@ -153,9 +159,14 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions): OptioApiH
   // SSE tree stream
   app.get('/api/processes/:id/tree/stream', async (req: any, res: any) => {
     const { id } = req.params as { id: string };
-    const query = req.query as { database?: string; prefix?: string; maxDepth?: string };
-    const { db, prefix } = resolveDb(dbOpts, query);
-    const maxDepthNum = query.maxDepth !== undefined ? parseInt(query.maxDepth, 10) : undefined;
+    let sseOpts;
+    try {
+      sseOpts = parseSseOptions((req.query as Record<string, unknown>) ?? {});
+    } catch (e) {
+      res.status(400).json({ message: (e as Error).message });
+      return;
+    }
+    const { db, prefix } = resolveDb(dbOpts, sseOpts);
 
     const col = db.collection(`${prefix}_processes`);
     const proc = await findProcessByEitherId(col, id);
@@ -181,7 +192,7 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions): OptioApiH
       onError: () => res.end(),
       rootId: proc.rootId.toString(),
       baseDepth: proc.depth,
-      maxDepth: maxDepthNum,
+      maxDepth: sseOpts.maxDepth,
     });
     poller.start();
     req.on('close', () => poller.stop());

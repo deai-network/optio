@@ -25,9 +25,13 @@ import {
 } from '../widget-proxy-core.js';
 import {
   detectLegacyMetadataParams,
-  parseMetadataFilterQuery,
   formatLegacyMetadataMessage,
 } from '../metadata-filter-query.js';
+import {
+  parseSseOptions,
+  checkLegacyMetadataParams,
+  LegacyMetadataParamError,
+} from '../sse-options.js';
 import type { EngineClient } from '../_generated/engine.js';
 import { createOptioContext } from '../context.js';
 
@@ -444,9 +448,14 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
 
   app.get('/api/processes/:id/tree/stream', async (request: any, reply: any) => {
     const { id } = request.params as { id: string };
-    const query = request.query as { database?: string; prefix?: string; maxDepth?: string };
-    const { db, prefix } = resolveDb(dbOpts, query);
-    const maxDepthNum = query.maxDepth !== undefined ? parseInt(query.maxDepth, 10) : undefined;
+    let sseOpts;
+    try {
+      sseOpts = parseSseOptions((request.query as Record<string, unknown>) ?? {});
+    } catch (e) {
+      reply.code(400).send({ message: (e as Error).message });
+      return;
+    }
+    const { db, prefix } = resolveDb(dbOpts, sseOpts);
 
     const col = db.collection(`${prefix}_processes`);
     const proc = await findProcessByEitherId(col, id);
@@ -472,7 +481,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       onError: () => reply.raw.end(),
       rootId: proc.rootId.toString(),
       baseDepth: proc.depth,
-      maxDepth: maxDepthNum,
+      maxDepth: sseOpts.maxDepth,
     });
 
     poller.start();
@@ -480,19 +489,24 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
   });
 
   app.get('/api/processes/stream', async (request: any, reply: any) => {
-    const legacyKeys = detectLegacyMetadataParams(request.query ?? {});
-    if (legacyKeys.length > 0) {
-      reply.code(400).send({ message: formatLegacyMetadataMessage(legacyKeys) });
+    const rawQuery = (request.query as Record<string, unknown>) ?? {};
+    try {
+      checkLegacyMetadataParams(rawQuery);
+    } catch (e) {
+      if (e instanceof LegacyMetadataParamError) {
+        reply.code(400).send({ message: e.message });
+        return;
+      }
+      throw e;
+    }
+    let sseOpts;
+    try {
+      sseOpts = parseSseOptions(rawQuery);
+    } catch (e) {
+      reply.code(400).send({ message: (e as Error).message });
       return;
     }
-    const parsed = parseMetadataFilterQuery((request.query as any)?.metadataFilter);
-    if (!parsed.ok) {
-      reply.code(400).send({ message: parsed.error });
-      return;
-    }
-
-    const query = request.query as { database?: string; prefix?: string };
-    const { db, prefix } = resolveDb(dbOpts, query);
+    const { db, prefix } = resolveDb(dbOpts, sseOpts);
 
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -509,7 +523,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       prefix,
       sendEvent,
       onError: () => reply.raw.end(),
-      metadataFilter: parsed.value,
+      metadataFilter: sseOpts.metadataFilter,
     });
 
     poller.start();
