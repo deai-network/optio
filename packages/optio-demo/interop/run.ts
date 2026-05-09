@@ -25,16 +25,19 @@ const FORCE_HANG = process.env.INTEROP_FORCE_HANG;
 
 async function withTimeout<T>(name: string, fn: () => Promise<T>): Promise<T> {
   const start = Date.now();
-  if (FORCE_HANG === name) {
-    console.error(`[scenario] ${name} HANG (forced via INTEROP_FORCE_HANG)`);
-    await new Promise(() => {}); // never resolves
-  }
   console.log(`[scenario] ${name} started`);
+  const work: Promise<T> =
+    FORCE_HANG === name
+      ? (async () => {
+          console.error(`[scenario] ${name} HANG (forced via INTEROP_FORCE_HANG)`);
+          return await new Promise<T>(() => {}); // never resolves
+        })()
+      : fn().then((v) => {
+          console.log(`[scenario] ${name} ok (${Date.now() - start}ms)`);
+          return v;
+        });
   return await Promise.race<T>([
-    fn().then((v) => {
-      console.log(`[scenario] ${name} ok (${Date.now() - start}ms)`);
-      return v;
-    }),
+    work,
     new Promise<T>((_, reject) =>
       setTimeout(
         () => reject(new Error(`[scenario] ${name} timed out after ${SCENARIO_TIMEOUT_MS}ms`)),
