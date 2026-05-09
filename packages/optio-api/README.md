@@ -33,6 +33,26 @@ npm install next @ts-rest/serverless
 - `optio-api/nextjs/pages` — Next.js Pages Router adapter
 - `optio-api/nextjs/app` — Next.js App Router adapter
 
+## Internal structure
+
+The package has three layers:
+
+1. **Adapter layer** (`src/adapters/`): one file per supported web framework
+   (`fastify`, `express`, `nextjs-app`, `nextjs-pages`). Owns only framework
+   integration — route registration, request/response wrangling, lifecycle
+   hooks. Framework-agnostic code is forbidden here; see `AGENTS.md` for the
+   binding rules.
+2. **Handler layer** (`src/handlers.ts` and collaborators): framework-agnostic
+   functions taking `OptioContext` + per-request data. Owns read-path Mongo
+   queries, write-path RPC calls, request → response shaping.
+3. **Context layer** (`src/context.ts`): owns durable per-app resources
+   (`dbOpts`, `engineCache`, `redis`). Constructed once at adapter
+   registration via `createOptioContext`.
+
+When extending the package, the test for placing code in an adapter is:
+*"Would I write this same code in the other three adapters?"* If yes, the
+code belongs in the handler or context layer, not the adapter.
+
 ## Quick Setup
 
 ### Fastify

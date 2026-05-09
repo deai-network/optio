@@ -324,3 +324,58 @@ export function registerOptioApiMyFramework(app: MyApp, opts: OptioApiOptions) {
   return { engine, closeAll: () => cache.closeAll() };
 }
 ```
+
+## Layer rules (binding)
+
+The `optio-api` package has three internal layers. Code lives in the layer that
+matches its responsibility. These rules are binding: PR review will reject
+violations.
+
+### 1. Adapter layer — `packages/optio-api/src/adapters/{fastify,express,nextjs-app,nextjs-pages}.ts`
+
+**Sole purpose:** integrate with the corresponding web framework.
+
+**Allowed:**
+
+- Framework-native request/response wrangling.
+- Route registration via the framework's API.
+- Framework lifecycle hooks (e.g. fastify `onClose`).
+- Framework-specific SSE response writers (`reply.raw.writeHead` / `res.write` /
+  Next.js `ReadableStream`).
+- Body parser and middleware registration.
+
+**Forbidden:** any code that would be repeated identically across the four
+adapters. This explicitly includes:
+
+- `resolveDb(...)` calls — extract to handler via `OptioContext`.
+- Default-value fallbacks (`x ?? N`) — defaults belong in the contract Zod
+  schemas (e.g. `PaginationQuerySchema.default(20)`).
+- `parseMetadataFilterQuery`, `detectLegacyMetadataParams`, `maxDepth`
+  coercion — use `sse-options.ts`.
+- Engine cache instantiation — use `createOptioContext`.
+- Business logic, RPC mechanics, `ObjectId` coercion.
+
+**Test before adding code to an adapter:** *"Would I write this same code in
+the other three adapters?"* If yes, extract.
+
+**Test before adding a default:** check whether the contract layer
+(`@optio/contracts`, `processesContract`) can express it via Zod
+`.default(...)`. Defaults belong in the contract.
+
+### 2. Handler layer — `packages/optio-api/src/handlers.ts` and collaborators
+
+Framework-agnostic. Receives `OptioContext` + per-request data. Owns:
+
+- Read-path Mongo queries.
+- Write-path RPC calls (post-phase-3).
+- Request → response shaping.
+- Status-code mapping.
+
+Collaborators: `process-id-resolver.ts`, `metadata-filter-query.ts`,
+`sse-options.ts`.
+
+### 3. Context layer — `packages/optio-api/src/context.ts`
+
+Owns durable per-app resources: `dbOpts`, `engineCache`, `redis`. Constructed
+once at adapter registration via `createOptioContext({ dbOpts, redis })`.
+Threaded into every handler call.
