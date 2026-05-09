@@ -35,6 +35,14 @@ describe('parseSseOptions', () => {
     expect(result.maxDepth).toBeUndefined();
   });
 
+  it('throws on negative maxDepth string', () => {
+    expect(() => parseSseOptions({ maxDepth: '-1' })).toThrow(/maxDepth/i);
+  });
+
+  it('throws on non-finite maxDepth string', () => {
+    expect(() => parseSseOptions({ maxDepth: 'abc' })).toThrow(/maxDepth/i);
+  });
+
   it('preserves database and prefix passthrough', () => {
     const result = parseSseOptions({ database: 'mydb', prefix: 'optio' });
     expect(result.database).toBe('mydb');
