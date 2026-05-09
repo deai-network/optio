@@ -27,7 +27,7 @@ npm install next @ts-rest/serverless
 
 ## Entry Points
 
-- `optio-api` — framework-agnostic handlers, Redis publishers, and stream pollers
+- `optio-api` — framework-agnostic handlers and stream pollers
 - `optio-api/fastify` — Fastify adapter
 - `optio-api/express` — Express adapter
 - `optio-api/nextjs/pages` — Next.js Pages Router adapter
@@ -153,38 +153,32 @@ with an explicit migration message.
 - `GET /api/processes/:prefix/stream` — live flat process list, polls every 1 s. Accepts the same optional `?metadataFilter=<URL-encoded JSON>` query param as the REST list endpoint; the legacy `?metadata.<key>=<value>` form returns 400.
 - `GET /api/processes/:prefix/:id/tree/stream` — live process tree with log deltas, polls every 1 s
 
-## Exported Publishers
-
-Use these in domain code to send commands to the Optio worker via Redis streams.
-
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `publishLaunch` | `(redis: Redis, prefix: string, processId: string) => Promise<void>` | Request launch of a process |
-| `publishResync` | `(redis: Redis, prefix: string, clean?: boolean, metadataFilter?: ProcessMetadataFilter) => Promise<void>` | Request a resync; pass `clean: true` for a nuke-and-resync; pass `metadataFilter` to restrict regeneration to matching tasks only |
-
-`prefix` defaults to `"optio"` when not specified in `OptioApiOptions`.
-
-Commands are written to the `{prefix}:commands` Redis stream.
-
 ## Building Custom Adapters
 
-Import handler functions and stream pollers directly from `optio-api`:
+Import handler functions, stream pollers, and the context factory directly
+from `optio-api`:
 
 ```typescript
 import {
+  createOptioContext, type OptioContext,
   listProcesses, getProcess, getProcessTree,
   getProcessLog, getProcessTreeLog,
   launchProcess, cancelProcess, dismissProcess, resyncProcesses,
   createListPoller, createTreePoller,
-  type ListQuery, type PaginationQuery, type TreeLogQuery, type CommandResult,
+  type ListQuery, type PaginationQuery, type TreeLogQuery,
+  type LaunchCommandResult, type CancelCommandResult, type DismissCommandResult,
   type StreamPollerOptions, type TreePollerOptions, type ListPollerHandle,
 } from 'optio-api';
 ```
 
-Handler functions take `db: Db` and `prefix: string` as their first two arguments,
-followed by any query or command parameters. Command handlers (`launchProcess`,
-`cancelProcess`, `dismissProcess`) also require `redis: Redis` and return a
-`CommandResult` union (`200 | 404 | 409`) that you can map to HTTP responses.
+Handler functions take an `OptioContext` (constructed once via
+`createOptioContext({ dbOpts, redis })`) as the first argument, a per-request
+`query` object as the second, and an optional `id` / additional parameters as
+later positional args. Command handlers (`launchProcess`, `cancelProcess`,
+`dismissProcess`) return per-command result unions
+(`LaunchCommandResult` / `CancelCommandResult` / `DismissCommandResult`)
+whose 404/409 bodies are `{ reason, message }` — map these to HTTP responses
+directly.
 
 Stream pollers expose a `{ start(), stop() }` handle; call `start()` when the
 client connects and `stop()` when they disconnect.

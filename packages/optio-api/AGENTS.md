@@ -24,6 +24,9 @@ symbols are re-exported from the main `optio-api` entry point:
 - `EngineCache` — the type returned by `createEngineCache`. Interface:
   `get(database: string, prefix: string): EngineClient` and
   `closeAll(): Promise<void>`.
+- `OptioContext` (type) — the per-app context threaded into every handler call.
+  Owns `dbOpts`, `engineCache`, and `redis`. Constructed once at adapter
+  registration via `createOptioContext({ dbOpts, redis })`.
 
 ## OptioApiOptions
 
@@ -122,78 +125,73 @@ All handlers are exported from `optio-api` (main entry point).
 ```typescript
 // Query handlers
 async function listProcesses(
-  db: Db,
-  prefix: string,
-  query: ListQuery,
+  ctx: OptioContext,
+  query: ListProcessesQuery,
 ): Promise<{ items: any[]; nextCursor: string | null; totalCount: number }>
 
 async function getProcess(
-  db: Db,
-  prefix: string,
+  ctx: OptioContext,
+  query: { database?: string; prefix?: string },
   id: string,
 ): Promise<object | null>
 
 async function getProcessTree(
-  db: Db,
-  prefix: string,
+  ctx: OptioContext,
+  query: { database?: string; prefix?: string; maxDepth?: number },
   id: string,
-  maxDepth?: number,
 ): Promise<object | null>
 
 async function getProcessLog(
-  db: Db,
-  prefix: string,
+  ctx: OptioContext,
+  query: GetProcessLogQuery,
   id: string,
-  query: PaginationQuery,
 ): Promise<{ items: any[]; nextCursor: string | null; totalCount: number } | null>
 
 async function getProcessTreeLog(
-  db: Db,
-  prefix: string,
+  ctx: OptioContext,
+  query: GetProcessTreeLogQuery,
   id: string,
-  query: TreeLogQuery,
 ): Promise<{ items: any[]; nextCursor: string | null; totalCount: number } | null>
 
 // Command handlers
-// **Phase-2 status note:** `launchProcess`, `cancelProcess`, `dismissProcess`, and
-// `resyncProcesses` continue to publish to the legacy `${database}/${prefix}:commands`
-// redis stream via `publisher.ts`. Phase 3 of the engine-RPC migration replaces these
-// `publishX` calls with direct `engine.X(...)` clamator RPC calls (the engine is
-// already serving them in phase 2; only the API caller side hasn't switched yet). See
-// `docs/2026-05-08-engine-rpc-migration-design.md`.
+// **Phase-3 status note:** command handlers route to clamator RPC via
+// `ctx.engineCache.get(database, prefix).{launch,cancel,dismiss,resync}(...)`. The
+// pre-RPC redis-stream `publisher.ts` was deleted in phase 3. The pre-check (state
+// allowlist + `proc.cancellable` + `proc.supportsResume`) is defense in depth against
+// stale Mongo data and is removed in phase 4 once the engine is the sole source of
+// truth for these guards. See
+// `docs/2026-05-08-engine-rpc-migration-phase-3-design.md`.
 async function launchProcess(
-  db: Db,
-  redis: Redis,
-  database: string,
-  prefix: string,
+  ctx: OptioContext,
+  query: { database?: string; prefix?: string },
   id: string,
   resume?: boolean,  // default: false
-): Promise<CommandResult>
-// Returns 409 with message "This task does not support resume" when resume=true is
-// requested against a process whose supportsResume field is false.
-// (409 is used instead of 400 because CommandResult has no 400 variant.)
+): Promise<LaunchCommandResult>
 
 async function cancelProcess(
-  db: Db,
-  redis: Redis,
-  prefix: string,
+  ctx: OptioContext,
+  query: { database?: string; prefix?: string },
   id: string,
-): Promise<CommandResult>
+): Promise<CancelCommandResult>
 
 async function dismissProcess(
-  db: Db,
-  redis: Redis,
-  prefix: string,
+  ctx: OptioContext,
+  query: { database?: string; prefix?: string },
   id: string,
-): Promise<CommandResult>
+): Promise<DismissCommandResult>
 
 async function resyncProcesses(
-  redis: Redis,
-  prefix: string,
+  ctx: OptioContext,
+  query: { database?: string; prefix?: string },
   clean?: boolean,  // default: false
   metadataFilter?: ProcessMetadataFilter,  // omit or pass {} for full sync
 ): Promise<{ message: string }>
 ```
+
+The 404/409 response body for `launchProcess` / `cancelProcess` / `dismissProcess` is
+`{ reason, message }`, typed via `LaunchErrorBody` / `CancelErrorBody` / `DismissErrorBody`
+in `optio-contracts/src/api-to-frontend.ts`. The `reason` discriminator is one of the
+engine failure-reason enums from `optio-contracts/src/engine-failure-reasons.ts`.
 
 **Adapters** (`fastify`, `express`, `nextjs-app`, `nextjs-pages`): all four extract `body?.resume`
 from the request body and forward it to `launchProcess` as the sixth argument.
@@ -224,27 +222,20 @@ interface TreeLogQuery extends PaginationQuery {
   maxDepth?: number;  // relative depth limit from queried process
 }
 
-type CommandResult =
+// Per-command result types. The 200 body is a process; the 404/409 body is
+// `{ reason, message }` where `reason` is the corresponding engine failure-reason
+// enum from `optio-contracts/src/engine-failure-reasons.ts`.
+type LaunchCommandResult =
   | { status: 200; body: any }
-  | { status: 404; body: { message: string } }
-  | { status: 409; body: { message: string } };
-```
+  | { status: 404 | 409; body: { reason: LaunchFailureReasonType; message: string } };
 
-## Publishers
+type CancelCommandResult =
+  | { status: 200; body: any }
+  | { status: 404 | 409; body: { reason: CancelFailureReasonType; message: string } };
 
-Imported from `optio-api` (main entry point). Write to the `{prefix}:commands` Redis stream.
-
-```typescript
-async function publishLaunch(redis: Redis, database: string, prefix: string, processId: string, resume?: boolean): Promise<void>
-// resume=true is included in the Redis launch payload; the consumer forwards it to the executor.
-async function publishResync(redis: Redis, prefix: string, clean?: boolean, metadataFilter?: ProcessMetadataFilter): Promise<void>
-```
-
-Internal-only (not exported from index, only used by handlers):
-
-```typescript
-async function publishCancel(redis: Redis, prefix: string, processId: string): Promise<void>
-async function publishDismiss(redis: Redis, prefix: string, processId: string): Promise<void>
+type DismissCommandResult =
+  | { status: 200; body: any }
+  | { status: 404 | 409; body: { reason: DismissFailureReasonType; message: string } };
 ```
 
 ## Stream Poller
