@@ -1,5 +1,4 @@
 import { ObjectId, type Db } from 'mongodb';
-import type { Redis } from 'ioredis';
 import { publishLaunch, publishCancel, publishDismiss, publishResync } from './publisher.js';
 import type { ProcessMetadataFilter } from './types.js';
 import { metadataFilterToMongo } from './metadata-filter-query.js';
@@ -206,7 +205,13 @@ export type CommandResult =
   | { status: 404; body: { message: string } }
   | { status: 409; body: { message: string } };
 
-export async function launchProcess(db: Db, redis: Redis, database: string, prefix: string, id: string, resume: boolean = false): Promise<CommandResult> {
+export async function launchProcess(
+  ctx: OptioContext,
+  query: { database?: string; prefix?: string },
+  id: string,
+  resume: boolean = false,
+): Promise<CommandResult> {
+  const { db, database, prefix } = resolveDb(ctx.dbOpts, query);
   const proc = await findProcessByEitherId(col(db, prefix), id);
   if (!proc) {
     return { status: 404, body: { message: 'Process not found' } };
@@ -217,11 +222,16 @@ export async function launchProcess(db: Db, redis: Redis, database: string, pref
   if (resume && !proc.supportsResume) {
     return { status: 409, body: { message: 'This task does not support resume' } };
   }
-  await publishLaunch(redis, database, prefix, proc.processId, resume);
+  await publishLaunch(ctx.redis, database, prefix, proc.processId, resume);
   return { status: 200, body: toResponse(proc) };
 }
 
-export async function cancelProcess(db: Db, redis: Redis, database: string, prefix: string, id: string): Promise<CommandResult> {
+export async function cancelProcess(
+  ctx: OptioContext,
+  query: { database?: string; prefix?: string },
+  id: string,
+): Promise<CommandResult> {
+  const { db, database, prefix } = resolveDb(ctx.dbOpts, query);
   const proc = await findProcessByEitherId(col(db, prefix), id);
   if (!proc) {
     return { status: 404, body: { message: 'Process not found' } };
@@ -232,11 +242,16 @@ export async function cancelProcess(db: Db, redis: Redis, database: string, pref
   if (!CANCELLABLE_STATES.includes(proc.status.state)) {
     return { status: 409, body: { message: `Cannot cancel process in state: ${proc.status.state}` } };
   }
-  await publishCancel(redis, database, prefix, proc.processId);
+  await publishCancel(ctx.redis, database, prefix, proc.processId);
   return { status: 200, body: toResponse(proc) };
 }
 
-export async function dismissProcess(db: Db, redis: Redis, database: string, prefix: string, id: string): Promise<CommandResult> {
+export async function dismissProcess(
+  ctx: OptioContext,
+  query: { database?: string; prefix?: string },
+  id: string,
+): Promise<CommandResult> {
+  const { db, database, prefix } = resolveDb(ctx.dbOpts, query);
   const proc = await findProcessByEitherId(col(db, prefix), id);
   if (!proc) {
     return { status: 404, body: { message: 'Process not found' } };
@@ -244,17 +259,17 @@ export async function dismissProcess(db: Db, redis: Redis, database: string, pre
   if (!END_STATES.includes(proc.status.state)) {
     return { status: 409, body: { message: `Cannot dismiss process in state: ${proc.status.state}` } };
   }
-  await publishDismiss(redis, database, prefix, proc.processId);
+  await publishDismiss(ctx.redis, database, prefix, proc.processId);
   return { status: 200, body: toResponse(proc) };
 }
 
 export async function resyncProcesses(
-  redis: Redis,
-  database: string,
-  prefix: string,
+  ctx: OptioContext,
+  query: { database?: string; prefix?: string },
   clean: boolean = false,
   metadataFilter?: ProcessMetadataFilter,
 ): Promise<{ message: string }> {
-  await publishResync(redis, database, prefix, clean, metadataFilter);
+  const { database, prefix } = resolveDb(ctx.dbOpts, query);
+  await publishResync(ctx.redis, database, prefix, clean, metadataFilter);
   return { message: clean ? 'Nuke and resync requested' : 'Resync requested' };
 }

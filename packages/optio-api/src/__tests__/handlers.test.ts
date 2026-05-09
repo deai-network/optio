@@ -14,8 +14,8 @@ const PREFIX = 'test';
 
 const fakeRedis: any = { duplicate: () => fakeRedis };
 
-function makeCtx(database: Db): OptioContext {
-  return createOptioContext({ dbOpts: { db: database }, redis: fakeRedis });
+function makeCtx(database: Db, redis: any = fakeRedis): OptioContext {
+  return createOptioContext({ dbOpts: { db: database }, redis });
 }
 
 let client: MongoClient;
@@ -116,7 +116,7 @@ describe('launchProcess — resume validation', () => {
 
   it('rejects resume=true when task does not support resume', async () => {
     const id = await insertLaunchable({ supportsResume: false });
-    const result = await launchProcess(db, redis, 'mydb', PREFIX, id, true);
+    const result = await launchProcess(makeCtx(db, redis), { prefix: PREFIX }, id, true);
     expect(result.status).toBe(409);
   });
 
@@ -124,10 +124,10 @@ describe('launchProcess — resume validation', () => {
     const id = await insertLaunchable({
       processId: 'q', supportsResume: true, hasSavedState: false,
     });
-    const result = await launchProcess(db, redis, 'mydb', PREFIX, id, true);
+    const result = await launchProcess(makeCtx(db, redis), { prefix: PREFIX }, id, true);
     expect(result.status).toBe(200);
 
-    const entries = await redis.xrange('mydb/test:commands', '-', '+');
+    const entries = await redis.xrange(`${DB_NAME}/${PREFIX}:commands`, '-', '+');
     const [, fields] = entries[0];
     const payload = JSON.parse(fields[fields.indexOf('payload') + 1]);
     expect(payload.resume).toBe(true);
@@ -136,10 +136,10 @@ describe('launchProcess — resume validation', () => {
 
   it('accepts missing body (backwards compatible): resume defaults to false', async () => {
     const id = await insertLaunchable({ processId: 'r' });
-    const result = await launchProcess(db, redis, 'mydb', PREFIX, id /* no resume */);
+    const result = await launchProcess(makeCtx(db, redis), { prefix: PREFIX }, id /* no resume */);
     expect(result.status).toBe(200);
 
-    const entries = await redis.xrange('mydb/test:commands', '-', '+');
+    const entries = await redis.xrange(`${DB_NAME}/${PREFIX}:commands`, '-', '+');
     const [, fields] = entries[0];
     const payload = JSON.parse(fields[fields.indexOf('payload') + 1]);
     expect(payload.resume ?? false).toBe(false);
@@ -217,7 +217,7 @@ describe('dual-form id resolution (ObjectId hex OR processId string)', () => {
     const redis = new Redis();
     await redis.flushall();
     const { processIdString } = await insertProcess('idle');
-    const result = await launchProcess(db, redis, 'mydb', PREFIX, processIdString);
+    const result = await launchProcess(makeCtx(db, redis), { prefix: PREFIX }, processIdString);
     expect(result.status).toBe(200);
   });
 
@@ -225,7 +225,7 @@ describe('dual-form id resolution (ObjectId hex OR processId string)', () => {
     const redis = new Redis();
     await redis.flushall();
     const { processIdString } = await insertProcess('running');
-    const result = await cancelProcess(db, redis, 'mydb', PREFIX, processIdString);
+    const result = await cancelProcess(makeCtx(db, redis), { prefix: PREFIX }, processIdString);
     expect(result.status).toBe(200);
   });
 
@@ -233,7 +233,7 @@ describe('dual-form id resolution (ObjectId hex OR processId string)', () => {
     const redis = new Redis();
     await redis.flushall();
     const { processIdString } = await insertProcess('done');
-    const result = await dismissProcess(db, redis, 'mydb', PREFIX, processIdString);
+    const result = await dismissProcess(makeCtx(db, redis), { prefix: PREFIX }, processIdString);
     expect(result.status).toBe(200);
   });
 });

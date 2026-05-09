@@ -406,24 +406,19 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       return { status: 200 as const, body: result };
     },
     launch: async ({ params, query, body }) => {
-      const { db, database, prefix } = resolveDb(dbOpts, query);
-      const resume = body?.resume === true;
-      const result = await handlers.launchProcess(db, redis, database, prefix, params.id, resume);
+      const result = await handlers.launchProcess(ctx, query, params.id, body?.resume === true);
       return result as any;
     },
     cancel: async ({ params, query }) => {
-      const { db, database, prefix } = resolveDb(dbOpts, query);
-      const result = await handlers.cancelProcess(db, redis, database, prefix, params.id);
+      const result = await handlers.cancelProcess(ctx, query, params.id);
       return result as any;
     },
     dismiss: async ({ params, query }) => {
-      const { db, database, prefix } = resolveDb(dbOpts, query);
-      const result = await handlers.dismissProcess(db, redis, database, prefix, params.id);
+      const result = await handlers.dismissProcess(ctx, query, params.id);
       return result as any;
     },
     resync: async ({ query, body }: { query: { database?: string; prefix?: string }; body: { clean?: boolean; metadataFilter?: import('../types.js').ProcessMetadataFilter } }) => {
-      const { database, prefix } = resolveDb(dbOpts, query);
-      const result = await handlers.resyncProcesses(redis, database, prefix, body.clean ?? false, body.metadataFilter);
+      const result = await handlers.resyncProcesses(ctx, query, body.clean, body.metadataFilter);
       return { status: 200 as const, body: result };
     },
   });
