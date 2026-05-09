@@ -38,3 +38,4 @@ export {
 // Engine RPC client and cache (phase 2 of engine-RPC migration).
 export { EngineClient } from './_generated/engine.js';
 export { createEngineCache, type EngineCache } from './engine-cache.js';
+export { type OptioContext } from './context.js';
