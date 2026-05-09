@@ -12,7 +12,9 @@ export {
   type ListQuery,
   type PaginationQuery,
   type TreeLogQuery,
-  type CommandResult,
+  type LaunchCommandResult,
+  type CancelCommandResult,
+  type DismissCommandResult,
 } from './handlers.js';
 
 export type { ProcessMetadataFilter } from './types.js';
@@ -36,4 +38,4 @@ export {
 // Engine RPC client and cache (phase 2 of engine-RPC migration).
 export { EngineClient } from './_generated/engine.js';
 export { createEngineCache, type EngineCache } from './engine-cache.js';
-export { type OptioContext } from './context.js';
+export { createOptioContext, type OptioContext } from './context.js';

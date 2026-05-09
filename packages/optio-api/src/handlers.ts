@@ -204,11 +204,6 @@ const LAUNCHABLE_STATES = ['idle', 'done', 'failed', 'cancelled'];
 const CANCELLABLE_STATES = ['running', 'scheduled'];
 const END_STATES = ['done', 'failed', 'cancelled'];
 
-export type CommandResult =
-  | { status: 200; body: any }
-  | { status: 404; body: { message: string } }
-  | { status: 409; body: { message: string } };
-
 export type LaunchCommandResult =
   | { status: 200; body: any }
   | { status: 404 | 409; body: { reason: LaunchFailureReasonType; message: string } };
