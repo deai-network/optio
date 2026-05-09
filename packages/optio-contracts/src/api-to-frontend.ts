@@ -2,7 +2,7 @@ import { initContract } from '@ts-rest/core';
 import { z } from 'zod';
 import { PaginationQuerySchema, PaginatedResponseSchema, ErrorSchema, ObjectIdSchema, ProcessIdParamSchema } from './schemas/common.js';
 import { ProcessSchema, ProcessStateSchema, LogEntrySchema, ProcessMetadataFilterSchema, MetadataFilterQueryParamSchema } from './schemas/process.js';
-import { LaunchFailureReason, CancelFailureReason } from './engine-failure-reasons.js';
+import { LaunchFailureReason, CancelFailureReason, DismissFailureReason } from './engine-failure-reasons.js';
 
 const c = initContract();
 
@@ -13,6 +13,11 @@ const LaunchErrorBody = z.object({
 
 const CancelErrorBody = z.object({
   reason: CancelFailureReason,
+  message: z.string(),
+});
+
+const DismissErrorBody = z.object({
+  reason: DismissFailureReason,
   message: z.string(),
 });
 
@@ -133,8 +138,8 @@ export const processesContract = c.router({
     body: c.noBody(),
     responses: {
       200: ProcessSchema,
-      404: ErrorSchema,
-      409: ErrorSchema,
+      404: DismissErrorBody,
+      409: DismissErrorBody,
     },
     summary: 'Dismiss process (reset to idle)',
   },

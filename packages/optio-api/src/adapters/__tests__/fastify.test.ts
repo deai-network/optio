@@ -6,8 +6,8 @@ import { registerOptioApi } from '../fastify.js';
 import { EngineClient } from '../../_generated/engine.js';
 
 // Stub the engine RPC at the prototype level so handlers that now call
-// engine.launch / engine.cancel (and later engine.dismiss/resync) don't
-// try to reach a real engine over the redis-mock.
+// engine.launch / engine.cancel / engine.dismiss (and later engine.resync)
+// don't try to reach a real engine over the redis-mock.
 vi.spyOn(EngineClient.prototype, 'launch').mockImplementation(async (params: any) => ({
   ok: true,
   process: {
@@ -36,6 +36,23 @@ vi.spyOn(EngineClient.prototype, 'cancel').mockImplementation(async (params: any
     depth: 0,
     order: 0,
     status: { state: 'cancelled' },
+    progress: { percent: 0, message: '' },
+    cancellable: true,
+    log: [],
+  },
+} as any));
+
+vi.spyOn(EngineClient.prototype, 'dismiss').mockImplementation(async (params: any) => ({
+  ok: true,
+  process: {
+    _id: new ObjectId(),
+    processId: params.processId,
+    name: 'Test Task',
+    rootId: new ObjectId(),
+    parentId: null,
+    depth: 0,
+    order: 0,
+    status: { state: 'idle' },
     progress: { percent: 0, message: '' },
     cancellable: true,
     log: [],
@@ -209,6 +226,31 @@ describe('Fastify adapter integration tests', () => {
     });
 
     expect(res.statusCode).toBe(200);
+  });
+
+  it('POST /api/processes/:id/dismiss — returns 409 for non-terminal process', async () => {
+    const doc = await seedProcess({ status: { state: 'running' } });
+    const app = createApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/processes/${doc._id.toString()}/dismiss`,
+    });
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.body)).toEqual({
+      reason: 'not-dismissable',
+      message: 'Process is not in a dismissable state',
+    });
+  });
+
+  it('POST /api/processes/:id/dismiss — returns 404 for nonexistent id', async () => {
+    const app = createApp();
+    const fakeId = new ObjectId().toString();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/processes/${fakeId}/dismiss`,
+    });
+    expect(res.statusCode).toBe(404);
+    expect(JSON.parse(res.body)).toEqual({ reason: 'not-found', message: 'Process not found' });
   });
 
   it('POST /api/processes/resync — triggers resync (200)', async () => {

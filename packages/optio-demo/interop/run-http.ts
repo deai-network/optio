@@ -63,12 +63,14 @@ async function dismissIfTerminal() {
   await http('POST', `/processes/${PROC}/dismiss`).catch(() => null);
 }
 
-// Wait until the process is in an idle/launchable state.
-// dismiss in this commit (3a) still publishes via the legacy redis stream
-// and is async — the engine consumes it asynchronously. Polling the
-// process state via GET avoids races. Once cancel/dismiss are migrated
-// (3b/3c), this can be replaced with a simple synchronous dismiss + launch.
-async function waitForState(states: string[], timeoutMs: number = 3000) {
+// Wait until the process is in one of the given states.
+// Even though launch/cancel/dismiss are now synchronous RPCs (3a/3b/3c),
+// the engine still drives the proc through additional state transitions
+// asynchronously (e.g. scheduled -> running -> done|failed|cancelled),
+// so polling the process state via GET remains useful for scenarios that
+// need the proc in a specific async-arrived state.
+async function waitForState(stateOrStates: string | string[], timeoutMs: number = 3000) {
+  const states = Array.isArray(stateOrStates) ? stateOrStates : [stateOrStates];
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const r = await http('GET', `/processes/${PROC}`).catch(() => null);
@@ -118,9 +120,10 @@ async function main() {
       ok('http-launch-not-found');
     });
 
-    // 4. Reset baseline: dismiss + launch. Dismiss currently still flows
-    // through the legacy redis stream and is async, so we poll until the
-    // process reaches an idle/launchable state before launching.
+    // 4. Reset baseline: dismiss + launch. Dismiss is now a synchronous
+    // RPC (3c), but the engine still drives proc state through async
+    // transitions, so we poll until the process reaches a launchable state
+    // before launching.
     await dismissIfTerminal();
     await withTimeout('http-launch-baseline-reset', async () => {
       await waitForState(['idle', 'done', 'failed', 'cancelled']);
@@ -163,6 +166,54 @@ async function main() {
       if (r.status !== 404) return fail('http-cancel-not-found', `expected 404, got ${r.status}`);
       if (r.body?.reason !== 'not-found') return fail('http-cancel-not-found', `expected reason 'not-found'`);
       ok('http-cancel-not-found');
+    });
+
+    // 8. Dismiss success: launch -> cancel -> wait for terminal -> dismiss.
+    await withTimeout('http-dismiss-success', async () => {
+      await dismissIfTerminal();
+      await waitForState(['idle', 'done', 'failed', 'cancelled']);
+      await http('POST', `/processes/${PROC}/launch`, {});
+      await http('POST', `/processes/${PROC}/cancel`, {});
+      // Wait for terminal state. Cancel may go through cancelling -> cancelled
+      // or directly to cancelled/failed/done.
+      await waitForState(['cancelled', 'failed', 'done']);
+      const r = await http('POST', `/processes/${PROC}/dismiss`, {});
+      if (r.status !== 200) return fail('http-dismiss-success', `expected 200, got ${r.status} ${JSON.stringify(r.body)}`);
+      ok('http-dismiss-success', `state=${r.body.status?.state}`);
+    });
+
+    // 9. Dismiss running proc -> 409 not-dismissable. The opencode-demo task
+    // fails fast in the interop env (no SSH host), so we may not always be
+    // able to observe a non-terminal state; in that case the scenario falls
+    // back to skipping (handler unit tests cover the pre-check path).
+    await withTimeout('http-dismiss-not-dismissable', async () => {
+      await dismissIfTerminal();
+      await waitForState(['idle', 'done', 'failed', 'cancelled']);
+      await http('POST', `/processes/${PROC}/launch`, {});
+      let observedNonTerminal = false;
+      try {
+        await waitForState(['running', 'scheduled', 'cancelling'], 1000);
+        observedNonTerminal = true;
+      } catch {
+        // proc raced into a terminal state too fast — skip and rely on unit tests.
+        console.log('[scenario] http-dismiss-not-dismissable: skipped (proc reached terminal state too fast)');
+        ok('http-dismiss-not-dismissable', 'skipped (terminal-fast)');
+        return;
+      }
+      if (!observedNonTerminal) return;
+      const r = await http('POST', `/processes/${PROC}/dismiss`, {});
+      if (r.status !== 409) return fail('http-dismiss-not-dismissable', `expected 409, got ${r.status} ${JSON.stringify(r.body)}`);
+      if (r.body?.reason !== 'not-dismissable')
+        return fail('http-dismiss-not-dismissable', `expected reason 'not-dismissable', got ${r.body?.reason}`);
+      ok('http-dismiss-not-dismissable');
+    });
+
+    // 10. Dismiss nonexistent -> 404 not-found.
+    await withTimeout('http-dismiss-not-found', async () => {
+      const r = await http('POST', `/processes/bogus-dismiss-id/dismiss`, {});
+      if (r.status !== 404) return fail('http-dismiss-not-found', `expected 404, got ${r.status}`);
+      if (r.body?.reason !== 'not-found') return fail('http-dismiss-not-found', `expected reason 'not-found'`);
+      ok('http-dismiss-not-found');
     });
   } finally {
     await app.close();

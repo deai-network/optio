@@ -1,5 +1,5 @@
 import { ObjectId, type Db } from 'mongodb';
-import { publishDismiss, publishResync } from './publisher.js';
+import { publishResync } from './publisher.js';
 import type { ProcessMetadataFilter } from './types.js';
 import { metadataFilterToMongo } from './metadata-filter-query.js';
 import { findProcessByEitherId } from './process-id-resolver.js';
@@ -8,6 +8,7 @@ import { resolveDb } from './resolve-db.js';
 import type {
   LaunchFailureReason as LaunchFailureReasonType,
   CancelFailureReason as CancelFailureReasonType,
+  DismissFailureReason as DismissFailureReasonType,
 } from 'optio-contracts';
 
 function col(db: Db, prefix: string) {
@@ -217,6 +218,10 @@ export type CancelCommandResult =
   | { status: 200; body: any }
   | { status: 404 | 409; body: { reason: CancelFailureReasonType; message: string } };
 
+export type DismissCommandResult =
+  | { status: 200; body: any }
+  | { status: 404 | 409; body: { reason: DismissFailureReasonType; message: string } };
+
 const LAUNCH_STATUS: Record<LaunchFailureReasonType, 404 | 409> = {
   'not-found': 404,
   'not-launchable': 409,
@@ -229,12 +234,18 @@ const CANCEL_STATUS: Record<CancelFailureReasonType, 404 | 409> = {
   'not-cancellable': 409,
 };
 
+const DISMISS_STATUS: Record<DismissFailureReasonType, 404 | 409> = {
+  'not-found': 404,
+  'not-dismissable': 409,
+};
+
 const MESSAGES: Record<string, string> = {
   'not-found': 'Process not found',
   'not-launchable': 'Process is not in a launchable state',
   'no-resume-support': 'This task does not support resume',
   'launch-blocked': 'Launches matching this filter are currently blocked',
   'not-cancellable': 'Process is not cancellable in its current state',
+  'not-dismissable': 'Process is not in a dismissable state',
 };
 
 function launchFail(reason: LaunchFailureReasonType): LaunchCommandResult {
@@ -243,6 +254,10 @@ function launchFail(reason: LaunchFailureReasonType): LaunchCommandResult {
 
 function cancelFail(reason: CancelFailureReasonType): CancelCommandResult {
   return { status: CANCEL_STATUS[reason], body: { reason, message: MESSAGES[reason] } };
+}
+
+function dismissFail(reason: DismissFailureReasonType): DismissCommandResult {
+  return { status: DISMISS_STATUS[reason], body: { reason, message: MESSAGES[reason] } };
 }
 
 export async function launchProcess(
@@ -286,17 +301,17 @@ export async function dismissProcess(
   ctx: OptioContext,
   query: { database?: string; prefix?: string },
   id: string,
-): Promise<CommandResult> {
+): Promise<DismissCommandResult> {
   const { db, database, prefix } = resolveDb(ctx.dbOpts, query);
+  const engine = ctx.engineCache.get(database, prefix);
+
   const proc = await findProcessByEitherId(col(db, prefix), id);
-  if (!proc) {
-    return { status: 404, body: { message: 'Process not found' } };
-  }
-  if (!END_STATES.includes(proc.status.state)) {
-    return { status: 409, body: { message: `Cannot dismiss process in state: ${proc.status.state}` } };
-  }
-  await publishDismiss(ctx.redis, database, prefix, proc.processId);
-  return { status: 200, body: toResponse(proc) };
+  if (!proc) return dismissFail('not-found');
+  if (!END_STATES.includes(proc.status.state)) return dismissFail('not-dismissable');
+
+  const result = await engine.dismiss({ processId: proc.processId });
+  if (result.ok) return { status: 200, body: toResponse(result.process) };
+  return dismissFail(result.reason);
 }
 
 export async function resyncProcesses(

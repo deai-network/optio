@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { MongoClient, ObjectId, type Db } from 'mongodb';
-import Redis from 'ioredis-mock';
 import {
   getProcess, getProcessTree, getProcessLog, getProcessTreeLog,
   listProcesses, launchProcess, cancelProcess, dismissProcess,
@@ -337,6 +336,107 @@ describe('cancelProcess — pre-checks + engine RPC', () => {
   });
 });
 
+describe('dismissProcess — pre-checks + engine RPC', () => {
+  // Builds a mock engine. By default `dismiss` resolves with
+  // `{ ok: true, process: <minimal-process> }` so the 200 path works
+  // without per-test setup. Tests that need a failure response pass
+  // an override via `dismissImpl`.
+  function makeMockEngine(dismissImpl?: (params: any) => any) {
+    return {
+      dismiss: vi.fn(dismissImpl ?? ((params: any) => ({
+        ok: true,
+        process: {
+          _id: new ObjectId(),
+          processId: params.processId,
+          name: 'P',
+          rootId: new ObjectId(),
+          parentId: null,
+          depth: 0,
+          order: 0,
+          status: { state: 'idle' },
+          progress: { percent: null },
+          cancellable: true,
+          log: [],
+        },
+      }))),
+    };
+  }
+
+  async function insertDismissable(extra: Record<string, unknown> = {}) {
+    const oid = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertOne({
+      _id: oid,
+      processId: 'p',
+      name: 'P',
+      rootId: oid,
+      parentId: null,
+      depth: 0,
+      order: 0,
+      status: { state: 'done' },
+      progress: { percent: null },
+      cancellable: true,
+      log: [],
+      ...extra,
+    });
+    return oid.toString();
+  }
+
+  it('200 on success: returns toResponse(result.process) and calls engine.dismiss with {processId}', async () => {
+    const id = await insertDismissable({ processId: 'p' });
+    const engine = makeMockEngine();
+    const result = await dismissProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
+    expect(result.status).toBe(200);
+    expect(engine.dismiss).toHaveBeenCalledTimes(1);
+    expect(engine.dismiss).toHaveBeenCalledWith({ processId: 'p' });
+    expect((result as any).body._id).toBeDefined();
+  });
+
+  it('404 not-found from pre-check: engine.dismiss never called', async () => {
+    const engine = makeMockEngine();
+    const fakeId = new ObjectId().toString();
+    const result = await dismissProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, fakeId);
+    expect(result.status).toBe(404);
+    expect((result as any).body).toEqual({ reason: 'not-found', message: 'Process not found' });
+    expect(engine.dismiss).not.toHaveBeenCalled();
+  });
+
+  it('409 not-dismissable from pre-check (state=running): engine.dismiss never called', async () => {
+    const id = await insertDismissable({ status: { state: 'running' } });
+    const engine = makeMockEngine();
+    const result = await dismissProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
+    expect(result.status).toBe(409);
+    expect((result as any).body).toEqual({
+      reason: 'not-dismissable',
+      message: 'Process is not in a dismissable state',
+    });
+    expect(engine.dismiss).not.toHaveBeenCalled();
+  });
+
+  it('409 not-dismissable from engine (race): pre-check passes, engine returns ok=false reason=not-dismissable', async () => {
+    const id = await insertDismissable();
+    const engine = makeMockEngine(() => ({ ok: false, reason: 'not-dismissable' }));
+    const result = await dismissProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
+    expect(result.status).toBe(409);
+    expect((result as any).body).toEqual({
+      reason: 'not-dismissable',
+      message: 'Process is not in a dismissable state',
+    });
+    expect(engine.dismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it('404 not-found from engine (race): pre-check passes, engine returns ok=false reason=not-found', async () => {
+    const id = await insertDismissable();
+    const engine = makeMockEngine(() => ({ ok: false, reason: 'not-found' }));
+    const result = await dismissProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
+    expect(result.status).toBe(404);
+    expect((result as any).body).toEqual({
+      reason: 'not-found',
+      message: 'Process not found',
+    });
+    expect(engine.dismiss).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('dual-form id resolution (ObjectId hex OR processId string)', () => {
   // The mkPid-style processId is the form excavator's recipe-debug
   // flow returns to the frontend at submit time, before the engine
@@ -471,11 +571,36 @@ describe('dual-form id resolution (ObjectId hex OR processId string)', () => {
   });
 
   it('dismissProcess accepts the processId string form', async () => {
-    const redis = new Redis();
-    await redis.flushall();
     const { processIdString } = await insertProcess('done');
-    const result = await dismissProcess(makeCtx(db, redis), { prefix: PREFIX }, processIdString);
+    const engine = {
+      dismiss: vi.fn((params: any) => ({
+        ok: true,
+        process: {
+          _id: new ObjectId(),
+          processId: params.processId,
+          name: 'P',
+          rootId: new ObjectId(),
+          parentId: null,
+          depth: 0,
+          order: 0,
+          status: { state: 'idle' },
+          progress: { percent: null },
+          cancellable: true,
+          log: [],
+        },
+      })),
+    };
+    const ctx: OptioContext = {
+      dbOpts: { db },
+      redis: fakeRedis,
+      engineCache: {
+        get: () => engine,
+        closeAll: async () => {},
+      },
+    } as any;
+    const result = await dismissProcess(ctx, { prefix: PREFIX }, processIdString);
     expect(result.status).toBe(200);
+    expect(engine.dismiss).toHaveBeenCalledWith({ processId: processIdString });
   });
 });
 
