@@ -31,8 +31,8 @@ test:  ## Run all tests (TS + Python; per-package, no docker)
 	  (cd packages/$$pkg && pytest); \
 	done
 
-test-interop:  ## End-to-end test: TS clamator client ↔ Py engine over real redis (clamator wire verification)
-	bash packages/optio-demo/run-interop.sh
+test-interop:  ## End-to-end test: TS clamator client ↔ Py engine over real redis (clamator wire verification). INTEROP_DEBUG=1 enables verbose mode + increased timeouts (slow CI). INTEROP_KEEP=1 skips cleanup on failure for postmortem.
+	timeout 120 bash packages/optio-demo/run-interop.sh
 
 lint:  ## Lint all packages
 	pnpm -r lint 2>/dev/null || true
