@@ -5,10 +5,18 @@ import {
   getProcess, getProcessTree, getProcessLog, getProcessTreeLog,
   listProcesses, launchProcess, cancelProcess, dismissProcess,
 } from '../handlers.js';
+import { createOptioContext } from '../context.js';
+import type { OptioContext } from '../context.js';
 
 const MONGO_URL = process.env.MONGO_URL ?? 'mongodb://localhost:27017';
 const DB_NAME = 'optio_test_handlers';
 const PREFIX = 'test';
+
+const fakeRedis: any = { duplicate: () => fakeRedis };
+
+function makeCtx(database: Db): OptioContext {
+  return createOptioContext({ dbOpts: { db: database }, redis: fakeRedis });
+}
 
 let client: MongoClient;
 let db: Db;
@@ -54,14 +62,14 @@ describe('widgetUpstream stripping', () => {
 
   it('getProcess does not return widgetUpstream', async () => {
     const id = await insertProcessWithUpstream();
-    const result = await getProcess(db, PREFIX, id);
+    const result = await getProcess(makeCtx(db), { prefix: PREFIX }, id);
     expect(result).not.toBeNull();
     expect(result).not.toHaveProperty('widgetUpstream');
   });
 
   it('getProcessTree does not return widgetUpstream', async () => {
     const id = await insertProcessWithUpstream();
-    const result = await getProcessTree(db, PREFIX, id);
+    const result = await getProcessTree(makeCtx(db), { prefix: PREFIX }, id);
     expect(result).not.toBeNull();
     expect(result).not.toHaveProperty('widgetUpstream');
   });
@@ -69,7 +77,7 @@ describe('widgetUpstream stripping', () => {
   it('listProcesses does not return widgetUpstream in any item', async () => {
     await insertProcessWithUpstream();
     await insertProcessWithUpstream({ processId: 'q', name: 'Q' });
-    const result = await listProcesses(db, PREFIX, { limit: 10 });
+    const result = await listProcesses(makeCtx(db), { limit: 10, prefix: PREFIX });
     expect(result.items.length).toBeGreaterThan(0);
     for (const item of result.items) {
       expect(item).not.toHaveProperty('widgetUpstream');
@@ -172,35 +180,35 @@ describe('dual-form id resolution (ObjectId hex OR processId string)', () => {
 
   it('getProcess resolves both ObjectId hex and processId string to the same row', async () => {
     const { oid, processIdString } = await insertProcess();
-    const byOid = await getProcess(db, PREFIX, oid);
-    const byString = await getProcess(db, PREFIX, processIdString);
+    const byOid = await getProcess(makeCtx(db), { prefix: PREFIX }, oid);
+    const byString = await getProcess(makeCtx(db), { prefix: PREFIX }, processIdString);
     expect(byOid).not.toBeNull();
     expect(byString).not.toBeNull();
     expect((byOid as any)._id).toBe((byString as any)._id);
   });
 
   it('getProcess returns null on unknown processId string (no throw)', async () => {
-    const result = await getProcess(db, PREFIX, 'unknown__processid_string');
+    const result = await getProcess(makeCtx(db), { prefix: PREFIX }, 'unknown__processid_string');
     expect(result).toBeNull();
   });
 
   it('getProcessTree accepts the processId string form', async () => {
     const { processIdString } = await insertProcess();
-    const tree = await getProcessTree(db, PREFIX, processIdString);
+    const tree = await getProcessTree(makeCtx(db), { prefix: PREFIX }, processIdString);
     expect(tree).not.toBeNull();
     expect((tree as any).processId).toBe(processIdString);
   });
 
   it('getProcessLog accepts the processId string form', async () => {
     const { processIdString } = await insertProcess();
-    const log = await getProcessLog(db, PREFIX, processIdString, { limit: 10 });
+    const log = await getProcessLog(makeCtx(db), { limit: 10, prefix: PREFIX }, processIdString);
     expect(log).not.toBeNull();
     expect((log as any).items.length).toBe(2);
   });
 
   it('getProcessTreeLog accepts the processId string form', async () => {
     const { processIdString } = await insertProcess();
-    const log = await getProcessTreeLog(db, PREFIX, processIdString, { limit: 10 });
+    const log = await getProcessTreeLog(makeCtx(db), { limit: 10, prefix: PREFIX }, processIdString);
     expect(log).not.toBeNull();
     expect((log as any).items.length).toBe(2);
   });
@@ -257,7 +265,7 @@ describe('listProcesses metadataFilter', () => {
   it('returns all processes when no filter', async () => {
     await insert({ project: 'x' });
     await insert({ project: 'y' });
-    const r = await listProcesses(db, PREFIX, { limit: 50 });
+    const r = await listProcesses(makeCtx(db), { limit: 50, prefix: PREFIX });
     expect(r.items.length).toBe(2);
     expect(r.totalCount).toBe(2);
   });
@@ -265,7 +273,7 @@ describe('listProcesses metadataFilter', () => {
   it('filters processes by metadata key', async () => {
     await insert({ project: 'x' });
     await insert({ project: 'y' });
-    const r = await listProcesses(db, PREFIX, { limit: 50, metadataFilter: { project: 'x' } });
+    const r = await listProcesses(makeCtx(db), { limit: 50, prefix: PREFIX, metadataFilter: { project: 'x' } });
     expect(r.items.length).toBe(1);
     expect((r.items[0] as any).metadata.project).toBe('x');
     expect(r.totalCount).toBe(1);
@@ -275,8 +283,9 @@ describe('listProcesses metadataFilter', () => {
     await insert({ project: 'x', kind: 'a' });
     await insert({ project: 'x', kind: 'b' });
     await insert({ project: 'y', kind: 'a' });
-    const r = await listProcesses(db, PREFIX, {
+    const r = await listProcesses(makeCtx(db), {
       limit: 50,
+      prefix: PREFIX,
       metadataFilter: { project: 'x', kind: 'a' },
     });
     expect(r.items.length).toBe(1);
@@ -285,7 +294,7 @@ describe('listProcesses metadataFilter', () => {
 
   it('returns empty when filter matches nothing', async () => {
     await insert({ project: 'x' });
-    const r = await listProcesses(db, PREFIX, { limit: 50, metadataFilter: { project: 'nope' } });
+    const r = await listProcesses(makeCtx(db), { limit: 50, prefix: PREFIX, metadataFilter: { project: 'nope' } });
     expect(r.items.length).toBe(0);
     expect(r.totalCount).toBe(0);
   });

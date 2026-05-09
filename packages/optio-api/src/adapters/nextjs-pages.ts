@@ -20,8 +20,8 @@ import {
   parseMetadataFilterQuery,
   formatLegacyMetadataMessage,
 } from '../metadata-filter-query.js';
-import { createEngineCache } from '../engine-cache.js';
 import type { EngineClient } from '../_generated/engine.js';
+import { createOptioContext } from '../context.js';
 
 export type OptioApiHandle =
   | { handler: (req: NextApiRequest, res: NextApiResponse) => Promise<void>; engine: EngineClient; closeAll: () => Promise<void>; getEngine?: never }
@@ -41,36 +41,31 @@ const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/a
 
 export function createOptioHandler(opts: OptioApiOptions): OptioApiHandle {
   const { redis } = opts;
-  const cache = createEngineCache(redis);
   const dbOpts: DbOptions = 'mongoClient' in opts && opts.mongoClient ? { mongoClient: opts.mongoClient } : { db: opts.db! };
+  const ctx = createOptioContext({ dbOpts, redis });
 
   const tsRestHandler = createNextRouter(apiContract.processes, {
     list: async ({ query }) => {
-      const { db, prefix } = resolveDb(dbOpts, query);
-      const result = await handlers.listProcesses(db, prefix, query);
+      const result = await handlers.listProcesses(ctx, query);
       return { status: 200 as const, body: result };
     },
     get: async ({ params, query }) => {
-      const { db, prefix } = resolveDb(dbOpts, query);
-      const result = await handlers.getProcess(db, prefix, params.id);
+      const result = await handlers.getProcess(ctx, query, params.id);
       if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
       return { status: 200 as const, body: result };
     },
     getTree: async ({ params, query }) => {
-      const { db, prefix } = resolveDb(dbOpts, query);
-      const result = await handlers.getProcessTree(db, prefix, params.id, query.maxDepth);
+      const result = await handlers.getProcessTree(ctx, query, params.id);
       if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
       return { status: 200 as const, body: result };
     },
     getLog: async ({ params, query }) => {
-      const { db, prefix } = resolveDb(dbOpts, query);
-      const result = await handlers.getProcessLog(db, prefix, params.id, query);
+      const result = await handlers.getProcessLog(ctx, query, params.id);
       if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
       return { status: 200 as const, body: result };
     },
     getTreeLog: async ({ params, query }) => {
-      const { db, prefix } = resolveDb(dbOpts, query);
-      const result = await handlers.getProcessTreeLog(db, prefix, params.id, query);
+      const result = await handlers.getProcessTreeLog(ctx, query, params.id);
       if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
       return { status: 200 as const, body: result };
     },
@@ -218,13 +213,13 @@ export function createOptioHandler(opts: OptioApiOptions): OptioApiHandle {
     const prefix = opts.prefix ?? 'optio';
     return {
       handler,
-      engine: cache.get(opts.db.databaseName, prefix) as EngineClient,
-      closeAll: () => cache.closeAll(),
+      engine: ctx.engineCache.get(opts.db.databaseName, prefix) as EngineClient,
+      closeAll: () => ctx.engineCache.closeAll(),
     };
   }
   return {
     handler,
-    getEngine: (database: string, prefix: string) => cache.get(database, prefix) as EngineClient,
-    closeAll: () => cache.closeAll(),
+    getEngine: (database: string, prefix: string) => ctx.engineCache.get(database, prefix) as EngineClient,
+    closeAll: () => ctx.engineCache.closeAll(),
   };
 }

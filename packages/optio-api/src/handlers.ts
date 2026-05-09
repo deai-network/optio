@@ -4,6 +4,8 @@ import { publishLaunch, publishCancel, publishDismiss, publishResync } from './p
 import type { ProcessMetadataFilter } from './types.js';
 import { metadataFilterToMongo } from './metadata-filter-query.js';
 import { findProcessByEitherId } from './process-id-resolver.js';
+import type { OptioContext } from './context.js';
+import { resolveDb } from './resolve-db.js';
 
 function col(db: Db, prefix: string) {
   return db.collection(`${prefix}_processes`);
@@ -34,12 +36,18 @@ export interface ListQuery {
   metadataFilter?: ProcessMetadataFilter;
 }
 
-export async function listProcesses(db: Db, prefix: string, query: ListQuery) {
+export interface ListProcessesQuery extends ListQuery {
+  database?: string;
+  prefix?: string;
+}
+
+export async function listProcesses(ctx: OptioContext, query: ListProcessesQuery) {
+  const { db, prefix } = resolveDb(ctx.dbOpts, query);
   const { cursor, limit, rootId, state, metadataFilter } = query;
+
   const filter: Record<string, unknown> = {
     ...metadataFilterToMongo(metadataFilter),
   };
-
   if (rootId) filter.rootId = new ObjectId(rootId);
   if (state) filter['status.state'] = state;
   if (cursor) filter._id = { $gt: new ObjectId(cursor) };
@@ -48,10 +56,8 @@ export async function listProcesses(db: Db, prefix: string, query: ListQuery) {
     col(db, prefix).find(filter).sort({ _id: 1 }).limit(limit + 1).toArray(),
     col(db, prefix).countDocuments(filter),
   ]);
-
   const hasNext = items.length > limit;
   if (hasNext) items.pop();
-
   return {
     items: items.map(toResponse),
     nextCursor: hasNext ? items[items.length - 1]._id.toString() : null,
@@ -59,7 +65,12 @@ export async function listProcesses(db: Db, prefix: string, query: ListQuery) {
   };
 }
 
-export async function getProcess(db: Db, prefix: string, id: string) {
+export async function getProcess(
+  ctx: OptioContext,
+  query: { database?: string; prefix?: string },
+  id: string,
+) {
+  const { db, prefix } = resolveDb(ctx.dbOpts, query);
   const proc = await findProcessByEitherId(col(db, prefix), id);
   if (!proc) return null;
   return toResponse(proc);
@@ -93,13 +104,18 @@ async function buildTree(db: Db, prefix: string, processId: ObjectId, maxDepth?:
   };
 }
 
-export async function getProcessTree(db: Db, prefix: string, id: string, maxDepth?: number) {
+export async function getProcessTree(
+  ctx: OptioContext,
+  query: { database?: string; prefix?: string; maxDepth?: number },
+  id: string,
+) {
+  const { db, prefix } = resolveDb(ctx.dbOpts, query);
   // Resolve the entry-point doc first so we can accept either id form.
   // Internal recursion in `buildTree` walks via `parentId` ObjectId
   // references and does not need the lookup helper.
   const entry = await findProcessByEitherId(col(db, prefix), id);
   if (!entry) return null;
-  return buildTree(db, prefix, entry._id as ObjectId, maxDepth);
+  return buildTree(db, prefix, entry._id as ObjectId, query.maxDepth);
 }
 
 export interface PaginationQuery {
@@ -107,7 +123,17 @@ export interface PaginationQuery {
   limit: number;
 }
 
-export async function getProcessLog(db: Db, prefix: string, id: string, query: PaginationQuery) {
+export interface GetProcessLogQuery extends PaginationQuery {
+  database?: string;
+  prefix?: string;
+}
+
+export async function getProcessLog(
+  ctx: OptioContext,
+  query: GetProcessLogQuery,
+  id: string,
+) {
+  const { db, prefix } = resolveDb(ctx.dbOpts, query);
   const proc = await findProcessByEitherId(col(db, prefix), id);
   if (!proc) return null;
 
@@ -128,7 +154,17 @@ export interface TreeLogQuery extends PaginationQuery {
   maxDepth?: number;
 }
 
-export async function getProcessTreeLog(db: Db, prefix: string, id: string, query: TreeLogQuery) {
+export interface GetProcessTreeLogQuery extends TreeLogQuery {
+  database?: string;
+  prefix?: string;
+}
+
+export async function getProcessTreeLog(
+  ctx: OptioContext,
+  query: GetProcessTreeLogQuery,
+  id: string,
+) {
+  const { db, prefix } = resolveDb(ctx.dbOpts, query);
   const proc = await findProcessByEitherId(col(db, prefix), id);
   if (!proc) return null;
 
@@ -152,7 +188,6 @@ export async function getProcessTreeLog(db: Db, prefix: string, id: string, quer
   const logSlice = allLogs.slice(startIdx, startIdx + limit + 1);
   const hasNext = logSlice.length > limit;
   if (hasNext) logSlice.pop();
-
   return {
     items: logSlice,
     nextCursor: hasNext ? String(startIdx + limit) : null,
