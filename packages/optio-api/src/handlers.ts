@@ -5,6 +5,7 @@ import { metadataFilterToMongo } from './metadata-filter-query.js';
 import { findProcessByEitherId } from './process-id-resolver.js';
 import type { OptioContext } from './context.js';
 import { resolveDb } from './resolve-db.js';
+import type { LaunchFailureReason as LaunchFailureReasonType } from 'optio-contracts';
 
 function col(db: Db, prefix: string) {
   return db.collection(`${prefix}_processes`);
@@ -205,25 +206,45 @@ export type CommandResult =
   | { status: 404; body: { message: string } }
   | { status: 409; body: { message: string } };
 
+export type LaunchCommandResult =
+  | { status: 200; body: any }
+  | { status: 404 | 409; body: { reason: LaunchFailureReasonType; message: string } };
+
+const LAUNCH_STATUS: Record<LaunchFailureReasonType, 404 | 409> = {
+  'not-found': 404,
+  'not-launchable': 409,
+  'no-resume-support': 409,
+  'launch-blocked': 409,
+};
+
+const MESSAGES: Record<string, string> = {
+  'not-found': 'Process not found',
+  'not-launchable': 'Process is not in a launchable state',
+  'no-resume-support': 'This task does not support resume',
+  'launch-blocked': 'Launches matching this filter are currently blocked',
+};
+
+function launchFail(reason: LaunchFailureReasonType): LaunchCommandResult {
+  return { status: LAUNCH_STATUS[reason], body: { reason, message: MESSAGES[reason] } };
+}
+
 export async function launchProcess(
   ctx: OptioContext,
   query: { database?: string; prefix?: string },
   id: string,
   resume: boolean = false,
-): Promise<CommandResult> {
+): Promise<LaunchCommandResult> {
   const { db, database, prefix } = resolveDb(ctx.dbOpts, query);
+  const engine = ctx.engineCache.get(database, prefix);
+
   const proc = await findProcessByEitherId(col(db, prefix), id);
-  if (!proc) {
-    return { status: 404, body: { message: 'Process not found' } };
-  }
-  if (!LAUNCHABLE_STATES.includes(proc.status.state)) {
-    return { status: 409, body: { message: `Cannot launch process in state: ${proc.status.state}` } };
-  }
-  if (resume && !proc.supportsResume) {
-    return { status: 409, body: { message: 'This task does not support resume' } };
-  }
-  await publishLaunch(ctx.redis, database, prefix, proc.processId, resume);
-  return { status: 200, body: toResponse(proc) };
+  if (!proc) return launchFail('not-found');
+  if (!LAUNCHABLE_STATES.includes(proc.status.state)) return launchFail('not-launchable');
+  if (resume && !proc.supportsResume) return launchFail('no-resume-support');
+
+  const result = await engine.launch({ processId: proc.processId, resume });
+  if (result.ok) return { status: 200, body: toResponse(result.process) };
+  return launchFail(result.reason);
 }
 
 export async function cancelProcess(

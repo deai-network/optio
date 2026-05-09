@@ -147,4 +147,19 @@ if (( SCENARIO_EXIT != 0 )); then
   die 15 "scenario runner exited $SCENARIO_EXIT"
 fi
 echo "[interop] scenarios passed"
+
+phase running-scenarios-http
+set +e
+REDIS_URL="redis://localhost:${REDIS_PORT}" \
+  MONGODB_URL="mongodb://localhost:${MONGO_PORT}/optio-demo" \
+  timeout "$SCENARIO_TIMEOUT" pnpm --dir "$DEMO_DIR/interop" exec tsx run-http.ts
+HTTP_EXIT=$?
+set -e
+if (( HTTP_EXIT != 0 )); then
+  if (( HTTP_EXIT == 124 )); then
+    die 15 "http scenario runner timed out after ${SCENARIO_TIMEOUT}s"
+  fi
+  die 15 "http scenario runner exited $HTTP_EXIT"
+fi
+echo "[interop] http scenarios passed"
 exit 0

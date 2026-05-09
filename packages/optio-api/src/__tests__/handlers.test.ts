@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import { MongoClient, ObjectId, type Db } from 'mongodb';
 import Redis from 'ioredis-mock';
 import {
@@ -16,6 +16,20 @@ const fakeRedis: any = { duplicate: () => fakeRedis };
 
 function makeCtx(database: Db, redis: any = fakeRedis): OptioContext {
   return createOptioContext({ dbOpts: { db: database }, redis });
+}
+
+// ctx with a stubbed engine cache, for command-handler tests that
+// exercise the engine.launch RPC path. The cache returns the same
+// stub for every (database, prefix) pair.
+function makeCtxWithMockEngine(database: Db, mockEngine: any): OptioContext {
+  return {
+    dbOpts: { db: database },
+    redis: fakeRedis,
+    engineCache: {
+      get: () => mockEngine,
+      closeAll: async () => {},
+    },
+  } as any;
 }
 
 let client: MongoClient;
@@ -85,13 +99,33 @@ describe('widgetUpstream stripping', () => {
   });
 });
 
-describe('launchProcess — resume validation', () => {
-  let redis: any;
-
-  beforeEach(async () => {
-    redis = new Redis();
-    await redis.flushall();
-  });
+describe('launchProcess — pre-checks + engine RPC', () => {
+  // Builds a mock engine. By default `launch` resolves with
+  // `{ ok: true, process: <minimal-process> }` so the 200 path works
+  // without per-test setup. Tests that need a failure response pass
+  // an override via `launchImpl`.
+  function makeMockEngine(launchImpl?: (params: any) => any) {
+    return {
+      launch: vi.fn(launchImpl ?? ((params: any) => ({
+        ok: true,
+        process: {
+          _id: new ObjectId(),
+          processId: params.processId,
+          name: 'P',
+          rootId: new ObjectId(),
+          parentId: null,
+          depth: 0,
+          order: 0,
+          status: { state: 'scheduled' },
+          progress: { percent: null },
+          cancellable: true,
+          log: [],
+          supportsResume: false,
+          hasSavedState: false,
+        },
+      }))),
+    };
+  }
 
   async function insertLaunchable(extra: Record<string, unknown> = {}) {
     const oid = new ObjectId();
@@ -114,35 +148,79 @@ describe('launchProcess — resume validation', () => {
     return oid.toString();
   }
 
-  it('rejects resume=true when task does not support resume', async () => {
-    const id = await insertLaunchable({ supportsResume: false });
-    const result = await launchProcess(makeCtx(db, redis), { prefix: PREFIX }, id, true);
+  it('200 on success: returns toResponse(result.process) and calls engine.launch with {processId, resume}', async () => {
+    const id = await insertLaunchable({ processId: 'p' });
+    const engine = makeMockEngine();
+    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id, false);
+    expect(result.status).toBe(200);
+    expect(engine.launch).toHaveBeenCalledTimes(1);
+    expect(engine.launch).toHaveBeenCalledWith({ processId: 'p', resume: false });
+    expect((result as any).body._id).toBeDefined();
+  });
+
+  it('forwards resume=true to engine.launch when task supportsResume', async () => {
+    const id = await insertLaunchable({ processId: 'q', supportsResume: true });
+    const engine = makeMockEngine();
+    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id, true);
+    expect(result.status).toBe(200);
+    expect(engine.launch).toHaveBeenCalledWith({ processId: 'q', resume: true });
+  });
+
+  it('404 not-found from pre-check: engine.launch never called', async () => {
+    const engine = makeMockEngine();
+    const fakeId = new ObjectId().toString();
+    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, fakeId);
+    expect(result.status).toBe(404);
+    expect((result as any).body).toEqual({ reason: 'not-found', message: 'Process not found' });
+    expect(engine.launch).not.toHaveBeenCalled();
+  });
+
+  it('409 not-launchable from pre-check (state=running): engine.launch never called', async () => {
+    const id = await insertLaunchable({ status: { state: 'running' } });
+    const engine = makeMockEngine();
+    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
     expect(result.status).toBe(409);
-  });
-
-  it('accepts resume=true when task supports resume (regardless of hasSavedState)', async () => {
-    const id = await insertLaunchable({
-      processId: 'q', supportsResume: true, hasSavedState: false,
+    expect((result as any).body).toEqual({
+      reason: 'not-launchable',
+      message: 'Process is not in a launchable state',
     });
-    const result = await launchProcess(makeCtx(db, redis), { prefix: PREFIX }, id, true);
-    expect(result.status).toBe(200);
-
-    const entries = await redis.xrange(`${DB_NAME}/${PREFIX}:commands`, '-', '+');
-    const [, fields] = entries[0];
-    const payload = JSON.parse(fields[fields.indexOf('payload') + 1]);
-    expect(payload.resume).toBe(true);
-    expect(payload.processId).toBe('q');
+    expect(engine.launch).not.toHaveBeenCalled();
   });
 
-  it('accepts missing body (backwards compatible): resume defaults to false', async () => {
-    const id = await insertLaunchable({ processId: 'r' });
-    const result = await launchProcess(makeCtx(db, redis), { prefix: PREFIX }, id /* no resume */);
-    expect(result.status).toBe(200);
+  it('409 no-resume-support from pre-check: engine.launch never called', async () => {
+    const id = await insertLaunchable({ supportsResume: false });
+    const engine = makeMockEngine();
+    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id, true);
+    expect(result.status).toBe(409);
+    expect((result as any).body).toEqual({
+      reason: 'no-resume-support',
+      message: 'This task does not support resume',
+    });
+    expect(engine.launch).not.toHaveBeenCalled();
+  });
 
-    const entries = await redis.xrange(`${DB_NAME}/${PREFIX}:commands`, '-', '+');
-    const [, fields] = entries[0];
-    const payload = JSON.parse(fields[fields.indexOf('payload') + 1]);
-    expect(payload.resume ?? false).toBe(false);
+  it('409 launch-blocked from engine: pre-check passes, engine returns ok=false reason=launch-blocked', async () => {
+    const id = await insertLaunchable();
+    const engine = makeMockEngine(() => ({ ok: false, reason: 'launch-blocked' }));
+    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
+    expect(result.status).toBe(409);
+    expect((result as any).body).toEqual({
+      reason: 'launch-blocked',
+      message: 'Launches matching this filter are currently blocked',
+    });
+    expect(engine.launch).toHaveBeenCalledTimes(1);
+  });
+
+  it('404 not-found from engine (race): pre-check passes, engine returns ok=false reason=not-found', async () => {
+    const id = await insertLaunchable();
+    const engine = makeMockEngine(() => ({ ok: false, reason: 'not-found' }));
+    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
+    expect(result.status).toBe(404);
+    expect((result as any).body).toEqual({
+      reason: 'not-found',
+      message: 'Process not found',
+    });
+    expect(engine.launch).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -214,11 +292,36 @@ describe('dual-form id resolution (ObjectId hex OR processId string)', () => {
   });
 
   it('launchProcess accepts the processId string form', async () => {
-    const redis = new Redis();
-    await redis.flushall();
     const { processIdString } = await insertProcess('idle');
-    const result = await launchProcess(makeCtx(db, redis), { prefix: PREFIX }, processIdString);
+    const engine = {
+      launch: vi.fn((params: any) => ({
+        ok: true,
+        process: {
+          _id: new ObjectId(),
+          processId: params.processId,
+          name: 'P',
+          rootId: new ObjectId(),
+          parentId: null,
+          depth: 0,
+          order: 0,
+          status: { state: 'scheduled' },
+          progress: { percent: null },
+          cancellable: true,
+          log: [],
+        },
+      })),
+    };
+    const ctx: OptioContext = {
+      dbOpts: { db },
+      redis: fakeRedis,
+      engineCache: {
+        get: () => engine,
+        closeAll: async () => {},
+      },
+    } as any;
+    const result = await launchProcess(ctx, { prefix: PREFIX }, processIdString);
     expect(result.status).toBe(200);
+    expect(engine.launch).toHaveBeenCalledWith({ processId: processIdString, resume: false });
   });
 
   it('cancelProcess accepts the processId string form', async () => {

@@ -2,8 +2,14 @@ import { initContract } from '@ts-rest/core';
 import { z } from 'zod';
 import { PaginationQuerySchema, PaginatedResponseSchema, ErrorSchema, ObjectIdSchema, ProcessIdParamSchema } from './schemas/common.js';
 import { ProcessSchema, ProcessStateSchema, LogEntrySchema, ProcessMetadataFilterSchema, MetadataFilterQueryParamSchema } from './schemas/process.js';
+import { LaunchFailureReason } from './engine-failure-reasons.js';
 
 const c = initContract();
+
+const LaunchErrorBody = z.object({
+  reason: LaunchFailureReason,
+  message: z.string(),
+});
 
 const ProcessTreeNodeSchema = ProcessSchema.extend({
   children: z.array(z.lazy(() => ProcessSchema.extend({ children: z.array(z.any()) }))),
@@ -96,8 +102,8 @@ export const processesContract = c.router({
     body: z.object({ resume: z.boolean().optional() }).optional(),
     responses: {
       200: ProcessSchema,
-      404: ErrorSchema,
-      409: ErrorSchema,
+      404: LaunchErrorBody,
+      409: LaunchErrorBody,
     },
     summary: 'Launch a process (optionally in resume mode)',
   },

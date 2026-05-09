@@ -1,9 +1,30 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { MongoClient, ObjectId, type Db } from 'mongodb';
 import Redis from 'ioredis-mock';
 import { createOptioHandler } from '../nextjs-pages.js';
+import { EngineClient } from '../../_generated/engine.js';
+
+// Stub the engine RPC at the prototype level so handlers that now call
+// engine.launch (and later engine.cancel/dismiss/resync) don't try to
+// reach a real engine over the redis-mock.
+vi.spyOn(EngineClient.prototype, 'launch').mockImplementation(async (params: any) => ({
+  ok: true,
+  process: {
+    _id: new ObjectId(),
+    processId: params.processId,
+    name: 'Test Task',
+    rootId: new ObjectId(),
+    parentId: null,
+    depth: 0,
+    order: 0,
+    status: { state: 'scheduled' },
+    progress: { percent: 0, message: '' },
+    cancellable: true,
+    log: [],
+  },
+} as any));
 
 let mongoClient: MongoClient;
 let db: Db;
@@ -264,8 +285,6 @@ describe('list metadataFilter (nextjs-pages)', () => {
     expect(res.status).toBe(400);
   });
 });
-
-import { EngineClient } from '../../_generated/engine.js';
 
 describe('createOptioHandler return shape', () => {
   it('single-db mode returns { handler, engine, closeAll }', async () => {

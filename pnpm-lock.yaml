@@ -204,12 +204,21 @@ importers:
       '@clamator/protocol':
         specifier: ^0.1.7
         version: 0.1.7(zod@4.3.6)
+      fastify:
+        specifier: ^5.2.0
+        version: 5.8.4
       ioredis:
         specifier: ^5.3.0
         version: 5.10.1
+      mongodb:
+        specifier: ^6.12.0
+        version: 6.21.0
       optio-api:
         specifier: workspace:*
         version: link:../../optio-api
+      undici:
+        specifier: ^7.0.0
+        version: 7.25.0
     devDependencies:
       tsx:
         specifier: ^4.7.0
