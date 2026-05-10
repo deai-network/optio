@@ -286,7 +286,7 @@ export const engineContract = defineContract('engine', {
 
 The five failure-reason enums (`LaunchFailureReason`, `CancelFailureReason`, `DismissFailureReason`, `GroupCancelFailureReason`, `BlockLaunchesFailureReason`) live in `packages/optio-contracts/src/engine-failure-reasons.ts` and import only `zod`. `engine-to-api.ts` imports them from there to use as discriminator values inside the result schemas. `packages/optio-contracts/src/index.ts` re-exports them from `engine-failure-reasons.ts`, so external consumers (`optio-api/src/handlers.ts`, `optio-ui` error UI, custom adapters) import them from the package root: `import { LaunchFailureReason } from 'optio-contracts'`. The split exists so browser bundles can re-export the enums without pulling in `@clamator/protocol` (which uses `node:crypto` and is Node-only). The package root does not re-export `engineContract` (Q9).
 
-`api-to-frontend.ts` (the ts-rest HTTP contract) does not import the failure-reason enums in phase 1; the new `LaunchErrorBody` / `CancelErrorBody` / `DismissErrorBody` response schemas — which would consume the enums — land in phase 4 alongside the handler rewrite.
+`api-to-frontend.ts` (the ts-rest HTTP contract) does not import the failure-reason enums in phase 1; the new `LaunchErrorBody` / `CancelErrorBody` / `DismissErrorBody` response schemas — which would consume the enums — land in **phase 3 Stage B** (3a/3b/3c). See §11 for the phase-3 scope addendum. *(Originally planned for phase 4; pulled forward.)*
 
 ```typescript
 import {
@@ -760,8 +760,9 @@ This section enumerates what each doc needs across the migration. Per-phase plan
 
 - **Phase 1.** Architecture Notes section gets the architectural rule.
 - **Phase 2.** Add `optio_core.rpc_server` to the public Python API table. Add return-shape note for `registerOptioApi`.
-- **Phase 4.** optio-api Handler Functions section: signatures updated; `CommandResult` body now `{ reason, message }`.
-- **Phase 5.** Remove `on_command(...)` from the optio-core API. Remove `publishLaunch` / `publishResync` from the optio-api Publishers section. Architecture Notes: remove `${prefix}:commands` stream description; replace with the clamator service-streams pattern.
+- **Phase 3.** *(was scheduled for phase 4)* optio-api Handler Functions section: signatures updated to `(ctx: OptioContext, query, ...)`; per-command `LaunchCommandResult` / `CancelCommandResult` / `DismissCommandResult` types. Done in commit `fa841f6` (`docs(optio-api): phase-3 doc accuracy fixes`).
+- **Phase 3.** *(was scheduled for phase 5)* Remove `publishLaunch` / `publishResync` references from the optio-api Publishers section — Publishers section deleted entirely (publisher.ts gone in 3d).
+- **Phase 5.** Remove `on_command(...)` from the optio-core API. Architecture Notes: remove `${prefix}:commands` stream description; replace with the clamator service-streams pattern.
 
 ### `packages/optio-contracts/AGENTS.md`
 
@@ -787,18 +788,20 @@ Create if missing.
 
 - **Phase 1.** Update import paths if any reference `contract.ts` (now `api-to-frontend.ts`).
 - **Phase 2.** Update OptioApiOptions doc; document the return shape of `registerOptioApi` / `createOptioRouteHandlers` / `createOptioHandler`. Add an EngineClient sharing example.
-- **Phase 4.** REST Endpoints table descriptions: remove text suggesting the API does state validation. Delete the "Exported Publishers" section. Add an "Engine Client" section.
+- **Phase 3.** *(was scheduled for phase 4)* Delete the "Exported Publishers" section. Done in commit `fa841f6`. *(REST Endpoints table state-validation cleanup remains for phase 4 once pre-checks are deleted.)*
 
 ### `packages/optio-api/AGENTS.md`
 
 - **Phase 1.** Update file paths if `contract.ts` is referenced.
 - **Phase 2.** Document the new return shape of `registerOptioApi`. Note the `EngineClient` and `createEngineCache` exports. Add `engine-cache.ts` to the "Building Custom Adapters" section so custom-adapter authors know to use the shared cache rather than rolling their own.
+- **Phase 3** *(was scheduled for phase 4)*:
+  - Rewrite Handler Functions section with new `(ctx, query, ...)` signatures. Done in `fa841f6`.
+  - Rewrite the `CommandResult` doc — split into per-command typed result types (`LaunchCommandResult` / `CancelCommandResult` / `DismissCommandResult`) with `{ reason, message }` body. Done in `fa841f6`.
+  - Replace the Publishers section — deleted outright. Done in `fa841f6`.
+  - Add binding "Layer rules" section codifying the adapter / handler / context layout. Done in `9024eda`.
 - **Phase 4.**
   - Delete the "State guards enforced by command handlers" block.
-  - Rewrite Handler Functions section with new signatures.
-  - Rewrite the `CommandResult` doc — body now `{ reason, message }`.
-  - Add the architectural rule statement at the top.
-  - Replace the Publishers section with an Engine Client section. Remove all `publishLaunch` / `publishResync` / `publishCancel` / `publishDismiss` references.
+  - Add the architectural rule statement at the top (still pending — the rule statement was deferred while pre-checks were still in place).
 
 ### `packages/optio-ui/README.md` and `AGENTS.md`
 
@@ -982,14 +985,18 @@ Docs: per §6 phase 2 entries.
 
 ### Phase 3 — Migrate HTTP command path to RPC (per endpoint)
 
-**Goal.** Switch HTTP command handlers from legacy `publishX` to `engine.X`. Per endpoint, with tests after each. The API's own pre-RPC validation stays as defense-in-depth during this phase.
+**Note (2026-05-10):** The actual phase-3 implementation expanded this section's scope. Phase 3 shipped as Stage A (six commits — adapter-layer cleanup) + Stage B (four commits — per-endpoint channel swap), pulling several phase-4 deliverables forward (body-shape flip, per-command error bodies, `publisher.ts` deletion). See §11 for the actual scope, and `docs/2026-05-08-engine-rpc-migration-phase-3-design.md` for the per-commit specification.
 
-**Deliverables.** One commit per endpoint:
+**Original goal.** Switch HTTP command handlers from legacy `publishX` to `engine.X`. Per endpoint, with tests after each. The API's own pre-RPC validation stays as defense-in-depth during this phase.
 
-- **3a — `launch`.** `handlers.launchProcess` calls `engine.launch(...)` instead of `publishLaunch(...)`. Maps the RPC result to the existing `CommandResult` shape. The API's pre-RPC checks remain; if they reject pre-flight, no RPC call.
-- **3b — `cancel`.** Same pattern.
-- **3c — `dismiss`.** Same pattern.
-- **3d — `resync`.** Switches to `engine.resync(...)` notification. The API returns `202 Accepted`. (Note: response status changes from 200 to 202 — minor breaking change for any client checking exact status.)
+**Deliverables (as actually shipped, 4 Stage B commits):**
+
+- **3a — `launch`.** `handlers.launchProcess` calls `engine.launch(...)` via `ctx.engineCache`. 404/409 body becomes `{reason, message}` typed via `LaunchErrorBody`. New `LaunchCommandResult`. Pre-RPC checks remain.
+- **3b — `cancel`.** Same pattern. `CancelErrorBody` / `CancelCommandResult`.
+- **3c — `dismiss`.** Same pattern. `DismissErrorBody` / `DismissCommandResult`.
+- **3d — `resync`.** Switches to `engine.resync(...)` notification. The API returns `202 Accepted`. `publisher.ts` deleted, `MESSAGES` typed against the union of failure-reason enums. (Note: response status changes from 200 to 202 — minor breaking change for any client checking exact status.)
+
+Six additional Stage A commits (A0–A5) preceded these — see §11.
 
 For each sub-step:
 
@@ -1008,9 +1015,11 @@ For each sub-step:
 
 ### Phase 4 — Remove API-side authority code
 
+**Note (2026-05-10):** Phase 3 pulled forward the body-shape flip, per-command error bodies, and `publisher.ts` deletion. Phase 4's remaining scope is **only** the pre-check deletion plus the dependent signature-and-test cleanup. See §11 for the full delta.
+
 **Goal.** Delete API code that exists only because of pre-RPC validation. The API becomes a pure RPC translator.
 
-**Deliverables.**
+**Deliverables (post-phase-3 actual scope).**
 
 Code:
 
@@ -1018,26 +1027,24 @@ Code:
   - Delete `LAUNCHABLE_STATES`, `CANCELLABLE_STATES`, `END_STATES` constants.
   - Delete `cancellable` and `supportsResume` precondition checks.
   - Delete pre-RPC `findProcessByEitherId(...)` calls in command handlers.
-  - Handler signatures change to `(engine, id, ...)` per §5.
-  - Update `api-to-frontend.ts` error response schemas (404 / 409 bodies) to `{ reason, message }`. Either extend `ErrorSchema` or introduce per-command error bodies (`LaunchErrorBody`, `CancelErrorBody`, `DismissErrorBody`) per §3.
+  - Handler signatures shrink: `(ctx, query, id, [resume])` → `(ctx, query, id, [resume])` *(same shape; the `db` and `prefix` locals from `resolveDb` become unused once the pre-check goes — clean up `resolveDb` calls in command handlers if the helper is no longer needed there)*.
+  - **(Already done in phase 3, do NOT redo)** Body-shape flip and per-command error bodies in `api-to-frontend.ts`.
 - `packages/optio-api/src/process-id-resolver.ts` — kept (query-side callers remain).
-- `packages/optio-api/src/publisher.ts` — deleted.
-- Adapter call-sites updated.
-- `packages/optio-api/src/index.ts` — remove `publishLaunch`, `publishResync` exports.
+- **(Already done in 3d)** `packages/optio-api/src/publisher.ts` deleted; publish exports removed from `index.ts`.
 
 Engine side:
 
 - `EngineService._resolve(id)` confirmed handles both ID forms. Phase 4 plan adds dedicated tests.
 
-Docs: per §6 phase 4 entries.
+Docs: per §6 phase 4 entries (most done in phase 3 — only the "State guards enforced" block deletion + architectural rule statement at the top of `optio-api/AGENTS.md` remain).
 
 Tests:
 
-- `make test-interop` scenarios for the full failure-reason matrix.
+- `make test-interop` scenarios for the full failure-reason matrix (adversarial: race the engine into each failure reason without pre-check protection).
 
 **Acceptance.**
 
-- `grep -E 'LAUNCHABLE_STATES|CANCELLABLE_STATES|END_STATES|publisher\.|publishLaunch|publishCancel|publishDismiss|publishResync' packages/optio-api/src/` returns nothing.
+- `grep -E 'LAUNCHABLE_STATES|CANCELLABLE_STATES|END_STATES' packages/optio-api/src/` returns nothing. *(Publisher-related grep already empty per phase 3.)*
 - `make test`, `make test-interop` green.
 
 **Risks.**
@@ -1314,3 +1321,76 @@ Failure modes use discriminated-union result types (e.g. `{ ok: true, process } 
 
 Generated wrappers ship next to consumers: `packages/optio-api/src/_generated/engine.ts` for TypeScript, `packages/optio-core/src/optio_core/_generated/engine.py` for Python. Regenerate via `make codegen` at the repo root.
 ```
+
+## 11. Phase-3 actual scope addendum (2026-05-10)
+
+This section records what phase 3 actually shipped versus what §8.3 originally described. The earlier sections of this spec (§3, §5, §6, §8.3, §8.4) have been spot-corrected; this section is the canonical delta. Future phases (4 and 5) inherit the post-phase-3 architecture documented here.
+
+**Phase-3 implementation reference:** `docs/2026-05-08-engine-rpc-migration-phase-3-design.md` and `docs/2026-05-08-engine-rpc-migration-phase-3-plan.md`. Merged to main as 18 commits (HEAD `a69d7cd`).
+
+### What phase 3 actually shipped
+
+Phase 3 expanded into two stages (10 commits + fixups):
+
+**Stage A — adapter-layer cleanup (no behavior change):**
+
+- **A0** (`bb6648e`, `c792780`, `ec4459b`) — Robustified `packages/optio-demo/run-interop.sh` and `interop/run.ts`: hard per-step timeouts, readiness probes, distinct exit codes (10/11/12/13/14/15/16/124), real-time engine-log tailing, `INTEROP_DEBUG=1` (verbose mode + 6× timeouts) and `INTEROP_KEEP=1` (postmortem container retention) env knobs. `INTEROP_FORCE_HANG=<scenario>` for negative testing. Outer `timeout 120` wrapper in `Makefile`.
+- **A1** (`0c1b976`, `6c075a6`) — New `packages/optio-api/src/context.ts` exporting `OptioContext { dbOpts, engineCache, redis }` and `createOptioContext({ dbOpts, redis })`.
+- **A2** (`f3e789d`) — Five read handlers (`listProcesses`, `getProcess`, `getProcessTree`, `getProcessLog`, `getProcessTreeLog`) take `(ctx, query, [id])` instead of `(db, prefix, ...)`. Adapters drop inline `resolveDb` calls and redundant `?? 25` defaults.
+- **A3** (`a20779e`) — Four command handlers (`launchProcess`, `cancelProcess`, `dismissProcess`, `resyncProcesses`) take `(ctx, query, id, ...)`. Internally still publish to legacy redis stream during Stage A. Adapters drop inline `resolveDb` and `body.clean ?? false`.
+- **A4** (`ff4d038`, `f536191`) — New `packages/optio-api/src/sse-options.ts` exporting `parseSseOptions(rawQuery)` and `checkLegacyMetadataParams(rawQuery)` (throws `LegacyMetadataParamError`). All three adapter files with SSE routes (fastify, express, nextjs-app, nextjs-pages) consume the helper.
+- **A5** (`9024eda`) — Layer rules in `packages/optio-api/AGENTS.md` (binding) plus `README.md` cross-link.
+
+**Stage B — channel swap (per-endpoint behavior change):**
+
+- **3a** (`4ef3d26`) — Launch HTTP path → `engine.launch(...)`. `LaunchErrorBody` in `api-to-frontend.ts`. `LaunchCommandResult`, `LAUNCH_STATUS`, launch slice of `MESSAGES`. New `packages/optio-demo/interop/run-http.ts` with HTTP-roundtrip launch scenarios; `run-interop.sh` runs HTTP scenarios after direct-clamator phase.
+- **3b** (`3215045`) — Cancel HTTP path → `engine.cancel(...)`. `CancelErrorBody` / `CancelCommandResult` / `CANCEL_STATUS`. Backfilled missing launch body-shape assertions in adapter tests.
+- **3c** (`7f09ce8`) — Dismiss HTTP path → `engine.dismiss(...)`. `DismissErrorBody` / `DismissCommandResult` / `DISMISS_STATUS`.
+- **3d** (`109c0d5`) — Resync HTTP path → `engine.resync(...)` notification. HTTP status 200 → 202. **`packages/optio-api/src/publisher.ts` and `__tests__/publisher.test.ts` deleted.** `index.ts` no longer exports `publishLaunch / publishCancel / publishDismiss / publishResync`. `MESSAGES` typed as `Record<LaunchFailureReason | CancelFailureReason | DismissFailureReason, string>` (compile-time exhaustiveness).
+
+Plus phase-3 closeout fixes (`fa841f6` doc accuracy, `a69d7cd` `createOptioContext` + per-command result type exports).
+
+### New architectural elements (phases 4/5 inherit these)
+
+- **`OptioContext` layer** (`packages/optio-api/src/context.ts`) — owns `dbOpts`, `engineCache`, `redis`. Constructed once per adapter registration. Threaded into every handler call as the first argument. Public type re-exported from `packages/optio-api/src/index.ts`.
+- **`createOptioContext({ dbOpts, redis })`** factory — exported from `packages/optio-api/src/index.ts` for custom-adapter authors. (Originally internal in A1; opened up in `a69d7cd` per phase-3 final review.)
+- **Per-command result types** (`LaunchCommandResult`, `CancelCommandResult`, `DismissCommandResult`) — exported from `packages/optio-api/src/index.ts`. The legacy `CommandResult` union no longer exists.
+- **`packages/optio-api/src/sse-options.ts`** — shared SSE/poller query parser, consumed by all adapters.
+- **Three-layer rules** documented in `packages/optio-api/AGENTS.md` (binding):
+  1. Adapter — only framework integration; no `resolveDb`, no defaults, no business logic.
+  2. Handler — framework-agnostic, takes `OptioContext` + per-request data.
+  3. Context — durable per-app resources (`dbOpts`, `engineCache`, `redis`).
+
+  Rule for adapter additions: *"Would I write this same code in the other three adapters?"* → if yes, extract.
+- **Hardened interop runner** with structured phase markers (`[interop] phase=…`), distinct exit codes, env knobs. Future phases that add scenarios should reuse the existing `withTimeout` + `fail` / `ok` helpers in `interop/run.ts` and `interop/run-http.ts`.
+
+### Phase-4 scope — narrowed
+
+What phase 4 *still* owns:
+
+- Delete the pre-check block in each command handler (`if (!proc) ...`, `if (!LAUNCHABLE_STATES.includes(...))`, `if (resume && !proc.supportsResume)`, `if (!proc.cancellable)`, `if (!CANCELLABLE_STATES.includes(...))`, `if (!END_STATES.includes(...))`).
+- Delete `LAUNCHABLE_STATES`, `CANCELLABLE_STATES`, `END_STATES` constants in `handlers.ts`.
+- Delete pre-RPC `findProcessByEitherId(col(db, prefix), id)` calls from command handlers (read handlers keep theirs).
+- Once pre-check is gone, the `db` and `prefix` locals from `resolveDb(ctx.dbOpts, query)` in command handlers become unused — drop the `resolveDb` call from each command handler. Engine resolves both id forms internally. Read handlers keep `resolveDb` because they read Mongo directly.
+- `EngineService._resolve(id)` Python tests: confirm both ObjectId hex and processId string accepted; add adversarial tests forcing every failure reason via the HTTP path (no pre-check protection).
+- Delete the "State guards enforced by command handlers" block from `packages/optio-api/AGENTS.md`. Add the architectural rule statement at the top.
+
+What phase 4 *no longer* needs to do (already shipped in phase 3):
+
+- ~~Body-shape flip to `{reason, message}`~~ — done in 3a/3b/3c.
+- ~~Per-command error bodies in `api-to-frontend.ts`~~ — done in 3a/3b/3c.
+- ~~Delete `publisher.ts` and its tests~~ — done in 3d.
+- ~~Remove `publishX` exports from `index.ts`~~ — done in 3d.
+- ~~Update `optio-api/AGENTS.md` Handler Functions section + delete Publishers section~~ — done in `fa841f6`.
+
+### Phase-5 scope — unchanged
+
+Phase 5 is engine-side (`packages/optio-core/src/optio_core/consumer.py`, `lifecycle.py`, `__init__.py`) and untouched by phase 3. Refer to §8.5 as written.
+
+The legacy `${database}/${prefix}:commands` redis stream is still consumed by the engine via `consumer.py` after phase 3. No API code writes to it. Phase 5 retires the stream consumer; the API side is already done.
+
+### Branch / merge state
+
+- Phase 3 merged to `main` on 2026-05-10 at commit `a69d7cd` (fast-forward, no drift, no conflicts).
+- Branch `csillag/rpc-migration-phase-3` deleted.
+- Pre-existing `fastify-widget-proxy.test.ts` WS upgrade flake confirmed pre-existing on main, untouched by phase 3 (widget-proxy code path not modified).
