@@ -25,7 +25,7 @@ from optio_core.store import (
     get_process_by_process_id, update_status, clear_result_fields,
     append_log, compute_expire_at,
 )
-from optio_core.state_machine import ACTIVE_STATES, CANCELLABLE_STATES
+from optio_core.state_machine import ACTIVE_STATES, CANCELLABLE_STATES, END_STATES
 from optio_core.executor import Executor
 from optio_core.consumer import CommandConsumer
 from clamator_protocol import RpcServerCore
@@ -777,7 +777,7 @@ class Optio:
         record disappears, or `grace_seconds` elapses. On grace timeout, log
         a warning; the caller (resync) proceeds with deletion regardless.
         """
-        non_terminal = {"scheduled", "running", "cancel_requested", "cancelling"}
+        non_terminal = ACTIVE_STATES
         targets = [(oid, pid) for (oid, pid, st) in stale if st in non_terminal]
         if not targets:
             return
@@ -926,7 +926,7 @@ class Optio:
         if proc is None:
             return
 
-        if proc["status"]["state"] not in {"done", "failed", "cancelled"}:
+        if proc["status"]["state"] not in END_STATES:
             return
 
         await clear_result_fields(

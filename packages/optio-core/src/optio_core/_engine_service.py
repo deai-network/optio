@@ -25,16 +25,10 @@ from optio_core._generated.engine import (
     ResyncParams,
 )
 from optio_core.models import LaunchBlocked
+from optio_core.state_machine import LAUNCHABLE_STATES, CANCELLABLE_STATES, DISMISSABLE_STATES
 
 if TYPE_CHECKING:
     from optio_core.lifecycle import Optio
-
-
-# State allowlists from packages/optio-api/src/handlers.ts. Mirrored here so
-# the engine — not the API — owns the rule (parent spec authority statement).
-LAUNCHABLE_STATES = {"idle", "done", "failed", "cancelled"}
-CANCELLABLE_STATES = {"scheduled", "running", "cancel_requested"}
-DISMISSABLE_STATES = {"done", "failed", "cancelled"}
 
 _OBJECTID_RE = __import__("re").compile(r"^[a-fA-F0-9]{24}$")
 
