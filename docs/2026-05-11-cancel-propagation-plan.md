@@ -1159,6 +1159,82 @@ git commit -m "feat(optio-core): alpha — abnormal child terminal triggers pare
 
 ---
 
+### Task 4.3b: α also fires from `ParallelGroup.spawn._run` on aggregate breach
+
+**Files:**
+- Modify: `packages/optio-core/src/optio_core/context.py:495-530` (the `ParallelGroup.spawn._run` body)
+
+**Rationale:** `ParallelGroup.spawn` calls `ctx.run_child(survive_failure=True, survive_cancel=True, ...)` internally so each spawn task collects results rather than raising. As a result, the α path inside `executor.execute_child` (which only fires on survive_*=False) does not trigger for individual group children. To make `parallel_group(survive_failure=False)` fail-fast and `parallel_group(survive_cancel=False)` cancel-fast, fire α at the group level when its own survive_* aggregate is breached.
+
+- [ ] **Step 1: Modify `ParallelGroup.spawn._run` to fire α on first aggregate breach**
+
+Edit `packages/optio-core/src/optio_core/context.py`. Replace the `_run` body inside `ParallelGroup.spawn` (preserving the refusal block added in Task 3.2):
+
+```python
+async def _run():
+    try:
+        state = await self._ctx.run_child(
+            execute=execute,
+            process_id=process_id,
+            name=name,
+            params=params,
+            survive_failure=True,
+            survive_cancel=True,
+            description=description,
+        )
+        self._results.append(ChildResult(
+            process_id=process_id,
+            state=state,
+            error=None if state == "done" else f"Child {state}",
+        ))
+        breached = False
+        if state == "failed" and not self._survive_failure:
+            self._failed = True
+            breached = True
+        if state == "cancelled" and not self._survive_cancel:
+            self._failed = True
+            breached = True
+        # α from group level: when group's own survive_* is breached,
+        # invoke notify_parent_abnormal so the parent's cancel propagation
+        # reaches sibling spawns.
+        if breached:
+            executor = self._ctx._executor
+            if executor is not None and executor._notify_parent_abnormal is not None:
+                asyncio.create_task(
+                    executor._notify_parent_abnormal(self._ctx.process_id)
+                )
+    finally:
+        self._semaphore.release()
+```
+
+- [ ] **Step 2: Run the α test for parallel_group siblings**
+
+Run: `pytest packages/optio-core/tests/test_cancel_propagation.py::test_alpha_child_cancel_triggers_parent_cancel_of_siblings -v`
+Expected: PASS. Note: the test uses `parallel_group(survive_cancel=False)` — group-level breach triggers α → parent gets cancel_requested → recursion cancels C.
+
+Important: under this combined path the parent's `__aexit__` may still raise `RuntimeError("Parallel group failed")` because `_failed` is True. That means parent's final state is `failed` (not `cancelled`). Update the test assertion accordingly:
+
+Edit the test in `packages/optio-core/tests/test_cancel_propagation.py`:
+
+```python
+    assert b_proc["status"]["state"] == "cancelled"
+    assert c_proc["status"]["state"] == "cancelled"
+    assert a_proc["status"]["state"] in {"failed", "cancelled"}
+```
+
+- [ ] **Step 3: Run the parallel_group fail-fast test (anticipating Task 4.4)**
+
+Run: `pytest packages/optio-core/tests/test_cancel_propagation.py::test_parallel_group_fail_fast_under_alpha -v` if it exists yet. (May not — that test is added in Task 4.4.)
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add packages/optio-core/src/optio_core/context.py packages/optio-core/tests/test_cancel_propagation.py
+git commit -m "feat(optio-core): ParallelGroup fires alpha on aggregate survive_* breach"
+```
+
+---
+
 ### Task 4.4: Test parallel_group fail-fast under α
 
 **Files:**
