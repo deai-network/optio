@@ -362,3 +362,50 @@ async def test_alpha_child_cancel_triggers_parent_cancel_of_siblings(mongo_db):
     assert a_proc["status"]["state"] in {"failed", "cancelled"}
 
     await optio.shutdown(grace_seconds=0.5)
+
+
+async def test_parallel_group_fail_fast_under_alpha(mongo_db):
+    """parallel_group(survive_failure=False): one child failing auto-cancels
+    siblings via alpha, rather than waiting for them to finish."""
+    prefix = "p4t4"
+    started = asyncio.Event()
+
+    async def quick_fail(ctx):
+        await asyncio.sleep(0.05)
+        raise RuntimeError("kaboom")
+
+    async def long_child(ctx):
+        while ctx.should_continue():
+            await asyncio.sleep(0.01)
+
+    async def parent(ctx):
+        started.set()
+        async with ctx.parallel_group(survive_failure=False) as group:
+            await group.spawn(execute=quick_fail, process_id="b", name="B")
+            await group.spawn(execute=long_child, process_id="c", name="C")
+
+    parent_inst = TaskInstance(execute=parent, process_id="a", name="A")
+    b_inst = TaskInstance(execute=quick_fail, process_id="b", name="B")
+    c_inst = TaskInstance(execute=long_child, process_id="c", name="C")
+
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix=prefix, cancel_grace_seconds=3.0)
+    await upsert_process(mongo_db, prefix, parent_inst)
+    optio._executor.register_tasks([parent_inst, b_inst, c_inst])
+
+    t0 = _time.monotonic()
+    runner = asyncio.create_task(optio.launch_and_wait("a"))
+    await started.wait()
+    await asyncio.wait_for(runner, timeout=5.0)
+    elapsed = _time.monotonic() - t0
+
+    assert elapsed < 2.0, f"expected fail-fast, took {elapsed:.2f}s"
+
+    b_proc = await get_process_by_process_id(mongo_db, prefix, "b")
+    c_proc = await get_process_by_process_id(mongo_db, prefix, "c")
+    a_proc = await get_process_by_process_id(mongo_db, prefix, "a")
+    assert b_proc["status"]["state"] == "failed"
+    assert c_proc["status"]["state"] == "cancelled"
+    assert a_proc["status"]["state"] in {"failed", "cancelled"}
+
+    await optio.shutdown(grace_seconds=0.5)
