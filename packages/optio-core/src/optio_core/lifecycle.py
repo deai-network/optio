@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re as _re
 import signal
 import time
 import uuid
@@ -19,20 +20,30 @@ except ImportError:
 from optio_core.models import (
     TaskInstance, OptioConfig, ProcessStatus, ProcessMetadataFilter,
     matches_filter, LaunchBlocked,
+    LaunchOutcome, CancelOutcome, DismissOutcome,
 )
 from optio_core.store import (
     upsert_process, remove_stale_processes, find_stale_process_ids,
     get_process_by_process_id, update_status, clear_result_fields,
     append_log, compute_expire_at,
 )
-from optio_core.state_machine import ACTIVE_STATES, CANCELLABLE_STATES, END_STATES
+from optio_core.state_machine import (
+    ACTIVE_STATES, CANCELLABLE_STATES, DISMISSABLE_STATES, END_STATES,
+    LAUNCHABLE_STATES,
+)
 from optio_core.executor import Executor
-from optio_core.consumer import CommandConsumer
 from clamator_protocol import RpcServerCore
 from clamator_over_redis import RedisRpcServer
 from optio_core.scheduler import ProcessScheduler
 
 logger = logging.getLogger("optio_core_core")
+
+
+_OBJECTID_RE = _re.compile(r"^[a-fA-F0-9]{24}$")
+
+
+def _is_objectid(s: str) -> bool:
+    return bool(_OBJECTID_RE.match(s))
 
 
 from dataclasses import dataclass
@@ -52,7 +63,6 @@ class Optio:
         self._config: OptioConfig | None = None
         self._redis: Redis | None = None
         self._executor: Executor | None = None
-        self._consumer: CommandConsumer | None = None
         self.rpc_server: "RpcServerCore | None" = None
         self._engine_service = None  # Set by init() when an rpc_server exists.
         self._owned_rpc_server: bool = False
@@ -121,17 +131,8 @@ class Optio:
                 )
             self._redis = Redis.from_url(redis_url)
 
-            # Legacy command stream (phase-2 co-existence; phase 5 removes).
+            # Clamator RPC server — the sole inbound control channel.
             db_name = mongo_db.name
-            stream_name = f"{db_name}/{prefix}:commands"
-            self._consumer = CommandConsumer(self._redis, stream_name)
-            self._consumer.on("launch", self._handle_launch)
-            self._consumer.on("cancel", self._handle_cancel)
-            self._consumer.on("dismiss", self._handle_dismiss)
-            self._consumer.on("resync", self._handle_resync)
-            await self._consumer.setup()
-
-            # New clamator RPC server (phase 2 of engine-RPC migration).
             self.rpc_server = RedisRpcServer(
                 redis=self._redis,
                 key_prefix=f"{db_name}/{prefix}",
@@ -167,7 +168,7 @@ class Optio:
 
         # Create scheduler
         self._scheduler = ProcessScheduler(
-            launch_fn=self._handle_launch_by_process_id,
+            launch_fn=self._scheduler_launch_adapter,
         )
 
         # Reconcile any processes left in active states by a previous session.
@@ -179,12 +180,6 @@ class Optio:
 
         redis_info = f", redis='{redis_url}'" if redis_url else ", no Redis"
         logger.info(f"Optio initialized: db='{mongo_db.name}', prefix='{prefix}'{redis_info}")
-
-    def on_command(self, command_type: str, handler: Callable[..., Awaitable]) -> None:
-        """Register a custom command handler (must be called before run)."""
-        if self._consumer is None:
-            raise RuntimeError("Custom commands require Redis")
-        self._consumer.on(command_type, handler)
 
     @asynccontextmanager
     async def block_launches(
@@ -262,6 +257,16 @@ class Optio:
                     msg += f"; reason={entry.reason}"
                 raise LaunchBlocked(msg)
 
+    def _matches_block(self, metadata: ProcessMetadataFilter | None) -> bool:
+        """Return True if `metadata` matches any registered launch block.
+        Non-raising sibling of `_check_launch_blocks`. Delegates so that any
+        monkeypatching of `_check_launch_blocks` in tests is honored here too."""
+        try:
+            self._check_launch_blocks(metadata)
+        except LaunchBlocked:
+            return True
+        return False
+
     async def _load_persisted_blocks(self) -> None:
         """Load every record from `{prefix}_launch_blocks` into the in-memory
         `_launch_blocks` dict. Each record gets a fresh UUID token. Empty or
@@ -338,18 +343,27 @@ class Optio:
         await delete_process(self._config.mongo_db, self._config.prefix, process_id)
         self._executor._task_registry.pop(process_id, None)
 
-    async def launch(self, process_id: str, resume: bool = False) -> None:
-        """Fire-and-forget launch. Returns immediately, process runs in background.
+    async def launch(self, process_id: str, resume: bool = False) -> LaunchOutcome:
+        """Fire-and-forget launch. Returns LaunchOutcome with a typed reason on
+        precondition failure (not-found, not-launchable, no-resume-support,
+        launch-blocked); on success the executor task is scheduled in the
+        background and the outcome is ok=True."""
+        proc = await self._resolve(process_id)
+        if proc is None:
+            return LaunchOutcome(ok=False, reason="not-found")
+        if proc["status"]["state"] not in LAUNCHABLE_STATES:
+            return LaunchOutcome(ok=False, reason="not-launchable")
+        if resume and not proc.get("supportsResume", False):
+            return LaunchOutcome(ok=False, reason="no-resume-support")
 
-        If resume is True, the task is launched with ctx.resume=True so it can
-        restore previous state rather than start fresh.
+        task = self._executor._task_registry.get(proc["processId"])
+        if task is not None and self._matches_block(task.metadata):
+            return LaunchOutcome(ok=False, reason="launch-blocked")
 
-        Raises LaunchBlocked if a registered launch block matches the task's metadata.
-        """
-        task = self._executor._task_registry.get(process_id)
-        if task is not None:
-            self._check_launch_blocks(task.metadata)
-        asyncio.create_task(self._executor.launch_process(process_id, resume=resume))
+        asyncio.create_task(
+            self._executor.launch_process(proc["processId"], resume=resume),
+        )
+        return LaunchOutcome(ok=True)
 
     async def launch_and_wait(self, process_id: str, resume: bool = False) -> None:
         """Launch and wait for the process to complete. Full progress tracking.
@@ -364,9 +378,41 @@ class Optio:
             self._check_launch_blocks(task.metadata)
         await self._executor.launch_process(process_id, resume=resume)
 
-    async def cancel(self, process_id: str) -> None:
-        """Cancel a running or scheduled process."""
-        await self._handle_cancel({"processId": process_id})
+    async def cancel(self, process_id: str) -> CancelOutcome:
+        """Cancel a running or scheduled process. Returns a CancelOutcome
+        with ok=False/reason for unknown or non-cancellable inputs."""
+        proc = await self._resolve(process_id)
+        if proc is None:
+            return CancelOutcome(ok=False, reason="not-found")
+        if not proc.get("cancellable", True) or proc["status"]["state"] not in CANCELLABLE_STATES:
+            return CancelOutcome(ok=False, reason="not-cancellable")
+
+        current_state = proc["status"]["state"]
+        if current_state == "scheduled":
+            now = datetime.now(timezone.utc)
+            expire_at = compute_expire_at(proc.get("ttlSeconds"), now=now)
+            await update_status(
+                self._config.mongo_db, self._config.prefix, proc["_id"],
+                ProcessStatus(state="cancelled", stopped_at=now),
+                expire_at=expire_at,
+            )
+            return CancelOutcome(ok=True)
+
+        await update_status(
+            self._config.mongo_db, self._config.prefix, proc["_id"],
+            ProcessStatus(state="cancel_requested"),
+        )
+
+        found = self._executor.request_cancel_with_deadline(
+            proc["_id"],
+            deadline=time.monotonic() + self._config.cancel_grace_seconds,
+        )
+        if found:
+            await update_status(
+                self._config.mongo_db, self._config.prefix, proc["_id"],
+                ProcessStatus(state="cancelling"),
+            )
+        return CancelOutcome(ok=True)
 
     async def cancel_and_wait(self, process_id: str) -> str | None:
         """Cancel and wait until the process reaches a terminal state.
@@ -540,9 +586,22 @@ class Optio:
                 await asyncio.sleep(0.1)
             return len(pending)
 
-    async def dismiss(self, process_id: str) -> None:
-        """Dismiss a completed process (reset to idle)."""
-        await self._handle_dismiss({"processId": process_id})
+    async def dismiss(self, process_id: str) -> DismissOutcome:
+        """Dismiss a completed process (reset to idle). Returns DismissOutcome."""
+        proc = await self._resolve(process_id)
+        if proc is None:
+            return DismissOutcome(ok=False, reason="not-found")
+        if proc["status"]["state"] not in DISMISSABLE_STATES:
+            return DismissOutcome(ok=False, reason="not-dismissable")
+
+        await clear_result_fields(
+            self._config.mongo_db, self._config.prefix, proc["_id"],
+        )
+        await update_status(
+            self._config.mongo_db, self._config.prefix, proc["_id"],
+            ProcessStatus(state="idle"),
+        )
+        return DismissOutcome(ok=True)
 
     async def resync(
         self,
@@ -559,7 +618,28 @@ class Optio:
         `clean=True` deletes process records before re-importing. When combined
         with a filter, only in-scope records are deleted.
         """
-        await self._handle_resync({"clean": clean, "metadataFilter": metadata_filter})
+        if clean:
+            coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
+            if metadata_filter:
+                mongo_query: dict[str, Any] = {"parentId": None}
+                for k, v in metadata_filter.items():
+                    mongo_query[f"metadata.{k}"] = v
+                deleted = await coll.delete_many(mongo_query)
+            else:
+                deleted = await coll.delete_many({})
+            logger.info(f"Nuked {deleted.deleted_count} process records")
+
+        await self._sync_definitions(metadata_filter)
+
+    async def _resolve(self, id_str: str) -> dict | None:
+        """Accept an ObjectId hex string or a processId; return the matching
+        Mongo process doc, or None if neither lookup matches."""
+        coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
+        if _is_objectid(id_str):
+            doc = await coll.find_one({"_id": ObjectId(id_str)})
+            if doc:
+                return doc
+        return await coll.find_one({"processId": id_str})
 
     async def get_process(self, process_id: str) -> dict | None:
         """Get a process by its process_id string."""
@@ -613,10 +693,7 @@ class Optio:
         self._supervisor_task = asyncio.create_task(self._supervisor_loop())
 
         try:
-            if self._consumer:
-                await self._consumer.run()
-            else:
-                await self._shutdown_event.wait()
+            await self._shutdown_event.wait()
         finally:
             await self._scheduler.stop()
 
@@ -642,9 +719,7 @@ class Optio:
                 pass
             self._heartbeat_task = None
 
-        # 2. Consumer
-        if self._consumer:
-            self._consumer.stop()
+        # 2. Signal shutdown to the main run() loop
         if hasattr(self, '_shutdown_event'):
             self._shutdown_event.set()
 
@@ -854,102 +929,13 @@ class Optio:
         scope = "(all)" if not metadata_filter else f"(filter={metadata_filter})"
         logger.info(f"Synced {len(tasks)} task definitions {scope}")
 
-    async def _handle_launch(self, payload: dict) -> None:
-        process_id = payload.get("processId")
-        if not process_id:
-            return
-        task = self._executor._task_registry.get(process_id)
-        if task is not None:
-            try:
-                self._check_launch_blocks(task.metadata)
-            except LaunchBlocked as e:
-                logger.warning(
-                    f"Launch rejected for processId={process_id!r}: {e}"
-                )
-                return
-        resume = payload.get("resume", False)
-        await self._handle_launch_by_process_id(process_id, resume=resume)
-
-    async def _handle_launch_by_process_id(self, process_id: str, resume: bool = False) -> None:
-        # Run in a background task so the consumer can continue
-        asyncio.create_task(self._executor.launch_process(process_id, resume=resume))
-
-    async def _handle_cancel(self, payload: dict) -> None:
-        process_id = payload.get("processId")
-        if not process_id:
-            return
-
-        proc = await get_process_by_process_id(
-            self._config.mongo_db, self._config.prefix, process_id,
-        )
-        if proc is None:
-            return
-
-        current_state = proc["status"]["state"]
-        if current_state not in CANCELLABLE_STATES:
-            return
-
-        if current_state == "scheduled":
-            # Not yet running — go directly to cancelled.
-            now = datetime.now(timezone.utc)
-            expire_at = compute_expire_at(proc.get("ttlSeconds"), now=now)
-            await update_status(
-                self._config.mongo_db, self._config.prefix, proc["_id"],
-                ProcessStatus(state="cancelled", stopped_at=now),
-                expire_at=expire_at,
-            )
-            return
-
-        await update_status(
-            self._config.mongo_db, self._config.prefix, proc["_id"],
-            ProcessStatus(state="cancel_requested"),
-        )
-
-        found = self._executor.request_cancel_with_deadline(
-            proc["_id"],
-            deadline=time.monotonic() + self._config.cancel_grace_seconds,
-        )
-        if found:
-            await update_status(
-                self._config.mongo_db, self._config.prefix, proc["_id"],
-                ProcessStatus(state="cancelling"),
+    async def _scheduler_launch_adapter(self, process_id: str) -> None:
+        """Scheduler hook: funnel through Optio.launch, log on failure.
+        APScheduler discards the return value; the warning preserves visibility
+        of skipped scheduled fires (e.g. launch blocks active at fire time)."""
+        outcome = await self.launch(process_id)
+        if not outcome.ok:
+            logger.warning(
+                f"Scheduled launch of {process_id} skipped: {outcome.reason}"
             )
 
-    async def _handle_dismiss(self, payload: dict) -> None:
-        process_id = payload.get("processId")
-        if not process_id:
-            return
-
-        proc = await get_process_by_process_id(
-            self._config.mongo_db, self._config.prefix, process_id,
-        )
-        if proc is None:
-            return
-
-        if proc["status"]["state"] not in END_STATES:
-            return
-
-        await clear_result_fields(
-            self._config.mongo_db, self._config.prefix, proc["_id"],
-        )
-        await update_status(
-            self._config.mongo_db, self._config.prefix, proc["_id"],
-            ProcessStatus(state="idle"),
-        )
-
-    async def _handle_resync(self, payload: dict) -> None:
-        clean = payload.get("clean", False)
-        metadata_filter = payload.get("metadataFilter") or None  # treat {} as None
-
-        if clean:
-            coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
-            if metadata_filter:
-                mongo_query: dict[str, Any] = {"parentId": None}
-                for k, v in metadata_filter.items():
-                    mongo_query[f"metadata.{k}"] = v
-                deleted = await coll.delete_many(mongo_query)
-            else:
-                deleted = await coll.delete_many({})
-            logger.info(f"Nuked {deleted.deleted_count} process records")
-
-        await self._sync_definitions(metadata_filter)

@@ -17,7 +17,6 @@ async def test_init_without_redis(mongo_db):
     assert fw._config is not None
     assert fw._config.redis_url is None
     assert fw._redis is None
-    assert fw._consumer is None
     assert fw._executor is not None
     assert fw._scheduler is not None
 
@@ -146,16 +145,6 @@ async def test_resync(mongo_db):
     # Still exists after resync
     proc = await get_process_by_process_id(mongo_db, "test_resync_direct", "test_task")
     assert proc is not None
-
-
-@pytest.mark.asyncio
-async def test_on_command_raises_without_redis(mongo_db):
-    """on_command() raises when Redis is not configured."""
-    fw = Optio()
-    await fw.init(mongo_db=mongo_db, prefix="test_no_cmd")
-
-    with pytest.raises(RuntimeError, match="Custom commands require Redis"):
-        fw.on_command("test", lambda p: None)
 
 
 @pytest.mark.asyncio

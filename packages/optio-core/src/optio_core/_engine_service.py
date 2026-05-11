@@ -1,9 +1,4 @@
-"""OptioEngineService — clamator RPC implementation for the optio engine.
-
-Phase 2 of the engine-RPC migration. Co-exists with the legacy
-${prefix}:commands stream consumer; HTTP handlers still route through
-the legacy stream until phase 3.
-"""
+"""Clamator RPC implementation for the optio-engine contract."""
 
 from __future__ import annotations
 
@@ -24,17 +19,9 @@ from optio_core._generated.optio_engine import (
     UnblockLaunchesParams, UnblockLaunchesResult,
     ResyncParams,
 )
-from optio_core.models import LaunchBlocked
-from optio_core.state_machine import LAUNCHABLE_STATES, CANCELLABLE_STATES, DISMISSABLE_STATES
 
 if TYPE_CHECKING:
     from optio_core.lifecycle import Optio
-
-_OBJECTID_RE = __import__("re").compile(r"^[a-fA-F0-9]{24}$")
-
-
-def _is_objectid(s: str) -> bool:
-    return bool(_OBJECTID_RE.match(s))
 
 
 _UTC = datetime.timezone.utc
@@ -88,62 +75,44 @@ class OptioEngineService(OptioEngineServiceBase):
 
     # --------------------------------------------------------------- launch
     async def launch(self, params: LaunchParams) -> LaunchResult:
-        proc = await self._resolve(params.process_id)
-        if proc is None:
-            return LaunchResult.model_validate({"ok": False, "reason": "not-found"})
-        if proc["status"]["state"] not in LAUNCHABLE_STATES:
-            return LaunchResult.model_validate({"ok": False, "reason": "not-launchable"})
-        if params.resume and not proc.get("supportsResume", False):
-            return LaunchResult.model_validate({"ok": False, "reason": "no-resume-support"})
-
-        try:
-            await self._optio.launch(proc["processId"], resume=bool(params.resume))
-        except LaunchBlocked:
-            return LaunchResult.model_validate({"ok": False, "reason": "launch-blocked"})
-
+        outcome = await self._optio.launch(
+            params.process_id, resume=bool(params.resume),
+        )
+        if not outcome.ok:
+            return LaunchResult.model_validate(
+                {"ok": False, "reason": outcome.reason}
+            )
         # The executor runs asynchronously; yield once so the state transition
         # (idle → scheduled) can be written before we read it back.
         await asyncio.sleep(0)
-        updated = await self._resolve(proc["processId"])
-        return LaunchResult.model_validate({"ok": True, "process": _to_process_dict(updated)})
-
-    # ------------------------------------------------------------- internals
-    async def _resolve(self, id_str: str) -> dict | None:
-        """Accept ObjectId hex or processId string; return the doc or None."""
-        coll = self._optio._config.mongo_db[
-            f"{self._optio._config.prefix}_processes"
-        ]
-        if _is_objectid(id_str):
-            doc = await coll.find_one({"_id": ObjectId(id_str)})
-            if doc:
-                return doc
-        return await coll.find_one({"processId": id_str})
+        proc = await self._optio._resolve(params.process_id)
+        return LaunchResult.model_validate(
+            {"ok": True, "process": _to_process_dict(proc)}
+        )
 
     # --------------------------------------------------------------- cancel
     async def cancel(self, params: CancelParams) -> CancelResult:
-        proc = await self._resolve(params.process_id)
-        if proc is None:
-            return CancelResult.model_validate({"ok": False, "reason": "not-found"})
-        if not proc.get("cancellable", True) or proc["status"]["state"] not in CANCELLABLE_STATES:
-            return CancelResult.model_validate({"ok": False, "reason": "not-cancellable"})
-
-        await self._optio.cancel(proc["processId"])
-
-        updated = await self._resolve(proc["processId"])
-        return CancelResult.model_validate({"ok": True, "process": _to_process_dict(updated)})
+        outcome = await self._optio.cancel(params.process_id)
+        if not outcome.ok:
+            return CancelResult.model_validate(
+                {"ok": False, "reason": outcome.reason}
+            )
+        proc = await self._optio._resolve(params.process_id)
+        return CancelResult.model_validate(
+            {"ok": True, "process": _to_process_dict(proc)}
+        )
 
     # --------------------------------------------------------------- dismiss
     async def dismiss(self, params: DismissParams) -> DismissResult:
-        proc = await self._resolve(params.process_id)
-        if proc is None:
-            return DismissResult.model_validate({"ok": False, "reason": "not-found"})
-        if proc["status"]["state"] not in DISMISSABLE_STATES:
-            return DismissResult.model_validate({"ok": False, "reason": "not-dismissable"})
-
-        await self._optio.dismiss(proc["processId"])
-
-        updated = await self._resolve(proc["processId"])
-        return DismissResult.model_validate({"ok": True, "process": _to_process_dict(updated)})
+        outcome = await self._optio.dismiss(params.process_id)
+        if not outcome.ok:
+            return DismissResult.model_validate(
+                {"ok": False, "reason": outcome.reason}
+            )
+        proc = await self._optio._resolve(params.process_id)
+        return DismissResult.model_validate(
+            {"ok": True, "process": _to_process_dict(proc)}
+        )
 
     # --------------------------------------------------------------- resync
     async def resync(self, params: ResyncParams) -> None:
