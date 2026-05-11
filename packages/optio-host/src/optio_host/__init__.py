@@ -11,6 +11,7 @@ from optio_host.context import (
     HostCommandError,
     RunResult,
 )
+from optio_host.download import DownloadFailed, create_download_task
 from optio_host.host import (
     Host,
     LocalHost,
@@ -31,4 +32,6 @@ __all__ = [
     "HostCommandError",
     "RunResult",
     "SSHConfig",
+    "DownloadFailed",
+    "create_download_task",
 ]

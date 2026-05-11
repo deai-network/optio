@@ -167,3 +167,9 @@ def test_download_file_appears_on_hook_context_protocol():
     from optio_host.context import HookContextProtocol
     methods = {m for m in dir(HookContextProtocol) if not m.startswith("_")}
     assert "download_file" in methods
+
+
+def test_create_download_task_and_downloadfailed_exported_from_optio_host():
+    import optio_host
+    assert hasattr(optio_host, "create_download_task")
+    assert hasattr(optio_host, "DownloadFailed")
