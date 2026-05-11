@@ -11,7 +11,7 @@ import * as handlers from '../handlers.js';
 import { findProcessByEitherId } from '../process-id-resolver.js';
 import { createListPoller, createTreePoller } from '../stream-poller.js';
 import { discoverInstances } from '../discovery.js';
-import { resolveDb, type DbOptions } from '../resolve-db.js';
+import { resolveDb, type DbOptions } from '../resolve.js';
 import httpProxy from '@fastify/http-proxy';
 import { createHash } from 'node:crypto';
 import type { AuthCallback } from '../auth.js';
@@ -32,12 +32,7 @@ import {
   checkLegacyMetadataParams,
   LegacyMetadataParamError,
 } from '../sse-options.js';
-import type { OptioEngineClient } from '../_generated/optio-engine.js';
-import { createOptioContext } from '../context.js';
-
-export type OptioApiHandle =
-  | { engine: OptioEngineClient; closeAll: () => Promise<void>; getEngine?: never }
-  | { getEngine: (database: string, prefix: string) => OptioEngineClient; closeAll: () => Promise<void>; engine?: never };
+import { createOptioContext, type OptioContext } from '../context.js';
 
 const WIDGET_CACHE_TTL_MS = 5000;
 
@@ -338,29 +333,50 @@ function registerWidgetProxy(app: FastifyInstance, opts: WidgetProxyInternalOpti
   });
 }
 
-export type OptioApiOptions = {
-  redis: Redis;
+/**
+ * `verbose`: when true, the widget reverse-proxy's per-request upstream-call
+ * logs (`fetching from remote server`, `response received` at INFO) are
+ * emitted. Defaults to false (quiet). Errors are logged regardless.
+ *
+ * Two-form options:
+ *  - Sugar form (typical hosts): supply `{ db | mongoClient, redis, ... }`.
+ *    registerOptioApi constructs an `OptioContext` internally, returns it,
+ *    and wires fastify's onClose hook to `ctx.closeAll()`.
+ *  - Explicit form (power users / shared-ctx hosts): supply `{ ctx, ... }`.
+ *    Caller owns ctx lifecycle; the adapter does NOT call closeAll on it.
+ *    registerOptioApi returns void in this form.
+ */
+export type OptioApiOptions =
+  | (BaseOptioApiOptions & { ctx: OptioContext })
+  | (BaseOptioApiOptions & { redis: Redis } & (
+      | { db: Db; mongoClient?: never }
+      | { mongoClient: MongoClient; db?: never }
+    ));
+
+interface BaseOptioApiOptions {
   prefix?: string;
   authenticate: AuthCallback<import('fastify').FastifyRequest>;
-  /**
-   * When true, the widget reverse-proxy's per-request upstream-call logs
-   * (`fetching from remote server`, `response received` at INFO) are emitted.
-   * Defaults to false (quiet). Errors are logged regardless.
-   */
   verbose?: boolean;
-} & (
-  | { db: Db; mongoClient?: never }
-  | { mongoClient: MongoClient; db?: never }
-);
+}
 
 const c = initContract();
 const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/api' });
 
-export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): OptioApiHandle {
-  const { redis } = opts;
-  const dbOpts: DbOptions = 'mongoClient' in opts && opts.mongoClient ? { mongoClient: opts.mongoClient } : { db: opts.db! };
-  const ctx = createOptioContext({ dbOpts, redis });
-  app.addHook('onClose', () => ctx.engineCache.closeAll());
+export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): OptioContext | void {
+  const explicit = 'ctx' in opts;
+  let ctx: OptioContext;
+  let redis: Redis;
+  let dbOpts: DbOptions;
+  if (explicit) {
+    ctx = opts.ctx;
+    dbOpts = ctx.dbOpts;
+    redis = ctx.redis;
+  } else {
+    redis = opts.redis;
+    dbOpts = 'mongoClient' in opts && opts.mongoClient ? { mongoClient: opts.mongoClient } : { db: opts.db! };
+    ctx = createOptioContext({ dbOpts, redis });
+    app.addHook('onClose', () => ctx.closeAll());
+  }
 
   // Global auth enforcement. Runs before route handlers (and before the
   // widget-proxy plugin's preHandler), so REST, SSE, discovery, and widget
@@ -530,15 +546,5 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
     request.raw.on('close', () => poller.stop());
   });
 
-  if ('db' in opts && opts.db) {
-    const prefix = opts.prefix ?? 'optio';
-    return {
-      engine: ctx.engineCache.get(opts.db.databaseName, prefix) as OptioEngineClient,
-      closeAll: () => ctx.engineCache.closeAll(),
-    };
-  }
-  return {
-    getEngine: (database: string, prefix: string) => ctx.engineCache.get(database, prefix) as OptioEngineClient,
-    closeAll: () => ctx.engineCache.closeAll(),
-  };
+  return explicit ? undefined : ctx;
 }

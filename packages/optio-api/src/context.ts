@@ -1,17 +1,22 @@
 import type { Redis } from 'ioredis';
-import { createEngineCache, type EngineCache } from './engine-cache.js';
-import type { DbOptions } from './resolve-db.js';
+import { createOptioTransports, type OptioTransports } from './optio-transports.js';
+import type { DbOptions } from './resolve.js';
 
 export interface OptioContext {
   dbOpts: DbOptions;
-  engineCache: EngineCache;
+  transports: OptioTransports;
   redis: Redis;
+  closeAll(): Promise<void>;
 }
 
 export function createOptioContext(opts: { dbOpts: DbOptions; redis: Redis }): OptioContext {
+  const transports = createOptioTransports(opts.redis);
   return {
     dbOpts: opts.dbOpts,
-    engineCache: createEngineCache(opts.redis),
+    transports,
     redis: opts.redis,
+    closeAll() {
+      return transports.closeAll();
+    },
   };
 }

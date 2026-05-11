@@ -10,7 +10,7 @@ import { ObjectId } from 'mongodb';
 import * as handlers from '../handlers.js';
 import { createListPoller, createTreePoller } from '../stream-poller.js';
 import { discoverInstances } from '../discovery.js';
-import { resolveDb, type DbOptions } from '../resolve-db.js';
+import { resolveDb, type DbOptions } from '../resolve.js';
 import type { AuthCallback } from '../auth.js';
 import { checkAuth } from '../auth.js';
 import { isWriteMethod } from '../widget-proxy-core.js';
@@ -23,29 +23,44 @@ import {
   checkLegacyMetadataParams,
   LegacyMetadataParamError,
 } from '../sse-options.js';
-import type { OptioEngineClient } from '../_generated/optio-engine.js';
-import { createOptioContext } from '../context.js';
+import { createOptioContext, type OptioContext } from '../context.js';
 
-export type OptioApiHandle =
-  | { GET: (request: Request) => Promise<Response>; POST: (request: Request) => Promise<Response>; engine: OptioEngineClient; closeAll: () => Promise<void>; getEngine?: never }
-  | { GET: (request: Request) => Promise<Response>; POST: (request: Request) => Promise<Response>; getEngine: (database: string, prefix: string) => OptioEngineClient; closeAll: () => Promise<void>; engine?: never };
+export interface OptioRouteHandlers {
+  GET: (request: Request) => Promise<Response>;
+  POST: (request: Request) => Promise<Response>;
+  /** Present only when called with sugar-form options (caller did not supply ctx). */
+  ctx?: OptioContext;
+}
 
-export type OptioApiOptions = {
-  redis: Redis;
+export type OptioApiOptions =
+  | (BaseOptioApiOptions & { ctx: OptioContext })
+  | (BaseOptioApiOptions & { redis: Redis } & (
+      | { db: Db; mongoClient?: never }
+      | { mongoClient: MongoClient; db?: never }
+    ));
+
+interface BaseOptioApiOptions {
   prefix?: string;
   authenticate: AuthCallback<Request>;
-} & (
-  | { db: Db; mongoClient?: never }
-  | { mongoClient: MongoClient; db?: never }
-);
+}
 
 const c = initContract();
 const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/api' });
 
-export function createOptioRouteHandlers(opts: OptioApiOptions): OptioApiHandle {
-  const { redis } = opts;
-  const dbOpts: DbOptions = 'mongoClient' in opts && opts.mongoClient ? { mongoClient: opts.mongoClient } : { db: opts.db! };
-  const ctx = createOptioContext({ dbOpts, redis });
+export function createOptioRouteHandlers(opts: OptioApiOptions): OptioRouteHandlers {
+  const explicit = 'ctx' in opts;
+  let ctx: OptioContext;
+  let redis: Redis;
+  let dbOpts: DbOptions;
+  if (explicit) {
+    ctx = opts.ctx;
+    dbOpts = ctx.dbOpts;
+    redis = ctx.redis;
+  } else {
+    redis = opts.redis;
+    dbOpts = 'mongoClient' in opts && opts.mongoClient ? { mongoClient: opts.mongoClient } : { db: opts.db! };
+    ctx = createOptioContext({ dbOpts, redis });
+  }
 
   async function authGate(request: Request): Promise<Response | null> {
     const authResult = await checkAuth(request, opts.authenticate, isWriteMethod(request.method));
@@ -255,19 +270,5 @@ export function createOptioRouteHandlers(opts: OptioApiOptions): OptioApiHandle 
     return tsRestHandlers(request);
   }
 
-  if ('db' in opts && opts.db) {
-    const prefix = opts.prefix ?? 'optio';
-    return {
-      GET,
-      POST,
-      engine: ctx.engineCache.get(opts.db.databaseName, prefix) as OptioEngineClient,
-      closeAll: () => ctx.engineCache.closeAll(),
-    };
-  }
-  return {
-    GET,
-    POST,
-    getEngine: (database: string, prefix: string) => ctx.engineCache.get(database, prefix) as OptioEngineClient,
-    closeAll: () => ctx.engineCache.closeAll(),
-  };
+  return explicit ? { GET, POST } : { GET, POST, ctx };
 }

@@ -1,4 +1,6 @@
 import type { Db, MongoClient } from 'mongodb';
+import { OptioEngineClient } from './_generated/optio-engine.js';
+import type { OptioContext } from './context.js';
 
 export interface SingleDbOptions {
   db: Db;
@@ -27,4 +29,12 @@ export function resolveDb(
   }
 
   return { db: opts.mongoClient!.db(query.database), database: query.database, prefix };
+}
+
+export function resolveOptioEngine(
+  ctx: OptioContext,
+  query: { database?: string; prefix?: string },
+): OptioEngineClient {
+  const { database, prefix } = resolveDb(ctx.dbOpts, query);
+  return new OptioEngineClient(ctx.transports.get(database, prefix));
 }

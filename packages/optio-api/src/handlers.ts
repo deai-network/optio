@@ -3,7 +3,7 @@ import type { ProcessMetadataFilter } from './types.js';
 import { metadataFilterToMongo } from './metadata-filter-query.js';
 import { findProcessByEitherId } from './process-id-resolver.js';
 import type { OptioContext } from './context.js';
-import { resolveDb } from './resolve-db.js';
+import { resolveDb, resolveOptioEngine } from './resolve.js';
 import type {
   LaunchFailureReason as LaunchFailureReasonType,
   CancelFailureReason as CancelFailureReasonType,
@@ -259,9 +259,7 @@ export async function launchProcess(
   id: string,
   resume: boolean = false,
 ): Promise<LaunchCommandResult> {
-  const { database, prefix } = resolveDb(ctx.dbOpts, query);
-  const engine = ctx.engineCache.get(database, prefix);
-
+  const engine = resolveOptioEngine(ctx, query);
   const result = await engine.launch({ processId: id, resume });
   if (result.ok) return { status: 200, body: toResponse(result.process) };
   return launchFail(result.reason);
@@ -272,9 +270,7 @@ export async function cancelProcess(
   query: { database?: string; prefix?: string },
   id: string,
 ): Promise<CancelCommandResult> {
-  const { database, prefix } = resolveDb(ctx.dbOpts, query);
-  const engine = ctx.engineCache.get(database, prefix);
-
+  const engine = resolveOptioEngine(ctx, query);
   const result = await engine.cancel({ processId: id });
   if (result.ok) return { status: 200, body: toResponse(result.process) };
   return cancelFail(result.reason);
@@ -285,9 +281,7 @@ export async function dismissProcess(
   query: { database?: string; prefix?: string },
   id: string,
 ): Promise<DismissCommandResult> {
-  const { database, prefix } = resolveDb(ctx.dbOpts, query);
-  const engine = ctx.engineCache.get(database, prefix);
-
+  const engine = resolveOptioEngine(ctx, query);
   const result = await engine.dismiss({ processId: id });
   if (result.ok) return { status: 200, body: toResponse(result.process) };
   return dismissFail(result.reason);
@@ -299,8 +293,7 @@ export async function resyncProcesses(
   clean: boolean = false,
   metadataFilter?: ProcessMetadataFilter,
 ): Promise<{ message: string }> {
-  const { database, prefix } = resolveDb(ctx.dbOpts, query);
-  const engine = ctx.engineCache.get(database, prefix);
+  const engine = resolveOptioEngine(ctx, query);
   await engine.resync({ clean, metadataFilter });
   return { message: clean ? 'Nuke and resync requested' : 'Resync requested' };
 }

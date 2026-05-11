@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import { MongoClient, ObjectId, type Db } from 'mongodb';
 import Redis from 'ioredis-mock';
 import { createOptioRouteHandlers } from '../nextjs-app.js';
+import { createOptioContext } from '../../context.js';
 import { OptioEngineClient } from '../../_generated/optio-engine.js';
 
 // Stub the engine RPC at the prototype level so handlers that now call
@@ -397,31 +398,37 @@ describe('list metadataFilter (nextjs-app)', () => {
 });
 
 describe('createOptioRouteHandlers return shape', () => {
-  it('single-db mode returns { engine, closeAll }', async () => {
+  it('sugar form (db) returns { GET, POST, ctx }', async () => {
     const result = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
-    expect(result).toBeDefined();
-    expect(result.engine).toBeInstanceOf(OptioEngineClient);
-    expect(typeof result.closeAll).toBe('function');
-    expect((result as any).getEngine).toBeUndefined();
-    await result.closeAll();
+    expect(typeof result.GET).toBe('function');
+    expect(typeof result.POST).toBe('function');
+    expect(result.ctx).toBeDefined();
+    const engine = new OptioEngineClient(result.ctx!.transports.get(db.databaseName, 'optio'));
+    expect(engine).toBeInstanceOf(OptioEngineClient);
+    await result.ctx!.closeAll();
   });
 
-  it('multi-db mode returns { getEngine, closeAll }', async () => {
+  it('sugar form (mongoClient) returns reusable transports on ctx', async () => {
     const result = createOptioRouteHandlers({ mongoClient, redis, authenticate: () => 'operator' });
-    expect(result).toBeDefined();
-    expect(typeof result.getEngine).toBe('function');
-    expect(typeof result.closeAll).toBe('function');
-    expect((result as any).engine).toBeUndefined();
-    // Cache reuse:
-    const a = result.getEngine!('db1', 'optio');
-    const b = result.getEngine!('db1', 'optio');
+    expect(result.ctx).toBeDefined();
+    const a = result.ctx!.transports.get('db1', 'optio');
+    const b = result.ctx!.transports.get('db1', 'optio');
     expect(a).toBe(b);
-    await result.closeAll();
+    await result.ctx!.closeAll();
   });
 
-  it('closeAll called twice succeeds', async () => {
+  it('ctx.closeAll called twice succeeds', async () => {
     const result = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
-    await result.closeAll!();
-    await expect(result.closeAll!()).resolves.toBeUndefined();
+    await result.ctx!.closeAll();
+    await expect(result.ctx!.closeAll()).resolves.toBeUndefined();
+  });
+
+  it('explicit form (ctx) omits ctx from the returned handlers', async () => {
+    const ownCtx = createOptioContext({ dbOpts: { db }, redis });
+    const result = createOptioRouteHandlers({ ctx: ownCtx, authenticate: () => 'operator' });
+    expect(typeof result.GET).toBe('function');
+    expect(typeof result.POST).toBe('function');
+    expect(result.ctx).toBeUndefined();
+    await ownCtx.closeAll();
   });
 });

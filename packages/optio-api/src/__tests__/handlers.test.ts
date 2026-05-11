@@ -17,17 +17,27 @@ function makeCtx(database: Db, redis: any = fakeRedis): OptioContext {
   return createOptioContext({ dbOpts: { db: database }, redis });
 }
 
-// ctx with a stubbed engine cache, for command-handler tests that
-// exercise the engine.launch RPC path. The cache returns the same
-// stub for every (database, prefix) pair.
+// ctx whose transport cache returns a fake RpcClient that routes
+// `.call('optio-engine', <method>, params)` to the mock engine's matching
+// method. This lets `resolveOptioEngine(ctx, query)` produce a real
+// OptioEngineClient whose RPC methods invoke the test mock.
 function makeCtxWithMockEngine(database: Db, mockEngine: any): OptioContext {
+  const fakeRpc: any = {
+    async call(_service: string, method: string, params: any) {
+      return mockEngine[method](params);
+    },
+    async notify(_service: string, method: string, params: any) {
+      return mockEngine[method](params);
+    },
+  };
   return {
     dbOpts: { db: database },
     redis: fakeRedis,
-    engineCache: {
-      get: () => mockEngine,
+    transports: {
+      get: () => fakeRpc,
       closeAll: async () => {},
     },
+    closeAll: async () => {},
   } as any;
 }
 
@@ -390,15 +400,7 @@ describe('dual-form id resolution (ObjectId hex OR processId string)', () => {
         },
       })),
     };
-    const ctx: OptioContext = {
-      dbOpts: { db },
-      redis: fakeRedis,
-      engineCache: {
-        get: () => engine,
-        closeAll: async () => {},
-      },
-    } as any;
-    const result = await launchProcess(ctx, { prefix: PREFIX }, processIdString);
+    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, processIdString);
     expect(result.status).toBe(200);
     expect(engine.launch).toHaveBeenCalledWith({ processId: processIdString, resume: false });
   });
@@ -423,15 +425,7 @@ describe('dual-form id resolution (ObjectId hex OR processId string)', () => {
         },
       })),
     };
-    const ctx: OptioContext = {
-      dbOpts: { db },
-      redis: fakeRedis,
-      engineCache: {
-        get: () => engine,
-        closeAll: async () => {},
-      },
-    } as any;
-    const result = await cancelProcess(ctx, { prefix: PREFIX }, processIdString);
+    const result = await cancelProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, processIdString);
     expect(result.status).toBe(200);
     expect(engine.cancel).toHaveBeenCalledWith({ processId: processIdString });
   });
@@ -456,15 +450,7 @@ describe('dual-form id resolution (ObjectId hex OR processId string)', () => {
         },
       })),
     };
-    const ctx: OptioContext = {
-      dbOpts: { db },
-      redis: fakeRedis,
-      engineCache: {
-        get: () => engine,
-        closeAll: async () => {},
-      },
-    } as any;
-    const result = await dismissProcess(ctx, { prefix: PREFIX }, processIdString);
+    const result = await dismissProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, processIdString);
     expect(result.status).toBe(200);
     expect(engine.dismiss).toHaveBeenCalledWith({ processId: processIdString });
   });

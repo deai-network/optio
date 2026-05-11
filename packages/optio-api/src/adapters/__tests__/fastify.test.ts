@@ -3,6 +3,7 @@ import Fastify from 'fastify';
 import { MongoClient, ObjectId, type Db } from 'mongodb';
 import Redis from 'ioredis-mock';
 import { registerOptioApi } from '../fastify.js';
+import { createOptioContext } from '../../context.js';
 import { OptioEngineClient } from '../../_generated/optio-engine.js';
 
 // Stub the engine RPC at the prototype level so handlers that now call
@@ -428,35 +429,42 @@ describe('list metadataFilter (fastify)', () => {
 });
 
 describe('registerOptioApi return shape', () => {
-  it('single-db mode returns { engine, closeAll }', async () => {
+  it('sugar form (db) returns an OptioContext', async () => {
     const app = Fastify();
-    const result = registerOptioApi(app, { db, redis, authenticate: () => 'operator' });
-    expect(result).toBeDefined();
-    expect(result.engine).toBeInstanceOf(OptioEngineClient);
-    expect(typeof result.closeAll).toBe('function');
-    expect((result as any).getEngine).toBeUndefined();
+    const ctx = registerOptioApi(app, { db, redis, authenticate: () => 'operator' });
+    expect(ctx).toBeDefined();
+    expect(ctx!.transports).toBeDefined();
+    expect(typeof ctx!.closeAll).toBe('function');
+    // Construct an OptioEngineClient on the cached transport.
+    const engine = new OptioEngineClient(ctx!.transports.get(db.databaseName, 'optio'));
+    expect(engine).toBeInstanceOf(OptioEngineClient);
     await app.close();
   });
 
-  it('multi-db mode returns { getEngine, closeAll }', async () => {
+  it('sugar form (mongoClient) returns an OptioContext with reusable transports', async () => {
     const app = Fastify();
-    const result = registerOptioApi(app, { mongoClient, redis, authenticate: () => 'operator' });
-    expect(result).toBeDefined();
-    expect(typeof result.getEngine).toBe('function');
-    expect(typeof result.closeAll).toBe('function');
-    expect((result as any).engine).toBeUndefined();
-    // Cache reuse:
-    const a = result.getEngine!('db1', 'optio');
-    const b = result.getEngine!('db1', 'optio');
+    const ctx = registerOptioApi(app, { mongoClient, redis, authenticate: () => 'operator' });
+    expect(ctx).toBeDefined();
+    const a = ctx!.transports.get('db1', 'optio');
+    const b = ctx!.transports.get('db1', 'optio');
     expect(a).toBe(b);
     await app.close();
   });
 
-  it('closeAll called twice succeeds', async () => {
+  it('ctx.closeAll called twice succeeds', async () => {
     const app = Fastify();
-    const result = registerOptioApi(app, { db, redis, authenticate: () => 'operator' });
-    await result.closeAll!();
-    await expect(result.closeAll!()).resolves.toBeUndefined();
+    const ctx = registerOptioApi(app, { db, redis, authenticate: () => 'operator' })!;
+    await ctx.closeAll();
+    await expect(ctx.closeAll()).resolves.toBeUndefined();
     await app.close();
+  });
+
+  it('explicit form (ctx) returns void and does not re-create transports', async () => {
+    const ownCtx = createOptioContext({ dbOpts: { db }, redis });
+    const app = Fastify();
+    const result = registerOptioApi(app, { ctx: ownCtx, authenticate: () => 'operator' });
+    expect(result).toBeUndefined();
+    await app.close();
+    await ownCtx.closeAll();
   });
 });

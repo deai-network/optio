@@ -13,33 +13,41 @@ import { createListPoller, createTreePoller } from '../stream-poller.js';
 import { detectLegacyMetadataParams, formatLegacyMetadataMessage } from '../metadata-filter-query.js';
 import { parseSseOptions, checkLegacyMetadataParams, LegacyMetadataParamError } from '../sse-options.js';
 import { discoverInstances } from '../discovery.js';
-import { resolveDb, type DbOptions } from '../resolve-db.js';
+import { resolveDb, type DbOptions } from '../resolve.js';
 import type { AuthCallback } from '../auth.js';
 import { checkAuth } from '../auth.js';
 import { isWriteMethod } from '../widget-proxy-core.js';
-import type { OptioEngineClient } from '../_generated/optio-engine.js';
-import { createOptioContext } from '../context.js';
+import { createOptioContext, type OptioContext } from '../context.js';
 
-export type OptioApiHandle =
-  | { engine: OptioEngineClient; closeAll: () => Promise<void>; getEngine?: never }
-  | { getEngine: (database: string, prefix: string) => OptioEngineClient; closeAll: () => Promise<void>; engine?: never };
+export type OptioApiOptions =
+  | (BaseOptioApiOptions & { ctx: OptioContext })
+  | (BaseOptioApiOptions & { redis: Redis } & (
+      | { db: Db; mongoClient?: never }
+      | { mongoClient: MongoClient; db?: never }
+    ));
 
-export type OptioApiOptions = {
-  redis: Redis;
+interface BaseOptioApiOptions {
   prefix?: string;
   authenticate: AuthCallback<import('express').Request>;
-} & (
-  | { db: Db; mongoClient?: never }
-  | { mongoClient: MongoClient; db?: never }
-);
+}
 
 const c = initContract();
 const apiContract = c.router({ processes: processesContract }, { pathPrefix: '/api' });
 
-export function registerOptioApi(app: Express, opts: OptioApiOptions): OptioApiHandle {
-  const { redis } = opts;
-  const dbOpts: DbOptions = 'mongoClient' in opts && opts.mongoClient ? { mongoClient: opts.mongoClient } : { db: opts.db! };
-  const ctx = createOptioContext({ dbOpts, redis });
+export function registerOptioApi(app: Express, opts: OptioApiOptions): OptioContext | void {
+  const explicit = 'ctx' in opts;
+  let ctx: OptioContext;
+  let redis: Redis;
+  let dbOpts: DbOptions;
+  if (explicit) {
+    ctx = opts.ctx;
+    dbOpts = ctx.dbOpts;
+    redis = ctx.redis;
+  } else {
+    redis = opts.redis;
+    dbOpts = 'mongoClient' in opts && opts.mongoClient ? { mongoClient: opts.mongoClient } : { db: opts.db! };
+    ctx = createOptioContext({ dbOpts, redis });
+  }
 
   // Global auth enforcement. Runs on every /api/* request before any
   // ts-rest, SSE, or discovery handler.
@@ -198,15 +206,5 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions): OptioApiH
     req.on('close', () => poller.stop());
   });
 
-  if ('db' in opts && opts.db) {
-    const prefix = opts.prefix ?? 'optio';
-    return {
-      engine: ctx.engineCache.get(opts.db.databaseName, prefix) as OptioEngineClient,
-      closeAll: () => ctx.engineCache.closeAll(),
-    };
-  }
-  return {
-    getEngine: (database: string, prefix: string) => ctx.engineCache.get(database, prefix) as OptioEngineClient,
-    closeAll: () => ctx.engineCache.closeAll(),
-  };
+  return explicit ? undefined : ctx;
 }

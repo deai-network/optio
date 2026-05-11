@@ -2,38 +2,35 @@ import { describe, it, expect, vi } from 'vitest';
 import { createOptioContext } from '../context.js';
 import type { Db } from 'mongodb';
 
-// Minimal Redis stub — engine-cache passes it to RedisRpcClient via
-// `.duplicate()`. Match the convention used by engine-cache.test.ts so
-// RedisRpcClient.start() doesn't throw and pollute stderr.
+// Minimal Redis stub — optio-transports passes it to RedisRpcClient via
+// `.duplicate()` and start()/stop() on the resulting RpcClient.
 const fakeRedis: any = { duplicate: () => fakeRedis };
 
 describe('createOptioContext', () => {
-  it('returns a context with the supplied dbOpts and redis', () => {
+  it('returns a context with the supplied dbOpts and redis plus a transport cache', () => {
     const fakeDb = { databaseName: 'testdb' } as unknown as Db;
     const ctx = createOptioContext({ dbOpts: { db: fakeDb }, redis: fakeRedis });
     expect(ctx.dbOpts).toEqual({ db: fakeDb });
     expect(ctx.redis).toBe(fakeRedis);
-    expect(ctx.engineCache).toBeDefined();
-    expect(typeof ctx.engineCache.get).toBe('function');
-    expect(typeof ctx.engineCache.closeAll).toBe('function');
+    expect(ctx.transports).toBeDefined();
+    expect(typeof ctx.transports.get).toBe('function');
+    expect(typeof ctx.transports.closeAll).toBe('function');
+    expect(typeof ctx.closeAll).toBe('function');
   });
 
-  it('engineCache.get returns the same instance for the same key', () => {
+  it('transports.get returns the same instance for the same key', () => {
     const fakeDb = { databaseName: 'd' } as unknown as Db;
     const ctx = createOptioContext({ dbOpts: { db: fakeDb }, redis: fakeRedis });
-    const a = ctx.engineCache.get('d', 'optio');
-    const b = ctx.engineCache.get('d', 'optio');
+    const a = ctx.transports.get('d', 'optio');
+    const b = ctx.transports.get('d', 'optio');
     expect(a).toBe(b);
   });
 
-  it('closeAll is idempotent', async () => {
+  it('ctx.closeAll delegates to transports.closeAll', async () => {
     const fakeDb = { databaseName: 'd' } as unknown as Db;
     const ctx = createOptioContext({ dbOpts: { db: fakeDb }, redis: fakeRedis });
-    const stopSpy = vi.fn().mockResolvedValue(undefined);
-    const e = ctx.engineCache.get('d', 'optio');
-    (e as any).stop = stopSpy;
-    await ctx.engineCache.closeAll();
-    await ctx.engineCache.closeAll();   // second call is a no-op
-    expect(stopSpy).toHaveBeenCalledTimes(1);
+    const spy = vi.spyOn(ctx.transports, 'closeAll').mockResolvedValue(undefined);
+    await ctx.closeAll();
+    expect(spy).toHaveBeenCalledTimes(1);
   });
 });

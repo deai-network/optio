@@ -1,6 +1,6 @@
 import type { Db, MongoClient } from 'mongodb';
 import type { Redis } from 'ioredis';
-import type { DbOptions } from './resolve-db.js';
+import type { DbOptions } from './resolve.js';
 
 const REQUIRED_FIELDS = ['processId', 'rootId', 'depth'];
 
