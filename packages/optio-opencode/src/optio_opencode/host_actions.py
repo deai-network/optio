@@ -35,6 +35,44 @@ if TYPE_CHECKING:
 
 _READY_RE = re.compile(r"(http://[^\s]+)")
 
+_SMART_INSTALL_URL = (
+    "https://raw.githubusercontent.com/csillag/opencode/main/smart-install.sh"
+)
+_SMART_INSTALL_CHECK_CMD = (
+    f"curl -fsSL {_SMART_INSTALL_URL} | bash -s -- --check"
+)
+
+
+async def _smart_install_check(host: "Host") -> tuple[str, str | None]:
+    """Run smart-install.sh --check on ``host`` and parse the result.
+
+    Returns:
+      ("ok", None) when opencode is already up to date.
+      ("download", url) when opencode is missing or stale; ``url`` is the
+        release-archive zip to fetch.
+
+    Raises RuntimeError on non-zero exit or unparseable output.
+    """
+    result = await host.run_command(_SMART_INSTALL_CHECK_CMD)
+    if result.exit_code != 0:
+        raise RuntimeError(
+            f"smart-install --check failed on host (exit {result.exit_code}): "
+            f"{result.stderr.strip()[:200]}"
+        )
+    line = result.stdout.strip()
+    if line == "opencode ok":
+        return ("ok", None)
+    if line.startswith("download "):
+        url = line[len("download "):].strip()
+        if not url:
+            raise RuntimeError(
+                f"smart-install --check returned empty URL: {result.stdout!r}"
+            )
+        return ("download", url)
+    raise RuntimeError(
+        f"smart-install --check returned unexpected output: {result.stdout!r}"
+    )
+
 
 async def detect_target(host: "Host") -> OpencodeTarget:
     """Detect the opencode build target (os/arch/musl/baseline) for ``host``.
