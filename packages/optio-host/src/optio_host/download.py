@@ -97,11 +97,11 @@ def create_download_task(
                 ctx.report_progress(pct, None)
 
         if host is None:
-            # "exec" so the shell replaces itself with stdbuf/curl — that
-            # way SIGTERM from proc.terminate() reaches the curl process
-            # directly rather than being absorbed by an intermediate /bin/sh.
+            # _build_curl_cmd already prefixes "exec " so the wrapping sh
+            # replaces itself with curl/stdbuf — SIGTERM during cancel
+            # reaches curl directly instead of being absorbed by sh.
             proc = await asyncio.create_subprocess_exec(
-                "sh", "-c", "exec " + cmd,
+                "sh", "-c", cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -139,7 +139,40 @@ def create_download_task(
             exit_code = await proc.wait()
             await asyncio.gather(stdout_t, stderr_t, watcher_t, return_exceptions=True)
         else:
-            raise NotImplementedError("host branch not yet implemented")
+            handle = await host.launch_subprocess(
+                cmd, cwd=host.workdir, merge_stderr=False,
+            )
+
+            async def _stdout_task() -> None:
+                await _drain_stdout_trace(
+                    handle.stdout,
+                    on_length=_on_length,
+                    on_recv=_on_recv,
+                    should_continue=ctx.should_continue,
+                )
+
+            async def _stderr_task() -> None:
+                if handle.stderr is None:
+                    return
+                await _drain_stderr_tail(handle.stderr, stderr_tail)
+
+            async def _cancel_watcher() -> None:
+                nonlocal cancelled
+                while True:
+                    if not ctx.should_continue():
+                        cancelled = True
+                        await host.terminate_subprocess(handle, aggressive=False)
+                        return
+                    if stdout_t.done() and stderr_t.done():
+                        return
+                    await asyncio.sleep(0.05)
+
+            stdout_t = asyncio.create_task(_stdout_task())
+            stderr_t = asyncio.create_task(_stderr_task())
+            watcher_t = asyncio.create_task(_cancel_watcher())
+            await asyncio.gather(stdout_t, stderr_t, return_exceptions=True)
+            watcher_t.cancel()
+            exit_code = await _host_proc_wait(handle)
 
         if cancelled:
             if cleanup_on_fail:
@@ -188,7 +221,10 @@ def _build_curl_cmd(*, url: str, target: str) -> str:
     cmd = " ".join(parts)
     if shutil.which("stdbuf"):
         cmd = "stdbuf -oL " + cmd
-    return cmd
+    # Prefix "exec " so the wrapping /bin/sh replaces itself with our
+    # process — SIGTERM during cancel then reaches curl/stdbuf directly
+    # instead of being absorbed by an intermediate shell.
+    return "exec " + cmd
 
 
 def _parse_trace_line(raw: bytes) -> tuple[str, int] | None:
@@ -284,6 +320,22 @@ async def _drain_stderr_tail(stream, tail: deque) -> None:
         tail.append(chunk)
         while sum(len(c) for c in tail) > _STDERR_TAIL_CAP and len(tail) > 1:
             tail.popleft()
+
+
+async def _host_proc_wait(handle) -> int:
+    """Wait for the subprocess behind ``handle`` and return its exit code.
+
+    Handles both LocalHost (asyncio.subprocess.Process) and RemoteHost
+    (asyncssh.SSHClientProcess) variants of ``pid_like``.
+    """
+    pid_like = handle.pid_like
+    if hasattr(pid_like, "wait") and asyncio.iscoroutinefunction(pid_like.wait):
+        return await pid_like.wait()
+    if hasattr(pid_like, "exit_status"):
+        if hasattr(pid_like, "wait_closed") and asyncio.iscoroutinefunction(pid_like.wait_closed):
+            await pid_like.wait_closed()
+        return int(pid_like.exit_status) if pid_like.exit_status is not None else -1
+    raise RuntimeError(f"unable to determine exit code for {pid_like!r}")
 
 
 async def _maybe_remove(host, target: str) -> None:

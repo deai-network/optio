@@ -220,7 +220,7 @@ def test_build_curl_cmd_omits_stdbuf_when_unavailable(monkeypatch):
         lambda name: None if name == "stdbuf" else f"/usr/bin/{name}",
     )
     cmd = dl_mod._build_curl_cmd(url="https://example/foo", target="/tmp/out")
-    assert cmd.startswith("curl ")
+    assert cmd.startswith("exec curl ")
     assert "stdbuf" not in cmd
 
 
@@ -232,7 +232,7 @@ def test_build_curl_cmd_includes_stdbuf_when_available(monkeypatch):
         lambda name: "/usr/bin/" + name,
     )
     cmd = dl_mod._build_curl_cmd(url="https://example/foo", target="/tmp/out")
-    assert cmd.startswith("stdbuf -oL curl ")
+    assert cmd.startswith("exec stdbuf -oL curl ")
 
 
 # ---------------------------------------------------------------------------
@@ -446,3 +446,63 @@ async def test_download_execute_no_host_cancel_mid_stream(slow_http_server, tmp_
 
     assert elapsed < 8.0, f"cancel took too long: {elapsed:.1f}s"
     assert not target.exists()
+
+
+async def test_download_execute_host_happy_path_via_localhost(http_server, tmp_path):
+    base_url, served = http_server
+    blob = os.urandom(2 * 1024 * 1024)
+    (served / "blob.bin").write_bytes(blob)
+    expected_sha = hashlib.sha256(blob).hexdigest()
+
+    from optio_host.host import LocalHost
+    from optio_host.download import create_download_task
+
+    taskdir = tmp_path / "taskdir"
+    taskdir.mkdir()
+    host = LocalHost(taskdir=str(taskdir))
+    await host.setup_workdir()
+    target_abs = os.path.join(host.workdir, "out.bin")
+
+    task = create_download_task(
+        process_id="p.download-0",
+        name="download blob.bin",
+        url=f"{base_url}/blob.bin",
+        target=target_abs,
+        host=host,
+    )
+    ctx = _RecordingCtx()
+    await task.execute(ctx)
+
+    assert ctx.progress[0] == (None, "Downloading out.bin")
+    numeric = [p for p, m in ctx.progress[1:] if p is not None]
+    assert numeric
+    for a, b in zip(numeric, numeric[1:]):
+        assert a <= b
+    assert numeric[-1] >= 99.0
+    assert os.path.exists(target_abs)
+    assert hashlib.sha256(Path(target_abs).read_bytes()).hexdigest() == expected_sha
+
+
+async def test_download_execute_host_404_raises_and_cleans_up(http_server, tmp_path):
+    base_url, _ = http_server
+    from optio_host.host import LocalHost
+    from optio_host.download import DownloadFailed, create_download_task
+
+    taskdir = tmp_path / "taskdir"
+    taskdir.mkdir()
+    host = LocalHost(taskdir=str(taskdir))
+    await host.setup_workdir()
+    target_abs = os.path.join(host.workdir, "nope.bin")
+
+    task = create_download_task(
+        process_id="p.download-0",
+        name="download nope.bin",
+        url=f"{base_url}/nope.bin",
+        target=target_abs,
+        host=host,
+    )
+    ctx = _RecordingCtx()
+    with pytest.raises(DownloadFailed) as ei:
+        await task.execute(ctx)
+    assert ei.value.exit_code == 22
+    assert not os.path.exists(target_abs)
