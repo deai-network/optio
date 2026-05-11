@@ -174,3 +174,51 @@ async def test_cancel_recursion_honors_per_level_optout(mongo_db):
     await optio.cancel("c")
     await asyncio.wait_for(runner, timeout=5.0)
     await optio.shutdown(grace_seconds=0.5)
+
+
+async def test_cancel_shared_deadline_across_subtree(mongo_db):
+    """All entries created under one cancel sweep share the same monotonic deadline."""
+    prefix = "p2t5"
+    parent_running = asyncio.Event()
+    child1_running = asyncio.Event()
+    child2_running = asyncio.Event()
+
+    async def long_child(ctx):
+        while ctx.should_continue():
+            await asyncio.sleep(0.01)
+
+    async def parent(ctx):
+        parent_running.set()
+        async with ctx.parallel_group(survive_cancel=True) as group:
+            await group.spawn(execute=long_child, process_id="c1", name="C1")
+            child1_running.set()
+            await group.spawn(execute=long_child, process_id="c2", name="C2")
+            child2_running.set()
+
+    parent_inst = TaskInstance(execute=parent, process_id="parent", name="Parent")
+    c1_inst = TaskInstance(execute=long_child, process_id="c1", name="C1")
+    c2_inst = TaskInstance(execute=long_child, process_id="c2", name="C2")
+
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix=prefix, cancel_grace_seconds=3.0)
+    await upsert_process(mongo_db, prefix, parent_inst)
+    optio._executor.register_tasks([parent_inst, c1_inst, c2_inst])
+
+    runner = asyncio.create_task(optio.launch_and_wait("parent"))
+    await parent_running.wait()
+    await child1_running.wait()
+    await child2_running.wait()
+    await asyncio.sleep(0.1)
+
+    await optio.cancel("parent")
+
+    # Inspect deadlines in the executor's cancellation_flags map.
+    entries = optio._executor._cancellation_flags
+    deadlines = [entry.deadline for entry in entries.values() if entry.deadline is not None]
+    assert len(deadlines) >= 3, f"expected >=3 entries, got {len(deadlines)}: {deadlines}"
+    assert all(d == deadlines[0] for d in deadlines), (
+        f"deadlines diverge: {deadlines}"
+    )
+
+    await asyncio.wait_for(runner, timeout=10.0)
+    await optio.shutdown(grace_seconds=0.5)
