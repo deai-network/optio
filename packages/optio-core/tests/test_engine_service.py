@@ -1,5 +1,7 @@
 """Tests for OptioEngineService — phase 2 of engine RPC migration."""
 
+import re
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from bson import ObjectId
@@ -15,6 +17,8 @@ from optio_core._generated.optio_engine import (
     ResyncParams,
 )
 from optio_core.models import LaunchBlocked
+
+_OBJECTID_RE = re.compile(r"^[a-fA-F0-9]{24}$")
 
 
 @pytest.fixture
@@ -63,6 +67,17 @@ def fake_optio(sample_idle_proc):
 
     # Default: collection returns the idle proc for any find_one.
     coll.find_one = AsyncMock(return_value=sample_idle_proc)
+
+    # Optio._resolve was lifted from the adapter; fake it by delegating
+    # to coll.find_one with the same ObjectId-vs-processId logic so the
+    # per-test find_one side_effect sequences continue to drive resolve.
+    async def fake_resolve(id_str):
+        if _OBJECTID_RE.match(id_str):
+            doc = await coll.find_one({"_id": ObjectId(id_str)})
+            if doc:
+                return doc
+        return await coll.find_one({"processId": id_str})
+    optio._resolve = fake_resolve
 
     optio.launch = AsyncMock(return_value=None)
     optio.cancel = AsyncMock(return_value=None)

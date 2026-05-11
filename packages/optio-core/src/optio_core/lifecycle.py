@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re as _re
 import signal
 import time
 import uuid
@@ -32,6 +33,13 @@ from clamator_over_redis import RedisRpcServer
 from optio_core.scheduler import ProcessScheduler
 
 logger = logging.getLogger("optio_core_core")
+
+
+_OBJECTID_RE = _re.compile(r"^[a-fA-F0-9]{24}$")
+
+
+def _is_objectid(s: str) -> bool:
+    return bool(_OBJECTID_RE.match(s))
 
 
 from dataclasses import dataclass
@@ -543,6 +551,16 @@ class Optio:
         with a filter, only in-scope records are deleted.
         """
         await self._handle_resync({"clean": clean, "metadataFilter": metadata_filter})
+
+    async def _resolve(self, id_str: str) -> dict | None:
+        """Accept an ObjectId hex string or a processId; return the matching
+        Mongo process doc, or None if neither lookup matches."""
+        coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
+        if _is_objectid(id_str):
+            doc = await coll.find_one({"_id": ObjectId(id_str)})
+            if doc:
+                return doc
+        return await coll.find_one({"processId": id_str})
 
     async def get_process(self, process_id: str) -> dict | None:
         """Get a process by its process_id string."""

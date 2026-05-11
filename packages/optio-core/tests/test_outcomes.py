@@ -1,6 +1,13 @@
-"""Outcome dataclass smoke tests; real coverage added in later tasks."""
+"""Outcome dataclass smoke + Optio._resolve + public-verb outcome coverage."""
 
-from optio_core.models import LaunchOutcome, CancelOutcome, DismissOutcome
+import pytest
+from bson import ObjectId
+
+from optio_core.lifecycle import Optio
+from optio_core.models import (
+    TaskInstance,
+    LaunchOutcome, CancelOutcome, DismissOutcome,
+)
 
 
 def test_launch_outcome_ok():
@@ -32,3 +39,43 @@ def test_outcomes_top_level_reexport():
     assert optio_core.LaunchOutcome is LaunchOutcome
     assert optio_core.CancelOutcome is CancelOutcome
     assert optio_core.DismissOutcome is DismissOutcome
+
+
+# -------------------------------------------------------------------- _resolve
+
+@pytest.mark.asyncio
+async def test_resolve_by_process_id(mongo_db):
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix="resolvetest")
+    async def noop(ctx):
+        pass
+    await fw.adhoc_define(
+        TaskInstance(execute=noop, process_id="probe", name="Probe"),
+    )
+
+    doc = await fw._resolve("probe")
+    assert doc is not None
+    assert doc["processId"] == "probe"
+
+
+@pytest.mark.asyncio
+async def test_resolve_by_objectid_hex(mongo_db):
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix="resolvetest2")
+    async def noop(ctx):
+        pass
+    proc = await fw.adhoc_define(
+        TaskInstance(execute=noop, process_id="probe", name="Probe"),
+    )
+
+    doc = await fw._resolve(str(proc["_id"]))
+    assert doc is not None
+    assert doc["_id"] == proc["_id"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_missing(mongo_db):
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix="resolvetest3")
+    assert await fw._resolve("does-not-exist") is None
+    assert await fw._resolve(str(ObjectId())) is None

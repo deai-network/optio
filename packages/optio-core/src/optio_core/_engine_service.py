@@ -30,12 +30,6 @@ from optio_core.state_machine import LAUNCHABLE_STATES, CANCELLABLE_STATES, DISM
 if TYPE_CHECKING:
     from optio_core.lifecycle import Optio
 
-_OBJECTID_RE = __import__("re").compile(r"^[a-fA-F0-9]{24}$")
-
-
-def _is_objectid(s: str) -> bool:
-    return bool(_OBJECTID_RE.match(s))
-
 
 _UTC = datetime.timezone.utc
 
@@ -88,7 +82,7 @@ class OptioEngineService(OptioEngineServiceBase):
 
     # --------------------------------------------------------------- launch
     async def launch(self, params: LaunchParams) -> LaunchResult:
-        proc = await self._resolve(params.process_id)
+        proc = await self._optio._resolve(params.process_id)
         if proc is None:
             return LaunchResult.model_validate({"ok": False, "reason": "not-found"})
         if proc["status"]["state"] not in LAUNCHABLE_STATES:
@@ -104,24 +98,12 @@ class OptioEngineService(OptioEngineServiceBase):
         # The executor runs asynchronously; yield once so the state transition
         # (idle → scheduled) can be written before we read it back.
         await asyncio.sleep(0)
-        updated = await self._resolve(proc["processId"])
+        updated = await self._optio._resolve(proc["processId"])
         return LaunchResult.model_validate({"ok": True, "process": _to_process_dict(updated)})
-
-    # ------------------------------------------------------------- internals
-    async def _resolve(self, id_str: str) -> dict | None:
-        """Accept ObjectId hex or processId string; return the doc or None."""
-        coll = self._optio._config.mongo_db[
-            f"{self._optio._config.prefix}_processes"
-        ]
-        if _is_objectid(id_str):
-            doc = await coll.find_one({"_id": ObjectId(id_str)})
-            if doc:
-                return doc
-        return await coll.find_one({"processId": id_str})
 
     # --------------------------------------------------------------- cancel
     async def cancel(self, params: CancelParams) -> CancelResult:
-        proc = await self._resolve(params.process_id)
+        proc = await self._optio._resolve(params.process_id)
         if proc is None:
             return CancelResult.model_validate({"ok": False, "reason": "not-found"})
         if not proc.get("cancellable", True) or proc["status"]["state"] not in CANCELLABLE_STATES:
@@ -129,12 +111,12 @@ class OptioEngineService(OptioEngineServiceBase):
 
         await self._optio.cancel(proc["processId"])
 
-        updated = await self._resolve(proc["processId"])
+        updated = await self._optio._resolve(proc["processId"])
         return CancelResult.model_validate({"ok": True, "process": _to_process_dict(updated)})
 
     # --------------------------------------------------------------- dismiss
     async def dismiss(self, params: DismissParams) -> DismissResult:
-        proc = await self._resolve(params.process_id)
+        proc = await self._optio._resolve(params.process_id)
         if proc is None:
             return DismissResult.model_validate({"ok": False, "reason": "not-found"})
         if proc["status"]["state"] not in DISMISSABLE_STATES:
@@ -142,7 +124,7 @@ class OptioEngineService(OptioEngineServiceBase):
 
         await self._optio.dismiss(proc["processId"])
 
-        updated = await self._resolve(proc["processId"])
+        updated = await self._optio._resolve(proc["processId"])
         return DismissResult.model_validate({"ok": True, "process": _to_process_dict(updated)})
 
     # --------------------------------------------------------------- resync
