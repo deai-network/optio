@@ -11,8 +11,7 @@
  *  - At least one task in optio-demo declares processId=opencode-demo.
  */
 import IORedis from 'ioredis';
-import { RedisRpcClient } from '@clamator/over-redis';
-import { OptioEngineClient } from 'optio-api';
+import { createOptioTransports, OptioEngineClient } from 'optio-api';
 
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 const DATABASE = 'optio-demo';
@@ -59,8 +58,8 @@ setTimeout(() => {
 }, 60_000).unref();
 
 const redis = new IORedis(REDIS_URL);
-const rpc = new RedisRpcClient({ redis, keyPrefix: KEY_PREFIX });
-const engine = new OptioEngineClient(rpc);
+const transports = createOptioTransports(redis);
+const engine = new OptioEngineClient(transports.get(DATABASE, PREFIX));
 
 let exitCode = 0;
 function fail(scenario: string, msg: string) {
@@ -77,8 +76,7 @@ async function dismissIfTerminal() {
 }
 
 async function main() {
-  await rpc.start();
-
+  // Transports are started lazily by createOptioTransports on first get().
   try {
     // Reset state baseline.
     await dismissIfTerminal();
@@ -234,7 +232,7 @@ async function main() {
       }
     });
   } finally {
-    await rpc.stop();
+    await transports.closeAll().catch(() => null);
     await redis.quit();
   }
 

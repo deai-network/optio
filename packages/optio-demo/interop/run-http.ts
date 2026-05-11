@@ -7,21 +7,19 @@ import IORedis from 'ioredis';
 import { MongoClient } from 'mongodb';
 import Fastify from 'fastify';
 import { registerOptioApi } from 'optio-api/fastify';
-import { RedisRpcClient } from '@clamator/over-redis';
-import { OptioEngineClient } from 'optio-api';
+import { createOptioTransports, OptioEngineClient } from 'optio-api';
 
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 const MONGODB_URL = process.env.MONGODB_URL ?? 'mongodb://localhost:27017/optio-demo';
 const PROC = 'opencode-demo';
 const DATABASE = 'optio-demo';
 const PREFIX = 'optio';
-const KEY_PREFIX = `${DATABASE}/${PREFIX}`;
 const SCENARIO_TIMEOUT_MS = 10_000;
 
 const redis = new IORedis(REDIS_URL);
 const mongoClient = new MongoClient(MONGODB_URL);
-const rpc = new RedisRpcClient({ redis, keyPrefix: KEY_PREFIX });
-const engine = new OptioEngineClient(rpc);
+const transports = createOptioTransports(redis);
+const engine = new OptioEngineClient(transports.get(DATABASE, PREFIX));
 let baseUrl = '';
 let exitCode = 0;
 
@@ -89,7 +87,7 @@ async function waitForState(stateOrStates: string | string[], timeoutMs: number 
 
 async function main() {
   await mongoClient.connect();
-  await rpc.start();
+  // Transports start lazily via createOptioTransports + transports.get().
   const db = mongoClient.db('optio-demo');
   const app = Fastify();
   await registerOptioApi(app, { db, redis, prefix: 'optio', authenticate: () => 'operator' });
@@ -319,7 +317,7 @@ async function main() {
     });
   } finally {
     await app.close();
-    await rpc.stop().catch(() => null);
+    await transports.closeAll().catch(() => null);
     await redis.quit();
     await mongoClient.close();
   }
