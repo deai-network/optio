@@ -177,7 +177,7 @@ asyncio.run(main())
 
 ### Level 2: Remote Control (+ Redis)
 
-Adds external command ingestion via Redis Streams, enabling remote control of processes from other services. External systems can publish commands (launch, cancel, dismiss, resync, or custom) to the `optio:commands` Redis stream (customizable via the `prefix` parameter). Custom command handlers can be registered with `on_command()`.
+Adds external command ingestion via clamator — a typed RPC channel layered on Redis Streams. External services use the generated TypeScript or Python client for the `optio-engine` contract to launch, cancel, dismiss, and resync processes. Calls return typed result reasons (`not-found`, `not-cancellable`, `launch-blocked`, etc.) so callers can react meaningfully. Custom verbs are added by registering additional clamator services against `optio_core.rpc_server`.
 
 ```bash
 pip install optio-core[redis]
