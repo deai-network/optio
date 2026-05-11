@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install build codegen test test-interop lint clean clean-codegen clean-deep
+.PHONY: help install build codegen test test-interop lint lint-no-direct-writes clean clean-codegen clean-deep
 
 PY_PACKAGES := optio-core optio-host optio-opencode
 
@@ -40,11 +40,21 @@ test:  ## Run all tests (TS + Python; per-package, no docker)
 test-interop:  ## End-to-end test: TS clamator client ↔ Py engine over real redis (clamator wire verification). INTEROP_DEBUG=1 enables verbose mode + increased timeouts (slow CI). INTEROP_KEEP=1 skips cleanup on failure for postmortem.
 	timeout 120 bash packages/optio-demo/run-interop.sh
 
-lint:  ## Lint all packages
+lint: lint-no-direct-writes  ## Lint all packages
 	pnpm -r lint 2>/dev/null || true
 	for pkg in $(PY_PACKAGES); do \
 	  (cd packages/$$pkg && ruff check . 2>/dev/null || true); \
 	done
+
+lint-no-direct-writes:  ## Fail if any direct Mongo write call appears in packages/optio-api/src/
+	@echo "Scanning packages/optio-api/src/ for direct Mongo writes..."
+	@if grep -rEn --include='*.ts' --exclude-dir=__tests__ \
+	    '\.(insertOne|insertMany|updateOne|updateMany|deleteOne|deleteMany|replaceOne|findOneAndUpdate|findOneAndReplace|findOneAndDelete|bulkWrite)\(' \
+	    packages/optio-api/src/ ; then \
+	  echo "ERROR: direct Mongo writes found in packages/optio-api/src/. The API server must only call engine RPCs for mutations." >&2 ; \
+	  exit 1 ; \
+	fi
+	@echo "OK: no direct Mongo writes in packages/optio-api/src/"
 
 clean:  ## Remove build artifacts and dependency caches (KEEPS committed _generated/)
 	pnpm -r clean 2>/dev/null || true

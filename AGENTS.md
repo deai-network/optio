@@ -522,6 +522,21 @@ Note: The Fastify adapter mounts the entire contract under `/api`, so effective 
 
 Package: `optio-api`. Framework-agnostic handlers + Fastify adapter.
 
+### Role: read-only DB exposure + RPC client
+
+The optio-api server has two roles only:
+
+1. **Expose process data for reading.** Direct Mongo reads via the layered Engine-access primitives (`resolveDb`, ts-rest contract routes).
+2. **Expose the optio engine's capabilities for mutation.** All mutations go via RPC into optio-core via `OptioEngineClient`. The API contains no business logic, generates no IDs/timestamps/defaults, and does not write to MongoDB.
+
+API handlers are pure pass-through: validate (auto via ts-rest/zod) → inject auth-derived fields → `engine.launch(...)` / `engine.cancel(...)` / etc. → map failure reason to HTTP status → return RPC's response body. No `??` defaulting, no `new Date()`, no `new ObjectId()` in write paths.
+
+Direct DB writes (`insertOne`, `updateOne`, `deleteOne`, `findOneAndUpdate`, etc.) under `packages/optio-api/src/` are violations of this rule. Tests may write directly (under `__tests__/`); production code never does. `make lint-no-direct-writes` enforces this via a grep guardrail; `packages/optio-api/eslint.config.mjs` surfaces violations inline in editors via `no-restricted-syntax`.
+
+### Don't copy code between projects
+
+When N projects need the same code — especially interface, contract, or wire-format code that must stay in sync — build a shared library. Do not duplicate. Code copies drift; bugs get fixed in one and not the others; schema mismatches cause runtime breakage. Cost of a shared lib is one-time; cost of N copies is linear in maintenance.
+
 ### Entry Points
 
 ```typescript
