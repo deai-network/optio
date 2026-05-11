@@ -44,6 +44,7 @@ class TaskInstance:
     ui_widget: str | None = None
     supports_resume: bool = False
     ttl_seconds: int | None = None
+    auto_cancel_children: bool = True
 
 
 @dataclass

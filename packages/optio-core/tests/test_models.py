@@ -67,6 +67,20 @@ def test_task_instance_supports_resume_can_be_set():
     assert task.supports_resume is True
 
 
+def test_task_instance_auto_cancel_children_default_true():
+    """TaskInstance.auto_cancel_children defaults to True."""
+    task = TaskInstance(execute=dummy_execute, process_id="p1", name="P1")
+    assert task.auto_cancel_children is True
+
+
+def test_task_instance_auto_cancel_children_can_be_false():
+    """TaskInstance.auto_cancel_children can be explicitly set to False."""
+    task = TaskInstance(
+        execute=dummy_execute, process_id="p1", name="P1", auto_cancel_children=False,
+    )
+    assert task.auto_cancel_children is False
+
+
 def test_matches_filter_none_filter_matches_anything():
     assert matches_filter({}, None) is True
     assert matches_filter({"group": "ingest"}, None) is True
