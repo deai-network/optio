@@ -112,10 +112,8 @@ await optio_core.adhoc_delete(process_id: str) -> None
 await optio_core.get_process(process_id: str) -> dict | None
 await optio_core.list_processes(state=None, root_id=None, metadata=None) -> list[dict]
 
-# Custom Redis command handler (call before run())
-optio_core.on_command(command_type: str, handler: Callable[..., Awaitable]) -> None
-
-# RPC server (set after init(); None if no Redis configured)
+# RPC server (set after init(); None if no Redis configured).
+# Register custom clamator services on it before run() for app-specific verbs.
 optio_core.rpc_server: RpcServerCore | None
 ```
 
@@ -124,7 +122,7 @@ optio_core.rpc_server: RpcServerCore | None
 | Param | Type | Default | Notes |
 |-------|------|---------|-------|
 | `mongo_db` | `AsyncIOMotorDatabase` | required | Motor async database object |
-| `prefix` | `str` | required | Namespace for collections (`{prefix}_processes`) and Redis streams (`{prefix}:commands`) |
+| `prefix` | `str` | required | Namespace for collections (`{prefix}_processes`) and clamator service streams (the `{database}/{prefix}` Redis key prefix) |
 | `redis_url` | `str \| None` | `None` | If None: command bus disabled; use direct method calls |
 | `rpc_server` | `RpcServerCore \| None` | `None` | Pre-built clamator RPC server. Mutually exclusive with `redis_url`. When supplied, optio-core registers `OptioEngineService` on it but does not own its lifecycle. |
 | `services` | `dict[str, Any] \| None` | `{}` | Passed as `ctx.services` to all task execute functions |
@@ -622,17 +620,13 @@ async function dismissProcess(db: Db, redis: Redis, prefix: string, id: string):
 async function resyncProcesses(redis: Redis, prefix: string, clean?: boolean, metadataFilter?: ProcessMetadataFilter): Promise<{ message: string }>
 ```
 
-### Publishers
+### In-process triggers
 
-Write commands to Redis stream `{prefix}:commands`. Used by domain code that needs to trigger processes without HTTP.
-
-```typescript
-async function publishLaunch(redis: Redis, database: string, prefix: string, processId: string, resume?: boolean): Promise<void>
-// resume=true is included in the Redis launch payload.
-async function publishResync(redis: Redis, prefix: string, clean?: boolean, metadataFilter?: ProcessMetadataFilter): Promise<void>
-```
-
-Note: `publishCancel` and `publishDismiss` exist in the source but are not re-exported from the package entry point. Use the REST API or handler functions for cancel/dismiss.
+In-process domain code that needs to launch / cancel / dismiss / resync calls the
+`Optio` methods directly (`optio_core.launch` / `cancel` / `dismiss` / `resync`);
+no wire involved. External services use the clamator RPC channel — see "Control-plane
+convergence" above for the architectural rule, and the optio-core README's
+"Remote Control via Clamator RPC" section for the client-construction details.
 
 ### Stream Poller
 
@@ -1021,3 +1015,15 @@ All components use `react-i18next`. Required keys:
 - **Scheduler**: APScheduler-backed; cron schedules defined on `TaskInstance.schedule` are synced on init and resync
 - **Process state reconciliation**: on `init()`, any process still in an active state (`scheduled`, `running`, `cancel_requested`, `cancelling`) from a previous session is reset to `failed` with `error="Process was interrupted by server restart"`. On `shutdown(grace_seconds=5.0)`, tasks that do not unwind within the grace period are force-finalized to `failed` with `error="Task did not exit within shutdown grace period"`. Spec: `docs/2026-04-22-process-reconciliation-design.md`
 - **Persistent launch blocks**: `block_launches(..., persist=True)` and `group_cancel*(..., block_new_launches=True, persist=True)` write a record to `{prefix}_launch_blocks` (Mongo); records are reloaded into the in-memory block list on every `init()` so the block survives restarts. Removed only by `unblock_launches(launch_filter)` (exact filter match). When set, `reason` is stored on the record and appended to the `LaunchBlocked` exception message (`...; reason={reason}`). Spec: `docs/2026-04-30-persistent-launch-blocks-design.md`
+
+### Control-plane convergence
+
+Every control verb (launch, cancel, dismiss, resync, group_cancel, …) has **exactly one implementation**: a method on `Optio` in `lifecycle.py`. All external entry points — Python callers, RPC adapters, schedulers, future channels — funnel through that public method.
+
+Adapters do two things and only two things:
+1. Translate inbound wire shape to a `(process_id, …)` tuple.
+2. Translate the public method's return / raised exception to the adapter's wire result.
+
+State-machine logic, side effects, and authority decisions live on `Optio`, never in adapters. If an adapter needs to short-circuit with a typed reason (e.g. RPC's `not-found` / `not-cancellable`), it pre-flights against shared constants (`CANCELLABLE_STATES`, etc.) and only then delegates — it does not duplicate the state transition.
+
+When you add a new channel, you call existing `Optio` methods. When you add a new verb, you add one method to `Optio` and one thin adapter per existing channel. Never duplicate verb logic across layers.
