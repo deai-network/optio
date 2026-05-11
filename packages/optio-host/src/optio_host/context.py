@@ -33,6 +33,9 @@ class HostCommandError(Exception):
 
 from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
 
+# Imported at module top so tests can monkeypatch this name on the module.
+from optio_host.download import create_download_task
+
 
 class HookContext:
     """ProcessContext + host primitives, passed to before/after_execute hooks
@@ -149,6 +152,53 @@ class HookContext:
     async def read_text_from_host(self, path: str, *, silent: bool = False) -> str:
         data = await self.read_from_host(path, silent=silent)
         return data.decode("utf-8")
+
+    async def download_file(
+        self,
+        url: str,
+        target: str,
+        *,
+        description: str | None = None,
+        cleanup_on_fail: bool = True,
+    ) -> None:
+        """Download ``url`` to ``target`` on the host as a child task.
+
+        Spawns a child process under the current task that runs curl on the
+        same host the parent runs on. Reports a single "Downloading
+        <basename>" message followed by numeric progress percent updates on
+        the child's ProcessContext.
+
+        ``target`` is resolved by the same rules as ``copy_file``: absolute
+        path | ``~`` / ``~/...`` home-relative | workdir-relative. On a
+        workdir-escape attempt this raises ``ValueError`` without spawning
+        a child.
+
+        Returns None on success. Raises ``RuntimeError`` if the child fails
+        (the underlying ``DownloadFailed`` is lost at the run_child boundary;
+        see /tmp/optio-child-failure-problem.md). Parent-task cancellation
+        propagates to the child automatically.
+        """
+        host_home = await self._host.resolve_host_home()
+        abs_target = _resolve_target_path(target, self._host.workdir, host_home)
+        basename = os.path.basename(abs_target) or abs_target
+
+        n = self._ctx._child_counter.get("next", 0)
+        child_process_id = f"{self._ctx.process_id}.download-{n}"
+        child_name = f"download {basename}"
+
+        task = create_download_task(
+            process_id=child_process_id,
+            name=child_name,
+            url=url,
+            target=abs_target,
+            host=self._host,
+            description=description,
+            cleanup_on_fail=cleanup_on_fail,
+        )
+        await self._ctx.run_child(
+            task.execute, task.process_id, task.name,
+            description=task.description,
+        )
 
 
 class HookContextProtocol(Protocol):
