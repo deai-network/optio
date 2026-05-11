@@ -1,7 +1,7 @@
 /**
- * Phase-2 interop scenarios. Direct clamator client → optio-demo engine.
- * Verifies the wire works end-to-end and the legacy ${prefix}:commands
- * stream still functions during co-existence.
+ * End-to-end interop scenarios. Direct clamator client → optio-demo engine.
+ * Verifies the clamator RPC wire works end-to-end against a live optio-demo
+ * engine subprocess.
  *
  * Assumptions (set up by run-interop.sh before this script runs):
  *  - Redis is reachable at REDIS_URL (default redis://localhost:6379).
@@ -16,7 +16,6 @@ import { createOptioTransports, OptioEngineClient } from 'optio-api';
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 const DATABASE = 'optio-demo';
 const PREFIX = 'optio';
-const KEY_PREFIX = `${DATABASE}/${PREFIX}`;
 const PROC = 'opencode-demo';
 
 const SCENARIO_TIMEOUT_MS = 5000;
@@ -192,44 +191,6 @@ async function main() {
       else if (r.reason !== 'invalid-persist-without-block')
         fail('groupCancel invalid-persist', `expected invalid-persist-without-block, got ${r.reason}`);
       else ok('groupCancel invalid-persist');
-    });
-
-    // 11. Legacy stream regression — XADD a launch command and confirm engine consumed.
-    await withTimeout('legacy-stream-regression', async () => {
-      // Ensure the process is in a launchable state before the legacy test:
-      // cancel if running/scheduled, then dismiss to idle.
-      await engine.cancel({ processId: PROC }).catch(() => null);
-      await new Promise((res) => setTimeout(res, 500));
-      await dismissIfTerminal();
-      const id = await redis.xadd(
-        `${KEY_PREFIX}:commands`,
-        '*',
-        'type',
-        'launch',
-        'payload',
-        JSON.stringify({ processId: PROC }),
-      );
-      if (!id) {
-        fail('legacy stream regression', 'xadd to legacy stream returned null id');
-      } else {
-        // Allow the engine consumer a brief window to consume the entry.
-        await new Promise((res) => setTimeout(res, 500));
-        // Verify that the legacy stream entry was consumed (acknowledged) by the engine.
-        // We read the pending-entry-list for the consumer group; if the entry id
-        // is no longer pending, it was processed.
-        const pending = await redis.xpending(
-          `${KEY_PREFIX}:commands`,
-          'optio_core',
-          id,
-          id,
-          1,
-        );
-        if (pending.length > 0) {
-          fail('legacy stream regression', `legacy stream entry ${id} is still pending — engine did not consume it`);
-        } else {
-          ok(`legacy stream regression (xadd id=${id})`);
-        }
-      }
     });
   } finally {
     await transports.closeAll().catch(() => null);
