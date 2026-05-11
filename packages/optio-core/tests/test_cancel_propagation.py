@@ -307,3 +307,58 @@ async def test_run_child_refuses_after_parent_cancel_when_auto(mongo_db):
 
     await runner
     await optio.shutdown(grace_seconds=0.5)
+
+
+async def test_alpha_child_cancel_triggers_parent_cancel_of_siblings(mongo_db):
+    """alpha: when child cancels and parent has survive_cancel=False at
+    group level, parent's OTHER active children are also cancelled."""
+    prefix = "p4t2"
+    a_running = asyncio.Event()
+    b_running = asyncio.Event()
+    c_running = asyncio.Event()
+
+    async def long_child(ctx):
+        if ctx.process_id == "b":
+            b_running.set()
+        elif ctx.process_id == "c":
+            c_running.set()
+        while ctx.should_continue():
+            await asyncio.sleep(0.01)
+
+    async def parent(ctx):
+        a_running.set()
+        async with ctx.parallel_group(survive_cancel=False) as group:
+            await group.spawn(execute=long_child, process_id="b", name="B")
+            await group.spawn(execute=long_child, process_id="c", name="C")
+
+    parent_inst = TaskInstance(execute=parent, process_id="a", name="A")
+    b_inst = TaskInstance(execute=long_child, process_id="b", name="B")
+    c_inst = TaskInstance(execute=long_child, process_id="c", name="C")
+
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix=prefix, cancel_grace_seconds=2.0)
+    await upsert_process(mongo_db, prefix, parent_inst)
+    optio._executor.register_tasks([parent_inst, b_inst, c_inst])
+
+    runner = asyncio.create_task(optio.launch_and_wait("a"))
+    await a_running.wait()
+    await b_running.wait()
+    await c_running.wait()
+    await asyncio.sleep(0.1)
+
+    # Cancel B directly: alpha should trigger cancel(A) which propagates to C.
+    await optio.cancel("b")
+
+    await asyncio.wait_for(runner, timeout=5.0)
+    a_proc = await _wait_terminal(mongo_db, prefix, "a")
+    b_proc = await _wait_terminal(mongo_db, prefix, "b")
+    c_proc = await _wait_terminal(mongo_db, prefix, "c")
+    assert b_proc["status"]["state"] == "cancelled"
+    assert c_proc["status"]["state"] == "cancelled"
+    # Parent ends 'failed' because parallel_group(survive_cancel=False)
+    # raises RuntimeError when any child cancels; the exception
+    # overwrites the prior cancel_requested state. Either terminal is
+    # acceptable.
+    assert a_proc["status"]["state"] in {"failed", "cancelled"}
+
+    await optio.shutdown(grace_seconds=0.5)
