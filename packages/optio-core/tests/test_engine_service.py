@@ -16,7 +16,9 @@ from optio_core._generated.optio_engine import (
     UnblockLaunchesParams, UnblockLaunchesResult,
     ResyncParams,
 )
-from optio_core.models import LaunchBlocked
+from optio_core.models import (
+    LaunchBlocked, LaunchOutcome, CancelOutcome, DismissOutcome,
+)
 
 _OBJECTID_RE = re.compile(r"^[a-fA-F0-9]{24}$")
 
@@ -80,8 +82,8 @@ def fake_optio(sample_idle_proc):
     optio._resolve = fake_resolve
 
     optio.launch = AsyncMock(return_value=None)
-    optio.cancel = AsyncMock(return_value=None)
-    optio.dismiss = AsyncMock(return_value=None)
+    optio.cancel = AsyncMock(return_value=CancelOutcome(ok=True))
+    optio.dismiss = AsyncMock(return_value=DismissOutcome(ok=True))
     optio.resync = AsyncMock(return_value=None)
     optio.group_cancel = AsyncMock(return_value=3)
     optio.group_cancel_and_wait = AsyncMock(return_value=2)
@@ -177,7 +179,9 @@ async def test_cancel_success(fake_optio, sample_running_proc):
     from optio_core._engine_service import OptioEngineService
     cancelled = dict(sample_running_proc)
     cancelled["status"] = {"state": "cancelled"}
-    fake_optio.collection.find_one = AsyncMock(side_effect=[sample_running_proc, cancelled])
+    # New adapter delegates to Optio.cancel and only re-reads post-success
+    # for the wire-response payload — one find_one call, not two.
+    fake_optio.collection.find_one = AsyncMock(return_value=cancelled)
     svc = OptioEngineService(fake_optio)
     result = await svc.cancel(CancelParams.model_validate({"processId": "p1"}))
     assert result.root.ok is True
@@ -187,7 +191,7 @@ async def test_cancel_success(fake_optio, sample_running_proc):
 @pytest.mark.asyncio
 async def test_cancel_not_found(fake_optio):
     from optio_core._engine_service import OptioEngineService
-    fake_optio.collection.find_one = AsyncMock(return_value=None)
+    fake_optio.cancel = AsyncMock(return_value=CancelOutcome(ok=False, reason="not-found"))
     svc = OptioEngineService(fake_optio)
     result = await svc.cancel(CancelParams.model_validate({"processId": "missing"}))
     assert result.root.ok is False
@@ -195,9 +199,9 @@ async def test_cancel_not_found(fake_optio):
 
 
 @pytest.mark.asyncio
-async def test_cancel_not_cancellable_by_state(fake_optio, sample_idle_proc):
+async def test_cancel_not_cancellable_by_state(fake_optio):
     from optio_core._engine_service import OptioEngineService
-    fake_optio.collection.find_one = AsyncMock(return_value=sample_idle_proc)
+    fake_optio.cancel = AsyncMock(return_value=CancelOutcome(ok=False, reason="not-cancellable"))
     svc = OptioEngineService(fake_optio)
     result = await svc.cancel(CancelParams.model_validate({"processId": "p1"}))
     assert result.root.ok is False
@@ -205,10 +209,9 @@ async def test_cancel_not_cancellable_by_state(fake_optio, sample_idle_proc):
 
 
 @pytest.mark.asyncio
-async def test_cancel_not_cancellable_by_flag(fake_optio, sample_running_proc):
+async def test_cancel_not_cancellable_by_flag(fake_optio):
     from optio_core._engine_service import OptioEngineService
-    sample_running_proc["cancellable"] = False
-    fake_optio.collection.find_one = AsyncMock(return_value=sample_running_proc)
+    fake_optio.cancel = AsyncMock(return_value=CancelOutcome(ok=False, reason="not-cancellable"))
     svc = OptioEngineService(fake_optio)
     result = await svc.cancel(CancelParams.model_validate({"processId": "p1"}))
     assert result.root.ok is False

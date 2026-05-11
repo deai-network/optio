@@ -79,3 +79,48 @@ async def test_resolve_missing(mongo_db):
     await fw.init(mongo_db=mongo_db, prefix="resolvetest3")
     assert await fw._resolve("does-not-exist") is None
     assert await fw._resolve(str(ObjectId())) is None
+
+
+# ---------------------------------------------------------------------- cancel
+
+
+@pytest.mark.asyncio
+async def test_cancel_not_found(mongo_db):
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix="canceltest")
+    out = await fw.cancel("nonexistent")
+    assert out == CancelOutcome(ok=False, reason="not-found")
+
+
+@pytest.mark.asyncio
+async def test_cancel_not_cancellable_when_idle(mongo_db):
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix="canceltest2")
+    async def noop(ctx):
+        pass
+    await fw.adhoc_define(
+        TaskInstance(execute=noop, process_id="idle1", name="Idle"),
+    )
+
+    out = await fw.cancel("idle1")
+    assert out == CancelOutcome(ok=False, reason="not-cancellable")
+
+
+@pytest.mark.asyncio
+async def test_cancel_returns_ok_when_scheduled(mongo_db):
+    """Direct DB seed of a 'scheduled' process — cancel transitions it to 'cancelled'."""
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix="canceltest3")
+    coll = mongo_db["canceltest3_processes"]
+    await coll.insert_one({
+        "_id": ObjectId(),
+        "processId": "sched1",
+        "status": {"state": "scheduled"},
+        "cancellable": True,
+    })
+
+    out = await fw.cancel("sched1")
+    assert out == CancelOutcome(ok=True)
+
+    proc = await fw.get_process("sched1")
+    assert proc["status"]["state"] == "cancelled"

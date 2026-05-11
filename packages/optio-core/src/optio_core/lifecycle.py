@@ -20,6 +20,7 @@ except ImportError:
 from optio_core.models import (
     TaskInstance, OptioConfig, ProcessStatus, ProcessMetadataFilter,
     matches_filter, LaunchBlocked,
+    LaunchOutcome, CancelOutcome, DismissOutcome,
 )
 from optio_core.store import (
     upsert_process, remove_stale_processes, find_stale_process_ids,
@@ -355,9 +356,41 @@ class Optio:
             self._check_launch_blocks(task.metadata)
         await self._executor.launch_process(process_id, resume=resume)
 
-    async def cancel(self, process_id: str) -> None:
-        """Cancel a running or scheduled process."""
-        await self._handle_cancel({"processId": process_id})
+    async def cancel(self, process_id: str) -> CancelOutcome:
+        """Cancel a running or scheduled process. Returns a CancelOutcome
+        with ok=False/reason for unknown or non-cancellable inputs."""
+        proc = await self._resolve(process_id)
+        if proc is None:
+            return CancelOutcome(ok=False, reason="not-found")
+        if not proc.get("cancellable", True) or proc["status"]["state"] not in CANCELLABLE_STATES:
+            return CancelOutcome(ok=False, reason="not-cancellable")
+
+        current_state = proc["status"]["state"]
+        if current_state == "scheduled":
+            now = datetime.now(timezone.utc)
+            expire_at = compute_expire_at(proc.get("ttlSeconds"), now=now)
+            await update_status(
+                self._config.mongo_db, self._config.prefix, proc["_id"],
+                ProcessStatus(state="cancelled", stopped_at=now),
+                expire_at=expire_at,
+            )
+            return CancelOutcome(ok=True)
+
+        await update_status(
+            self._config.mongo_db, self._config.prefix, proc["_id"],
+            ProcessStatus(state="cancel_requested"),
+        )
+
+        found = self._executor.request_cancel_with_deadline(
+            proc["_id"],
+            deadline=time.monotonic() + self._config.cancel_grace_seconds,
+        )
+        if found:
+            await update_status(
+                self._config.mongo_db, self._config.prefix, proc["_id"],
+                ProcessStatus(state="cancelling"),
+            )
+        return CancelOutcome(ok=True)
 
     async def cancel_and_wait(self, process_id: str) -> str | None:
         """Cancel and wait until the process reaches a terminal state.
@@ -853,47 +886,6 @@ class Optio:
     async def _handle_launch_by_process_id(self, process_id: str, resume: bool = False) -> None:
         # Background-spawn the executor; scheduler hook (Task 8 introduces an outcome-aware adapter).
         asyncio.create_task(self._executor.launch_process(process_id, resume=resume))
-
-    async def _handle_cancel(self, payload: dict) -> None:
-        process_id = payload.get("processId")
-        if not process_id:
-            return
-
-        proc = await get_process_by_process_id(
-            self._config.mongo_db, self._config.prefix, process_id,
-        )
-        if proc is None:
-            return
-
-        current_state = proc["status"]["state"]
-        if current_state not in CANCELLABLE_STATES:
-            return
-
-        if current_state == "scheduled":
-            # Not yet running — go directly to cancelled.
-            now = datetime.now(timezone.utc)
-            expire_at = compute_expire_at(proc.get("ttlSeconds"), now=now)
-            await update_status(
-                self._config.mongo_db, self._config.prefix, proc["_id"],
-                ProcessStatus(state="cancelled", stopped_at=now),
-                expire_at=expire_at,
-            )
-            return
-
-        await update_status(
-            self._config.mongo_db, self._config.prefix, proc["_id"],
-            ProcessStatus(state="cancel_requested"),
-        )
-
-        found = self._executor.request_cancel_with_deadline(
-            proc["_id"],
-            deadline=time.monotonic() + self._config.cancel_grace_seconds,
-        )
-        if found:
-            await update_status(
-                self._config.mongo_db, self._config.prefix, proc["_id"],
-                ProcessStatus(state="cancelling"),
-            )
 
     async def _handle_dismiss(self, payload: dict) -> None:
         process_id = payload.get("processId")

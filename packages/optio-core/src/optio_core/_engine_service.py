@@ -25,7 +25,7 @@ from optio_core._generated.optio_engine import (
     ResyncParams,
 )
 from optio_core.models import LaunchBlocked
-from optio_core.state_machine import LAUNCHABLE_STATES, CANCELLABLE_STATES, DISMISSABLE_STATES
+from optio_core.state_machine import LAUNCHABLE_STATES, DISMISSABLE_STATES
 
 if TYPE_CHECKING:
     from optio_core.lifecycle import Optio
@@ -103,16 +103,15 @@ class OptioEngineService(OptioEngineServiceBase):
 
     # --------------------------------------------------------------- cancel
     async def cancel(self, params: CancelParams) -> CancelResult:
+        outcome = await self._optio.cancel(params.process_id)
+        if not outcome.ok:
+            return CancelResult.model_validate(
+                {"ok": False, "reason": outcome.reason}
+            )
         proc = await self._optio._resolve(params.process_id)
-        if proc is None:
-            return CancelResult.model_validate({"ok": False, "reason": "not-found"})
-        if not proc.get("cancellable", True) or proc["status"]["state"] not in CANCELLABLE_STATES:
-            return CancelResult.model_validate({"ok": False, "reason": "not-cancellable"})
-
-        await self._optio.cancel(proc["processId"])
-
-        updated = await self._optio._resolve(proc["processId"])
-        return CancelResult.model_validate({"ok": True, "process": _to_process_dict(updated)})
+        return CancelResult.model_validate(
+            {"ok": True, "process": _to_process_dict(proc)}
+        )
 
     # --------------------------------------------------------------- dismiss
     async def dismiss(self, params: DismissParams) -> DismissResult:
