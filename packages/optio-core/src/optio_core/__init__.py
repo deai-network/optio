@@ -1,6 +1,9 @@
 """Optio — reusable async process management library."""
 
-from optio_core.models import TaskInstance, ChildResult, LaunchBlocked
+from optio_core.models import (
+    TaskInstance, ChildResult, LaunchBlocked,
+    LaunchOutcome, CancelOutcome, DismissOutcome,
+)
 from optio_core.lifecycle import Optio
 
 _instance = Optio()
@@ -24,6 +27,7 @@ group_cancel_and_wait = _instance.group_cancel_and_wait
 
 __all__ = [
     "TaskInstance", "ChildResult", "LaunchBlocked",
+    "LaunchOutcome", "CancelOutcome", "DismissOutcome",
     "init", "run", "shutdown",
     "adhoc_define", "adhoc_delete",
     "launch", "launch_and_wait", "cancel", "dismiss", "resync",

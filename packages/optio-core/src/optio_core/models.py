@@ -1,8 +1,31 @@
 """Core data models for optio."""
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Awaitable, Union, TypeAlias
+from typing import Any, Callable, Awaitable, Literal, Union, TypeAlias
 from datetime import datetime
+
+
+@dataclass(frozen=True)
+class LaunchOutcome:
+    """Result of Optio.launch. ok=False carries a typed reason."""
+    ok: bool
+    reason: Literal[
+        "not-found", "not-launchable", "launch-blocked", "no-resume-support",
+    ] | None = None
+
+
+@dataclass(frozen=True)
+class CancelOutcome:
+    """Result of Optio.cancel."""
+    ok: bool
+    reason: Literal["not-found", "not-cancellable"] | None = None
+
+
+@dataclass(frozen=True)
+class DismissOutcome:
+    """Result of Optio.dismiss."""
+    ok: bool
+    reason: Literal["not-found", "not-dismissable"] | None = None
 
 
 @dataclass
