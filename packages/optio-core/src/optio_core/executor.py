@@ -263,6 +263,18 @@ class Executor:
         if parent_ctx._on_child_progress is not None:
             parent_ctx._notify_child_state_change(process_id, end_state)
 
+        # alpha: abnormal child terminal -> trigger parent's downward
+        # propagation via the lifecycle callback. The callback is
+        # idempotent for an already-cancel_requested parent.
+        abnormal = (
+            (end_state == "cancelled" and not survive_cancel)
+            or (end_state == "failed" and not survive_failure)
+        )
+        if abnormal and self._notify_parent_abnormal is not None:
+            asyncio.create_task(
+                self._notify_parent_abnormal(parent_ctx.process_id)
+            )
+
         if end_state == "failed" and not survive_failure:
             raise RuntimeError(f"Child process '{name}' failed")
         if end_state == "cancelled" and not survive_cancel:
