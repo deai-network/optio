@@ -97,8 +97,11 @@ def create_download_task(
                 ctx.report_progress(pct, None)
 
         if host is None:
+            # "exec" so the shell replaces itself with stdbuf/curl — that
+            # way SIGTERM from proc.terminate() reaches the curl process
+            # directly rather than being absorbed by an intermediate /bin/sh.
             proc = await asyncio.create_subprocess_exec(
-                "sh", "-c", cmd,
+                "sh", "-c", "exec " + cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

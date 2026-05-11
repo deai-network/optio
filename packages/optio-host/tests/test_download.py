@@ -413,3 +413,36 @@ async def test_download_execute_no_host_404_no_cleanup_does_not_call_remove(
     with pytest.raises(DownloadFailed):
         await task.execute(ctx)
     assert called["n"] == 0
+
+
+async def test_download_execute_no_host_cancel_mid_stream(slow_http_server, tmp_path):
+    from optio_host.download import create_download_task
+
+    target = tmp_path / "out.bin"
+    task = create_download_task(
+        process_id="p.download-0",
+        name="download big.bin",
+        url=f"{slow_http_server}/big.bin",
+        target=str(target),
+        host=None,
+    )
+    ctx = _RecordingCtx()
+
+    async def _run():
+        await task.execute(ctx)
+
+    run_t = asyncio.create_task(_run())
+    for _ in range(200):
+        if any(p is not None and p > 0 for p, _m in ctx.progress):
+            break
+        await asyncio.sleep(0.05)
+    else:
+        pytest.fail("did not see any numeric progress before cancelling")
+
+    start = _time.monotonic()
+    ctx.cancellation_flag.set()
+    await asyncio.wait_for(run_t, timeout=10.0)
+    elapsed = _time.monotonic() - start
+
+    assert elapsed < 8.0, f"cancel took too long: {elapsed:.1f}s"
+    assert not target.exists()
