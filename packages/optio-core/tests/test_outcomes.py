@@ -124,3 +124,46 @@ async def test_cancel_returns_ok_when_scheduled(mongo_db):
 
     proc = await fw.get_process("sched1")
     assert proc["status"]["state"] == "cancelled"
+
+
+# --------------------------------------------------------------------- dismiss
+
+
+@pytest.mark.asyncio
+async def test_dismiss_not_found(mongo_db):
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix="dismisstest")
+    out = await fw.dismiss("nonexistent")
+    assert out == DismissOutcome(ok=False, reason="not-found")
+
+
+@pytest.mark.asyncio
+async def test_dismiss_not_dismissable_when_idle(mongo_db):
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix="dismisstest2")
+    async def noop(ctx):
+        pass
+    await fw.adhoc_define(
+        TaskInstance(execute=noop, process_id="idle1", name="Idle"),
+    )
+
+    out = await fw.dismiss("idle1")
+    assert out == DismissOutcome(ok=False, reason="not-dismissable")
+
+
+@pytest.mark.asyncio
+async def test_dismiss_ok_from_done(mongo_db):
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix="dismisstest3")
+    coll = mongo_db["dismisstest3_processes"]
+    await coll.insert_one({
+        "_id": ObjectId(),
+        "processId": "done1",
+        "status": {"state": "done"},
+    })
+
+    out = await fw.dismiss("done1")
+    assert out == DismissOutcome(ok=True)
+
+    proc = await fw.get_process("done1")
+    assert proc["status"]["state"] == "idle"

@@ -221,10 +221,9 @@ async def test_cancel_not_cancellable_by_flag(fake_optio):
 @pytest.mark.asyncio
 async def test_dismiss_success(fake_optio, sample_idle_proc):
     from optio_core._engine_service import OptioEngineService
-    sample_idle_proc["status"] = {"state": "done"}
     after = dict(sample_idle_proc)
     after["status"] = {"state": "idle"}
-    fake_optio.collection.find_one = AsyncMock(side_effect=[sample_idle_proc, after])
+    fake_optio.collection.find_one = AsyncMock(return_value=after)
     svc = OptioEngineService(fake_optio)
     result = await svc.dismiss(DismissParams.model_validate({"processId": "p1"}))
     assert result.root.ok is True
@@ -233,7 +232,7 @@ async def test_dismiss_success(fake_optio, sample_idle_proc):
 @pytest.mark.asyncio
 async def test_dismiss_not_found(fake_optio):
     from optio_core._engine_service import OptioEngineService
-    fake_optio.collection.find_one = AsyncMock(return_value=None)
+    fake_optio.dismiss = AsyncMock(return_value=DismissOutcome(ok=False, reason="not-found"))
     svc = OptioEngineService(fake_optio)
     result = await svc.dismiss(DismissParams.model_validate({"processId": "missing"}))
     assert result.root.ok is False
@@ -241,9 +240,9 @@ async def test_dismiss_not_found(fake_optio):
 
 
 @pytest.mark.asyncio
-async def test_dismiss_not_dismissable(fake_optio, sample_running_proc):
+async def test_dismiss_not_dismissable(fake_optio):
     from optio_core._engine_service import OptioEngineService
-    fake_optio.collection.find_one = AsyncMock(return_value=sample_running_proc)
+    fake_optio.dismiss = AsyncMock(return_value=DismissOutcome(ok=False, reason="not-dismissable"))
     svc = OptioEngineService(fake_optio)
     result = await svc.dismiss(DismissParams.model_validate({"processId": "p1"}))
     assert result.root.ok is False

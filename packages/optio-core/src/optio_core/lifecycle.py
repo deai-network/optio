@@ -27,7 +27,9 @@ from optio_core.store import (
     get_process_by_process_id, update_status, clear_result_fields,
     append_log, compute_expire_at,
 )
-from optio_core.state_machine import ACTIVE_STATES, CANCELLABLE_STATES, END_STATES
+from optio_core.state_machine import (
+    ACTIVE_STATES, CANCELLABLE_STATES, DISMISSABLE_STATES, END_STATES,
+)
 from optio_core.executor import Executor
 from clamator_protocol import RpcServerCore
 from clamator_over_redis import RedisRpcServer
@@ -564,9 +566,22 @@ class Optio:
                 await asyncio.sleep(0.1)
             return len(pending)
 
-    async def dismiss(self, process_id: str) -> None:
-        """Dismiss a completed process (reset to idle)."""
-        await self._handle_dismiss({"processId": process_id})
+    async def dismiss(self, process_id: str) -> DismissOutcome:
+        """Dismiss a completed process (reset to idle). Returns DismissOutcome."""
+        proc = await self._resolve(process_id)
+        if proc is None:
+            return DismissOutcome(ok=False, reason="not-found")
+        if proc["status"]["state"] not in DISMISSABLE_STATES:
+            return DismissOutcome(ok=False, reason="not-dismissable")
+
+        await clear_result_fields(
+            self._config.mongo_db, self._config.prefix, proc["_id"],
+        )
+        await update_status(
+            self._config.mongo_db, self._config.prefix, proc["_id"],
+            ProcessStatus(state="idle"),
+        )
+        return DismissOutcome(ok=True)
 
     async def resync(
         self,
@@ -886,28 +901,6 @@ class Optio:
     async def _handle_launch_by_process_id(self, process_id: str, resume: bool = False) -> None:
         # Background-spawn the executor; scheduler hook (Task 8 introduces an outcome-aware adapter).
         asyncio.create_task(self._executor.launch_process(process_id, resume=resume))
-
-    async def _handle_dismiss(self, payload: dict) -> None:
-        process_id = payload.get("processId")
-        if not process_id:
-            return
-
-        proc = await get_process_by_process_id(
-            self._config.mongo_db, self._config.prefix, process_id,
-        )
-        if proc is None:
-            return
-
-        if proc["status"]["state"] not in END_STATES:
-            return
-
-        await clear_result_fields(
-            self._config.mongo_db, self._config.prefix, proc["_id"],
-        )
-        await update_status(
-            self._config.mongo_db, self._config.prefix, proc["_id"],
-            ProcessStatus(state="idle"),
-        )
 
     async def _handle_resync(self, payload: dict) -> None:
         clean = payload.get("clean", False)

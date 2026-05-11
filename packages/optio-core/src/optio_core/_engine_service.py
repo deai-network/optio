@@ -25,7 +25,7 @@ from optio_core._generated.optio_engine import (
     ResyncParams,
 )
 from optio_core.models import LaunchBlocked
-from optio_core.state_machine import LAUNCHABLE_STATES, DISMISSABLE_STATES
+from optio_core.state_machine import LAUNCHABLE_STATES
 
 if TYPE_CHECKING:
     from optio_core.lifecycle import Optio
@@ -115,16 +115,15 @@ class OptioEngineService(OptioEngineServiceBase):
 
     # --------------------------------------------------------------- dismiss
     async def dismiss(self, params: DismissParams) -> DismissResult:
+        outcome = await self._optio.dismiss(params.process_id)
+        if not outcome.ok:
+            return DismissResult.model_validate(
+                {"ok": False, "reason": outcome.reason}
+            )
         proc = await self._optio._resolve(params.process_id)
-        if proc is None:
-            return DismissResult.model_validate({"ok": False, "reason": "not-found"})
-        if proc["status"]["state"] not in DISMISSABLE_STATES:
-            return DismissResult.model_validate({"ok": False, "reason": "not-dismissable"})
-
-        await self._optio.dismiss(proc["processId"])
-
-        updated = await self._optio._resolve(proc["processId"])
-        return DismissResult.model_validate({"ok": True, "process": _to_process_dict(updated)})
+        return DismissResult.model_validate(
+            {"ok": True, "process": _to_process_dict(proc)}
+        )
 
     # --------------------------------------------------------------- resync
     async def resync(self, params: ResyncParams) -> None:
