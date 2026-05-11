@@ -263,3 +263,47 @@ async def test_cancel_concurrent_calls_are_idempotent(mongo_db):
     assert parent_proc["status"]["state"] == "cancelled"
 
     await optio.shutdown(grace_seconds=0.5)
+
+
+async def test_run_child_refuses_after_parent_cancel_when_auto(mongo_db):
+    """When parent has auto_cancel_children=True and its cancellation_flag
+    is set, ctx.run_child returns 'cancelled' immediately without creating
+    a child doc."""
+    prefix = "p3t1"
+    spawn_after_cancel = asyncio.Event()
+    refusal_result: dict = {}
+
+    async def short_child(ctx):
+        ctx.report_progress(50, "doing")
+
+    async def parent(ctx):
+        # Wait for cancel.
+        while ctx.should_continue():
+            await asyncio.sleep(0.01)
+        # Now flag is set; try to spawn another child.
+        state = await ctx.run_child(
+            execute=short_child, process_id="late_child", name="Late",
+        )
+        refusal_result["state"] = state
+        spawn_after_cancel.set()
+
+    parent_inst = TaskInstance(execute=parent, process_id="parent", name="Parent")
+    child_inst = TaskInstance(execute=short_child, process_id="late_child", name="Late")
+
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix=prefix, cancel_grace_seconds=2.0)
+    await upsert_process(mongo_db, prefix, parent_inst)
+    optio._executor.register_tasks([parent_inst, child_inst])
+
+    runner = asyncio.create_task(optio.launch_and_wait("parent"))
+    await asyncio.sleep(0.1)
+
+    await optio.cancel("parent")
+    await spawn_after_cancel.wait()
+
+    assert refusal_result["state"] == "cancelled"
+    late_proc = await get_process_by_process_id(mongo_db, prefix, "late_child")
+    assert late_proc is None, "no child doc should exist for refused run_child"
+
+    await runner
+    await optio.shutdown(grace_seconds=0.5)
