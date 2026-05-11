@@ -78,3 +78,171 @@ async def test_smart_install_check_against_real_localhost(tmp_workdir):
     assert kind in ("ok", "download")
     if kind == "download":
         assert url and url.startswith("https://")
+
+
+# ---------------------------------------------------------------------------
+# _install_opencode_from_zip integration tests (real curl + fake zip server).
+# ---------------------------------------------------------------------------
+
+import asyncio
+import hashlib
+import io
+import os
+import threading
+import zipfile
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+
+@pytest.fixture
+def zip_server(tmp_path):
+    """Serve a directory over HTTP. Tests write zips into it."""
+    served = tmp_path / "zip_served"
+    served.mkdir()
+
+    class Handler(SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=str(served), **kwargs)
+
+        def log_message(self, format, *args):
+            pass
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{port}", served
+    finally:
+        httpd.shutdown()
+        thread.join(timeout=2)
+
+
+def _make_fake_opencode_zip(target_path, binary_content: bytes):
+    """Build a zip with bin/opencode at target_path (matching real layout)."""
+    with zipfile.ZipFile(target_path, "w") as zf:
+        zf.writestr("bin/opencode", binary_content)
+        zf.writestr("package.json", '{"name":"opencode","version":"0.0.0-test"}')
+
+
+class _ExecutingFakeCtx:
+    """Fake ProcessContext whose run_child actually awaits the execute fn.
+
+    download_file routes through here in our test: parent ctx receives
+    run_child, which we implement by allocating a child sub-ctx and
+    awaiting ``execute(sub_ctx)`` directly. Sufficient for an integration
+    test of _install_opencode_from_zip that doesn't need real Mongo/Optio.
+    """
+
+    def __init__(self, *, process_id="root"):
+        self.process_id = process_id
+        self._child_counter = {"next": 0}
+        self.progress = []
+        self.cancellation_flag = asyncio.Event()
+
+    def report_progress(self, percent, message=None):
+        self.progress.append((percent, message))
+
+    def should_continue(self) -> bool:
+        return not self.cancellation_flag.is_set()
+
+    async def run_child(self, execute, process_id, name, *, description=None, **kw):
+        sub = _ExecutingFakeCtx(process_id=process_id)
+        # share the cancellation flag so parent-set cancel propagates manually
+        sub.cancellation_flag = self.cancellation_flag
+        self._child_counter["next"] += 1
+        try:
+            await execute(sub)
+        except Exception as e:
+            # Mirror executor's wrapping: structured exceptions are lost.
+            raise RuntimeError(
+                f"Child process '{name}' failed: {e!r}"
+            ) from e
+        return "done"
+
+
+async def test_install_opencode_from_zip_happy_path(zip_server, tmp_path):
+    from optio_host.context import HookContext
+    from optio_host.host import LocalHost
+    from optio_opencode.host_actions import _install_opencode_from_zip
+
+    base_url, served = zip_server
+    # Pretend "binary" is a tiny shell script so we can exercise chmod +x +
+    # actually invoke it after install.
+    binary = b"#!/bin/sh\necho fake-opencode\n"
+    _make_fake_opencode_zip(served / "opencode-linux-x64.zip", binary)
+    url = f"{base_url}/opencode-linux-x64.zip"
+
+    # Use a per-test HOME so we don't clobber the real ~/.local/bin/opencode.
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    saved_home = os.environ.get("HOME")
+    os.environ["HOME"] = str(fake_home)
+    try:
+        taskdir = tmp_path / "taskdir"
+        taskdir.mkdir()
+        host = LocalHost(taskdir=str(taskdir))
+        await host.setup_workdir()
+
+        parent = _ExecutingFakeCtx(process_id="opencode.task")
+        hook_ctx = HookContext(parent, host)
+
+        path = await _install_opencode_from_zip(hook_ctx, url)
+
+        assert path == str(fake_home / ".local" / "bin" / "opencode")
+        # Installed and executable.
+        st = os.stat(path)
+        assert st.st_mode & 0o111, "install path is not executable"
+        with open(path, "rb") as fh:
+            assert fh.read() == binary
+    finally:
+        if saved_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = saved_home
+
+
+async def test_install_opencode_from_zip_cleans_up_tempdir(zip_server, tmp_path):
+    """The temp dir created on the host should be removed after install."""
+    from optio_host.context import HookContext
+    from optio_host.host import LocalHost
+    from optio_opencode.host_actions import _install_opencode_from_zip
+
+    base_url, served = zip_server
+    _make_fake_opencode_zip(
+        served / "opencode-linux-x64.zip", b"#!/bin/sh\nexit 0\n",
+    )
+    url = f"{base_url}/opencode-linux-x64.zip"
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    saved_home = os.environ.get("HOME")
+    os.environ["HOME"] = str(fake_home)
+    try:
+        taskdir = tmp_path / "taskdir"
+        taskdir.mkdir()
+        host = LocalHost(taskdir=str(taskdir))
+        await host.setup_workdir()
+        parent = _ExecutingFakeCtx()
+        hook_ctx = HookContext(parent, host)
+        # Capture every mktemp -d call so we can verify cleanup of its result.
+        tmpdirs: list[str] = []
+        orig_run = host.run_command
+
+        async def spy(command, **kwargs):
+            r = await orig_run(command, **kwargs)
+            if command.startswith("mktemp -d"):
+                tmpdirs.append(r.stdout.strip())
+            return r
+
+        host.run_command = spy  # type: ignore[method-assign]
+
+        await _install_opencode_from_zip(hook_ctx, url)
+
+        assert tmpdirs, "no mktemp -d call observed"
+        for td in tmpdirs:
+            assert not os.path.exists(td), f"tempdir {td!r} not cleaned up"
+    finally:
+        if saved_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = saved_home

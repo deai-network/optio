@@ -74,6 +74,68 @@ async def _smart_install_check(host: "Host") -> tuple[str, str | None]:
     )
 
 
+async def _install_opencode_from_zip(hook_ctx, url: str) -> str:
+    """Download the opencode release archive from ``url`` and install it.
+
+    Uniform for LocalHost and RemoteHost:
+      1. mktemp -d on the host.
+      2. ``hook_ctx.download_file(url, <tmpdir>/opencode.zip)`` (spawns the
+         child download task — emits its own progress on the child ctx).
+      3. unzip on the host (archive layout: ``bin/opencode`` + sidecars).
+      4. mkdir -p ``~/.local/bin``; move binary there; chmod +x.
+      5. Remove the tempdir.
+
+    Returns the absolute install path on the host.
+    """
+    host = hook_ctx._host
+    r = await host.run_command("mktemp -d -t optio-opencode-XXXXXX")
+    if r.exit_code != 0:
+        raise RuntimeError(
+            f"mktemp -d failed (exit {r.exit_code}): {r.stderr.strip()[:200]}"
+        )
+    tmpdir = r.stdout.strip()
+    zip_path = f"{tmpdir}/opencode.zip"
+    try:
+        await hook_ctx.download_file(url, zip_path)
+
+        r = await host.run_command(
+            f"unzip -o -q {shlex.quote(zip_path)} -d {shlex.quote(tmpdir)}"
+        )
+        if r.exit_code != 0:
+            raise RuntimeError(
+                f"unzip failed (exit {r.exit_code}): {r.stderr.strip()[:200]}"
+            )
+
+        host_home = await host.resolve_host_home()
+        install_dir = f"{host_home}/.local/bin"
+        install_path = f"{install_dir}/opencode"
+        r = await host.run_command(f"mkdir -p {shlex.quote(install_dir)}")
+        if r.exit_code != 0:
+            raise RuntimeError(
+                f"mkdir -p {install_dir!r} failed (exit {r.exit_code}): "
+                f"{r.stderr.strip()[:200]}"
+            )
+        src = f"{tmpdir}/bin/opencode"
+        r = await host.run_command(
+            f"mv -f {shlex.quote(src)} {shlex.quote(install_path)}"
+        )
+        if r.exit_code != 0:
+            raise RuntimeError(
+                f"mv {src!r} → {install_path!r} failed (exit {r.exit_code}): "
+                f"{r.stderr.strip()[:200]}"
+            )
+        r = await host.run_command(f"chmod +x {shlex.quote(install_path)}")
+        if r.exit_code != 0:
+            raise RuntimeError(
+                f"chmod +x {install_path!r} failed (exit {r.exit_code}): "
+                f"{r.stderr.strip()[:200]}"
+            )
+        return install_path
+    finally:
+        # Best-effort cleanup. Don't mask a primary exception with cleanup errors.
+        await host.run_command(f"rm -rf {shlex.quote(tmpdir)}")
+
+
 async def detect_target(host: "Host") -> OpencodeTarget:
     """Detect the opencode build target (os/arch/musl/baseline) for ``host``.
 
