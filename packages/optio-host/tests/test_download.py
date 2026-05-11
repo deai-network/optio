@@ -161,3 +161,9 @@ async def test_download_file_rejects_workdir_escape_without_spawning():
     with pytest.raises(ValueError):
         await h.download_file("https://example/foo", "../escape")
     assert ctx.run_child_calls == []
+
+
+def test_download_file_appears_on_hook_context_protocol():
+    from optio_host.context import HookContextProtocol
+    methods = {m for m in dir(HookContextProtocol) if not m.startswith("_")}
+    assert "download_file" in methods

@@ -234,6 +234,14 @@ class HookContextProtocol(Protocol):
     ) -> "str | RunResult": ...
     async def read_from_host(self, path: str, *, silent: bool = False) -> bytes: ...
     async def read_text_from_host(self, path: str, *, silent: bool = False) -> str: ...
+    async def download_file(
+        self,
+        url: str,
+        target: str,
+        *,
+        description: str | None = None,
+        cleanup_on_fail: bool = True,
+    ) -> None: ...
 
 
 def _resolve_target_path(path: str, workdir: str, host_home: str) -> str:
