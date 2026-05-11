@@ -559,10 +559,25 @@ class ParallelGroup:
                     state=state,
                     error=None if state == "done" else f"Child {state}",
                 ))
+                breached = False
                 if state == "failed" and not self._survive_failure:
                     self._failed = True
+                    breached = True
                 if state == "cancelled" and not self._survive_cancel:
                     self._failed = True
+                    breached = True
+                # alpha at group level: when group's own survive_*
+                # aggregate is breached, invoke notify_parent_abnormal so
+                # the parent's cancel propagation reaches sibling spawns.
+                # spawn's run_child uses survive_*=True per-child so the
+                # execute_child alpha path does not fire for individual
+                # children of a parallel_group.
+                if breached:
+                    executor = self._ctx._executor
+                    if executor is not None and executor._notify_parent_abnormal is not None:
+                        asyncio.create_task(
+                            executor._notify_parent_abnormal(self._ctx.process_id)
+                        )
             finally:
                 self._semaphore.release()
 
