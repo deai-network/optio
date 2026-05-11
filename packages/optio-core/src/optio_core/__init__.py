@@ -8,7 +8,6 @@ _instance = Optio()
 init = _instance.init
 run = _instance.run
 shutdown = _instance.shutdown
-on_command = _instance.on_command
 adhoc_define = _instance.adhoc_define
 adhoc_delete = _instance.adhoc_delete
 launch = _instance.launch
@@ -25,7 +24,7 @@ group_cancel_and_wait = _instance.group_cancel_and_wait
 
 __all__ = [
     "TaskInstance", "ChildResult", "LaunchBlocked",
-    "init", "run", "shutdown", "on_command",
+    "init", "run", "shutdown",
     "adhoc_define", "adhoc_delete",
     "launch", "launch_and_wait", "cancel", "dismiss", "resync",
     "get_process", "list_processes",

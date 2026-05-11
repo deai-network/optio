@@ -310,42 +310,6 @@ async def test_launch_passes_when_pid_unknown(mongo_db):
         await optio.launch("nope")
 
 
-async def test_handle_launch_blocked_logs_warning_and_does_not_launch(mongo_db, caplog):
-    """The Redis launch command consumer catches LaunchBlocked, logs a WARNING, and ACKs.
-
-    No process state transition occurs; no exception escapes _handle_launch.
-    """
-    optio = Optio()
-    await optio.init(mongo_db=mongo_db, prefix="test")
-
-    started = {"count": 0}
-
-    async def noop(ctx):
-        started["count"] += 1
-
-    task = TaskInstance(
-        execute=noop,
-        process_id="consumer1",
-        name="consumer1",
-        metadata={"project": "p1"},
-    )
-    await optio.adhoc_define(task)
-
-    caplog.set_level(logging.WARNING)
-    async with optio.block_launches({"project": "p1"}):
-        # _handle_launch is the dispatcher invoked by the Redis CommandConsumer.
-        await optio._handle_launch({"processId": "consumer1"})
-
-    # No process started.
-    assert started["count"] == 0
-
-    # A WARNING was emitted, naming the rejected processId.
-    assert any(
-        rec.levelno == logging.WARNING and "consumer1" in rec.message
-        for rec in caplog.records
-    ), [rec.message for rec in caplog.records]
-
-
 async def test_two_concurrent_blocks_both_required_to_unblock(mongo_db):
     """Two concurrent block_launches() with the same filter — exiting one
     keeps the block in force; both must exit before launches are accepted.
