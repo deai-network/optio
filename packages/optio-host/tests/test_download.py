@@ -233,3 +233,131 @@ def test_build_curl_cmd_includes_stdbuf_when_available(monkeypatch):
     )
     cmd = dl_mod._build_curl_cmd(url="https://example/foo", target="/tmp/out")
     assert cmd.startswith("stdbuf -oL curl ")
+
+
+# ---------------------------------------------------------------------------
+# Real-curl integration tests for _execute (no-host and host branches).
+# ---------------------------------------------------------------------------
+
+import asyncio
+import hashlib
+import os
+import threading
+import time as _time
+from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+
+@pytest.fixture
+def http_server(tmp_path):
+    """Serve ``tmp_path/served/`` over a thread-backed HTTP server.
+
+    Yields (base_url, served_dir).
+    """
+    served = tmp_path / "served"
+    served.mkdir()
+
+    class Handler(SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=str(served), **kwargs)
+
+        def log_message(self, format, *args):
+            pass
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{port}", served
+    finally:
+        httpd.shutdown()
+        thread.join(timeout=2)
+
+
+@pytest.fixture
+def slow_http_server(tmp_path):
+    """Serve a 50MB blob throttled per 64KB chunk with 50ms sleeps."""
+    served = tmp_path / "slow_served"
+    served.mkdir()
+    blob = os.urandom(50 * 1024 * 1024)
+    (served / "big.bin").write_bytes(blob)
+
+    class SlowHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            path = self.path.lstrip("/")
+            file_path = served / path
+            if not file_path.is_file():
+                self.send_error(404)
+                return
+            data = file_path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Content-Type", "application/octet-stream")
+            self.end_headers()
+            chunk = 64 * 1024
+            for i in range(0, len(data), chunk):
+                try:
+                    self.wfile.write(data[i:i + chunk])
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+                _time.sleep(0.05)
+
+        def log_message(self, format, *args):
+            pass
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), SlowHandler)
+    port = httpd.server_address[1]
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        httpd.shutdown()
+        thread.join(timeout=2)
+
+
+class _RecordingCtx:
+    """Fake ProcessContext for execute-level tests. Records report_progress."""
+
+    def __init__(self):
+        self.process_id = "p"
+        self.cancellation_flag = asyncio.Event()
+        self.progress = []
+
+    def report_progress(self, percent, message=None):
+        self.progress.append((percent, message))
+
+    def should_continue(self) -> bool:
+        return not self.cancellation_flag.is_set()
+
+
+async def test_download_execute_no_host_happy_path(http_server, tmp_path):
+    base_url, served = http_server
+    blob = os.urandom(4 * 1024 * 1024)
+    (served / "blob.bin").write_bytes(blob)
+    expected_sha = hashlib.sha256(blob).hexdigest()
+
+    from optio_host.download import create_download_task
+
+    target = tmp_path / "out.bin"
+    task = create_download_task(
+        process_id="p.download-0",
+        name="download blob.bin",
+        url=f"{base_url}/blob.bin",
+        target=str(target),
+        host=None,
+    )
+    ctx = _RecordingCtx()
+    await task.execute(ctx)
+
+    # Basename in the message is derived from the target path per design.
+    assert ctx.progress[0] == (None, "Downloading out.bin")
+    numeric = [p for p, m in ctx.progress[1:] if p is not None]
+    assert numeric, "expected at least one numeric progress report"
+    for a, b in zip(numeric, numeric[1:]):
+        assert a <= b, f"percent went backwards: {a} -> {b}"
+    assert numeric[-1] >= 99.0
+    assert target.exists()
+    assert hashlib.sha256(target.read_bytes()).hexdigest() == expected_sha
