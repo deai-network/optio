@@ -304,10 +304,15 @@ class Executor:
 
         Calls Task.cancel() on the tracked asyncio Task, awaits a bounded
         unwind, then writes the conditional 'failed' terminal state to
-        Mongo via _write_force_cancelled_state. Used only by the
-        Optio-level supervisor and by shutdown.
+        Mongo via _write_force_cancelled_state. After the local terminal
+        write, cascade unconditionally to direct active children —
+        captures both auto-propagate descendants (already in supervisor
+        map; idempotent) and opt-out descendants (only this cascade
+        reaches them).
         """
         from optio_core._force_cancel import _write_force_cancelled_state
+        from optio_core.store import list_direct_children
+        from optio_core.state_machine import ACTIVE_STATES
 
         task = self._running_tasks.get(oid)
         if task is not None and not task.done():
@@ -321,3 +326,13 @@ class Executor:
                 # update below is the source of truth.
                 pass
         await _write_force_cancelled_state(self._db, self._prefix, oid)
+
+        # Cascade to direct active children. Unconditional — force is force.
+        children = await list_direct_children(
+            self._db, self._prefix, oid, states=ACTIVE_STATES,
+        )
+        if children:
+            await asyncio.gather(
+                *(self.force_cancel(c["_id"]) for c in children),
+                return_exceptions=True,
+            )
