@@ -83,3 +83,34 @@ def create_download_task(
         cancellable=True,
         supports_resume=False,
     )
+
+
+def _parse_trace_line(raw: bytes) -> tuple[str, int] | None:
+    """Parse a single curl ``--trace-ascii -`` output line.
+
+    Returns:
+      ('length', N) on a content-length header line.
+      ('recv', N) on a "<= Recv data, N bytes" line.
+      None for any other line.
+
+    The matcher is lowercase + prefix-based to tolerate header-name case
+    variation and curl version drift on incidental fields.
+    """
+    if not raw:
+        return None
+    line = raw.decode("utf-8", errors="replace").strip().lower()
+    cl_prefix = "0000: content-length:"
+    if line.startswith(cl_prefix):
+        value = line[len(cl_prefix):].strip()
+        try:
+            return ("length", int(value))
+        except ValueError:
+            return None
+    if line.startswith("<= recv data,"):
+        parts = line.split()
+        if len(parts) >= 4:
+            try:
+                return ("recv", int(parts[3]))
+            except ValueError:
+                return None
+    return None

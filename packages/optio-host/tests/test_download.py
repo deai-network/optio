@@ -173,3 +173,29 @@ def test_create_download_task_and_downloadfailed_exported_from_optio_host():
     import optio_host
     assert hasattr(optio_host, "create_download_task")
     assert hasattr(optio_host, "DownloadFailed")
+
+
+def test_parse_trace_line_content_length():
+    from optio_host.download import _parse_trace_line
+    out = _parse_trace_line(b"0000: content-length: 1048576\r\n")
+    assert out == ("length", 1048576)
+
+
+def test_parse_trace_line_recv_data():
+    from optio_host.download import _parse_trace_line
+    out = _parse_trace_line(b"<= Recv data, 16384 bytes (0x4000)\n")
+    assert out == ("recv", 16384)
+
+
+def test_parse_trace_line_recv_data_lowercased():
+    from optio_host.download import _parse_trace_line
+    out = _parse_trace_line(b"<= recv data, 4096 bytes (0x1000)\n")
+    assert out == ("recv", 4096)
+
+
+def test_parse_trace_line_unrelated_returns_none():
+    from optio_host.download import _parse_trace_line
+    assert _parse_trace_line(b"== Info: Trying 1.2.3.4...\n") is None
+    assert _parse_trace_line(b"=> Send header, 123 bytes (0x7b)\n") is None
+    assert _parse_trace_line(b"") is None
+    assert _parse_trace_line(b"0000: GET /foo HTTP/1.1\n") is None
