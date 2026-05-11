@@ -156,7 +156,10 @@ class Optio:
             self.rpc_server.register_service(optio_engine_contract, self._engine_service)
 
         # Create executor
-        self._executor = Executor(mongo_db, prefix, services, optio=self)
+        self._executor = Executor(
+            mongo_db, prefix, services, optio=self,
+            notify_parent_abnormal=self.cancel,
+        )
 
         # Run migrations
         from optio_core.migrations import fw_migrations
@@ -378,40 +381,87 @@ class Optio:
             self._check_launch_blocks(task.metadata)
         await self._executor.launch_process(process_id, resume=resume)
 
-    async def cancel(self, process_id: str) -> CancelOutcome:
-        """Cancel a running or scheduled process. Returns a CancelOutcome
-        with ok=False/reason for unknown or non-cancellable inputs."""
+    async def cancel(
+        self,
+        process_id: str,
+        *,
+        inherit_deadline: float | None = None,
+    ) -> CancelOutcome:
+        """Cancel a running or scheduled process and propagate to direct
+        active children when the process's TaskInstance has
+        `auto_cancel_children=True`.
+
+        `inherit_deadline` is for internal recursion. External callers
+        omit it; a fresh deadline is computed from `cancel_grace_seconds`.
+        The same monotonic deadline is threaded through the entire subtree
+        so descendants share one grace budget.
+        """
         proc = await self._resolve(process_id)
         if proc is None:
             return CancelOutcome(ok=False, reason="not-found")
         if not proc.get("cancellable", True) or proc["status"]["state"] not in CANCELLABLE_STATES:
             return CancelOutcome(ok=False, reason="not-cancellable")
 
+        # Establish the effective deadline once for this cancel sweep.
+        effective_deadline = (
+            inherit_deadline
+            if inherit_deadline is not None
+            else time.monotonic() + self._config.cancel_grace_seconds
+        )
+
+        # Atomic conditional state-transition: only one concurrent caller
+        # can flip an active process. Losers return not-cancellable.
+        from optio_core.store import _collection
+        coll = _collection(self._config.mongo_db, self._config.prefix)
         current_state = proc["status"]["state"]
         if current_state == "scheduled":
             now = datetime.now(timezone.utc)
             expire_at = compute_expire_at(proc.get("ttlSeconds"), now=now)
-            await update_status(
-                self._config.mongo_db, self._config.prefix, proc["_id"],
-                ProcessStatus(state="cancelled", stopped_at=now),
-                expire_at=expire_at,
+            new_status = ProcessStatus(state="cancelled", stopped_at=now).to_dict()
+            set_doc: dict = {"status": new_status}
+            if expire_at is not None:
+                set_doc["expireAt"] = expire_at
+            result = await coll.update_one(
+                {"_id": proc["_id"], "status.state": "scheduled"},
+                {"$set": set_doc},
             )
-            return CancelOutcome(ok=True)
-
-        await update_status(
-            self._config.mongo_db, self._config.prefix, proc["_id"],
-            ProcessStatus(state="cancel_requested"),
-        )
-
-        found = self._executor.request_cancel_with_deadline(
-            proc["_id"],
-            deadline=time.monotonic() + self._config.cancel_grace_seconds,
-        )
-        if found:
-            await update_status(
-                self._config.mongo_db, self._config.prefix, proc["_id"],
-                ProcessStatus(state="cancelling"),
+            if result.modified_count == 0:
+                return CancelOutcome(ok=False, reason="not-cancellable")
+        else:
+            result = await coll.update_one(
+                {"_id": proc["_id"], "status.state": {"$in": list(CANCELLABLE_STATES)}},
+                {"$set": {"status": ProcessStatus(state="cancel_requested").to_dict()}},
             )
+            if result.modified_count == 0:
+                return CancelOutcome(ok=False, reason="not-cancellable")
+            found = self._executor.request_cancel_with_deadline(
+                proc["_id"], deadline=effective_deadline,
+            )
+            if found:
+                await update_status(
+                    self._config.mongo_db, self._config.prefix, proc["_id"],
+                    ProcessStatus(state="cancelling"),
+                )
+
+        # Downward propagation: recurse over active direct children unless
+        # this process's TaskInstance opts out. Unknown task → assume True
+        # (fail safe toward propagation, not orphan).
+        task = self._executor._task_registry.get(proc["processId"])
+        auto = task.auto_cancel_children if task is not None else True
+        if auto:
+            from optio_core.store import list_direct_children
+            children = await list_direct_children(
+                self._config.mongo_db, self._config.prefix,
+                proc["_id"], states=ACTIVE_STATES,
+            )
+            if children:
+                await asyncio.gather(
+                    *(
+                        self.cancel(c["processId"], inherit_deadline=effective_deadline)
+                        for c in children
+                    ),
+                    return_exceptions=True,
+                )
         return CancelOutcome(ok=True)
 
     async def cancel_and_wait(self, process_id: str) -> str | None:

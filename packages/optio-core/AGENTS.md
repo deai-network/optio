@@ -38,6 +38,29 @@ and the blob helpers to persist and restore checkpoint data.
 
 ---
 
+### TaskInstance.auto_cancel_children
+
+```python
+@dataclass
+class TaskInstance:
+    ...
+    auto_cancel_children: bool = True
+```
+
+When `True` (default), `lifecycle.cancel(this_process)` recurses to active direct children and cancels each. Recursion threads the same monotonic deadline through every level so descendants share one grace budget. Internal callers pass `inherit_deadline=...`; external callers omit it.
+
+When `False`, this task owns shutdown of its own children. After receiving cancel, the task's execute fn is responsible for cancelling/finalizing children within the parent's grace. If it does not, the force-cancel cascade catches every live descendant at grace expiry.
+
+`executor.force_cancel(oid)` walks `list_direct_children(oid, states=ACTIVE_STATES)` and recursively force-cancels each. Unconditional — no flag check. Idempotent at every touchpoint: `task.cancel()` is idempotent, `_write_force_cancelled_state` is a conditional Mongo update on `state in ACTIVE_STATES`.
+
+Upward propagation (alpha): abnormal child terminal (cancelled with `survive_cancel=False`, or failed with `survive_failure=False`) invokes `notify_parent_abnormal(parent_process_id)` — wired at `Executor` construction to `lifecycle.cancel`. For `parallel_group`, `ParallelGroup.spawn._run` fires alpha when the group's own `survive_*` aggregate is breached, because the per-spawn `run_child` hardcodes `survive_*=True` (so the executor-level alpha path does not fire for individual group children).
+
+`ctx.run_child` and `ParallelGroup.spawn` refuse to spawn new children when the parent's cancellation flag is set and `auto_cancel_children=True` — they return `"cancelled"` without inserting a child doc.
+
+Spec: `docs/2026-05-11-cancel-propagation-design.md`. Plan: `docs/2026-05-11-cancel-propagation-plan.md`.
+
+---
+
 ### InnerAuth (optio_core.models)
 
 ```python

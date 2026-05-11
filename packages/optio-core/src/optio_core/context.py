@@ -303,9 +303,28 @@ class ProcessContext:
         on_child_progress: Callable | None = None,
         description: str | None = None,
     ) -> str:
-        """Launch a sequential child process. Blocks until child completes."""
+        """Launch a sequential child process. Blocks until child completes.
+
+        If the parent's cancellation_flag is set and the parent's
+        TaskInstance has `auto_cancel_children=True` (default), refuse:
+        return `"cancelled"` without inserting a child doc. Tasks that opt
+        out of auto-propagation may still spawn during their own cancel
+        window.
+        """
         if self._executor is None:
             raise RuntimeError("Executor not set on context")
+        if self._cancellation_flag.is_set():
+            task = self._executor._task_registry.get(self.process_id)
+            auto = task.auto_cancel_children if task is not None else True
+            if auto:
+                from optio_core.store import append_log
+                await append_log(
+                    self._db, self._prefix, self._process_oid,
+                    "event",
+                    f"Refused to spawn child '{name}' (process_id={process_id}): "
+                    f"parent already cancelled",
+                )
+                return "cancelled"
         if on_child_progress is not None:
             self._set_child_callback(on_child_progress)
         return await self._executor.execute_child(
@@ -500,7 +519,28 @@ class ParallelGroup:
         params: dict[str, Any] | None = None,
         description: str | None = None,
     ) -> None:
-        """Add a child to the group. Blocks if max_concurrency reached."""
+        """Add a child to the group. Blocks if max_concurrency reached.
+
+        Refuses (records a 'cancelled' result, no DB doc) when the
+        parent's cancellation_flag is set and the parent's TaskInstance
+        has `auto_cancel_children=True`.
+        """
+        if self._ctx._cancellation_flag.is_set():
+            task_inst = self._ctx._executor._task_registry.get(self._ctx.process_id)
+            auto = task_inst.auto_cancel_children if task_inst is not None else True
+            if auto:
+                from optio_core.store import append_log
+                await append_log(
+                    self._ctx._db, self._ctx._prefix, self._ctx._process_oid,
+                    "event",
+                    f"Refused to spawn child '{name}' (process_id={process_id}): "
+                    f"parent already cancelled",
+                )
+                self._results.append(ChildResult(
+                    process_id=process_id, state="cancelled",
+                    error="parent cancelled",
+                ))
+                return
         await self._semaphore.acquire()
 
         async def _run():
@@ -519,10 +559,25 @@ class ParallelGroup:
                     state=state,
                     error=None if state == "done" else f"Child {state}",
                 ))
+                breached = False
                 if state == "failed" and not self._survive_failure:
                     self._failed = True
+                    breached = True
                 if state == "cancelled" and not self._survive_cancel:
                     self._failed = True
+                    breached = True
+                # alpha at group level: when group's own survive_*
+                # aggregate is breached, invoke notify_parent_abnormal so
+                # the parent's cancel propagation reaches sibling spawns.
+                # spawn's run_child uses survive_*=True per-child so the
+                # execute_child alpha path does not fire for individual
+                # children of a parallel_group.
+                if breached:
+                    executor = self._ctx._executor
+                    if executor is not None and executor._notify_parent_abnormal is not None:
+                        asyncio.create_task(
+                            executor._notify_parent_abnormal(self._ctx.process_id)
+                        )
             finally:
                 self._semaphore.release()
 

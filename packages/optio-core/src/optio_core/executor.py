@@ -42,11 +42,13 @@ class Executor:
         prefix: str,
         services: dict[str, Any],
         optio: "Optio | None" = None,
+        notify_parent_abnormal: Callable[..., Awaitable[Any]] | None = None,
     ):
         self._db = db
         self._prefix = prefix
         self._services = services
         self._optio = optio
+        self._notify_parent_abnormal = notify_parent_abnormal
         self._cancellation_flags: dict[ObjectId, _CancelEntry] = {}
         self._running_tasks: dict[ObjectId, asyncio.Task] = {}
         self._task_registry: dict[str, TaskInstance] = {}
@@ -261,6 +263,18 @@ class Executor:
         if parent_ctx._on_child_progress is not None:
             parent_ctx._notify_child_state_change(process_id, end_state)
 
+        # alpha: abnormal child terminal -> trigger parent's downward
+        # propagation via the lifecycle callback. The callback is
+        # idempotent for an already-cancel_requested parent.
+        abnormal = (
+            (end_state == "cancelled" and not survive_cancel)
+            or (end_state == "failed" and not survive_failure)
+        )
+        if abnormal and self._notify_parent_abnormal is not None:
+            asyncio.create_task(
+                self._notify_parent_abnormal(parent_ctx.process_id)
+            )
+
         if end_state == "failed" and not survive_failure:
             raise RuntimeError(f"Child process '{name}' failed")
         if end_state == "cancelled" and not survive_cancel:
@@ -290,10 +304,15 @@ class Executor:
 
         Calls Task.cancel() on the tracked asyncio Task, awaits a bounded
         unwind, then writes the conditional 'failed' terminal state to
-        Mongo via _write_force_cancelled_state. Used only by the
-        Optio-level supervisor and by shutdown.
+        Mongo via _write_force_cancelled_state. After the local terminal
+        write, cascade unconditionally to direct active children —
+        captures both auto-propagate descendants (already in supervisor
+        map; idempotent) and opt-out descendants (only this cascade
+        reaches them).
         """
         from optio_core._force_cancel import _write_force_cancelled_state
+        from optio_core.store import list_direct_children
+        from optio_core.state_machine import ACTIVE_STATES
 
         task = self._running_tasks.get(oid)
         if task is not None and not task.done():
@@ -307,3 +326,13 @@ class Executor:
                 # update below is the source of truth.
                 pass
         await _write_force_cancelled_state(self._db, self._prefix, oid)
+
+        # Cascade to direct active children. Unconditional — force is force.
+        children = await list_direct_children(
+            self._db, self._prefix, oid, states=ACTIVE_STATES,
+        )
+        if children:
+            await asyncio.gather(
+                *(self.force_cancel(c["_id"]) for c in children),
+                return_exceptions=True,
+            )

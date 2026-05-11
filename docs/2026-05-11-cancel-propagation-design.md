@@ -83,7 +83,6 @@ The query is read at force time. New children spawned in the opt-out window are 
 | `executor.force_cancel` | Recurses to direct active children unconditionally |
 | `executor.execute_child` | After abnormal child terminal, invokes `notify_parent_abnormal(parent_pid)` callback if wired |
 | `executor.__init__` | Accepts optional `notify_parent_abnormal: Callable[[str], Awaitable[None]]` |
-| `executor._execute_process` | At end-of-execute when end_state ≠ `done`, issues cooperative cancel on still-active direct children (orphan safety net for crash-during-opt-out path) |
 | `ctx.run_child` | When parent has `auto_cancel_children=True` and cancellation flag is set, refuse: log event, return `"cancelled"`, no child doc created |
 | `store` | New helper `list_direct_children(db, prefix, parent_oid, *, states=None)` |
 
@@ -135,7 +134,7 @@ No existing task currently requires `auto_cancel_children=False`. The flag is in
 | R6 | Opt-out parent: child spawned during opt-out window | Allowed. Caught by the force-cancel cascade's DB walk at force time |
 | R7 | TaskInstance not in registry at cancel time (e.g., task removed from generator after launch) | Default to `auto_cancel_children=True`. Fail safe toward propagation, not orphan |
 | R8 | Grandparent's cancel reaches an opt-out parent mid-tree | Grandparent's recursion stops at opt-out parent. Opt-out parent's children rejoin propagation only at force step via the cascade |
-| R9 | Opt-out parent's execute fn raises mid-handling without cleaning up children | `_execute_process` finally writes terminal `failed`; the end-of-execute orphan safety net cancels still-active direct children |
+| R9 | Opt-out parent's execute fn raises mid-handling | Cannot happen with current `parallel_group.__aexit__` (it blocks on gather even when an exception is propagating, so parent never leaves the body while children are alive). If parent is force-cancelled at grace expiry instead, the force-cancel cascade catches all live descendants. The originally-planned end-of-execute orphan safety net is therefore not implemented in this pass — see plan Phase 6 dropped note |
 
 ## Test plan
 
