@@ -64,3 +64,55 @@ async def test_cancel_parent_propagates_to_running_children(mongo_db):
     assert child_proc["status"]["state"] == "cancelled"
 
     await optio.shutdown(grace_seconds=0.5)
+
+
+async def test_cancel_optout_does_not_auto_cancel_children(mongo_db):
+    """Parent with auto_cancel_children=False keeps children running until
+    its own execute fn cancels them or force-cancel cascade catches them."""
+    prefix = "p2t3"
+    child_started = asyncio.Event()
+
+    async def long_child(ctx):
+        while ctx.should_continue():
+            await asyncio.sleep(0.01)
+
+    async def parent(ctx):
+        async with ctx.parallel_group(survive_cancel=True) as group:
+            await group.spawn(
+                execute=long_child, process_id="child", name="Child",
+            )
+            child_started.set()
+            while ctx.should_continue():
+                await asyncio.sleep(0.01)
+
+    parent_task = TaskInstance(
+        execute=parent, process_id="parent", name="Parent",
+        auto_cancel_children=False,
+    )
+    child_task = TaskInstance(execute=long_child, process_id="child", name="Child")
+
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix=prefix, cancel_grace_seconds=1.0)
+    await upsert_process(mongo_db, prefix, parent_task)
+    optio._executor.register_tasks([parent_task, child_task])
+
+    runner = asyncio.create_task(optio.launch_and_wait("parent"))
+    await child_started.wait()
+    await asyncio.sleep(0.1)
+
+    await optio.cancel("parent")
+
+    # Immediately after cancel: child should still be active because
+    # parent opted out.
+    child_proc = await get_process_by_process_id(mongo_db, prefix, "child")
+    assert child_proc["status"]["state"] in {"running", "scheduled"}, (
+        f"opt-out parent should not auto-cancel children, "
+        f"got child state={child_proc['status']['state']}"
+    )
+
+    # Cleanup: cancel child directly so parent can exit. The full
+    # opt-out terminal behavior is verified in Phase 5 (force-cancel
+    # cascade) and Phase 6 (orphan safety net).
+    await optio.cancel("child")
+    await asyncio.wait_for(runner, timeout=5.0)
+    await optio.shutdown(grace_seconds=0.5)
