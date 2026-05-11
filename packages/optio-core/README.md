@@ -81,7 +81,7 @@ Initialize Optio. Must be called before any other function.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `mongo_db` | `AsyncIOMotorDatabase` | required | Motor async database object |
-| `prefix` | `str` | `"optio"` | Namespace for collections (`{prefix}_processes`) and Redis streams (`{database}/{prefix}:commands`). Override if you need to avoid name collisions in a shared database. Redis streams are automatically scoped by both database name and prefix, so instances using different databases won't collide even on a shared Redis server. |
+| `prefix` | `str` | `"optio"` | Namespace for collections (`{prefix}_processes`) and clamator service streams (the `{database}/{prefix}` Redis key prefix). Override if you need to avoid name collisions in a shared database. Streams are automatically scoped by both database name and prefix, so instances using different databases won't collide even on a shared Redis server. |
 | `redis_url` | `str \| None` | `None` | If `None`, Redis features are disabled; use direct method calls only |
 | `services` | `dict[str, Any] \| None` | `{}` | Passed as `ctx.services` to all task execute functions |
 | `get_task_definitions` | `Callable[..., Awaitable[list[TaskInstance]]] \| None` | `None` | Async function `(services, metadata_filter) -> list[TaskInstance]`; called on init and resync. `metadata_filter` is `None` for a full sync, or a dict of metadata key/value pairs to restrict which task definitions are regenerated. **This is the most important part — this is where you declare the tasks that Optio will manage.** See the [TaskInstance definition](#taskinstance) under Data Types. |
@@ -496,21 +496,27 @@ proc = await adhoc_define(
 await launch("one-off-123")
 ```
 
-## RPC service
+## Remote Control via Clamator RPC
 
-In addition to the legacy `${prefix}:commands` redis stream consumer
-(see "Remote Control via Redis"), `optio-core` hosts a clamator
-`RedisRpcServer` listening on `${database}/${prefix}:cmds:optio-engine`.
-The server exposes the `optio-engine` service whose contract lives in
-`packages/optio-contracts/src/optio-engine-to-api.ts`. The Python ABC and
-Pydantic models are codegenned to
-`src/optio_core/_generated/optio_engine.py` (filename post-processed
-from `optio-engine.py` so Python's module-identifier rules accept it).
+When Redis is configured (by passing `redis_url` to `init()`), `optio-core`
+hosts a clamator `RedisRpcServer` at the `${database}/${prefix}` key prefix
+and registers the `optio-engine` service against it. External services
+control processes by holding a clamator client and calling typed methods:
+`launch`, `cancel`, `dismiss`, `resync`, `group_cancel`, `group_cancel_and_wait`,
+`block_launches`, `unblock_launches`. Results are discriminated unions —
+`ok: true` carries the updated process payload; `ok: false` carries a typed
+`reason` field (e.g. `"not-found"`, `"not-cancellable"`, `"launch-blocked"`,
+`"no-resume-support"`).
 
-The server is constructed automatically by `optio_core.init(...)` when
-`redis_url` is supplied, and is exposed at `optio_core.rpc_server` for
-applications that need to register additional services on the same
-server before calling `optio_core.run()`:
+The contract lives in `packages/optio-contracts/src/optio-engine-to-api.ts`.
+Generated TypeScript bindings ship from `optio-api` / `optio-contracts`;
+the Python ABC and Pydantic models are codegenned to
+`src/optio_core/_generated/optio_engine.py` (filename post-processed from
+`optio-engine.py` so Python's module-identifier rules accept it).
+
+The RPC server is exposed at `optio_core.rpc_server` for applications that
+need to register additional services on the same server before calling
+`optio_core.run()`:
 
 ```python
 import optio_core
@@ -520,54 +526,8 @@ optio_core.rpc_server.register_service(my_domain_contract, MyDomainService())
 await optio_core.run()
 ```
 
-During phases 2-4 of the engine-RPC migration the legacy
-`${prefix}:commands` stream and the new RPC server co-exist; both
-ingress paths are functional. Phase 5 retires the legacy stream.
-
-## Remote Control via Redis
-
-When Redis is enabled (by passing `redis_url` to `init()`), Optio listens for commands on the `{prefix}:commands` Redis stream. This allows external systems — other services, the REST API layer, or scripts — to control processes remotely. The `run()` method blocks and processes incoming commands until `shutdown()` is called.
-
-The following built-in commands are available out of the box:
-
-| Command | Payload | Description |
-|---------|---------|-------------|
-| `launch` | `{"processId": "..."}` | Launch a process (same as calling `launch()` directly) |
-| `cancel` | `{"processId": "..."}` | Cancel a running or scheduled process |
-| `dismiss` | `{"processId": "..."}` | Reset a completed process back to `idle` |
-| `resync` | `{"clean": false}` | Re-run the task generator and sync definitions |
-
-### Custom Commands
-
-You can also register your own command handlers for application-specific operations.
-
-#### `on_command()`
-
-```python
-optio_core.on_command(command_type: str, handler: Callable[..., Awaitable]) -> None
-```
-
-Register a custom command handler. The handler receives the command payload dict. Must be called after `init()` but before `run()`.
-
-**Example:**
-
-```python
-from optio_core import init, run, on_command
-
-async def handle_custom(payload):
-    print(f"Received: {payload}")
-
-async def main():
-    await init(
-        mongo_db=db,
-        redis_url="redis://localhost:6379",
-        get_task_definitions=get_tasks,
-    )
-
-    on_command("my_custom_command", handle_custom)
-
-    await run()  # Blocks, listens for commands on Redis stream "optio:commands"
-```
+Custom command verbs are added by registering an additional clamator
+service against `optio_core.rpc_server`.
 
 ## Data Types
 
