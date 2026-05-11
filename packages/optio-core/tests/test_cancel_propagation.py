@@ -222,3 +222,44 @@ async def test_cancel_shared_deadline_across_subtree(mongo_db):
 
     await asyncio.wait_for(runner, timeout=10.0)
     await optio.shutdown(grace_seconds=0.5)
+
+
+async def test_cancel_concurrent_calls_are_idempotent(mongo_db):
+    """Concurrent cancel(parent) calls do not corrupt state. One wins,
+    others return not-cancellable."""
+    prefix = "p2t6"
+    parent_running = asyncio.Event()
+
+    async def long_parent(ctx):
+        parent_running.set()
+        while ctx.should_continue():
+            await asyncio.sleep(0.01)
+
+    parent_inst = TaskInstance(execute=long_parent, process_id="parent", name="Parent")
+
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix=prefix, cancel_grace_seconds=2.0)
+    await upsert_process(mongo_db, prefix, parent_inst)
+    optio._executor.register_tasks([parent_inst])
+
+    runner = asyncio.create_task(optio.launch_and_wait("parent"))
+    await parent_running.wait()
+    await asyncio.sleep(0.05)
+
+    results = await asyncio.gather(
+        optio.cancel("parent"),
+        optio.cancel("parent"),
+        optio.cancel("parent"),
+    )
+    ok_count = sum(1 for r in results if r.ok)
+    not_cancellable_count = sum(
+        1 for r in results if not r.ok and r.reason == "not-cancellable"
+    )
+    assert ok_count == 1, f"expected exactly one ok, got {ok_count} ({results})"
+    assert ok_count + not_cancellable_count == 3
+
+    await asyncio.wait_for(runner, timeout=3.0)
+    parent_proc = await _wait_terminal(mongo_db, prefix, "parent")
+    assert parent_proc["status"]["state"] == "cancelled"
+
+    await optio.shutdown(grace_seconds=0.5)
