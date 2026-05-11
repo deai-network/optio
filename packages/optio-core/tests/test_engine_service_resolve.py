@@ -20,6 +20,7 @@ from bson import ObjectId
 from optio_core._engine_service import OptioEngineService
 from optio_core._generated.optio_engine import LaunchParams
 from optio_core.lifecycle import Optio
+from optio_core.models import LaunchOutcome
 
 
 _OBJECTID_RE = re.compile(r"^[a-fA-F0-9]{24}$")
@@ -60,7 +61,7 @@ def _make_service(coll: AsyncMock) -> OptioEngineService:
         return await coll.find_one({"processId": id_str})
     optio._resolve = fake_resolve
 
-    optio.launch = AsyncMock(return_value=None)
+    optio.launch = AsyncMock(return_value=LaunchOutcome(ok=True))
     return OptioEngineService(optio)
 
 

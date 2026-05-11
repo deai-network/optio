@@ -167,3 +167,64 @@ async def test_dismiss_ok_from_done(mongo_db):
 
     proc = await fw.get_process("done1")
     assert proc["status"]["state"] == "idle"
+
+
+# ---------------------------------------------------------------------- launch
+
+
+@pytest.mark.asyncio
+async def test_launch_not_found(mongo_db):
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix="launchtest")
+    out = await fw.launch("nonexistent")
+    assert out == LaunchOutcome(ok=False, reason="not-found")
+
+
+@pytest.mark.asyncio
+async def test_launch_not_launchable_when_already_running(mongo_db):
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix="launchtest2")
+    coll = mongo_db["launchtest2_processes"]
+    await coll.insert_one({
+        "_id": ObjectId(),
+        "processId": "running1",
+        "status": {"state": "running"},
+    })
+
+    out = await fw.launch("running1")
+    assert out == LaunchOutcome(ok=False, reason="not-launchable")
+
+
+@pytest.mark.asyncio
+async def test_launch_no_resume_support(mongo_db):
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix="launchtest3")
+    coll = mongo_db["launchtest3_processes"]
+    await coll.insert_one({
+        "_id": ObjectId(),
+        "processId": "noresume1",
+        "status": {"state": "idle"},
+        "supportsResume": False,
+    })
+
+    out = await fw.launch("noresume1", resume=True)
+    assert out == LaunchOutcome(ok=False, reason="no-resume-support")
+
+
+@pytest.mark.asyncio
+async def test_launch_blocked_outcome(mongo_db):
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix="launchtest4")
+    async def noop(ctx):
+        pass
+    await fw.adhoc_define(
+        TaskInstance(
+            execute=noop, process_id="blocked1", name="Blocked",
+            metadata={"project": "p1"},
+        ),
+    )
+
+    async with fw.block_launches({"project": "p1"}):
+        out = await fw.launch("blocked1")
+
+    assert out == LaunchOutcome(ok=False, reason="launch-blocked")

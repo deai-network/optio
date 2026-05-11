@@ -232,10 +232,10 @@ async def test_execute_child_blocked_when_parent_metadata_matches(mongo_db):
 
 
 async def test_launch_blocked_when_task_metadata_matches(mongo_db):
-    """Optio.launch raises LaunchBlocked synchronously for a task whose metadata matches a block.
+    """Optio.launch returns ok=False/reason=launch-blocked when task metadata matches a block.
 
     The check happens before the asyncio Task is scheduled, so the caller
-    observes the exception directly.
+    observes the typed outcome directly.
     """
     optio = Optio()
     await optio.init(mongo_db=mongo_db, prefix="test")
@@ -252,8 +252,9 @@ async def test_launch_blocked_when_task_metadata_matches(mongo_db):
     await optio.adhoc_define(task)
 
     async with optio.block_launches({"project": "p1"}):
-        with pytest.raises(LaunchBlocked):
-            await optio.launch("launch1")
+        out = await optio.launch("launch1")
+    assert out.ok is False
+    assert out.reason == "launch-blocked"
 
 
 async def test_launch_and_wait_blocked_when_task_metadata_matches(mongo_db):

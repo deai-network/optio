@@ -81,7 +81,7 @@ def fake_optio(sample_idle_proc):
         return await coll.find_one({"processId": id_str})
     optio._resolve = fake_resolve
 
-    optio.launch = AsyncMock(return_value=None)
+    optio.launch = AsyncMock(return_value=LaunchOutcome(ok=True))
     optio.cancel = AsyncMock(return_value=CancelOutcome(ok=True))
     optio.dismiss = AsyncMock(return_value=DismissOutcome(ok=True))
     optio.resync = AsyncMock(return_value=None)
@@ -95,31 +95,30 @@ def fake_optio(sample_idle_proc):
 
 @pytest.mark.asyncio
 async def test_launch_by_objectid_hex(fake_optio, sample_idle_proc):
-    """Verify _resolve accepts a 24-char hex ObjectId and queries _id, not processId."""
+    """Adapter passes the hex id through to Optio.launch unchanged; the resolver
+    on Optio (not on the adapter) handles the ObjectId-vs-string distinction."""
     from optio_core._engine_service import OptioEngineService
     running = dict(sample_idle_proc)
     running["status"] = {"state": "scheduled"}
-    fake_optio.collection.find_one = AsyncMock(side_effect=[sample_idle_proc, running])
+    # Post-success _resolve happens via the fake_resolve → find_one path.
+    fake_optio.collection.find_one = AsyncMock(return_value=running)
 
     svc = OptioEngineService(fake_optio)
     hex_id = str(sample_idle_proc["_id"])
     result = await svc.launch(LaunchParams.model_validate({"processId": hex_id}))
 
     assert result.root.ok is True
-    # First find_one query mentions _id (ObjectId branch), not processId (string branch).
-    first_query = fake_optio.collection.find_one.call_args_list[0][0][0]
-    assert "_id" in first_query
+    fake_optio.launch.assert_awaited_once_with(hex_id, resume=False)
 
 
 @pytest.mark.asyncio
 async def test_launch_success(fake_optio, sample_idle_proc):
-    """launch on an idle process returns ok=True with the post-mutation doc."""
+    """launch ok=True path returns the post-mutation proc as the wire payload."""
     from optio_core._engine_service import OptioEngineService
 
-    # Sequence: first find_one returns idle, second (post-launch) returns running.
     running = dict(sample_idle_proc)
     running["status"] = {"state": "scheduled"}
-    fake_optio.collection.find_one = AsyncMock(side_effect=[sample_idle_proc, running])
+    fake_optio.collection.find_one = AsyncMock(return_value=running)
 
     svc = OptioEngineService(fake_optio)
     result = await svc.launch(LaunchParams.model_validate({"processId": "p1"}))
@@ -133,30 +132,27 @@ async def test_launch_success(fake_optio, sample_idle_proc):
 @pytest.mark.asyncio
 async def test_launch_not_found(fake_optio):
     from optio_core._engine_service import OptioEngineService
-    fake_optio.collection.find_one = AsyncMock(return_value=None)
+    fake_optio.launch = AsyncMock(return_value=LaunchOutcome(ok=False, reason="not-found"))
     svc = OptioEngineService(fake_optio)
     result = await svc.launch(LaunchParams.model_validate({"processId": "missing"}))
     assert result.root.ok is False
     assert result.root.reason == "not-found"
-    fake_optio.launch.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_launch_not_launchable(fake_optio, sample_running_proc):
+async def test_launch_not_launchable(fake_optio):
     from optio_core._engine_service import OptioEngineService
-    fake_optio.collection.find_one = AsyncMock(return_value=sample_running_proc)
+    fake_optio.launch = AsyncMock(return_value=LaunchOutcome(ok=False, reason="not-launchable"))
     svc = OptioEngineService(fake_optio)
     result = await svc.launch(LaunchParams.model_validate({"processId": "p1"}))
     assert result.root.ok is False
     assert result.root.reason == "not-launchable"
-    fake_optio.launch.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_launch_no_resume_support(fake_optio, sample_idle_proc):
+async def test_launch_no_resume_support(fake_optio):
     from optio_core._engine_service import OptioEngineService
-    sample_idle_proc["supportsResume"] = False
-    fake_optio.collection.find_one = AsyncMock(return_value=sample_idle_proc)
+    fake_optio.launch = AsyncMock(return_value=LaunchOutcome(ok=False, reason="no-resume-support"))
     svc = OptioEngineService(fake_optio)
     result = await svc.launch(LaunchParams.model_validate({"processId": "p1", "resume": True}))
     assert result.root.ok is False
@@ -164,10 +160,9 @@ async def test_launch_no_resume_support(fake_optio, sample_idle_proc):
 
 
 @pytest.mark.asyncio
-async def test_launch_blocked(fake_optio, sample_idle_proc):
+async def test_launch_blocked(fake_optio):
     from optio_core._engine_service import OptioEngineService
-    fake_optio.collection.find_one = AsyncMock(return_value=sample_idle_proc)
-    fake_optio.launch = AsyncMock(side_effect=LaunchBlocked("blocked by test"))
+    fake_optio.launch = AsyncMock(return_value=LaunchOutcome(ok=False, reason="launch-blocked"))
     svc = OptioEngineService(fake_optio)
     result = await svc.launch(LaunchParams.model_validate({"processId": "p1"}))
     assert result.root.ok is False
@@ -351,18 +346,20 @@ async def test_unblock_launches_returns_count(fake_optio):
 
 @pytest.mark.asyncio
 async def test_launch_redelivery_returns_not_launchable(fake_optio, sample_idle_proc):
-    """First launch transitions idle→scheduled; redelivered launch sees scheduled and returns not-launchable."""
+    """First launch returns ok=True; redelivered launch sees scheduled state
+    and returns not-launchable. With outcome-based contract, Optio.launch
+    returns the typed reason; the adapter passes it through unchanged."""
     from optio_core._engine_service import OptioEngineService
 
     after = dict(sample_idle_proc)
     after["status"] = {"state": "scheduled"}
 
-    # Two find_one's per call (pre-check + post-mutation re-read).
-    # First call: idle, scheduled. Second call: scheduled (redelivery sees the scheduled doc).
-    fake_optio.collection.find_one = AsyncMock(side_effect=[
-        sample_idle_proc, after,  # first call
-        after,                    # second call's pre-check sees scheduled
+    fake_optio.launch = AsyncMock(side_effect=[
+        LaunchOutcome(ok=True),
+        LaunchOutcome(ok=False, reason="not-launchable"),
     ])
+    # Post-success _resolve returns the post-mutation proc.
+    fake_optio.collection.find_one = AsyncMock(return_value=after)
 
     svc = OptioEngineService(fake_optio)
     first = await svc.launch(LaunchParams.model_validate({"processId": "p1"}))

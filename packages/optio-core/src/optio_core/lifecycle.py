@@ -29,6 +29,7 @@ from optio_core.store import (
 )
 from optio_core.state_machine import (
     ACTIVE_STATES, CANCELLABLE_STATES, DISMISSABLE_STATES, END_STATES,
+    LAUNCHABLE_STATES,
 )
 from optio_core.executor import Executor
 from clamator_protocol import RpcServerCore
@@ -256,6 +257,16 @@ class Optio:
                     msg += f"; reason={entry.reason}"
                 raise LaunchBlocked(msg)
 
+    def _matches_block(self, metadata: ProcessMetadataFilter | None) -> bool:
+        """Return True if `metadata` matches any registered launch block.
+        Non-raising sibling of `_check_launch_blocks`. Delegates so that any
+        monkeypatching of `_check_launch_blocks` in tests is honored here too."""
+        try:
+            self._check_launch_blocks(metadata)
+        except LaunchBlocked:
+            return True
+        return False
+
     async def _load_persisted_blocks(self) -> None:
         """Load every record from `{prefix}_launch_blocks` into the in-memory
         `_launch_blocks` dict. Each record gets a fresh UUID token. Empty or
@@ -332,18 +343,27 @@ class Optio:
         await delete_process(self._config.mongo_db, self._config.prefix, process_id)
         self._executor._task_registry.pop(process_id, None)
 
-    async def launch(self, process_id: str, resume: bool = False) -> None:
-        """Fire-and-forget launch. Returns immediately, process runs in background.
+    async def launch(self, process_id: str, resume: bool = False) -> LaunchOutcome:
+        """Fire-and-forget launch. Returns LaunchOutcome with a typed reason on
+        precondition failure (not-found, not-launchable, no-resume-support,
+        launch-blocked); on success the executor task is scheduled in the
+        background and the outcome is ok=True."""
+        proc = await self._resolve(process_id)
+        if proc is None:
+            return LaunchOutcome(ok=False, reason="not-found")
+        if proc["status"]["state"] not in LAUNCHABLE_STATES:
+            return LaunchOutcome(ok=False, reason="not-launchable")
+        if resume and not proc.get("supportsResume", False):
+            return LaunchOutcome(ok=False, reason="no-resume-support")
 
-        If resume is True, the task is launched with ctx.resume=True so it can
-        restore previous state rather than start fresh.
+        task = self._executor._task_registry.get(proc["processId"])
+        if task is not None and self._matches_block(task.metadata):
+            return LaunchOutcome(ok=False, reason="launch-blocked")
 
-        Raises LaunchBlocked if a registered launch block matches the task's metadata.
-        """
-        task = self._executor._task_registry.get(process_id)
-        if task is not None:
-            self._check_launch_blocks(task.metadata)
-        asyncio.create_task(self._executor.launch_process(process_id, resume=resume))
+        asyncio.create_task(
+            self._executor.launch_process(proc["processId"], resume=resume),
+        )
+        return LaunchOutcome(ok=True)
 
     async def launch_and_wait(self, process_id: str, resume: bool = False) -> None:
         """Launch and wait for the process to complete. Full progress tracking.

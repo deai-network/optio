@@ -24,8 +24,6 @@ from optio_core._generated.optio_engine import (
     UnblockLaunchesParams, UnblockLaunchesResult,
     ResyncParams,
 )
-from optio_core.models import LaunchBlocked
-from optio_core.state_machine import LAUNCHABLE_STATES
 
 if TYPE_CHECKING:
     from optio_core.lifecycle import Optio
@@ -82,24 +80,20 @@ class OptioEngineService(OptioEngineServiceBase):
 
     # --------------------------------------------------------------- launch
     async def launch(self, params: LaunchParams) -> LaunchResult:
-        proc = await self._optio._resolve(params.process_id)
-        if proc is None:
-            return LaunchResult.model_validate({"ok": False, "reason": "not-found"})
-        if proc["status"]["state"] not in LAUNCHABLE_STATES:
-            return LaunchResult.model_validate({"ok": False, "reason": "not-launchable"})
-        if params.resume and not proc.get("supportsResume", False):
-            return LaunchResult.model_validate({"ok": False, "reason": "no-resume-support"})
-
-        try:
-            await self._optio.launch(proc["processId"], resume=bool(params.resume))
-        except LaunchBlocked:
-            return LaunchResult.model_validate({"ok": False, "reason": "launch-blocked"})
-
+        outcome = await self._optio.launch(
+            params.process_id, resume=bool(params.resume),
+        )
+        if not outcome.ok:
+            return LaunchResult.model_validate(
+                {"ok": False, "reason": outcome.reason}
+            )
         # The executor runs asynchronously; yield once so the state transition
         # (idle → scheduled) can be written before we read it back.
         await asyncio.sleep(0)
-        updated = await self._optio._resolve(proc["processId"])
-        return LaunchResult.model_validate({"ok": True, "process": _to_process_dict(updated)})
+        proc = await self._optio._resolve(params.process_id)
+        return LaunchResult.model_validate(
+            {"ok": True, "process": _to_process_dict(proc)}
+        )
 
     # --------------------------------------------------------------- cancel
     async def cancel(self, params: CancelParams) -> CancelResult:
