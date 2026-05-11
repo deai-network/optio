@@ -1,9 +1,4 @@
-"""OptioEngineService — clamator RPC implementation for the optio engine.
-
-Phase 2 of the engine-RPC migration. Co-exists with the legacy
-${prefix}:commands stream consumer; HTTP handlers still route through
-the legacy stream until phase 3.
-"""
+"""Clamator RPC implementation for the optio-engine contract."""
 
 from __future__ import annotations
 
