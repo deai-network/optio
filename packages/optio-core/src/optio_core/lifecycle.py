@@ -168,7 +168,7 @@ class Optio:
 
         # Create scheduler
         self._scheduler = ProcessScheduler(
-            launch_fn=self._handle_launch_by_process_id,
+            launch_fn=self._scheduler_launch_adapter,
         )
 
         # Reconcile any processes left in active states by a previous session.
@@ -929,7 +929,13 @@ class Optio:
         scope = "(all)" if not metadata_filter else f"(filter={metadata_filter})"
         logger.info(f"Synced {len(tasks)} task definitions {scope}")
 
-    async def _handle_launch_by_process_id(self, process_id: str, resume: bool = False) -> None:
-        # Background-spawn the executor; scheduler hook (Task 8 introduces an outcome-aware adapter).
-        asyncio.create_task(self._executor.launch_process(process_id, resume=resume))
+    async def _scheduler_launch_adapter(self, process_id: str) -> None:
+        """Scheduler hook: funnel through Optio.launch, log on failure.
+        APScheduler discards the return value; the warning preserves visibility
+        of skipped scheduled fires (e.g. launch blocks active at fire time)."""
+        outcome = await self.launch(process_id)
+        if not outcome.ok:
+            logger.warning(
+                f"Scheduled launch of {process_id} skipped: {outcome.reason}"
+            )
 

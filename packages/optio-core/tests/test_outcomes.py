@@ -1,5 +1,7 @@
 """Outcome dataclass smoke + Optio._resolve + public-verb outcome coverage."""
 
+import logging
+
 import pytest
 from bson import ObjectId
 
@@ -228,3 +230,31 @@ async def test_launch_blocked_outcome(mongo_db):
         out = await fw.launch("blocked1")
 
     assert out == LaunchOutcome(ok=False, reason="launch-blocked")
+
+
+# -------------------------------------------------------- scheduler adapter
+
+
+@pytest.mark.asyncio
+async def test_scheduler_adapter_logs_warning_when_blocked(mongo_db, caplog):
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix="schedtest")
+    async def noop(ctx):
+        pass
+    await fw.adhoc_define(
+        TaskInstance(
+            execute=noop, process_id="sched-blocked", name="Sched-Blocked",
+            metadata={"project": "p1"},
+        ),
+    )
+
+    caplog.set_level(logging.WARNING)
+    async with fw.block_launches({"project": "p1"}):
+        await fw._scheduler_launch_adapter("sched-blocked")
+
+    assert any(
+        rec.levelno == logging.WARNING
+        and "sched-blocked" in rec.message
+        and "launch-blocked" in rec.message
+        for rec in caplog.records
+    ), [rec.message for rec in caplog.records]
