@@ -116,3 +116,61 @@ async def test_cancel_optout_does_not_auto_cancel_children(mongo_db):
     await optio.cancel("child")
     await asyncio.wait_for(runner, timeout=5.0)
     await optio.shutdown(grace_seconds=0.5)
+
+
+async def test_cancel_recursion_honors_per_level_optout(mongo_db):
+    """A->B->C where B opts out. cancel(A) cancels A and B; C remains active."""
+    prefix = "p2t4"
+    a_running = asyncio.Event()
+    b_running = asyncio.Event()
+    c_running = asyncio.Event()
+
+    async def c_task(ctx):
+        c_running.set()
+        while ctx.should_continue():
+            await asyncio.sleep(0.01)
+
+    async def b_task(ctx):
+        b_running.set()
+        async with ctx.parallel_group(survive_cancel=True) as group:
+            await group.spawn(execute=c_task, process_id="c", name="C")
+            while ctx.should_continue():
+                await asyncio.sleep(0.01)
+
+    async def a_task(ctx):
+        a_running.set()
+        await ctx.run_child(execute=b_task, process_id="b", name="B")
+
+    a_inst = TaskInstance(execute=a_task, process_id="a", name="A")
+    b_inst = TaskInstance(
+        execute=b_task, process_id="b", name="B",
+        auto_cancel_children=False,
+    )
+    c_inst = TaskInstance(execute=c_task, process_id="c", name="C")
+
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix=prefix, cancel_grace_seconds=1.0)
+    await upsert_process(mongo_db, prefix, a_inst)
+    optio._executor.register_tasks([a_inst, b_inst, c_inst])
+
+    runner = asyncio.create_task(optio.launch_and_wait("a"))
+    await a_running.wait()
+    await b_running.wait()
+    await c_running.wait()
+    await asyncio.sleep(0.1)
+
+    await optio.cancel("a")
+
+    # Immediately: A and B should be in cancel_requested/cancelling;
+    # C remains active because B opted out.
+    a_proc = await get_process_by_process_id(mongo_db, prefix, "a")
+    b_proc = await get_process_by_process_id(mongo_db, prefix, "b")
+    c_proc = await get_process_by_process_id(mongo_db, prefix, "c")
+    assert a_proc["status"]["state"] in {"cancel_requested", "cancelling"}
+    assert b_proc["status"]["state"] in {"cancel_requested", "cancelling"}
+    assert c_proc["status"]["state"] in {"running", "scheduled"}
+
+    # Cleanup: cancel C directly so B can exit, then A can exit.
+    await optio.cancel("c")
+    await asyncio.wait_for(runner, timeout=5.0)
+    await optio.shutdown(grace_seconds=0.5)
