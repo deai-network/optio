@@ -598,7 +598,18 @@ class Optio:
         `clean=True` deletes process records before re-importing. When combined
         with a filter, only in-scope records are deleted.
         """
-        await self._handle_resync({"clean": clean, "metadataFilter": metadata_filter})
+        if clean:
+            coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
+            if metadata_filter:
+                mongo_query: dict[str, Any] = {"parentId": None}
+                for k, v in metadata_filter.items():
+                    mongo_query[f"metadata.{k}"] = v
+                deleted = await coll.delete_many(mongo_query)
+            else:
+                deleted = await coll.delete_many({})
+            logger.info(f"Nuked {deleted.deleted_count} process records")
+
+        await self._sync_definitions(metadata_filter)
 
     async def _resolve(self, id_str: str) -> dict | None:
         """Accept an ObjectId hex string or a processId; return the matching
@@ -902,19 +913,3 @@ class Optio:
         # Background-spawn the executor; scheduler hook (Task 8 introduces an outcome-aware adapter).
         asyncio.create_task(self._executor.launch_process(process_id, resume=resume))
 
-    async def _handle_resync(self, payload: dict) -> None:
-        clean = payload.get("clean", False)
-        metadata_filter = payload.get("metadataFilter") or None  # treat {} as None
-
-        if clean:
-            coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
-            if metadata_filter:
-                mongo_query: dict[str, Any] = {"parentId": None}
-                for k, v in metadata_filter.items():
-                    mongo_query[f"metadata.{k}"] = v
-                deleted = await coll.delete_many(mongo_query)
-            else:
-                deleted = await coll.delete_many({})
-            logger.info(f"Nuked {deleted.deleted_count} process records")
-
-        await self._sync_definitions(metadata_filter)
