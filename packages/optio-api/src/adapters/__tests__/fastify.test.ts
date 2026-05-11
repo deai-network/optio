@@ -154,31 +154,24 @@ describe('Fastify adapter integration tests', () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it('POST /api/processes/:id/launch — returns 409 for running process', async () => {
-    const doc = await seedProcess({ status: { state: 'running' } });
+  it('POST /api/processes/:id/launch — propagates engine failure (404 reason=not-found)', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' } });
     const app = createApp();
+    vi.spyOn(EngineClient.prototype, 'launch').mockImplementationOnce(async () => ({
+      ok: false,
+      reason: 'not-found',
+    } as any));
 
     const res = await app.inject({
       method: 'POST',
       url: `/api/processes/${doc._id.toString()}/launch`,
     });
 
-    expect(res.statusCode).toBe(409);
-    expect(JSON.parse(res.body)).toEqual({
-      reason: 'not-launchable',
-      message: 'Process is not in a launchable state',
-    });
-  });
-
-  it('POST /api/processes/:id/launch — returns 404 for nonexistent id', async () => {
-    const app = createApp();
-    const fakeId = new ObjectId().toString();
-    const res = await app.inject({
-      method: 'POST',
-      url: `/api/processes/${fakeId}/launch`,
-    });
     expect(res.statusCode).toBe(404);
-    expect(JSON.parse(res.body)).toEqual({ reason: 'not-found', message: 'Process not found' });
+    expect(JSON.parse(res.body)).toEqual({
+      reason: 'not-found',
+      message: 'Process not found',
+    });
   });
 
   it('POST /api/processes/:id/cancel — cancels running cancellable process (200)', async () => {
@@ -193,31 +186,6 @@ describe('Fastify adapter integration tests', () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it('POST /api/processes/:id/cancel — returns 409 for non-cancellable process', async () => {
-    const doc = await seedProcess({ status: { state: 'idle' }, cancellable: true });
-    const app = createApp();
-    const res = await app.inject({
-      method: 'POST',
-      url: `/api/processes/${doc._id.toString()}/cancel`,
-    });
-    expect(res.statusCode).toBe(409);
-    expect(JSON.parse(res.body)).toEqual({
-      reason: 'not-cancellable',
-      message: 'Process is not cancellable in its current state',
-    });
-  });
-
-  it('POST /api/processes/:id/cancel — returns 404 for nonexistent id', async () => {
-    const app = createApp();
-    const fakeId = new ObjectId().toString();
-    const res = await app.inject({
-      method: 'POST',
-      url: `/api/processes/${fakeId}/cancel`,
-    });
-    expect(res.statusCode).toBe(404);
-    expect(JSON.parse(res.body)).toEqual({ reason: 'not-found', message: 'Process not found' });
-  });
-
   it('POST /api/processes/:id/dismiss — dismisses done process (200)', async () => {
     const doc = await seedProcess({ status: { state: 'done' } });
     const app = createApp();
@@ -228,31 +196,6 @@ describe('Fastify adapter integration tests', () => {
     });
 
     expect(res.statusCode).toBe(200);
-  });
-
-  it('POST /api/processes/:id/dismiss — returns 409 for non-terminal process', async () => {
-    const doc = await seedProcess({ status: { state: 'running' } });
-    const app = createApp();
-    const res = await app.inject({
-      method: 'POST',
-      url: `/api/processes/${doc._id.toString()}/dismiss`,
-    });
-    expect(res.statusCode).toBe(409);
-    expect(JSON.parse(res.body)).toEqual({
-      reason: 'not-dismissable',
-      message: 'Process is not in a dismissable state',
-    });
-  });
-
-  it('POST /api/processes/:id/dismiss — returns 404 for nonexistent id', async () => {
-    const app = createApp();
-    const fakeId = new ObjectId().toString();
-    const res = await app.inject({
-      method: 'POST',
-      url: `/api/processes/${fakeId}/dismiss`,
-    });
-    expect(res.statusCode).toBe(404);
-    expect(JSON.parse(res.body)).toEqual({ reason: 'not-found', message: 'Process not found' });
   });
 
   it('POST /api/processes/resync — triggers resync (202)', async () => {

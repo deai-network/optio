@@ -200,10 +200,6 @@ export async function getProcessTreeLog(
 
 // --- Command handlers ---
 
-const LAUNCHABLE_STATES = ['idle', 'done', 'failed', 'cancelled'];
-const CANCELLABLE_STATES = ['running', 'scheduled'];
-const END_STATES = ['done', 'failed', 'cancelled'];
-
 export type LaunchCommandResult =
   | { status: 200; body: any }
   | { status: 404 | 409; body: { reason: LaunchFailureReasonType; message: string } };
@@ -263,15 +259,10 @@ export async function launchProcess(
   id: string,
   resume: boolean = false,
 ): Promise<LaunchCommandResult> {
-  const { db, database, prefix } = resolveDb(ctx.dbOpts, query);
+  const { database, prefix } = resolveDb(ctx.dbOpts, query);
   const engine = ctx.engineCache.get(database, prefix);
 
-  const proc = await findProcessByEitherId(col(db, prefix), id);
-  if (!proc) return launchFail('not-found');
-  if (!LAUNCHABLE_STATES.includes(proc.status.state)) return launchFail('not-launchable');
-  if (resume && !proc.supportsResume) return launchFail('no-resume-support');
-
-  const result = await engine.launch({ processId: proc.processId, resume });
+  const result = await engine.launch({ processId: id, resume });
   if (result.ok) return { status: 200, body: toResponse(result.process) };
   return launchFail(result.reason);
 }
@@ -281,15 +272,10 @@ export async function cancelProcess(
   query: { database?: string; prefix?: string },
   id: string,
 ): Promise<CancelCommandResult> {
-  const { db, database, prefix } = resolveDb(ctx.dbOpts, query);
+  const { database, prefix } = resolveDb(ctx.dbOpts, query);
   const engine = ctx.engineCache.get(database, prefix);
 
-  const proc = await findProcessByEitherId(col(db, prefix), id);
-  if (!proc) return cancelFail('not-found');
-  if (!proc.cancellable) return cancelFail('not-cancellable');
-  if (!CANCELLABLE_STATES.includes(proc.status.state)) return cancelFail('not-cancellable');
-
-  const result = await engine.cancel({ processId: proc.processId });
+  const result = await engine.cancel({ processId: id });
   if (result.ok) return { status: 200, body: toResponse(result.process) };
   return cancelFail(result.reason);
 }
@@ -299,14 +285,10 @@ export async function dismissProcess(
   query: { database?: string; prefix?: string },
   id: string,
 ): Promise<DismissCommandResult> {
-  const { db, database, prefix } = resolveDb(ctx.dbOpts, query);
+  const { database, prefix } = resolveDb(ctx.dbOpts, query);
   const engine = ctx.engineCache.get(database, prefix);
 
-  const proc = await findProcessByEitherId(col(db, prefix), id);
-  if (!proc) return dismissFail('not-found');
-  if (!END_STATES.includes(proc.status.state)) return dismissFail('not-dismissable');
-
-  const result = await engine.dismiss({ processId: proc.processId });
+  const result = await engine.dismiss({ processId: id });
   if (result.ok) return { status: 200, body: toResponse(result.process) };
   return dismissFail(result.reason);
 }

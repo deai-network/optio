@@ -152,29 +152,19 @@ describe('Next.js App Router adapter integration tests', () => {
     expect(res.status).toBe(200);
   });
 
-  it('POST /api/processes/:id/launch — returns 409 for running process', async () => {
-    const doc = await seedProcess({ status: { state: 'running' } });
+  it('POST /api/processes/:id/launch — propagates engine failure (404 reason=not-found)', async () => {
+    const doc = await seedProcess({ status: { state: 'idle' } });
     const { POST } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
+    vi.spyOn(EngineClient.prototype, 'launch').mockImplementationOnce(async () => ({
+      ok: false,
+      reason: 'not-found',
+    } as any));
 
     const req = makeNextRequest(`http://localhost/api/processes/${doc._id.toString()}/launch`, {
       method: 'POST',
     });
     const res = await POST(req);
 
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({
-      reason: 'not-launchable',
-      message: 'Process is not in a launchable state',
-    });
-  });
-
-  it('POST /api/processes/:id/launch — returns 404 for nonexistent id', async () => {
-    const { POST } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
-    const fakeId = new ObjectId().toString();
-    const req = makeNextRequest(`http://localhost/api/processes/${fakeId}/launch`, {
-      method: 'POST',
-    });
-    const res = await POST(req);
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ reason: 'not-found', message: 'Process not found' });
   });
@@ -189,31 +179,6 @@ describe('Next.js App Router adapter integration tests', () => {
     expect(res.status).toBe(200);
   });
 
-  it('POST /api/processes/:id/cancel — returns 409 for non-cancellable process', async () => {
-    const doc = await seedProcess({ status: { state: 'idle' }, cancellable: true });
-    const { POST } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
-    const req = makeNextRequest(`http://localhost/api/processes/${doc._id.toString()}/cancel`, {
-      method: 'POST',
-    });
-    const res = await POST(req);
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({
-      reason: 'not-cancellable',
-      message: 'Process is not cancellable in its current state',
-    });
-  });
-
-  it('POST /api/processes/:id/cancel — returns 404 for nonexistent id', async () => {
-    const { POST } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
-    const fakeId = new ObjectId().toString();
-    const req = makeNextRequest(`http://localhost/api/processes/${fakeId}/cancel`, {
-      method: 'POST',
-    });
-    const res = await POST(req);
-    expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ reason: 'not-found', message: 'Process not found' });
-  });
-
   it('POST /api/processes/:id/dismiss — dismisses done process (200)', async () => {
     const doc = await seedProcess({ status: { state: 'done' } });
     const { POST } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
@@ -222,31 +187,6 @@ describe('Next.js App Router adapter integration tests', () => {
     });
     const res = await POST(req);
     expect(res.status).toBe(200);
-  });
-
-  it('POST /api/processes/:id/dismiss — returns 409 for non-terminal process', async () => {
-    const doc = await seedProcess({ status: { state: 'running' } });
-    const { POST } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
-    const req = makeNextRequest(`http://localhost/api/processes/${doc._id.toString()}/dismiss`, {
-      method: 'POST',
-    });
-    const res = await POST(req);
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({
-      reason: 'not-dismissable',
-      message: 'Process is not in a dismissable state',
-    });
-  });
-
-  it('POST /api/processes/:id/dismiss — returns 404 for nonexistent id', async () => {
-    const { POST } = createOptioRouteHandlers({ db, redis, authenticate: () => 'operator' });
-    const fakeId = new ObjectId().toString();
-    const req = makeNextRequest(`http://localhost/api/processes/${fakeId}/dismiss`, {
-      method: 'POST',
-    });
-    const res = await POST(req);
-    expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ reason: 'not-found', message: 'Process not found' });
   });
 
   it('POST /api/processes/resync — triggers resync (202)', async () => {

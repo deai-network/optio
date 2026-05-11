@@ -98,7 +98,7 @@ describe('widgetUpstream stripping', () => {
   });
 });
 
-describe('launchProcess — pre-checks + engine RPC', () => {
+describe('launchProcess — engine RPC', () => {
   // Builds a mock engine. By default `launch` resolves with
   // `{ ok: true, process: <minimal-process> }` so the 200 path works
   // without per-test setup. Tests that need a failure response pass
@@ -126,82 +126,47 @@ describe('launchProcess — pre-checks + engine RPC', () => {
     };
   }
 
-  async function insertLaunchable(extra: Record<string, unknown> = {}) {
-    const oid = new ObjectId();
-    await db.collection(`${PREFIX}_processes`).insertOne({
-      _id: oid,
-      processId: 'p',
-      name: 'P',
-      rootId: oid,
-      parentId: null,
-      depth: 0,
-      order: 0,
-      status: { state: 'idle' },
-      progress: { percent: null },
-      cancellable: true,
-      log: [],
-      supportsResume: false,
-      hasSavedState: false,
-      ...extra,
-    });
-    return oid.toString();
-  }
-
   it('200 on success: returns toResponse(result.process) and calls engine.launch with {processId, resume}', async () => {
-    const id = await insertLaunchable({ processId: 'p' });
     const engine = makeMockEngine();
-    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id, false);
+    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'p', false);
     expect(result.status).toBe(200);
     expect(engine.launch).toHaveBeenCalledTimes(1);
     expect(engine.launch).toHaveBeenCalledWith({ processId: 'p', resume: false });
     expect((result as any).body._id).toBeDefined();
   });
 
-  it('forwards resume=true to engine.launch when task supportsResume', async () => {
-    const id = await insertLaunchable({ processId: 'q', supportsResume: true });
+  it('forwards resume=true to engine.launch', async () => {
     const engine = makeMockEngine();
-    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id, true);
+    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'q', true);
     expect(result.status).toBe(200);
     expect(engine.launch).toHaveBeenCalledWith({ processId: 'q', resume: true });
   });
 
-  it('404 not-found from pre-check: engine.launch never called', async () => {
-    const engine = makeMockEngine();
-    const fakeId = new ObjectId().toString();
-    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, fakeId);
-    expect(result.status).toBe(404);
-    expect((result as any).body).toEqual({ reason: 'not-found', message: 'Process not found' });
-    expect(engine.launch).not.toHaveBeenCalled();
-  });
-
-  it('409 not-launchable from pre-check (state=running): engine.launch never called', async () => {
-    const id = await insertLaunchable({ status: { state: 'running' } });
-    const engine = makeMockEngine();
-    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
+  it('409 not-launchable from engine: returns ok=false reason=not-launchable', async () => {
+    const engine = makeMockEngine(() => ({ ok: false, reason: 'not-launchable' }));
+    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'p');
     expect(result.status).toBe(409);
     expect((result as any).body).toEqual({
       reason: 'not-launchable',
       message: 'Process is not in a launchable state',
     });
-    expect(engine.launch).not.toHaveBeenCalled();
+    expect(engine.launch).toHaveBeenCalledTimes(1);
   });
 
-  it('409 no-resume-support from pre-check: engine.launch never called', async () => {
-    const id = await insertLaunchable({ supportsResume: false });
-    const engine = makeMockEngine();
-    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id, true);
+  it('409 no-resume-support from engine: returns ok=false reason=no-resume-support', async () => {
+    const engine = makeMockEngine(() => ({ ok: false, reason: 'no-resume-support' }));
+    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'p', true);
     expect(result.status).toBe(409);
     expect((result as any).body).toEqual({
       reason: 'no-resume-support',
       message: 'This task does not support resume',
     });
-    expect(engine.launch).not.toHaveBeenCalled();
+    expect(engine.launch).toHaveBeenCalledTimes(1);
   });
 
-  it('409 launch-blocked from engine: pre-check passes, engine returns ok=false reason=launch-blocked', async () => {
-    const id = await insertLaunchable();
+  it('409 launch-blocked from engine: returns ok=false reason=launch-blocked', async () => {
     const engine = makeMockEngine(() => ({ ok: false, reason: 'launch-blocked' }));
-    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
+    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'p');
     expect(result.status).toBe(409);
     expect((result as any).body).toEqual({
       reason: 'launch-blocked',
@@ -210,10 +175,9 @@ describe('launchProcess — pre-checks + engine RPC', () => {
     expect(engine.launch).toHaveBeenCalledTimes(1);
   });
 
-  it('404 not-found from engine (race): pre-check passes, engine returns ok=false reason=not-found', async () => {
-    const id = await insertLaunchable();
+  it('404 not-found from engine: returns ok=false reason=not-found', async () => {
     const engine = makeMockEngine(() => ({ ok: false, reason: 'not-found' }));
-    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
+    const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'p');
     expect(result.status).toBe(404);
     expect((result as any).body).toEqual({
       reason: 'not-found',
@@ -223,7 +187,7 @@ describe('launchProcess — pre-checks + engine RPC', () => {
   });
 });
 
-describe('cancelProcess — pre-checks + engine RPC', () => {
+describe('cancelProcess — engine RPC', () => {
   // Builds a mock engine. By default `cancel` resolves with
   // `{ ok: true, process: <minimal-process> }` so the 200 path works
   // without per-test setup. Tests that need a failure response pass
@@ -249,72 +213,18 @@ describe('cancelProcess — pre-checks + engine RPC', () => {
     };
   }
 
-  async function insertCancellable(extra: Record<string, unknown> = {}) {
-    const oid = new ObjectId();
-    await db.collection(`${PREFIX}_processes`).insertOne({
-      _id: oid,
-      processId: 'p',
-      name: 'P',
-      rootId: oid,
-      parentId: null,
-      depth: 0,
-      order: 0,
-      status: { state: 'running' },
-      progress: { percent: null },
-      cancellable: true,
-      log: [],
-      ...extra,
-    });
-    return oid.toString();
-  }
-
   it('200 on success: returns toResponse(result.process) and calls engine.cancel with {processId}', async () => {
-    const id = await insertCancellable({ processId: 'p' });
     const engine = makeMockEngine();
-    const result = await cancelProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
+    const result = await cancelProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'p');
     expect(result.status).toBe(200);
     expect(engine.cancel).toHaveBeenCalledTimes(1);
     expect(engine.cancel).toHaveBeenCalledWith({ processId: 'p' });
     expect((result as any).body._id).toBeDefined();
   });
 
-  it('404 not-found from pre-check: engine.cancel never called', async () => {
-    const engine = makeMockEngine();
-    const fakeId = new ObjectId().toString();
-    const result = await cancelProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, fakeId);
-    expect(result.status).toBe(404);
-    expect((result as any).body).toEqual({ reason: 'not-found', message: 'Process not found' });
-    expect(engine.cancel).not.toHaveBeenCalled();
-  });
-
-  it('409 not-cancellable from pre-check (cancellable=false): engine.cancel never called', async () => {
-    const id = await insertCancellable({ cancellable: false });
-    const engine = makeMockEngine();
-    const result = await cancelProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
-    expect(result.status).toBe(409);
-    expect((result as any).body).toEqual({
-      reason: 'not-cancellable',
-      message: 'Process is not cancellable in its current state',
-    });
-    expect(engine.cancel).not.toHaveBeenCalled();
-  });
-
-  it('409 not-cancellable from pre-check (state=idle): engine.cancel never called', async () => {
-    const id = await insertCancellable({ status: { state: 'idle' } });
-    const engine = makeMockEngine();
-    const result = await cancelProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
-    expect(result.status).toBe(409);
-    expect((result as any).body).toEqual({
-      reason: 'not-cancellable',
-      message: 'Process is not cancellable in its current state',
-    });
-    expect(engine.cancel).not.toHaveBeenCalled();
-  });
-
-  it('409 not-cancellable from engine (race): pre-check passes, engine returns ok=false reason=not-cancellable', async () => {
-    const id = await insertCancellable();
+  it('409 not-cancellable from engine: returns ok=false reason=not-cancellable', async () => {
     const engine = makeMockEngine(() => ({ ok: false, reason: 'not-cancellable' }));
-    const result = await cancelProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
+    const result = await cancelProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'p');
     expect(result.status).toBe(409);
     expect((result as any).body).toEqual({
       reason: 'not-cancellable',
@@ -323,10 +233,9 @@ describe('cancelProcess — pre-checks + engine RPC', () => {
     expect(engine.cancel).toHaveBeenCalledTimes(1);
   });
 
-  it('404 not-found from engine (race): pre-check passes, engine returns ok=false reason=not-found', async () => {
-    const id = await insertCancellable();
+  it('404 not-found from engine: returns ok=false reason=not-found', async () => {
     const engine = makeMockEngine(() => ({ ok: false, reason: 'not-found' }));
-    const result = await cancelProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
+    const result = await cancelProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'p');
     expect(result.status).toBe(404);
     expect((result as any).body).toEqual({
       reason: 'not-found',
@@ -336,7 +245,7 @@ describe('cancelProcess — pre-checks + engine RPC', () => {
   });
 });
 
-describe('dismissProcess — pre-checks + engine RPC', () => {
+describe('dismissProcess — engine RPC', () => {
   // Builds a mock engine. By default `dismiss` resolves with
   // `{ ok: true, process: <minimal-process> }` so the 200 path works
   // without per-test setup. Tests that need a failure response pass
@@ -362,60 +271,18 @@ describe('dismissProcess — pre-checks + engine RPC', () => {
     };
   }
 
-  async function insertDismissable(extra: Record<string, unknown> = {}) {
-    const oid = new ObjectId();
-    await db.collection(`${PREFIX}_processes`).insertOne({
-      _id: oid,
-      processId: 'p',
-      name: 'P',
-      rootId: oid,
-      parentId: null,
-      depth: 0,
-      order: 0,
-      status: { state: 'done' },
-      progress: { percent: null },
-      cancellable: true,
-      log: [],
-      ...extra,
-    });
-    return oid.toString();
-  }
-
   it('200 on success: returns toResponse(result.process) and calls engine.dismiss with {processId}', async () => {
-    const id = await insertDismissable({ processId: 'p' });
     const engine = makeMockEngine();
-    const result = await dismissProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
+    const result = await dismissProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'p');
     expect(result.status).toBe(200);
     expect(engine.dismiss).toHaveBeenCalledTimes(1);
     expect(engine.dismiss).toHaveBeenCalledWith({ processId: 'p' });
     expect((result as any).body._id).toBeDefined();
   });
 
-  it('404 not-found from pre-check: engine.dismiss never called', async () => {
-    const engine = makeMockEngine();
-    const fakeId = new ObjectId().toString();
-    const result = await dismissProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, fakeId);
-    expect(result.status).toBe(404);
-    expect((result as any).body).toEqual({ reason: 'not-found', message: 'Process not found' });
-    expect(engine.dismiss).not.toHaveBeenCalled();
-  });
-
-  it('409 not-dismissable from pre-check (state=running): engine.dismiss never called', async () => {
-    const id = await insertDismissable({ status: { state: 'running' } });
-    const engine = makeMockEngine();
-    const result = await dismissProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
-    expect(result.status).toBe(409);
-    expect((result as any).body).toEqual({
-      reason: 'not-dismissable',
-      message: 'Process is not in a dismissable state',
-    });
-    expect(engine.dismiss).not.toHaveBeenCalled();
-  });
-
-  it('409 not-dismissable from engine (race): pre-check passes, engine returns ok=false reason=not-dismissable', async () => {
-    const id = await insertDismissable();
+  it('409 not-dismissable from engine: returns ok=false reason=not-dismissable', async () => {
     const engine = makeMockEngine(() => ({ ok: false, reason: 'not-dismissable' }));
-    const result = await dismissProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
+    const result = await dismissProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'p');
     expect(result.status).toBe(409);
     expect((result as any).body).toEqual({
       reason: 'not-dismissable',
@@ -424,10 +291,9 @@ describe('dismissProcess — pre-checks + engine RPC', () => {
     expect(engine.dismiss).toHaveBeenCalledTimes(1);
   });
 
-  it('404 not-found from engine (race): pre-check passes, engine returns ok=false reason=not-found', async () => {
-    const id = await insertDismissable();
+  it('404 not-found from engine: returns ok=false reason=not-found', async () => {
     const engine = makeMockEngine(() => ({ ok: false, reason: 'not-found' }));
-    const result = await dismissProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, id);
+    const result = await dismissProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'p');
     expect(result.status).toBe(404);
     expect((result as any).body).toEqual({
       reason: 'not-found',
