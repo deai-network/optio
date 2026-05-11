@@ -199,3 +199,37 @@ def test_parse_trace_line_unrelated_returns_none():
     assert _parse_trace_line(b"=> Send header, 123 bytes (0x7b)\n") is None
     assert _parse_trace_line(b"") is None
     assert _parse_trace_line(b"0000: GET /foo HTTP/1.1\n") is None
+
+
+def test_build_curl_cmd_includes_required_flags():
+    from optio_host.download import _build_curl_cmd
+    cmd = _build_curl_cmd(url="https://example/foo bin", target="/tmp/out file")
+    assert "--trace-ascii -" in cmd
+    assert " -s " in cmd
+    assert " -f " in cmd
+    assert " -L " in cmd
+    assert "'/tmp/out file'" in cmd
+    assert "'https://example/foo bin'" in cmd
+
+
+def test_build_curl_cmd_omits_stdbuf_when_unavailable(monkeypatch):
+    import shutil
+    from optio_host import download as dl_mod
+    monkeypatch.setattr(
+        shutil, "which",
+        lambda name: None if name == "stdbuf" else f"/usr/bin/{name}",
+    )
+    cmd = dl_mod._build_curl_cmd(url="https://example/foo", target="/tmp/out")
+    assert cmd.startswith("curl ")
+    assert "stdbuf" not in cmd
+
+
+def test_build_curl_cmd_includes_stdbuf_when_available(monkeypatch):
+    import shutil
+    from optio_host import download as dl_mod
+    monkeypatch.setattr(
+        shutil, "which",
+        lambda name: "/usr/bin/" + name,
+    )
+    cmd = dl_mod._build_curl_cmd(url="https://example/foo", target="/tmp/out")
+    assert cmd.startswith("stdbuf -oL curl ")

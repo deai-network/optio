@@ -9,6 +9,8 @@ See docs/2026-05-12-optio-host-download-design.md for the full design.
 
 from __future__ import annotations
 
+import shlex
+import shutil
 from typing import Any, TYPE_CHECKING
 
 from optio_core.models import TaskInstance
@@ -83,6 +85,32 @@ def create_download_task(
         cancellable=True,
         supports_resume=False,
     )
+
+
+def _build_curl_cmd(*, url: str, target: str) -> str:
+    """Build the shell command string that runs curl with progress trace.
+
+    Output stream layout when the command runs:
+      - stdout: ``--trace-ascii -`` protocol trace lines.
+      - stderr: curl's own error messages.
+      - the response body is written to ``target`` directly (``-o``).
+
+    ``stdbuf -oL`` is prefixed when available so trace lines flush
+    promptly. Absent stdbuf, the parser still works (just chunkier).
+    """
+    parts = [
+        "curl",
+        "--trace-ascii", "-",
+        "-s",
+        "-f",
+        "-L",
+        "-o", shlex.quote(target),
+        shlex.quote(url),
+    ]
+    cmd = " ".join(parts)
+    if shutil.which("stdbuf"):
+        cmd = "stdbuf -oL " + cmd
+    return cmd
 
 
 def _parse_trace_line(raw: bytes) -> tuple[str, int] | None:
