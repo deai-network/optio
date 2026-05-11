@@ -1,5 +1,11 @@
 # optio-api — LLM Reference
 
+## Architectural rule
+
+**Engine owns all writes.** This package reads MongoDB directly for queries (REST GETs, SSE streams, widget proxy) and forwards every mutating operation to the engine via clamator RPC. The API enforces no state machine, no policy, no command-acceptance rules. The engine is the single source of truth for what commands are allowed and what state results.
+
+---
+
 ## Package
 
 - **name**: `optio-api`
@@ -196,11 +202,11 @@ engine failure-reason enums from `optio-contracts/src/engine-failure-reasons.ts`
 **Adapters** (`fastify`, `express`, `nextjs-app`, `nextjs-pages`): all four extract `body?.resume`
 from the request body and forward it to `launchProcess` as the sixth argument.
 
-State guards enforced by command handlers:
-
-- `launchProcess`: allowed states `idle | done | failed | cancelled`; 409 when `resume=true` and `supportsResume=false`
-- `cancelProcess`: requires `proc.cancellable === true`; allowed states `running | scheduled`
-- `dismissProcess`: allowed states `done | failed | cancelled`
+Per the architectural rule above, command handlers do not validate state — they forward the raw
+id to the engine via `engine.launch / cancel / dismiss` and translate the discriminated-union
+result into HTTP status + body. Failure reasons (`not-found`, `not-launchable`, `no-resume-support`,
+`launch-blocked`, `not-cancellable`, `not-dismissable`) come from the engine; the API only maps
+each to 404 or 409.
 
 ## Types
 

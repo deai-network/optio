@@ -1394,3 +1394,24 @@ The legacy `${database}/${prefix}:commands` redis stream is still consumed by th
 - Phase 3 merged to `main` on 2026-05-10 at commit `a69d7cd` (fast-forward, no drift, no conflicts).
 - Branch `csillag/rpc-migration-phase-3` deleted.
 - Pre-existing `fastify-widget-proxy.test.ts` WS upgrade flake confirmed pre-existing on main, untouched by phase 3 (widget-proxy code path not modified).
+
+## 12. Phase-4 actual scope addendum (2026-05-11)
+
+Phase 4 shipped as designed in `docs/2026-05-10-engine-rpc-migration-phase-4-design.md` and planned in `docs/2026-05-10-engine-rpc-migration-phase-4-plan.md`. Five commits on branch `csillag/rpc-migration-phase-4`. Two notes worth recording for posterity:
+
+**No engine migration required.** §8.4 originally framed phase 4 as moving pre-checks from API to engine; in practice phase 2 had already mirrored them in `_engine_service.py` (the file's own comment said "the engine — not the API — owns the rule"). Phase 4 is therefore pure deletion on the API side.
+
+**Bonus: state-set SoT cleanup.** `_engine_service.py` redefined `LAUNCHABLE_STATES` / `CANCELLABLE_STATES` / `DISMISSABLE_STATES` locally instead of importing from `state_machine.py`. The local `CANCELLABLE_STATES` even included `cancel_requested`, which diverged from `lifecycle._handle_cancel`'s guard — re-cancel on a `cancel_requested` proc returned a misleading 200 no-op. Commit (a-prime) consolidates on `state_machine.py` as the single source of truth across `optio-core` and replaces two anonymous set literals in `lifecycle.py` (lines 780, 929) with named imports. Side effect: re-cancel correctly returns 409 `not-cancellable`.
+
+**Phase-4 commits (branch `csillag/rpc-migration-phase-4`):**
+
+| Commit | Subject |
+|---|---|
+| `f283528` | `docs: phase-4 engine-RPC migration design` |
+| `0f1661e` | `docs: phase-4 implementation plan + spec count fix` |
+| `ba44bab` | `refactor(optio-core): single source of truth for state-set constants` (commit a-prime) |
+| `c892776` | `feat(optio-api): delete API-side state guards (engine owns authority)` (commit a) |
+| `062eaba` | `test(optio-core): exhaustive coverage for EngineService._resolve` (commit b) |
+| `5b969a7` | `test(optio-demo): adversarial interop scenarios for phase-4 matrix` (commit c) |
+
+**Follow-up: optio-ui state-set duplication.** `optio-ui/src/process-state.ts` redefines `LAUNCHABLE_STATES` and `ACTIVE_STATES` locally (different language; no Python import path). Out of phase-4 scope per parent §2 ("optio-ui — no logic change"). Proper fix is to promote shared state sets to `optio-contracts` runtime exports; tracked separately.

@@ -129,10 +129,12 @@ All adapters mount the same endpoints under `/api/processes/:prefix/...`:
 | GET | `/api/processes/:prefix/:id/tree` | Get process subtree |
 | GET | `/api/processes/:prefix/:id/log` | Get process log |
 | GET | `/api/processes/:prefix/:id/tree/log` | Get merged subtree log |
-| POST | `/api/processes/:prefix/:id/launch` | Launch a process |
-| POST | `/api/processes/:prefix/:id/cancel` | Cancel a process |
-| POST | `/api/processes/:prefix/:id/dismiss` | Dismiss a process |
-| POST | `/api/processes/:prefix/resync` | Re-sync task definitions |
+| POST | `/api/processes/:prefix/:id/launch` | Forward launch to engine. 200 on success; 404/409 with `{reason, message}` per `LaunchFailureReason`. |
+| POST | `/api/processes/:prefix/:id/cancel` | Forward cancel to engine. 200 on success; 404/409 per `CancelFailureReason`. |
+| POST | `/api/processes/:prefix/:id/dismiss` | Forward dismiss to engine. 200 on success; 404/409 per `DismissFailureReason`. |
+| POST | `/api/processes/:prefix/resync` | 202 Accepted; engine handles resync asynchronously. |
+
+Command endpoints do not validate state in this package. The engine owns all command-acceptance rules; the API translates the engine's discriminated-union result into HTTP status + body. See the architectural rule at the top of `AGENTS.md`.
 
 ### List Query Parameters
 
