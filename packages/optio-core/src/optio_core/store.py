@@ -306,6 +306,26 @@ async def get_children(
     ).sort("order", 1).to_list(None)
 
 
+async def list_direct_children(
+    db: AsyncIOMotorDatabase,
+    prefix: str,
+    parent_oid: ObjectId,
+    *,
+    states: set[str] | None = None,
+) -> list[dict]:
+    """Return direct children of `parent_oid`, optionally filtered by status.state.
+
+    Sorted by `order` ascending, then `_id` ascending for stable ordering.
+    `states=None` returns all direct children regardless of state.
+    """
+    filt: dict = {"parentId": parent_oid}
+    if states is not None:
+        filt["status.state"] = {"$in": list(states)}
+    return await _collection(db, prefix).find(filt).sort(
+        [("order", 1), ("_id", 1)]
+    ).to_list(None)
+
+
 async def cancel_children(
     db: AsyncIOMotorDatabase, prefix: str, parent_oid: ObjectId,
 ) -> None:

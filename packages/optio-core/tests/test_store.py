@@ -283,3 +283,91 @@ async def test_remove_stale_processes_filter_none_is_full_sweep(mongo_db):
     assert count == 1
     assert await get_process_by_process_id(mongo_db, "test", "alpha") is not None
     assert await get_process_by_process_id(mongo_db, "test", "beta") is None
+
+
+async def test_list_direct_children_returns_only_direct(mongo_db):
+    """list_direct_children excludes grandchildren."""
+    from bson import ObjectId
+    from optio_core.store import list_direct_children, _collection
+
+    prefix = "ldc"
+    coll = _collection(mongo_db, prefix)
+    parent_oid = ObjectId()
+    direct_oid = ObjectId()
+    grandchild_oid = ObjectId()
+
+    await coll.insert_one({
+        "_id": parent_oid, "processId": "parent", "name": "Parent",
+        "status": {"state": "running"}, "depth": 0, "order": 0,
+    })
+    await coll.insert_one({
+        "_id": direct_oid, "processId": "direct", "name": "Direct",
+        "parentId": parent_oid,
+        "status": {"state": "running"}, "depth": 1, "order": 0,
+    })
+    await coll.insert_one({
+        "_id": grandchild_oid, "processId": "gc", "name": "Grandchild",
+        "parentId": direct_oid,
+        "status": {"state": "running"}, "depth": 2, "order": 0,
+    })
+
+    rows = await list_direct_children(mongo_db, prefix, parent_oid)
+    ids = [r["_id"] for r in rows]
+    assert ids == [direct_oid]
+
+
+async def test_list_direct_children_filters_by_states(mongo_db):
+    """list_direct_children honors the states filter."""
+    from bson import ObjectId
+    from optio_core.store import list_direct_children, _collection
+
+    prefix = "ldc2"
+    coll = _collection(mongo_db, prefix)
+    parent_oid = ObjectId()
+    running_oid = ObjectId()
+    done_oid = ObjectId()
+
+    await coll.insert_one({
+        "_id": parent_oid, "processId": "p", "name": "P",
+        "status": {"state": "running"}, "depth": 0, "order": 0,
+    })
+    await coll.insert_one({
+        "_id": running_oid, "processId": "r", "name": "R",
+        "parentId": parent_oid,
+        "status": {"state": "running"}, "depth": 1, "order": 0,
+    })
+    await coll.insert_one({
+        "_id": done_oid, "processId": "d", "name": "D",
+        "parentId": parent_oid,
+        "status": {"state": "done"}, "depth": 1, "order": 1,
+    })
+
+    rows = await list_direct_children(
+        mongo_db, prefix, parent_oid, states={"running", "scheduled"},
+    )
+    ids = [r["_id"] for r in rows]
+    assert ids == [running_oid]
+
+
+async def test_list_direct_children_no_states_returns_all(mongo_db):
+    """When states is None, list_direct_children returns all direct children."""
+    from bson import ObjectId
+    from optio_core.store import list_direct_children, _collection
+
+    prefix = "ldc3"
+    coll = _collection(mongo_db, prefix)
+    parent_oid = ObjectId()
+
+    await coll.insert_one({
+        "_id": parent_oid, "processId": "p", "name": "P",
+        "status": {"state": "running"}, "depth": 0, "order": 0,
+    })
+    for i, state in enumerate(["running", "done", "failed"]):
+        await coll.insert_one({
+            "_id": ObjectId(), "processId": f"c{i}", "name": f"C{i}",
+            "parentId": parent_oid,
+            "status": {"state": state}, "depth": 1, "order": i,
+        })
+
+    rows = await list_direct_children(mongo_db, prefix, parent_oid)
+    assert len(rows) == 3
