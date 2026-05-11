@@ -525,3 +525,67 @@ async def test_force_cancel_cascade_optout_path(mongo_db):
         except asyncio.CancelledError:
             pass
     await optio.shutdown(grace_seconds=0.5)
+
+
+async def test_force_cancel_cascade_catches_late_optout_child(mongo_db):
+    """Opt-out parent spawns a NEW child after cancel arrives. Force-cancel
+    cascade walks the DB at force time and catches it."""
+    prefix = "p5t4"
+    parent_started = asyncio.Event()
+    late_child_spawned = asyncio.Event()
+
+    async def late_child(ctx):
+        while True:
+            await asyncio.sleep(0.05)
+
+    async def parent(ctx):
+        parent_started.set()
+        # Wait for cancel to arrive.
+        while ctx.should_continue():
+            await asyncio.sleep(0.01)
+        # Opt-out window: still allowed to spawn.
+        async with ctx.parallel_group(survive_cancel=True, survive_failure=True) as group:
+            await group.spawn(
+                execute=late_child, process_id="late", name="Late",
+            )
+            late_child_spawned.set()
+            while True:
+                await asyncio.sleep(0.05)
+
+    parent_inst = TaskInstance(
+        execute=parent, process_id="parent", name="Parent",
+        auto_cancel_children=False,
+    )
+    late_inst = TaskInstance(execute=late_child, process_id="late", name="Late")
+
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix=prefix, cancel_grace_seconds=0.5)
+    await upsert_process(mongo_db, prefix, parent_inst)
+    optio._executor.register_tasks([parent_inst, late_inst])
+    optio._running = True
+    optio._supervisor_task = asyncio.create_task(optio._supervisor_loop())
+
+    await optio.launch("parent")
+    await parent_started.wait()
+    await asyncio.sleep(0.05)
+
+    await optio.cancel("parent")
+    await late_child_spawned.wait()
+
+    # Within force-cancel window, late child exists in DB and is active.
+    late_proc = await get_process_by_process_id(mongo_db, prefix, "late")
+    assert late_proc is not None
+    assert late_proc["status"]["state"] in {"running", "scheduled"}
+
+    # After grace + cascade, late child reaches terminal.
+    late_proc = await _wait_terminal(mongo_db, prefix, "late", timeout=5.0)
+    assert late_proc["status"]["state"] == "failed"
+
+    optio._running = False
+    if optio._supervisor_task:
+        optio._supervisor_task.cancel()
+        try:
+            await optio._supervisor_task
+        except asyncio.CancelledError:
+            pass
+    await optio.shutdown(grace_seconds=0.5)
