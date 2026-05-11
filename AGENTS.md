@@ -97,6 +97,11 @@ await optio_core.shutdown(grace_seconds=5.0)  # graceful shutdown; force-finaliz
 await optio_core.launch(process_id: str, resume: bool = False) -> None           # fire-and-forget
 await optio_core.launch_and_wait(process_id: str, resume: bool = False) -> None  # blocks until done
 await optio_core.cancel(process_id: str) -> None
+# Cancels the named process. Recursively cancels active direct descendants whose
+# TaskInstance has auto_cancel_children=True (default). Opt-out parents handle
+# their own children's shutdown. Force-cancel after grace always cascades through
+# the live subtree regardless of the flag. The cancel grace deadline is shared
+# across the subtree — descendants inherit the root cancel's monotonic deadline.
 await optio_core.group_cancel(metadata_filter: dict, block_new_launches: bool = False, *, persist: bool = False, reason: str | None = None) -> None             # fire-and-forget; cancels every active process matching the filter (persist=True requires block_new_launches=True)
 await optio_core.group_cancel_and_wait(metadata_filter: dict, block_new_launches: bool = False, *, persist: bool = False, reason: str | None = None) -> None    # blocks until every matching process is terminal (persist=True requires block_new_launches=True)
 async with optio_core.block_launches(launch_filter: dict, *, persist: bool = False, reason: str | None = None): ...   # async CM; rejects matching launches with LaunchBlocked. persist=True writes a Mongo record and the block survives the CM
@@ -152,6 +157,7 @@ class TaskInstance:
     warning: str | None = None              # shown as confirmation prompt before launch
     cancellable: bool = True                 # whether this process can be cancelled
     ui_widget: str | None = None             # widget name registered via registerWidget() in optio-ui
+    auto_cancel_children: bool = True        # cancel(this) recursively cancels active direct descendants; set False for tasks that finalize children themselves
 ```
 
 ---
@@ -359,6 +365,16 @@ DISMISSABLE_STATES = {"done", "failed", "cancelled"}
 | `cancel_requested` | `cancelling` |
 | `cancelling` | `cancelled` |
 | `cancelled` | `scheduled`, `idle` |
+
+**Cancel propagation:**
+
+`cancel(p)` recursively cancels active direct descendants of `p` when `p`'s TaskInstance has `auto_cancel_children=True` (default). Setting it to False makes `p` responsible for cleaning up its own subtree within the cancel grace budget. Force-cancel (the post-grace path) always cascades through the live subtree regardless of the flag.
+
+Upward propagation (alpha): when a child terminates abnormally (cancelled with `survive_cancel=False`, or failed with `survive_failure=False`), the executor invokes `cancel(parent)` so the parent's other active children are cancelled too. This is implemented via a `notify_parent_abnormal` callback bound to `lifecycle.cancel`. For `parallel_group`, the alpha callback fires from `ParallelGroup.spawn._run` whenever the group's own `survive_*` aggregate is breached, since the per-spawn `run_child` hardcodes `survive_*=True`.
+
+The cancel grace deadline is shared across the subtree: descendants inherit the root cancel's monotonic deadline (via an internal `inherit_deadline` kwarg on `lifecycle.cancel`) rather than starting a fresh clock at each level.
+
+While a process is being cancelled (its cancellation flag is set), `ctx.run_child` and `ParallelGroup.spawn` refuse to spawn new children unless the parent has `auto_cancel_children=False` (it owns shutdown timing).
 
 ---
 
