@@ -465,3 +465,63 @@ async def test_force_cancel_cascade_auto_propagate(mongo_db):
         except asyncio.CancelledError:
             pass
     await optio.shutdown(grace_seconds=0.5)
+
+
+async def test_force_cancel_cascade_optout_path(mongo_db):
+    """Opt-out parent: cancel does not propagate to children; after grace,
+    force-cancel cascade catches them."""
+    prefix = "p5t3"
+    parent_started = asyncio.Event()
+    child_started = asyncio.Event()
+
+    async def long_child(ctx):
+        while True:
+            await asyncio.sleep(0.05)
+
+    async def parent(ctx):
+        parent_started.set()
+        async with ctx.parallel_group(survive_cancel=True, survive_failure=True) as group:
+            await group.spawn(execute=long_child, process_id="b", name="B")
+            child_started.set()
+            # Do not cancel B; let force-cancel cascade handle it.
+            while True:
+                await asyncio.sleep(0.05)
+
+    parent_inst = TaskInstance(
+        execute=parent, process_id="parent", name="Parent",
+        auto_cancel_children=False,
+    )
+    b_inst = TaskInstance(execute=long_child, process_id="b", name="B")
+
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix=prefix, cancel_grace_seconds=0.5)
+    await upsert_process(mongo_db, prefix, parent_inst)
+    optio._executor.register_tasks([parent_inst, b_inst])
+    optio._running = True
+    optio._supervisor_task = asyncio.create_task(optio._supervisor_loop())
+
+    await optio.launch("parent")
+    await parent_started.wait()
+    await child_started.wait()
+    await asyncio.sleep(0.05)
+
+    await optio.cancel("parent")
+
+    # Immediately after cancel: B still active.
+    b_proc = await get_process_by_process_id(mongo_db, prefix, "b")
+    assert b_proc["status"]["state"] in {"running", "scheduled"}
+
+    # After grace + cascade, B reaches terminal via force_cancel cascade.
+    b_proc = await _wait_terminal(mongo_db, prefix, "b", timeout=5.0)
+    parent_proc = await _wait_terminal(mongo_db, prefix, "parent", timeout=5.0)
+    assert b_proc["status"]["state"] == "failed"
+    assert parent_proc["status"]["state"] == "failed"
+
+    optio._running = False
+    if optio._supervisor_task:
+        optio._supervisor_task.cancel()
+        try:
+            await optio._supervisor_task
+        except asyncio.CancelledError:
+            pass
+    await optio.shutdown(grace_seconds=0.5)
