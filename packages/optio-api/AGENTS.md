@@ -13,26 +13,67 @@
   - `optio-api` → `dist/index.js` / `dist/index.d.ts`
   - `optio-api/fastify` → `dist/adapters/fastify.js` / `dist/adapters/fastify.d.ts`
 - **dependencies**: `optio-contracts`, `@ts-rest/core`, `mongodb`, `ioredis`, `@clamator/protocol`, `@clamator/over-redis`, `zod`
-- **note**: `zod` is declared explicitly here even though `optio-api` does not import it directly. `@clamator/protocol` declares `zod` as a peerDependency; without an explicit declaration in this package, pnpm can resolve `@clamator/protocol`'s peer requirement against a different physical `zod` copy than the one used by `optio-contracts`, which causes TypeScript to reject the codegenned `_generated/engine.ts`. See `@clamator/protocol`'s README for the canonical statement of this consumer requirement.
+- **note**: `zod` is declared explicitly here even though `optio-api` does not import it directly. `@clamator/protocol` declares `zod` as a peerDependency; without an explicit declaration in this package, pnpm can resolve `@clamator/protocol`'s peer requirement against a different physical `zod` copy than the one used by `optio-contracts`, which causes TypeScript to reject the codegenned `_generated/optio-engine.ts`. See `@clamator/protocol`'s README for the canonical statement of this consumer requirement.
 - **optionalDependencies**: `@ts-rest/fastify`
 - **peerDependencies**: `fastify ^5.2.0` (optional)
 
-## Exports (phase 2+)
+## Layered architecture
 
-In addition to the handler functions and stream pollers listed below, the following
-symbols are re-exported from the main `optio-api` entry point:
+| Layer | Provides | Audience |
+|-------|----------|----------|
+| 1 | `createOptioTransports(redis): OptioTransports` — cache of `RpcClient` per `(database, prefix)` | RPC-only consumers (e.g., Excavator) + custom HTTP adapter authors |
+| 2 | `createOptioContext({ dbOpts, redis }): OptioContext` — bundles `dbOpts`, `transports`, `redis`, `closeAll` | HTTP hosts (typical) |
+| 3a | `registerOptioApi(app, { ctx, authenticate })` (or sugar form) — binds HTTP routes onto a framework | HTTP hosts |
 
-- `EngineClient` (re-exported from `_generated/engine.ts`) — typed clamator client
-  for the engine RPC contract. Use to call engine methods from non-HTTP code paths.
-- `createEngineCache(redis: Redis): EngineCache` — framework-agnostic factory that
-  lazily constructs and caches `EngineClient` instances per `(database, prefix)`.
-  Custom adapters consume this rather than rolling their own cache.
-- `EngineCache` — the type returned by `createEngineCache`. Interface:
-  `get(database: string, prefix: string): EngineClient` and
-  `closeAll(): Promise<void>`.
-- `OptioContext` (type) — the per-app context threaded into every handler call.
-  Owns `dbOpts`, `engineCache`, and `redis`. Constructed once at adapter
-  registration via `createOptioContext({ dbOpts, redis })`.
+The transport cache (Layer 1) is contract-agnostic. Any clamator contract — `OptioEngineClient` plus future consumer contracts — wraps a cached transport. RPC-only consumers stop at Layer 1; HTTP-handler code uses Layer 2.
+
+## Exports
+
+Re-exported from the main `optio-api` entry point:
+
+- `OptioEngineClient` (re-exported from `_generated/optio-engine.ts`) — typed clamator client for the optio-engine RPC contract. Constructed as `new OptioEngineClient(transport)`.
+- `createOptioTransports(redis: Redis): OptioTransports` — Layer 1 factory. Caches one `RpcClient` per `(database, prefix)`. Audience: RPC-only consumers, custom adapter authors.
+- `OptioTransports` (type) — interface `{ get(database: string, prefix: string): RpcClient; closeAll(): Promise<void> }`.
+- `createOptioContext({ dbOpts, redis }): OptioContext` — Layer 2 factory. Wraps Layer 1 + Mongo `Db`.
+- `OptioContext` (type) — interface `{ dbOpts: DbOptions; transports: OptioTransports; redis: Redis; closeAll(): Promise<void> }`. Threaded into every handler call.
+- `resolveDb(dbOpts, query)` — extract `db`, `database`, `prefix` from a query plus dbOpts.
+- `resolveOptioEngine(ctx, query): OptioEngineClient` — Layer 2 helper combining `resolveDb` and `new OptioEngineClient(ctx.transports.get(...))`. Use inside per-request handler paths.
+
+### Patterns
+
+External RPC-only consumer (e.g., Excavator):
+
+```typescript
+import { createOptioTransports, OptioEngineClient } from 'optio-api';
+
+const transports = createOptioTransports(redis);
+const optioEngine = new OptioEngineClient(transports.get('mydb', 'optio'));
+await optioEngine.launch({ processId: 'foo' });
+
+// Consumer's own contract on the same transport infrastructure:
+const myClient = new MyDomainClient(transports.get('mydb', 'mydomain'));
+```
+
+HTTP host:
+
+```typescript
+import { createOptioContext, registerOptioApi, resolveOptioEngine } from 'optio-api';
+
+const ctx = createOptioContext({ dbOpts: { db }, redis });
+registerOptioApi(app, { ctx, authenticate });  // explicit form
+app.addHook('onClose', () => ctx.closeAll());
+
+// Programmatic engine access in the host's own code:
+const engine = resolveOptioEngine(ctx, {});
+await engine.launch({ processId: 'foo' });
+```
+
+Sugar form (host doesn't need to manage ctx explicitly):
+
+```typescript
+const ctx = registerOptioApi(app, { db, redis, authenticate });
+// fastify wires onClose to ctx.closeAll automatically in the sugar form.
+```
 
 ## OptioApiOptions
 
@@ -74,16 +115,20 @@ defense in depth.
 
 Imported from `optio-api/fastify`.
 
-**Return shape (phase 2+):**
+**Return shape (two-form):**
 
-`registerOptioApi(app, opts)` returns:
+`registerOptioApi(app, opts)` accepts either:
 
-- `{ engine: EngineClient, closeAll: () => Promise<void> }` in single-db mode (`db` supplied).
-- `{ getEngine: (database: string, prefix: string) => EngineClient, closeAll: () => Promise<void> }` in multi-db mode (`mongoClient` supplied).
+- **Sugar form** — `{ db | mongoClient, redis, authenticate, prefix?, verbose? }`. Adapter constructs an `OptioContext` internally, wires fastify's `onClose` to `ctx.closeAll()`, and returns the constructed `OptioContext` so the host can reach `transports`, etc.
+- **Explicit form** — `{ ctx, authenticate, prefix?, verbose? }`. Caller owns ctx lifecycle; adapter does NOT wire `onClose` and returns `void`.
 
-Fastify wires `closeAll` into its `onClose` hook automatically. The returned `engine`
-(or result of `getEngine(...)`) can be shared with non-HTTP code paths so they do not
-need to construct their own clamator client.
+Engine access for non-HTTP code goes through the context (sugar: returned `OptioContext`; explicit: caller's own):
+
+```typescript
+const engine = resolveOptioEngine(ctx, {});
+// or for a custom contract:
+const my = new MyClient(ctx.transports.get(database, prefix));
+```
 
 ```typescript
 function registerProcessRoutes(app: FastifyInstance, opts: OptioApiOptions): void
@@ -159,14 +204,11 @@ async function getProcessTreeLog(
   id: string,
 ): Promise<{ items: any[]; nextCursor: string | null; totalCount: number } | null>
 
-// Command handlers
-// **Phase-3 status note:** command handlers route to clamator RPC via
-// `ctx.engineCache.get(database, prefix).{launch,cancel,dismiss,resync}(...)`. The
-// pre-RPC redis-stream `publisher.ts` was deleted in phase 3. The pre-check (state
-// allowlist + `proc.cancellable` + `proc.supportsResume`) is defense in depth against
-// stale Mongo data and is removed in phase 4 once the engine is the sole source of
-// truth for these guards. See
-// `docs/2026-05-08-engine-rpc-migration-phase-3-design.md`.
+// Command handlers route to the optio-engine clamator contract via
+// `resolveOptioEngine(ctx, query).{launch,cancel,dismiss,resync}(...)`. Engine
+// owns all command-acceptance rules (state allowlists, supportsResume guard,
+// persistent launch blocks); API handlers translate the discriminated-union
+// result into HTTP status + body.
 async function launchProcess(
   ctx: OptioContext,
   query: { database?: string; prefix?: string },
@@ -293,32 +335,33 @@ The `widgetData` field is included in tree-stream `update` events and is part of
 
 When writing a custom framework adapter (not Fastify/Express/Next.js), follow these rules:
 
-1. **Use `createEngineCache(opts.redis)`** to obtain an `EngineCache`. Do NOT construct
-   `RedisRpcClient` or `EngineClient` directly — the cache ensures one client instance
-   per `(database, prefix)` pair and handles connection lifecycle.
+1. **Accept an `OptioContext`** (or build one yourself from `createOptioContext({ dbOpts, redis })`). Do NOT construct `RedisRpcClient` directly; the ctx's `transports` cache ensures one client per `(database, prefix)` and handles lifecycle.
 
-2. **Wire `cache.closeAll()` into your framework's shutdown hook** (where the framework
-   provides one). If it does not, expose `closeAll` on the adapter's return value so
-   callers can wire it into their own `SIGTERM` / `onClose` handler.
+2. **For per-request engine access, call `resolveOptioEngine(ctx, query)`**. It encapsulates `resolveDb` + `new OptioEngineClient(...)`.
 
-3. **Return the cache (or a `getEngine` wrapper)** from your adapter function so callers
-   can share the `EngineClient` with non-HTTP code paths (scheduled jobs, custom RPC
-   integrations, etc.) without constructing a second client.
+3. **Lifecycle**: when sugar form (you constructed ctx), wire `ctx.closeAll()` into your framework's shutdown hook. When explicit form (caller passed ctx), do NOT call closeAll — caller owns lifecycle.
 
 Example skeleton:
 
 ```typescript
-import { createEngineCache, type EngineClient } from 'optio-api';
+import {
+  createOptioContext,
+  resolveOptioEngine,
+  type OptioContext,
+  launchProcess, cancelProcess, dismissProcess, /* ... */
+} from 'optio-api';
 
-export function registerOptioApiMyFramework(app: MyApp, opts: OptioApiOptions) {
-  const cache = createEngineCache(opts.redis);
-  const engine: EngineClient = cache.get(opts.db.databaseName!, opts.prefix ?? 'optio');
+export function registerOptioApiMyFramework(app: MyApp, opts: SugarOpts | { ctx: OptioContext }) {
+  const explicit = 'ctx' in opts;
+  const ctx = explicit ? opts.ctx : createOptioContext({ dbOpts: { db: opts.db }, redis: opts.redis });
 
-  // ... mount routes using handler functions from optio-api ...
+  // ... mount routes; handlers take (ctx, query, id?, ...) ...
 
-  app.onClose(async () => cache.closeAll());
-
-  return { engine, closeAll: () => cache.closeAll() };
+  if (!explicit) {
+    app.onClose(async () => ctx.closeAll());
+    return ctx;
+  }
+  return;
 }
 ```
 
@@ -373,6 +416,4 @@ Collaborators: `process-id-resolver.ts`, `metadata-filter-query.ts`,
 
 ### 3. Context layer — `packages/optio-api/src/context.ts`
 
-Owns durable per-app resources: `dbOpts`, `engineCache`, `redis`. Constructed
-once at adapter registration via `createOptioContext({ dbOpts, redis })`.
-Threaded into every handler call.
+Owns durable per-app resources: `dbOpts`, `transports` (Layer 1 cache), `redis`, and a `closeAll` teardown function. Constructed once at adapter registration via `createOptioContext({ dbOpts, redis })`. Threaded into every handler call.

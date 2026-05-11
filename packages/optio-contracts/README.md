@@ -30,7 +30,7 @@ Zod schemas and ts-rest contract for the Optio process management API.
 The package hosts two typed contracts. Contract files follow `<server>-to-<client>.ts` naming: the server side is the one that exposes the contract; the client side calls it.
 
 - `processesContract` (in `src/api-to-frontend.ts`) — ts-rest HTTP contract that `optio-api` exposes to its REST clients.
-- `engineContract` (in `src/engine-to-api.ts`) — clamator RPC contract that `optio-core` exposes to its RPC callers.
+- `optioEngineContract` (in `src/optio-engine-to-api.ts`) — clamator RPC contract that `optio-core` exposes to its RPC callers. Wire service name: `'optio-engine'`.
 
 ### `processesContract` (HTTP, ts-rest)
 
@@ -50,9 +50,9 @@ ts-rest router with 9 endpoints, used by `optio-ui` to call `optio-api`:
 
 Used at runtime by ts-rest; no codegen step.
 
-### `engineContract` (RPC, clamator)
+### `optioEngineContract` (RPC, clamator)
 
-clamator service named `engine`, used by `optio-api` to call `optio-core`. Methods:
+clamator service named `optio-engine`, used by `optio-api` to call `optio-core`. Methods:
 
 | Method | Kind | Purpose |
 |--------|------|---------|

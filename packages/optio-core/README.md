@@ -500,11 +500,12 @@ await launch("one-off-123")
 
 In addition to the legacy `${prefix}:commands` redis stream consumer
 (see "Remote Control via Redis"), `optio-core` hosts a clamator
-`RedisRpcServer` listening on `${database}/${prefix}:cmds:engine`.
-The server exposes the `engine` service whose contract lives in
-`packages/optio-contracts/src/engine-to-api.ts`. The Python ABC and
+`RedisRpcServer` listening on `${database}/${prefix}:cmds:optio-engine`.
+The server exposes the `optio-engine` service whose contract lives in
+`packages/optio-contracts/src/optio-engine-to-api.ts`. The Python ABC and
 Pydantic models are codegenned to
-`src/optio_core/_generated/engine.py`.
+`src/optio_core/_generated/optio_engine.py` (filename post-processed
+from `optio-engine.py` so Python's module-identifier rules accept it).
 
 The server is constructed automatically by `optio_core.init(...)` when
 `redis_url` is supplied, and is exposed at `optio_core.rpc_server` for

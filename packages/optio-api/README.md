@@ -46,8 +46,11 @@ The package has three layers:
    functions taking `OptioContext` + per-request data. Owns read-path Mongo
    queries, write-path RPC calls, request → response shaping.
 3. **Context layer** (`src/context.ts`): owns durable per-app resources
-   (`dbOpts`, `engineCache`, `redis`). Constructed once at adapter
-   registration via `createOptioContext`.
+   (`dbOpts`, `transports` cache, `redis`, `closeAll`). Constructed once at
+   adapter registration via `createOptioContext`. The `transports` cache
+   (Layer 1, in `src/optio-transports.ts`) is contract-agnostic — wraps
+   `RpcClient` per `(database, prefix)` — and is exposed to RPC-only
+   consumers via `createOptioTransports`.
 
 When extending the package, the test for placing code in an adapter is:
 *"Would I write this same code in the other three adapters?"* If yes, the
@@ -188,39 +191,53 @@ client connects and `stop()` when they disconnect.
 ## Return value
 
 `registerOptioApi`, `createOptioRouteHandlers`, and `createOptioHandler`
-return an object that exposes the underlying clamator engine client(s)
-plus a teardown function:
+accept two forms:
 
-- **Single-db mode** (`db` supplied): `{ engine, closeAll }`
-  - `engine: EngineClient` — typed client ready to call engine RPC methods.
-  - `closeAll(): Promise<void>` — drains every cached client. Idempotent.
-- **Multi-db mode** (`mongoClient` supplied): `{ getEngine, closeAll }`
-  - `getEngine(database, prefix): EngineClient` — looks up or lazily
-    constructs the client for `(database, prefix)`. Repeat lookups
-    return the same instance.
-  - `closeAll(): Promise<void>` — same as above.
+- **Sugar form** (`{ db | mongoClient, redis, authenticate, ... }`): the adapter constructs an `OptioContext` internally. Return shape:
+  - fastify/express: returns the constructed `OptioContext`.
+  - nextjs-app: returns `{ GET, POST, ctx }`.
+  - nextjs-pages: returns `{ handler, ctx }`.
 
-Fastify wires `closeAll` into its `onClose` lifecycle hook
-automatically. Express and Next.js have no equivalent; callers wire
-`closeAll` into their shutdown handler manually:
+  Fastify additionally wires its `onClose` lifecycle hook to `ctx.closeAll()` automatically.
+
+- **Explicit form** (`{ ctx, authenticate, ... }`): caller supplies a pre-built `OptioContext` and owns its lifecycle. Return shape:
+  - fastify/express: returns `void`.
+  - nextjs-app: returns `{ GET, POST }` (no `ctx`).
+  - nextjs-pages: returns `{ handler }`.
+
+Construct the context explicitly via `createOptioContext({ dbOpts, redis })` and call `ctx.closeAll()` on shutdown:
 
 ```typescript
 // Express:
 import { registerOptioApi } from 'optio-api/express';
 
-const { engine, closeAll } = registerOptioApi(app, { db, redis });
+const ctx = registerOptioApi(app, { db, redis, authenticate })!;  // sugar form returns ctx
 const server = app.listen(3000);
 process.on('SIGTERM', async () => {
   server.close();
-  await closeAll();
+  await ctx.closeAll();
 });
 ```
 
-Next.js: `closeAll` is exposed on the same handle returned from `createOptioRouteHandlers` / `createOptioHandler`. Wire it into whatever shutdown hook your deployment provides (typically not needed for serverless, since process death drops the Redis socket).
+Next.js: same pattern — sugar form returns `{ GET, POST, ctx }` (app router) or `{ handler, ctx }` (pages router). Wire `ctx.closeAll()` into whatever shutdown hook your deployment provides (typically not needed for serverless, since process death drops the Redis socket).
 
-The returned `engine` (or `getEngine(...)`) can be shared with non-HTTP
-code paths (custom RPC integrations, server-side scheduled jobs) so
-they do not need to construct their own clamator client.
+Programmatic engine access for the host's own non-HTTP code:
+
+```typescript
+import { resolveOptioEngine } from 'optio-api';
+const engine = resolveOptioEngine(ctx, {});
+await engine.launch({ processId: 'my-task' });
+```
+
+RPC-only consumers (no Mongo, no HTTP — e.g., Excavator) use the Layer-1 transport cache directly:
+
+```typescript
+import { createOptioTransports, OptioEngineClient } from 'optio-api';
+const transports = createOptioTransports(redis);
+const optioEngine = new OptioEngineClient(transports.get('mydb', 'optio'));
+// Plus any other clamator contract:
+const myDomain = new MyDomainClient(transports.get('mydb', 'mydomain'));
+```
 
 ## See Also
 

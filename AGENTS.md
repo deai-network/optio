@@ -126,7 +126,7 @@ optio_core.rpc_server: RpcServerCore | None
 | `mongo_db` | `AsyncIOMotorDatabase` | required | Motor async database object |
 | `prefix` | `str` | required | Namespace for collections (`{prefix}_processes`) and Redis streams (`{prefix}:commands`) |
 | `redis_url` | `str \| None` | `None` | If None: command bus disabled; use direct method calls |
-| `rpc_server` | `RpcServerCore \| None` | `None` | Pre-built clamator RPC server. Mutually exclusive with `redis_url`. When supplied, optio-core registers `EngineService` on it but does not own its lifecycle. |
+| `rpc_server` | `RpcServerCore \| None` | `None` | Pre-built clamator RPC server. Mutually exclusive with `redis_url`. When supplied, optio-core registers `OptioEngineService` on it but does not own its lifecycle. |
 | `services` | `dict[str, Any] \| None` | `{}` | Passed as `ctx.services` to all task execute functions |
 | `get_task_definitions` | `Callable[..., Awaitable[list[TaskInstance]]] \| None` | `None` | Async function `(services, metadata_filter) -> list[TaskInstance]`; called on init and resync. `metadata_filter` is `None` for a full sync. |
 
@@ -530,31 +530,42 @@ Package: `optio-api`. Framework-agnostic handlers + Fastify adapter.
 // Handlers (framework-agnostic)
 export { listProcesses, getProcess, getProcessTree, getProcessLog, getProcessTreeLog,
          launchProcess, cancelProcess, dismissProcess, resyncProcesses } from 'optio-api';
-export type { ListQuery, PaginationQuery, TreeLogQuery, CommandResult } from 'optio-api';
+export type { ListQuery, PaginationQuery, TreeLogQuery,
+              LaunchCommandResult, CancelCommandResult, DismissCommandResult } from 'optio-api';
 
-// Publishers (for domain code to trigger commands via Redis)
-export { publishLaunch, publishResync } from 'optio-api';
-
-// Engine client (phase 2+)
-export { EngineClient, createEngineCache } from 'optio-api';
-export type { EngineCache } from 'optio-api';
-// EngineCache: { get(database, prefix): EngineClient; closeAll(): Promise<void> }
+// Layered RPC access
+//   Layer 1 (Transport cache): createOptioTransports / OptioTransports
+//   Layer 2 (Optio context):   createOptioContext / OptioContext / resolveOptioEngine
+//   Generated:                 OptioEngineClient (wraps Layer 0 RpcClient)
+export { OptioEngineClient,
+         createOptioTransports, type OptioTransports,
+         createOptioContext, type OptioContext,
+         resolveDb, resolveOptioEngine,
+         type DbOptions, type SingleDbOptions, type MultiDbOptions } from 'optio-api';
 
 // Stream poller (for custom SSE adapters)
 export { createListPoller, createTreePoller } from 'optio-api';
 export type { StreamPollerOptions, TreePollerOptions, ListPollerHandle } from 'optio-api';
 ```
 
-### OptioApiOptions
+### OptioApiOptions (two-form)
 
 ```typescript
-import type { AuthCallback, OptioRole } from 'optio-api';
+import type { AuthCallback, OptioRole, OptioContext } from 'optio-api';
 
-interface OptioApiOptions {
-  db: Db;       // mongodb Db instance
-  redis: Redis; // ioredis Redis instance
+// Sugar form: adapter constructs OptioContext internally, returns it.
+interface SugarOptioApiOptions {
+  db?: Db;                                    // single-db mode
+  mongoClient?: MongoClient;                  // multi-db mode (alternative to db)
+  redis: Redis;
   prefix?: string;                            // optional; default 'optio'
-  authenticate: AuthCallback<TRequest>;       // TRequest depends on adapter
+  authenticate: AuthCallback<TRequest>;
+}
+
+// Explicit form: caller supplies a pre-built OptioContext. Returns void.
+interface ExplicitOptioApiOptions {
+  ctx: OptioContext;
+  authenticate: AuthCallback<TRequest>;
 }
 
 // AuthCallback returns 'viewer' (read-only) | 'operator' (read+write) | null (deny).
@@ -568,8 +579,9 @@ interface OptioApiOptions {
 ```typescript
 import { registerOptioApi } from 'optio-api/fastify';
 
-registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): { engine: EngineClient, closeAll: () => Promise<void> }
-// (multi-db mode returns { getEngine, closeAll } instead — see packages/optio-api/README.md)
+registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): OptioContext | void
+// Sugar form: returns the constructed OptioContext; fastify onClose wired to ctx.closeAll().
+// Explicit form (caller passed ctx): returns void; caller owns ctx lifecycle.
 // Single entry point for the Fastify integration. Registers:
 //   - REST endpoints from processesContract under /api/processes/...
 //   - SSE endpoints GET /api/processes/:id/tree/stream and GET /api/processes/stream
@@ -997,8 +1009,8 @@ All components use `react-i18next`. Required keys:
 ## Architecture Notes
 
 - **Authority rule.** `optio-core` is the sole writer to MongoDB. `optio-api` reads MongoDB directly for queries (REST GETs, SSE, widget proxy, discovery) and forwards every mutating operation to the engine via clamator RPC. The API enforces no state machine, no policy, no command-acceptance rules. Engine is single source of truth for what commands are allowed and what state results. Full statement: top-level README "Authority and data flow".
-- **Engine RPC.** clamator over-redis. Engine hosts a `RedisRpcServer` constructed by `optio_core.init()` with `key_prefix=f"{database}/{prefix}"`, registering the `engine` service defined in `optio-contracts/src/engine-to-api.ts`. API uses a `RedisRpcClient` per `(database, prefix)` constructed by `registerOptioApi`. Apps can register additional services on `optio_core.rpc_server` before calling `optio_core.run()`.
-- **registerOptioApi return handle.** `registerOptioApi` (and the Next.js equivalents `createOptioRouteHandlers` / `createOptioHandler`) return a handle exposing the underlying `EngineClient`(s) and a `closeAll` teardown. Single-db mode: `{ engine: EngineClient, closeAll }`. Multi-db mode: `{ getEngine, closeAll }`. See `packages/optio-api/README.md` for details.
+- **Engine RPC.** clamator over-redis. Engine hosts a `RedisRpcServer` constructed by `optio_core.init()` with `key_prefix=f"{database}/{prefix}"`, registering the `optio-engine` service defined in `optio-contracts/src/optio-engine-to-api.ts`. API uses a `RedisRpcClient` per `(database, prefix)` provided by `createOptioTransports` / `OptioContext.transports`. Apps can register additional services on `optio_core.rpc_server` before calling `optio_core.run()`; consumers (e.g. Excavator) wrap any clamator contract on the cached transport.
+- **registerOptioApi return shape.** Sugar form (no `ctx` supplied) returns the constructed `OptioContext`; the host uses `ctx.transports`, `ctx.closeAll()`, `resolveOptioEngine(ctx, query)` as needed. Explicit form (`{ ctx, authenticate }`) returns `void` and leaves lifecycle to the caller. nextjs-app returns `{ GET, POST, ctx? }`; nextjs-pages returns `{ handler, ctx? }`. See `packages/optio-api/README.md`.
 - **optio-api internal layer rules.** The `optio-api` package has binding internal layer rules (adapter / handler / context); see `packages/optio-api/AGENTS.md` "Layer rules (binding)".
 - **Collection name**: `{prefix}_processes` (MongoDB)
 - **No Redis mode**: `init()` with `redis_url=None` and no `rpc_server` disables the command surface; use direct Python API calls (`optio.launch()`, etc.) instead.

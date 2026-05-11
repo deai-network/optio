@@ -276,10 +276,10 @@ configured. Apps register additional clamator services on this attribute before 
 Two new keyword arguments added to `optio_core.init()`:
 
 - `rpc_server` (`RpcServerCore | None`): Pre-built clamator RPC server. Mutually
-  exclusive with `redis_url`. When supplied, optio-core registers `EngineService` on
+  exclusive with `redis_url`. When supplied, optio-core registers `OptioEngineService` on
   it but does not own its lifecycle.
 - `redis_url` (existing): When supplied, optio-core constructs a `RedisRpcServer`
-  internally, registers `EngineService`, and exposes it at `optio_core.rpc_server`.
+  internally, registers `OptioEngineService`, and exposes it at `optio_core.rpc_server`.
 
 Full `init()` signature (as of phase 2):
 
