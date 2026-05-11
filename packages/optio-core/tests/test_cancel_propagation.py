@@ -409,3 +409,59 @@ async def test_parallel_group_fail_fast_under_alpha(mongo_db):
     assert a_proc["status"]["state"] in {"failed", "cancelled"}
 
     await optio.shutdown(grace_seconds=0.5)
+
+
+async def test_force_cancel_cascade_auto_propagate(mongo_db):
+    """Stubborn child that ignores should_continue gets force-cancelled
+    when grace expires; parent also force-cancelled."""
+    prefix = "p5t1"
+    parent_started = asyncio.Event()
+    child_started = asyncio.Event()
+
+    async def stubborn_child(ctx):
+        child_started.set()
+        # Ignore should_continue; only break on asyncio.CancelledError.
+        while True:
+            await asyncio.sleep(0.05)
+
+    async def parent(ctx):
+        parent_started.set()
+        await ctx.run_child(
+            execute=stubborn_child, process_id="stub", name="Stub",
+        )
+
+    parent_inst = TaskInstance(execute=parent, process_id="parent", name="Parent")
+    child_inst = TaskInstance(execute=stubborn_child, process_id="stub", name="Stub")
+
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix=prefix, cancel_grace_seconds=0.5)
+    await upsert_process(mongo_db, prefix, parent_inst)
+    optio._executor.register_tasks([parent_inst, child_inst])
+
+    optio._running = True
+    optio._supervisor_task = asyncio.create_task(optio._supervisor_loop())
+
+    # Fire-and-forget launch so the test does not have to absorb
+    # CancelledError when force-cancel kills the runner task.
+    await optio.launch("parent")
+    await parent_started.wait()
+    await child_started.wait()
+    await asyncio.sleep(0.05)
+
+    await optio.cancel("parent")
+
+    # Poll DB until both reach terminal (force-cancel writes 'failed'
+    # after grace expires).
+    parent_proc = await _wait_terminal(mongo_db, prefix, "parent", timeout=5.0)
+    child_proc = await _wait_terminal(mongo_db, prefix, "stub", timeout=5.0)
+    assert parent_proc["status"]["state"] in {"failed", "cancelled"}
+    assert child_proc["status"]["state"] in {"failed", "cancelled"}
+
+    optio._running = False
+    if optio._supervisor_task:
+        optio._supervisor_task.cancel()
+        try:
+            await optio._supervisor_task
+        except asyncio.CancelledError:
+            pass
+    await optio.shutdown(grace_seconds=0.5)
