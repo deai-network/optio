@@ -176,6 +176,7 @@ def _build_curl_cmd(*, url: str, target: str) -> str:
         "curl",
         "--trace-ascii", "-",
         "-s",
+        "-S",
         "-f",
         "-L",
         "-o", shlex.quote(target),

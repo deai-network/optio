@@ -361,3 +361,55 @@ async def test_download_execute_no_host_happy_path(http_server, tmp_path):
     assert numeric[-1] >= 99.0
     assert target.exists()
     assert hashlib.sha256(target.read_bytes()).hexdigest() == expected_sha
+
+
+async def test_download_execute_no_host_404_raises_and_cleans_up(http_server, tmp_path):
+    base_url, _ = http_server  # served dir empty; any URL is 404
+
+    from optio_host.download import DownloadFailed, create_download_task
+
+    target = tmp_path / "out.bin"
+    task = create_download_task(
+        process_id="p.download-0",
+        name="download nope.bin",
+        url=f"{base_url}/nope.bin",
+        target=str(target),
+        host=None,
+    )
+    ctx = _RecordingCtx()
+    with pytest.raises(DownloadFailed) as ei:
+        await task.execute(ctx)
+    assert ei.value.exit_code == 22
+    assert ei.value.url == f"{base_url}/nope.bin"
+    assert ei.value.target == str(target)
+    assert ei.value.stderr_tail
+    assert not target.exists()
+
+
+async def test_download_execute_no_host_404_no_cleanup_does_not_call_remove(
+    http_server, tmp_path, monkeypatch,
+):
+    base_url, _ = http_server
+    from optio_host import download as dl_mod
+    from optio_host.download import DownloadFailed, create_download_task
+
+    called = {"n": 0}
+
+    async def spy_remove(host, target):
+        called["n"] += 1
+
+    monkeypatch.setattr(dl_mod, "_maybe_remove", spy_remove)
+
+    target = tmp_path / "out.bin"
+    task = create_download_task(
+        process_id="p.download-0",
+        name="download nope.bin",
+        url=f"{base_url}/nope.bin",
+        target=str(target),
+        host=None,
+        cleanup_on_fail=False,
+    )
+    ctx = _RecordingCtx()
+    with pytest.raises(DownloadFailed):
+        await task.execute(ctx)
+    assert called["n"] == 0
