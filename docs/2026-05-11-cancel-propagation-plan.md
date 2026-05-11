@@ -1635,9 +1635,15 @@ git commit -m "test(optio-core): force-cancel cascade catches children spawned i
 
 ---
 
-## Phase 6 — Orphan safety net
+## Phase 6 — Orphan safety net [DROPPED 2026-05-12]
 
-### Task 6.1: Test orphan safety net (opt-out parent fails mid-handling)
+**Status: dropped.** Reason: the scenario the safety net was meant to handle (opt-out parent's execute fn raises mid-cancel-handling while children still active) cannot actually happen with the current `parallel_group` implementation. `parallel_group.__aexit__` blocks on `await asyncio.gather(*tasks, ...)` even when an exception is propagating, which means a parent cannot exit its execute body while children are still alive.
+
+The orphan cleanup is fully covered by Phase 5's force-cancel cascade (Task 5.2): when the parent's grace expires and `force_cancel(parent)` runs, the recursive cascade catches every active descendant in DB regardless of how they got there. Tests 5.3 and 5.4 verify this explicitly for the opt-out path and the late-spawn case.
+
+If `parallel_group.__aexit__` is ever changed to fail-fast on exception, revisit this and add the safety net as a finer-grained backup before the force-cancel cascade.
+
+### Task 6.1 (dropped): Test orphan safety net (opt-out parent fails mid-handling)
 
 **Files:**
 - Modify: `packages/optio-core/tests/test_cancel_propagation.py`
