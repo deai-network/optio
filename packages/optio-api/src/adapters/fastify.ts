@@ -32,12 +32,12 @@ import {
   checkLegacyMetadataParams,
   LegacyMetadataParamError,
 } from '../sse-options.js';
-import type { EngineClient } from '../_generated/engine.js';
+import type { OptioEngineClient } from '../_generated/optio-engine.js';
 import { createOptioContext } from '../context.js';
 
 export type OptioApiHandle =
-  | { engine: EngineClient; closeAll: () => Promise<void>; getEngine?: never }
-  | { getEngine: (database: string, prefix: string) => EngineClient; closeAll: () => Promise<void>; engine?: never };
+  | { engine: OptioEngineClient; closeAll: () => Promise<void>; getEngine?: never }
+  | { getEngine: (database: string, prefix: string) => OptioEngineClient; closeAll: () => Promise<void>; engine?: never };
 
 const WIDGET_CACHE_TTL_MS = 5000;
 
@@ -533,12 +533,12 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
   if ('db' in opts && opts.db) {
     const prefix = opts.prefix ?? 'optio';
     return {
-      engine: ctx.engineCache.get(opts.db.databaseName, prefix) as EngineClient,
+      engine: ctx.engineCache.get(opts.db.databaseName, prefix) as OptioEngineClient,
       closeAll: () => ctx.engineCache.closeAll(),
     };
   }
   return {
-    getEngine: (database: string, prefix: string) => ctx.engineCache.get(database, prefix) as EngineClient,
+    getEngine: (database: string, prefix: string) => ctx.engineCache.get(database, prefix) as OptioEngineClient,
     closeAll: () => ctx.engineCache.closeAll(),
   };
 }

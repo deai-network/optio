@@ -1,4 +1,4 @@
-"""EngineService — clamator RPC implementation for the optio engine.
+"""OptioEngineService — clamator RPC implementation for the optio engine.
 
 Phase 2 of the engine-RPC migration. Co-exists with the legacy
 ${prefix}:commands stream consumer; HTTP handlers still route through
@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING
 
 from bson import ObjectId
 
-from optio_core._generated.engine import (
-    EngineService as EngineServiceBase,
+from optio_core._generated.optio_engine import (
+    OptioEngineService as OptioEngineServiceBase,
     LaunchParams, LaunchResult,
     CancelParams, CancelResult,
     DismissParams, DismissResult,
@@ -80,8 +80,8 @@ def _to_process_dict(doc: dict) -> dict:
     return out
 
 
-class EngineService(EngineServiceBase):
-    """Concrete EngineService backing the clamator engine contract."""
+class OptioEngineService(OptioEngineServiceBase):
+    """Concrete OptioEngineService backing the clamator optio-engine contract."""
 
     def __init__(self, optio: "Optio") -> None:
         self._optio = optio

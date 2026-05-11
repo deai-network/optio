@@ -1,18 +1,18 @@
 import type { Redis } from 'ioredis';
 import { RedisRpcClient } from '@clamator/over-redis';
-import { EngineClient } from './_generated/engine.js';
+import { OptioEngineClient } from './_generated/optio-engine.js';
 
-// EngineClient (generated) wraps a ClamatorClient and exposes only RPC
+// OptioEngineClient (generated) wraps a ClamatorClient and exposes only RPC
 // methods. We augment it with start()/stop() delegating to the underlying
 // RedisRpcClient so callers can manage the connection lifecycle without
 // needing a separate handle.
-export type ManagedEngineClient = EngineClient & {
+export type ManagedOptioEngineClient = OptioEngineClient & {
   start(): Promise<void>;
   stop(): Promise<void>;
 };
 
 export interface EngineCache {
-  get(database: string, prefix: string): ManagedEngineClient;
+  get(database: string, prefix: string): ManagedOptioEngineClient;
   closeAll(): Promise<void>;
 }
 
@@ -20,7 +20,7 @@ export interface EngineCache {
 // have a small (~10) number of (database, prefix) pairs. If the cache exceeds
 // 100 entries in production, file an issue and revisit eviction strategy.
 export function createEngineCache(redis: Redis): EngineCache {
-  const map = new Map<string, ManagedEngineClient>();
+  const map = new Map<string, ManagedOptioEngineClient>();
 
   return {
     get(database, prefix) {
@@ -28,7 +28,7 @@ export function createEngineCache(redis: Redis): EngineCache {
       let engine = map.get(key);
       if (!engine) {
         const rpc = new RedisRpcClient({ redis, keyPrefix: key });
-        engine = Object.assign(new EngineClient(rpc), {
+        engine = Object.assign(new OptioEngineClient(rpc), {
           start: () => rpc.start(),
           stop: () => rpc.stop(),
         });

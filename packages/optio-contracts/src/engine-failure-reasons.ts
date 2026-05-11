@@ -3,7 +3,7 @@
 // This module exists so failure-reason enums can be re-exported from
 // `optio-contracts` to browser bundles (optio-ui, optio-dashboard) without
 // pulling in `@clamator/protocol`, which uses node:crypto. The contract source
-// (engine-to-api.ts) imports from here; index.ts re-exports from here.
+// (optio-engine-to-api.ts) imports from here; index.ts re-exports from here.
 
 import { z } from 'zod';
 

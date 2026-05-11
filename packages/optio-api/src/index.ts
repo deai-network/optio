@@ -36,6 +36,6 @@ export {
 } from './metadata-filter-query.js';
 
 // Engine RPC client and cache (phase 2 of engine-RPC migration).
-export { EngineClient } from './_generated/engine.js';
+export { OptioEngineClient } from './_generated/optio-engine.js';
 export { createEngineCache, type EngineCache } from './engine-cache.js';
 export { createOptioContext, type OptioContext } from './context.js';

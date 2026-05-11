@@ -1,10 +1,10 @@
-"""Tests for EngineService — phase 2 of engine RPC migration."""
+"""Tests for OptioEngineService — phase 2 of engine RPC migration."""
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 from bson import ObjectId
 
-from optio_core._generated.engine import (
+from optio_core._generated.optio_engine import (
     LaunchParams, LaunchResult,
     CancelParams, CancelResult,
     DismissParams, DismissResult,
@@ -52,7 +52,7 @@ def sample_running_proc(sample_idle_proc):
 
 @pytest.fixture
 def fake_optio(sample_idle_proc):
-    """A MagicMock Optio with the methods EngineService calls."""
+    """A MagicMock Optio with the methods OptioEngineService calls."""
     optio = MagicMock()
     optio._config = MagicMock()
     coll = AsyncMock()
@@ -79,12 +79,12 @@ def fake_optio(sample_idle_proc):
 @pytest.mark.asyncio
 async def test_launch_by_objectid_hex(fake_optio, sample_idle_proc):
     """Verify _resolve accepts a 24-char hex ObjectId and queries _id, not processId."""
-    from optio_core._engine_service import EngineService
+    from optio_core._engine_service import OptioEngineService
     running = dict(sample_idle_proc)
     running["status"] = {"state": "scheduled"}
     fake_optio.collection.find_one = AsyncMock(side_effect=[sample_idle_proc, running])
 
-    svc = EngineService(fake_optio)
+    svc = OptioEngineService(fake_optio)
     hex_id = str(sample_idle_proc["_id"])
     result = await svc.launch(LaunchParams.model_validate({"processId": hex_id}))
 
@@ -97,14 +97,14 @@ async def test_launch_by_objectid_hex(fake_optio, sample_idle_proc):
 @pytest.mark.asyncio
 async def test_launch_success(fake_optio, sample_idle_proc):
     """launch on an idle process returns ok=True with the post-mutation doc."""
-    from optio_core._engine_service import EngineService
+    from optio_core._engine_service import OptioEngineService
 
     # Sequence: first find_one returns idle, second (post-launch) returns running.
     running = dict(sample_idle_proc)
     running["status"] = {"state": "scheduled"}
     fake_optio.collection.find_one = AsyncMock(side_effect=[sample_idle_proc, running])
 
-    svc = EngineService(fake_optio)
+    svc = OptioEngineService(fake_optio)
     result = await svc.launch(LaunchParams.model_validate({"processId": "p1"}))
 
     assert isinstance(result, LaunchResult)
@@ -115,9 +115,9 @@ async def test_launch_success(fake_optio, sample_idle_proc):
 
 @pytest.mark.asyncio
 async def test_launch_not_found(fake_optio):
-    from optio_core._engine_service import EngineService
+    from optio_core._engine_service import OptioEngineService
     fake_optio.collection.find_one = AsyncMock(return_value=None)
-    svc = EngineService(fake_optio)
+    svc = OptioEngineService(fake_optio)
     result = await svc.launch(LaunchParams.model_validate({"processId": "missing"}))
     assert result.root.ok is False
     assert result.root.reason == "not-found"
@@ -126,9 +126,9 @@ async def test_launch_not_found(fake_optio):
 
 @pytest.mark.asyncio
 async def test_launch_not_launchable(fake_optio, sample_running_proc):
-    from optio_core._engine_service import EngineService
+    from optio_core._engine_service import OptioEngineService
     fake_optio.collection.find_one = AsyncMock(return_value=sample_running_proc)
-    svc = EngineService(fake_optio)
+    svc = OptioEngineService(fake_optio)
     result = await svc.launch(LaunchParams.model_validate({"processId": "p1"}))
     assert result.root.ok is False
     assert result.root.reason == "not-launchable"
@@ -137,10 +137,10 @@ async def test_launch_not_launchable(fake_optio, sample_running_proc):
 
 @pytest.mark.asyncio
 async def test_launch_no_resume_support(fake_optio, sample_idle_proc):
-    from optio_core._engine_service import EngineService
+    from optio_core._engine_service import OptioEngineService
     sample_idle_proc["supportsResume"] = False
     fake_optio.collection.find_one = AsyncMock(return_value=sample_idle_proc)
-    svc = EngineService(fake_optio)
+    svc = OptioEngineService(fake_optio)
     result = await svc.launch(LaunchParams.model_validate({"processId": "p1", "resume": True}))
     assert result.root.ok is False
     assert result.root.reason == "no-resume-support"
@@ -148,10 +148,10 @@ async def test_launch_no_resume_support(fake_optio, sample_idle_proc):
 
 @pytest.mark.asyncio
 async def test_launch_blocked(fake_optio, sample_idle_proc):
-    from optio_core._engine_service import EngineService
+    from optio_core._engine_service import OptioEngineService
     fake_optio.collection.find_one = AsyncMock(return_value=sample_idle_proc)
     fake_optio.launch = AsyncMock(side_effect=LaunchBlocked("blocked by test"))
-    svc = EngineService(fake_optio)
+    svc = OptioEngineService(fake_optio)
     result = await svc.launch(LaunchParams.model_validate({"processId": "p1"}))
     assert result.root.ok is False
     assert result.root.reason == "launch-blocked"
@@ -159,11 +159,11 @@ async def test_launch_blocked(fake_optio, sample_idle_proc):
 
 @pytest.mark.asyncio
 async def test_cancel_success(fake_optio, sample_running_proc):
-    from optio_core._engine_service import EngineService
+    from optio_core._engine_service import OptioEngineService
     cancelled = dict(sample_running_proc)
     cancelled["status"] = {"state": "cancelled"}
     fake_optio.collection.find_one = AsyncMock(side_effect=[sample_running_proc, cancelled])
-    svc = EngineService(fake_optio)
+    svc = OptioEngineService(fake_optio)
     result = await svc.cancel(CancelParams.model_validate({"processId": "p1"}))
     assert result.root.ok is True
     assert result.root.process.status.state == "cancelled"
@@ -171,9 +171,9 @@ async def test_cancel_success(fake_optio, sample_running_proc):
 
 @pytest.mark.asyncio
 async def test_cancel_not_found(fake_optio):
-    from optio_core._engine_service import EngineService
+    from optio_core._engine_service import OptioEngineService
     fake_optio.collection.find_one = AsyncMock(return_value=None)
-    svc = EngineService(fake_optio)
+    svc = OptioEngineService(fake_optio)
     result = await svc.cancel(CancelParams.model_validate({"processId": "missing"}))
     assert result.root.ok is False
     assert result.root.reason == "not-found"
@@ -181,9 +181,9 @@ async def test_cancel_not_found(fake_optio):
 
 @pytest.mark.asyncio
 async def test_cancel_not_cancellable_by_state(fake_optio, sample_idle_proc):
-    from optio_core._engine_service import EngineService
+    from optio_core._engine_service import OptioEngineService
     fake_optio.collection.find_one = AsyncMock(return_value=sample_idle_proc)
-    svc = EngineService(fake_optio)
+    svc = OptioEngineService(fake_optio)
     result = await svc.cancel(CancelParams.model_validate({"processId": "p1"}))
     assert result.root.ok is False
     assert result.root.reason == "not-cancellable"
@@ -191,10 +191,10 @@ async def test_cancel_not_cancellable_by_state(fake_optio, sample_idle_proc):
 
 @pytest.mark.asyncio
 async def test_cancel_not_cancellable_by_flag(fake_optio, sample_running_proc):
-    from optio_core._engine_service import EngineService
+    from optio_core._engine_service import OptioEngineService
     sample_running_proc["cancellable"] = False
     fake_optio.collection.find_one = AsyncMock(return_value=sample_running_proc)
-    svc = EngineService(fake_optio)
+    svc = OptioEngineService(fake_optio)
     result = await svc.cancel(CancelParams.model_validate({"processId": "p1"}))
     assert result.root.ok is False
     assert result.root.reason == "not-cancellable"
@@ -202,21 +202,21 @@ async def test_cancel_not_cancellable_by_flag(fake_optio, sample_running_proc):
 
 @pytest.mark.asyncio
 async def test_dismiss_success(fake_optio, sample_idle_proc):
-    from optio_core._engine_service import EngineService
+    from optio_core._engine_service import OptioEngineService
     sample_idle_proc["status"] = {"state": "done"}
     after = dict(sample_idle_proc)
     after["status"] = {"state": "idle"}
     fake_optio.collection.find_one = AsyncMock(side_effect=[sample_idle_proc, after])
-    svc = EngineService(fake_optio)
+    svc = OptioEngineService(fake_optio)
     result = await svc.dismiss(DismissParams.model_validate({"processId": "p1"}))
     assert result.root.ok is True
 
 
 @pytest.mark.asyncio
 async def test_dismiss_not_found(fake_optio):
-    from optio_core._engine_service import EngineService
+    from optio_core._engine_service import OptioEngineService
     fake_optio.collection.find_one = AsyncMock(return_value=None)
-    svc = EngineService(fake_optio)
+    svc = OptioEngineService(fake_optio)
     result = await svc.dismiss(DismissParams.model_validate({"processId": "missing"}))
     assert result.root.ok is False
     assert result.root.reason == "not-found"
@@ -224,9 +224,9 @@ async def test_dismiss_not_found(fake_optio):
 
 @pytest.mark.asyncio
 async def test_dismiss_not_dismissable(fake_optio, sample_running_proc):
-    from optio_core._engine_service import EngineService
+    from optio_core._engine_service import OptioEngineService
     fake_optio.collection.find_one = AsyncMock(return_value=sample_running_proc)
-    svc = EngineService(fake_optio)
+    svc = OptioEngineService(fake_optio)
     result = await svc.dismiss(DismissParams.model_validate({"processId": "p1"}))
     assert result.root.ok is False
     assert result.root.reason == "not-dismissable"
@@ -234,8 +234,8 @@ async def test_dismiss_not_dismissable(fake_optio, sample_running_proc):
 
 @pytest.mark.asyncio
 async def test_resync_default(fake_optio):
-    from optio_core._engine_service import EngineService
-    svc = EngineService(fake_optio)
+    from optio_core._engine_service import OptioEngineService
+    svc = OptioEngineService(fake_optio)
     result = await svc.resync(ResyncParams())
     assert result is None
     fake_optio.resync.assert_awaited_once_with(clean=False, metadata_filter=None)
@@ -243,8 +243,8 @@ async def test_resync_default(fake_optio):
 
 @pytest.mark.asyncio
 async def test_resync_with_filter(fake_optio):
-    from optio_core._engine_service import EngineService
-    svc = EngineService(fake_optio)
+    from optio_core._engine_service import OptioEngineService
+    svc = OptioEngineService(fake_optio)
     result = await svc.resync(ResyncParams.model_validate(
         {"clean": True, "metadataFilter": {"tag": "demo"}}
     ))
@@ -254,8 +254,8 @@ async def test_resync_with_filter(fake_optio):
 
 @pytest.mark.asyncio
 async def test_group_cancel_success(fake_optio):
-    from optio_core._engine_service import EngineService
-    svc = EngineService(fake_optio)
+    from optio_core._engine_service import OptioEngineService
+    svc = OptioEngineService(fake_optio)
     result = await svc.group_cancel(GroupCancelParams.model_validate(
         {"metadataFilter": {"tag": "demo"}}
     ))
@@ -265,8 +265,8 @@ async def test_group_cancel_success(fake_optio):
 
 @pytest.mark.asyncio
 async def test_group_cancel_invalid_persist(fake_optio):
-    from optio_core._engine_service import EngineService
-    svc = EngineService(fake_optio)
+    from optio_core._engine_service import OptioEngineService
+    svc = OptioEngineService(fake_optio)
     result = await svc.group_cancel(GroupCancelParams.model_validate(
         {"metadataFilter": {"tag": "demo"}, "persist": True}
     ))
@@ -277,8 +277,8 @@ async def test_group_cancel_invalid_persist(fake_optio):
 
 @pytest.mark.asyncio
 async def test_group_cancel_and_wait_success(fake_optio):
-    from optio_core._engine_service import EngineService
-    svc = EngineService(fake_optio)
+    from optio_core._engine_service import OptioEngineService
+    svc = OptioEngineService(fake_optio)
     result = await svc.group_cancel_and_wait(GroupCancelAndWaitParams.model_validate(
         {"metadataFilter": {"tag": "demo"}}
     ))
@@ -288,8 +288,8 @@ async def test_group_cancel_and_wait_success(fake_optio):
 
 @pytest.mark.asyncio
 async def test_group_cancel_and_wait_invalid_persist(fake_optio):
-    from optio_core._engine_service import EngineService
-    svc = EngineService(fake_optio)
+    from optio_core._engine_service import OptioEngineService
+    svc = OptioEngineService(fake_optio)
     result = await svc.group_cancel_and_wait(GroupCancelAndWaitParams.model_validate(
         {"metadataFilter": {"tag": "demo"}, "persist": True}
     ))
@@ -300,7 +300,7 @@ async def test_group_cancel_and_wait_invalid_persist(fake_optio):
 
 @pytest.mark.asyncio
 async def test_block_launches_success(fake_optio, monkeypatch):
-    from optio_core._engine_service import EngineService
+    from optio_core._engine_service import OptioEngineService
 
     fake_coll = AsyncMock()
 
@@ -313,7 +313,7 @@ async def test_block_launches_success(fake_optio, monkeypatch):
     monkeypatch.setattr(lb_store, "collection", fake_collection)
     monkeypatch.setattr(lb_store, "upsert_block", upsert_called)
 
-    svc = EngineService(fake_optio)
+    svc = OptioEngineService(fake_optio)
     result = await svc.block_launches(BlockLaunchesParams.model_validate(
         {"launchFilter": {"tag": "demo"}, "reason": "x"}
     ))
@@ -324,8 +324,8 @@ async def test_block_launches_success(fake_optio, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_unblock_launches_returns_count(fake_optio):
-    from optio_core._engine_service import EngineService
-    svc = EngineService(fake_optio)
+    from optio_core._engine_service import OptioEngineService
+    svc = OptioEngineService(fake_optio)
     result = await svc.unblock_launches(
         UnblockLaunchesParams.model_validate({"launchFilter": {"tag": "demo"}})
     )
@@ -335,7 +335,7 @@ async def test_unblock_launches_returns_count(fake_optio):
 @pytest.mark.asyncio
 async def test_launch_redelivery_returns_not_launchable(fake_optio, sample_idle_proc):
     """First launch transitions idle→scheduled; redelivered launch sees scheduled and returns not-launchable."""
-    from optio_core._engine_service import EngineService
+    from optio_core._engine_service import OptioEngineService
 
     after = dict(sample_idle_proc)
     after["status"] = {"state": "scheduled"}
@@ -347,7 +347,7 @@ async def test_launch_redelivery_returns_not_launchable(fake_optio, sample_idle_
         after,                    # second call's pre-check sees scheduled
     ])
 
-    svc = EngineService(fake_optio)
+    svc = OptioEngineService(fake_optio)
     first = await svc.launch(LaunchParams.model_validate({"processId": "p1"}))
     second = await svc.launch(LaunchParams.model_validate({"processId": "p1"}))
 

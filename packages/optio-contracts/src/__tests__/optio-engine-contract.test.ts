@@ -1,14 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { engineContract } from '../engine-to-api.js';
+import { optioEngineContract } from '../optio-engine-to-api.js';
 import { LaunchFailureReason } from '../engine-failure-reasons.js';
 
-describe('engineContract', () => {
+describe('optioEngineContract', () => {
   it('declares the expected service name', () => {
-    expect(engineContract.service).toBe('engine');
+    expect(optioEngineContract.service).toBe('optio-engine');
   });
 
   it('exposes launch as a method with discriminated-union result', () => {
-    const launch = engineContract.methods.launch;
+    const launch = optioEngineContract.methods.launch;
     expect(launch).toBeDefined();
     const ok = launch.result.parse({
       ok: true,
@@ -37,7 +37,7 @@ describe('engineContract', () => {
   });
 
   it('exposes resync as a notification (no result schema)', () => {
-    const resync = engineContract.methods.resync;
+    const resync = optioEngineContract.methods.resync;
     expect(resync).toBeDefined();
     expect((resync as { result?: unknown }).result).toBeUndefined();
   });

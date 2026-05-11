@@ -23,7 +23,13 @@ codegen:  ## Regenerate clamator RPC client/server stubs from optio-contracts so
 	  --src packages/optio-contracts/src \
 	  --out-ts packages/optio-api/src/_generated \
 	  --out-py packages/optio-core/src/optio_core/_generated \
-	  --ts-contract-import 'optio-contracts/engine-to-api'
+	  --ts-contract-import 'optio-contracts/optio-engine'
+	@# Post-process: rename Python files with hyphens (invalid Python module
+	@# identifiers) to underscored form. TS keeps hyphens (valid in TS).
+	@if [ -f packages/optio-core/src/optio_core/_generated/optio-engine.py ]; then \
+	  mv packages/optio-core/src/optio_core/_generated/optio-engine.py \
+	     packages/optio-core/src/optio_core/_generated/optio_engine.py; \
+	fi
 
 test:  ## Run all tests (TS + Python; per-package, no docker)
 	pnpm -r test

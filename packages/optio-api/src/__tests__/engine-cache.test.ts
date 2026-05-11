@@ -7,7 +7,7 @@ import { createEngineCache } from '../engine-cache.js';
 const fakeRedis: any = { duplicate: () => fakeRedis };
 
 describe('createEngineCache', () => {
-  it('returns the same EngineClient for the same (database, prefix)', () => {
+  it('returns the same OptioEngineClient for the same (database, prefix)', () => {
     const cache = createEngineCache(fakeRedis);
     const a = cache.get('db1', 'optio');
     const b = cache.get('db1', 'optio');

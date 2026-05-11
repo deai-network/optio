@@ -139,20 +139,20 @@ class Optio:
             )
             self._owned_rpc_server = True
 
-            # Defer EngineService import to avoid circular module load.
-            from optio_core._engine_service import EngineService
-            from optio_core._generated.engine import engine_contract
-            self._engine_service = EngineService(self)
-            self.rpc_server.register_service(engine_contract, self._engine_service)
+            # Defer OptioEngineService import to avoid circular module load.
+            from optio_core._engine_service import OptioEngineService
+            from optio_core._generated.optio_engine import optio_engine_contract
+            self._engine_service = OptioEngineService(self)
+            self.rpc_server.register_service(optio_engine_contract, self._engine_service)
 
         elif rpc_server is not None:
             # App-provided server (test or shared-server mode). No legacy consumer.
             self.rpc_server = rpc_server
             self._owned_rpc_server = False
-            from optio_core._engine_service import EngineService
-            from optio_core._generated.engine import engine_contract
-            self._engine_service = EngineService(self)
-            self.rpc_server.register_service(engine_contract, self._engine_service)
+            from optio_core._engine_service import OptioEngineService
+            from optio_core._generated.optio_engine import optio_engine_contract
+            self._engine_service = OptioEngineService(self)
+            self.rpc_server.register_service(optio_engine_contract, self._engine_service)
 
         # Create executor
         self._executor = Executor(mongo_db, prefix, services, optio=self)

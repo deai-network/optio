@@ -1,4 +1,4 @@
-"""Exhaustive coverage for EngineService._resolve.
+"""Exhaustive coverage for OptioEngineService._resolve.
 
 Phase 4 deletes the API's pre-RPC findProcessByEitherId, so the engine
 is solely responsible for resolving either ObjectId hex or processId
@@ -15,19 +15,19 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 from bson import ObjectId
 
-from optio_core._engine_service import EngineService
-from optio_core._generated.engine import LaunchParams
+from optio_core._engine_service import OptioEngineService
+from optio_core._generated.optio_engine import LaunchParams
 
 
-def _make_service(coll: AsyncMock) -> EngineService:
-    """Construct an EngineService bound to a mock collection."""
+def _make_service(coll: AsyncMock) -> OptioEngineService:
+    """Construct an OptioEngineService bound to a mock collection."""
     optio = MagicMock()
     optio._config = MagicMock()
     db = MagicMock()
     db.__getitem__.return_value = coll
     optio._config.mongo_db = db
     optio._config.prefix = "test"
-    return EngineService(optio)
+    return OptioEngineService(optio)
 
 
 def _sample_proc(process_id: str = "alpha") -> dict:
@@ -186,7 +186,7 @@ async def test_resolve_collision_id_branch_wins():
 
 @pytest.mark.asyncio
 async def test_launch_accepts_object_id_hex_form():
-    """EngineService.launch resolves the hex _id form via _resolve."""
+    """OptioEngineService.launch resolves the hex _id form via _resolve."""
     proc = _sample_proc()
     coll = AsyncMock()
     # Two find_one calls in launch(): pre-state read + post-launch read.
@@ -198,7 +198,7 @@ async def test_launch_accepts_object_id_hex_form():
     optio._config.mongo_db = db
     optio._config.prefix = "test"
     optio.launch = AsyncMock(return_value=None)
-    svc = EngineService(optio)
+    svc = OptioEngineService(optio)
 
     result = await svc.launch(LaunchParams.model_validate({"processId": str(proc["_id"])}))
 
@@ -209,7 +209,7 @@ async def test_launch_accepts_object_id_hex_form():
 
 @pytest.mark.asyncio
 async def test_launch_accepts_process_id_string_form():
-    """EngineService.launch resolves the processId string form via _resolve."""
+    """OptioEngineService.launch resolves the processId string form via _resolve."""
     proc = _sample_proc(process_id="launch-by-pid")
     coll = AsyncMock()
     coll.find_one = AsyncMock(side_effect=[proc, {**proc, "status": {"state": "scheduled"}}])
@@ -220,7 +220,7 @@ async def test_launch_accepts_process_id_string_form():
     optio._config.mongo_db = db
     optio._config.prefix = "test"
     optio.launch = AsyncMock(return_value=None)
-    svc = EngineService(optio)
+    svc = OptioEngineService(optio)
 
     result = await svc.launch(LaunchParams.model_validate({"processId": "launch-by-pid"}))
 

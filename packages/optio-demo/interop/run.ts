@@ -12,7 +12,7 @@
  */
 import IORedis from 'ioredis';
 import { RedisRpcClient } from '@clamator/over-redis';
-import { EngineClient } from 'optio-api';
+import { OptioEngineClient } from 'optio-api';
 
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 const DATABASE = 'optio-demo';
@@ -60,7 +60,7 @@ setTimeout(() => {
 
 const redis = new IORedis(REDIS_URL);
 const rpc = new RedisRpcClient({ redis, keyPrefix: KEY_PREFIX });
-const engine = new EngineClient(rpc);
+const engine = new OptioEngineClient(rpc);
 
 let exitCode = 0;
 function fail(scenario: string, msg: string) {

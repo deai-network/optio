@@ -11,9 +11,9 @@
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
     },
-    "./engine-to-api": {
-      "import": "./dist/engine-to-api.js",
-      "types": "./dist/engine-to-api.d.ts"
+    "./optio-engine": {
+      "import": "./dist/optio-engine-to-api.js",
+      "types": "./dist/optio-engine-to-api.d.ts"
     }
   },
   "scripts": {

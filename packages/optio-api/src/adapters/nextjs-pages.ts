@@ -24,12 +24,12 @@ import {
   checkLegacyMetadataParams,
   LegacyMetadataParamError,
 } from '../sse-options.js';
-import type { EngineClient } from '../_generated/engine.js';
+import type { OptioEngineClient } from '../_generated/optio-engine.js';
 import { createOptioContext } from '../context.js';
 
 export type OptioApiHandle =
-  | { handler: (req: NextApiRequest, res: NextApiResponse) => Promise<void>; engine: EngineClient; closeAll: () => Promise<void>; getEngine?: never }
-  | { handler: (req: NextApiRequest, res: NextApiResponse) => Promise<void>; getEngine: (database: string, prefix: string) => EngineClient; closeAll: () => Promise<void>; engine?: never };
+  | { handler: (req: NextApiRequest, res: NextApiResponse) => Promise<void>; engine: OptioEngineClient; closeAll: () => Promise<void>; getEngine?: never }
+  | { handler: (req: NextApiRequest, res: NextApiResponse) => Promise<void>; getEngine: (database: string, prefix: string) => OptioEngineClient; closeAll: () => Promise<void>; engine?: never };
 
 export type OptioApiOptions = {
   redis: Redis;
@@ -216,13 +216,13 @@ export function createOptioHandler(opts: OptioApiOptions): OptioApiHandle {
     const prefix = opts.prefix ?? 'optio';
     return {
       handler,
-      engine: ctx.engineCache.get(opts.db.databaseName, prefix) as EngineClient,
+      engine: ctx.engineCache.get(opts.db.databaseName, prefix) as OptioEngineClient,
       closeAll: () => ctx.engineCache.closeAll(),
     };
   }
   return {
     handler,
-    getEngine: (database: string, prefix: string) => ctx.engineCache.get(database, prefix) as EngineClient,
+    getEngine: (database: string, prefix: string) => ctx.engineCache.get(database, prefix) as OptioEngineClient,
     closeAll: () => ctx.engineCache.closeAll(),
   };
 }

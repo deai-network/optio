@@ -45,7 +45,7 @@ const unblockLaunchesResult = z.object({
   removed: z.number().int().nonnegative(),
 });
 
-export const engineContract = defineContract('engine', {
+export const optioEngineContract = defineContract('optio-engine', {
   launch: defineMethod({
     params: z.object({
       processId: ProcessIdParam,

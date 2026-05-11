@@ -4,14 +4,14 @@ import request from 'supertest';
 import { MongoClient, ObjectId, type Db } from 'mongodb';
 import Redis from 'ioredis-mock';
 import { registerOptioApi } from '../express.js';
-import { EngineClient } from '../../_generated/engine.js';
+import { OptioEngineClient } from '../../_generated/optio-engine.js';
 
 // Stub the engine RPC at the prototype level so handlers that now call
 // engine.launch / engine.cancel / engine.dismiss / engine.resync don't
 // try to reach a real engine over the redis-mock.
-vi.spyOn(EngineClient.prototype, 'resync').mockResolvedValue(undefined);
+vi.spyOn(OptioEngineClient.prototype, 'resync').mockResolvedValue(undefined);
 
-vi.spyOn(EngineClient.prototype, 'launch').mockImplementation(async (params: any) => ({
+vi.spyOn(OptioEngineClient.prototype, 'launch').mockImplementation(async (params: any) => ({
   ok: true,
   process: {
     _id: new ObjectId(),
@@ -28,7 +28,7 @@ vi.spyOn(EngineClient.prototype, 'launch').mockImplementation(async (params: any
   },
 } as any));
 
-vi.spyOn(EngineClient.prototype, 'cancel').mockImplementation(async (params: any) => ({
+vi.spyOn(OptioEngineClient.prototype, 'cancel').mockImplementation(async (params: any) => ({
   ok: true,
   process: {
     _id: new ObjectId(),
@@ -45,7 +45,7 @@ vi.spyOn(EngineClient.prototype, 'cancel').mockImplementation(async (params: any
   },
 } as any));
 
-vi.spyOn(EngineClient.prototype, 'dismiss').mockImplementation(async (params: any) => ({
+vi.spyOn(OptioEngineClient.prototype, 'dismiss').mockImplementation(async (params: any) => ({
   ok: true,
   process: {
     _id: new ObjectId(),
@@ -136,7 +136,7 @@ describe('Express adapter integration tests', () => {
   it('POST /api/processes/:id/launch — propagates engine failure (404 reason=not-found)', async () => {
     const doc = await seedProcess({ status: { state: 'idle' } });
     const app = createApp();
-    vi.spyOn(EngineClient.prototype, 'launch').mockImplementationOnce(async () => ({
+    vi.spyOn(OptioEngineClient.prototype, 'launch').mockImplementationOnce(async () => ({
       ok: false,
       reason: 'not-found',
     } as any));
@@ -160,7 +160,7 @@ describe('Express adapter integration tests', () => {
   });
 
   it('POST /api/processes/resync — triggers resync (202)', async () => {
-    const resyncSpy = vi.spyOn(EngineClient.prototype, 'resync').mockResolvedValue(undefined);
+    const resyncSpy = vi.spyOn(OptioEngineClient.prototype, 'resync').mockResolvedValue(undefined);
     const app = createApp();
     const res = await request(app).post('/api/processes/resync').send({});
     expect(res.status).toBe(202);
@@ -169,7 +169,7 @@ describe('Express adapter integration tests', () => {
   });
 
   it('POST /api/processes/resync — forwards metadataFilter to engine.resync', async () => {
-    const resyncSpy = vi.spyOn(EngineClient.prototype, 'resync').mockResolvedValue(undefined);
+    const resyncSpy = vi.spyOn(OptioEngineClient.prototype, 'resync').mockResolvedValue(undefined);
     const app = createApp();
 
     const res = await request(app)
@@ -313,7 +313,7 @@ describe('registerOptioApi return shape', () => {
     app.use(express.json());
     const result = registerOptioApi(app, { db, redis, authenticate: () => 'operator' });
     expect(result).toBeDefined();
-    expect(result.engine).toBeInstanceOf(EngineClient);
+    expect(result.engine).toBeInstanceOf(OptioEngineClient);
     expect(typeof result.closeAll).toBe('function');
     expect((result as any).getEngine).toBeUndefined();
     await result.closeAll();
