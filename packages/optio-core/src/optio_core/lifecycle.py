@@ -156,7 +156,10 @@ class Optio:
             self.rpc_server.register_service(optio_engine_contract, self._engine_service)
 
         # Create executor
-        self._executor = Executor(mongo_db, prefix, services, optio=self)
+        self._executor = Executor(
+            mongo_db, prefix, services, optio=self,
+            notify_parent_abnormal=self.cancel,
+        )
 
         # Run migrations
         from optio_core.migrations import fw_migrations
@@ -406,20 +409,31 @@ class Optio:
             else time.monotonic() + self._config.cancel_grace_seconds
         )
 
+        # Atomic conditional state-transition: only one concurrent caller
+        # can flip an active process. Losers return not-cancellable.
+        from optio_core.store import _collection
+        coll = _collection(self._config.mongo_db, self._config.prefix)
         current_state = proc["status"]["state"]
         if current_state == "scheduled":
             now = datetime.now(timezone.utc)
             expire_at = compute_expire_at(proc.get("ttlSeconds"), now=now)
-            await update_status(
-                self._config.mongo_db, self._config.prefix, proc["_id"],
-                ProcessStatus(state="cancelled", stopped_at=now),
-                expire_at=expire_at,
+            new_status = ProcessStatus(state="cancelled", stopped_at=now).to_dict()
+            set_doc: dict = {"status": new_status}
+            if expire_at is not None:
+                set_doc["expireAt"] = expire_at
+            result = await coll.update_one(
+                {"_id": proc["_id"], "status.state": "scheduled"},
+                {"$set": set_doc},
             )
+            if result.modified_count == 0:
+                return CancelOutcome(ok=False, reason="not-cancellable")
         else:
-            await update_status(
-                self._config.mongo_db, self._config.prefix, proc["_id"],
-                ProcessStatus(state="cancel_requested"),
+            result = await coll.update_one(
+                {"_id": proc["_id"], "status.state": {"$in": list(CANCELLABLE_STATES)}},
+                {"$set": {"status": ProcessStatus(state="cancel_requested").to_dict()}},
             )
+            if result.modified_count == 0:
+                return CancelOutcome(ok=False, reason="not-cancellable")
             found = self._executor.request_cancel_with_deadline(
                 proc["_id"], deadline=effective_deadline,
             )

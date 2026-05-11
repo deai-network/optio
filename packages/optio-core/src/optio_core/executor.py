@@ -42,11 +42,13 @@ class Executor:
         prefix: str,
         services: dict[str, Any],
         optio: "Optio | None" = None,
+        notify_parent_abnormal: Callable[..., Awaitable[Any]] | None = None,
     ):
         self._db = db
         self._prefix = prefix
         self._services = services
         self._optio = optio
+        self._notify_parent_abnormal = notify_parent_abnormal
         self._cancellation_flags: dict[ObjectId, _CancelEntry] = {}
         self._running_tasks: dict[ObjectId, asyncio.Task] = {}
         self._task_registry: dict[str, TaskInstance] = {}
