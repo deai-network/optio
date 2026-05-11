@@ -7,14 +7,21 @@ import IORedis from 'ioredis';
 import { MongoClient } from 'mongodb';
 import Fastify from 'fastify';
 import { registerOptioApi } from 'optio-api/fastify';
+import { RedisRpcClient } from '@clamator/over-redis';
+import { EngineClient } from 'optio-api';
 
 const REDIS_URL = process.env.REDIS_URL ?? 'redis://localhost:6379';
 const MONGODB_URL = process.env.MONGODB_URL ?? 'mongodb://localhost:27017/optio-demo';
 const PROC = 'opencode-demo';
+const DATABASE = 'optio-demo';
+const PREFIX = 'optio';
+const KEY_PREFIX = `${DATABASE}/${PREFIX}`;
 const SCENARIO_TIMEOUT_MS = 10_000;
 
 const redis = new IORedis(REDIS_URL);
 const mongoClient = new MongoClient(MONGODB_URL);
+const rpc = new RedisRpcClient({ redis, keyPrefix: KEY_PREFIX });
+const engine = new EngineClient(rpc);
 let baseUrl = '';
 let exitCode = 0;
 
@@ -82,6 +89,7 @@ async function waitForState(stateOrStates: string | string[], timeoutMs: number 
 
 async function main() {
   await mongoClient.connect();
+  await rpc.start();
   const db = mongoClient.db('optio-demo');
   const app = Fastify();
   await registerOptioApi(app, { db, redis, prefix: 'optio', authenticate: () => 'operator' });
@@ -118,6 +126,54 @@ async function main() {
       if (r.body?.reason !== 'not-found')
         return fail('http-launch-not-found', `expected reason 'not-found', got ${r.body?.reason}`);
       ok('http-launch-not-found');
+    });
+
+    // 3b. Launch with resume=true on a proc whose supportsResume is false ->
+    //     409 no-resume-support. Temporarily flips opencode-demo's
+    //     supportsResume field on the proc doc; restores after.
+    await withTimeout('http-launch-no-resume-support', async () => {
+      await dismissIfTerminal();
+      await waitForState(['idle', 'done', 'failed', 'cancelled']);
+      const procsColl = db.collection('optio_processes');
+      const original = await procsColl.findOne({ processId: PROC }, { projection: { supportsResume: 1 } });
+      try {
+        await procsColl.updateOne({ processId: PROC }, { $set: { supportsResume: false } });
+        const r = await http('POST', `/processes/${PROC}/launch`, { resume: true });
+        if (r.status !== 409)
+          return fail('http-launch-no-resume-support', `expected 409, got ${r.status} ${JSON.stringify(r.body)}`);
+        if (r.body?.reason !== 'no-resume-support')
+          return fail('http-launch-no-resume-support', `expected reason 'no-resume-support', got ${r.body?.reason}`);
+        ok('http-launch-no-resume-support');
+      } finally {
+        await procsColl.updateOne(
+          { processId: PROC },
+          { $set: { supportsResume: original?.supportsResume ?? true } },
+        );
+      }
+    });
+
+    // 3c. Persistent launch block matches every task; POST launch -> 409
+    //     launch-blocked. Cleanup with unblockLaunches.
+    await withTimeout('http-launch-launch-blocked', async () => {
+      await dismissIfTerminal();
+      await waitForState(['idle', 'done', 'failed', 'cancelled']);
+      const block = await engine.blockLaunches({
+        launchFilter: {},
+        reason: 'phase-4-interop',
+      });
+      if (!block.ok) {
+        return fail('http-launch-launch-blocked', `blockLaunches setup failed: reason=${block.reason}`);
+      }
+      try {
+        const r = await http('POST', `/processes/${PROC}/launch`, {});
+        if (r.status !== 409)
+          return fail('http-launch-launch-blocked', `expected 409, got ${r.status} ${JSON.stringify(r.body)}`);
+        if (r.body?.reason !== 'launch-blocked')
+          return fail('http-launch-launch-blocked', `expected reason 'launch-blocked', got ${r.body?.reason}`);
+        ok('http-launch-launch-blocked');
+      } finally {
+        await engine.unblockLaunches({ launchFilter: {} }).catch(() => null);
+      }
     });
 
     // 4. Reset baseline: dismiss + launch. Dismiss is now a synchronous
@@ -166,6 +222,39 @@ async function main() {
       if (r.status !== 404) return fail('http-cancel-not-found', `expected 404, got ${r.status}`);
       if (r.body?.reason !== 'not-found') return fail('http-cancel-not-found', `expected reason 'not-found'`);
       ok('http-cancel-not-found');
+    });
+
+    // 7b. Cancel-during-cancel race. Validates the phase-4 (a-prime) SoT
+    //     cleanup: engine no longer admits re-cancel on cancel_requested.
+    //     Launch a running proc; cancel #1 returns 200 (state moves toward
+    //     cancel_requested); cancel #2 (no async yield) returns 409
+    //     not-cancellable instead of the old misleading 200 no-op.
+    await withTimeout('http-cancel-during-cancel', async () => {
+      await dismissIfTerminal();
+      await waitForState(['idle', 'done', 'failed', 'cancelled']);
+      const launchRes = await http('POST', `/processes/${PROC}/launch`, {});
+      if (launchRes.status !== 200) {
+        return fail('http-cancel-during-cancel', `pre-launch failed: ${launchRes.status} ${JSON.stringify(launchRes.body)}`);
+      }
+      try {
+        await waitForState(['scheduled', 'running'], 2000);
+      } catch {
+        console.log('[scenario] http-cancel-during-cancel: skipped (proc reached terminal state too fast)');
+        ok('http-cancel-during-cancel', 'skipped (terminal-fast)');
+        return;
+      }
+      const cancel1 = await http('POST', `/processes/${PROC}/cancel`, {});
+      if (cancel1.status !== 200) {
+        return fail('http-cancel-during-cancel', `cancel #1 expected 200, got ${cancel1.status} ${JSON.stringify(cancel1.body)}`);
+      }
+      const cancel2 = await http('POST', `/processes/${PROC}/cancel`, {});
+      if (cancel2.status !== 409) {
+        return fail('http-cancel-during-cancel', `cancel #2 expected 409, got ${cancel2.status} ${JSON.stringify(cancel2.body)}`);
+      }
+      if (cancel2.body?.reason !== 'not-cancellable') {
+        return fail('http-cancel-during-cancel', `cancel #2 expected reason 'not-cancellable', got ${cancel2.body?.reason}`);
+      }
+      ok('http-cancel-during-cancel');
     });
 
     // 8. Dismiss success: launch -> cancel -> wait for terminal -> dismiss.
@@ -230,6 +319,7 @@ async function main() {
     });
   } finally {
     await app.close();
+    await rpc.stop().catch(() => null);
     await redis.quit();
     await mongoClient.close();
   }
