@@ -81,6 +81,15 @@ def _cmd_export(session_id: str) -> None:
 # Run env-dump first (it may strip args), then check for import/export.
 _handle_env_dump()
 
+# Mirror the real opencode CLI's ``--version``: print a fake version and exit.
+# Smart-install.sh calls ``opencode --version`` to decide whether the installed
+# binary is up-to-date; without this branch, the fake falls through to the web
+# scenario path and hangs forever, which in turn hangs ``ensure_opencode_installed``
+# whenever it is called outside the protocol driver's tail-and-cancel loop.
+if "--version" in sys.argv[1:]:
+    print("0.0.0-fake")
+    sys.exit(0)
+
 if len(sys.argv) >= 2:
     _sub = sys.argv[1]
     if _sub == "import":

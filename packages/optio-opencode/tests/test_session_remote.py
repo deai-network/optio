@@ -103,9 +103,19 @@ async def test_remote_happy_path(sshd, ctx, monkeypatch):
     # the SSH code path we're actually exercising here.  The local
     # integration suite covers the real HTTP-session-creation path.
     import optio_opencode.session as _session_mod
+    from optio_opencode import host_actions as _host_actions
     async def _stub_create_session(port, password, directory):
         return "fake-session-id"
     monkeypatch.setattr(_session_mod, "_create_opencode_session", _stub_create_session)
+
+    # Short-circuit ensure_opencode_installed: the shim at /usr/local/bin/opencode
+    # is a stand-in for the real binary and would not satisfy smart-install.sh's
+    # version check (which queries GitHub for the latest released tag). The test
+    # is exercising the SSH/protocol wiring, not the install code path. Mirrors
+    # the equivalent stub in test_session_local.
+    async def _ensure(hook_ctx, install_if_missing=True):
+        return "/usr/local/bin/opencode"
+    monkeypatch.setattr(_host_actions, "ensure_opencode_installed", _ensure)
 
     config = OpencodeTaskConfig(
         consumer_instructions="remote test",

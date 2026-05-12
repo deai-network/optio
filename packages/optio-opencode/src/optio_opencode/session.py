@@ -91,14 +91,26 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             ctx._db, prefix=ctx._prefix, process_id=ctx.process_id,
         )
 
+    # Connect + install BEFORE deciding fresh vs resume. The resume path
+    # needs ``opencode import`` to replay the saved session DB, which
+    # requires opencode to be installed on the host and resolved to an
+    # absolute path. Hoisting also lets the fresh path skip the redundant
+    # ``host.connect()`` later. ``setup_workdir`` is idempotent (mkdir -p)
+    # and the protocol driver still calls it again for the fresh path —
+    # harmless. Install progress reports through ``ctx``, so the
+    # dashboard sees activity from the very first step.
+    await host.connect()
+    await host.setup_workdir()
+    opencode_exec = await host_actions.ensure_opencode_installed(
+        HookContext(ctx, host), install_if_missing=config.install_if_missing,
+    )
+
     # Resume restore must run BEFORE the protocol session begins, so the
     # driver's tail_task does not subscribe to the restored stale optio.log
     # (which contains last run's DONE / ERROR events). The body below sees
     # ``resuming`` already decided.
     resuming = snapshot is not None
     if resuming:
-        await host.connect()
-        await host.setup_workdir()
         await host.remove_file(opencode_db)
         try:
             await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
@@ -179,13 +191,10 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         if config.supports_resume:
             await _append_resume_log_entry(host)
 
-        # --- install ----------------------------------------------------
-        # Uniform local + remote: smart-install.sh --check, then download +
-        # unpack into ~/.local/bin/opencode when needed. Download runs as
-        # an optio child task so progress is visible in the dashboard.
-        opencode_exec = await host_actions.ensure_opencode_installed(
-            hook_ctx, install_if_missing=config.install_if_missing,
-        )
+        # opencode is already installed by run_opencode_session before
+        # this body runs (so resume restore can call opencode_import
+        # against a known-good absolute path). ``opencode_exec`` is set
+        # on the enclosing closure.
 
         # --- before_execute hook ----------------------------------------
         # Fires after the binary is in place and before opencode launches,
@@ -259,10 +268,8 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         await proc.wait()  # type: ignore[union-attr]
 
     # --- run the protocol session -----------------------------------------
+    # host.connect() already happened up-front (before install + resume).
     session_error: BaseException | None = None
-    if not resuming:
-        # Resume path already connected above to do the restore.
-        await host.connect()
     try:
         # before_execute is wired manually inside _opencode_body (after
         # install, before launch) per opencode's documented timing.
