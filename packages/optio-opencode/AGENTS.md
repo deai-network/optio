@@ -33,7 +33,7 @@ The returned `TaskInstance` has `ui_widget="iframe"` and `supports_resume=True` 
 - `consumer_instructions: str` — prepended with optio-opencode's base prompt.
 - `opencode_config: dict | None` — passthrough to `opencode.json` on the host.
 - `ssh: SSHConfig | None` — `None` = local subprocess.
-- `install_if_missing: bool` — default `True`; run upstream curl installer when opencode is absent.
+- `install_if_missing: bool` — default `True`; when `smart-install.sh --check` says opencode is missing or stale, download + install the release zip into `~/.local/bin/opencode`. When `False`, raise `RuntimeError` instead.
 - `workdir_exclude: list[str] | None` — see `OpencodeTaskConfig.workdir_exclude` below.
 - `before_execute: Callable | None` — see **Hooks** below.
 - `after_execute: Callable | None` — see **Hooks** below.
@@ -153,51 +153,35 @@ progress updates / log entries.
 ## Operating modes
 
 - **Local**: `asyncio.create_subprocess_exec("opencode", "web", ...)`.
-  Workdir is a `tempfile.mkdtemp`.  Expects opencode pre-installed
-  (or use `OPTIO_OPENCODE_BINARY_DIR`, below).
+  Workdir is a `tempfile.mkdtemp`.
 - **Remote**: single asyncssh connection multiplexes exec (install,
   launch, `tail -F`, teardown), SFTP, and local port forward.  Workdir
   is `/tmp/optio-opencode-<uuid>/` on the remote.
 
-## Shipping a specific opencode binary
+## How the opencode binary is installed
 
-Set `OPTIO_OPENCODE_BINARY_DIR` in the worker's environment to a
-directory matching opencode's build layout (i.e. containing per-target
-subdirs like `opencode-linux-x64/bin/opencode`, `opencode-darwin-arm64/
-bin/opencode`, `opencode-linux-x64-baseline-musl/bin/opencode`, …).  When
-set, optio-opencode:
+Uniform local + remote. On task start, `ensure_opencode_installed` runs
+`smart-install.sh --check` from <https://github.com/csillag/opencode> via
+`host.run_command`. The script either prints `opencode ok` (no install
+needed) or `download <url>` pointing at the release zip for the host's
+platform. On `download`:
 
-1. Detects the target host's OS / arch / libc / AVX2 via `uname`, `ldd`
-   and `/proc/cpuinfo` (detection mirrors opencode's upstream install
-   script so the subdir name is the one opencode's build would emit).
-2. Resolves the matching binary inside `OPTIO_OPENCODE_BINARY_DIR`.
-3. **Local mode:** runs that binary directly (bypasses any `opencode`
-   on PATH).
-4. **Remote mode:** SFTP-uploads the binary to `~/.local/bin/opencode`
-   on the remote host (atomic via temp-file + rename), skipping the
-   upload when the existing file's SHA-256 already matches.  Launches
-   via the absolute path, so the user doesn't need `~/.local/bin` on
-   their PATH for optio-opencode to work (though they'll benefit from
-   having it on PATH for later manual invocations).
+1. Create a tempdir on the host (`mktemp -d`).
+2. Download the zip as an optio child task via
+   `hook_ctx.download_file(url, <tmpdir>/opencode.zip)`. The download
+   shows up in the dashboard with byte-progress.
+3. Unzip on the host (`unzip -o -q`). Archive layout is
+   `bin/opencode` plus a `package.json` sidecar.
+4. Move `bin/opencode` to `~/.local/bin/opencode` (mkdir -p first),
+   chmod +x.
+5. Remove the tempdir.
 
-When the env var is unset, behavior falls back to the previous scheme:
-local mode expects `opencode` on PATH, remote mode runs the upstream
-curl installer if `opencode` is missing.
-
-This is a bridge feature for shipping an iframe-embeddability fork of
-opencode until those fixes land upstream; once upstream ships, the env
-var's only remaining use is pinning to a specific build.
-
-**Where the fork lives:** the patched binaries are built from
-<https://github.com/csillag/opencode> on branch
-`csillag/make-web-embeddable-in-iframes` — three small orthogonal
-patches (relative vite base, CSP `'unsafe-eval'`, `getCurrentUrl`
-honoring localStorage).  Upstream PR:
-<https://github.com/anomalyco/opencode/pull/23912>.  To populate
-`OPTIO_OPENCODE_BINARY_DIR`: check out that branch, run
-`bun install && bun run --cwd packages/opencode build`, and point the
-env var at the resulting `packages/opencode/dist/` directory (which
-contains per-target subdirs such as `opencode-linux-x64/bin/opencode`).
+The patched fork that supplies these binaries lives at
+<https://github.com/csillag/opencode> on branch `main` — see
+smart-install.sh and install.sh in that repo for the resolution logic.
+Set `install_if_missing=False` on `OpencodeTaskConfig` to forbid
+downloads (raises `RuntimeError` when the check says an install is
+needed).
 
 ## Testing
 
