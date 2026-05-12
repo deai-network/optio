@@ -12,8 +12,8 @@ dependencies = [
     "motor>=3.3.0",
     "apscheduler>=4.0.0a6",
     "quaestor",
-    "clamator-over-redis>=0.1.7",
-    "clamator-protocol>=0.1.7",
+    "clamator-over-redis>=0.1.9",
+    "clamator-protocol>=0.1.9",
     "pydantic>=2.0",
 ]
 
