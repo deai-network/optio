@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install build codegen test test-interop lint lint-no-direct-writes clean clean-codegen clean-deep
+.PHONY: help install install-demo run-demo run-demo-dashboard build codegen test test-interop lint lint-no-direct-writes clean clean-codegen clean-deep
 
 PY_PACKAGES := optio-core optio-host optio-opencode
 
@@ -70,3 +70,12 @@ clean-codegen:  ## Remove generated clamator stubs (require make codegen to rebu
 	rm -rf packages/optio-core/src/optio_core/_generated
 
 clean-deep: clean clean-codegen  ## clean + clean-codegen (full reset)
+
+install-demo:  ## Install optio-demo (docker compose + pip)
+	$(MAKE) -C packages/optio-demo install
+
+run-demo:  ## Run the optio-demo Python entrypoint
+	$(MAKE) -C packages/optio-demo run
+
+run-demo-dashboard:  ## Run the dashboard against the demo Mongo + Redis
+	$(MAKE) -C packages/optio-demo run-dashboard
