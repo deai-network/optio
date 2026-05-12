@@ -55,9 +55,57 @@ When `False`, this task owns shutdown of its own children. After receiving cance
 
 Upward propagation (alpha): abnormal child terminal (cancelled with `survive_cancel=False`, or failed with `survive_failure=False`) invokes `notify_parent_abnormal(parent_process_id)` — wired at `Executor` construction to `lifecycle.cancel`. For `parallel_group`, `ParallelGroup.spawn._run` fires alpha when the group's own `survive_*` aggregate is breached, because the per-spawn `run_child` hardcodes `survive_*=True` (so the executor-level alpha path does not fire for individual group children).
 
-`ctx.run_child` and `ParallelGroup.spawn` refuse to spawn new children when the parent's cancellation flag is set and `auto_cancel_children=True` — they return `"cancelled"` without inserting a child doc.
+`ctx.run_child` and `ParallelGroup.spawn` refuse to spawn new children when the parent's cancellation flag is set and `auto_cancel_children=True` — they return `ChildOutcome(state="cancelled")` without inserting a child doc.
 
 Spec: `docs/2026-05-11-cancel-propagation-design.md`. Plan: `docs/2026-05-11-cancel-propagation-plan.md`.
+
+---
+
+### Structured child-failure propagation
+
+When a child task fails, the exception object raised inside its `execute` function is preserved across the `run_child` / `parallel_group` boundary so parents can branch on the original type and inspect its fields.
+
+```python
+from optio_core.exceptions import ChildProcessFailed
+from optio_core.models import ChildOutcome
+
+# Single child — failure raises ChildProcessFailed, .original is the live exception
+try:
+    await ctx.run_child(execute=..., process_id=..., name="Downloader")
+except ChildProcessFailed as e:
+    if isinstance(e.original, DownloadFailed):
+        log.warning(f"download failed: url={e.original.url} code={e.original.exit_code}")
+
+# survive_failure=True — no raise, ChildOutcome carries the original instead
+outcome = await ctx.run_child(..., survive_failure=True)
+if outcome.state == "failed":
+    handle(outcome.original_exception)
+elif outcome.state == "cancelled":
+    ...  # outcome.original_exception is None
+
+# Parallel group — aggregate breach raises ExceptionGroup[ChildProcessFailed]
+try:
+    async with ctx.parallel_group(survive_failure=False) as g:
+        await g.spawn(execute=..., process_id="a", name="A")
+        await g.spawn(execute=..., process_id="b", name="B")
+except* ChildProcessFailed as eg:
+    for cpf in eg.exceptions:
+        log.warning(f"{cpf.name}: {cpf.original!r}")
+```
+
+**Types:**
+
+- `ChildProcessFailed(Exception)` — `name: str`, `process_id: str`, `original: BaseException`. `__cause__` is set to `original` so the traceback shows the chain. Import: `from optio_core.exceptions import ChildProcessFailed`.
+- `ChildOutcome` — return type of `ProcessContext.run_child`. Fields: `state: str` (`"done" | "failed" | "cancelled"`) and `original_exception: BaseException | None`. Import: `from optio_core.models import ChildOutcome`. **Breaking:** `run_child` previously returned a bare state `str`; callers that captured the return must now read `.state`.
+- `ChildResult` (extended) — `ParallelGroup.results[i]` now also carries `name: str` and `original_exception: BaseException | None`. Existing fields (`process_id`, `state`, `error`) unchanged.
+
+**`ParallelGroup.__aexit__` raise type changed:** was `RuntimeError("Parallel group failed: ...")`, now `ExceptionGroup("Parallel group failed", [ChildProcessFailed, ...])`. Each entry in the group is a `ChildProcessFailed`; for children that were cancelled (not raised), `.original` is a synthetic `RuntimeError("child cancelled")` so it is never `None`. Callers use `except* ChildProcessFailed` (Python 3.11+).
+
+**No-execute-fn early-fail.** When `_execute_process` hits the no-execute-fn branch (`execute_fn is None`), it returns `("failed", None)`. `execute_child` synthesizes a `RuntimeError(f"Child process '{name}' failed")` as `ChildProcessFailed.original` so callers always see a non-`None` `.original`.
+
+Persistence is unaffected: Mongo `status.error` remains the `str(e)` text of the original exception. The structured propagation is in-process only — resumed processes lose the live exception object (consistent with the rest of the resume model).
+
+Spec: `docs/2026-05-12-child-failure-propagation-design.md`. Plan: `docs/2026-05-12-child-failure-propagation-plan.md`.
 
 ---
 
