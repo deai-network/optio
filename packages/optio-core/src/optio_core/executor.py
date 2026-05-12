@@ -1,12 +1,15 @@
 """Task executor — runs task functions with state management."""
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Awaitable
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
+
+_trace_logger = logging.getLogger("optio_core.cancel_trace")
 
 from optio_core.models import (
     TaskInstance, ProcessStatus, Progress, ProcessMetadataFilter, matches_filter,
@@ -202,6 +205,9 @@ class Executor:
             elapsed = time.monotonic() - start_time
 
             if end_state == "done":
+                _trace_logger.warning(
+                    "CANCEL-TRACE %s: executor write done", proc["processId"],
+                )
                 await update_status(
                     self._db, self._prefix, oid,
                     ProcessStatus(
@@ -213,6 +219,10 @@ class Executor:
                 )
                 await append_log(self._db, self._prefix, oid, "event", "State changed to done")
             elif end_state == "cancelled":
+                _trace_logger.warning(
+                    "CANCEL-TRACE %s: executor write cancelled (after execute_fn returned)",
+                    proc["processId"],
+                )
                 await update_status(
                     self._db, self._prefix, oid,
                     ProcessStatus(
@@ -274,6 +284,10 @@ class Executor:
             or (end_state == "failed" and not survive_failure)
         )
         if abnormal and self._notify_parent_abnormal is not None:
+            _trace_logger.warning(
+                "CANCEL-TRACE %s: abnormal child %s (%s) → scheduling notify_parent_abnormal(parent=%s)",
+                process_id, name, end_state, parent_ctx.process_id,
+            )
             asyncio.create_task(
                 self._notify_parent_abnormal(parent_ctx.process_id)
             )

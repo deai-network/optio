@@ -398,8 +398,19 @@ class Optio:
         """
         proc = await self._resolve(process_id)
         if proc is None:
+            logger.warning("CANCEL-TRACE %s: not-found", process_id)
             return CancelOutcome(ok=False, reason="not-found")
-        if not proc.get("cancellable", True) or proc["status"]["state"] not in CANCELLABLE_STATES:
+        _state_now = proc["status"]["state"]
+        _inh = "inherit" if inherit_deadline is not None else "fresh"
+        logger.warning(
+            "CANCEL-TRACE %s: enter state=%s cancellable=%s (%s deadline)",
+            process_id, _state_now, proc.get("cancellable", True), _inh,
+        )
+        if not proc.get("cancellable", True) or _state_now not in CANCELLABLE_STATES:
+            logger.warning(
+                "CANCEL-TRACE %s: early-return not-cancellable (state=%s cancellable=%s)",
+                process_id, _state_now, proc.get("cancellable", True),
+            )
             return CancelOutcome(ok=False, reason="not-cancellable")
 
         # Establish the effective deadline once for this cancel sweep.
@@ -425,6 +436,10 @@ class Optio:
                 {"_id": proc["_id"], "status.state": "scheduled"},
                 {"$set": set_doc},
             )
+            logger.warning(
+                "CANCEL-TRACE %s: scheduled→cancelled match=%d",
+                process_id, result.modified_count,
+            )
             if result.modified_count == 0:
                 return CancelOutcome(ok=False, reason="not-cancellable")
         else:
@@ -432,16 +447,25 @@ class Optio:
                 {"_id": proc["_id"], "status.state": {"$in": list(CANCELLABLE_STATES)}},
                 {"$set": {"status": ProcessStatus(state="cancel_requested").to_dict()}},
             )
+            logger.warning(
+                "CANCEL-TRACE %s: →cancel_requested match=%d (was %s)",
+                process_id, result.modified_count, current_state,
+            )
             if result.modified_count == 0:
                 return CancelOutcome(ok=False, reason="not-cancellable")
             found = self._executor.request_cancel_with_deadline(
                 proc["_id"], deadline=effective_deadline,
+            )
+            logger.warning(
+                "CANCEL-TRACE %s: request_cancel_with_deadline found=%s",
+                process_id, found,
             )
             if found:
                 await update_status(
                     self._config.mongo_db, self._config.prefix, proc["_id"],
                     ProcessStatus(state="cancelling"),
                 )
+                logger.warning("CANCEL-TRACE %s: →cancelling", process_id)
 
         # Downward propagation: recurse over active direct children unless
         # this process's TaskInstance opts out. Unknown task → assume True
@@ -455,6 +479,10 @@ class Optio:
                 proc["_id"], states=ACTIVE_STATES,
             )
             if children:
+                logger.warning(
+                    "CANCEL-TRACE %s: propagating to children=%s",
+                    process_id, [c["processId"] for c in children],
+                )
                 await asyncio.gather(
                     *(
                         self.cancel(c["processId"], inherit_deadline=effective_deadline)
@@ -462,6 +490,7 @@ class Optio:
                     ),
                     return_exceptions=True,
                 )
+        logger.warning("CANCEL-TRACE %s: exit ok=True", process_id)
         return CancelOutcome(ok=True)
 
     async def cancel_and_wait(self, process_id: str) -> str | None:
