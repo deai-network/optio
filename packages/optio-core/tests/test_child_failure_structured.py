@@ -263,3 +263,41 @@ async def test_no_execute_fn_synthesizes_runtimeerror_as_original(mongo_db):
     assert e.name == "Missing"
     assert isinstance(e.original, RuntimeError)
     assert "Missing" in str(e.original) or "failed" in str(e.original).lower()
+
+
+async def test_parallel_group_results_carry_originals(mongo_db):
+    """survive_failure=True at group level. group.results[i].original_exception
+    is populated for failed children."""
+    captured_results = {}
+
+    async def fail_a(ctx):
+        raise _SampleErr("ua", 1)
+
+    async def fail_b(ctx):
+        raise _SampleErr("ub", 2)
+
+    async def parent_task(ctx):
+        async with ctx.parallel_group(survive_failure=True) as g:
+            await g.spawn(execute=fail_a, process_id="pa", name="PA")
+            await g.spawn(execute=fail_b, process_id="pb", name="PB")
+        captured_results["r"] = list(g.results)
+
+    parent_inst = TaskInstance(execute=parent_task, process_id="pgr", name="PGR")
+    a_inst = TaskInstance(execute=fail_a, process_id="pa", name="PA")
+    b_inst = TaskInstance(execute=fail_b, process_id="pb", name="PB")
+    await upsert_process(mongo_db, "test_pgr", parent_inst)
+    executor = Executor(mongo_db, "test_pgr", {})
+    executor.register_tasks([parent_inst, a_inst, b_inst])
+    await executor.launch_process("pgr")
+
+    results = captured_results["r"]
+    assert len(results) == 2
+    by_pid = {r.process_id: r for r in results}
+    assert by_pid["pa"].state == "failed"
+    assert isinstance(by_pid["pa"].original_exception, _SampleErr)
+    assert by_pid["pa"].original_exception.url == "ua"
+    assert by_pid["pa"].name == "PA"
+    assert by_pid["pb"].state == "failed"
+    assert isinstance(by_pid["pb"].original_exception, _SampleErr)
+    assert by_pid["pb"].original_exception.url == "ub"
+    assert by_pid["pb"].name == "PB"
