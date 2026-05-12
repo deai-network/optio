@@ -173,10 +173,12 @@ class HookContext:
         workdir-escape attempt this raises ``ValueError`` without spawning
         a child.
 
-        Returns None on success. Raises ``RuntimeError`` if the child fails
-        (the underlying ``DownloadFailed`` is lost at the run_child boundary;
-        see /tmp/optio-child-failure-problem.md). Parent-task cancellation
-        propagates to the child automatically.
+        Returns None on success. Raises
+        ``optio_core.exceptions.ChildProcessFailed`` if the child fails;
+        the original ``DownloadFailed`` is preserved via ``__cause__``
+        (and on the child's ``ChildResult.original_exception`` when caller
+        uses ``parallel_group``). Parent-task cancellation propagates to
+        the child automatically.
         """
         host_home = await self._host.resolve_host_home()
         abs_target = _resolve_target_path(target, self._host.workdir, host_home)

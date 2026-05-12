@@ -140,10 +140,11 @@ async def download_file(
 - Calls `await self._ctx.run_child(task.execute, task.process_id, task.name,
   description=task.description)`.
 - Returns None on success. On child failure, `run_child` raises
-  `RuntimeError("Child process '<name>' failed")` — the original
-  `DownloadFailed` type is lost across the boundary (see "Known limitation"
-  below). On parent cancel, the child completes as "cancelled" and the
-  framework propagates the cancel flag back to the parent per the standard
+  `optio_core.exceptions.ChildProcessFailed(name, process_id, exc)` with
+  the original `DownloadFailed` preserved on `__cause__` (and on
+  `ChildResult.original_exception` when reached via `parallel_group`). On
+  parent cancel, the child completes as "cancelled" and the framework
+  propagates the cancel flag back to the parent per the standard
   child→parent rule (`survive_cancel=False` default).
 
 ### `optio_host/__init__.py` exports
@@ -260,23 +261,32 @@ the target from a prior crashed run is overwritten by curl's `-o` from byte 0.
 |        28 | operation timed out                  |                       28 |
 |        56 | failure receiving network data       |                       56 |
 
-All map to `DownloadFailed`. Caller catches on type (post known-limitation
-fix) or by `exit_code` value.
+All map to `DownloadFailed`. Caller catches `ChildProcessFailed` from
+`run_child` and inspects `__cause__` (which holds the original
+`DownloadFailed`) or uses `ChildResult.original_exception` via
+`parallel_group`.
 
-## Known limitation — child failure type loss
+## Child failure propagation
 
-The structured `DownloadFailed` exception raised inside the child's execute
-is caught by `_execute_process` (executor.py:181-194) and converted to a
-string in `status.error`. When the parent's `run_child` sees the child end
-in `failed` state, it raises `RuntimeError("Child process '<name>'
-failed")`, throwing away the original exception type and fields. Callers of
-`download_file` cannot `except DownloadFailed:` — they must catch
-`RuntimeError` or read MongoDB.
+`DownloadFailed` raised inside the child's execute is captured by
+`_execute_process` and re-raised by the parent's `run_child` as
+`optio_core.exceptions.ChildProcessFailed(name, process_id, exc) from
+exc`. The original `DownloadFailed` is preserved on `__cause__` (and on
+the child's `ChildResult.original_exception` when the parent uses
+`parallel_group`). Callers of `download_file` therefore can do:
 
-This is **not** a download-specific issue; it affects every task factory
-whose execute raises a typed exception. A note describing the problem and
-possible fix shape has been written to `/tmp/optio-child-failure-problem.md`
-for the user to pick up separately. v1 of `download_file` accepts the loss.
+```python
+try:
+    await hook_ctx.download_file(url, target)
+except ChildProcessFailed as e:
+    if isinstance(e.__cause__, DownloadFailed):
+        ...
+```
+
+The same propagation mechanism applies to every task factory whose
+execute raises a typed exception — landed on `main` via the
+`feat/child-failure-propagation` work merged before this branch was
+rebased.
 
 ## Files changed
 
@@ -388,7 +398,5 @@ updates degrades.
 - Integrity verification (sha256 expected, like `copy_file`'s
   `skip_if_unchanged`).
 - A symmetric `upload_url` for HTTP PUT/POST uploads.
-- Fixing the child-failure-type-loss across `run_child` (see
-  `/tmp/optio-child-failure-problem.md`).
 - Demo / integration exercise in `optio-demo` — the user has a specific
   consumer in mind.

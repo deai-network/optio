@@ -31,10 +31,12 @@ class DownloadFailed(Exception):
       - exit_code: curl's exit code (see curl(1) EXIT CODES)
       - stderr_tail: up to ~1 KB of curl's stderr (the most recent bytes)
 
-    Note: when this exception propagates out of a child task body, the
-    optio-core executor converts it to ``str(self)`` in ``status.error``
-    and the parent's ``run_child`` re-raises as a plain ``RuntimeError``.
-    See /tmp/optio-child-failure-problem.md for the cross-cutting fix shape.
+    When raised inside a download child task body, optio-core writes
+    ``str(self)`` to the child's ``status.error`` for the dashboard, and
+    the parent's ``run_child`` re-raises as
+    ``optio_core.exceptions.ChildProcessFailed`` with this exception
+    preserved on ``__cause__`` (and on ``ChildResult.original_exception``
+    when reached via ``parallel_group``).
     """
 
     def __init__(self, *, url: str, target: str, exit_code: int, stderr_tail: str) -> None:
