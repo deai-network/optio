@@ -147,6 +147,10 @@ async def ensure_opencode_installed(
     needed but ``install_if_missing`` is False, or when any sub-step fails.
     """
     host = hook_ctx._host
+    # Mark the parent task indeterminate-active before any host I/O so the
+    # dashboard shows it working rather than stuck at 0% while the install
+    # check (and any subsequent download child task) runs.
+    hook_ctx.report_progress(None, "Checking opencode installation…")
     kind, url = await _smart_install_check(host)
     if kind == "ok":
         # Resolve the on-PATH path (login-shell PATH so ~/.local/bin counts).
@@ -165,6 +169,7 @@ async def ensure_opencode_installed(
             "install_if_missing=False was requested."
         )
     assert url is not None  # _smart_install_check guarantees
+    hook_ctx.report_progress(None, "Installing opencode…")
     return await _install_opencode_from_zip(hook_ctx, url)
 
 
@@ -284,15 +289,25 @@ async def launch_opencode(
         pass
 
     # Build cmd: read password from file via $(cat), set BROWSER=true,
-    # cd to workdir so opencode picks up opencode.json. Use bash -lc so
-    # ~/.local/bin (where the upstream installer puts the binary) is on
-    # PATH for the remote case; harmless locally.
-    inner = (
+    # cd to workdir so opencode picks up opencode.json.
+    #
+    # NOTE: do NOT wrap in `bash -lc` / `bash -l`. A login shell sources
+    # the user's profile (~/.profile, ~/.bash_profile, /etc/profile),
+    # which on most Linux installs rewrites PATH from scratch and
+    # therefore wipes the workdir/bin prefix we set in `env` below. With
+    # the prefix gone, the noop xdg-open / sensible-browser / gio / open
+    # shadows below stop hiding the real ones and opencode succeeds at
+    # opening a real browser window. opencode_executable is an absolute
+    # path (resolved by ensure_opencode_installed), so login-shell PATH
+    # lookup is not needed to find the binary. Let LocalHost / RemoteHost
+    # launch_subprocess do the shell wrapping; we just need the env-var
+    # prefix and $(cat ...) substitution, which any POSIX sh handles.
+    cmd = (
+        f"exec env "
         f"OPENCODE_SERVER_PASSWORD=\"$(cat {shlex.quote(host.workdir + '/' + pw_file)})\" "
         f"BROWSER=true "
         f"{opencode_executable} web --port=0 --hostname=127.0.0.1"
     )
-    cmd = f"bash -lc {shlex.quote(inner)}"
 
     # Prepend the noop-browsers bin dir to PATH via env on launch_subprocess.
     workdir_bin = f"{host.workdir}/bin"
