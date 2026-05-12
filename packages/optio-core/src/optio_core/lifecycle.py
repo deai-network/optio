@@ -461,11 +461,20 @@ class Optio:
                 process_id, found,
             )
             if found:
-                await update_status(
-                    self._config.mongo_db, self._config.prefix, proc["_id"],
-                    ProcessStatus(state="cancelling"),
+                # Conditional: only advance to 'cancelling' if the row is
+                # still in 'cancel_requested'. If the executor has already
+                # raced ahead to a terminal state (e.g. the running task's
+                # execute_fn observed the cancel flag and finalized to
+                # 'cancelled' between our W1 above and now), we must NOT
+                # overwrite the terminal state with 'cancelling'.
+                result = await coll.update_one(
+                    {"_id": proc["_id"], "status.state": "cancel_requested"},
+                    {"$set": {"status": ProcessStatus(state="cancelling").to_dict()}},
                 )
-                logger.warning("CANCEL-TRACE %s: →cancelling", process_id)
+                logger.warning(
+                    "CANCEL-TRACE %s: →cancelling match=%d",
+                    process_id, result.modified_count,
+                )
 
         # Downward propagation: recurse over active direct children unless
         # this process's TaskInstance opts out. Unknown task → assume True
