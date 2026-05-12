@@ -337,3 +337,57 @@ async def test_parallel_group_raises_exception_group_with_per_child_wrappers(mon
     assert by_name["EA"].original.url == "ua"
     assert isinstance(by_name["EB"].original, _SampleErr)
     assert by_name["EB"].original.url == "ub"
+
+
+async def test_parallel_group_mixed_cancel_and_fail_synthesizes_for_cancelled(mongo_db):
+    """One child fails with a real exception, one is cancelled mid-flight.
+    The cancelled child's ChildProcessFailed wrapper has a synthetic
+    RuntimeError as .original (no real exception was raised).
+
+    Uses Optio so the alpha-cascade notify_parent_abnormal callback is
+    wired up — that is what propagates the parent's cancel down to the
+    sibling spawn after the first child fails."""
+    from optio_core.lifecycle import Optio
+
+    prefix = "test_pmfx"
+    caught_eg = {}
+
+    async def fail_a(ctx):
+        await asyncio.sleep(0.05)
+        raise _SampleErr("ua", 1)
+
+    async def slow_child(ctx):
+        while ctx.should_continue():
+            await asyncio.sleep(0.01)
+
+    async def parent_task(ctx):
+        try:
+            async with ctx.parallel_group(
+                survive_failure=False, survive_cancel=False,
+            ) as g:
+                await g.spawn(execute=fail_a, process_id="mfa", name="MFA")
+                await g.spawn(execute=slow_child, process_id="mfb", name="MFB")
+        except* ChildProcessFailed as eg:
+            caught_eg["matched"] = list(eg.exceptions)
+
+    parent_inst = TaskInstance(execute=parent_task, process_id="pmfx", name="PMFX")
+    a_inst = TaskInstance(execute=fail_a, process_id="mfa", name="MFA")
+    b_inst = TaskInstance(execute=slow_child, process_id="mfb", name="MFB")
+
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix=prefix, cancel_grace_seconds=2.0)
+    await upsert_process(mongo_db, prefix, parent_inst)
+    optio._executor.register_tasks([parent_inst, a_inst, b_inst])
+
+    try:
+        await asyncio.wait_for(optio.launch_and_wait("pmfx"), timeout=10.0)
+    finally:
+        await optio.shutdown(grace_seconds=0.5)
+
+    matched = caught_eg.get("matched", [])
+    by_name = {cpf.name: cpf for cpf in matched}
+    assert "MFA" in by_name
+    assert isinstance(by_name["MFA"].original, _SampleErr)
+    if "MFB" in by_name:
+        assert isinstance(by_name["MFB"].original, RuntimeError)
+        assert "cancelled" in str(by_name["MFB"].original).lower()
