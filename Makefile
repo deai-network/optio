@@ -1,12 +1,40 @@
 .DEFAULT_GOAL := help
-.PHONY: help install install-demo run-demo run-demo-dashboard build build-dashboard run-dashboard-api run-dashboard-dev codegen test test-interop lint lint-no-direct-writes clean clean-codegen clean-deep
+.PHONY: help install check-tooling install-demo run-demo run-demo-dashboard build build-dashboard run-dashboard-api run-dashboard-dev codegen test test-interop lint lint-no-direct-writes clean clean-codegen clean-deep
 
 PY_PACKAGES := optio-core optio-host optio-opencode
 
 help:  ## Show this help
 	@awk 'BEGIN { FS = ":.*##" } /^[a-zA-Z_-]+:.*##/ { printf "  \033[1m%-15s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
-install:  ## Install dependencies (TS workspace + Python packages)
+check-tooling:  ## Verify node + pnpm match repo pins; clear errors if missing
+	@if [ ! -f .nvmrc ]; then echo "ERROR: .nvmrc missing"; exit 1; fi
+	@expected_node=$$(cat .nvmrc | tr -d 'v'); \
+	 if ! command -v node >/dev/null 2>&1; then \
+	   echo "ERROR: node not installed."; \
+	   echo "  Install nvm: https://github.com/nvm-sh/nvm#installing-and-updating"; \
+	   echo "  Then run:    nvm install"; \
+	   exit 1; \
+	 fi; \
+	 actual_node=$$(node --version | tr -d 'v'); \
+	 if [ "$$actual_node" != "$$expected_node" ]; then \
+	   echo "ERROR: node v$$actual_node does not match .nvmrc (v$$expected_node)."; \
+	   echo "  Run: nvm install $$(cat .nvmrc) && nvm use"; \
+	   echo "  (If nvm is missing: https://github.com/nvm-sh/nvm)"; \
+	   exit 1; \
+	 fi
+	@if ! command -v corepack >/dev/null 2>&1; then \
+	   echo "ERROR: corepack not on PATH (ships with Node 16.10+)."; \
+	   echo "  After installing node, run once: corepack enable"; \
+	   exit 1; \
+	 fi
+	@if ! command -v pnpm >/dev/null 2>&1; then \
+	   echo "ERROR: pnpm not on PATH."; \
+	   echo "  Run once: corepack enable"; \
+	   exit 1; \
+	 fi
+	@echo "OK: node $$(node --version), pnpm $$(pnpm --version) (managed via corepack against package.json packageManager pin)"
+
+install: check-tooling  ## Install dependencies (TS workspace + Python packages)
 	pnpm install
 	for pkg in $(PY_PACKAGES); do \
 	  (cd packages/$$pkg && pip install -e .[dev] 2>/dev/null || pip install -e .); \
