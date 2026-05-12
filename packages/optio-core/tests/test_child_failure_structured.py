@@ -301,3 +301,39 @@ async def test_parallel_group_results_carry_originals(mongo_db):
     assert isinstance(by_pid["pb"].original_exception, _SampleErr)
     assert by_pid["pb"].original_exception.url == "ub"
     assert by_pid["pb"].name == "PB"
+
+
+async def test_parallel_group_raises_exception_group_with_per_child_wrappers(mongo_db):
+    """On aggregate breach, __aexit__ raises ExceptionGroup[ChildProcessFailed]."""
+    caught_eg = {}
+
+    async def fail_a(ctx):
+        raise _SampleErr("ua", 1)
+
+    async def fail_b(ctx):
+        raise _SampleErr("ub", 2)
+
+    async def parent_task(ctx):
+        try:
+            async with ctx.parallel_group(survive_failure=False) as g:
+                await g.spawn(execute=fail_a, process_id="ea", name="EA")
+                await g.spawn(execute=fail_b, process_id="eb", name="EB")
+        except* ChildProcessFailed as eg:
+            caught_eg["matched"] = list(eg.exceptions)
+
+    parent_inst = TaskInstance(execute=parent_task, process_id="peg", name="PEG")
+    a_inst = TaskInstance(execute=fail_a, process_id="ea", name="EA")
+    b_inst = TaskInstance(execute=fail_b, process_id="eb", name="EB")
+    await upsert_process(mongo_db, "test_peg", parent_inst)
+    executor = Executor(mongo_db, "test_peg", {})
+    executor.register_tasks([parent_inst, a_inst, b_inst])
+    await executor.launch_process("peg")
+
+    matched = caught_eg.get("matched", [])
+    assert len(matched) == 2
+    by_name = {cpf.name: cpf for cpf in matched}
+    assert "EA" in by_name and "EB" in by_name
+    assert isinstance(by_name["EA"].original, _SampleErr)
+    assert by_name["EA"].original.url == "ua"
+    assert isinstance(by_name["EB"].original, _SampleErr)
+    assert by_name["EB"].original.url == "ub"

@@ -11,6 +11,7 @@ from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorGridFSBucket
 
 from optio_core.models import Progress, ChildResult, ChildProgressInfo, InnerAuth, ChildOutcome
+from optio_core.exceptions import ChildProcessFailed
 
 
 # Adaptive progress throttling: only engage the flush-interval buffer when
@@ -595,7 +596,15 @@ class ParallelGroup:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         if self._failed:
             failed = [r for r in self._results if r.state != "done"]
-            raise RuntimeError(
-                f"Parallel group failed: {len(failed)} children did not complete successfully"
-            )
+            failures = [
+                ChildProcessFailed(
+                    r.name,
+                    r.process_id,
+                    r.original_exception
+                    if r.original_exception is not None
+                    else RuntimeError(f"child {r.state}"),
+                )
+                for r in failed
+            ]
+            raise ExceptionGroup("Parallel group failed", failures)
         return False
