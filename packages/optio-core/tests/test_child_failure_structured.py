@@ -234,3 +234,32 @@ async def test_run_child_refused_outcome_is_cancelled_no_exception(mongo_db):
     o = outcomes["o"]
     assert o.state == "cancelled"
     assert o.original_exception is None
+
+
+async def test_no_execute_fn_synthesizes_runtimeerror_as_original(mongo_db):
+    """When _execute_process receives execute_fn=None it hits the
+    no-execute-fn early-fail path, returning ('failed', None).
+    execute_child synthesizes a RuntimeError as .original so .original is
+    never None."""
+    caught = {}
+
+    async def parent_task(ctx):
+        try:
+            await ctx.run_child(
+                execute=None,  # type: ignore[arg-type]
+                process_id="missing-child",
+                name="Missing",
+            )
+        except ChildProcessFailed as e:
+            caught["e"] = e
+
+    parent_inst = TaskInstance(execute=parent_task, process_id="p-miss", name="P Miss")
+    await upsert_process(mongo_db, "test_miss", parent_inst)
+    executor = Executor(mongo_db, "test_miss", {})
+    executor.register_tasks([parent_inst])
+    await executor.launch_process("p-miss")
+
+    e = caught["e"]
+    assert e.name == "Missing"
+    assert isinstance(e.original, RuntimeError)
+    assert "Missing" in str(e.original) or "failed" in str(e.original).lower()
