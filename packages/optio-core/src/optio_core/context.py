@@ -10,7 +10,8 @@ from typing import Any, Callable, Awaitable, TYPE_CHECKING
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorGridFSBucket
 
-from optio_core.models import Progress, ChildResult, ChildProgressInfo, InnerAuth
+from optio_core.models import Progress, ChildResult, ChildProgressInfo, InnerAuth, ChildOutcome
+from optio_core.exceptions import ChildProcessFailed
 
 
 # Adaptive progress throttling: only engage the flush-interval buffer when
@@ -302,14 +303,14 @@ class ProcessContext:
         survive_cancel: bool = False,
         on_child_progress: Callable | None = None,
         description: str | None = None,
-    ) -> str:
+    ) -> ChildOutcome:
         """Launch a sequential child process. Blocks until child completes.
 
         If the parent's cancellation_flag is set and the parent's
         TaskInstance has `auto_cancel_children=True` (default), refuse:
-        return `"cancelled"` without inserting a child doc. Tasks that opt
-        out of auto-propagation may still spawn during their own cancel
-        window.
+        return `ChildOutcome(state="cancelled")` without inserting a child
+        doc. Tasks that opt out of auto-propagation may still spawn during
+        their own cancel window.
         """
         if self._executor is None:
             raise RuntimeError("Executor not set on context")
@@ -324,7 +325,7 @@ class ProcessContext:
                     f"Refused to spawn child '{name}' (process_id={process_id}): "
                     f"parent already cancelled",
                 )
-                return "cancelled"
+                return ChildOutcome(state="cancelled", original_exception=None)
         if on_child_progress is not None:
             self._set_child_callback(on_child_progress)
         return await self._executor.execute_child(
@@ -539,13 +540,14 @@ class ParallelGroup:
                 self._results.append(ChildResult(
                     process_id=process_id, state="cancelled",
                     error="parent cancelled",
+                    name=name, original_exception=None,
                 ))
                 return
         await self._semaphore.acquire()
 
         async def _run():
             try:
-                state = await self._ctx.run_child(
+                outcome = await self._ctx.run_child(
                     execute=execute,
                     process_id=process_id,
                     name=name,
@@ -556,14 +558,16 @@ class ParallelGroup:
                 )
                 self._results.append(ChildResult(
                     process_id=process_id,
-                    state=state,
-                    error=None if state == "done" else f"Child {state}",
+                    state=outcome.state,
+                    error=None if outcome.state == "done" else f"Child {outcome.state}",
+                    name=name,
+                    original_exception=outcome.original_exception,
                 ))
                 breached = False
-                if state == "failed" and not self._survive_failure:
+                if outcome.state == "failed" and not self._survive_failure:
                     self._failed = True
                     breached = True
-                if state == "cancelled" and not self._survive_cancel:
+                if outcome.state == "cancelled" and not self._survive_cancel:
                     self._failed = True
                     breached = True
                 # alpha at group level: when group's own survive_*
@@ -592,7 +596,15 @@ class ParallelGroup:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         if self._failed:
             failed = [r for r in self._results if r.state != "done"]
-            raise RuntimeError(
-                f"Parallel group failed: {len(failed)} children did not complete successfully"
-            )
+            failures = [
+                ChildProcessFailed(
+                    r.name,
+                    r.process_id,
+                    r.original_exception
+                    if r.original_exception is not None
+                    else RuntimeError(f"child {r.state}"),
+                )
+                for r in failed
+            ]
+            raise ExceptionGroup("Parallel group failed", failures)
         return False

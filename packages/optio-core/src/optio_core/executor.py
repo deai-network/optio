@@ -10,6 +10,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from optio_core.models import (
     TaskInstance, ProcessStatus, Progress, ProcessMetadataFilter, matches_filter,
+    ChildOutcome,
 )
 from optio_core.state_machine import LAUNCHABLE_STATES
 from optio_core.store import (
@@ -19,6 +20,7 @@ from optio_core.store import (
     clear_widget_upstream, compute_expire_at,
 )
 from optio_core.context import ProcessContext
+from optio_core.exceptions import ChildProcessFailed
 
 
 @dataclass
@@ -106,15 +108,16 @@ class Executor:
         await append_log(self._db, self._prefix, proc["_id"], "event", "State changed to scheduled")
 
         task = self._task_registry.get(process_id)
-        return await self._execute_process(
+        state, _ = await self._execute_process(
             proc, task.execute if task else None, resume=resume,
         )
+        return state
 
     async def _execute_process(
         self, proc: dict, execute_fn: Callable | None,
         parent_ctx: ProcessContext | None = None,
         resume: bool = False,
-    ) -> str:
+    ) -> tuple[str, BaseException | None]:
         """Execute a process."""
         oid = proc["_id"]
         root_oid = proc.get("rootId", oid)
@@ -171,7 +174,7 @@ class Executor:
                     ),
                     expire_at=compute_expire_at(ttl_seconds),
                 )
-                return "failed"
+                return ("failed", None)
 
             start_time = time.monotonic()
             end_state = "done"
@@ -193,7 +196,7 @@ class Executor:
                 await append_log(self._db, self._prefix, oid, "error", str(e))
                 await clear_widget_upstream(self._db, self._prefix, oid)
                 await self._cleanup_ephemeral(proc["processId"])
-                return "failed"
+                return ("failed", e)
 
             await ctx.flush_final_progress()
             elapsed = time.monotonic() - start_time
@@ -222,7 +225,7 @@ class Executor:
 
             await clear_widget_upstream(self._db, self._prefix, oid)
             await self._cleanup_ephemeral(proc["processId"])
-            return end_state
+            return (end_state, None)
         finally:
             self._cancellation_flags.pop(oid, None)
             self._running_tasks.pop(oid, None)
@@ -237,7 +240,7 @@ class Executor:
         survive_failure: bool = False,
         survive_cancel: bool = False,
         description: str | None = None,
-    ) -> str:
+    ) -> ChildOutcome:
         """Execute a child process (called from ProcessContext.run_child)."""
         if self._optio is not None:
             self._optio._check_launch_blocks(parent_ctx.metadata)
@@ -258,7 +261,7 @@ class Executor:
         )
         await append_log(self._db, self._prefix, parent_ctx._process_oid, "event", f"Spawned child: {name}")
 
-        end_state = await self._execute_process(child_doc, execute, parent_ctx=parent_ctx)
+        end_state, exc = await self._execute_process(child_doc, execute, parent_ctx=parent_ctx)
 
         if parent_ctx._on_child_progress is not None:
             parent_ctx._notify_child_state_change(process_id, end_state)
@@ -276,11 +279,16 @@ class Executor:
             )
 
         if end_state == "failed" and not survive_failure:
-            raise RuntimeError(f"Child process '{name}' failed")
+            if exc is None:
+                exc = RuntimeError(f"Child process '{name}' failed")
+            raise ChildProcessFailed(name, process_id, exc) from exc
         if end_state == "cancelled" and not survive_cancel:
             parent_ctx._cancellation_flag.set()
 
-        return end_state
+        return ChildOutcome(
+            state=end_state,
+            original_exception=exc if end_state == "failed" else None,
+        )
 
     def request_cancel_with_deadline(
         self, process_oid: ObjectId, deadline: float

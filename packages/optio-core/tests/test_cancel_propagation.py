@@ -267,8 +267,8 @@ async def test_cancel_concurrent_calls_are_idempotent(mongo_db):
 
 async def test_run_child_refuses_after_parent_cancel_when_auto(mongo_db):
     """When parent has auto_cancel_children=True and its cancellation_flag
-    is set, ctx.run_child returns 'cancelled' immediately without creating
-    a child doc."""
+    is set, ctx.run_child returns ChildOutcome(state="cancelled")
+    immediately without creating a child doc."""
     prefix = "p3t1"
     spawn_after_cancel = asyncio.Event()
     refusal_result: dict = {}
@@ -281,10 +281,10 @@ async def test_run_child_refuses_after_parent_cancel_when_auto(mongo_db):
         while ctx.should_continue():
             await asyncio.sleep(0.01)
         # Now flag is set; try to spawn another child.
-        state = await ctx.run_child(
+        outcome = await ctx.run_child(
             execute=short_child, process_id="late_child", name="Late",
         )
-        refusal_result["state"] = state
+        refusal_result["state"] = outcome.state
         spawn_after_cancel.set()
 
     parent_inst = TaskInstance(execute=parent, process_id="parent", name="Parent")
@@ -356,9 +356,9 @@ async def test_alpha_child_cancel_triggers_parent_cancel_of_siblings(mongo_db):
     assert b_proc["status"]["state"] == "cancelled"
     assert c_proc["status"]["state"] == "cancelled"
     # Parent ends 'failed' because parallel_group(survive_cancel=False)
-    # raises RuntimeError when any child cancels; the exception
-    # overwrites the prior cancel_requested state. Either terminal is
-    # acceptable.
+    # raises ExceptionGroup[ChildProcessFailed] when any child cancels;
+    # the exception overwrites the prior cancel_requested state. Either
+    # terminal is acceptable.
     assert a_proc["status"]["state"] in {"failed", "cancelled"}
 
     await optio.shutdown(grace_seconds=0.5)

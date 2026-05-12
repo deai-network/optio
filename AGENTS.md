@@ -170,7 +170,39 @@ class ChildResult:
     process_id: str
     state: str        # "done" | "failed" | "cancelled"
     error: str | None = None
+    name: str = ""                                       # child's logical name (same string passed to spawn)
+    original_exception: BaseException | None = None      # exception raised inside child's execute, if any
 ```
+
+---
+
+### ChildOutcome Fields
+
+```python
+@dataclass
+class ChildOutcome:
+    state: str                                           # "done" | "failed" | "cancelled"
+    original_exception: BaseException | None = None      # populated on "failed" only
+```
+
+`ProcessContext.run_child` returns `ChildOutcome`. Use `.state` for the string state; on `survive_failure=True` callers, `.original_exception` carries the live exception object raised inside the child.
+
+---
+
+### ChildProcessFailed (optio_core.exceptions)
+
+```python
+from optio_core.exceptions import ChildProcessFailed
+
+class ChildProcessFailed(Exception):
+    name: str
+    process_id: str
+    original: BaseException     # __cause__ is also set to this
+```
+
+Raised by `ctx.run_child` when a child fails and `survive_failure=False`. For `parallel_group`, aggregate failure raises `ExceptionGroup("Parallel group failed", [ChildProcessFailed, ...])`; callers use `except* ChildProcessFailed`.
+
+For cancelled children inside a parallel-group `ExceptionGroup`, `.original` is a synthetic `RuntimeError("child cancelled")` so it is never `None`.
 
 ---
 
