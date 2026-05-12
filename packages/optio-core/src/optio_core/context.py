@@ -78,7 +78,14 @@ class ProcessContext:
         self._cancellation_flag = cancellation_flag
         self._child_counter = child_counter
 
-        # Progress throttling — adaptive.
+        # Progress throttling — adaptive, message-bearing calls only.
+        # Percent-only calls (message is None) bypass this machinery
+        # entirely; they coalesce into `_pending_pct` and never count
+        # toward `_recent_calls` or `_dropped_count`. They produce no
+        # log entries by definition, so the "(N messages dropped)"
+        # synthetic line is never emitted on their account.
+        #
+        # For message-bearing calls:
         # Quiet periods: each call enqueues a Progress in `_message_queue`
         # and gets its own DB write + log entry.
         # Avalanche periods (>AVALANCHE_THRESHOLD calls within
@@ -88,6 +95,7 @@ class ProcessContext:
         # eventually flushed, a synthetic "(N messages dropped)" line is
         # written first if `_dropped_count > 0`, then the surviving
         # message — keeping the surviving message as the last log line.
+        self._pending_pct: Progress | None = None
         self._pending_progress: Progress | None = None
         self._message_queue: deque[Progress] = deque()
         self._dropped_count: int = 0
@@ -112,16 +120,55 @@ class ProcessContext:
         self._executor: "Executor | None" = None
 
     def report_progress(self, percent: float | None, message: str | None = None) -> None:
-        """Update progress. percent=None for indeterminate.
+        """Update progress bar and/or append a log line.
 
-        Quiet periods: every call gets its own DB write + log entry.
-        Avalanche periods (>10 calls per 0.1s): only the latest message
-        survives; the count of replaced messages is reported alongside
-        the surviving one.
+        The two arguments are independent:
+
+          - ``percent`` (0..100, or ``None`` for indeterminate) updates the
+            progress bar shown in the UI. Percent-only calls (``message`` is
+            ``None``) DO NOT append a log line — the bar moves silently.
+          - ``message`` (when not ``None``) appends a log line with that
+            text. Pass both together to advance the bar and log a milestone
+            in one call.
+
+        Call patterns:
+
+          - ``report_progress(0.42)`` — bar to 42%, no log entry.
+          - ``report_progress(None, "Verifying ...")`` — log entry, bar
+            stays indeterminate.
+          - ``report_progress(1.0, "Done")`` — bar to 100% and log entry.
+
+        Rate limiting:
+
+          - Percent-only calls (``message is None``) are coalesced into a
+            single pending slot and flushed at the throttle interval.
+            They are exempt from the avalanche/drop-counter machinery
+            because they never produce log entries on their own.
+            High-frequency numeric updates (e.g. parsing per-chunk
+            progress from a subprocess) can therefore be fired
+            unthrottled by the caller — the DB write rate is bounded
+            here, and no "(N messages dropped)" line is ever generated
+            on their behalf.
+          - Message-bearing calls use adaptive coalescing. In quiet
+            periods each call gets its own DB write and log entry. In
+            avalanche periods (>10 message-bearing calls within any
+            0.1s window) intermediate calls are coalesced: the latest
+            survives and a synthetic ``"(N messages dropped)"`` log line
+            is emitted in front of it.
         """
+        # Percent-only path: coalesce silently, no rate counting, no
+        # drop summary. Always reaches the DB via the next flush.
+        if message is None:
+            self._pending_pct = Progress(percent=percent, message=None)
+            self._schedule_flush()
+            if self._parent_listener is not None:
+                self._parent_listener(percent, None)
+            return
+
         now = time.monotonic()
 
-        # Maintain a sliding window of call timestamps.
+        # Maintain a sliding window of call timestamps — only
+        # message-bearing calls participate in avalanche detection.
         self._recent_calls.append(now)
         while self._recent_calls and now - self._recent_calls[0] > AVALANCHE_WINDOW:
             self._recent_calls.popleft()
@@ -372,6 +419,11 @@ class ProcessContext:
             )
 
     async def _flush_progress(self) -> None:
+        # Phase 0: flush coalesced percent-only update (silent, no log).
+        if self._pending_pct is not None:
+            await self._write_progress(self._pending_pct)
+            self._pending_pct = None
+
         # Phase 1: drain any quiet-mode messages.
         while self._message_queue:
             await self._write_progress(self._message_queue.popleft())
@@ -397,6 +449,10 @@ class ProcessContext:
                 await self._flush_task
             except asyncio.CancelledError:
                 pass
+        # Flush coalesced percent-only update.
+        if self._pending_pct is not None:
+            await self._write_progress(self._pending_pct)
+            self._pending_pct = None
         # Drain any remaining quiet-mode queue.
         while self._message_queue:
             await self._write_progress(self._message_queue.popleft())
