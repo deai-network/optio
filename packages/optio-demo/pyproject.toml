@@ -12,6 +12,7 @@ dependencies = [
     "optio-core[redis]",
     "marimo>=0.9",
     "optio-opencode",
+    "watchfiles>=1.0",
 ]
 
 [tool.setuptools.packages.find]
