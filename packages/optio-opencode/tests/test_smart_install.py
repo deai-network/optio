@@ -17,6 +17,9 @@ class _FakeHost:
         self.calls.append(command)
         return self._results.pop(0)
 
+    async def resolve_host_home(self):
+        return "/home/test"
+
 
 async def test_smart_install_check_returns_ok_when_up_to_date():
     from optio_opencode.host_actions import _smart_install_check
@@ -258,7 +261,7 @@ async def test_ensure_opencode_installed_returns_existing_path_when_ok(monkeypat
     from optio_host.context import HookContext
     from optio_opencode import host_actions
 
-    async def stub_check(host):
+    async def stub_check(host, *, install_dir=None):
         return ("ok", None)
 
     async def fake_run(command, *, cwd=None, env=None):
@@ -274,6 +277,8 @@ async def test_ensure_opencode_installed_returns_existing_path_when_ok(monkeypat
         workdir = "/wd"
         async def run_command(self, command, *, cwd=None, env=None):
             return await fake_run(command, cwd=cwd, env=env)
+        async def resolve_host_home(self):
+            return "/home/test"
 
     host = StubHost()
     parent = _ExecutingFakeCtx()
@@ -287,7 +292,7 @@ async def test_ensure_opencode_installed_raises_when_install_disabled(monkeypatc
     from optio_host.context import HookContext
     from optio_opencode import host_actions
 
-    async def stub_check(host):
+    async def stub_check(host, *, install_dir=None):
         return ("download", "https://example/opencode.zip")
 
     monkeypatch.setattr(host_actions, "_smart_install_check", stub_check)
@@ -296,6 +301,8 @@ async def test_ensure_opencode_installed_raises_when_install_disabled(monkeypatc
         workdir = "/wd"
         async def run_command(self, command, *, cwd=None, env=None):
             raise AssertionError(f"unexpected run_command: {command!r}")
+        async def resolve_host_home(self):
+            return "/home/test"
 
     host = StubHost()
     parent = _ExecutingFakeCtx()
@@ -320,7 +327,7 @@ async def test_ensure_opencode_installed_installs_when_download_required(
     _make_fake_opencode_zip(served / "opencode-linux-x64.zip", binary)
     url = f"{base_url}/opencode-linux-x64.zip"
 
-    async def stub_check(host):
+    async def stub_check(host, *, install_dir=None):
         return ("download", url)
 
     monkeypatch.setattr(host_actions, "_smart_install_check", stub_check)
@@ -346,3 +353,122 @@ async def test_ensure_opencode_installed_installs_when_download_required(
             os.environ.pop("HOME", None)
         else:
             os.environ["HOME"] = saved_home
+
+
+# ---------------------------------------------------------------------------
+# install_dir override: smart-install sees it on PATH, install lands there.
+# ---------------------------------------------------------------------------
+
+
+async def test_smart_install_check_prepends_install_dir_to_path():
+    """``_smart_install_check`` must inject ``install_dir`` into PATH so
+    smart-install.sh's internal ``command -v opencode`` can see a binary
+    installed at that location even when the calling shell's PATH does
+    not already include it. Without this, smart-install reports
+    ``download`` and the task redownloads opencode on every run."""
+    from optio_opencode.host_actions import _smart_install_check
+
+    host = _FakeHost([RunResult(stdout="opencode ok\n", stderr="", exit_code=0)])
+    kind, url = await _smart_install_check(host, install_dir="/opt/custom/bin")
+    assert kind == "ok"
+    assert url is None
+    # The single observed run_command should carry the PATH export with
+    # the install_dir prepended, ahead of the curl|bash pipeline.
+    assert len(host.calls) == 1
+    cmd = host.calls[0]
+    assert "export PATH=/opt/custom/bin:" in cmd, cmd
+    assert "curl -fsSL" in cmd
+    assert cmd.index("export PATH=") < cmd.index("curl -fsSL"), (
+        "PATH export must come before curl"
+    )
+
+
+async def test_ensure_opencode_installed_respects_custom_install_dir(
+    monkeypatch, zip_server, tmp_path,
+):
+    """End-to-end: an explicit ``install_dir`` flows through to the
+    install target and to the post-ok ``command -v`` PATH augmentation."""
+    from optio_host.context import HookContext
+    from optio_host.host import LocalHost
+    from optio_opencode import host_actions
+
+    base_url, served = zip_server
+    binary = b"#!/bin/sh\necho fake\n"
+    _make_fake_opencode_zip(served / "opencode-linux-x64.zip", binary)
+    url = f"{base_url}/opencode-linux-x64.zip"
+
+    observed_install_dirs: list[str] = []
+
+    async def stub_check(host, *, install_dir=None):
+        observed_install_dirs.append(install_dir)
+        return ("download", url)
+
+    monkeypatch.setattr(host_actions, "_smart_install_check", stub_check)
+
+    custom_dir = tmp_path / "custom_opencode_bin"
+
+    taskdir = tmp_path / "taskdir"
+    taskdir.mkdir()
+    host = LocalHost(taskdir=str(taskdir))
+    await host.setup_workdir()
+    parent = _ExecutingFakeCtx()
+    hook_ctx = HookContext(parent, host)
+
+    path = await host_actions.ensure_opencode_installed(
+        hook_ctx, install_dir=str(custom_dir),
+    )
+
+    assert path == str(custom_dir / "opencode")
+    assert os.path.isfile(path)
+    with open(path, "rb") as fh:
+        assert fh.read() == binary
+    st = os.stat(path)
+    assert st.st_mode & 0o111, "install path is not executable"
+
+    assert observed_install_dirs == [str(custom_dir)]
+
+
+async def test_ensure_opencode_installed_default_install_dir_is_home_local_bin(
+    monkeypatch, tmp_path,
+):
+    """When ``install_dir`` is omitted, the default is
+    ``<host_home>/.local/bin``."""
+    from optio_host.context import HookContext
+    from optio_opencode import host_actions
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    expected_default = f"{fake_home}/.local/bin"
+
+    observed: list[str] = []
+
+    async def stub_check(host, *, install_dir=None):
+        observed.append(install_dir)
+        return ("ok", None)
+
+    monkeypatch.setattr(host_actions, "_smart_install_check", stub_check)
+
+    class StubHost:
+        workdir = "/wd"
+
+        async def resolve_host_home(self):
+            return str(fake_home)
+
+        async def run_command(self, command, *, cwd=None, env=None):
+            # Sole expected call: the post-ok ``bash -lc 'export
+            # PATH=...; command -v opencode'`` lookup. Return a path.
+            assert "command -v opencode" in command, command
+            assert str(fake_home) in command, (
+                "post-ok lookup must carry the default install_dir on PATH"
+            )
+            return RunResult(
+                stdout=f"{expected_default}/opencode\n", stderr="", exit_code=0,
+            )
+
+    host = StubHost()
+    parent = _ExecutingFakeCtx()
+    hook_ctx = HookContext(parent, host)
+
+    path = await host_actions.ensure_opencode_installed(hook_ctx)
+    assert path == f"{expected_default}/opencode"
+    assert observed == [expected_default]

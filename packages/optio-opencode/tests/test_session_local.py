@@ -119,7 +119,7 @@ def _supply_scenario(monkeypatch):
 
     # Also short-circuit ensure_opencode_installed and opencode_version
     # so we don't try to invoke a real `opencode` binary.
-    async def _ensure(hook_ctx, install_if_missing=True):
+    async def _ensure(hook_ctx, install_if_missing=True, *, install_dir=None):
         return "opencode"
     monkeypatch.setattr(host_actions, "ensure_opencode_installed", _ensure)
 

@@ -113,7 +113,7 @@ async def test_remote_happy_path(sshd, ctx, monkeypatch):
     # version check (which queries GitHub for the latest released tag). The test
     # is exercising the SSH/protocol wiring, not the install code path. Mirrors
     # the equivalent stub in test_session_local.
-    async def _ensure(hook_ctx, install_if_missing=True):
+    async def _ensure(hook_ctx, install_if_missing=True, *, install_dir=None):
         return "/usr/local/bin/opencode"
     monkeypatch.setattr(_host_actions, "ensure_opencode_installed", _ensure)
 

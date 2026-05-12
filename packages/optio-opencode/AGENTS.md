@@ -33,7 +33,8 @@ The returned `TaskInstance` has `ui_widget="iframe"` and `supports_resume=True` 
 - `consumer_instructions: str` — prepended with optio-opencode's base prompt.
 - `opencode_config: dict | None` — passthrough to `opencode.json` on the host.
 - `ssh: SSHConfig | None` — `None` = local subprocess.
-- `install_if_missing: bool` — default `True`; when `smart-install.sh --check` says opencode is missing or stale, download + install the release zip into `~/.local/bin/opencode`. When `False`, raise `RuntimeError` instead.
+- `install_if_missing: bool` — default `True`; when `smart-install.sh --check` says opencode is missing or stale, download + install the release zip into `<opencode_install_dir>/opencode`. When `False`, raise `RuntimeError` instead.
+- `opencode_install_dir: str | None` — default `None` → `~/.local/bin` on the host (resolved at task start). Absolute path of the directory that holds (or will hold) the opencode binary. The same directory is used for installation, for smart-install's PATH lookup, and for the post-"ok" `command -v` resolution, so an explicit override stays consistent across all three. Must be an absolute path when set.
 - `workdir_exclude: list[str] | None` — see `OpencodeTaskConfig.workdir_exclude` below.
 - `before_execute: Callable | None` — see **Hooks** below.
 - `after_execute: Callable | None` — see **Hooks** below.
@@ -172,8 +173,7 @@ platform. On `download`:
    shows up in the dashboard with byte-progress.
 3. Unzip on the host (`unzip -o -q`). Archive layout is
    `bin/opencode` plus a `package.json` sidecar.
-4. Move `bin/opencode` to `~/.local/bin/opencode` (mkdir -p first),
-   chmod +x.
+4. Move `bin/opencode` to `<opencode_install_dir>/opencode` (mkdir -p first), chmod +x. `opencode_install_dir` defaults to `~/.local/bin`; override it via `OpencodeTaskConfig.opencode_install_dir`.
 5. Remove the tempdir.
 
 The patched fork that supplies these binaries lives at

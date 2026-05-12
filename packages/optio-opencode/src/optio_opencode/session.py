@@ -102,7 +102,9 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
     await host.connect()
     await host.setup_workdir()
     opencode_exec = await host_actions.ensure_opencode_installed(
-        HookContext(ctx, host), install_if_missing=config.install_if_missing,
+        HookContext(ctx, host),
+        install_if_missing=config.install_if_missing,
+        install_dir=config.opencode_install_dir,
     )
 
     # Resume restore must run BEFORE the protocol session begins, so the

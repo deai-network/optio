@@ -8,7 +8,11 @@ Host Protocol stays generic.
 Install path is uniform: ``ensure_opencode_installed`` drives
 csillag/opencode's ``smart-install.sh --check`` and, when needed, downloads
 the release zip as an optio child task (`HookContext.download_file`),
-unpacks it on the host, and places the binary at ``~/.local/bin/opencode``.
+unpacks it on the host, and places the binary at
+``<install_dir>/opencode``. ``install_dir`` defaults to
+``~/.local/bin`` (resolved per host) and is overridable via the
+``install_dir`` keyword argument on the public entry points; consumers
+expose this as ``OpencodeTaskConfig.opencode_install_dir``.
 No isinstance branches.
 """
 
@@ -31,12 +35,42 @@ _READY_RE = re.compile(r"(http://[^\s]+)")
 _SMART_INSTALL_URL = (
     "https://raw.githubusercontent.com/csillag/opencode/main/smart-install.sh"
 )
-_SMART_INSTALL_CHECK_CMD = (
-    f"curl -fsSL {_SMART_INSTALL_URL} | bash -s -- --check"
-)
+
+# Sub-path of the host's $HOME used as the default opencode install
+# directory when no explicit ``install_dir`` is supplied. Kept as a
+# constant so the three places that care about it (smart-install PATH
+# augmentation, post-ok ``command -v`` lookup, ``_install_opencode_from_zip``
+# install target) stay in agreement.
+DEFAULT_INSTALL_SUBDIR = ".local/bin"
 
 
-async def _smart_install_check(host: "Host") -> tuple[str, str | None]:
+async def _resolve_install_dir(host: "Host", install_dir: str | None) -> str:
+    """Return ``install_dir`` if given, else the host's default install dir.
+
+    Default: ``<host_home>/<DEFAULT_INSTALL_SUBDIR>``.
+    """
+    if install_dir is not None:
+        return install_dir
+    host_home = await host.resolve_host_home()
+    return f"{host_home}/{DEFAULT_INSTALL_SUBDIR}"
+
+
+def _path_augmented(cmd: str, install_dir: str) -> str:
+    """Prefix ``cmd`` with an export that prepends ``install_dir`` to PATH.
+
+    Used so smart-install's internal ``command -v opencode`` and the
+    post-"ok" lookup find the binary at the install location even when
+    the calling shell's PATH doesn't already include it (common: the
+    python process inherits a slimmed-down PATH that doesn't add
+    ``~/.local/bin``, so smart-install would falsely report "download"
+    and we'd reinstall on every task run).
+    """
+    return f'export PATH={shlex.quote(install_dir)}:"$PATH"; {cmd}'
+
+
+async def _smart_install_check(
+    host: "Host", *, install_dir: str | None = None,
+) -> tuple[str, str | None]:
     """Run smart-install.sh --check on ``host`` and parse the result.
 
     Returns:
@@ -44,9 +78,19 @@ async def _smart_install_check(host: "Host") -> tuple[str, str | None]:
       ("download", url) when opencode is missing or stale; ``url`` is the
         release-archive zip to fetch.
 
+    ``install_dir`` is prepended to PATH inside the remote shell so
+    smart-install's internal ``command -v opencode`` can see binaries
+    installed by a prior ``_install_opencode_from_zip``. Defaults to
+    ``~/.local/bin`` on the host.
+
     Raises RuntimeError on non-zero exit or unparseable output.
     """
-    result = await host.run_command(_SMART_INSTALL_CHECK_CMD)
+    resolved_install_dir = await _resolve_install_dir(host, install_dir)
+    cmd = _path_augmented(
+        f"curl -fsSL {_SMART_INSTALL_URL} | bash -s -- --check",
+        resolved_install_dir,
+    )
+    result = await host.run_command(cmd)
     if result.exit_code != 0:
         raise RuntimeError(
             f"smart-install --check failed on host (exit {result.exit_code}): "
@@ -67,7 +111,9 @@ async def _smart_install_check(host: "Host") -> tuple[str, str | None]:
     )
 
 
-async def _install_opencode_from_zip(hook_ctx, url: str) -> str:
+async def _install_opencode_from_zip(
+    hook_ctx, url: str, *, install_dir: str | None = None,
+) -> str:
     """Download the opencode release archive from ``url`` and install it.
 
     Uniform for LocalHost and RemoteHost:
@@ -75,12 +121,15 @@ async def _install_opencode_from_zip(hook_ctx, url: str) -> str:
       2. ``hook_ctx.download_file(url, <tmpdir>/opencode.zip)`` (spawns the
          child download task — emits its own progress on the child ctx).
       3. unzip on the host (archive layout: ``bin/opencode`` + sidecars).
-      4. mkdir -p ``~/.local/bin``; move binary there; chmod +x.
+      4. mkdir -p ``install_dir``; move binary there; chmod +x.
       5. Remove the tempdir.
+
+    ``install_dir`` defaults to ``~/.local/bin`` on the host when None.
 
     Returns the absolute install path on the host.
     """
     host = hook_ctx._host
+    resolved_install_dir = await _resolve_install_dir(host, install_dir)
     r = await host.run_command("mktemp -d -t optio-opencode-XXXXXX")
     if r.exit_code != 0:
         raise RuntimeError(
@@ -99,13 +148,11 @@ async def _install_opencode_from_zip(hook_ctx, url: str) -> str:
                 f"unzip failed (exit {r.exit_code}): {r.stderr.strip()[:200]}"
             )
 
-        host_home = await host.resolve_host_home()
-        install_dir = f"{host_home}/.local/bin"
-        install_path = f"{install_dir}/opencode"
-        r = await host.run_command(f"mkdir -p {shlex.quote(install_dir)}")
+        install_path = f"{resolved_install_dir}/opencode"
+        r = await host.run_command(f"mkdir -p {shlex.quote(resolved_install_dir)}")
         if r.exit_code != 0:
             raise RuntimeError(
-                f"mkdir -p {install_dir!r} failed (exit {r.exit_code}): "
+                f"mkdir -p {resolved_install_dir!r} failed (exit {r.exit_code}): "
                 f"{r.stderr.strip()[:200]}"
             )
         src = f"{tmpdir}/bin/opencode"
@@ -130,7 +177,10 @@ async def _install_opencode_from_zip(hook_ctx, url: str) -> str:
 
 
 async def ensure_opencode_installed(
-    hook_ctx, install_if_missing: bool = True,
+    hook_ctx,
+    install_if_missing: bool = True,
+    *,
+    install_dir: str | None = None,
 ) -> str:
     """Ensure opencode is available on the host behind ``hook_ctx``.
 
@@ -139,7 +189,15 @@ async def ensure_opencode_installed(
     latest opencode, returns the absolute path that ``command -v opencode``
     resolves to. Otherwise — when ``install_if_missing`` is True — downloads
     the release zip (as an optio child task, so progress shows up in the
-    UI), unpacks it, and installs the binary at ``~/.local/bin/opencode``.
+    UI), unpacks it, and installs the binary at
+    ``<install_dir>/opencode``.
+
+    ``install_dir`` is the absolute path of the directory that holds (or
+    will hold) the ``opencode`` binary on the host. When None (default),
+    resolves to ``<host_home>/.local/bin``. Pass an explicit absolute path
+    to opt out of the default — the same dir is used for installation, for
+    smart-install's PATH lookup, and for the post-"ok" ``command -v``
+    resolution, so all three stay in agreement.
 
     Returns the absolute path of the opencode binary on the host.
 
@@ -147,14 +205,22 @@ async def ensure_opencode_installed(
     needed but ``install_if_missing`` is False, or when any sub-step fails.
     """
     host = hook_ctx._host
+    resolved_install_dir = await _resolve_install_dir(host, install_dir)
     # Mark the parent task indeterminate-active before any host I/O so the
     # dashboard shows it working rather than stuck at 0% while the install
     # check (and any subsequent download child task) runs.
     hook_ctx.report_progress(None, "Checking opencode installation…")
-    kind, url = await _smart_install_check(host)
+    kind, url = await _smart_install_check(host, install_dir=resolved_install_dir)
     if kind == "ok":
-        # Resolve the on-PATH path (login-shell PATH so ~/.local/bin counts).
-        r = await host.run_command("bash -lc 'command -v opencode'")
+        # Resolve the on-PATH path. Login shell so ``$HOME``-relative
+        # additions from ``~/.profile`` apply (e.g. a manual install at
+        # some other location the user has added to PATH), and *also*
+        # prepend ``resolved_install_dir`` so our install location wins
+        # even when the login profile doesn't add it.
+        lookup_inner = _path_augmented(
+            "command -v opencode", resolved_install_dir,
+        )
+        r = await host.run_command(f"bash -lc {shlex.quote(lookup_inner)}")
         if r.exit_code != 0:
             raise RuntimeError(
                 "smart-install reported 'opencode ok' but command -v opencode "
@@ -170,7 +236,9 @@ async def ensure_opencode_installed(
         )
     assert url is not None  # _smart_install_check guarantees
     hook_ctx.report_progress(None, "Installing opencode…")
-    return await _install_opencode_from_zip(hook_ctx, url)
+    return await _install_opencode_from_zip(
+        hook_ctx, url, install_dir=resolved_install_dir,
+    )
 
 
 async def opencode_version(

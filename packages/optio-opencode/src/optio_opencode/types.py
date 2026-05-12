@@ -25,6 +25,13 @@ class OpencodeTaskConfig:
     ssh: SSHConfig | None = None
     on_deliverable: DeliverableCallback | None = None
     install_if_missing: bool = True
+    # Absolute path on the host where the opencode binary is/should be
+    # installed. ``None`` (default) → ``~/.local/bin`` (user home resolved
+    # at task start). The same directory is used for installation, for
+    # smart-install's PATH lookup, and for the post-"ok" ``command -v``
+    # resolution, so an explicit override stays consistent across all
+    # three. Must be an absolute path when set.
+    opencode_install_dir: str | None = None
     workdir_exclude: list[str] | None = None
     supports_resume: bool = True
     before_execute: HookCallback | None = None
