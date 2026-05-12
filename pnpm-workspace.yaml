@@ -1,3 +1,12 @@
 packages:
   - 'packages/*'
   - 'packages/optio-demo/interop'
+# pnpm 11 requires explicit opt-in for transitive postinstall scripts.
+# Allowed:
+#   esbuild — fetches per-platform native bundler binary
+#   mongodb-memory-server — downloads mongod for in-memory test cluster
+#   sharp — selects/extracts libvips prebuilt binding
+allowBuilds:
+  esbuild: true
+  mongodb-memory-server: true
+  sharp: true
