@@ -128,7 +128,7 @@ async def test_child_failure_survived(mongo_db):
             failing_child, "bad_child2", "Bad Child",
             survive_failure=True,
         )
-        assert result == "failed"
+        assert result.state == "failed"
         ctx.report_progress(100, "Parent survived")
 
     task = TaskInstance(execute=parent_task, process_id="survive", name="Survivor")

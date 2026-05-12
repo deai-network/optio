@@ -10,6 +10,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from optio_core.models import (
     TaskInstance, ProcessStatus, Progress, ProcessMetadataFilter, matches_filter,
+    ChildOutcome,
 )
 from optio_core.state_machine import LAUNCHABLE_STATES
 from optio_core.store import (
@@ -238,7 +239,7 @@ class Executor:
         survive_failure: bool = False,
         survive_cancel: bool = False,
         description: str | None = None,
-    ) -> str:
+    ) -> ChildOutcome:
         """Execute a child process (called from ProcessContext.run_child)."""
         if self._optio is not None:
             self._optio._check_launch_blocks(parent_ctx.metadata)
@@ -259,7 +260,7 @@ class Executor:
         )
         await append_log(self._db, self._prefix, parent_ctx._process_oid, "event", f"Spawned child: {name}")
 
-        end_state, _ = await self._execute_process(child_doc, execute, parent_ctx=parent_ctx)
+        end_state, exc = await self._execute_process(child_doc, execute, parent_ctx=parent_ctx)
 
         if parent_ctx._on_child_progress is not None:
             parent_ctx._notify_child_state_change(process_id, end_state)
@@ -281,7 +282,10 @@ class Executor:
         if end_state == "cancelled" and not survive_cancel:
             parent_ctx._cancellation_flag.set()
 
-        return end_state
+        return ChildOutcome(
+            state=end_state,
+            original_exception=exc if end_state == "failed" else None,
+        )
 
     def request_cancel_with_deadline(
         self, process_oid: ObjectId, deadline: float
