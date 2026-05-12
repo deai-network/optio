@@ -152,3 +152,36 @@ async def test_child_process_failed_cause_chain_is_original(mongo_db):
     e = caught_cpf["e"]
     assert e.__cause__ is e.original
     assert isinstance(e.__cause__, _SampleErr)
+
+
+async def test_run_child_survive_failure_returns_outcome_with_original(mongo_db):
+    """survive_failure=True suppresses the raise; caller gets ChildOutcome
+    with state='failed' and original_exception populated."""
+    outcomes = {}
+
+    async def failing_child(ctx):
+        raise _SampleErr("u", 11)
+
+    async def parent_task(ctx):
+        outcome = await ctx.run_child(
+            failing_child, process_id="sf1", name="SF1",
+            survive_failure=True,
+        )
+        outcomes["o"] = outcome
+
+    parent_inst = TaskInstance(
+        execute=parent_task, process_id="parent-sf", name="Parent SF",
+    )
+    child_inst = TaskInstance(
+        execute=failing_child, process_id="sf1", name="SF1",
+    )
+    await upsert_process(mongo_db, "test_sf", parent_inst)
+    executor = Executor(mongo_db, "test_sf", {})
+    executor.register_tasks([parent_inst, child_inst])
+    result = await executor.launch_process("parent-sf")
+
+    assert result == "done"
+    o = outcomes["o"]
+    assert o.state == "failed"
+    assert isinstance(o.original_exception, _SampleErr)
+    assert o.original_exception.exit_code == 11
