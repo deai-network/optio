@@ -2,10 +2,18 @@
 
 import asyncio
 import logging
+import os as _os
 import re as _re
 import signal
 import time
 import uuid
+
+# Cancel-trace instrumentation. Off by default. Enable with
+# `OPTIO_CANCEL_TRACE=1` to see every state-write inside lifecycle.cancel
+# (and the matching executor terminal-state writes). Used to diagnose
+# cancel-propagation races; safe to leave compiled in because each log
+# call is guarded by the module-level flag below.
+_CANCEL_TRACE = _os.environ.get("OPTIO_CANCEL_TRACE", "0").lower() in ("1", "true", "yes")
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, AsyncExitStack
 from datetime import datetime, timezone
@@ -37,6 +45,12 @@ from clamator_over_redis import RedisRpcServer
 from optio_core.scheduler import ProcessScheduler
 
 logger = logging.getLogger("optio_core_core")
+
+
+def _trace(fmt: str, *args: object) -> None:
+    """Cancel-trace log helper, gated on OPTIO_CANCEL_TRACE env var."""
+    if _CANCEL_TRACE:
+        logger.warning(fmt, *args)
 
 
 _OBJECTID_RE = _re.compile(r"^[a-fA-F0-9]{24}$")
@@ -398,16 +412,16 @@ class Optio:
         """
         proc = await self._resolve(process_id)
         if proc is None:
-            logger.warning("CANCEL-TRACE %s: not-found", process_id)
+            _trace("CANCEL-TRACE %s: not-found", process_id)
             return CancelOutcome(ok=False, reason="not-found")
         _state_now = proc["status"]["state"]
         _inh = "inherit" if inherit_deadline is not None else "fresh"
-        logger.warning(
+        _trace(
             "CANCEL-TRACE %s: enter state=%s cancellable=%s (%s deadline)",
             process_id, _state_now, proc.get("cancellable", True), _inh,
         )
         if not proc.get("cancellable", True) or _state_now not in CANCELLABLE_STATES:
-            logger.warning(
+            _trace(
                 "CANCEL-TRACE %s: early-return not-cancellable (state=%s cancellable=%s)",
                 process_id, _state_now, proc.get("cancellable", True),
             )
@@ -436,7 +450,7 @@ class Optio:
                 {"_id": proc["_id"], "status.state": "scheduled"},
                 {"$set": set_doc},
             )
-            logger.warning(
+            _trace(
                 "CANCEL-TRACE %s: scheduled→cancelled match=%d",
                 process_id, result.modified_count,
             )
@@ -447,7 +461,7 @@ class Optio:
                 {"_id": proc["_id"], "status.state": {"$in": list(CANCELLABLE_STATES)}},
                 {"$set": {"status": ProcessStatus(state="cancel_requested").to_dict()}},
             )
-            logger.warning(
+            _trace(
                 "CANCEL-TRACE %s: →cancel_requested match=%d (was %s)",
                 process_id, result.modified_count, current_state,
             )
@@ -456,7 +470,7 @@ class Optio:
             found = self._executor.request_cancel_with_deadline(
                 proc["_id"], deadline=effective_deadline,
             )
-            logger.warning(
+            _trace(
                 "CANCEL-TRACE %s: request_cancel_with_deadline found=%s",
                 process_id, found,
             )
@@ -471,7 +485,7 @@ class Optio:
                     {"_id": proc["_id"], "status.state": "cancel_requested"},
                     {"$set": {"status": ProcessStatus(state="cancelling").to_dict()}},
                 )
-                logger.warning(
+                _trace(
                     "CANCEL-TRACE %s: →cancelling match=%d",
                     process_id, result.modified_count,
                 )
@@ -488,7 +502,7 @@ class Optio:
                 proc["_id"], states=ACTIVE_STATES,
             )
             if children:
-                logger.warning(
+                _trace(
                     "CANCEL-TRACE %s: propagating to children=%s",
                     process_id, [c["processId"] for c in children],
                 )
@@ -499,7 +513,7 @@ class Optio:
                     ),
                     return_exceptions=True,
                 )
-        logger.warning("CANCEL-TRACE %s: exit ok=True", process_id)
+        _trace("CANCEL-TRACE %s: exit ok=True", process_id)
         return CancelOutcome(ok=True)
 
     async def cancel_and_wait(self, process_id: str) -> str | None:

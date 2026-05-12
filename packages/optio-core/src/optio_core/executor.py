@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os as _os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -10,6 +11,13 @@ from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 _trace_logger = logging.getLogger("optio_core.cancel_trace")
+_CANCEL_TRACE = _os.environ.get("OPTIO_CANCEL_TRACE", "0").lower() in ("1", "true", "yes")
+
+
+def _trace(fmt: str, *args: object) -> None:
+    """Cancel-trace log helper, gated on OPTIO_CANCEL_TRACE env var."""
+    if _CANCEL_TRACE:
+        _trace_logger.warning(fmt, *args)
 
 from optio_core.models import (
     TaskInstance, ProcessStatus, Progress, ProcessMetadataFilter, matches_filter,
@@ -205,7 +213,7 @@ class Executor:
             elapsed = time.monotonic() - start_time
 
             if end_state == "done":
-                _trace_logger.warning(
+                _trace(
                     "CANCEL-TRACE %s: executor write done", proc["processId"],
                 )
                 await update_status(
@@ -219,7 +227,7 @@ class Executor:
                 )
                 await append_log(self._db, self._prefix, oid, "event", "State changed to done")
             elif end_state == "cancelled":
-                _trace_logger.warning(
+                _trace(
                     "CANCEL-TRACE %s: executor write cancelled (after execute_fn returned)",
                     proc["processId"],
                 )
@@ -284,7 +292,7 @@ class Executor:
             or (end_state == "failed" and not survive_failure)
         )
         if abnormal and self._notify_parent_abnormal is not None:
-            _trace_logger.warning(
+            _trace(
                 "CANCEL-TRACE %s: abnormal child %s (%s) → scheduling notify_parent_abnormal(parent=%s)",
                 process_id, name, end_state, parent_ctx.process_id,
             )
