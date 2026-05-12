@@ -13,8 +13,8 @@ build:  ## Install dependencies and build all packages
 	pnpm --dir $(ROOT) --filter optio-ui build
 	pnpm --dir $(ROOT) --filter optio-dashboard build
 
-run-api:  ## Start the dashboard API server
-	pnpm --dir $(ROOT) --filter optio-dashboard start
+run-api:  ## Start the dashboard API server (OPTIO_PASSWORD defaults to optio-dev if unset)
+	OPTIO_PASSWORD="$${OPTIO_PASSWORD:-optio-dev}" pnpm --dir $(ROOT) --filter optio-dashboard start
 
 dev:  ## Start Vite dev server (proxies /api to localhost:3000; requires `make run-api`)
 	pnpm --dir $(ROOT) --filter optio-dashboard dev
