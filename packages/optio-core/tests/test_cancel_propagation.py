@@ -356,9 +356,9 @@ async def test_alpha_child_cancel_triggers_parent_cancel_of_siblings(mongo_db):
     assert b_proc["status"]["state"] == "cancelled"
     assert c_proc["status"]["state"] == "cancelled"
     # Parent ends 'failed' because parallel_group(survive_cancel=False)
-    # raises RuntimeError when any child cancels; the exception
-    # overwrites the prior cancel_requested state. Either terminal is
-    # acceptable.
+    # raises ExceptionGroup[ChildProcessFailed] when any child cancels;
+    # the exception overwrites the prior cancel_requested state. Either
+    # terminal is acceptable.
     assert a_proc["status"]["state"] in {"failed", "cancelled"}
 
     await optio.shutdown(grace_seconds=0.5)
