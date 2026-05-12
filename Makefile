@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install install-demo run-demo run-demo-dashboard build codegen test test-interop lint lint-no-direct-writes clean clean-codegen clean-deep
+.PHONY: help install install-demo run-demo run-demo-dashboard build build-dashboard run-dashboard-api run-dashboard-dev codegen test test-interop lint lint-no-direct-writes clean clean-codegen clean-deep
 
 PY_PACKAGES := optio-core optio-host optio-opencode
 
@@ -79,3 +79,12 @@ run-demo:  ## Run the optio-demo Python entrypoint
 
 run-demo-dashboard:  ## Run the dashboard against the demo Mongo + Redis
 	$(MAKE) -C packages/optio-demo run-dashboard
+
+build-dashboard:  ## Build optio-dashboard (and its package deps)
+	$(MAKE) -C packages/optio-dashboard build
+
+run-dashboard-api:  ## Start the dashboard API server
+	$(MAKE) -C packages/optio-dashboard run-api
+
+run-dashboard-dev:  ## Start the dashboard Vite dev server (requires run-dashboard-api)
+	$(MAKE) -C packages/optio-dashboard dev
