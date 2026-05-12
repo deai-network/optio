@@ -121,3 +121,34 @@ async def test_run_child_raises_child_process_failed_with_original(mongo_db):
     assert isinstance(caught["original"], _SampleErr)
     assert caught["original"].url == "http://example.com/bin"
     assert caught["original"].exit_code == 42
+
+
+async def test_child_process_failed_cause_chain_is_original(mongo_db):
+    """ChildProcessFailed.__cause__ is the original exception instance."""
+    caught_cpf = {}
+
+    async def failing_child(ctx):
+        raise _SampleErr("u", 7)
+
+    async def parent_task(ctx):
+        try:
+            await ctx.run_child(
+                failing_child, process_id="cc1", name="CC1",
+            )
+        except ChildProcessFailed as e:
+            caught_cpf["e"] = e
+
+    parent_inst = TaskInstance(
+        execute=parent_task, process_id="parent-cc", name="Parent CC",
+    )
+    child_inst = TaskInstance(
+        execute=failing_child, process_id="cc1", name="CC1",
+    )
+    await upsert_process(mongo_db, "test_cc", parent_inst)
+    executor = Executor(mongo_db, "test_cc", {})
+    executor.register_tasks([parent_inst, child_inst])
+    await executor.launch_process("parent-cc")
+
+    e = caught_cpf["e"]
+    assert e.__cause__ is e.original
+    assert isinstance(e.__cause__, _SampleErr)
