@@ -86,6 +86,7 @@ def create_download_task(
         cmd = _build_curl_cmd(url=url, target=target)
         total = {"value": 0}
         received = {"value": 0}
+        last_pct = {"value": -1}
         stderr_tail: deque = deque()
         cancelled = False
 
@@ -94,9 +95,19 @@ def create_download_task(
 
         def _on_recv(n: int) -> None:
             received["value"] += n
-            if total["value"] > 0:
-                pct = min(100.0, received["value"] * 100.0 / total["value"])
-                ctx.report_progress(pct, None)
+            if total["value"] <= 0:
+                return
+            pct = min(100.0, received["value"] * 100.0 / total["value"])
+            # Throttle to integer-percent changes. curl emits a "Recv data"
+            # trace line per network read — many per second on a fast link.
+            # ProcessContext.report_progress coalesces rapid calls and emits
+            # a synthetic "(N messages dropped)" log line; bounding ourselves
+            # to ~101 calls per download keeps us out of that path.
+            int_pct = int(pct)
+            if int_pct == last_pct["value"]:
+                return
+            last_pct["value"] = int_pct
+            ctx.report_progress(pct, None)
 
         if host is None:
             # _build_curl_cmd already prefixes "exec " so the wrapping sh
