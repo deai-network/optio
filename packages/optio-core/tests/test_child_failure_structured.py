@@ -185,3 +185,52 @@ async def test_run_child_survive_failure_returns_outcome_with_original(mongo_db)
     assert o.state == "failed"
     assert isinstance(o.original_exception, _SampleErr)
     assert o.original_exception.exit_code == 11
+
+
+async def test_run_child_done_outcome_is_none(mongo_db):
+    """Successful child yields ChildOutcome('done', None)."""
+    outcomes = {}
+
+    async def ok_child(ctx):
+        ctx.report_progress(100)
+
+    async def parent_task(ctx):
+        outcome = await ctx.run_child(ok_child, process_id="ok1", name="OK1")
+        outcomes["o"] = outcome
+
+    parent_inst = TaskInstance(execute=parent_task, process_id="parent-ok", name="Parent OK")
+    child_inst = TaskInstance(execute=ok_child, process_id="ok1", name="OK1")
+    await upsert_process(mongo_db, "test_ok", parent_inst)
+    executor = Executor(mongo_db, "test_ok", {})
+    executor.register_tasks([parent_inst, child_inst])
+    await executor.launch_process("parent-ok")
+
+    o = outcomes["o"]
+    assert o.state == "done"
+    assert o.original_exception is None
+
+
+async def test_run_child_refused_outcome_is_cancelled_no_exception(mongo_db):
+    """Parent's cancel flag is set with auto_cancel_children -> run_child
+    returns ChildOutcome('cancelled', None) without spawning."""
+    outcomes = {}
+
+    async def short_child(ctx):
+        ctx.report_progress(100)
+
+    async def parent_task(ctx):
+        ctx._cancellation_flag.set()
+        outcome = await ctx.run_child(short_child, process_id="ref1", name="REF1")
+        outcomes["o"] = outcome
+        ctx._cancellation_flag.clear()
+
+    parent_inst = TaskInstance(execute=parent_task, process_id="parent-ref", name="Parent REF")
+    child_inst = TaskInstance(execute=short_child, process_id="ref1", name="REF1")
+    await upsert_process(mongo_db, "test_ref", parent_inst)
+    executor = Executor(mongo_db, "test_ref", {})
+    executor.register_tasks([parent_inst, child_inst])
+    await executor.launch_process("parent-ref")
+
+    o = outcomes["o"]
+    assert o.state == "cancelled"
+    assert o.original_exception is None
