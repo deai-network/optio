@@ -111,10 +111,7 @@ def _patch_host_actions(monkeypatch, host):
     """
     from optio_opencode import host_actions
 
-    async def _ensure(_host, _install_if_missing):
-        host.timeline.append("install_binary")
-
-    async def _install(_host, _local_path, progress=None):
+    async def _ensure(_hook_ctx, install_if_missing=True):
         host.timeline.append("install_binary")
         return "opencode"
 
@@ -126,7 +123,6 @@ def _patch_host_actions(monkeypatch, host):
         raise RuntimeError("test never gets past launch")
 
     monkeypatch.setattr(host_actions, "ensure_opencode_installed", _ensure)
-    monkeypatch.setattr(host_actions, "install_opencode_binary", _install)
     monkeypatch.setattr(host_actions, "opencode_version", _version)
     monkeypatch.setattr(host_actions, "launch_opencode", _launch)
 

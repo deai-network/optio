@@ -1,16 +1,15 @@
 """Opencode-specific actions over a generic Host.
 
-Each function takes ``Host`` (from optio_host) as the first argument and
-uses only generic primitives (``run_command``, ``put_file_to_host``,
-``write_text``, ``launch_subprocess``, etc.) plus opencode-shaped
-state-passing.
+Each function takes a ``Host`` (from optio_host) and uses only generic
+primitives (``run_command``, ``launch_subprocess``, etc.) plus opencode-
+shaped state-passing. Free functions, not Host methods, so optio-host's
+Host Protocol stays generic.
 
-Per the optio-host split spec, opencode actions become free functions
-rather than Host methods so optio-host's Host interface stays generic.
-The asymmetric ones (``ensure_opencode_installed``,
-``install_opencode_binary``) carry an internal ``isinstance(host, LocalHost)``
-branch — local never installs; remote may. All others are uniform via
-host primitives.
+Install path is uniform: ``ensure_opencode_installed`` drives
+csillag/opencode's ``smart-install.sh --check`` and, when needed, downloads
+the release zip as an optio child task (`HookContext.download_file`),
+unpacks it on the host, and places the binary at ``~/.local/bin/opencode``.
+No isinstance branches.
 """
 
 from __future__ import annotations
@@ -21,13 +20,7 @@ import re
 import shlex
 from typing import TYPE_CHECKING, Callable
 
-from optio_host.host import LocalHost, ProcessHandle
-from optio_opencode.install import (
-    OpencodeTarget,
-    make_target,
-    normalize_arch,
-    normalize_os,
-)
+from optio_host.host import ProcessHandle
 
 if TYPE_CHECKING:
     from optio_host.host import Host
@@ -136,148 +129,43 @@ async def _install_opencode_from_zip(hook_ctx, url: str) -> str:
         await host.run_command(f"rm -rf {shlex.quote(tmpdir)}")
 
 
-async def detect_target(host: "Host") -> OpencodeTarget:
-    """Detect the opencode build target (os/arch/musl/baseline) for ``host``.
-
-    Uniform local + remote implementation via ``host.run_command`` —
-    shells out to ``uname -s``, ``uname -m``, /etc/alpine-release test,
-    ``ldd --version``, /proc/cpuinfo, and macOS ``sysctl`` probes. Mirrors
-    opencode's upstream installer logic so the resulting triple maps
-    directly to a build-output subdirectory name.
-    """
-    uname_s = (await host.run_command("uname -s")).stdout
-    uname_m = (await host.run_command("uname -m")).stdout
-    os_ = normalize_os(uname_s)
-    arch = normalize_arch(uname_m)
-
-    musl = False
-    rosetta = False
-    baseline = False
-
-    if os_ == "linux":
-        alpine = await host.run_command("test -f /etc/alpine-release")
-        if alpine.exit_code == 0:
-            musl = True
-        else:
-            ldd = await host.run_command("ldd --version 2>&1 || true")
-            if "musl" in ldd.stdout.lower():
-                musl = True
-        if arch == "x64":
-            cpuinfo = await host.run_command(
-                "cat /proc/cpuinfo 2>/dev/null || true",
-            )
-            haystack = " " + cpuinfo.stdout.lower() + " "
-            if cpuinfo.exit_code != 0 or " avx2 " not in haystack:
-                baseline = True
-    elif os_ == "darwin":
-        if arch == "x64":
-            ros = await host.run_command(
-                "sysctl -n sysctl.proc_translated 2>/dev/null || echo 0",
-            )
-            rosetta = ros.stdout.strip() == "1"
-            avx2 = await host.run_command(
-                "sysctl -n hw.optional.avx2_0 2>/dev/null || echo 0",
-            )
-            baseline = avx2.stdout.strip() != "1"
-
-    return make_target(os_, arch, rosetta=rosetta, musl=musl, baseline=baseline)
-
-
 async def ensure_opencode_installed(
-    host: "Host", install_if_missing: bool,
-) -> None:
-    """Ensure opencode is available on ``host``.
+    hook_ctx, install_if_missing: bool = True,
+) -> str:
+    """Ensure opencode is available on the host behind ``hook_ctx``.
 
-    Local: ``command -v opencode`` via the host. Raises RuntimeError if
-    missing — local never installs.
+    Uniform local + remote: runs the upstream smart-install.sh in
+    ``--check`` mode via ``host.run_command``. If the host already has the
+    latest opencode, returns the absolute path that ``command -v opencode``
+    resolves to. Otherwise — when ``install_if_missing`` is True — downloads
+    the release zip (as an optio child task, so progress shows up in the
+    UI), unpacks it, and installs the binary at ``~/.local/bin/opencode``.
 
-    Remote: ``command -v opencode`` (login-shell PATH so ``~/.local/bin``
-    is visible). If missing and ``install_if_missing`` is True, runs the
-    upstream curl installer; otherwise raises RuntimeError.
+    Returns the absolute path of the opencode binary on the host.
+
+    Raises RuntimeError when the check is unparseable, when an install is
+    needed but ``install_if_missing`` is False, or when any sub-step fails.
     """
-    if isinstance(host, LocalHost):
-        # Local mode: always expects pre-install.
-        result = await host.run_command("command -v opencode")
-        if result.exit_code != 0:
+    host = hook_ctx._host
+    kind, url = await _smart_install_check(host)
+    if kind == "ok":
+        # Resolve the on-PATH path (login-shell PATH so ~/.local/bin counts).
+        r = await host.run_command("bash -lc 'command -v opencode'")
+        if r.exit_code != 0:
             raise RuntimeError(
-                "opencode is not available on this local host.  "
-                "Install it first (e.g. `curl -fsSL opencode.ai/install | bash`); "
-                "optio-opencode does not install opencode in local mode."
+                "smart-install reported 'opencode ok' but command -v opencode "
+                f"failed on the host (exit {r.exit_code}): "
+                f"{r.stderr.strip()[:200]}"
             )
-        return
-
-    # Remote: use bash -lc so that $HOME/.local/bin (where the opencode
-    # install script puts the binary) is on PATH.
-    check = await host.run_command("bash -lc 'command -v opencode'")
-    if check.exit_code == 0:
-        return
+        return r.stdout.strip()
+    # kind == "download"
     if not install_if_missing:
         raise RuntimeError(
-            "opencode is not installed on the remote host and "
+            "opencode is missing or stale on the host and "
             "install_if_missing=False was requested."
         )
-    install = await host.run_command(
-        "curl -fsSL https://opencode.ai/install | bash",
-    )
-    if install.exit_code != 0:
-        raise RuntimeError(
-            f"opencode install on the remote host failed "
-            f"(exit {install.exit_code}): {install.stderr}"
-        )
-
-
-async def install_opencode_binary(
-    host: "Host",
-    local_binary_path: str,
-    progress: "Callable[[int, int], None] | None" = None,
-) -> str:
-    """Install ``local_binary_path`` onto ``host``; return its absolute path there.
-
-    Local: validates the file exists, returns the path verbatim — no copy.
-
-    Remote: SFTP-uploads to ``<remote_home>/.local/bin/opencode`` (atomic
-    rename + skip-if-unchanged), chmods +x, returns that absolute path.
-    Idempotent across runs.
-
-    If ``progress`` is given and a real upload happens, it is invoked
-    periodically with ``(bytes_transferred, total_bytes)``.
-    """
-    if not os.path.isfile(local_binary_path):
-        raise RuntimeError(
-            f"opencode binary not found at {local_binary_path!r}"
-        )
-
-    if isinstance(host, LocalHost):
-        # Local installs are effectively instant; no progress callback.
-        return local_binary_path
-
-    # Remote: copy under ~/.local/bin, chmod +x, return absolute path.
-    home = await host.resolve_host_home()
-    install_path = f"{home}/.local/bin/opencode"
-
-    # Adapt the public progress(transferred, total) signature to the
-    # progress_cb(pct_or_None, msg_or_None) interface used internally.
-    progress_cb = None
-    if progress is not None:
-        _file_size = os.path.getsize(local_binary_path)
-
-        def progress_cb(pct, _msg):
-            if pct is not None and _file_size > 0:
-                progress(int(pct * _file_size / 100), _file_size)
-
-    await host.put_file_to_host(
-        local_binary_path,
-        install_path,
-        skip_if_unchanged=True,
-        progress_cb=progress_cb,
-    )
-    result = await host.run_command(f"chmod +x {shlex.quote(install_path)}")
-    if result.exit_code != 0:
-        raise RuntimeError(
-            f"chmod +x {install_path} failed: exit {result.exit_code}: "
-            f"{result.stderr!r}"
-        )
-    return install_path
+    assert url is not None  # _smart_install_check guarantees
+    return await _install_opencode_from_zip(hook_ctx, url)
 
 
 async def opencode_version(

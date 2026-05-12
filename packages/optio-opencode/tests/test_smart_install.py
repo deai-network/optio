@@ -246,3 +246,103 @@ async def test_install_opencode_from_zip_cleans_up_tempdir(zip_server, tmp_path)
             os.environ.pop("HOME", None)
         else:
             os.environ["HOME"] = saved_home
+
+
+# ---------------------------------------------------------------------------
+# ensure_opencode_installed (top-level) tests.
+# ---------------------------------------------------------------------------
+
+
+async def test_ensure_opencode_installed_returns_existing_path_when_ok(monkeypatch):
+    """When smart-install says 'ok', resolve the on-PATH path and return it."""
+    from optio_host.context import HookContext
+    from optio_opencode import host_actions
+
+    async def stub_check(host):
+        return ("ok", None)
+
+    async def fake_run(command, *, cwd=None, env=None):
+        # Capture both calls — the smart-install stub bypasses run_command for
+        # the check itself, so the only call we expect is 'command -v opencode'.
+        if "command -v opencode" in command:
+            return RunResult(stdout="/usr/local/bin/opencode\n", stderr="", exit_code=0)
+        raise AssertionError(f"unexpected run_command: {command!r}")
+
+    monkeypatch.setattr(host_actions, "_smart_install_check", stub_check)
+
+    class StubHost:
+        workdir = "/wd"
+        async def run_command(self, command, *, cwd=None, env=None):
+            return await fake_run(command, cwd=cwd, env=env)
+
+    host = StubHost()
+    parent = _ExecutingFakeCtx()
+    hook_ctx = HookContext(parent, host)
+
+    path = await host_actions.ensure_opencode_installed(hook_ctx)
+    assert path == "/usr/local/bin/opencode"
+
+
+async def test_ensure_opencode_installed_raises_when_install_disabled(monkeypatch):
+    from optio_host.context import HookContext
+    from optio_opencode import host_actions
+
+    async def stub_check(host):
+        return ("download", "https://example/opencode.zip")
+
+    monkeypatch.setattr(host_actions, "_smart_install_check", stub_check)
+
+    class StubHost:
+        workdir = "/wd"
+        async def run_command(self, command, *, cwd=None, env=None):
+            raise AssertionError(f"unexpected run_command: {command!r}")
+
+    host = StubHost()
+    parent = _ExecutingFakeCtx()
+    hook_ctx = HookContext(parent, host)
+
+    with pytest.raises(RuntimeError, match="install_if_missing"):
+        await host_actions.ensure_opencode_installed(
+            hook_ctx, install_if_missing=False,
+        )
+
+
+async def test_ensure_opencode_installed_installs_when_download_required(
+    monkeypatch, zip_server, tmp_path,
+):
+    """End-to-end with a real LocalHost + fake zip server: install path."""
+    from optio_host.context import HookContext
+    from optio_host.host import LocalHost
+    from optio_opencode import host_actions
+
+    base_url, served = zip_server
+    binary = b"#!/bin/sh\necho fake\n"
+    _make_fake_opencode_zip(served / "opencode-linux-x64.zip", binary)
+    url = f"{base_url}/opencode-linux-x64.zip"
+
+    async def stub_check(host):
+        return ("download", url)
+
+    monkeypatch.setattr(host_actions, "_smart_install_check", stub_check)
+
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    saved_home = os.environ.get("HOME")
+    os.environ["HOME"] = str(fake_home)
+    try:
+        taskdir = tmp_path / "taskdir"
+        taskdir.mkdir()
+        host = LocalHost(taskdir=str(taskdir))
+        await host.setup_workdir()
+        parent = _ExecutingFakeCtx()
+        hook_ctx = HookContext(parent, host)
+
+        path = await host_actions.ensure_opencode_installed(hook_ctx)
+        assert path == str(fake_home / ".local" / "bin" / "opencode")
+        st = os.stat(path)
+        assert st.st_mode & 0o111
+    finally:
+        if saved_home is None:
+            os.environ.pop("HOME", None)
+        else:
+            os.environ["HOME"] = saved_home

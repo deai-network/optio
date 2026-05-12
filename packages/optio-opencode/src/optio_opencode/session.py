@@ -180,51 +180,12 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             await _append_resume_log_entry(host)
 
         # --- install ----------------------------------------------------
-        # When OPTIO_OPENCODE_BINARY_DIR is set, we ship a platform-matched
-        # binary from that directory onto the host (SFTP for remote, direct
-        # exec for local) and skip the upstream curl installer entirely.
-        # The directory layout matches opencode's build output:
-        # ``<binary_dir>/opencode-<os>-<arch>[-baseline][-musl]/bin/opencode``.
-        # This is how we ship the iframe-embeddability fork until those
-        # fixes land upstream.
-        binary_dir = os.environ.get("OPTIO_OPENCODE_BINARY_DIR")
-        if binary_dir:
-            target = await host_actions.detect_target(host)
-            candidate = os.path.join(
-                binary_dir, target.directory_name, "bin", "opencode"
-            )
-            if not os.path.isfile(candidate):
-                raise RuntimeError(
-                    f"OPTIO_OPENCODE_BINARY_DIR={binary_dir!r} does not contain "
-                    f"a binary for target {target.directory_name!r} "
-                    f"(expected {candidate!r})"
-                )
-            ctx.report_progress(
-                None, f"Installing opencode binary ({target.directory_name})…"
-            )
-
-            _last_pct = -1
-
-            def _on_progress(transferred: int, total: int) -> None:
-                nonlocal _last_pct
-                if total <= 0:
-                    return
-                pct = int(transferred * 100 / total)
-                if pct == _last_pct:
-                    return
-                _last_pct = pct
-                # Percent-only update: no message, so ProcessContext will
-                # advance the progress bar without appending a log entry.
-                ctx.report_progress(pct)
-
-            opencode_exec = await host_actions.install_opencode_binary(
-                host, candidate, progress=_on_progress,
-            )
-            ctx.report_progress(None, "opencode binary ready")
-        else:
-            await host_actions.ensure_opencode_installed(
-                host, config.install_if_missing,
-            )
+        # Uniform local + remote: smart-install.sh --check, then download +
+        # unpack into ~/.local/bin/opencode when needed. Download runs as
+        # an optio child task so progress is visible in the dashboard.
+        opencode_exec = await host_actions.ensure_opencode_installed(
+            hook_ctx, install_if_missing=config.install_if_missing,
+        )
 
         # --- before_execute hook ----------------------------------------
         # Fires after the binary is in place and before opencode launches,
