@@ -56,6 +56,20 @@ class ChildResult:
 
 
 @dataclass
+class ChildOutcome:
+    """Return value of ProcessContext.run_child.
+
+    state: "done" | "failed" | "cancelled".
+    original_exception: the exception object raised inside the child's
+        execute function, if any. None for state in {"done", "cancelled"}
+        and for "failed" only when the child failed via the no-execute-fn
+        early-fail path (no real exception was raised).
+    """
+    state: str
+    original_exception: BaseException | None = None
+
+
+@dataclass
 class ChildProgressInfo:
     """Progress snapshot of a child process, delivered to parent callbacks."""
     process_id: str

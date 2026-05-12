@@ -37,3 +37,19 @@ def test_child_process_failed_is_an_exception():
     assert isinstance(cpf, Exception)
     with pytest.raises(ChildProcessFailed):
         raise cpf
+
+
+from optio_core.models import ChildOutcome
+
+
+def test_child_outcome_default_no_exception():
+    outcome = ChildOutcome(state="done")
+    assert outcome.state == "done"
+    assert outcome.original_exception is None
+
+
+def test_child_outcome_with_exception():
+    exc = _SampleErr("u", 9)
+    outcome = ChildOutcome(state="failed", original_exception=exc)
+    assert outcome.state == "failed"
+    assert outcome.original_exception is exc
