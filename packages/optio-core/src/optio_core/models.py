@@ -53,6 +53,8 @@ class ChildResult:
     process_id: str
     state: str  # "done", "failed", "cancelled"
     error: str | None = None
+    name: str = ""
+    original_exception: BaseException | None = None
 
 
 @dataclass

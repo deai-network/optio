@@ -53,3 +53,25 @@ def test_child_outcome_with_exception():
     outcome = ChildOutcome(state="failed", original_exception=exc)
     assert outcome.state == "failed"
     assert outcome.original_exception is exc
+
+
+from optio_core.models import ChildResult
+
+
+def test_child_result_defaults():
+    r = ChildResult(process_id="p", state="done")
+    assert r.process_id == "p"
+    assert r.state == "done"
+    assert r.error is None
+    assert r.name == ""
+    assert r.original_exception is None
+
+
+def test_child_result_carries_name_and_original():
+    exc = _SampleErr("u", 1)
+    r = ChildResult(
+        process_id="p", state="failed", error="Child failed",
+        name="Sample", original_exception=exc,
+    )
+    assert r.name == "Sample"
+    assert r.original_exception is exc
