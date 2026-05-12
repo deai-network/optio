@@ -75,3 +75,49 @@ def test_child_result_carries_name_and_original():
     )
     assert r.name == "Sample"
     assert r.original_exception is exc
+
+
+import asyncio
+from optio_core.executor import Executor
+from optio_core.models import TaskInstance
+from optio_core.store import upsert_process
+
+
+async def test_run_child_raises_child_process_failed_with_original(mongo_db):
+    """Child raises a structured exception; parent catches ChildProcessFailed
+    and recovers the original via .original."""
+    caught = {}
+
+    async def failing_child(ctx):
+        raise _SampleErr("http://example.com/bin", 42)
+
+    async def parent_task(ctx):
+        try:
+            await ctx.run_child(
+                failing_child,
+                process_id="failing-child-1",
+                name="Failing Child",
+            )
+        except ChildProcessFailed as e:
+            caught["name"] = e.name
+            caught["process_id"] = e.process_id
+            caught["original"] = e.original
+
+    parent_inst = TaskInstance(
+        execute=parent_task, process_id="parent-cpf", name="Parent CPF",
+    )
+    child_inst = TaskInstance(
+        execute=failing_child, process_id="failing-child-1", name="Failing Child",
+    )
+
+    await upsert_process(mongo_db, "test_cpf", parent_inst)
+    executor = Executor(mongo_db, "test_cpf", {})
+    executor.register_tasks([parent_inst, child_inst])
+
+    result = await executor.launch_process("parent-cpf")
+    assert result == "done"
+    assert caught["name"] == "Failing Child"
+    assert caught["process_id"] == "failing-child-1"
+    assert isinstance(caught["original"], _SampleErr)
+    assert caught["original"].url == "http://example.com/bin"
+    assert caught["original"].exit_code == 42

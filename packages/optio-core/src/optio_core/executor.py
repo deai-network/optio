@@ -20,6 +20,7 @@ from optio_core.store import (
     clear_widget_upstream, compute_expire_at,
 )
 from optio_core.context import ProcessContext
+from optio_core.exceptions import ChildProcessFailed
 
 
 @dataclass
@@ -278,7 +279,9 @@ class Executor:
             )
 
         if end_state == "failed" and not survive_failure:
-            raise RuntimeError(f"Child process '{name}' failed")
+            if exc is None:
+                exc = RuntimeError(f"Child process '{name}' failed")
+            raise ChildProcessFailed(name, process_id, exc) from exc
         if end_state == "cancelled" and not survive_cancel:
             parent_ctx._cancellation_flag.set()
 
