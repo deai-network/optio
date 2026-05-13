@@ -10,7 +10,10 @@ from typing import Any, Callable, Awaitable, TYPE_CHECKING
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorGridFSBucket
 
-from optio_core.models import Progress, ChildResult, ChildProgressInfo, InnerAuth, ChildOutcome
+from optio_core.models import (
+    Progress, ChildResult, ChildProgressInfo, InnerAuth, ChildOutcome,
+    TaskInstanceCore,
+)
 from optio_core.exceptions import ChildProcessFailed
 
 
@@ -384,6 +387,35 @@ class ProcessContext:
             survive_failure=survive_failure,
             survive_cancel=survive_cancel,
             description=description,
+        )
+
+    async def run_child_task(
+        self,
+        task: TaskInstanceCore,
+        *,
+        survive_failure: bool = False,
+        survive_cancel: bool = False,
+        on_child_progress: Callable | None = None,
+    ) -> ChildOutcome:
+        """Run a TaskInstance(Core) as a child process.
+
+        Convenience over `run_child` that unpacks the TaskInstance fields
+        applicable to child execution (execute / process_id / name /
+        description / params). The remaining TaskInstance fields
+        (metadata / schedule / ttl_seconds / cancellable / supports_resume /
+        ui_widget / special / warning / auto_cancel_children) are top-level
+        concerns: children inherit metadata from the parent, can't have
+        their own schedule, and use the parent's lifecycle.
+        """
+        return await self.run_child(
+            execute=task.execute,
+            process_id=task.process_id,
+            name=task.name,
+            description=task.description,
+            params=task.params,
+            survive_failure=survive_failure,
+            survive_cancel=survive_cancel,
+            on_child_progress=on_child_progress,
         )
 
     def parallel_group(

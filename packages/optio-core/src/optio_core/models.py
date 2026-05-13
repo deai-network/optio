@@ -29,13 +29,24 @@ class DismissOutcome:
 
 
 @dataclass
-class TaskInstance:
-    """A unit of work provided by the application's task generator."""
+class TaskInstanceCore:
+    """The subset of TaskInstance fields that apply to child execution.
+
+    Children inherit metadata/cancellation-policy/ttl from their parent and
+    don't have schedules or top-level UI markers — so the fields here are
+    exactly what ProcessContext.run_child_task needs to run a TaskInstance
+    as a child process.
+    """
     execute: Callable[..., Awaitable[None]]
     process_id: str
     name: str
     description: str | None = None
     params: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class TaskInstance(TaskInstanceCore):
+    """A unit of work provided by the application's task generator."""
     metadata: dict[str, Any] = field(default_factory=dict)
     schedule: str | None = None
     special: bool = False

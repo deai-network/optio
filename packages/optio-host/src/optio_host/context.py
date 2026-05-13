@@ -197,10 +197,7 @@ class HookContext:
             description=description,
             cleanup_on_fail=cleanup_on_fail,
         )
-        await self._ctx.run_child(
-            task.execute, task.process_id, task.name,
-            description=task.description,
-        )
+        await self._ctx.run_child_task(task)
 
 
 class HookContextProtocol(Protocol):

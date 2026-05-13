@@ -162,6 +162,12 @@ class _ExecutingFakeCtx:
             ) from e
         return "done"
 
+    async def run_child_task(self, task, **kw):
+        return await self.run_child(
+            task.execute, task.process_id, task.name,
+            description=task.description, **kw,
+        )
+
 
 async def test_install_opencode_from_zip_happy_path(zip_server, tmp_path):
     from optio_host.context import HookContext

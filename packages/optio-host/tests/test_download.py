@@ -66,8 +66,10 @@ class _RoutingFakeCtx:
         self._child_counter = {"next": 0}
         self.run_child_calls = []
 
-    async def run_child(self, execute, process_id, name, *, description=None, **kw):
-        self.run_child_calls.append((execute, process_id, name, description))
+    async def run_child_task(self, task, **kw):
+        self.run_child_calls.append(
+            (task.execute, task.process_id, task.name, task.description)
+        )
         self._child_counter["next"] += 1
         return "done"
 

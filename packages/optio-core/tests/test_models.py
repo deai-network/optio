@@ -1,7 +1,7 @@
 """Tests for data models."""
 
 from optio_core.models import (
-    TaskInstance, ChildResult, ProcessStatus, Progress,
+    TaskInstance, TaskInstanceCore, ChildResult, ProcessStatus, Progress,
     matches_filter,
 )
 
@@ -107,3 +107,45 @@ def test_matches_filter_and_semantics():
     metadata = {"group": "ingest", "tier": "fast"}
     assert matches_filter(metadata, {"group": "ingest", "tier": "fast"}) is True
     assert matches_filter(metadata, {"group": "ingest", "tier": "slow"}) is False
+
+
+def test_task_instance_core_minimal():
+    """TaskInstanceCore carries only child-applicable fields."""
+    task = TaskInstanceCore(execute=dummy_execute, process_id="t", name="T")
+    assert task.process_id == "t"
+    assert task.name == "T"
+    assert task.description is None
+    assert task.params == {}
+
+
+def test_task_instance_is_subclass_of_core():
+    """TaskInstance extends TaskInstanceCore — full task is acceptable
+    anywhere a Core is expected (e.g. ProcessContext.run_child_task)."""
+    task = TaskInstance(execute=dummy_execute, process_id="t", name="T")
+    assert isinstance(task, TaskInstanceCore)
+
+
+def test_task_instance_field_order_unchanged():
+    """Existing positional construction order must be preserved across
+    the Core/Instance split: execute, process_id, name, description, params,
+    metadata, schedule, special, warning, cancellable, ui_widget,
+    supports_resume, ttl_seconds, auto_cancel_children."""
+    task = TaskInstance(
+        dummy_execute, "p", "P", "desc", {"k": "v"},
+        {"m": "v"}, "0 * * * *", True, "warn",
+        False, "widget", True, 60, False,
+    )
+    assert task.execute is dummy_execute
+    assert task.process_id == "p"
+    assert task.name == "P"
+    assert task.description == "desc"
+    assert task.params == {"k": "v"}
+    assert task.metadata == {"m": "v"}
+    assert task.schedule == "0 * * * *"
+    assert task.special is True
+    assert task.warning == "warn"
+    assert task.cancellable is False
+    assert task.ui_widget == "widget"
+    assert task.supports_resume is True
+    assert task.ttl_seconds == 60
+    assert task.auto_cancel_children is False

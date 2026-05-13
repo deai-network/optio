@@ -102,6 +102,64 @@ async def test_sequential_child_execution(mongo_db):
     assert child1["depth"] == 1
 
 
+async def test_run_child_task_unpacks_task_instance(mongo_db):
+    """run_child_task accepts a TaskInstance(Core), unpacks the
+    child-applicable fields, and dispatches to run_child. Equivalent
+    behaviour to the explicit-arg run_child call."""
+    from optio_core.models import TaskInstanceCore
+
+    results = []
+
+    async def child_execute(ctx):
+        results.append((ctx.process_id, ctx.params.get("step")))
+
+    async def parent_task(ctx):
+        # TaskInstanceCore is the minimal acceptable surface
+        core_task = TaskInstanceCore(
+            execute=child_execute,
+            process_id="core_child",
+            name="Core Child",
+            description="Run as TaskInstanceCore",
+            params={"step": 1},
+        )
+        outcome = await ctx.run_child_task(core_task)
+        assert outcome.state == "done"
+
+        # Full TaskInstance is also accepted (subclass)
+        full_task = TaskInstance(
+            execute=child_execute,
+            process_id="full_child",
+            name="Full Child",
+            params={"step": 2},
+            ttl_seconds=60,           # ignored (top-level-only)
+            metadata={"k": "v"},      # ignored (children inherit parent's)
+        )
+        outcome = await ctx.run_child_task(full_task)
+        assert outcome.state == "done"
+
+    task = TaskInstance(
+        execute=parent_task, process_id="parent_rct", name="Parent RCT",
+    )
+    await upsert_process(mongo_db, "test", task)
+
+    executor = Executor(mongo_db, "test", {})
+    executor.register_tasks([task])
+
+    result = await executor.launch_process("parent_rct")
+    assert result == "done"
+    assert results == [("core_child", 1), ("full_child", 2)]
+
+    # Children created with correct depth + params
+    core = await get_process_by_process_id(mongo_db, "test", "core_child")
+    assert core["depth"] == 1
+    assert core["params"] == {"step": 1}
+    assert core["name"] == "Core Child"
+
+    full = await get_process_by_process_id(mongo_db, "test", "full_child")
+    assert full["depth"] == 1
+    assert full["params"] == {"step": 2}
+
+
 async def test_child_failure_propagates(mongo_db):
     async def failing_child(ctx):
         raise Exception("Child failed")
