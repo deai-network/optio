@@ -32,10 +32,18 @@ class ProcessHandle:
     (the default in ``Host.launch_subprocess``), ``stderr`` is ``None`` and
     stderr bytes are merged into ``stdout``. When ``merge_stderr=False``,
     ``stderr`` is a separate iterator over stderr-only bytes.
+
+    When ``stdin=True`` is passed to ``Host.launch_subprocess``, ``stdin`` is
+    a writable byte stream exposing the duck-typed surface
+    ``write(bytes) -> None``, ``drain() -> Awaitable[None]``,
+    ``close() -> None``, ``wait_closed() -> Awaitable[None]``. Default is
+    ``None`` (parent's stdin is inherited; the handle does not expose a
+    writer).
     """
     pid_like: object
     stdout: AsyncIterator[bytes]
     stderr: AsyncIterator[bytes] | None = None
+    stdin: object | None = None
 
 
 class Host(Protocol):
@@ -79,6 +87,7 @@ class Host(Protocol):
         env: dict[str, str] | None = None,
         cwd: str | None = None,
         merge_stderr: bool = True,
+        stdin: bool = False,
     ) -> ProcessHandle:
         """Spawn ``command`` (interpreted by ``/bin/sh -c`` semantics) and
         return a handle whose ``stdout`` iterator yields bytes as they arrive.
@@ -90,6 +99,13 @@ class Host(Protocol):
         via ``2>&1`` semantics; ``ProcessHandle.stderr`` is ``None``. When
         False, stderr is captured separately and exposed as
         ``ProcessHandle.stderr`` -- caller iterates both streams.
+
+        ``stdin`` (default False): inherit parent's stdin and leave
+        ``ProcessHandle.stdin = None``. When True, a writable byte stream is
+        attached to the subprocess's stdin and exposed as
+        ``ProcessHandle.stdin``. Caller must ``close()`` (and ``await
+        wait_closed()``) when finished to signal EOF; otherwise the
+        subprocess may block waiting for input.
         """
 
     async def terminate_subprocess(
@@ -237,6 +253,7 @@ class LocalHost:
         env: dict[str, str] | None = None,
         cwd: str | None = None,
         merge_stderr: bool = True,
+        stdin: bool = False,
     ) -> ProcessHandle:
         proc_env = os.environ.copy()
         if env:
@@ -245,6 +262,7 @@ class LocalHost:
             "/bin/sh", "-c", command,
             cwd=cwd if cwd is not None else self.workdir,
             env=proc_env,
+            stdin=asyncio.subprocess.PIPE if stdin else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=(
                 asyncio.subprocess.STDOUT if merge_stderr
@@ -259,16 +277,22 @@ class LocalHost:
                     break
                 yield line
 
+        stdin_writer = proc.stdin if stdin else None
+
         if merge_stderr:
             assert proc.stdout is not None
             return ProcessHandle(
-                pid_like=proc, stdout=_stream(proc.stdout), stderr=None,
+                pid_like=proc,
+                stdout=_stream(proc.stdout),
+                stderr=None,
+                stdin=stdin_writer,
             )
         assert proc.stdout is not None and proc.stderr is not None
         return ProcessHandle(
             pid_like=proc,
             stdout=_stream(proc.stdout),
             stderr=_stream(proc.stderr),
+            stdin=stdin_writer,
         )
 
     async def terminate_subprocess(
@@ -572,6 +596,7 @@ class RemoteHost:
         env: dict[str, str] | None = None,
         cwd: str | None = None,
         merge_stderr: bool = True,
+        stdin: bool = False,
     ) -> ProcessHandle:
         assert self._conn is not None
         env_prefix = ""
@@ -594,14 +619,24 @@ class RemoteHost:
                 if chunk:
                     yield chunk
 
+        # asyncssh's SSHClientProcess always has a .stdin (SSHWriter[bytes]);
+        # only expose it on the handle when the caller asked for stdin piping.
+        # When stdin=False, leave handle.stdin=None so callers that don't ask
+        # for stdin can't accidentally race on the SSH channel's write side.
+        stdin_writer = proc.stdin if stdin else None
+
         if merge_stderr:
             return ProcessHandle(
-                pid_like=proc, stdout=_stream(proc.stdout), stderr=None,
+                pid_like=proc,
+                stdout=_stream(proc.stdout),
+                stderr=None,
+                stdin=stdin_writer,
             )
         return ProcessHandle(
             pid_like=proc,
             stdout=_stream(proc.stdout),
             stderr=_stream(proc.stderr),
+            stdin=stdin_writer,
         )
 
     async def terminate_subprocess(
