@@ -253,6 +253,7 @@ class LocalHost:
         env: dict[str, str] | None = None,
         cwd: str | None = None,
         merge_stderr: bool = True,
+        stdin: bool = False,
     ) -> ProcessHandle:
         proc_env = os.environ.copy()
         if env:
@@ -261,6 +262,7 @@ class LocalHost:
             "/bin/sh", "-c", command,
             cwd=cwd if cwd is not None else self.workdir,
             env=proc_env,
+            stdin=asyncio.subprocess.PIPE if stdin else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=(
                 asyncio.subprocess.STDOUT if merge_stderr
@@ -275,16 +277,22 @@ class LocalHost:
                     break
                 yield line
 
+        stdin_writer = proc.stdin if stdin else None
+
         if merge_stderr:
             assert proc.stdout is not None
             return ProcessHandle(
-                pid_like=proc, stdout=_stream(proc.stdout), stderr=None,
+                pid_like=proc,
+                stdout=_stream(proc.stdout),
+                stderr=None,
+                stdin=stdin_writer,
             )
         assert proc.stdout is not None and proc.stderr is not None
         return ProcessHandle(
             pid_like=proc,
             stdout=_stream(proc.stdout),
             stderr=_stream(proc.stderr),
+            stdin=stdin_writer,
         )
 
     async def terminate_subprocess(
