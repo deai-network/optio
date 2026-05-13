@@ -18,3 +18,9 @@ export {
   GroupCancelFailureReason,
   BlockLaunchesFailureReason,
 } from './engine-failure-reasons.js';
+
+// Cross-package error-route manifest (consumed by host-app lints)
+export {
+  apiToFrontendRouteErrorReasons,
+  type ApiToFrontendRouteId,
+} from './route-error-reasons.js';
