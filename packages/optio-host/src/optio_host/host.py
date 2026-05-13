@@ -32,10 +32,18 @@ class ProcessHandle:
     (the default in ``Host.launch_subprocess``), ``stderr`` is ``None`` and
     stderr bytes are merged into ``stdout``. When ``merge_stderr=False``,
     ``stderr`` is a separate iterator over stderr-only bytes.
+
+    When ``stdin=True`` is passed to ``Host.launch_subprocess``, ``stdin`` is
+    a writable byte stream exposing the duck-typed surface
+    ``write(bytes) -> None``, ``drain() -> Awaitable[None]``,
+    ``close() -> None``, ``wait_closed() -> Awaitable[None]``. Default is
+    ``None`` (parent's stdin is inherited; the handle does not expose a
+    writer).
     """
     pid_like: object
     stdout: AsyncIterator[bytes]
     stderr: AsyncIterator[bytes] | None = None
+    stdin: object | None = None
 
 
 class Host(Protocol):
