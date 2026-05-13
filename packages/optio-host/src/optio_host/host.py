@@ -87,6 +87,7 @@ class Host(Protocol):
         env: dict[str, str] | None = None,
         cwd: str | None = None,
         merge_stderr: bool = True,
+        stdin: bool = False,
     ) -> ProcessHandle:
         """Spawn ``command`` (interpreted by ``/bin/sh -c`` semantics) and
         return a handle whose ``stdout`` iterator yields bytes as they arrive.
@@ -98,6 +99,13 @@ class Host(Protocol):
         via ``2>&1`` semantics; ``ProcessHandle.stderr`` is ``None``. When
         False, stderr is captured separately and exposed as
         ``ProcessHandle.stderr`` -- caller iterates both streams.
+
+        ``stdin`` (default False): inherit parent's stdin and leave
+        ``ProcessHandle.stdin = None``. When True, a writable byte stream is
+        attached to the subprocess's stdin and exposed as
+        ``ProcessHandle.stdin``. Caller must ``close()`` (and ``await
+        wait_closed()``) when finished to signal EOF; otherwise the
+        subprocess may block waiting for input.
         """
 
     async def terminate_subprocess(
