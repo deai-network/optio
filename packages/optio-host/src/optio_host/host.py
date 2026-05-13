@@ -596,6 +596,7 @@ class RemoteHost:
         env: dict[str, str] | None = None,
         cwd: str | None = None,
         merge_stderr: bool = True,
+        stdin: bool = False,
     ) -> ProcessHandle:
         assert self._conn is not None
         env_prefix = ""
@@ -618,14 +619,24 @@ class RemoteHost:
                 if chunk:
                     yield chunk
 
+        # asyncssh's SSHClientProcess always has a .stdin (SSHWriter[bytes]);
+        # only expose it on the handle when the caller asked for stdin piping.
+        # When stdin=False, leave handle.stdin=None so callers that don't ask
+        # for stdin can't accidentally race on the SSH channel's write side.
+        stdin_writer = proc.stdin if stdin else None
+
         if merge_stderr:
             return ProcessHandle(
-                pid_like=proc, stdout=_stream(proc.stdout), stderr=None,
+                pid_like=proc,
+                stdout=_stream(proc.stdout),
+                stderr=None,
+                stdin=stdin_writer,
             )
         return ProcessHandle(
             pid_like=proc,
             stdout=_stream(proc.stdout),
             stderr=_stream(proc.stderr),
+            stdin=stdin_writer,
         )
 
     async def terminate_subprocess(
