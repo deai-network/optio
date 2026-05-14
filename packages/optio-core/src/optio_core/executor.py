@@ -194,6 +194,60 @@ class Executor:
                 await execute_fn(ctx)
                 if cancel_flag.is_set():
                     end_state = "cancelled"
+            except asyncio.CancelledError:
+                # CancelledError is a BaseException, not Exception — the `except
+                # Exception` arm below does NOT catch it. Without this arm,
+                # a task body that raises CancelledError cooperatively (e.g.
+                # optio-recipe-runner explicitly raises it after the cancel
+                # flag fires) propagates out of `_execute_process` without
+                # any terminal state write, leaving the row stuck at
+                # `cancelling` — and the finally below pops the cancellation
+                # entry from the supervisor map, so force_cancel can't rescue
+                # it either.
+                #
+                # Distinguish two CancelledError sources:
+                #   (a) Cooperative: a cancel was requested via
+                #       lifecycle.cancel (so the entry has a deadline set)
+                #       and the task body raised CancelledError BEFORE that
+                #       deadline expired. Treat as a normal cancel → write
+                #       `cancelled`.
+                #   (b) Forced: either (i) the entry has no deadline (no
+                #       cooperative cancel was requested — this is a
+                #       force-cancel cascade against an opted-out subtree)
+                #       or (ii) deadline expired and force_cancel injected
+                #       task.cancel(). Let CancelledError propagate so
+                #       _write_force_cancelled_state writes the canonical
+                #       `failed` terminal state with the grace-exceeded
+                #       error.
+                #
+                # Re-raise either way to honor the asyncio cancellation
+                # contract — parents must see the unwind.
+                entry = self._cancellation_flags.get(oid)
+                cooperative = (
+                    entry is not None and entry.deadline is not None
+                    and time.monotonic() < entry.deadline
+                )
+                if cooperative:
+                    _trace(
+                        "CANCEL-TRACE %s: executor write cancelled (raised CancelledError)",
+                        proc["processId"],
+                    )
+                    await ctx.flush_final_progress()
+                    await update_status(
+                        self._db, self._prefix, oid,
+                        ProcessStatus(
+                            state="cancelled",
+                            stopped_at=datetime.now(timezone.utc),
+                        ),
+                        expire_at=compute_expire_at(ttl_seconds),
+                    )
+                    await append_log(
+                        self._db, self._prefix, oid, "event",
+                        "State changed to cancelled (raised CancelledError)",
+                    )
+                    await clear_widget_upstream(self._db, self._prefix, oid)
+                    await self._cleanup_ephemeral(proc["processId"])
+                raise
             except Exception as e:
                 await ctx.flush_final_progress()
                 await update_status(

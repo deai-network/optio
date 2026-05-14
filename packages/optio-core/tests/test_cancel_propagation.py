@@ -591,3 +591,101 @@ async def test_force_cancel_cascade_catches_late_optout_child(mongo_db):
     await optio.shutdown(grace_seconds=0.5)
 
 
+async def test_task_raising_cancelled_error_reaches_cancelled_state(mongo_db):
+    """Task body that observes the cancel flag and raises asyncio.CancelledError
+    must reach terminal state=cancelled.
+
+    This is the optio-recipe-runner pattern: it explicitly raises
+    CancelledError after the cancel flag fires (see optio_recipe_runner/
+    session.py). CancelledError is a BaseException, not Exception, so
+    naive `except Exception` clauses don't catch it — the executor needs
+    a dedicated arm or the row stays at `cancelling` forever and the
+    supervisor's force_cancel can't help (the cancellation flag entry is
+    popped when the task body unwinds)."""
+    prefix = "p6t1"
+    started = asyncio.Event()
+
+    async def raises_cancelled_on_flag(ctx):
+        started.set()
+        # Cooperatively wait on the flag (the recipe-runner pattern), then
+        # raise CancelledError instead of returning normally.
+        await ctx.cancellation_flag.wait()
+        raise asyncio.CancelledError()
+
+    task = TaskInstance(
+        execute=raises_cancelled_on_flag, process_id="raiser", name="Raiser",
+    )
+
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix=prefix, cancel_grace_seconds=2.0)
+    await upsert_process(mongo_db, prefix, task)
+    optio._executor.register_tasks([task])
+
+    runner = asyncio.create_task(optio.launch_and_wait("raiser"))
+    await started.wait()
+    await asyncio.sleep(0.05)
+
+    await optio.cancel("raiser")
+
+    # The runner task absorbs the CancelledError raised by the task body.
+    try:
+        await runner
+    except asyncio.CancelledError:
+        pass
+
+    proc = await _wait_terminal(mongo_db, prefix, "raiser")
+    assert proc["status"]["state"] == "cancelled"
+    assert proc["status"].get("stoppedAt") is not None
+    # The flag entry must have been popped (otherwise force_cancel would
+    # later overwrite our `cancelled` state with `failed`).
+    assert not optio._executor._cancellation_flags
+
+    await optio.shutdown(grace_seconds=0.5)
+
+
+async def test_child_raises_cancelled_error_propagates_to_parent(mongo_db):
+    """Cancel-error from a child task body propagates up: parent's
+    `ctx.run_child` re-raises CancelledError, parent itself reaches
+    `cancelled`. End-to-end check of the full cancel-propagation chain
+    when the cancellation mechanism is CancelledError (not cooperative
+    return)."""
+    prefix = "p6t2"
+    parent_started = asyncio.Event()
+    child_started = asyncio.Event()
+
+    async def child(ctx):
+        child_started.set()
+        await ctx.cancellation_flag.wait()
+        raise asyncio.CancelledError()
+
+    async def parent(ctx):
+        parent_started.set()
+        await ctx.run_child(execute=child, process_id="kid", name="Kid")
+
+    parent_inst = TaskInstance(execute=parent, process_id="parent", name="Parent")
+    child_inst = TaskInstance(execute=child, process_id="kid", name="Kid")
+
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix=prefix, cancel_grace_seconds=2.0)
+    await upsert_process(mongo_db, prefix, parent_inst)
+    optio._executor.register_tasks([parent_inst, child_inst])
+
+    runner = asyncio.create_task(optio.launch_and_wait("parent"))
+    await parent_started.wait()
+    await child_started.wait()
+    await asyncio.sleep(0.05)
+
+    await optio.cancel("parent")
+    try:
+        await runner
+    except asyncio.CancelledError:
+        pass
+
+    parent_proc = await _wait_terminal(mongo_db, prefix, "parent")
+    child_proc = await _wait_terminal(mongo_db, prefix, "kid")
+    assert child_proc["status"]["state"] == "cancelled"
+    assert parent_proc["status"]["state"] == "cancelled"
+
+    await optio.shutdown(grace_seconds=0.5)
+
+
