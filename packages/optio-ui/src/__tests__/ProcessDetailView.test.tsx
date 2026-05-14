@@ -10,8 +10,9 @@ vi.mock('../hooks/useProcessStream.js', () => ({
 }));
 
 const mockLaunch = vi.fn();
+const mockCancel = vi.fn();
 vi.mock('../hooks/useProcessActions.js', () => ({
-  useProcessActions: () => ({ launch: mockLaunch }),
+  useProcessActions: () => ({ launch: mockLaunch, cancel: mockCancel }),
 }));
 
 // Mock context hooks — these live in useOptioContext.ts (imported by useProcessStream).
@@ -36,6 +37,7 @@ describe('ProcessDetailView', () => {
     _clearWidgetRegistry();
     mockProcessStream.mockReset();
     mockLaunch.mockReset();
+    mockCancel.mockReset();
     mockBaseUrl.mockReturnValue('http://host');
     mockPrefix.mockReturnValue('optio');
     mockDatabase.mockReturnValue('mydb');
@@ -259,6 +261,34 @@ describe('ProcessDetailView', () => {
     });
     const { container } = render(<ProcessDetailView processId="abc" readOnly />);
     expect(container.querySelector('.anticon-play-circle')).toBeNull();
+  });
+
+  it('renders the cancel button for a cancellable running process by default', () => {
+    mockProcessStream.mockReturnValue({
+      tree: {
+        _id: 'abc', name: 'P', status: { state: 'running' },
+        progress: { percent: null }, cancellable: true,
+        depth: 0, order: 0, parentId: null, children: [],
+      },
+      logs: [],
+      connected: true,
+    });
+    const { container } = render(<ProcessDetailView processId="abc" />);
+    expect(container.querySelector('.anticon-close-circle')).not.toBeNull();
+  });
+
+  it('hides the cancel button when readOnly is true', () => {
+    mockProcessStream.mockReturnValue({
+      tree: {
+        _id: 'abc', name: 'P', status: { state: 'running' },
+        progress: { percent: null }, cancellable: true,
+        depth: 0, order: 0, parentId: null, children: [],
+      },
+      logs: [],
+      connected: true,
+    });
+    const { container } = render(<ProcessDetailView processId="abc" readOnly />);
+    expect(container.querySelector('.anticon-close-circle')).toBeNull();
   });
 
   it('falls back to default tree+log rendering while widgetData is not yet set', () => {

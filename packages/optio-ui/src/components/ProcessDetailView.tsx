@@ -7,9 +7,9 @@ import { useProcessActions } from '../hooks/useProcessActions.js';
 export interface ProcessDetailViewProps {
   processId: string | null | undefined;
   /**
-   * When true, suppress all per-process action affordances (today: the
-   * Launch control rendered by `ProcessTreeView`). The view continues to
-   * stream and render tree / logs / widget identically. Defaults to
+   * When true, suppress all per-process action affordances (Launch and
+   * Cancel controls rendered by `ProcessTreeView`). The view continues
+   * to stream and render tree / logs / widget identically. Defaults to
    * false.
    *
    * Intended for embeds where the host page already owns the action
@@ -24,7 +24,7 @@ export interface ProcessDetailViewProps {
 export function ProcessDetailView({ processId, readOnly = false }: ProcessDetailViewProps) {
   const { tree, logs, connected, processNotFound, error } =
     useProcessStream(processId ?? undefined);
-  const { launch } = useProcessActions();
+  const { launch, cancel } = useProcessActions();
   const widget = useProcessWidget(tree);
 
   if (!processId) {
@@ -83,6 +83,7 @@ export function ProcessDetailView({ processId, readOnly = false }: ProcessDetail
         treeData={tree}
         sseState={{ connected }}
         onLaunch={readOnly ? undefined : (id, opts) => launch(id, opts)}
+        onCancel={readOnly ? undefined : (id) => cancel(id)}
       />
       <ProcessLogPanel logs={logs} tree={tree} />
     </div>
