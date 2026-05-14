@@ -12,7 +12,7 @@ export { WithFilteredProcesses, ProcessFilters, FilteredProcessList, useProcessF
 // Hooks
 export { useInstances, useInstanceDiscovery, type OptioInstance } from './hooks/useInstanceDiscovery.js';
 export { useProcessActions } from './hooks/useProcessActions.js';
-export { useProcessList, useProcess, useProcessTree, useProcessTreeLog } from './hooks/useProcessQueries.js';
+export { useProcessList, useProcess, useProcesses, useProcessTree, useProcessTreeLog } from './hooks/useProcessQueries.js';
 export { useProcessStream } from './hooks/useProcessStream.js';
 export { useProcessListStream } from './hooks/useProcessListStream.js';
 export { usePrefixes, usePrefixDiscovery } from './hooks/usePrefixDiscovery.js';
