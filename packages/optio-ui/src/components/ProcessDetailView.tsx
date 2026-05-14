@@ -68,7 +68,7 @@ export function ProcessDetailView({ processId, readOnly = false }: ProcessDetail
         style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}
       >
         <div style={{ flex: '0 0 20%', minHeight: 0, overflow: 'hidden' }}>
-          <ProcessLogPanel logs={logs} fillParent />
+          <ProcessLogPanel logs={logs} tree={tree} fillParent />
         </div>
         <div style={{ flex: '1 1 auto', minHeight: 0 }}>
           {widget}
@@ -84,7 +84,7 @@ export function ProcessDetailView({ processId, readOnly = false }: ProcessDetail
         sseState={{ connected }}
         onLaunch={readOnly ? undefined : (id, opts) => launch(id, opts)}
       />
-      <ProcessLogPanel logs={logs} />
+      <ProcessLogPanel logs={logs} tree={tree} />
     </div>
   );
 }
