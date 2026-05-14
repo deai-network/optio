@@ -1,4 +1,4 @@
-import type { ProcessMetadataFilter } from 'optio-contracts';
+import type { Process, ProcessMetadataFilter } from 'optio-contracts';
 import { useOptioPrefix, useOptioClient, useOptioDatabase } from '../context/useOptioContext.js';
 
 export function useProcessList(options?: {
@@ -57,6 +57,27 @@ export function useProcessTree(id: string | undefined, options?: { refetchInterv
     refetchInterval: options?.refetchInterval ?? 5000,
   });
   return data?.status === 200 ? data.body : null;
+}
+
+export function useProcesses(
+  pids: (string | undefined)[],
+  options?: { refetchInterval?: number | false },
+): Array<{ process: Process | null; isLoading: boolean }> {
+  const prefix = useOptioPrefix();
+  const database = useOptioDatabase();
+  const api = useOptioClient();
+  const results = api.processes.get.useQueries({
+    queries: pids.map((pid) => ({
+      queryKey: ['process', database, prefix, pid],
+      queryData: { params: { id: pid! }, query: { database, prefix } },
+      enabled: !!pid,
+      refetchInterval: options?.refetchInterval ?? 5000,
+    })),
+  }) as Array<{ data?: { status: number; body: Process }; isLoading: boolean }>;
+  return results.map((q) => ({
+    process: q.data?.status === 200 ? q.data.body : null,
+    isLoading: q.isLoading,
+  }));
 }
 
 export function useProcessTreeLog(id: string | undefined, options?: { refetchInterval?: number | false; limit?: number }) {
