@@ -3,6 +3,17 @@
 
 PY_PACKAGES := optio-core optio-host optio-opencode
 
+# Python toolchain — repo-local venv. Override PYTHON to pick a specific interpreter.
+PYTHON ?= python3
+VENV   := $(CURDIR)/.venv
+PY     := $(VENV)/bin/python
+PIP    := $(VENV)/bin/pip
+PYTEST := $(VENV)/bin/pytest
+
+$(VENV)/bin/python:
+	$(PYTHON) -m venv $(VENV)
+	$(PIP) install --upgrade pip
+
 help:  ## Show this help
 	@awk 'BEGIN { FS = ":.*##" } /^[a-zA-Z_-]+:.*##/ { printf "  \033[1m%-15s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 
@@ -34,16 +45,16 @@ check-tooling:  ## Verify node + pnpm match repo pins; clear errors if missing
 	 fi
 	@echo "OK: node $$(node --version), pnpm $$(pnpm --version) (managed via corepack against package.json packageManager pin)"
 
-install: check-tooling  ## Install dependencies (TS workspace + Python packages)
+install: check-tooling $(VENV)/bin/python  ## Install dependencies (TS workspace + Python packages)
 	pnpm install
 	for pkg in $(PY_PACKAGES); do \
-	  (cd packages/$$pkg && pip install -e .[dev] 2>/dev/null || pip install -e .); \
+	  (cd packages/$$pkg && $(PIP) install -e .[dev] 2>/dev/null || $(PIP) install -e .); \
 	done
 
-build:  ## Build all packages
+build: $(VENV)/bin/python  ## Build all packages
 	pnpm -r build
 	for pkg in $(PY_PACKAGES); do \
-	  (cd packages/$$pkg && python -m build 2>/dev/null || true); \
+	  (cd packages/$$pkg && $(PY) -m build 2>/dev/null || true); \
 	done
 
 codegen:  ## Regenerate clamator RPC client/server stubs from optio-contracts source
@@ -59,10 +70,10 @@ codegen:  ## Regenerate clamator RPC client/server stubs from optio-contracts so
 	     packages/optio-core/src/optio_core/_generated/optio_engine.py; \
 	fi
 
-test:  ## Run all tests (TS + Python; per-package, no docker)
+test: $(VENV)/bin/python  ## Run all tests (TS + Python; per-package, no docker)
 	pnpm -r test
 	for pkg in $(PY_PACKAGES); do \
-	  (cd packages/$$pkg && pytest); \
+	  (cd packages/$$pkg && $(PYTEST)); \
 	done
 
 test-interop:  ## End-to-end test: TS clamator client ↔ Py engine over real redis (clamator wire verification). INTEROP_DEBUG=1 enables verbose mode + increased timeouts (slow CI). INTEROP_KEEP=1 skips cleanup on failure for postmortem.
@@ -84,7 +95,7 @@ lint-no-direct-writes:  ## Fail if any direct Mongo write call appears in packag
 	fi
 	@echo "OK: no direct Mongo writes in packages/optio-api/src/"
 
-clean:  ## Remove build artifacts and dependency caches (KEEPS committed _generated/)
+clean:  ## Remove build artifacts and dependency caches (KEEPS committed _generated/ and $(VENV)/)
 	pnpm -r clean 2>/dev/null || true
 	rm -rf node_modules packages/*/node_modules packages/*/dist
 	for pkg in $(PY_PACKAGES); do \

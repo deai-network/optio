@@ -21,6 +21,11 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DEMO_DIR="$REPO_ROOT/packages/optio-demo"
+VENV_PY="$REPO_ROOT/.venv/bin/python"
+if [[ ! -x "$VENV_PY" ]]; then
+  echo "ERROR: repo venv missing at $REPO_ROOT/.venv. Run \`make install\` from $REPO_ROOT first." >&2
+  exit 1
+fi
 
 # Bounds (overridable via INTEROP_DEBUG).
 if [[ "${INTEROP_DEBUG:-0}" == "1" ]]; then
@@ -72,8 +77,8 @@ for img in redis:7 mongo:7; do
 done
 
 # Allocate free ports.
-REDIS_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
-MONGO_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
+REDIS_PORT=$("$VENV_PY" -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
+MONGO_PORT=$("$VENV_PY" -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
 
 # Start redis.
 phase redis-up
@@ -112,7 +117,7 @@ phase engine-up
 MONGODB_URL="mongodb://localhost:${MONGO_PORT}/optio-demo" \
   REDIS_URL="redis://localhost:${REDIS_PORT}" \
   OPTIO_PREFIX="optio" \
-  python -m optio_demo > >(tee -a "$ENGINE_LOG" | sed 's/^/[engine] /') 2> >(tee -a "$ENGINE_LOG" | sed 's/^/[engine] /' >&2) &
+  "$VENV_PY" -m optio_demo > >(tee -a "$ENGINE_LOG" | sed 's/^/[engine] /') 2> >(tee -a "$ENGINE_LOG" | sed 's/^/[engine] /' >&2) &
 ENGINE_PID=$!
 
 HEARTBEAT_KEY="optio-demo/optio:heartbeat"
