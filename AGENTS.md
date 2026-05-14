@@ -77,6 +77,20 @@ docker cp <mongo-container>:/data/dump /tmp/dump
 If `docker ps` does not show a mongo container, bring it up via the relevant
 package's `docker-compose.yml` (`packages/optio-demo` for development).
 
+### UI brainstorming
+
+Render real `optio-ui` components against fixtures (visual variants, layout
+explorations, etc.):
+
+```bash
+pnpm --filter optio-dashboard dev:playground
+```
+
+Then open http://localhost:5174/. Add new topics under
+`packages/optio-dashboard/playground/topics/<name>/`; see the playground
+`README.md` for the contract. Use this when comparing visual variants of an
+`optio-ui` component before committing to a design.
+
 ---
 
 ## Python: optio-core

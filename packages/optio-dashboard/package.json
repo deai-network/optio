@@ -9,6 +9,7 @@
   },
   "scripts": {
     "dev": "vite",
+    "dev:playground": "vite --config playground/vite.config.ts",
     "build": "vite build && tsc -p tsconfig.json",
     "build:app": "vite build",
     "build:server": "tsc -p tsconfig.json",
