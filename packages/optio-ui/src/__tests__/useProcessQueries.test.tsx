@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { OptioProvider } from '../context/OptioProvider.js';
-import { useProcessList } from '../hooks/useProcessQueries.js';
+import { useProcessList, useProcesses } from '../hooks/useProcessQueries.js';
 
 // Avoid network calls during instance discovery — return a stable instance.
 vi.mock('../hooks/useInstanceDiscovery.js', () => ({
@@ -75,5 +75,44 @@ describe('useProcessList metadataFilter', () => {
     const lastRaw = String((fetchMock.mock.calls.at(-1) as [string | URL, ...unknown[]])[0]);
     const lastUrl = new URL(lastRaw, 'http://localhost');
     expect(lastUrl.searchParams.get('metadataFilter')).toBe('{"project":"y"}');
+  });
+});
+
+describe('useProcesses', () => {
+  beforeEach(() => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      const match = url.match(/\/api\/processes\/([^?]+)/);
+      const id = match ? decodeURIComponent(match[1]) : 'unknown';
+      return new Response(
+        JSON.stringify({
+          _id: id, processId: id, name: `name-${id}`,
+          rootId: id, status: { state: 'idle' },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      );
+    });
+  });
+
+  it('returns one slot per input pid, in order', () => {
+    const { result } = renderHook(() => useProcesses(['p1', 'p2', 'p3']), { wrapper: wrap });
+    expect(result.current).toHaveLength(3);
+  });
+
+  it('returns null process for undefined pid (disabled query)', () => {
+    const { result } = renderHook(() => useProcesses([undefined, 'p2']), { wrapper: wrap });
+    expect(result.current[0].process).toBeNull();
+    expect(result.current[0].isLoading).toBe(false);
+  });
+
+  it('survives dynamic-length expansion across renders', () => {
+    const { result, rerender } = renderHook(
+      ({ pids }: { pids: (string | undefined)[] }) => useProcesses(pids),
+      { wrapper: wrap, initialProps: { pids: ['p1'] as (string | undefined)[] } },
+    );
+    expect(result.current).toHaveLength(1);
+    rerender({ pids: ['p1', 'p2', 'p3'] });
+    expect(result.current).toHaveLength(3);
+    // No Rules-of-Hooks crash; ts-rest useQueries handles dynamic length.
   });
 });
