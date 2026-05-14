@@ -1,6 +1,7 @@
 import { Tag, Typography, Empty } from 'antd';
 import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import type { LogEntry } from '../hooks/useProcessStream.js';
 
 const { Text } = Typography;
 
@@ -11,13 +12,6 @@ const LEVEL_COLORS: Record<string, string> = {
   warning: 'gold',
   error: 'red',
 };
-
-interface LogEntry {
-  timestamp: string;
-  level: string;
-  message: string;
-  processName?: string;
-}
 
 interface ProcessLogPanelProps {
   logs: LogEntry[];
@@ -74,8 +68,8 @@ export function ProcessLogPanel({ logs, fillParent }: ProcessLogPanelProps) {
           <Tag color={LEVEL_COLORS[entry.level] ?? 'default'} style={{ fontSize: 10 }}>
             {entry.level.toUpperCase()}
           </Tag>
-          {entry.processName && (
-            <Text type="secondary" style={{ fontSize: 11 }}>[{entry.processName}]</Text>
+          {entry.processLabel && (
+            <Text type="secondary" style={{ fontSize: 11 }}>[{entry.processLabel}]</Text>
           )}
           <Text>{entry.message}</Text>
         </div>
