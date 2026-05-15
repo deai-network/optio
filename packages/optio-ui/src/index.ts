@@ -3,7 +3,9 @@ export { OptioProvider } from './context/OptioProvider.js';
 export { useOptioLive } from './context/useOptioContext.js';
 
 // Components
-export { ProcessList, ProcessItem } from './components/ProcessList.js';
+export { ProcessList } from './components/ProcessList.js';
+export { ProcessItem } from './components/ProcessItem.js';
+export type { ProcessItemProps } from './components/ProcessItem.js';
 export { ProcessStatusBadge } from './components/ProcessStatusBadge.js';
 export { ProcessTreeView } from './components/ProcessTreeView.js';
 export { ProcessLogPanel } from './components/ProcessLogPanel.js';
@@ -42,6 +44,8 @@ export {
   isTerminalState,
   isWidgetLive,
   isWidgetLiveState,
+  isCancellable,
+  isCancellableState,
   isResumable,
 } from './process-state.js';
 export type { ProcessStateLike } from './process-state.js';
