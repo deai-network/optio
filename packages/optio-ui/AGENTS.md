@@ -132,12 +132,17 @@ Active states: `running | scheduled | cancel_requested | cancelling`.
 ### ProcessItem
 
 ```ts
+type ProcessItemSize = 'small' | 'default' | 'big';
+
 interface ProcessItemProps {
   process: any;
   onLaunch?: (id: string) => void;
   onCancel?: (id: string) => void;
   readonly?: boolean;
   onProcessClick?: (id: string) => void;
+  size?: ProcessItemSize;  // default: 'default'
+  inline?: boolean;        // default: false — when true, progress bar shares the row with name + actions (flex middle slot)
+  inactiveContent?: ReactNode;  // shown where the progress bar would go when the process is NOT active (inline: middle slot, non-inline: second row). Pass last-run context here.
 }
 ```
 
@@ -149,15 +154,28 @@ Single process row. Behavioral rules:
 - Name rendered as `Button[type=link]` when `onProcessClick` provided, plain `Text` otherwise. If `process.description` is set, the name is wrapped in a `Tooltip` showing the description.
 - Progress message shown inline (blue) when process is active and `progress.message` is set.
 
+Size mapping (one knob → progress bar height, button size, badge size):
+
+| `size` | Progress | Button | Badge |
+|--------|----------|--------|-------|
+| `small`   | `'small'`   (6px bar)  | `'small'`  | tag — antd defaults |
+| `default` | `'default'` (8px bar)  | `'middle'` | fontSize 14, padding 2px 8px |
+| `big`     | `{ height: 12 }` (12px bar) | `'large'`  | fontSize 16, padding 4px 12px |
+
+Internal callers (`ProcessList`, `RecentProcesses`) pass `size="small"` to preserve the pre-existing compact look. New call sites pick whatever fits the surrounding layout.
+
 ---
 
 ### ProcessStatusBadge
 
 ```ts
+type ProcessStatusBadgeSize = 'small' | 'default' | 'big';
+
 interface ProcessStatusBadgeProps {
   state: string;
   error?: string;
-  runningSince?: string | null;  // ISO datetime string
+  runningSince?: string | null;          // ISO datetime string
+  size?: ProcessStatusBadgeSize;         // default: 'small' (= antd Tag defaults; preserves legacy look)
 }
 ```
 
@@ -172,7 +190,7 @@ Renders a colored Ant Design `Tag`. State-to-color mapping:
 | `failed` | `red` |
 | `cancel_requested` | `orange` |
 | `cancelling` | `orange` |
-| `cancelled` | `default` |
+| `cancelled` | `orange` |
 
 Active states (`running | scheduled | cancel_requested | cancelling`): shows live
 elapsed time in `m:ss` format, updating every second via `setInterval`.

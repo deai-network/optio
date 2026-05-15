@@ -8,6 +8,9 @@ export interface LaunchControlsProps {
   process: any;
   onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
   size?: ButtonProps['size'];
+  /** Optional pixel size for the inner icons (Play/Down/Reload). When unset,
+   *  the icon inherits antd's default sizing for the chosen button size. */
+  iconFontSize?: number;
 }
 
 /**
@@ -21,9 +24,10 @@ export interface LaunchControlsProps {
  * Defensive defaults: missing fields on the process document are treated
  * as false so the UI works against an unmigrated DB.
  */
-export function LaunchControls({ process, onLaunch, size = 'small' }: LaunchControlsProps) {
+export function LaunchControls({ process, onLaunch, size = 'small', iconFontSize }: LaunchControlsProps) {
   const { t } = useTranslation();
   if (!isLaunchable(process) || !onLaunch) return null;
+  const iconStyle = iconFontSize ? { fontSize: iconFontSize } : undefined;
 
   // Case 1: single play button (fresh start semantics — no opts).
   if (!isResumable(process)) {
@@ -31,7 +35,7 @@ export function LaunchControls({ process, onLaunch, size = 'small' }: LaunchCont
       <Button
         type="text"
         size={size}
-        icon={<PlayCircleOutlined />}
+        icon={<PlayCircleOutlined style={iconStyle} />}
         style={{ color: '#52c41a' }}
         onClick={(e) => {
           e.preventDefault();
@@ -67,7 +71,7 @@ export function LaunchControls({ process, onLaunch, size = 'small' }: LaunchCont
         <Button
           type="text"
           size={size}
-          icon={<PlayCircleOutlined />}
+          icon={<PlayCircleOutlined style={iconStyle} />}
           style={{ color: '#52c41a' }}
           onClick={(e) => {
             e.preventDefault();
@@ -80,7 +84,7 @@ export function LaunchControls({ process, onLaunch, size = 'small' }: LaunchCont
           <Button
             type="text"
             size={size}
-            icon={<DownOutlined />}
+            icon={<DownOutlined style={iconStyle} />}
           />
         </Tooltip>
       </Dropdown>

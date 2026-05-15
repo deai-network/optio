@@ -17,7 +17,7 @@ export function ProcessList({ processes, loading, onLaunch, onCancel, onProcessC
       pagination={{ pageSize: 16 }}
       renderItem={(item: any) => (
         <List.Item>
-          <ProcessItem process={item} onLaunch={onLaunch} onCancel={onCancel} onProcessClick={onProcessClick} />
+          <ProcessItem process={item} onLaunch={onLaunch} onCancel={onCancel} onProcessClick={onProcessClick} size="small" />
         </List.Item>
       )}
     />

@@ -2,6 +2,7 @@ import { Tag, Tooltip } from 'antd';
 import { ExclamationCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useState, useEffect } from 'react';
+import type { CSSProperties } from 'react';
 import { isActiveState } from '../process-state.js';
 
 const STATUS_COLORS: Record<string, string> = {
@@ -12,7 +13,17 @@ const STATUS_COLORS: Record<string, string> = {
   failed: 'red',
   cancel_requested: 'orange',
   cancelling: 'orange',
-  cancelled: 'default',
+  cancelled: 'orange',
+};
+
+export type ProcessStatusBadgeSize = 'small' | 'default' | 'big';
+
+// 'small' = antd Tag defaults (current look). Larger variants set fontSize +
+// padding inline so the badge scales proportionally with the ProcessItem.
+const SIZE_STYLE: Record<ProcessStatusBadgeSize, CSSProperties> = {
+  small:   {},
+  default: { fontSize: 14, padding: '2px 8px', lineHeight: '20px' },
+  big:     { fontSize: 16, padding: '4px 12px', lineHeight: '24px' },
 };
 
 function formatElapsed(seconds: number): string {
@@ -44,9 +55,10 @@ interface ProcessStatusBadgeProps {
   state: string;
   error?: string;
   runningSince?: string | null;
+  size?: ProcessStatusBadgeSize;
 }
 
-export function ProcessStatusBadge({ state, error, runningSince }: ProcessStatusBadgeProps) {
+export function ProcessStatusBadge({ state, error, runningSince, size = 'small' }: ProcessStatusBadgeProps) {
   const { t } = useTranslation();
   const color = STATUS_COLORS[state] ?? 'default';
   const label = t(`status.${state}`, state);
@@ -55,7 +67,7 @@ export function ProcessStatusBadge({ state, error, runningSince }: ProcessStatus
 
   return (
     <span>
-      <Tag color={color}>
+      <Tag color={color} style={SIZE_STYLE[size]}>
         {label}
         {elapsed && ` (${elapsed})`}
       </Tag>
