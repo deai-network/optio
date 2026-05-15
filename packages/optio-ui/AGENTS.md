@@ -45,6 +45,7 @@ Do:
   `isActive(process)` / `isActiveState(state)`,
   `isTerminal(process)` / `isTerminalState(state)`,
   `isWidgetLive(process)` / `isWidgetLiveState(state)`,
+  `isCancellable(process)` / `isCancellableState(state)`,
   `isResumable(process)`.
 - If you genuinely need a new state-derived concept (e.g. "show widget UI" —
   which is *almost* `isActive` but excludes `scheduled`), add a named
@@ -143,7 +144,7 @@ interface ProcessItemProps {
 Single process row. Behavioral rules:
 - Launch button visible when `!readonly && state in LAUNCHABLE_STATES && onLaunch provided`.
 - If `process.warning` is set, launch button is wrapped in `Popconfirm` requiring confirmation.
-- Cancel button visible when `!readonly && state in ACTIVE_STATES && process.cancellable && onCancel provided`.
+- Cancel button visible when `!readonly && isCancellable(process) && onCancel provided` — i.e. state is `scheduled | running` AND `process.cancellable === true`. Hidden during `cancel_requested`/`cancelling` (cancel already in flight; re-click is a no-op).
 - Progress bar: active + `progress.percent != null` → determinate bar; active + no percent → indeterminate animated gradient bar; not active → hidden.
 - Name rendered as `Button[type=link]` when `onProcessClick` provided, plain `Text` otherwise. If `process.description` is set, the name is wrapped in a `Tooltip` showing the description.
 - Progress message shown inline (blue) when process is active and `progress.message` is set.

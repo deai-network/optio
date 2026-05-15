@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { HighlightedText } from '@quaesitor-textus/core';
 import { ProcessStatusBadge } from './ProcessStatusBadge.js';
 import { LaunchControls } from './LaunchControls.js';
-import { isActive as isProcessActive } from '../process-state.js';
+import { isActive as isProcessActive, isCancellable as isProcessCancellable } from '../process-state.js';
 
 const { Text } = Typography;
 
@@ -20,7 +20,7 @@ export function ProcessItem({ process, onLaunch, onCancel, readonly, onProcessCl
   const { t } = useTranslation();
   const state = process.status?.state ?? 'idle';
   const isActive = isProcessActive(process);
-  const isCancellable = !readonly && isActive && process.cancellable;
+  const isCancellable = !readonly && isProcessCancellable(process);
   const hasPercent = process.progress?.percent != null;
 
   const nameContent = onProcessClick ? (

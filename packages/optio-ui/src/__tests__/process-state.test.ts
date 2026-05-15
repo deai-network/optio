@@ -8,6 +8,8 @@ import {
   isTerminalState,
   isWidgetLive,
   isWidgetLiveState,
+  isCancellable,
+  isCancellableState,
   isResumable,
 } from '../process-state.js';
 
@@ -120,6 +122,63 @@ describe('isActive', () => {
     expect(isActive(null)).toBe(false);
     expect(isActive(undefined)).toBe(false);
     expect(isActive({})).toBe(false);
+  });
+});
+
+describe('isCancellableState', () => {
+  it.each(['scheduled', 'running'])('true for %s', (state) => {
+    expect(isCancellableState(state)).toBe(true);
+  });
+  it.each(['idle', 'cancel_requested', 'cancelling', 'done', 'failed', 'cancelled'])(
+    'false for %s',
+    (state) => {
+      expect(isCancellableState(state)).toBe(false);
+    },
+  );
+  it('false for null/undefined/empty', () => {
+    expect(isCancellableState(null)).toBe(false);
+    expect(isCancellableState(undefined)).toBe(false);
+    expect(isCancellableState('')).toBe(false);
+  });
+  it('cancellable ⊂ active (excludes cancel_requested/cancelling/scheduled overlap noted in header)', () => {
+    expect(isActiveState('cancel_requested')).toBe(true);
+    expect(isCancellableState('cancel_requested')).toBe(false);
+    expect(isActiveState('cancelling')).toBe(true);
+    expect(isCancellableState('cancelling')).toBe(false);
+  });
+});
+
+describe('isCancellable', () => {
+  it('true only when state is cancellable AND cancellable flag is true', () => {
+    expect(isCancellable({ status: { state: 'running' }, cancellable: true })).toBe(true);
+    expect(isCancellable({ status: { state: 'scheduled' }, cancellable: true })).toBe(true);
+  });
+
+  it('false when state is not cancellable, regardless of flag', () => {
+    expect(isCancellable({ status: { state: 'cancelling' }, cancellable: true })).toBe(false);
+    expect(isCancellable({ status: { state: 'cancel_requested' }, cancellable: true })).toBe(false);
+    expect(isCancellable({ status: { state: 'done' }, cancellable: true })).toBe(false);
+    expect(isCancellable({ status: { state: 'idle' }, cancellable: true })).toBe(false);
+  });
+
+  it('false when cancellable flag is false or missing, regardless of state', () => {
+    expect(isCancellable({ status: { state: 'running' }, cancellable: false })).toBe(false);
+    expect(isCancellable({ status: { state: 'running' } })).toBe(false);
+  });
+
+  it('false for null/undefined/empty process', () => {
+    expect(isCancellable(null)).toBe(false);
+    expect(isCancellable(undefined)).toBe(false);
+    expect(isCancellable({})).toBe(false);
+  });
+
+  it('truthy non-boolean cancellable does not count as true', () => {
+    expect(
+      isCancellable({
+        status: { state: 'running' },
+        cancellable: 1 as unknown as boolean,
+      }),
+    ).toBe(false);
   });
 });
 
