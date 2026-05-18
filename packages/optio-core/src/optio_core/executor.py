@@ -90,15 +90,17 @@ class Executor:
             self._task_registry[t.process_id] = t
 
     async def _cleanup_ephemeral(self, process_id: str) -> None:
-        """Delete the process if it's marked ephemeral."""
+        """Delete the process if it's marked ephemeral. Accepts processId OR OID hex."""
         proc = await get_process_by_process_id(self._db, self._prefix, process_id)
         if proc is not None and proc.get("ephemeral"):
             from optio_core.store import delete_process
-            await delete_process(self._db, self._prefix, process_id)
-            self._task_registry.pop(process_id, None)
+            # delete_process accepts dual-form; pass OID to avoid orphan
+            # ambiguity. Registry pop must use the resolved doc's processId.
+            await delete_process(self._db, self._prefix, str(proc["_id"]))
+            self._task_registry.pop(proc["processId"], None)
 
     async def launch_process(self, process_id: str, resume: bool = False) -> str | None:
-        """Launch a top-level process by processId. Returns end state or None.
+        """Launch a top-level process by processId OR OID hex (dual-form).
 
         If resume is True, ctx.resume will be True inside the execute function,
         signalling that the task should restore previous state rather than start fresh.
@@ -118,7 +120,9 @@ class Executor:
         )
         await append_log(self._db, self._prefix, proc["_id"], "event", "State changed to scheduled")
 
-        task = self._task_registry.get(process_id)
+        # Use resolved doc's processId for the registry — caller may have
+        # passed OID hex, but _task_registry is processId-keyed.
+        task = self._task_registry.get(proc["processId"])
         state, _ = await self._execute_process(
             proc, task.execute if task else None, resume=resume,
         )
@@ -246,7 +250,7 @@ class Executor:
                         "State changed to cancelled (raised CancelledError)",
                     )
                     await clear_widget_upstream(self._db, self._prefix, oid)
-                    await self._cleanup_ephemeral(proc["processId"])
+                    await self._cleanup_ephemeral(str(oid))
                 raise
             except Exception as e:
                 await ctx.flush_final_progress()
@@ -260,7 +264,7 @@ class Executor:
                 )
                 await append_log(self._db, self._prefix, oid, "error", str(e))
                 await clear_widget_upstream(self._db, self._prefix, oid)
-                await self._cleanup_ephemeral(proc["processId"])
+                await self._cleanup_ephemeral(str(oid))
                 return ("failed", e)
 
             await ctx.flush_final_progress()
@@ -296,7 +300,7 @@ class Executor:
                 await append_log(self._db, self._prefix, oid, "event", "State changed to cancelled")
 
             await clear_widget_upstream(self._db, self._prefix, oid)
-            await self._cleanup_ephemeral(proc["processId"])
+            await self._cleanup_ephemeral(str(oid))
             return (end_state, None)
         finally:
             self._cancellation_flags.pop(oid, None)
@@ -377,10 +381,18 @@ class Executor:
         """
         entry = self._cancellation_flags.get(process_oid)
         if entry is None:
+            _trace("request_cancel_with_deadline oid=%s: NOT FOUND in supervisor map",
+                   process_oid)
             return False
         entry.flag.set()
+        _existing = entry.deadline
         if entry.deadline is None:
             entry.deadline = deadline
+        _trace(
+            "request_cancel_with_deadline oid=%s: flag set; deadline=%.3f (now=%.3f budget=%.3fs) existing=%s",
+            process_oid, entry.deadline, time.monotonic(),
+            entry.deadline - time.monotonic(), _existing,
+        )
         return True
 
     async def force_cancel(self, oid: ObjectId) -> None:
@@ -399,15 +411,25 @@ class Executor:
         from optio_core.state_machine import ACTIVE_STATES
 
         task = self._running_tasks.get(oid)
+        _trace(
+            "force_cancel oid=%s task=%s done=%s",
+            oid, task, task.done() if task else None,
+        )
         if task is not None and not task.done():
+            _trace("force_cancel oid=%s: calling task.cancel() + 2s shield wait", oid)
             task.cancel()
             try:
                 await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
-                # TimeoutError: thread-blocked or stubborn — proceed regardless.
-                # CancelledError: task acknowledged cancellation — proceed.
-                # Other exceptions are not our concern; the conditional Mongo
-                # update below is the source of truth.
+                _trace("force_cancel oid=%s: task unwound within shield window", oid)
+            except asyncio.TimeoutError:
+                _trace("force_cancel oid=%s: 2s shield TIMEOUT — task still running", oid)
+                pass
+            except asyncio.CancelledError:
+                _trace("force_cancel oid=%s: task acknowledged Cancel", oid)
+                pass
+            except Exception as _e:
+                _trace("force_cancel oid=%s: task raised %s: %s",
+                       oid, type(_e).__name__, _e)
                 pass
         await _write_force_cancelled_state(self._db, self._prefix, oid)
 
@@ -416,6 +438,10 @@ class Executor:
             self._db, self._prefix, oid, states=ACTIVE_STATES,
         )
         if children:
+            _trace(
+                "force_cancel oid=%s: cascading to children=%s",
+                oid, [str(c["_id"]) for c in children],
+            )
             await asyncio.gather(
                 *(self.force_cancel(c["_id"]) for c in children),
                 return_exceptions=True,

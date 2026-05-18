@@ -122,7 +122,9 @@ async def test_cancel_returns_ok_when_scheduled(mongo_db):
     })
 
     out = await fw.cancel("sched1")
-    assert out == CancelOutcome(ok=True)
+    assert out.ok is True
+    assert out.proc is not None
+    assert out.proc["status"]["state"] == "cancelled"
 
     proc = await fw.get_process("sched1")
     assert proc["status"]["state"] == "cancelled"
@@ -165,7 +167,9 @@ async def test_dismiss_ok_from_done(mongo_db):
     })
 
     out = await fw.dismiss("done1")
-    assert out == DismissOutcome(ok=True)
+    assert out.ok is True
+    assert out.proc is not None
+    assert out.proc["status"]["state"] == "idle"
 
     proc = await fw.get_process("done1")
     assert proc["status"]["state"] == "idle"

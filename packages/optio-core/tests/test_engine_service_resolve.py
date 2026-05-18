@@ -221,30 +221,32 @@ async def test_resolve_collision_id_branch_wins():
 
 @pytest.mark.asyncio
 async def test_launch_accepts_object_id_hex_form():
-    """OptioEngineService.launch resolves the hex _id form via Optio._resolve."""
+    """OptioEngineService.launch passes the hex _id form through to Optio.launch
+    unchanged; resolution is Optio's responsibility (verified via the Optio.launch
+    mock receiving the hex id verbatim)."""
     proc = _sample_proc()
     coll = AsyncMock()
-    # Two find_one calls in launch(): pre-state read + post-launch read.
-    coll.find_one = AsyncMock(side_effect=[proc, {**proc, "status": {"state": "scheduled"}}])
     svc = _make_service(coll)
+    scheduled = {**proc, "status": {"state": "scheduled"}}
+    svc._optio.launch = AsyncMock(return_value=LaunchOutcome(ok=True, proc=scheduled))
 
     result = await svc.launch(LaunchParams.model_validate({"processId": str(proc["_id"])}))
 
     assert result.root.ok is True
-    first_query = coll.find_one.call_args_list[0][0][0]
-    assert "_id" in first_query
+    svc._optio.launch.assert_awaited_once_with(str(proc["_id"]), resume=False)
 
 
 @pytest.mark.asyncio
 async def test_launch_accepts_process_id_string_form():
-    """OptioEngineService.launch resolves the processId string form via Optio._resolve."""
+    """OptioEngineService.launch passes the processId string form through to
+    Optio.launch unchanged."""
     proc = _sample_proc(process_id="launch-by-pid")
     coll = AsyncMock()
-    coll.find_one = AsyncMock(side_effect=[proc, {**proc, "status": {"state": "scheduled"}}])
     svc = _make_service(coll)
+    scheduled = {**proc, "status": {"state": "scheduled"}}
+    svc._optio.launch = AsyncMock(return_value=LaunchOutcome(ok=True, proc=scheduled))
 
     result = await svc.launch(LaunchParams.model_validate({"processId": "launch-by-pid"}))
 
     assert result.root.ok is True
-    first_query = coll.find_one.call_args_list[0][0][0]
-    assert first_query == {"processId": "launch-by-pid"}
+    svc._optio.launch.assert_awaited_once_with("launch-by-pid", resume=False)

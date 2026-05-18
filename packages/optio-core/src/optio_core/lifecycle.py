@@ -364,7 +364,9 @@ class Optio:
         """Fire-and-forget launch. Returns LaunchOutcome with a typed reason on
         precondition failure (not-found, not-launchable, no-resume-support,
         launch-blocked); on success the executor task is scheduled in the
-        background and the outcome is ok=True."""
+        background and the outcome is ok=True with `proc` populated from a
+        post-schedule re-read (state will typically be 'scheduled' or
+        already advanced to 'running' depending on event-loop timing)."""
         proc = await self._resolve(process_id)
         if proc is None:
             return LaunchOutcome(ok=False, reason="not-found")
@@ -377,10 +379,16 @@ class Optio:
         if task is not None and self._matches_block(task.metadata):
             return LaunchOutcome(ok=False, reason="launch-blocked")
 
+        oid_str = str(proc["_id"])
         asyncio.create_task(
-            self._executor.launch_process(proc["processId"], resume=resume),
+            self._executor.launch_process(oid_str, resume=resume),
         )
-        return LaunchOutcome(ok=True)
+        # Yield once so the executor's first state-write (idle→scheduled)
+        # lands before we re-read; then return the post-launch snapshot
+        # via OID (unambiguous).
+        await asyncio.sleep(0)
+        post = await self._resolve(oid_str)
+        return LaunchOutcome(ok=True, proc=post)
 
     async def launch_and_wait(self, process_id: str, resume: bool = False) -> None:
         """Launch and wait for the process to complete. Full progress tracking.
@@ -508,16 +516,22 @@ class Optio:
                 )
                 await asyncio.gather(
                     *(
-                        self.cancel(c["processId"], inherit_deadline=effective_deadline)
+                        self.cancel(str(c["_id"]), inherit_deadline=effective_deadline)
                         for c in children
                     ),
                     return_exceptions=True,
                 )
         _trace("CANCEL-TRACE %s: exit ok=True", process_id)
-        return CancelOutcome(ok=True)
+        # Re-read by OID for the post-cancel snapshot; state has advanced
+        # to cancel_requested / cancelling / cancelled depending on the
+        # arm taken above.
+        post = await self._resolve(str(proc["_id"]))
+        return CancelOutcome(ok=True, proc=post)
 
     async def cancel_and_wait(self, process_id: str) -> str | None:
         """Cancel and wait until the process reaches a terminal state.
+
+        Accepts processId OR OID hex (via the widened lookup primitive).
 
         Returns the terminal state ('cancelled', 'failed', 'done', ...) or
         None if the process does not exist. Raises asyncio.TimeoutError if
@@ -531,13 +545,16 @@ class Optio:
         if proc is None:
             return None
 
-        await self.cancel(process_id)
+        # Use the resolved OID for the cancel + poll so orphan-duplicate
+        # processIds can't misroute either operation.
+        oid_str = str(proc["_id"])
+        await self.cancel(oid_str)
 
         ceiling = self._config.cancel_grace_seconds + 25.0
         deadline = time.monotonic() + ceiling
         while True:
             proc = await get_process_by_process_id(
-                self._config.mongo_db, self._config.prefix, process_id,
+                self._config.mongo_db, self._config.prefix, oid_str,
             )
             if proc is None:
                 return None
@@ -567,10 +584,11 @@ class Optio:
         active = [p for p in procs if p["status"]["state"] in ACTIVE_STATES]
 
         # 2. Issue cancellations in parallel. cancel() is non-blocking
-        #    and idempotent.
+        #    and idempotent. Pass OID so duplicate processIds (orphans
+        #    from re-registrations) can't misroute the cancel.
         if active:
             await asyncio.gather(
-                *(self.cancel(p["processId"]) for p in active)
+                *(self.cancel(str(p["_id"])) for p in active)
             )
 
         pending_ids = [p["processId"] for p in active]
@@ -589,7 +607,7 @@ class Optio:
             ]
             if leaked:
                 await asyncio.gather(
-                    *(self.cancel(p["processId"]) for p in leaked)
+                    *(self.cancel(str(p["_id"])) for p in leaked)
                 )
                 pending_ids.extend(p["processId"] for p in leaked)
 
@@ -689,7 +707,8 @@ class Optio:
             return len(pending)
 
     async def dismiss(self, process_id: str) -> DismissOutcome:
-        """Dismiss a completed process (reset to idle). Returns DismissOutcome."""
+        """Dismiss a completed process (reset to idle). Returns DismissOutcome
+        with `proc` populated from a post-dismiss re-read on success."""
         proc = await self._resolve(process_id)
         if proc is None:
             return DismissOutcome(ok=False, reason="not-found")
@@ -703,13 +722,14 @@ class Optio:
             self._config.mongo_db, self._config.prefix, proc["_id"],
             ProcessStatus(state="idle"),
         )
-        return DismissOutcome(ok=True)
+        post = await self._resolve(str(proc["_id"]))
+        return DismissOutcome(ok=True, proc=post)
 
     async def resync(
         self,
         clean: bool = False,
         metadata_filter: ProcessMetadataFilter | None = None,
-    ) -> None:
+    ) -> dict[str, str]:
         """Re-sync task definitions from the generator.
 
         With no `metadata_filter`, the full task set is regenerated and stale
@@ -719,6 +739,12 @@ class Optio:
 
         `clean=True` deletes process records before re-importing. When combined
         with a filter, only in-scope records are deleted.
+
+        Returns a `{processId: oid_hex}` map covering every task synced this
+        call. Callers that want to immediately launch one of the synced
+        tasks should pass `oid_hex` from this map to `launch()` rather than
+        the processId — avoids the ambiguity that arises when prior runs
+        left orphan docs with the same processId.
         """
         if clean:
             coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
@@ -731,17 +757,24 @@ class Optio:
                 deleted = await coll.delete_many({})
             logger.info(f"Nuked {deleted.deleted_count} process records")
 
-        await self._sync_definitions(metadata_filter)
+        return await self._sync_definitions(metadata_filter)
 
     async def _resolve(self, id_str: str) -> dict | None:
         """Accept an ObjectId hex string or a processId; return the matching
-        Mongo process doc, or None if neither lookup matches."""
+        Mongo process doc, or None if neither lookup matches.
+
+        ProcessId fallback returns the NEWEST doc by _id (orphan-resilient):
+        when multiple docs share the same processId from prior task
+        re-registrations, the live one (newest OID) wins. Callers that
+        already hold a doc/OID should pass the OID hex to avoid the
+        ambiguity altogether.
+        """
         coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
         if _is_objectid(id_str):
             doc = await coll.find_one({"_id": ObjectId(id_str)})
             if doc:
                 return doc
-        return await coll.find_one({"processId": id_str})
+        return await coll.find_one({"processId": id_str}, sort=[("_id", -1)])
 
     async def get_process(self, process_id: str) -> dict | None:
         """Get a process by its process_id string."""
@@ -924,6 +957,10 @@ class Optio:
                             continue
                         if now < entry.deadline:
                             continue
+                        _trace(
+                            "CANCEL-TRACE supervisor: oid=%s deadline EXPIRED (now=%.3f deadline=%.3f overshoot=%.3fs); calling force_cancel",
+                            oid, now, entry.deadline, now - entry.deadline,
+                        )
                         await self._executor.force_cancel(oid)
             except Exception as e:
                 logger.exception(f"Supervisor loop error: {e}")
@@ -989,10 +1026,16 @@ class Optio:
     async def _sync_definitions(
         self,
         metadata_filter: ProcessMetadataFilter | None = None,
-    ) -> None:
-        """Run the task generator and sync with database, optionally scoped."""
+    ) -> dict[str, str]:
+        """Run the task generator and sync with database, optionally scoped.
+
+        Returns a `{processId: oid_hex}` map covering every task synced this
+        call. Callers that immediately want to launch by OID can read the
+        OID from this map instead of doing a follow-up processId-keyed
+        lookup. Empty dict if no generator is configured.
+        """
         if self._config.get_task_definitions is None:
-            return
+            return {}
 
         tasks = await self._config.get_task_definitions(
             self._config.services, metadata_filter,
@@ -1003,8 +1046,10 @@ class Optio:
         if metadata_filter:
             tasks = [t for t in tasks if matches_filter(t.metadata, metadata_filter)]
 
+        pid_to_oid: dict[str, str] = {}
         for task in tasks:
-            await upsert_process(self._config.mongo_db, self._config.prefix, task)
+            proc = await upsert_process(self._config.mongo_db, self._config.prefix, task)
+            pid_to_oid[task.process_id] = str(proc["_id"])
 
         valid_ids = {t.process_id for t in tasks}
 
@@ -1030,6 +1075,7 @@ class Optio:
 
         scope = "(all)" if not metadata_filter else f"(filter={metadata_filter})"
         logger.info(f"Synced {len(tasks)} task definitions {scope}")
+        return pid_to_oid
 
     async def _scheduler_launch_adapter(self, process_id: str) -> None:
         """Scheduler hook: funnel through Optio.launch, log on failure.

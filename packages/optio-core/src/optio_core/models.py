@@ -7,25 +7,40 @@ from datetime import datetime
 
 @dataclass(frozen=True)
 class LaunchOutcome:
-    """Result of Optio.launch. ok=False carries a typed reason."""
+    """Result of Optio.launch. ok=False carries a typed reason.
+
+    `proc` is the post-action process doc snapshot when ok=True (lifecycle
+    resolves it after the state transition); None on failure.
+    """
     ok: bool
     reason: Literal[
         "not-found", "not-launchable", "launch-blocked", "no-resume-support",
     ] | None = None
+    proc: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
 class CancelOutcome:
-    """Result of Optio.cancel."""
+    """Result of Optio.cancel.
+
+    `proc` is the post-action process doc snapshot when ok=True; None on
+    failure.
+    """
     ok: bool
     reason: Literal["not-found", "not-cancellable"] | None = None
+    proc: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
 class DismissOutcome:
-    """Result of Optio.dismiss."""
+    """Result of Optio.dismiss.
+
+    `proc` is the post-action process doc snapshot when ok=True; None on
+    failure.
+    """
     ok: bool
     reason: Literal["not-found", "not-dismissable"] | None = None
+    proc: dict[str, Any] | None = None
 
 
 @dataclass

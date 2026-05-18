@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import datetime
 from typing import TYPE_CHECKING
 
@@ -82,12 +81,8 @@ class OptioEngineService(OptioEngineServiceBase):
             return LaunchResult.model_validate(
                 {"ok": False, "reason": outcome.reason}
             )
-        # The executor runs asynchronously; yield once so the state transition
-        # (idle → scheduled) can be written before we read it back.
-        await asyncio.sleep(0)
-        proc = await self._optio._resolve(params.process_id)
         return LaunchResult.model_validate(
-            {"ok": True, "process": _to_process_dict(proc)}
+            {"ok": True, "process": _to_process_dict(outcome.proc)}
         )
 
     # --------------------------------------------------------------- cancel
@@ -97,9 +92,8 @@ class OptioEngineService(OptioEngineServiceBase):
             return CancelResult.model_validate(
                 {"ok": False, "reason": outcome.reason}
             )
-        proc = await self._optio._resolve(params.process_id)
         return CancelResult.model_validate(
-            {"ok": True, "process": _to_process_dict(proc)}
+            {"ok": True, "process": _to_process_dict(outcome.proc)}
         )
 
     # --------------------------------------------------------------- dismiss
@@ -109,9 +103,8 @@ class OptioEngineService(OptioEngineServiceBase):
             return DismissResult.model_validate(
                 {"ok": False, "reason": outcome.reason}
             )
-        proc = await self._optio._resolve(params.process_id)
         return DismissResult.model_validate(
-            {"ok": True, "process": _to_process_dict(proc)}
+            {"ok": True, "process": _to_process_dict(outcome.proc)}
         )
 
     # --------------------------------------------------------------- resync

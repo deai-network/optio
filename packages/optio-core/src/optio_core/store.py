@@ -1,5 +1,6 @@
 """MongoDB operations for process records."""
 
+import re as _re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from bson import ObjectId
@@ -8,6 +9,13 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from optio_core.models import (
     TaskInstance, ProcessStatus, Progress, InnerAuth, ProcessMetadataFilter,
 )
+
+
+_OBJECTID_RE = _re.compile(r"^[a-fA-F0-9]{24}$")
+
+
+def _is_objectid(s: str) -> bool:
+    return bool(_OBJECTID_RE.match(s))
 
 
 def _collection(db: AsyncIOMotorDatabase, prefix: str):
@@ -144,8 +152,20 @@ async def get_process_by_id(
 async def get_process_by_process_id(
     db: AsyncIOMotorDatabase, prefix: str, process_id: str,
 ) -> dict | None:
-    """Get a process record by processId string."""
-    return await _collection(db, prefix).find_one({"processId": process_id})
+    """Get a process record by processId or by OID hex (dual-form).
+
+    If the string is a 24-hex ObjectId, looks up by _id (unambiguous).
+    Otherwise looks up by processId. ProcessId fallback returns the
+    NEWEST doc by _id (orphan-resilient: when multiple docs share the
+    same processId from prior task re-registrations, the live one — the
+    one with the newest OID — wins).
+    """
+    coll = _collection(db, prefix)
+    if _is_objectid(process_id):
+        doc = await coll.find_one({"_id": ObjectId(process_id)})
+        if doc is not None:
+            return doc
+    return await coll.find_one({"processId": process_id}, sort=[("_id", -1)])
 
 
 async def update_status(
@@ -262,7 +282,7 @@ async def delete_descendants(
 async def delete_process(
     db: AsyncIOMotorDatabase, prefix: str, process_id: str,
 ) -> None:
-    """Delete a process and its descendants by processId. No-op if not found."""
+    """Delete a process and its descendants by processId OR OID hex. No-op if not found."""
     proc = await get_process_by_process_id(db, prefix, process_id)
     if proc is None:
         return

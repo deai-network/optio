@@ -81,9 +81,12 @@ def fake_optio(sample_idle_proc):
         return await coll.find_one({"processId": id_str})
     optio._resolve = fake_resolve
 
-    optio.launch = AsyncMock(return_value=LaunchOutcome(ok=True))
-    optio.cancel = AsyncMock(return_value=CancelOutcome(ok=True))
-    optio.dismiss = AsyncMock(return_value=DismissOutcome(ok=True))
+    # Default outcome includes the post-mutation proc snapshot — Optio.launch/
+    # cancel/dismiss populate this for the adapter to serialize without
+    # re-resolving. Per-test mocks override with case-specific docs.
+    optio.launch = AsyncMock(return_value=LaunchOutcome(ok=True, proc=sample_idle_proc))
+    optio.cancel = AsyncMock(return_value=CancelOutcome(ok=True, proc=sample_idle_proc))
+    optio.dismiss = AsyncMock(return_value=DismissOutcome(ok=True, proc=sample_idle_proc))
     optio.resync = AsyncMock(return_value=None)
     optio.group_cancel = AsyncMock(return_value=3)
     optio.group_cancel_and_wait = AsyncMock(return_value=2)
@@ -98,10 +101,9 @@ async def test_launch_by_objectid_hex(fake_optio, sample_idle_proc):
     """Adapter passes the hex id through to Optio.launch unchanged; the resolver
     on Optio (not on the adapter) handles the ObjectId-vs-string distinction."""
     from optio_core._engine_service import OptioEngineService
-    running = dict(sample_idle_proc)
-    running["status"] = {"state": "scheduled"}
-    # Post-success _resolve happens via the fake_resolve → find_one path.
-    fake_optio.collection.find_one = AsyncMock(return_value=running)
+    scheduled = dict(sample_idle_proc)
+    scheduled["status"] = {"state": "scheduled"}
+    fake_optio.launch = AsyncMock(return_value=LaunchOutcome(ok=True, proc=scheduled))
 
     svc = OptioEngineService(fake_optio)
     hex_id = str(sample_idle_proc["_id"])
@@ -116,9 +118,9 @@ async def test_launch_success(fake_optio, sample_idle_proc):
     """launch ok=True path returns the post-mutation proc as the wire payload."""
     from optio_core._engine_service import OptioEngineService
 
-    running = dict(sample_idle_proc)
-    running["status"] = {"state": "scheduled"}
-    fake_optio.collection.find_one = AsyncMock(return_value=running)
+    scheduled = dict(sample_idle_proc)
+    scheduled["status"] = {"state": "scheduled"}
+    fake_optio.launch = AsyncMock(return_value=LaunchOutcome(ok=True, proc=scheduled))
 
     svc = OptioEngineService(fake_optio)
     result = await svc.launch(LaunchParams.model_validate({"processId": "p1"}))
@@ -174,9 +176,7 @@ async def test_cancel_success(fake_optio, sample_running_proc):
     from optio_core._engine_service import OptioEngineService
     cancelled = dict(sample_running_proc)
     cancelled["status"] = {"state": "cancelled"}
-    # New adapter delegates to Optio.cancel and only re-reads post-success
-    # for the wire-response payload — one find_one call, not two.
-    fake_optio.collection.find_one = AsyncMock(return_value=cancelled)
+    fake_optio.cancel = AsyncMock(return_value=CancelOutcome(ok=True, proc=cancelled))
     svc = OptioEngineService(fake_optio)
     result = await svc.cancel(CancelParams.model_validate({"processId": "p1"}))
     assert result.root.ok is True
@@ -218,7 +218,7 @@ async def test_dismiss_success(fake_optio, sample_idle_proc):
     from optio_core._engine_service import OptioEngineService
     after = dict(sample_idle_proc)
     after["status"] = {"state": "idle"}
-    fake_optio.collection.find_one = AsyncMock(return_value=after)
+    fake_optio.dismiss = AsyncMock(return_value=DismissOutcome(ok=True, proc=after))
     svc = OptioEngineService(fake_optio)
     result = await svc.dismiss(DismissParams.model_validate({"processId": "p1"}))
     assert result.root.ok is True
@@ -355,11 +355,9 @@ async def test_launch_redelivery_returns_not_launchable(fake_optio, sample_idle_
     after["status"] = {"state": "scheduled"}
 
     fake_optio.launch = AsyncMock(side_effect=[
-        LaunchOutcome(ok=True),
+        LaunchOutcome(ok=True, proc=after),
         LaunchOutcome(ok=False, reason="not-launchable"),
     ])
-    # Post-success _resolve returns the post-mutation proc.
-    fake_optio.collection.find_one = AsyncMock(return_value=after)
 
     svc = OptioEngineService(fake_optio)
     first = await svc.launch(LaunchParams.model_validate({"processId": "p1"}))
