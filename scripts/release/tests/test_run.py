@@ -187,8 +187,8 @@ class TestReleasePerPackage:
         assert any(len(c) >= 3 and c[1:3] == ["-m", "build"] for c in commands)
         # Confirm git tag was created.
         assert any(c[:2] == ["git", "tag"] and "fake-py-v0.1.0" in c for c in commands)
-        # Confirm git commit was created.
-        assert any(c[:2] == ["git", "commit"] for c in commands)
+        # BUMP=none with no sibling pin changes: no commit (nothing to commit).
+        assert not any(c[:2] == ["git", "commit"] for c in commands)
 
     def test_dist_wipe_handles_nested_subdirs(self, tmp_path: Path):
         """Regression: dist-wipe must recursively remove subdirectories
@@ -362,7 +362,7 @@ class TestReleaseWire:
         tag_names = [c[2] for c in tag_cmds]
         assert "optio-contracts-v0.2.0" in tag_names
         assert "optio-core-v0.2.0" in tag_names
-        # Single commit covering both packages + sibling.
+        # Single commit covering both packages + sibling (BUMP=minor changed version).
         commit_cmds = [c for c in commands if c[:2] == ["git", "commit"]]
         assert len(commit_cmds) == 1
         assert "release(wire): 0.2.0" in commit_cmds[0][-1]

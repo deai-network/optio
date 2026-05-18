@@ -196,15 +196,17 @@ def release_per_package(
             ["pnpm", "--filter", info.dist_name, "build"], cwd=str(repo_root)
         )
 
-    # Commit + tag
-    files_to_add = [str(version_file)]
-    files_to_add.extend(
-        str(repo_root / "packages" / s / "pyproject.toml") for s in changed_sibs
-    )
-    subprocess.check_call(["git", "add", *files_to_add])
-    subprocess.check_call(
-        ["git", "commit", "-m", f"release({info.name}): {new_version}"]
-    )
+    # Commit (only if anything actually changed) + tag
+    version_changed = new_version != info.current_version
+    if version_changed or changed_sibs:
+        files_to_add = [str(version_file)]
+        files_to_add.extend(
+            str(repo_root / "packages" / s / "pyproject.toml") for s in changed_sibs
+        )
+        subprocess.check_call(["git", "add", *files_to_add])
+        subprocess.check_call(
+            ["git", "commit", "-m", f"release({info.name}): {new_version}"]
+        )
     tag = f"{info.name}-v{new_version}"
     subprocess.check_call(["git", "tag", tag])
 
@@ -299,15 +301,17 @@ def release_wire(
         ["pnpm", "--filter", contracts.dist_name, "build"], cwd=str(repo_root)
     )
 
-    # Single commit
-    files_to_add = [str(contracts_file), str(core_file)]
-    files_to_add.extend(
-        str(repo_root / "packages" / s / "pyproject.toml") for s in changed_sibs
-    )
-    subprocess.check_call(["git", "add", *files_to_add])
-    subprocess.check_call(
-        ["git", "commit", "-m", f"release(wire): {new_version}"]
-    )
+    # Single commit (only if anything actually changed)
+    version_changed = new_version != contracts.current_version
+    if version_changed or changed_sibs:
+        files_to_add = [str(contracts_file), str(core_file)]
+        files_to_add.extend(
+            str(repo_root / "packages" / s / "pyproject.toml") for s in changed_sibs
+        )
+        subprocess.check_call(["git", "add", *files_to_add])
+        subprocess.check_call(
+            ["git", "commit", "-m", f"release(wire): {new_version}"]
+        )
 
     # Two tags
     contracts_tag = f"optio-contracts-v{new_version}"
