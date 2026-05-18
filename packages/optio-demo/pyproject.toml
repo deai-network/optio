@@ -6,14 +6,34 @@ build-backend = "setuptools.build_meta"
 name = "optio-demo"
 version = "0.1.0"
 description = "Demo application exercising all optio-core features"
+readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
+authors = [
+    { name = "Kristof Csillag", email = "kristof.csillag@deai-labs.com" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 dependencies = [
-    "optio-core[redis]",
+    "optio-core[redis]>=0.1,<0.2",
     "marimo>=0.9",
-    "optio-opencode",
+    "optio-opencode>=0.1,<0.2",
     "watchfiles>=1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/deai-network/optio"
+Repository = "https://github.com/deai-network/optio"
+Issues = "https://github.com/deai-network/optio/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]

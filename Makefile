@@ -127,3 +127,51 @@ run-dashboard-api:  ## Start the dashboard API server
 
 run-dashboard-dev:  ## Start the dashboard Vite dev server (requires run-dashboard-api)
 	$(MAKE) -C packages/optio-dashboard dev
+
+# -----------------------------------------------------------------------------
+# Release targets
+#
+# Per-package releases via Python orchestrator. Each target takes BUMP=...
+# Wire-locked optio-contracts and optio-core release together via release-wire.
+# See docs/2026-05-18-release-infrastructure-design.md for design.
+
+RELEASABLE_TS      := optio-ui optio-api optio-dashboard
+RELEASABLE_PY      := optio-host optio-opencode optio-demo
+RELEASE_INDIVIDUAL := $(RELEASABLE_TS) $(RELEASABLE_PY)
+WIRE_LOCKED        := optio-contracts optio-core
+
+# Single dispatcher target: delegates to the Python orchestrator.
+# Requires BUMP=<level> on the command line.
+.PHONY: $(addprefix release-, $(RELEASE_INDIVIDUAL))
+$(addprefix release-, $(RELEASE_INDIVIDUAL)): release-%: $(VENV)/bin/python
+	@if [ -z "$(BUMP)" ]; then \
+	  echo "ERROR: BUMP is required (patch | minor | none | promote-to-1.0)" >&2; \
+	  exit 1; \
+	fi
+	$(PY) scripts/release/run.py per-package $* "$(BUMP)"
+
+# Wire-locked packages: print a helpful message and exit.
+.PHONY: $(addprefix release-, $(WIRE_LOCKED))
+$(addprefix release-, $(WIRE_LOCKED)):
+	@echo "wire-locked: use 'make release-wire BUMP=...' to release optio-contracts + optio-core together." >&2
+	@exit 1
+
+.PHONY: release-wire
+release-wire: $(VENV)/bin/python  ## Release optio-contracts + optio-core in lockstep (requires BUMP=...)
+	@if [ -z "$(BUMP)" ]; then \
+	  echo "ERROR: BUMP is required (patch | minor | none | promote-to-1.0)" >&2; \
+	  exit 1; \
+	fi
+	$(PY) scripts/release/run.py wire "$(BUMP)"
+
+.PHONY: release-all
+release-all: $(VENV)/bin/python  ## Release every package whose source > registry
+	$(PY) scripts/release/run.py all
+
+.PHONY: $(addprefix resume-release-, $(RELEASE_INDIVIDUAL))
+$(addprefix resume-release-, $(RELEASE_INDIVIDUAL)): resume-release-%: $(VENV)/bin/python
+	$(PY) scripts/release/run.py resume $*
+
+.PHONY: $(addprefix clean-dist-, $(RELEASABLE_PY) $(RELEASABLE_TS) $(WIRE_LOCKED))
+$(addprefix clean-dist-, $(RELEASABLE_PY) $(RELEASABLE_TS) $(WIRE_LOCKED)): clean-dist-%:
+	rm -rf packages/$*/dist

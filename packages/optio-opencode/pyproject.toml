@@ -6,11 +6,28 @@ build-backend = "setuptools.build_meta"
 name = "optio-opencode"
 version = "0.1.0"
 description = "Run opencode web as an optio task; local subprocess or remote via SSH."
+readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
+authors = [
+    { name = "Kristof Csillag", email = "kristof.csillag@deai-labs.com" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Code Generators",
+    "Framework :: AsyncIO",
+]
 dependencies = [
-    "optio-core",
-    "optio-host",
+    "optio-core>=0.1,<0.2",
+    "optio-host>=0.1,<0.2",
     "asyncssh>=2.14",
 ]
 
@@ -19,6 +36,11 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
 ]
+
+[project.urls]
+Homepage = "https://github.com/deai-network/optio"
+Repository = "https://github.com/deai-network/optio"
+Issues = "https://github.com/deai-network/optio/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
