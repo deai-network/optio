@@ -208,7 +208,9 @@ def release_per_package(
             ["git", "commit", "-m", f"release({info.name}): {new_version}"]
         )
     tag = f"{info.name}-v{new_version}"
-    subprocess.check_call(["git", "tag", tag])
+    subprocess.check_call(
+        ["git", "tag", "-a", tag, "-m", f"Release {info.dist_name} {new_version}"]
+    )
 
     # Publish
     if not skip_publish:
@@ -316,8 +318,12 @@ def release_wire(
     # Two tags
     contracts_tag = f"optio-contracts-v{new_version}"
     core_tag = f"optio-core-v{new_version}"
-    subprocess.check_call(["git", "tag", contracts_tag])
-    subprocess.check_call(["git", "tag", core_tag])
+    subprocess.check_call(
+        ["git", "tag", "-a", contracts_tag, "-m", f"Release optio-contracts {new_version}"]
+    )
+    subprocess.check_call(
+        ["git", "tag", "-a", core_tag, "-m", f"Release optio-core {new_version}"]
+    )
 
     # Publish both
     if not skip_publish:

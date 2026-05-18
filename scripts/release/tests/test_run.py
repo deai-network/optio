@@ -185,8 +185,8 @@ class TestReleasePerPackage:
 
         # Confirm the build command was issued (any python executable + -m build).
         assert any(len(c) >= 3 and c[1:3] == ["-m", "build"] for c in commands)
-        # Confirm git tag was created.
-        assert any(c[:2] == ["git", "tag"] and "fake-py-v0.1.0" in c for c in commands)
+        # Confirm git tag was created (annotated form).
+        assert any(c[:3] == ["git", "tag", "-a"] and "fake-py-v0.1.0" in c for c in commands)
         # BUMP=none with no sibling pin changes: no commit (nothing to commit).
         assert not any(c[:2] == ["git", "commit"] for c in commands)
 
@@ -357,9 +357,9 @@ class TestReleaseWire:
         assert 'version = "0.2.0"' in (core / "pyproject.toml").read_text()
         # Sibling pin in optio-host updated.
         assert '"optio-core>=0.2,<0.3"' in (host / "pyproject.toml").read_text()
-        # Two tags issued.
-        tag_cmds = [c for c in commands if c[:2] == ["git", "tag"]]
-        tag_names = [c[2] for c in tag_cmds]
+        # Two tags issued (annotated form: git tag -a <name> -m <msg>).
+        tag_cmds = [c for c in commands if c[:3] == ["git", "tag", "-a"]]
+        tag_names = [c[3] for c in tag_cmds]
         assert "optio-contracts-v0.2.0" in tag_names
         assert "optio-core-v0.2.0" in tag_names
         # Single commit covering both packages + sibling (BUMP=minor changed version).
