@@ -1,8 +1,16 @@
 {
   "name": "optio-ui",
   "version": "0.1.0",
-  "private": true,
   "license": "Apache-2.0",
+  "description": "React components for embedding optio process management UIs into ts-rest applications.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deai-network/optio.git",
+    "directory": "packages/optio-ui"
+  },
+  "homepage": "https://github.com/deai-network/optio/tree/main/packages/optio-ui#readme",
+  "bugs": { "url": "https://github.com/deai-network/optio/issues" },
+  "author": "Kristof Csillag <kristof.csillag@deai-labs.com>",
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
@@ -17,8 +25,8 @@
   },
   "dependencies": {
     "@ant-design/icons": "^5.6.0",
-    "@quaesitor-textus/antd": "link:../../../quaesitor-textus/packages/antd",
-    "@quaesitor-textus/core": "link:../../../quaesitor-textus/packages/core",
+    "@quaesitor-textus/antd": "^0.1.6",
+    "@quaesitor-textus/core": "^0.1.6",
     "@ts-rest/core": "^3.51.0",
     "@ts-rest/react-query": "^3.51.0",
     "antd": "^5.29.3",
