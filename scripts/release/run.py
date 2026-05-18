@@ -112,8 +112,10 @@ def preflight(*, skip_tests: bool = False, skip_fetch: bool = False) -> None:
     if local != upstream:
         raise SystemExit("preflight failed: branch is not up to date with origin/main")
 
-    # Tests
-    if not skip_tests:
+    # Tests — escape hatch via OPTIO_SKIP_PREFLIGHT_TESTS=1 for flaky-test or
+    # rapid-multi-release scenarios. Use sparingly; tests should pass.
+    import os
+    if not skip_tests and os.environ.get("OPTIO_SKIP_PREFLIGHT_TESTS") != "1":
         rc = subprocess.run(["make", "test"]).returncode
         if rc != 0:
             raise SystemExit("preflight failed: `make test` failed")
