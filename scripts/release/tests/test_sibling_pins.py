@@ -68,6 +68,21 @@ class TestUpdatePyproject:
         new = p.read_text()
         assert '"optio-core[redis]>=0.5,<0.6"' in new
 
+    def test_already_at_target_range_returns_false(self, tmp_path):
+        """If the pin already matches the target range, the rewrite is a no-op
+        and the function must report unchanged (so callers don't try to commit
+        a non-existent diff)."""
+        p = tmp_path / "pyproject.toml"
+        original = (
+            'dependencies = [\n'
+            '    "optio-core>=0.1,<0.2",\n'
+            ']\n'
+        )
+        p.write_text(original)
+        # Same version → same range → no actual file change.
+        assert update_pyproject(p, "optio-core", "0.1.0") is False
+        assert p.read_text() == original
+
     def test_no_match_returns_false(self, tmp_path):
         p = tmp_path / "pyproject.toml"
         p.write_text(

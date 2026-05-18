@@ -52,6 +52,9 @@ def update_pyproject(path: Path, target_pkg: str, new_version: str) -> bool:
     new_text, n = pat.subn(repl, text)
     if n != 1:
         raise SystemExit(f"{path}: substitution failed unexpectedly")
+    if new_text == text:
+        # Pin already at the target range; no rewrite needed.
+        return False
     path.write_text(new_text)
     return True
 
