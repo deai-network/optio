@@ -12,6 +12,7 @@
   "bugs": { "url": "https://github.com/deai-network/optio/issues" },
   "author": "Kristof Csillag <kristof.csillag@deai-labs.com>",
   "type": "module",
+  "files": ["dist", "README.md", "LICENSE"],
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {

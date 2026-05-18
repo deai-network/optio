@@ -17,6 +17,14 @@
   "exports": {
     ".": "./src/index.ts"
   },
+  "files": [
+    "src",
+    "!src/__tests__",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
