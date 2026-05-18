@@ -387,6 +387,101 @@ def release_all(
         )
 
 
+# --- Resume ------------------------------------------------------------------
+
+def _local_tag_exists(tag: str) -> bool:
+    r = subprocess.run(
+        ["git", "tag", "-l", tag],
+        capture_output=True, text=True,
+    )
+    return tag in r.stdout.split()
+
+
+def resume(
+    *,
+    repo_root: Path,
+    pkg_name: str,
+    skip_publish: bool = False,
+    skip_push: bool = False,
+) -> None:
+    """Resume a failed release. Diagnoses state and replays the missing steps."""
+    if pkg_name in WIRE_LOCKED:
+        raise SystemExit(
+            f"{pkg_name} is wire-locked — resume via `make resume-release-optio-contracts` "
+            f"or `make resume-release-optio-core` is not supported; rerun `make release-wire` "
+            f"after manually cleaning state."
+        )
+
+    info = discover_package(repo_root, pkg_name)
+    expected_tag = f"{pkg_name}-v{info.current_version}"
+    tag_present = _local_tag_exists(expected_tag)
+    dist_dir = info.dir / "dist"
+    have_artifact = dist_dir.exists() and any(dist_dir.iterdir())
+    latest = latest_published(info)
+    registry_has = (latest == info.current_version)
+
+    # Case analysis:
+    # 1. Registry has this version: nothing to do (publish already succeeded).
+    if registry_has:
+        if not skip_push:
+            print(f"registry has {info.dist_name} {info.current_version}; pushing tag if needed.")
+            subprocess.check_call(["git", "push", "origin", "main"])
+            subprocess.check_call(["git", "push", "origin", expected_tag])
+        else:
+            print(f"registry has {info.dist_name} {info.current_version}; nothing to do.")
+        return
+
+    # 2. Tag present + artifact present: resume from publish.
+    if tag_present and have_artifact:
+        print(f"resume: tag {expected_tag} and dist/ present; retrying publish step.")
+        if not skip_publish:
+            if info.kind == "python":
+                subprocess.check_call(
+                    [sys.executable, "-m", "twine", "upload",
+                     *[str(p) for p in sorted(dist_dir.iterdir())]]
+                )
+            else:
+                subprocess.check_call(
+                    ["pnpm", "publish", "--access", "public"], cwd=str(info.dir)
+                )
+        if not skip_push:
+            subprocess.check_call(["git", "push", "origin", "main"])
+            subprocess.check_call(["git", "push", "origin", expected_tag])
+        return
+
+    # 3. Tag present, no artifact: rebuild and republish.
+    if tag_present and not have_artifact:
+        print(f"resume: tag {expected_tag} present but no dist/. Rebuilding + republishing.")
+        if info.kind == "python":
+            subprocess.check_call([sys.executable, "-m", "build"], cwd=str(info.dir))
+            subprocess.check_call(
+                [sys.executable, "-m", "twine", "check",
+                 *[str(p) for p in sorted(dist_dir.iterdir())]]
+            )
+            if not skip_publish:
+                subprocess.check_call(
+                    [sys.executable, "-m", "twine", "upload",
+                     *[str(p) for p in sorted(dist_dir.iterdir())]]
+                )
+        else:
+            subprocess.check_call(["pnpm", "--filter", info.dist_name, "build"],
+                                  cwd=str(repo_root))
+            if not skip_publish:
+                subprocess.check_call(["pnpm", "publish", "--access", "public"],
+                                      cwd=str(info.dir))
+        if not skip_push:
+            subprocess.check_call(["git", "push", "origin", "main"])
+            subprocess.check_call(["git", "push", "origin", expected_tag])
+        return
+
+    # 4. No tag, no artifact, no registry entry: rerun the full release.
+    raise SystemExit(
+        f"nothing to resume: no tag {expected_tag}, no dist artifact, and "
+        f"{info.dist_name} {info.current_version} is not on the registry. "
+        f"Run `make release-{pkg_name} BUMP=<level>` instead."
+    )
+
+
 # --- CLI ---------------------------------------------------------------------
 
 def main() -> None:
@@ -404,6 +499,9 @@ def main() -> None:
 
     sub.add_parser("all", help="Release every package whose source > registry.")
 
+    r = sub.add_parser("resume", help="Resume a partially-completed per-package release.")
+    r.add_argument("pkg")
+
     args = p.parse_args()
     repo_root = Path(__file__).resolve().parents[2]
 
@@ -416,6 +514,8 @@ def main() -> None:
         release_wire(repo_root=repo_root, bump=args.bump)
     elif args.cmd == "all":
         release_all(repo_root=repo_root)
+    elif args.cmd == "resume":
+        resume(repo_root=repo_root, pkg_name=args.pkg)
 
 
 if __name__ == "__main__":

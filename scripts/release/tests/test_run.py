@@ -333,3 +333,61 @@ class TestReleaseAll:
             with pytest.raises(SystemExit, match="nothing pending"):
                 release_all(repo_root=tmp_path, skip_tests=True, skip_fetch=True,
                             skip_publish=True, skip_push=True)
+
+
+class TestResume:
+    def test_resumes_from_publish_when_tag_and_dist_exist_but_registry_lags(
+        self, tmp_path: Path
+    ):
+        """If git tag exists, dist artifact exists, and registry doesn't have
+        the version yet — resume from the publish step."""
+        packages = tmp_path / "packages"
+        packages.mkdir()
+        pkg = packages / "fake-py"
+        pkg.mkdir()
+        (pkg / "pyproject.toml").write_text(
+            '[project]\nname = "fake-py"\nversion = "0.2.0"\n'
+            'description = "x"\nreadme = "README.md"\ndependencies = []\n'
+        )
+        (pkg / "README.md").write_text("# fake-py\n")
+        (pkg / "dist").mkdir()
+        (pkg / "dist" / "fake_py-0.2.0-py3-none-any.whl").write_text("")
+        (pkg / "dist" / "fake_py-0.2.0.tar.gz").write_text("")
+
+        from run import resume
+
+        commands = []
+        def fake_run(cmd, **kw):
+            if cmd == ["git", "tag", "-l", "fake-py-v0.2.0"]:
+                return MagicMock(returncode=0, stdout="fake-py-v0.2.0\n")
+            return MagicMock(returncode=0, stdout="")
+
+        with patch("run.pypi_latest", return_value="0.1.0"), \
+             patch("run.subprocess.run", side_effect=fake_run), \
+             patch("run.subprocess.check_call", side_effect=lambda *a, **kw: commands.append(a[0])):
+            resume(repo_root=tmp_path, pkg_name="fake-py", skip_publish=False, skip_push=True)
+
+        # Should have invoked twine upload.
+        assert any(len(c) >= 3 and c[1:3] == ["-m", "twine"] and "upload" in c for c in commands)
+
+    def test_refuses_when_state_ambiguous(self, tmp_path: Path):
+        """No tag, no dist, version matches registry: nothing to resume."""
+        packages = tmp_path / "packages"
+        packages.mkdir()
+        pkg = packages / "fake-py"
+        pkg.mkdir()
+        (pkg / "pyproject.toml").write_text(
+            '[project]\nname = "fake-py"\nversion = "0.1.0"\n'
+            'description = "x"\nreadme = "README.md"\ndependencies = []\n'
+        )
+        (pkg / "README.md").write_text("# fake-py\n")
+
+        from run import resume
+
+        def fake_run(cmd, **kw):
+            return MagicMock(returncode=0, stdout="")
+
+        with patch("run.pypi_latest", return_value=None), \
+             patch("run.subprocess.run", side_effect=fake_run):
+            with pytest.raises(SystemExit, match="nothing to resume"):
+                resume(repo_root=tmp_path, pkg_name="fake-py", skip_publish=True, skip_push=True)
