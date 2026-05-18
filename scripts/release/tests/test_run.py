@@ -226,3 +226,86 @@ class TestReleasePerPackage:
                     skip_publish=True,
                     skip_push=True,
                 )
+
+
+class TestReleaseWire:
+    def test_releases_both_packages_with_same_version(self, tmp_path: Path):
+        """`release_wire` must bump optio-contracts (TS) and optio-core (Py)
+        to the same new version, update Python sibling pins, and create
+        two tags in a single commit."""
+        packages = tmp_path / "packages"
+        packages.mkdir()
+        # optio-contracts (TS)
+        contracts = packages / "optio-contracts"
+        contracts.mkdir()
+        (contracts / "package.json").write_text(
+            '{\n  "name": "optio-contracts",\n  "version": "0.1.0"\n}\n'
+        )
+        # optio-core (Python)
+        core = packages / "optio-core"
+        core.mkdir()
+        (core / "pyproject.toml").write_text(
+            '[project]\nname = "optio-core"\nversion = "0.1.0"\n'
+            'description = "x"\nreadme = "README.md"\ndependencies = []\n'
+        )
+        (core / "README.md").write_text("# optio-core\n")
+        # optio-host (Python sibling pinning optio-core)
+        host = packages / "optio-host"
+        host.mkdir()
+        (host / "pyproject.toml").write_text(
+            '[project]\nname = "optio-host"\nversion = "0.1.0"\n'
+            'description = "x"\nreadme = "README.md"\n'
+            'dependencies = [\n    "optio-core",\n]\n'
+        )
+        (host / "README.md").write_text("# optio-host\n")
+
+        commands = []
+        def fake_run(cmd, **kw):
+            commands.append(cmd)
+            stdout = ""
+            if cmd == ["git", "diff", "--quiet"] or cmd == ["git", "diff", "--cached", "--quiet"]:
+                return MagicMock(returncode=0)
+            if cmd[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+                stdout = "main\n"
+            if cmd == ["git", "rev-parse", "HEAD"] or cmd == ["git", "rev-parse", "@{u}"]:
+                stdout = "abc\n"
+            return MagicMock(returncode=0, stdout=stdout)
+
+        def fake_check_call(cmd, **kw):
+            commands.append(cmd)
+            if len(cmd) >= 3 and cmd[1:3] == ["-m", "build"]:
+                cwd_dir = Path(kw.get("cwd", "."))
+                d = cwd_dir / "dist"
+                d.mkdir(exist_ok=True)
+                (d / "optio_core-0.2.0-py3-none-any.whl").write_text("")
+                (d / "optio_core-0.2.0.tar.gz").write_text("")
+
+        from run import release_wire  # late import; symbol added in this task
+
+        with patch("run.npm_latest", return_value=None), \
+             patch("run.pypi_latest", return_value=None), \
+             patch("run.subprocess.run", side_effect=fake_run), \
+             patch("run.subprocess.check_call", side_effect=fake_check_call):
+            release_wire(
+                repo_root=tmp_path,
+                bump="minor",
+                skip_tests=True,
+                skip_fetch=True,
+                skip_publish=True,
+                skip_push=True,
+            )
+
+        # Both source versions bumped to 0.2.0.
+        assert '"version": "0.2.0"' in (contracts / "package.json").read_text()
+        assert 'version = "0.2.0"' in (core / "pyproject.toml").read_text()
+        # Sibling pin in optio-host updated.
+        assert '"optio-core>=0.2,<0.3"' in (host / "pyproject.toml").read_text()
+        # Two tags issued.
+        tag_cmds = [c for c in commands if c[:2] == ["git", "tag"]]
+        tag_names = [c[2] for c in tag_cmds]
+        assert "optio-contracts-v0.2.0" in tag_names
+        assert "optio-core-v0.2.0" in tag_names
+        # Single commit covering both packages + sibling.
+        commit_cmds = [c for c in commands if c[:2] == ["git", "commit"]]
+        assert len(commit_cmds) == 1
+        assert "release(wire): 0.2.0" in commit_cmds[0][-1]
