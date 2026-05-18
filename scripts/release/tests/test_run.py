@@ -190,6 +190,63 @@ class TestReleasePerPackage:
         # Confirm git commit was created.
         assert any(c[:2] == ["git", "commit"] for c in commands)
 
+    def test_dist_wipe_handles_nested_subdirs(self, tmp_path: Path):
+        """Regression: dist-wipe must recursively remove subdirectories
+        (e.g. optio-contracts ships dist/schemas/). The original loop-and-unlink
+        impl failed with IsADirectoryError."""
+        packages = tmp_path / "packages"
+        packages.mkdir()
+        pkg = packages / "fake-py"
+        pkg.mkdir()
+        (pkg / "pyproject.toml").write_text(
+            '[project]\nname = "fake-py"\nversion = "0.1.0"\n'
+            'description = "x"\nreadme = "README.md"\ndependencies = []\n'
+        )
+        (pkg / "README.md").write_text("# fake-py\n")
+        # Pre-create a dist with nested subdirs (the failure mode).
+        d = pkg / "dist"
+        d.mkdir()
+        (d / "old.whl").write_text("")
+        (d / "schemas").mkdir()
+        (d / "schemas" / "thing.json").write_text("")
+
+        commands = []
+        def fake_run(cmd, **kw):
+            commands.append(cmd)
+            stdout = ""
+            if cmd == ["git", "diff", "--quiet"] or cmd == ["git", "diff", "--cached", "--quiet"]:
+                return MagicMock(returncode=0)
+            if cmd[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+                stdout = "main\n"
+            if cmd == ["git", "rev-parse", "HEAD"] or cmd == ["git", "rev-parse", "@{u}"]:
+                stdout = "abc\n"
+            return MagicMock(returncode=0, stdout=stdout)
+
+        def fake_check_call(cmd, **kw):
+            commands.append(cmd)
+            if len(cmd) >= 3 and cmd[1:3] == ["-m", "build"]:
+                cwd_dir = Path(kw.get("cwd", "."))
+                d2 = cwd_dir / "dist"
+                d2.mkdir(exist_ok=True)
+                (d2 / "fake_py-0.1.0-py3-none-any.whl").write_text("")
+
+        with patch("run.pypi_latest", return_value=None), \
+             patch("run.subprocess.run", side_effect=fake_run), \
+             patch("run.subprocess.check_call", side_effect=fake_check_call):
+            release_per_package(
+                repo_root=tmp_path,
+                pkg_name="fake-py",
+                bump="none",
+                skip_tests=True,
+                skip_fetch=True,
+                skip_publish=True,
+                skip_push=True,
+            )
+
+        # After wipe + fake build, dist should contain only the new artifact.
+        contents = sorted(p.name for p in (pkg / "dist").iterdir())
+        assert contents == ["fake_py-0.1.0-py3-none-any.whl"]
+
     def test_rejects_bump_none_when_already_published(self, tmp_path: Path):
         packages = tmp_path / "packages"
         packages.mkdir()

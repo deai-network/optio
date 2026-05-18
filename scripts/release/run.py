@@ -18,6 +18,7 @@ import argparse
 import dataclasses
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -180,8 +181,7 @@ def release_per_package(
     # Build (clean dist first)
     dist = info.dir / "dist"
     if dist.exists():
-        for f in dist.iterdir():
-            f.unlink()
+        shutil.rmtree(dist)
 
     if info.kind == "python":
         subprocess.check_call(
@@ -287,8 +287,7 @@ def release_wire(
     for pkg in (contracts, core):
         dist = pkg.dir / "dist"
         if dist.exists():
-            for f in dist.iterdir():
-                f.unlink()
+            shutil.rmtree(dist)
     subprocess.check_call(
         [sys.executable, "-m", "build"], cwd=str(core.dir)
     )
