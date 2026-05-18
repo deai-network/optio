@@ -1,8 +1,16 @@
 {
   "name": "optio-api",
   "version": "0.1.0",
-  "private": true,
   "license": "Apache-2.0",
+  "description": "Server-side optio API with Fastify, Express, and Next.js adapters.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deai-network/optio.git",
+    "directory": "packages/optio-api"
+  },
+  "homepage": "https://github.com/deai-network/optio/tree/main/packages/optio-api#readme",
+  "bugs": { "url": "https://github.com/deai-network/optio/issues" },
+  "author": "Kristof Csillag <kristof.csillag@deai-labs.com>",
   "type": "module",
   "exports": {
     ".": {

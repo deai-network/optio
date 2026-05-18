@@ -1,8 +1,16 @@
 {
   "name": "optio-contracts",
   "version": "0.1.0",
-  "private": true,
   "license": "Apache-2.0",
+  "description": "Shared wire-protocol types and ts-rest contracts for the optio task runner.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deai-network/optio.git",
+    "directory": "packages/optio-contracts"
+  },
+  "homepage": "https://github.com/deai-network/optio/tree/main/packages/optio-contracts#readme",
+  "bugs": { "url": "https://github.com/deai-network/optio/issues" },
+  "author": "Kristof Csillag <kristof.csillag@deai-labs.com>",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
