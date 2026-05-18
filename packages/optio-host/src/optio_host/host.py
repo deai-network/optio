@@ -164,9 +164,19 @@ class Host(Protocol):
 
 import asyncio
 import hashlib
+import logging as _logging
 import os
 import shlex
 import shutil
+import time as _time
+
+_trace_logger = _logging.getLogger("optio_core.cancel_trace")
+_CANCEL_TRACE = os.environ.get("OPTIO_CANCEL_TRACE", "0").lower() in ("1", "true", "yes")
+
+
+def _trace(fmt: str, *args: object) -> None:
+    if _CANCEL_TRACE:
+        _trace_logger.warning("[%.3f] optio-host " + fmt, _time.monotonic(), *args)
 
 
 class LocalHost:
@@ -303,20 +313,33 @@ class LocalHost:
     ) -> None:
         proc: asyncio.subprocess.Process = handle.pid_like  # type: ignore[assignment]
         if proc.returncode is not None:
+            _trace("LocalHost.terminate: pid=%s already exited rc=%s",
+                   proc.pid, proc.returncode)
             return
         if aggressive:
+            _trace("LocalHost.terminate aggressive=True: SIGKILL pid=%s", proc.pid)
             proc.kill()
             try:
                 await asyncio.wait_for(proc.wait(), timeout=1.0)
+                _trace("LocalHost.terminate aggressive: reaped pid=%s rc=%s",
+                       proc.pid, proc.returncode)
             except asyncio.TimeoutError:
+                _trace("LocalHost.terminate aggressive: reap TIMEOUT pid=%s", proc.pid)
                 pass
             return
+        _trace("LocalHost.terminate aggressive=False: SIGTERM pid=%s", proc.pid)
         proc.terminate()
         try:
             await asyncio.wait_for(proc.wait(), timeout=5.0)
+            _trace("LocalHost.terminate: SIGTERM took effect pid=%s rc=%s",
+                   proc.pid, proc.returncode)
         except asyncio.TimeoutError:
+            _trace("LocalHost.terminate: SIGTERM grace EXPIRED, escalating to SIGKILL pid=%s",
+                   proc.pid)
             proc.kill()
             await proc.wait()
+            _trace("LocalHost.terminate: SIGKILL reaped pid=%s rc=%s",
+                   proc.pid, proc.returncode)
 
     async def run_command(
         self,

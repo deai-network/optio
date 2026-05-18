@@ -5,6 +5,9 @@ module to avoid a circular import between executor.py and lifecycle.py.
 
 Spec: docs/2026-04-29-deadline-driven-cancel-design.md
 """
+import logging as _logging
+import os as _os
+import time as _time
 from datetime import datetime, timezone
 
 from bson import ObjectId
@@ -13,6 +16,15 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 from optio_core.models import ProcessStatus
 from optio_core.state_machine import ACTIVE_STATES
 from optio_core.store import append_log, compute_expire_at
+
+
+_trace_logger = _logging.getLogger("optio_core.cancel_trace")
+_CANCEL_TRACE = _os.environ.get("OPTIO_CANCEL_TRACE", "0").lower() in ("1", "true", "yes")
+
+
+def _trace(fmt: str, *args: object) -> None:
+    if _CANCEL_TRACE:
+        _trace_logger.warning("[%.3f] _force_cancel " + fmt, _time.monotonic(), *args)
 
 
 FORCE_CANCEL_ERROR = "Task did not unwind within cancellation grace period"
@@ -50,10 +62,12 @@ async def _write_force_cancelled_state(
         {"$set": set_doc},
     )
     if result.modified_count:
+        _trace("oid=%s WROTE state=failed reason=grace-exceeded", oid)
         await append_log(
             db, prefix, oid,
             "event",
             "State forced: running -> failed (cancellation grace period exceeded)",
         )
         return True
+    _trace("oid=%s no-op: row already in terminal state (lost race)", oid)
     return False
