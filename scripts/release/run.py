@@ -337,6 +337,56 @@ def release_wire(
     print(f"  optio-core:      https://pypi.org/project/{core.dist_name}/{new_version}/")
 
 
+# --- Batch release -----------------------------------------------------------
+
+def release_all(
+    *,
+    repo_root: Path,
+    skip_tests: bool = False,
+    skip_fetch: bool = False,
+    skip_publish: bool = False,
+    skip_push: bool = False,
+) -> None:
+    """Release every package whose source version is ahead of its registry version.
+
+    All releases use BUMP=none (the source version-as-is). Refuses if nothing is pending.
+    The wire-locked pair, if pending, is released first via release_wire(bump="none").
+    """
+    pending_wire = False
+    pending_per_pkg: list[str] = []
+
+    for name in TS_PUBLISHABLE + PY_PUBLISHABLE:
+        info = discover_package(repo_root, name)
+        latest = latest_published(info)
+        # "ahead of registry" means source-version differs from registry (or is unpublished)
+        if latest != info.current_version:
+            if name in WIRE_LOCKED:
+                pending_wire = True
+            else:
+                pending_per_pkg.append(name)
+
+    if not pending_wire and not pending_per_pkg:
+        raise SystemExit("nothing pending — every source version matches its registry version")
+
+    if pending_wire:
+        release_wire(
+            repo_root=repo_root, bump="none",
+            skip_tests=skip_tests, skip_fetch=skip_fetch,
+            skip_publish=skip_publish, skip_push=skip_push,
+        )
+        # Subsequent per-package releases inherit a clean tree from wire's commit;
+        # preflight will skip fetch/tests on the rest since they were just done.
+        skip_tests = True
+        skip_fetch = True
+
+    for name in pending_per_pkg:
+        release_per_package(
+            repo_root=repo_root, pkg_name=name, bump="none",
+            skip_tests=skip_tests, skip_fetch=skip_fetch,
+            skip_publish=skip_publish, skip_push=skip_push,
+        )
+
+
 # --- CLI ---------------------------------------------------------------------
 
 def main() -> None:
@@ -352,6 +402,8 @@ def main() -> None:
     w = sub.add_parser("wire", help="Release optio-contracts + optio-core together.")
     w.add_argument("bump", choices=["patch", "minor", "major", "promote-to-1.0", "none"])
 
+    sub.add_parser("all", help="Release every package whose source > registry.")
+
     args = p.parse_args()
     repo_root = Path(__file__).resolve().parents[2]
 
@@ -362,6 +414,8 @@ def main() -> None:
         release_per_package(repo_root=repo_root, pkg_name=args.pkg, bump=args.bump)
     elif args.cmd == "wire":
         release_wire(repo_root=repo_root, bump=args.bump)
+    elif args.cmd == "all":
+        release_all(repo_root=repo_root)
 
 
 if __name__ == "__main__":

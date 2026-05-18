@@ -309,3 +309,27 @@ class TestReleaseWire:
         commit_cmds = [c for c in commands if c[:2] == ["git", "commit"]]
         assert len(commit_cmds) == 1
         assert "release(wire): 0.2.0" in commit_cmds[0][-1]
+
+
+class TestReleaseAll:
+    def test_no_pending_returns_message(self, tmp_path: Path):
+        """When every source version matches what's published, refuse."""
+        packages = tmp_path / "packages"
+        packages.mkdir()
+        for name, file_, body in [
+            ("optio-contracts", "package.json", '{"name":"optio-contracts","version":"0.1.0"}\n'),
+            ("optio-core", "pyproject.toml", '[project]\nname = "optio-core"\nversion = "0.1.0"\ndependencies=[]\n'),
+        ]:
+            d = packages / name
+            d.mkdir()
+            (d / file_).write_text(body)
+
+        from run import release_all
+
+        with patch("run.npm_latest", return_value="0.1.0"), \
+             patch("run.pypi_latest", return_value="0.1.0"), \
+             patch("run.TS_PUBLISHABLE", ["optio-contracts"]), \
+             patch("run.PY_PUBLISHABLE", ["optio-core"]):
+            with pytest.raises(SystemExit, match="nothing pending"):
+                release_all(repo_root=tmp_path, skip_tests=True, skip_fetch=True,
+                            skip_publish=True, skip_push=True)
