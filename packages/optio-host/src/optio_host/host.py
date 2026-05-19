@@ -62,10 +62,18 @@ class Host(Protocol):
     async def write_text(self, relpath: str, content: str) -> None:
         """Write a UTF-8 text file inside the workdir."""
 
-    async def establish_tunnel(self, remote_port: int) -> int:
+    async def establish_tunnel(
+        self, remote_port: int, *, bind_addr: str = "127.0.0.1",
+    ) -> int:
         """Return the port on the worker machine at which the upstream
         is reachable.  Local hosts return ``remote_port`` unchanged;
-        remote hosts open an SSH local forward and return the local port."""
+        remote hosts open an SSH local forward and return the local port.
+
+        ``bind_addr`` controls which interface the local forward listens
+        on.  Defaults to ``127.0.0.1`` (caller-only reachability).  Set
+        to ``0.0.0.0`` (or another address) when other processes on the
+        worker — e.g. a sibling container on the same Docker network —
+        must reach the tunnel.  Local hosts ignore this parameter."""
 
     def tail_file(self, absolute_path: str) -> AsyncIterator[str]:
         """Async iterator yielding lines (without trailing newlines) from
@@ -224,7 +232,12 @@ class LocalHost:
         with open(full, "w", encoding="utf-8") as fh:
             fh.write(content)
 
-    async def establish_tunnel(self, remote_port: int) -> int:
+    async def establish_tunnel(
+        self, remote_port: int, *, bind_addr: str = "127.0.0.1",
+    ) -> int:
+        # LocalHost has nothing to forward — the caller reaches the
+        # upstream directly on ``remote_port``.  ``bind_addr`` is
+        # accepted for protocol compatibility but ignored.
         return remote_port
 
     async def tail_file(self, absolute_path: str) -> AsyncIterator[str]:
@@ -580,10 +593,12 @@ class RemoteHost:
         async with self._sftp.open(remote_path, "w", encoding="utf-8") as fh:
             await fh.write(content)
 
-    async def establish_tunnel(self, remote_port: int) -> int:
+    async def establish_tunnel(
+        self, remote_port: int, *, bind_addr: str = "127.0.0.1",
+    ) -> int:
         assert self._conn is not None
         self._forward = await self._conn.forward_local_port(
-            "127.0.0.1", 0, "127.0.0.1", remote_port
+            bind_addr, 0, "127.0.0.1", remote_port
         )
         return self._forward.get_port()
 
