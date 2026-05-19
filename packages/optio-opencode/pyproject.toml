@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "optio-opencode"
-version = "0.1.0"
+version = "0.1.1"
 description = "Run opencode web as an optio task; local subprocess or remote via SSH."
 readme = "README.md"
 license = "Apache-2.0"
@@ -27,7 +27,9 @@ classifiers = [
 ]
 dependencies = [
     "optio-core>=0.1,<0.2",
-    "optio-host>=0.1,<0.2",
+    # 0.1.1 introduces the bind_addr kwarg on Host.establish_tunnel —
+    # required for OPTIO_WIDGET_TUNNEL_BIND to work.
+    "optio-host>=0.1.1,<0.2",
     "asyncssh>=2.14",
 ]
 

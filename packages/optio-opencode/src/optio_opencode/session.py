@@ -219,7 +219,18 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         launched_handle = handle
 
         # --- tunnel + widget registration --------------------------------
-        worker_port = await host.establish_tunnel(opencode_port)
+        # By default the SSH tunnel listens on 127.0.0.1 — only the worker
+        # process (this engine) can reach it.  For multi-container deploys
+        # where the API proxy lives in a different container than the
+        # engine but on the same Docker network, set
+        # OPTIO_WIDGET_TUNNEL_BIND=0.0.0.0 so sibling containers can
+        # connect to the engine's port, and OPTIO_WIDGET_TUNNEL_HOST to
+        # the Docker DNS name other containers resolve to reach this
+        # engine (e.g. the compose service name). Both default to
+        # 127.0.0.1 so single-host deploys are unchanged.
+        bind_addr = os.environ.get("OPTIO_WIDGET_TUNNEL_BIND", "127.0.0.1")
+        upstream_host = os.environ.get("OPTIO_WIDGET_TUNNEL_HOST", "127.0.0.1")
+        worker_port = await host.establish_tunnel(opencode_port, bind_addr=bind_addr)
 
         if preserved_session_id is not None:
             session_id = preserved_session_id
@@ -235,7 +246,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             )
 
         await ctx.set_widget_upstream(
-            f"http://127.0.0.1:{worker_port}",
+            f"http://{upstream_host}:{worker_port}",
             inner_auth=BasicAuth(username="opencode", password=password),
         )
         # Point the iframe directly at the pre-created session so viewers
