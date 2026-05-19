@@ -247,6 +247,64 @@ class TestReleasePerPackage:
         contents = sorted(p.name for p in (pkg / "dist").iterdir())
         assert contents == ["fake_py-0.1.0-py3-none-any.whl"]
 
+    def test_bump_none_publishes_source_when_ahead_of_registry(self, tmp_path: Path):
+        """Source 0.1.1, registry 0.1.0: BUMP=none should publish current
+        source version (no re-bump, no version-change commit, tag at 0.1.1)."""
+        packages = tmp_path / "packages"
+        packages.mkdir()
+        pkg = packages / "fake-py"
+        pkg.mkdir()
+        (pkg / "pyproject.toml").write_text(
+            '[project]\nname = "fake-py"\nversion = "0.1.1"\n'
+            'description = "x"\nreadme = "README.md"\ndependencies = []\n'
+        )
+        (pkg / "README.md").write_text("# fake-py\n")
+
+        commands = []
+        def fake_run(cmd, **kw):
+            commands.append(cmd)
+            stdout = ""
+            if cmd == ["git", "diff", "--quiet"]:
+                return MagicMock(returncode=0)
+            if cmd == ["git", "diff", "--cached", "--quiet"]:
+                return MagicMock(returncode=0)
+            if cmd[:3] == ["git", "rev-parse", "--abbrev-ref"]:
+                stdout = "main\n"
+            if cmd == ["git", "rev-parse", "HEAD"]:
+                stdout = "abc\n"
+            if cmd == ["git", "rev-parse", "@{u}"]:
+                stdout = "abc\n"
+            return MagicMock(returncode=0, stdout=stdout)
+
+        def fake_check_call(cmd, **kw):
+            commands.append(cmd)
+            if len(cmd) >= 3 and cmd[1:3] == ["-m", "build"]:
+                cwd_dir = Path(kw.get("cwd", "."))
+                d = cwd_dir / "dist"
+                d.mkdir(exist_ok=True)
+                (d / "fake_py-0.1.1-py3-none-any.whl").write_text("")
+                (d / "fake_py-0.1.1.tar.gz").write_text("")
+
+        with patch("run.pypi_latest", return_value="0.1.0"), \
+             patch("run.subprocess.run", side_effect=fake_run), \
+             patch("run.subprocess.check_call", side_effect=fake_check_call):
+            release_per_package(
+                repo_root=tmp_path,
+                pkg_name="fake-py",
+                bump="none",
+                skip_tests=True,
+                skip_fetch=True,
+                skip_publish=True,
+                skip_push=True,
+            )
+
+        # Tag at the source version (0.1.1), not registry version.
+        assert any(c[:3] == ["git", "tag", "-a"] and "fake-py-v0.1.1" in c for c in commands)
+        # No version-change commit (source already correct).
+        assert not any(c[:2] == ["git", "commit"] for c in commands)
+        # pyproject version unchanged.
+        assert 'version = "0.1.1"' in (pkg / "pyproject.toml").read_text()
+
     def test_rejects_bump_none_when_already_published(self, tmp_path: Path):
         packages = tmp_path / "packages"
         packages.mkdir()

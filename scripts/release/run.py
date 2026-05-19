@@ -27,7 +27,7 @@ from typing import Literal
 # Make sibling helper modules importable.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from bump import compute_new_version, read_version, write_version  # noqa: E402
+from bump import compute_new_version, read_version, write_version, _parse_semver  # noqa: E402
 from registry import npm_latest, pypi_latest  # noqa: E402
 from sibling_pins import update_pyproject  # noqa: E402
 
@@ -152,10 +152,12 @@ def release_per_package(
     # Pre-flight
     preflight(skip_tests=skip_tests, skip_fetch=skip_fetch)
 
-    # BUMP=none policy: only valid before first release
+    # BUMP=none policy: allowed when source is ahead of (or matches) no
+    # registry entry. Rejected when source <= latest_published, i.e. the
+    # current source version is already published (or stale).
     latest = latest_published(info)
     if bump == "none":
-        if latest is not None:
+        if latest is not None and _parse_semver(info.current_version) <= _parse_semver(latest):
             raise SystemExit(
                 f"BUMP=none rejected: {info.dist_name} {latest} already published. "
                 f"Use BUMP=patch or BUMP=minor."
