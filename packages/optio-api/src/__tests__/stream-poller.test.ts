@@ -129,6 +129,82 @@ describe('createTreePoller widgetData propagation', () => {
     expect(update.processes[0].uiWidget).toBe('my-custom-widget');
   });
 
+  it('includes metadata in the update event payload', async () => {
+    const events: any[] = [];
+    const rootId = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertOne({
+      _id: rootId,
+      processId: 'p', name: 'P',
+      rootId, parentId: null,
+      depth: 0, order: 0,
+      status: { state: 'idle' },
+      progress: { percent: null },
+      metadata: { known_bad: true, broken_reason: 'target disabled' },
+      cancellable: true,
+      log: [],
+    });
+
+    const poller = createTreePoller({
+      db, prefix: PREFIX,
+      sendEvent: (data) => events.push(data),
+      onError: () => {},
+      rootId: rootId.toString(),
+      baseDepth: 0,
+    });
+    poller.start();
+    await new Promise((r) => setTimeout(r, 1100));
+    poller.stop();
+
+    const update = events.find((e) => e.type === 'update');
+    expect(update).toBeDefined();
+    expect(update.processes[0].metadata).toEqual({
+      known_bad: true, broken_reason: 'target disabled',
+    });
+  });
+
+  it('fires an update event when ONLY metadata changes', async () => {
+    const events: any[] = [];
+    const rootId = new ObjectId();
+    const coll = db.collection(`${PREFIX}_processes`);
+    await coll.insertOne({
+      _id: rootId,
+      processId: 'p', name: 'P',
+      rootId, parentId: null,
+      depth: 0, order: 0,
+      status: { state: 'idle' },
+      progress: { percent: null },
+      metadata: { known_bad: false },
+      cancellable: true,
+      log: [],
+    });
+
+    const poller = createTreePoller({
+      db, prefix: PREFIX,
+      sendEvent: (data) => events.push(data),
+      onError: () => {},
+      rootId: rootId.toString(),
+      baseDepth: 0,
+    });
+    poller.start();
+    await new Promise((r) => setTimeout(r, 1100));
+
+    const before = events.filter((e) => e.type === 'update').length;
+    expect(before).toBeGreaterThanOrEqual(1);
+
+    await coll.updateOne(
+      { _id: rootId },
+      { $set: { metadata: { known_bad: true, broken_reason: 'target disabled' } } },
+    );
+    await new Promise((r) => setTimeout(r, 1100));
+    poller.stop();
+
+    const after = events.filter((e) => e.type === 'update').length;
+    expect(after).toBeGreaterThan(before);
+    const last = [...events].reverse().find((e) => e.type === 'update');
+    expect(last.processes[0].metadata.known_bad).toBe(true);
+    expect(last.processes[0].metadata.broken_reason).toBe('target disabled');
+  });
+
   it('never includes widgetUpstream in the payload', async () => {
     const events: any[] = [];
     const rootId = new ObjectId();

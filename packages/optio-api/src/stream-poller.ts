@@ -104,6 +104,7 @@ export function createTreePoller(opts: TreePollerOptions): ListPollerHandle {
           widgetData: p.widgetData, uiWidget: p.uiWidget,
           supportsResume: p.supportsResume ?? false,
           hasSavedState: p.hasSavedState ?? false,
+          metadata: p.metadata,
         })),
       );
 
@@ -124,6 +125,7 @@ export function createTreePoller(opts: TreePollerOptions): ListPollerHandle {
             uiWidget: p.uiWidget,
             supportsResume: p.supportsResume ?? false,
             hasSavedState: p.hasSavedState ?? false,
+            metadata: p.metadata,
           })),
         });
       }
