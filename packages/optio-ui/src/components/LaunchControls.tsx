@@ -11,6 +11,13 @@ export interface LaunchControlsProps {
   /** Optional pixel size for the inner icons (Play/Down/Reload). When unset,
    *  the icon inherits antd's default sizing for the chosen button size. */
   iconFontSize?: number;
+  /** When set + non-empty, the launch button is rendered disabled with this
+   *  string as the hover tooltip. Domain-specific launch gate: the caller
+   *  decides launchability beyond the process state machine (e.g., from
+   *  task metadata) and renders the operator-facing reason. Suppresses both
+   *  the single-button and split-button (resume) branches; cancel/etc. are
+   *  unaffected. */
+  denyReason?: string | null;
 }
 
 /**
@@ -24,10 +31,30 @@ export interface LaunchControlsProps {
  * Defensive defaults: missing fields on the process document are treated
  * as false so the UI works against an unmigrated DB.
  */
-export function LaunchControls({ process, onLaunch, size = 'small', iconFontSize }: LaunchControlsProps) {
+export function LaunchControls({ process, onLaunch, size = 'small', iconFontSize, denyReason }: LaunchControlsProps) {
   const { t } = useTranslation();
   if (!isLaunchable(process) || !onLaunch) return null;
   const iconStyle = iconFontSize ? { fontSize: iconFontSize } : undefined;
+
+  // Caller-injected gate: launchable per state machine but domain-denied.
+  // Render a single disabled play button with the reason as tooltip.
+  // antd's Tooltip suppresses pointer events on disabled buttons; wrap in
+  // a span so hover still surfaces the reason.
+  if (denyReason) {
+    return (
+      <Tooltip title={denyReason}>
+        <span style={{ display: 'inline-block', cursor: 'not-allowed' }}>
+          <Button
+            type="text"
+            size={size}
+            icon={<PlayCircleOutlined style={iconStyle} />}
+            disabled
+            style={{ pointerEvents: 'none' }}
+          />
+        </span>
+      </Tooltip>
+    );
+  }
 
   // Case 1: single play button (fresh start semantics — no opts).
   if (!isResumable(process)) {

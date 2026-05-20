@@ -71,4 +71,57 @@ describe('LaunchControls', () => {
     fireEvent.click(btn);
     expect(onLaunch).toHaveBeenCalledWith('5', undefined);
   });
+
+  it('renders disabled button when denyReason is set (single-button branch)', () => {
+    const onLaunch = vi.fn();
+    render(
+      <I18nextProvider i18n={i18n}>
+        <LaunchControls
+          process={{ _id: '6', status: { state: 'idle' }, supportsResume: false }}
+          onLaunch={onLaunch}
+          size="small"
+          denyReason="target disabled"
+        />
+      </I18nextProvider>,
+    );
+    const btn = screen.getByRole('button');
+    expect((btn as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(btn);
+    expect(onLaunch).not.toHaveBeenCalled();
+  });
+
+  it('renders disabled button when denyReason is set (split-button branch suppressed)', () => {
+    const onLaunch = vi.fn();
+    render(
+      <I18nextProvider i18n={i18n}>
+        <LaunchControls
+          process={{ _id: '7', status: { state: 'idle' }, supportsResume: true, hasSavedState: true }}
+          onLaunch={onLaunch}
+          size="small"
+          denyReason="not ready"
+        />
+      </I18nextProvider>,
+    );
+    const buttons = screen.getAllByRole('button');
+    expect(buttons.length).toBe(1);
+    expect((buttons[0] as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('ignores empty / null denyReason — renders the usual launch affordance', () => {
+    const onLaunch = vi.fn();
+    render(
+      <I18nextProvider i18n={i18n}>
+        <LaunchControls
+          process={{ _id: '8', status: { state: 'idle' }, supportsResume: false }}
+          onLaunch={onLaunch}
+          size="small"
+          denyReason={null}
+        />
+      </I18nextProvider>,
+    );
+    const btn = screen.getByRole('button');
+    expect((btn as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(btn);
+    expect(onLaunch).toHaveBeenCalledWith('8', undefined);
+  });
 });

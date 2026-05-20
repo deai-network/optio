@@ -10,6 +10,9 @@ interface ProcessUpdate {
   cancellable: boolean;
   depth: number;
   order: number;
+  /** Free-form per-task metadata (kept opaque by optio-ui). Backend SSE
+   *  whitelist carries this verbatim; callers cast / read by convention. */
+  metadata?: Record<string, unknown>;
 }
 
 export interface ProcessTreeNode extends ProcessUpdate {

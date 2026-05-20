@@ -44,11 +44,17 @@ export interface ProcessItemProps {
    *  context — "Started X (Y ago), finished Z (elapsed W)" etc. —
    *  without bloating ProcessItem with excavator-specific state. */
   inactiveContent?: ReactNode;
+  /** Operator-facing reason that launch is denied beyond what the process
+   *  state machine knows (e.g., task is registered known_bad in caller's
+   *  metadata convention). When set + non-empty, the launch button is
+   *  disabled with this string as the hover tooltip. Forwarded to
+   *  LaunchControls; cancel/status badge are unaffected. */
+  launchDenyReason?: string | null;
 }
 
 export function ProcessItem({
   process, onLaunch, onCancel, readonly, onProcessClick,
-  size = 'default', inline = false, inactiveContent,
+  size = 'default', inline = false, inactiveContent, launchDenyReason,
 }: ProcessItemProps) {
   const { t } = useTranslation();
   const state = process.status?.state ?? 'idle';
@@ -108,6 +114,7 @@ export function ProcessItem({
           onLaunch={onLaunch}
           size={tokens.button}
           iconFontSize={tokens.iconFontSize}
+          denyReason={launchDenyReason}
         />
       )}
       {isCancellable && onCancel && (
