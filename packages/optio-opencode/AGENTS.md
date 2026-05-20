@@ -159,6 +159,18 @@ progress updates / log entries.
   launch, `tail -F`, teardown), SFTP, and local port forward.  Workdir
   is `/tmp/optio-opencode-<uuid>/` on the remote.
 
+### Network binding
+
+`launch_opencode(host, ...)` accepts a `hostname` kwarg (default
+`127.0.0.1`) that is passed straight through to `opencode web
+--hostname=<value>`. For LocalHost in a multi-container deploy where
+the API-proxy lives in a sibling container, `session.py` derives the
+hostname from `OPTIO_WIDGET_TUNNEL_BIND` so opencode binds to an
+interface the proxy can actually reach (LocalHost's
+`establish_tunnel` is a no-op — there is no SSH tunnel doing the
+exposure). RemoteHost keeps the loopback default and lets the SSH
+tunnel handle cross-container reachability on the engine side.
+
 ## How the opencode binary is installed
 
 Uniform local + remote. On task start, `ensure_opencode_installed` runs

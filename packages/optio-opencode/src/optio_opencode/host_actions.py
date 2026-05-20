@@ -328,6 +328,7 @@ async def launch_opencode(
     *,
     ready_timeout_s: float = 30.0,
     opencode_executable: str = "opencode",
+    hostname: str = "127.0.0.1",
 ) -> tuple[ProcessHandle, int]:
     """Launch ``opencode web`` on ``host``; wait for the listening URL.
 
@@ -339,6 +340,12 @@ async def launch_opencode(
     sensible-browser) under ``<workdir>/bin`` and prepends that
     directory to PATH so opencode's automatic browser-launch is
     suppressed.
+
+    ``hostname`` is passed to ``opencode web --hostname=`` so callers
+    can bind to a non-loopback interface when consumers reach the server
+    across a network boundary (e.g. LocalHost inside a docker container
+    serving a sibling API-proxy container). Defaults to ``127.0.0.1`` to
+    keep RemoteHost-over-SSH and single-host deployments unchanged.
 
     Returns ``(handle, opencode_port)``. Caller is responsible for
     eventually terminating the handle via ``host.terminate_subprocess``.
@@ -374,7 +381,7 @@ async def launch_opencode(
         f"exec env "
         f"OPENCODE_SERVER_PASSWORD=\"$(cat {shlex.quote(host.workdir + '/' + pw_file)})\" "
         f"BROWSER=true "
-        f"{opencode_executable} web --port=0 --hostname=127.0.0.1"
+        f"{opencode_executable} web --port=0 --hostname={shlex.quote(hostname)}"
     )
 
     # Prepend the noop-browsers bin dir to PATH via env on launch_subprocess.

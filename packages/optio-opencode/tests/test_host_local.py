@@ -64,6 +64,50 @@ async def test_launch_times_out_on_no_url(tmp_path):
     pass
 
 
+async def test_launch_opencode_passes_hostname_into_cmd(local_host, monkeypatch):
+    """Multi-container deploys need opencode bound to a non-loopback
+    interface so a sibling API-proxy container can reach it. The
+    ``hostname`` kwarg must propagate into the ``opencode web
+    --hostname=`` argument."""
+    captured: dict[str, str] = {}
+
+    async def fake_launch_subprocess(self, cmd, *, env=None, cwd=None):
+        captured["cmd"] = cmd
+        raise RuntimeError("stop before waiting on stdout")
+
+    monkeypatch.setattr(LocalHost, "launch_subprocess", fake_launch_subprocess)
+
+    await local_host.setup_workdir()
+    with pytest.raises(RuntimeError, match="stop before"):
+        await host_actions.launch_opencode(
+            local_host, password="pw",
+            ready_timeout_s=1.0,
+            opencode_executable="opencode",
+            hostname="0.0.0.0",
+        )
+    assert "--hostname=0.0.0.0" in captured["cmd"]
+
+
+async def test_launch_opencode_default_hostname_is_loopback(local_host, monkeypatch):
+    """Default keeps single-host / RemoteHost-over-SSH behaviour intact."""
+    captured: dict[str, str] = {}
+
+    async def fake_launch_subprocess(self, cmd, *, env=None, cwd=None):
+        captured["cmd"] = cmd
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(LocalHost, "launch_subprocess", fake_launch_subprocess)
+
+    await local_host.setup_workdir()
+    with pytest.raises(RuntimeError, match="stop"):
+        await host_actions.launch_opencode(
+            local_host, password="pw",
+            ready_timeout_s=1.0,
+            opencode_executable="opencode",
+        )
+    assert "--hostname=127.0.0.1" in captured["cmd"]
+
+
 async def test_tail_file_yields_appended_lines(local_host):
     await local_host.setup_workdir()
     log_path = os.path.join(local_host.workdir, "optio.log")

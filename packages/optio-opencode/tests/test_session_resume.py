@@ -53,7 +53,7 @@ def _supply_scenario(monkeypatch):
     orig_launch = host_actions.launch_opencode
     holder = {"name": "happy"}
 
-    async def _launch(host, password, *, ready_timeout_s=30.0, opencode_executable="opencode"):
+    async def _launch(host, password, *, ready_timeout_s=30.0, opencode_executable="opencode", hostname="127.0.0.1"):
         del opencode_executable
         return await orig_launch(
             host, password,
@@ -61,6 +61,7 @@ def _supply_scenario(monkeypatch):
             opencode_executable=(
                 f"{sys.executable} {FAKE_OPENCODE} --scenario {holder['name']}"
             ),
+            hostname=hostname,
         )
     monkeypatch.setattr(host_actions, "launch_opencode", _launch)
 

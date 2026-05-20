@@ -210,14 +210,6 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             host, opencode_executable=opencode_exec,
         )
         version_suffix = f" {version}" if version else ""
-        ctx.report_progress(None, f"Launching opencode{version_suffix}…")
-        handle, opencode_port = await host_actions.launch_opencode(
-            host, password,
-            ready_timeout_s=READY_TIMEOUT_S,
-            opencode_executable=opencode_exec,
-        )
-        launched_handle = handle
-
         # --- tunnel + widget registration --------------------------------
         # By default the SSH tunnel listens on 127.0.0.1 — only the worker
         # process (this engine) can reach it.  For multi-container deploys
@@ -230,6 +222,22 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         # 127.0.0.1 so single-host deploys are unchanged.
         bind_addr = os.environ.get("OPTIO_WIDGET_TUNNEL_BIND", "127.0.0.1")
         upstream_host = os.environ.get("OPTIO_WIDGET_TUNNEL_HOST", "127.0.0.1")
+
+        # LocalHost has no SSH tunnel — establish_tunnel is a no-op — so
+        # opencode itself must bind to ``bind_addr`` for sibling containers
+        # to reach it. RemoteHost keeps opencode bound to the remote's
+        # loopback; the SSH tunnel on the engine side handles exposure.
+        opencode_hostname = bind_addr if isinstance(host, LocalHost) else "127.0.0.1"
+
+        ctx.report_progress(None, f"Launching opencode{version_suffix}…")
+        handle, opencode_port = await host_actions.launch_opencode(
+            host, password,
+            ready_timeout_s=READY_TIMEOUT_S,
+            opencode_executable=opencode_exec,
+            hostname=opencode_hostname,
+        )
+        launched_handle = handle
+
         worker_port = await host.establish_tunnel(opencode_port, bind_addr=bind_addr)
 
         if preserved_session_id is not None:

@@ -118,7 +118,7 @@ def _patch_host_actions(monkeypatch, host):
     async def _version(_host, *, opencode_executable="opencode"):
         return None
 
-    async def _launch(_host, _password, *, ready_timeout_s=30.0, opencode_executable="opencode"):
+    async def _launch(_host, _password, *, ready_timeout_s=30.0, opencode_executable="opencode", hostname="127.0.0.1"):
         host.timeline.append("launch_opencode")
         raise RuntimeError("test never gets past launch")
 
