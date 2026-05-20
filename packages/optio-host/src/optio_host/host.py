@@ -181,6 +181,14 @@ import time as _time
 _trace_logger = _logging.getLogger("optio_core.cancel_trace")
 _CANCEL_TRACE = os.environ.get("OPTIO_CANCEL_TRACE", "0").lower() in ("1", "true", "yes")
 
+# asyncio.StreamReader defaults its buffer cap to 64 KiB; readline() raises
+# LimitOverrunError on any single line that exceeds it. Subprocess output we
+# consume here (recipe-dsl NDJSON events, singer messages, tailed log lines)
+# can legitimately carry multi-MiB records, so we lift the cap to 256 MiB.
+# The limit is a high-water mark for the StreamReader's internal buffer, not
+# a pre-allocation — memory tracks actual bytes in flight.
+_SUBPROCESS_STREAM_LIMIT = 256 * 1024 * 1024
+
 
 def _trace(fmt: str, *args: object) -> None:
     if _CANCEL_TRACE:
@@ -254,6 +262,7 @@ class LocalHost:
             "tail", "-F", "-n", "+1", absolute_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            limit=_SUBPROCESS_STREAM_LIMIT,
         )
         assert self._tail_proc.stdout is not None
         while True:
@@ -291,6 +300,7 @@ class LocalHost:
                 asyncio.subprocess.STDOUT if merge_stderr
                 else asyncio.subprocess.PIPE
             ),
+            limit=_SUBPROCESS_STREAM_LIMIT,
         )
 
         async def _stream(reader) -> AsyncIterator[bytes]:
