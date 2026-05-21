@@ -2,6 +2,19 @@
 export { OptioProvider } from './context/OptioProvider.js';
 export { useOptioLive } from './context/useOptioContext.js';
 
+// Multi-process stream
+export {
+  MultiProcessStreamProvider,
+  MultiProcessStreamContext,
+} from './context/MultiProcessStreamContext.js';
+export type {
+  ProcessStreamSlice,
+  MultiProcessUpdate,
+  MultiLogEntry,
+  MultiProcessTreeNode,
+  MultiProcessStreamContextValue,
+} from './context/MultiProcessStreamContext.js';
+
 // Components
 export { ProcessList } from './components/ProcessList.js';
 export { ProcessItem } from './components/ProcessItem.js';
