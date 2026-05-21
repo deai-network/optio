@@ -158,9 +158,7 @@ describe('MultiProcessStreamProvider (dynamic registration)', () => {
     // Unmount the consumer
     rerender(
       <Wrapper>
-        <MultiProcessStreamProvider>
-          {/* no consumer */}
-        </MultiProcessStreamProvider>
+        <MultiProcessStreamProvider children={null} />
       </Wrapper>,
     );
     act(() => { vi.runAllTimers(); });
