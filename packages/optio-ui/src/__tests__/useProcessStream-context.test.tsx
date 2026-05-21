@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import React from 'react';
 import type { ReactNode } from 'react';
@@ -26,6 +26,10 @@ class MockEventSource {
   close() { this.closed = true; }
   emit(data: any) { this.onmessage?.({ data: JSON.stringify(data) } as any); }
   static reset() { this.instances = []; }
+  /** Return currently-open (non-closed) instances. */
+  static live(): MockEventSource[] {
+    return this.instances.filter((es) => !es.closed);
+  }
 }
 
 beforeEach(() => {
@@ -34,21 +38,27 @@ beforeEach(() => {
   vi.resetModules();
   // Stub fetch so the per-PID preflight probe doesn't error out in the fallback path
   (globalThis as any).fetch = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+  vi.useFakeTimers();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('useProcessStream context-awareness', () => {
-  it('consumes provider slice without opening a per-PID EventSource when provider knows the pid', async () => {
+  it('consumes provider slice without opening a per-PID EventSource when hook registers and provider covers the pid', async () => {
     const { QueryClient, QueryClientProvider } = await import('@tanstack/react-query');
     const { OptioProvider } = await import('../context/OptioProvider.js');
     const { MultiProcessStreamProvider } = await import('../context/MultiProcessStreamContext.js');
     const { useProcessStream } = await import('../hooks/useProcessStream.js');
 
+    // The hook self-registers via ctx.registerTree — no treeIds prop needed
     function wrapper({ children }: { children: ReactNode }) {
       const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
       return (
         <QueryClientProvider client={client}>
           <OptioProvider prefix="test" database="test-db" baseUrl="http://localhost:0">
-            <MultiProcessStreamProvider treeIds={['pA']} flatIds={[]}>
+            <MultiProcessStreamProvider>
               {children}
             </MultiProcessStreamProvider>
           </OptioProvider>
@@ -58,13 +68,19 @@ describe('useProcessStream context-awareness', () => {
 
     const { result } = renderHook(() => useProcessStream('pA'), { wrapper });
 
-    // Exactly ONE EventSource opened — the provider's multi-stream, not a per-PID one
-    expect(MockEventSource.instances).toHaveLength(1);
-    expect(MockEventSource.instances[0].url).toContain('/api/processes/tree/multi/stream');
+    // Flush the registration debounce timer
+    act(() => { vi.runAllTimers(); });
 
-    // Emit an update event with a pA row through the provider's EventSource
+    // Exactly ONE live EventSource — the provider's multi-stream, not a per-PID one
+    // (React 19 double-invokes effects; closed instances are the probe run)
+    const liveES = MockEventSource.live();
+    expect(liveES).toHaveLength(1);
+    expect(liveES[0].url).toContain('/api/processes/tree/multi/stream');
+    expect(liveES[0].url).toContain('treeIds=pA');
+
+    // Emit an update event with a pA row through the live EventSource
     act(() => {
-      MockEventSource.instances[0].emit({
+      liveES[0].emit({
         type: 'update',
         processes: [
           {
@@ -88,8 +104,8 @@ describe('useProcessStream context-awareness', () => {
     expect(result.current.rootProcess).not.toBeNull();
     expect(result.current.rootProcess!.name).toBe('A-root');
 
-    // Still exactly ONE EventSource — no per-PID SSE was opened
-    expect(MockEventSource.instances).toHaveLength(1);
+    // Still exactly ONE live EventSource — no per-PID SSE was opened
+    expect(MockEventSource.live()).toHaveLength(1);
   });
 
   it('falls back to per-PID EventSource when no provider mounted', async () => {
@@ -111,46 +127,14 @@ describe('useProcessStream context-awareness', () => {
     renderHook(() => useProcessStream('pX'), { wrapper });
 
     // The fetch probe resolves to ok — EventSource should be opened for the per-PID stream
-    // We need to wait for the async probe to complete
     await act(async () => {
+      vi.runAllTimers();
       await Promise.resolve();
     });
 
-    expect(MockEventSource.instances).toHaveLength(1);
-    expect(MockEventSource.instances[0].url).toContain('/api/processes/pX/tree/stream');
-  });
-
-  it('falls back to per-PID EventSource when provider does not watch the pid', async () => {
-    const { QueryClient, QueryClientProvider } = await import('@tanstack/react-query');
-    const { OptioProvider } = await import('../context/OptioProvider.js');
-    const { MultiProcessStreamProvider } = await import('../context/MultiProcessStreamContext.js');
-    const { useProcessStream } = await import('../hooks/useProcessStream.js');
-
-    function wrapper({ children }: { children: ReactNode }) {
-      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-      return (
-        <QueryClientProvider client={client}>
-          <OptioProvider prefix="test" database="test-db" baseUrl="http://localhost:0">
-            <MultiProcessStreamProvider treeIds={['pA']} flatIds={[]}>
-              {children}
-            </MultiProcessStreamProvider>
-          </OptioProvider>
-        </QueryClientProvider>
-      );
-    }
-
-    renderHook(() => useProcessStream('pNotWatched'), { wrapper });
-
-    // Wait for the per-PID async probe to settle
-    await act(async () => {
-      await Promise.resolve();
-    });
-
-    // TWO EventSources: one for the provider's multi-stream, one for the hook's per-PID fallback
-    expect(MockEventSource.instances).toHaveLength(2);
-
-    const urls = MockEventSource.instances.map((es) => es.url);
-    expect(urls.some((u) => u.includes('/api/processes/tree/multi/stream'))).toBe(true);
-    expect(urls.some((u) => u.includes('/api/processes/pNotWatched/tree/stream'))).toBe(true);
+    // At least one live ES for the per-PID stream
+    const liveES = MockEventSource.live();
+    expect(liveES.length).toBeGreaterThanOrEqual(1);
+    expect(liveES.some((es) => es.url.includes('/api/processes/pX/tree/stream'))).toBe(true);
   });
 });

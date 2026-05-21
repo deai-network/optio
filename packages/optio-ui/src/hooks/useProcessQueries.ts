@@ -1,4 +1,4 @@
-import { useContext } from 'react';
+import { useContext, useEffect } from 'react';
 import type { Process, ProcessMetadataFilter } from 'optio-contracts';
 import { useOptioPrefix, useOptioClient, useOptioDatabase } from '../context/useOptioContext.js';
 import { MultiProcessStreamContext } from '../context/MultiProcessStreamContext.js';
@@ -34,6 +34,15 @@ export function useProcessList(options?: {
 
 export function useProcess(id: string | undefined, options?: { refetchInterval?: number | false }) {
   const ctx = useContext(MultiProcessStreamContext);
+
+  // Self-register with the provider (flat kind) when a provider is mounted.
+  // Flat registration means the provider streams only the root-level process
+  // (no deep tree), which is sufficient for useProcess callers.
+  useEffect(() => {
+    if (!ctx || !id) return;
+    return ctx.registerFlat(id);
+  }, [ctx, id]);
+
   const slice = ctx && id ? ctx.getSlice(id) : null;
 
   const prefix = useOptioPrefix();

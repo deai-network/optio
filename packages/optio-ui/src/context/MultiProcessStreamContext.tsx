@@ -44,6 +44,8 @@ export interface ProcessStreamSlice {
 
 export interface MultiProcessStreamContextValue {
   getSlice: (processId: string) => ProcessStreamSlice | null;
+  registerTree: (processId: string) => () => void;
+  registerFlat: (processId: string) => () => void;
   connected: boolean;
 }
 
@@ -67,13 +69,9 @@ function buildTree(flat: MultiProcessUpdate[], rootProcessId: string): MultiProc
 }
 
 export function MultiProcessStreamProvider({
-  treeIds,
-  flatIds,
   maxDepth = 10,
   children,
 }: {
-  treeIds: string[];
-  flatIds: string[];
   maxDepth?: number;
   children: ReactNode;
 }) {
@@ -90,10 +88,68 @@ export function MultiProcessStreamProvider({
   // we see in update events (rows where parentId === null AND _id === rootId).
   const rootIdToPidRef = useRef<Map<string, string>>(new Map());
 
-  const treeIdsKey = treeIds.join(',');
-  const flatIdsKey = flatIds.join(',');
+  // Refcount maps: pid → number of mounted consumers
+  const treeRefsRef = useRef<Map<string, number>>(new Map());
+  const flatRefsRef = useRef<Map<string, number>>(new Map());
 
+  // version increments when the effective pid union changes (a pid crosses 0 boundary)
+  const [version, setVersion] = useState(0);
+
+  // Timer for debouncing rapid register/unregister calls
+  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const scheduleReconnect = useCallback(() => {
+    if (debounceTimerRef.current !== null) return;
+    debounceTimerRef.current = setTimeout(() => {
+      debounceTimerRef.current = null;
+      setVersion((v) => v + 1);
+    }, 100);
+  }, []);
+
+  const registerTree = useCallback((pid: string): (() => void) => {
+    const prev = treeRefsRef.current.get(pid) ?? 0;
+    treeRefsRef.current.set(pid, prev + 1);
+    if (prev === 0) scheduleReconnect();
+    return () => {
+      const cur = treeRefsRef.current.get(pid) ?? 0;
+      const next = cur - 1;
+      if (next <= 0) {
+        treeRefsRef.current.delete(pid);
+        scheduleReconnect();
+      } else {
+        treeRefsRef.current.set(pid, next);
+      }
+    };
+  }, [scheduleReconnect]);
+
+  const registerFlat = useCallback((pid: string): (() => void) => {
+    const prev = flatRefsRef.current.get(pid) ?? 0;
+    flatRefsRef.current.set(pid, prev + 1);
+    if (prev === 0) scheduleReconnect();
+    return () => {
+      const cur = flatRefsRef.current.get(pid) ?? 0;
+      const next = cur - 1;
+      if (next <= 0) {
+        flatRefsRef.current.delete(pid);
+        scheduleReconnect();
+      } else {
+        flatRefsRef.current.set(pid, next);
+      }
+    };
+  }, [scheduleReconnect]);
+
+  // Reconnect effect: fires when version (or config) changes
   useEffect(() => {
+    const treeIds = Array.from(treeRefsRef.current.keys());
+    const flatIds = Array.from(flatRefsRef.current.keys());
+
+    if (treeIds.length === 0 && flatIds.length === 0) {
+      // No registered consumers — nothing to stream
+      setConnected(false);
+      return;
+    }
+
+    // Reset slice state for new connection
     setProcessesByRootPid({});
     setLogsByRootPid({});
     setMissing(new Set());
@@ -101,8 +157,8 @@ export function MultiProcessStreamProvider({
     rootIdToPidRef.current = new Map();
 
     const params = new URLSearchParams();
-    if (treeIdsKey) params.set('treeIds', treeIdsKey);
-    if (flatIdsKey) params.set('flatIds', flatIdsKey);
+    if (treeIds.length) params.set('treeIds', treeIds.join(','));
+    if (flatIds.length) params.set('flatIds', flatIds.join(','));
     params.set('prefix', prefix);
     if (database) params.set('database', database);
     params.set('maxDepth', String(maxDepth));
@@ -118,6 +174,9 @@ export function MultiProcessStreamProvider({
           setMissing(new Set(data.missing as string[]));
         } else if (data.type === 'update') {
           const procs: MultiProcessUpdate[] = data.processes;
+          // Capture treeIds/flatIds at the time this event fires (closure over the effect run)
+          const currentTreeIds = Array.from(treeRefsRef.current.keys());
+          const currentFlatIds = Array.from(flatRefsRef.current.keys());
           for (const p of procs) {
             if (p.parentId === null && p.rootId === p._id) {
               rootIdToPidRef.current.set(p._id, p.processId);
@@ -128,7 +187,7 @@ export function MultiProcessStreamProvider({
             const rootPid = p.rootId
               ? rootIdToPidRef.current.get(p.rootId)
               : undefined;
-            const pidToBin = rootPid && (treeIds.includes(rootPid) || flatIds.includes(rootPid))
+            const pidToBin = rootPid && (currentTreeIds.includes(rootPid) || currentFlatIds.includes(rootPid))
               ? rootPid
               : p.processId;
             if (!byPid[pidToBin]) byPid[pidToBin] = [];
@@ -164,15 +223,17 @@ export function MultiProcessStreamProvider({
     return () => {
       es.close();
     };
-  }, [treeIdsKey, flatIdsKey, maxDepth, prefix, database, baseUrl]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [version, maxDepth, prefix, database, baseUrl]);
 
   const getSlice = useCallback(
     (processId: string): ProcessStreamSlice | null => {
-      const watched = treeIds.includes(processId) || flatIds.includes(processId);
+      const isTreeKind = treeRefsRef.current.has(processId);
+      const isFlatKind = flatRefsRef.current.has(processId);
+      const watched = isTreeKind || isFlatKind;
       if (!watched) return null;
       const processes = processesByRootPid[processId] ?? [];
       const rootProcess = processes.find((p) => p.processId === processId) ?? null;
-      const isTreeKind = treeIds.includes(processId);
       const tree = isTreeKind && rootProcess
         ? buildTree(processes, processId)
         : (rootProcess ? { ...rootProcess, children: [] as MultiProcessTreeNode[] } : null);
@@ -186,10 +247,10 @@ export function MultiProcessStreamProvider({
         error: null,
       };
     },
-    [treeIds, flatIds, processesByRootPid, logsByRootPid, missing, connected],
+    [processesByRootPid, logsByRootPid, missing, connected],
   );
 
-  const value: MultiProcessStreamContextValue = { getSlice, connected };
+  const value: MultiProcessStreamContextValue = { getSlice, registerTree, registerFlat, connected };
   return (
     <MultiProcessStreamContext.Provider value={value}>
       {children}

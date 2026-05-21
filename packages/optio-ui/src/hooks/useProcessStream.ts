@@ -88,6 +88,18 @@ export function useProcessStream(processId: string | undefined, maxDepth = 10): 
 
   // Check whether a MultiProcessStreamProvider ancestor covers this pid.
   const ctx = useContext(MultiProcessStreamContext);
+
+  // Self-register with the provider (tree kind) when a provider is mounted.
+  // The registration drives the provider to open an EventSource that includes
+  // this pid. The cleanup returned by registerTree removes the refcount when
+  // this hook unmounts or processId changes.
+  useEffect(() => {
+    if (!ctx || !processId) return;
+    return ctx.registerTree(processId);
+  }, [ctx, processId]);
+
+  // getSlice reads from already-registered map, so slice is populated after
+  // the provider's next reconnect cycle triggered by registerTree above.
   const slice = ctx && processId ? ctx.getSlice(processId) : null;
   // Capture sliceActive as a stable boolean for the effect dependency array.
   // When sliceActive is true the effect below is a no-op, which prevents
