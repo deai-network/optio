@@ -559,7 +559,6 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
     sendEvent({ type: 'resolution', missing });
 
     if (treeRoots.length === 0 && flatIds.length === 0) {
-      request.raw.on('close', () => {});
       return;
     }
 

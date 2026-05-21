@@ -127,16 +127,15 @@ describe('GET /api/processes/tree/multi/stream', () => {
     const { app, baseUrl } = await startServer();
     try {
       const url = `${baseUrl}/api/processes/tree/multi/stream?treeIds=pid-tree-a&flatIds=pid-flat-b&prefix=optio&maxDepth=10`;
-      // Stop once we have at least 1 event
-      const events = await collectSseEvents(url, (evts) => evts.length >= 1);
+      // Stop once we have at least 2 events (resolution + first update)
+      const events = await collectSseEvents(url, (evts) => evts.length >= 2);
 
-      expect(events.length).toBeGreaterThanOrEqual(1);
+      expect(events.length).toBeGreaterThanOrEqual(2);
       const firstEvent = events[0] as any;
-      // The first event must be resolution (with no missing) or an update
-      expect(['resolution', 'update']).toContain(firstEvent.type);
-      if (firstEvent.type === 'resolution') {
-        expect(firstEvent.missing).toEqual([]);
-      }
+      expect(firstEvent.type).toBe('resolution');
+      expect(firstEvent.missing).toEqual([]);
+      const secondEvent = events[1] as any;
+      expect(secondEvent.type).toBe('update');
     } finally {
       await app.close();
     }
