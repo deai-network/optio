@@ -328,3 +328,47 @@ describe('createListPoller metadataFilter', () => {
     expect(update.processes.length).toBe(1);
   });
 });
+
+describe('createTreePoller rootId propagation', () => {
+  it('includes rootId on every process in the update event', async () => {
+    const events: any[] = [];
+    const rootId = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertOne({
+      _id: rootId,
+      processId: 'p-root', name: 'Root',
+      rootId, parentId: null,
+      depth: 0, order: 0,
+      status: { state: 'running' },
+      progress: { percent: null },
+      cancellable: true,
+      log: [],
+    });
+    const childId = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertOne({
+      _id: childId,
+      processId: 'p-child', name: 'Child',
+      rootId, parentId: rootId,
+      depth: 1, order: 0,
+      status: { state: 'done' },
+      progress: { percent: 100 },
+      cancellable: false,
+      log: [],
+    });
+    const poller = createTreePoller({
+      db, prefix: PREFIX,
+      sendEvent: (e: any) => { if (e.type === 'update') events.push(e); },
+      onError: () => {},
+      rootId: rootId.toString(),
+      baseDepth: 0,
+    });
+    poller.start();
+    await new Promise((r) => setTimeout(r, 1100));
+    poller.stop();
+
+    expect(events.length).toBeGreaterThan(0);
+    const procs = events[0].processes;
+    expect(procs).toHaveLength(2);
+    expect(procs[0].rootId).toBe(rootId.toString());
+    expect(procs[1].rootId).toBe(rootId.toString());
+  });
+});
