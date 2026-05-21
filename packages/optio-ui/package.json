@@ -1,6 +1,6 @@
 {
   "name": "optio-ui",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "license": "Apache-2.0",
   "description": "React components for embedding optio process management UIs into ts-rest applications.",
   "repository": {
