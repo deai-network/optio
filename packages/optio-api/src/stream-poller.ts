@@ -211,15 +211,6 @@ export function createMultiTreePoller(opts: MultiTreePollerOptions): ListPollerH
   const lastLogCounts = new Map<string, number>();
   let firstPoll = true;
 
-  const treeRootSet = new Set(treeRoots.map((r) => r.rootId.toString()));
-  const flatRowSet = new Set(flatIds.map((id) => id.toString()));
-
-  function isLoggableRow(p: any): boolean {
-    if (treeRootSet.has(p.rootId?.toString())) return true;
-    if (flatRowSet.has(p._id.toString())) return true;
-    return false;
-  }
-
   async function poll() {
     try {
       const branches: Record<string, unknown>[] = [];
@@ -278,7 +269,6 @@ export function createMultiTreePoller(opts: MultiTreePollerOptions): ListPollerH
       const logClearedRoots = new Set<string>();
       const newLogEntries: any[] = [];
       for (const p of allProcs) {
-        if (!isLoggableRow(p)) continue;
         const pid = p._id.toString();
         const logLen = (p.log ?? []).length;
         const lastLen = lastLogCounts.get(pid) ?? 0;
