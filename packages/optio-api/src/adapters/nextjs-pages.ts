@@ -9,7 +9,7 @@ import type { MongoClient } from 'mongodb';
 import type { Redis } from 'ioredis';
 import { ObjectId } from 'mongodb';
 import * as handlers from '../handlers.js';
-import { createListPoller, createTreePoller } from '../stream-poller.js';
+import { createListPoller, createTreePoller, createMultiTreePoller } from '../stream-poller.js';
 import { discoverInstances } from '../discovery.js';
 import { resolveDb, type DbOptions } from '../resolve.js';
 import type { AuthCallback } from '../auth.js';
@@ -173,6 +173,87 @@ export function createOptioHandler(opts: OptioApiOptions): OptioPagesHandler {
         maxDepth: sseOpts.maxDepth,
       });
 
+      poller.start();
+      req.on('close', () => poller.stop());
+      return;
+    }
+
+    // Multi-PID tree stream: /api/processes/tree/multi/stream
+    // NOTE: Resolution here uses findOne({_id: new ObjectId(id)}) (ObjectId-only), matching
+    // the single-PID convention in this file. The fastify adapter uses findProcessByEitherId
+    // (accepts both ObjectId hex and processId string). If you need processId support here,
+    // align this adapter with fastify by switching to findProcessByEitherId.
+    if (path === '/api/processes/tree/multi/stream' && method === 'GET') {
+      const rawQuery = req.query as Record<string, unknown>;
+      const treeIdsParam = (rawQuery.treeIds as string | undefined) ?? '';
+      const flatIdsParam = (rawQuery.flatIds as string | undefined) ?? '';
+      const treeInputIds = treeIdsParam ? treeIdsParam.split(',').filter(Boolean) : [];
+      const flatInputIds = flatIdsParam ? flatIdsParam.split(',').filter(Boolean) : [];
+      if (treeInputIds.length === 0 && flatInputIds.length === 0) {
+        res.status(400).json({ message: 'treeIds or flatIds must be non-empty' });
+        return;
+      }
+
+      let sseOpts;
+      try {
+        sseOpts = parseSseOptions(rawQuery);
+      } catch (e) {
+        res.status(400).json({ message: (e as Error).message });
+        return;
+      }
+      const { db, prefix } = resolveDb(dbOpts, sseOpts);
+      const col = db.collection(`${prefix}_processes`);
+
+      async function resolveOne(id: string): Promise<{ id: string; proc: any | null }> {
+        try {
+          const proc = await col.findOne({ _id: new ObjectId(id) });
+          return { id, proc };
+        } catch {
+          return { id, proc: null };
+        }
+      }
+      const [treeResolved, flatResolved] = await Promise.all([
+        Promise.all(treeInputIds.map(resolveOne)),
+        Promise.all(flatInputIds.map(resolveOne)),
+      ]);
+
+      const missing: string[] = [];
+      const treeRoots: { rootId: any; baseDepth: number }[] = [];
+      const resolvedFlatIds: any[] = [];
+      for (const r of treeResolved) {
+        if (!r.proc) missing.push(r.id);
+        else treeRoots.push({ rootId: r.proc.rootId, baseDepth: r.proc.depth });
+      }
+      for (const r of flatResolved) {
+        if (!r.proc) missing.push(r.id);
+        else resolvedFlatIds.push(r.proc._id);
+      }
+
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      });
+
+      const sendEvent = (data: unknown) => {
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      };
+
+      sendEvent({ type: 'resolution', missing });
+
+      if (treeRoots.length === 0 && resolvedFlatIds.length === 0) {
+        return;
+      }
+
+      const poller = createMultiTreePoller({
+        db,
+        prefix,
+        sendEvent,
+        onError: () => res.end(),
+        treeRoots,
+        flatIds: resolvedFlatIds,
+        maxDepth: sseOpts.maxDepth,
+      });
       poller.start();
       req.on('close', () => poller.stop());
       return;

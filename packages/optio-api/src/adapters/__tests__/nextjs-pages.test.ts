@@ -345,6 +345,37 @@ describe('list metadataFilter (nextjs-pages)', () => {
   });
 });
 
+describe('GET /api/processes/tree/multi/stream (nextjs-pages)', () => {
+  it('returns 400 when both treeIds and flatIds are empty', async () => {
+    const app = createApp();
+    const res = await request(app).get('/api/processes/tree/multi/stream?prefix=optio');
+    expect(res.status).toBe(400);
+    expect(res.body.message).toContain('treeIds or flatIds must be non-empty');
+  });
+
+  it('null role → 401', async () => {
+    const { handler } = createOptioHandler({ db, redis, authenticate: () => null });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      const pathname = req.path;
+      const segments = pathname.split('/').filter(Boolean);
+      const existingQuery = Object.fromEntries(Object.entries(req.query as Record<string, unknown>));
+      Object.defineProperty(req, 'query', {
+        value: { ...existingQuery, 'ts-rest': segments },
+        writable: true,
+        configurable: true,
+      });
+      next();
+    });
+    app.use((req, res) => handler(req as any, res as any));
+    const res = await request(app).get(
+      '/api/processes/tree/multi/stream?treeIds=someid&prefix=optio',
+    );
+    expect(res.status).toBe(401);
+  });
+});
+
 describe('createOptioHandler return shape', () => {
   it('sugar form (db) returns { handler, ctx }', async () => {
     const result = createOptioHandler({ db, redis, authenticate: () => 'operator' });
