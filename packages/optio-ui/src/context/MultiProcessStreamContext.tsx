@@ -1,4 +1,4 @@
-import React, { createContext, useEffect, useRef, useState, useCallback } from 'react';
+import { createContext, useEffect, useRef, useState, useCallback, type ReactNode } from 'react';
 import { useOptioPrefix, useOptioBaseUrl, useOptioDatabase } from './useOptioContext.js';
 
 export interface MultiProcessUpdate {
@@ -75,7 +75,7 @@ export function MultiProcessStreamProvider({
   treeIds: string[];
   flatIds: string[];
   maxDepth?: number;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   const prefix = useOptioPrefix();
   const database = useOptioDatabase();
