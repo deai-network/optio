@@ -114,6 +114,21 @@ async def _module_level_record(pid: str) -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_is_idempotent():
+    """ProcessScheduler.start() must be safe to call twice — Optio.init()
+    starts it so _sync_definitions sees a live scheduler, and Optio.run()
+    also calls it defensively. The second call must NOT re-create the
+    apscheduler instance (which would discard already-registered jobs)."""
+    ps = ProcessScheduler(launch_fn=_noop)
+    await ps.start()
+    first_aps = ps._scheduler
+    assert first_aps is not None, "first start must wire apscheduler"
+    await ps.start()
+    assert ps._scheduler is first_aps, "second start must NOT replace the apscheduler instance"
+    await ps.stop()
+
+
+@pytest.mark.asyncio
 async def test_start_actually_runs_trigger_loop():
     """ProcessScheduler.start() must produce a scheduler that actually
     fires registered triggers. apscheduler 4.x requires both __aenter__()

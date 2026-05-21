@@ -26,7 +26,14 @@ class ProcessScheduler:
         apscheduler 4.x requires BOTH __aenter__() and start_in_background()
         — the former wires up internal services, the latter runs the
         trigger evaluation loop. Without start_in_background(), schedules
-        register cleanly but no job ever fires."""
+        register cleanly but no job ever fires.
+
+        Idempotent — subsequent calls are no-ops. Optio.init() starts the
+        scheduler so _sync_definitions can register schedules into a live
+        runloop; Optio.run() also calls start() defensively, and that
+        second call must not re-create the apscheduler instance."""
+        if self._scheduler is not None:
+            return
         try:
             from apscheduler import AsyncScheduler
             self._scheduler = AsyncScheduler()

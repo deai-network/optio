@@ -192,7 +192,14 @@ class Optio:
         # Spec: docs/2026-04-22-process-reconciliation-design.md
         await self._reconcile_interrupted_processes()
 
-        # Run initial sync
+        # Run initial sync. NOTE: at this point _scheduler.start() has not
+        # been called yet, so sync_schedules early-returns and no cron
+        # triggers reach apscheduler. run() compensates by re-running
+        # sync_definitions immediately after start(). Starting apscheduler
+        # in init() instead leaks its anyio task_group across the
+        # init/run scope boundary and tears down Optio.run() prematurely
+        # during shutdown — verified by 13 test_deadline_cancel /
+        # test_group_cancel failures.
         await self._sync_definitions()
 
         redis_info = f", redis='{redis_url}'" if redis_url else ", no Redis"
@@ -818,8 +825,14 @@ class Optio:
         if self.rpc_server is not None and self._owned_rpc_server:
             await self.rpc_server.start()
 
-        # Start scheduler
+        # Start scheduler — must run in the same async context as
+        # Optio.run() so apscheduler's anyio task_group lives inside the
+        # run-loop's scope, not init()'s. Re-sync immediately after start
+        # so cron triggers registered during init() actually reach the
+        # now-live apscheduler instance (the init-time sync_schedules
+        # was a no-op because apscheduler was None at that point).
         await self._scheduler.start()
+        await self._sync_definitions()
 
         # Start heartbeat (if Redis is configured)
         if self._redis:
