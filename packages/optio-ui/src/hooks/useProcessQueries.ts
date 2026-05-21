@@ -1,5 +1,7 @@
+import { useContext } from 'react';
 import type { Process, ProcessMetadataFilter } from 'optio-contracts';
 import { useOptioPrefix, useOptioClient, useOptioDatabase } from '../context/useOptioContext.js';
+import { MultiProcessStreamContext } from '../context/MultiProcessStreamContext.js';
 
 export function useProcessList(options?: {
   refetchInterval?: number | false;
@@ -31,15 +33,24 @@ export function useProcessList(options?: {
 }
 
 export function useProcess(id: string | undefined, options?: { refetchInterval?: number | false }) {
+  const ctx = useContext(MultiProcessStreamContext);
+  const slice = ctx && id ? ctx.getSlice(id) : null;
+
   const prefix = useOptioPrefix();
   const database = useOptioDatabase();
   const api = useOptioClient();
   const { data, isLoading } = api.processes.get.useQuery({
     queryKey: ['process', database, prefix, id],
     queryData: { params: { id: id! }, query: { database, prefix } },
-    enabled: !!id,
+    enabled: !!id && !slice,  // skip polling when provider covers this pid
     refetchInterval: options?.refetchInterval ?? 5000,
   });
+
+  if (slice) {
+    // Structural cast: MultiProcessUpdate is shape-compatible with Process for the
+    // fields callers rely on (status, name, etc.). Same pattern as Task 6.
+    return { process: slice.rootProcess as unknown as Process | null, isLoading: false };
+  }
   return {
     process: data?.status === 200 ? data.body : null,
     isLoading,
