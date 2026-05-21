@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo, useContext } from 'react';
 import { useOptioPrefix, useOptioBaseUrl, useOptioDatabase } from '../context/useOptioContext.js';
+import { MultiProcessStreamContext } from '../context/MultiProcessStreamContext.js';
 
 interface ProcessUpdate {
   _id: string;
@@ -75,10 +76,23 @@ export function useProcessStream(processId: string | undefined, maxDepth = 10): 
   const prefix = useOptioPrefix();
   const database = useOptioDatabase();
   const baseUrl = useOptioBaseUrl();
+
+  // All hooks must be called unconditionally (Rules of Hooks). The local state
+  // and refs below are used only in the per-PID fallback path, but they are
+  // declared here unconditionally so the hook call order is stable regardless
+  // of whether the MultiProcessStreamContext slice path is active.
   const [state, setState] = useState<InternalState>(INITIAL_STATE);
   const eventSourceRef = useRef<EventSource | null>(null);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Check whether a MultiProcessStreamProvider ancestor covers this pid.
+  const ctx = useContext(MultiProcessStreamContext);
+  const slice = ctx && processId ? ctx.getSlice(processId) : null;
+  // Capture sliceActive as a stable boolean for the effect dependency array.
+  // When sliceActive is true the effect below is a no-op, which prevents
+  // opening a redundant per-PID EventSource.
+  const sliceActive = slice !== null;
 
   const connect = useCallback(() => {
     if (!processId) return;
@@ -150,6 +164,10 @@ export function useProcessStream(processId: string | undefined, maxDepth = 10): 
   }, [processId, maxDepth, prefix, database, baseUrl]);
 
   useEffect(() => {
+    // When the provider slice is active for this pid, skip the per-PID
+    // EventSource entirely. The provider manages its own SSE connection.
+    if (sliceActive) return;
+
     // Reset buffered state when processId changes so logs/tree/error from
     // the previous process don't leak through until the new connection
     // catches up — the stream handler only appends to state.logs, so
@@ -164,9 +182,30 @@ export function useProcessStream(processId: string | undefined, maxDepth = 10): 
         retryTimeoutRef.current = null;
       }
     };
-  }, [connect]);
+  }, [connect, sliceActive]);
 
+  // useMemo is called unconditionally; when the slice path is active the
+  // local state.processes array is empty so buildTree returns null (harmless).
   const tree = useMemo(() => buildTree(state.processes), [state.processes]);
   const rootProcess = state.processes.find((p) => p.depth === 0) ?? null;
+
+  // When the provider covers this pid, map the provider slice to the hook's
+  // return shape. The Multi-prefixed types carry a superset of ProcessUpdate's
+  // fields (same field names, compatible runtime shapes), so a structural cast
+  // is safe here. We use `as unknown as X` rather than widening the hook's
+  // public return type to Multi-prefixed types — that would require touching
+  // every consumer. The cast is local to this boundary and explicitly documented.
+  if (slice) {
+    return {
+      processes: slice.processes as unknown as ProcessUpdate[],
+      tree: slice.tree as unknown as ProcessTreeNode | null,
+      logs: slice.logs as unknown as LogEntry[],
+      connected: slice.connected,
+      rootProcess: slice.rootProcess as unknown as ProcessUpdate | null,
+      processNotFound: slice.processNotFound,
+      error: slice.error,
+    };
+  }
+
   return { ...state, tree, rootProcess };
 }
