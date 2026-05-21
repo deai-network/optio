@@ -102,3 +102,46 @@ async def test_sync_schedules_no_apscheduler_is_noop():
     await ps.sync_schedules([_t("a", group="ingest")])
     # No exception, no jobs tracked.
     assert ps._jobs == {}
+
+
+_test_fires: list[str] = []
+
+
+async def _module_level_record(pid: str) -> None:
+    """Module-level callback — apscheduler 4.x cannot reference nested
+    functions or closures (SerializationError)."""
+    _test_fires.append(pid)
+
+
+@pytest.mark.asyncio
+async def test_start_actually_runs_trigger_loop():
+    """ProcessScheduler.start() must produce a scheduler that actually
+    fires registered triggers. apscheduler 4.x requires both __aenter__()
+    and start_in_background() — calling only the former initializes
+    services but never executes scheduled jobs."""
+    import asyncio
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    _test_fires.clear()
+
+    ps = ProcessScheduler(launch_fn=_module_level_record)
+    await ps.start()
+    try:
+        assert ps._scheduler is not None, "apscheduler must be importable for this test"
+        # Register a sub-second interval directly — cron's 1-minute floor is
+        # too slow for unit-test timing. Tests the same code path the cron
+        # registration uses: scheduler.add_schedule(launch_fn, trigger, ...).
+        await ps._scheduler.add_schedule(
+            _module_level_record,
+            IntervalTrigger(seconds=0.5),
+            id="t_real",
+            args=["t_real"],
+        )
+        # Wait up to 3 seconds for at least one fire.
+        for _ in range(30):
+            await asyncio.sleep(0.1)
+            if _test_fires:
+                break
+        assert _test_fires, "trigger never fired — scheduler is initialized but not running"
+    finally:
+        await ps.stop()

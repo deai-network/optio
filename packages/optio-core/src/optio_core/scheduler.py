@@ -21,11 +21,17 @@ class ProcessScheduler:
         self._jobs: dict[str, TaskInstance] = {}
 
     async def start(self) -> None:
-        """Start the scheduler."""
+        """Start the scheduler.
+
+        apscheduler 4.x requires BOTH __aenter__() and start_in_background()
+        — the former wires up internal services, the latter runs the
+        trigger evaluation loop. Without start_in_background(), schedules
+        register cleanly but no job ever fires."""
         try:
             from apscheduler import AsyncScheduler
             self._scheduler = AsyncScheduler()
             await self._scheduler.__aenter__()
+            await self._scheduler.start_in_background()
             logger.info("Scheduler started")
         except Exception as e:
             logger.warning(f"Could not start scheduler: {e}")
