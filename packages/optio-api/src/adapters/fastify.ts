@@ -9,7 +9,7 @@ import type { MongoClient } from 'mongodb';
 import type { Redis } from 'ioredis';
 import * as handlers from '../handlers.js';
 import { findProcessByEitherId } from '../process-id-resolver.js';
-import { createListPoller, createTreePoller } from '../stream-poller.js';
+import { createListPoller, createTreePoller, createMultiTreePoller } from '../stream-poller.js';
 import { discoverInstances } from '../discovery.js';
 import { resolveDb, type DbOptions } from '../resolve.js';
 import httpProxy from '@fastify/http-proxy';
@@ -500,6 +500,78 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       maxDepth: sseOpts.maxDepth,
     });
 
+    poller.start();
+    request.raw.on('close', () => poller.stop());
+  });
+
+  app.get('/api/processes/tree/multi/stream', async (request: any, reply: any) => {
+    const rawQuery = (request.query as Record<string, unknown>) ?? {};
+    const treeIdsParam = (rawQuery.treeIds as string | undefined) ?? '';
+    const flatIdsParam = (rawQuery.flatIds as string | undefined) ?? '';
+    const treeInputIds = treeIdsParam ? treeIdsParam.split(',').filter(Boolean) : [];
+    const flatInputIds = flatIdsParam ? flatIdsParam.split(',').filter(Boolean) : [];
+    if (treeInputIds.length === 0 && flatInputIds.length === 0) {
+      reply.code(400).send({ message: 'treeIds or flatIds must be non-empty' });
+      return;
+    }
+
+    let sseOpts;
+    try {
+      sseOpts = parseSseOptions(rawQuery);
+    } catch (e) {
+      reply.code(400).send({ message: (e as Error).message });
+      return;
+    }
+    const { db, prefix } = resolveDb(dbOpts, sseOpts);
+    const col = db.collection(`${prefix}_processes`);
+
+    async function resolveOne(id: string): Promise<{ id: string; proc: any | null }> {
+      const proc = await findProcessByEitherId(col, id);
+      return { id, proc };
+    }
+    const [treeResolved, flatResolved] = await Promise.all([
+      Promise.all(treeInputIds.map(resolveOne)),
+      Promise.all(flatInputIds.map(resolveOne)),
+    ]);
+
+    const missing: string[] = [];
+    const treeRoots: { rootId: any; baseDepth: number }[] = [];
+    const flatIds: any[] = [];
+    for (const r of treeResolved) {
+      if (!r.proc) missing.push(r.id);
+      else treeRoots.push({ rootId: r.proc.rootId, baseDepth: r.proc.depth });
+    }
+    for (const r of flatResolved) {
+      if (!r.proc) missing.push(r.id);
+      else flatIds.push(r.proc._id);
+    }
+
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    });
+
+    const sendEvent = (data: unknown) => {
+      reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    sendEvent({ type: 'resolution', missing });
+
+    if (treeRoots.length === 0 && flatIds.length === 0) {
+      request.raw.on('close', () => {});
+      return;
+    }
+
+    const poller = createMultiTreePoller({
+      db,
+      prefix,
+      sendEvent,
+      onError: () => reply.raw.end(),
+      treeRoots,
+      flatIds,
+      maxDepth: sseOpts.maxDepth,
+    });
     poller.start();
     request.raw.on('close', () => poller.stop());
   });
