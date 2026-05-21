@@ -97,6 +97,7 @@ export function MultiProcessStreamProvider({
     setProcessesByRootPid({});
     setLogsByRootPid({});
     setMissing(new Set());
+    setConnected(false);
     rootIdToPidRef.current = new Map();
 
     const params = new URLSearchParams();
