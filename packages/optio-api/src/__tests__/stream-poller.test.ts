@@ -329,6 +329,115 @@ describe('createListPoller metadataFilter', () => {
   });
 });
 
+describe('createMultiTreePoller', () => {
+  it('emits combined update for multiple tree roots', async () => {
+    const events: any[] = [];
+    const rootA = new ObjectId(); const childA = new ObjectId();
+    const rootB = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertMany([
+      { _id: rootA, processId: 'pA', name: 'A', rootId: rootA, parentId: null, depth: 0, order: 0, status: { state: 'running' }, progress: {}, cancellable: true, log: [] },
+      { _id: childA, processId: 'pAC', name: 'A-child', rootId: rootA, parentId: rootA, depth: 1, order: 0, status: { state: 'done' }, progress: {}, cancellable: false, log: [] },
+      { _id: rootB, processId: 'pB', name: 'B', rootId: rootB, parentId: null, depth: 0, order: 0, status: { state: 'running' }, progress: {}, cancellable: true, log: [] },
+    ]);
+    const { createMultiTreePoller } = await import('../stream-poller.js');
+    const poller = createMultiTreePoller({
+      db, prefix: PREFIX,
+      sendEvent: (e: any) => { if (e.type === 'update') events.push(e); },
+      onError: () => {},
+      treeRoots: [
+        { rootId: rootA, baseDepth: 0 },
+        { rootId: rootB, baseDepth: 0 },
+      ],
+      flatIds: [],
+    });
+    poller.start();
+    await new Promise((r) => setTimeout(r, 1100));
+    poller.stop();
+
+    expect(events.length).toBeGreaterThan(0);
+    const procs = events[0].processes;
+    const ids = procs.map((p: any) => p.processId).sort();
+    expect(ids).toEqual(['pA', 'pAC', 'pB']);
+    const rowA = procs.find((p: any) => p.processId === 'pA');
+    const rowAC = procs.find((p: any) => p.processId === 'pAC');
+    const rowB = procs.find((p: any) => p.processId === 'pB');
+    expect(rowA.rootId).toBe(rootA.toString());
+    expect(rowAC.rootId).toBe(rootA.toString());
+    expect(rowB.rootId).toBe(rootB.toString());
+  });
+
+  it('flat ids fetch only the named row, not descendants', async () => {
+    const events: any[] = [];
+    const flatRoot = new ObjectId(); const flatChild = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertMany([
+      { _id: flatRoot, processId: 'flatR', name: 'flat-root', rootId: flatRoot, parentId: null, depth: 0, order: 0, status: { state: 'running' }, progress: {}, cancellable: true, log: [] },
+      { _id: flatChild, processId: 'flatC', name: 'flat-child', rootId: flatRoot, parentId: flatRoot, depth: 1, order: 0, status: { state: 'running' }, progress: {}, cancellable: false, log: [] },
+    ]);
+    const { createMultiTreePoller } = await import('../stream-poller.js');
+    const poller = createMultiTreePoller({
+      db, prefix: PREFIX,
+      sendEvent: (e: any) => { if (e.type === 'update') events.push(e); },
+      onError: () => {},
+      treeRoots: [],
+      flatIds: [flatRoot],
+    });
+    poller.start();
+    await new Promise((r) => setTimeout(r, 1100));
+    poller.stop();
+
+    expect(events.length).toBeGreaterThan(0);
+    const ids = events[0].processes.map((p: any) => p.processId);
+    expect(ids).toEqual(['flatR']);
+    expect(ids).not.toContain('flatC');
+  });
+
+  it('log events carry rootId for client routing', async () => {
+    const logs: any[] = [];
+    const rootA = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertOne({
+      _id: rootA, processId: 'pA', name: 'A', rootId: rootA, parentId: null,
+      depth: 0, order: 0, status: { state: 'running' }, progress: {}, cancellable: true,
+      log: [{ timestamp: '2026-05-21T00:00:00Z', level: 'info', message: 'hello' }],
+    });
+    const { createMultiTreePoller } = await import('../stream-poller.js');
+    const poller = createMultiTreePoller({
+      db, prefix: PREFIX,
+      sendEvent: (e: any) => { if (e.type === 'log') logs.push(e); },
+      onError: () => {},
+      treeRoots: [{ rootId: rootA, baseDepth: 0 }],
+      flatIds: [],
+    });
+    poller.start();
+    await new Promise((r) => setTimeout(r, 1100));
+    poller.stop();
+
+    expect(logs.length).toBeGreaterThan(0);
+    expect(logs[0].entries[0].rootId).toBe(rootA.toString());
+  });
+
+  it('flat-id descendants do NOT emit log entries', async () => {
+    const logs: any[] = [];
+    const flatRoot = new ObjectId(); const flatChild = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertMany([
+      { _id: flatRoot, processId: 'flatR', name: 'flat-root', rootId: flatRoot, parentId: null, depth: 0, order: 0, status: { state: 'running' }, progress: {}, cancellable: true, log: [] },
+      { _id: flatChild, processId: 'flatC', name: 'flat-child', rootId: flatRoot, parentId: flatRoot, depth: 1, order: 0, status: { state: 'running' }, progress: {}, cancellable: false, log: [{ timestamp: '2026-05-21T00:00:00Z', level: 'info', message: 'descendant log' }] },
+    ]);
+    const { createMultiTreePoller } = await import('../stream-poller.js');
+    const poller = createMultiTreePoller({
+      db, prefix: PREFIX,
+      sendEvent: (e: any) => { if (e.type === 'log') logs.push(e); },
+      onError: () => {},
+      treeRoots: [],
+      flatIds: [flatRoot],
+    });
+    poller.start();
+    await new Promise((r) => setTimeout(r, 1100));
+    poller.stop();
+
+    expect(logs).toHaveLength(0);
+  });
+});
+
 describe('createTreePoller rootId propagation', () => {
   it('includes rootId on every process in the update event', async () => {
     const events: any[] = [];
