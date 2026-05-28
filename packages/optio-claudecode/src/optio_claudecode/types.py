@@ -6,7 +6,7 @@ alongside the package-specific ``ClaudeCodeTaskConfig``.
 """
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from optio_host.protocol.session import DeliverableCallback, HookCallback
 from optio_host.types import SSHConfig
@@ -54,6 +54,22 @@ class ClaudeCodeTaskConfig:
     after_execute: HookCallback | None = None
     on_deliverable: DeliverableCallback | None = None
 
+    # --- resume surface (mirrors OpencodeTaskConfig) --------------------
+    supports_resume: bool = True
+    workdir_exclude: list[str] | None = None
+    # Optional pair of synchronous bytes->bytes transforms wrapping the
+    # home/.claude session tar at GridFS write/read. Both set → encrypted
+    # at rest; both None (default) → plaintext. Setting only one is a
+    # config error (asymmetric usage is always a mistake).
+    session_blob_encrypt: Callable[[bytes], bytes] | None = None
+    session_blob_decrypt: Callable[[bytes], bytes] | None = None
+    # Optional hook fired on resume only (never on fresh start). Receives
+    # the original config; returns a (possibly mutated) config. The harness
+    # re-renders AGENTS.md from the returned config and writes it back only
+    # when it differs from the file on disk, tagging the next resume.log
+    # line with `REFRESHED:AGENTS.md`. None (default) → no refresh.
+    on_resume_refresh: "Callable[[ClaudeCodeTaskConfig], ClaudeCodeTaskConfig] | None" = None
+
     def __post_init__(self) -> None:
         if self.permission_mode is not None and self.permission_mode not in _VALID_PERMISSION_MODES:
             raise ValueError(
@@ -67,3 +83,11 @@ class ClaudeCodeTaskConfig:
                     f"ClaudeCodeTaskConfig.{field_name}={val!r} must be an "
                     f"absolute path (start with '/' or '~')."
                 )
+        e = self.session_blob_encrypt is not None
+        d = self.session_blob_decrypt is not None
+        if e != d:
+            raise ValueError(
+                "ClaudeCodeTaskConfig: session_blob_encrypt and "
+                "session_blob_decrypt must be set together (both callables) "
+                "or both left as None; one without the other is a config error."
+            )
