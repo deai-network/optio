@@ -158,6 +158,12 @@ def get_tasks() -> list[TaskInstance]:
                 before_execute=_before_execute,
                 after_execute=_after_execute,
                 on_deliverable=_on_deliverable,
+                # Resume support. Crypto hooks left None → plaintext
+                # session blob (same shape as the opencode demo). Operators
+                # forking the demo for a real deployment supply both hooks
+                # pointing at actual crypto. No on_resume_refresh: AGENTS.md
+                # is reused verbatim on resume. workdir_exclude left default.
+                supports_resume=True,
             ),
         )
     ]
