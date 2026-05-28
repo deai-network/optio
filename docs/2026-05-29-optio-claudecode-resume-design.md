@@ -288,6 +288,19 @@ The local session tests run against MongoDB-via-Docker, same as v1.
 - **Automated SSH-in-Docker remote resume test.** Same status as v1's remote test infrastructure — manual smoke; full automation tracked separately.
 - **Snapshot compression-vs-encryption ordering knob.** Fixed as "tar.gz first, then encrypt"; no plan to make this tunable.
 
+## Demo task update
+
+`packages/optio-demo/src/optio_demo/tasks/claudecode.py` is updated alongside the implementation to exercise the resume path:
+
+- `supports_resume=True` (explicit, even though it's the new default).
+- `session_blob_encrypt` and `session_blob_decrypt` set to identity callables (`lambda b: b`). This satisfies the mandatory-encryption validation while keeping the demo task self-contained — operators who fork the demo for a real deployment swap the identity functions for actual crypto. Identity is sufficient to validate the wiring; round-tripping bytes through encrypt+decrypt is the only behavior the framework relies on.
+- `workdir_exclude` left at default (`None`).
+- No `on_resume_refresh` hook in the demo. Default behavior — AGENTS.md is reused verbatim on resume.
+
+For reference, the opencode demo task (`tasks/opencode.py`) wires nothing related to encryption and relies on opencode's both-None plaintext fallthrough. Claudecode cannot do the same because its `__post_init__` rejects that combination; the demo must supply at least the identity pair.
+
+The demo update is part of the implementation plan, not a separate follow-up.
+
 ## Follow-up referenced from v1
 
 The original optio-claudecode spec (`docs/2026-05-28-optio-claudecode-design.md`) listed "Resume support" under follow-ups. This spec is that follow-up.
