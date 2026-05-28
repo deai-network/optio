@@ -275,7 +275,12 @@ ctx.report_progress(percent: float | None, message: str | None = None) -> None
 # message is also appended to process log
 
 ctx.should_continue() -> bool
-# Returns False when cancellation has been requested; poll this in loops
+# Returns False when cancellation has been requested for THIS process —
+# external on self/ancestor, or cancel cascade from a non-surviving
+# descendant. Does NOT become False because a child of this process
+# failed. Poll this in loops; also safe to read inside `except
+# ExceptionGroup` / `except ChildProcessFailed` handlers to distinguish
+# "I was cancelled" (False) from "a child failed" (True).
 
 await ctx.mark_ephemeral() -> None
 # Mark this process for deletion after it completes
@@ -416,7 +421,14 @@ DISMISSABLE_STATES = {"done", "failed", "cancelled"}
 
 `cancel(p)` recursively cancels active direct descendants of `p` when `p`'s TaskInstance has `auto_cancel_children=True` (default). Setting it to False makes `p` responsible for cleaning up its own subtree within the cancel grace budget. Force-cancel (the post-grace path) always cascades through the live subtree regardless of the flag.
 
-Upward propagation (alpha): when a child terminates abnormally (cancelled with `survive_cancel=False`, or failed with `survive_failure=False`), the executor invokes `cancel(parent)` so the parent's other active children are cancelled too. This is implemented via a `notify_parent_abnormal` callback bound to `lifecycle.cancel`. For `parallel_group`, the alpha callback fires from `ParallelGroup.spawn._run` whenever the group's own `survive_*` aggregate is breached, since the per-spawn `run_child` hardcodes `survive_*=True`.
+Upward propagation (alpha) dispatches by breach reason:
+
+- **Failure breach** (child failed with `survive_failure=False`): invokes `notify_parent_failure(parent)` → `Optio._cancel_active_children(parent)`. Cancels only the parent's other active direct children (sibling-only descent). Parent's `cancellation_flag` and row state are NOT touched; the failure is signalled to user code via `ChildProcessFailed` / `ExceptionGroup[ChildProcessFailed]`.
+- **Cancellation breach** (child cancelled with `survive_cancel=False`): invokes `notify_parent_abnormal(parent)` → `Optio.cancel(parent)`. Sets parent's flag, transitions parent's row through `cancel_requested`/`cancelling`, recurses to direct children. Cancellation cascades upward through the tree.
+
+For `parallel_group`, `ParallelGroup` records `_breach_reason: Literal["failure", "cancel", None]` per child outcome (failure dominates over cancel). `__aexit__` dispatches to the correct callback based on the final reason and always raises `ExceptionGroup[ChildProcessFailed]`. Per-spawn `run_child` inside groups hardcodes `survive_*=True`, so the executor-level alpha path does not fire for individual group children.
+
+Terminal-state rule: a parent whose own child *failed* never ends as `cancelled`. The `cancelled` terminal is reserved for actual cancellation — external on self/ancestor, or cancel-cascade from a non-surviving descendant.
 
 The cancel grace deadline is shared across the subtree: descendants inherit the root cancel's monotonic deadline (via an internal `inherit_deadline` kwarg on `lifecycle.cancel`) rather than starting a fresh clock at each level.
 
