@@ -294,6 +294,34 @@ def test_build_ttyd_argv_basic():
     assert "--permission-mode bypassPermissions" in bash_payload
 
 
+@pytest.mark.parametrize("banner,expected_port", [
+    # ttyd 1.7.x with libwebsockets logging prefix + colon after "port"
+    ("[2026/05/28 23:20:13:3422] N:  Listening on port: 33449", 33449),
+    # Older / simpler ttyd builds
+    ("Listening on port 7681", 7681),
+    # Some forks log a URL instead of "port"
+    ("[INFO] tty.c:131 listening on http://127.0.0.1:7681/", 7681),
+    # URL variant ending with whitespace
+    ("Now listening at http://0.0.0.0:8080 hello", 8080),
+])
+def test_ttyd_ready_regex_matches_known_banners(banner: str, expected_port: int):
+    m = host_actions._TTYD_READY_RE.search(banner)
+    assert m is not None, f"regex failed on banner: {banner!r}"
+    port = int(m.group(1) or m.group(2))
+    assert port == expected_port
+
+
+@pytest.mark.parametrize("noise", [
+    # ttyd internal tag lines contain `<ip>|<port>` but no "port" word
+    "[wsi|1|listen|default|127.0.0.1|33449]",
+    # Unrelated stdout
+    "something else entirely",
+    "",
+])
+def test_ttyd_ready_regex_ignores_noise(noise: str):
+    assert host_actions._TTYD_READY_RE.search(noise) is None
+
+
 def test_build_ttyd_argv_no_extra_env():
     argv = host_actions.build_ttyd_argv(
         ttyd_path="/usr/bin/ttyd",
