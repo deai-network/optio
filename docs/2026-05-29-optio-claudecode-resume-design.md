@@ -12,8 +12,7 @@ Adds resume support to `optio-claudecode`. A task that has terminated (done, fai
 
 - Resume a previously-terminated claudecode task by `processId`, restoring claude's full conversation context, credentials, settings, and workdir contents.
 - Mirror `optio-opencode`'s public-API resume surface (`supports_resume`, `workdir_exclude`, `on_resume_refresh`, encrypt/decrypt hooks) so consumers can switch between the two packages.
-- Encrypt only the sensitive subset (`home/.claude/`) at rest. Keep the bulk workdir tar plaintext for compression and speed.
-- Make encryption non-optional for resume-enabled tasks. Drift between dev and prod ("forgot to wire keys") becomes a loud configuration error, not a silent regression.
+- Encrypt only the sensitive subset (`home/.claude/`) at rest when the consumer supplies crypto hooks. Keep the bulk workdir tar plaintext for compression and speed.
 - Reuse `optio-host`'s existing primitives (`archive_workdir`, `restore_workdir`, `run_command`, `fetch_bytes_from_host`, `put_file_to_host`). No new primitives in `optio-host`.
 
 ## Non-goals (v1 of resume support)
@@ -70,12 +69,13 @@ Pseudo-code:
 1. # tar the sensitive subtree, gather into bytes
    session_bytes = await _archive_home_claude(host)
 
-2. # encryption is mandatory when supports_resume=True
-   encrypted = config.session_blob_encrypt(session_bytes)
+2. # encrypt if hooks supplied, else plaintext fallthrough
+   encrypt = config.session_blob_encrypt or (lambda b: b)
+   payload = encrypt(session_bytes)
 
-3. # write encrypted blob to GridFS
+3. # write blob to GridFS
    async with ctx.store_blob("session") as w:
-       await w.write(encrypted)
+       await w.write(payload)
        session_blob_id = w.file_id
 
 4. # defensive wipe — workdir tar must not carry a copy of sensitive state
@@ -140,10 +140,11 @@ Pseudo-code:
 3. # plaintext workdir first — establishes the directory tree (incl. home/)
    await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
 
-4. # decrypt and extract home/.claude over the top
-   enc = await _read_blob_bytes(ctx, snapshot["sessionBlobId"])
+4. # decrypt (or plaintext-pass) and extract home/.claude over the top
+   payload = await _read_blob_bytes(ctx, snapshot["sessionBlobId"])
+   decrypt = config.session_blob_decrypt or (lambda b: b)
    try:
-       plain = config.session_blob_decrypt(enc)
+       plain = decrypt(payload)
    except Exception:
        # Decrypt failure = tampering or key change. Fail loud — do NOT
        # silently drop to fresh-start.
@@ -213,26 +214,22 @@ class ClaudeCodeTaskConfig:
 
 `supports_resume` flips the v1 hardcoded `False` to a default of `True`. The propagated `TaskInstance.supports_resume` value tracks the config field. Callers who do not want resume must pass `supports_resume=False` explicitly.
 
-Validation in `__post_init__`:
+Validation in `__post_init__` (identical to opencode — asymmetric is the only configuration error):
 
 ```python
-if self.supports_resume:
-    e = self.session_blob_encrypt is not None
-    d = self.session_blob_decrypt is not None
-    if not (e and d):
-        raise ValueError(
-            "ClaudeCodeTaskConfig: supports_resume=True requires both "
-            "session_blob_encrypt and session_blob_decrypt to be set. "
-            "Pass supports_resume=False to disable resume entirely."
-        )
-elif self.session_blob_encrypt is not None or self.session_blob_decrypt is not None:
+e = self.session_blob_encrypt is not None
+d = self.session_blob_decrypt is not None
+if e != d:
     raise ValueError(
-        "ClaudeCodeTaskConfig: session_blob_encrypt/decrypt are only "
-        "meaningful when supports_resume=True; got supports_resume=False."
+        "ClaudeCodeTaskConfig: session_blob_encrypt and "
+        "session_blob_decrypt must be set together (both callables) "
+        "or both left as None; one without the other is a config error."
     )
 ```
 
-The mandatory-encryption rule is the one substantive divergence from opencode's resume config. Opencode treats both-None as "plaintext fallthrough"; claudecode rejects. Rationale: claude's `.credentials.json` and full conversation transcript are exactly the data a security-conscious operator most needs encrypted at rest, and the cost of failing the configuration at startup is low compared to the cost of silently persisting plaintext API keys in Mongo.
+Both-None means plaintext fallthrough — the same fallback behavior opencode uses. Capture: skip the encrypt callable, write the raw tar bytes. Resume: skip the decrypt callable, read the raw tar bytes. Consumers who need at-rest encryption supply the callable pair. Consumers who don't (dev, demo, single-tenant deploys with Mongo-side encryption) leave them None.
+
+This matches opencode's surface 1:1 — no divergence on validation rules. Forcing an identity-pair on every demo/dev path adds boilerplate without preventing plaintext storage (any consumer who wants plaintext just supplies `lambda b: b`); the explicit-None form is the cleaner expression of intent.
 
 `workdir_exclude` semantics are unchanged from opencode: `None` = framework default (`optio_host.archive.DEFAULT_WORKDIR_EXCLUDES`); `[]` = no excludes; non-empty list = used verbatim. The framework does NOT add `home/.claude` to this list — the defensive `rm -rf` at capture step 4 is the actual suppression mechanism.
 
@@ -276,7 +273,7 @@ New test modules:
 
 - `tests/test_on_resume_refresh.py` — hook fires only on resume; mutated config rewrites AGENTS.md; `REFRESHED:AGENTS.md` line appears in `resume.log`.
 
-- `tests/test_session_blob_hooks.py` — config validation: `supports_resume=True` + missing/asymmetric hooks raises; `supports_resume=False` + non-None hooks raises.
+- `tests/test_session_blob_hooks.py` — config validation: asymmetric (one set, the other None) raises; both-None and both-set both accepted.
 
 The local session tests run against MongoDB-via-Docker, same as v1.
 
@@ -293,11 +290,9 @@ The local session tests run against MongoDB-via-Docker, same as v1.
 `packages/optio-demo/src/optio_demo/tasks/claudecode.py` is updated alongside the implementation to exercise the resume path:
 
 - `supports_resume=True` (explicit, even though it's the new default).
-- `session_blob_encrypt` and `session_blob_decrypt` set to identity callables (`lambda b: b`). This satisfies the mandatory-encryption validation while keeping the demo task self-contained — operators who fork the demo for a real deployment swap the identity functions for actual crypto. Identity is sufficient to validate the wiring; round-tripping bytes through encrypt+decrypt is the only behavior the framework relies on.
+- `session_blob_encrypt` and `session_blob_decrypt` left as `None`. Claudecode takes the plaintext fallthrough — same shape as the opencode demo. Operators who fork the demo for a real deployment supply both hooks pointing at actual crypto.
 - `workdir_exclude` left at default (`None`).
 - No `on_resume_refresh` hook in the demo. Default behavior — AGENTS.md is reused verbatim on resume.
-
-For reference, the opencode demo task (`tasks/opencode.py`) wires nothing related to encryption and relies on opencode's both-None plaintext fallthrough. Claudecode cannot do the same because its `__post_init__` rejects that combination; the demo must supply at least the identity pair.
 
 The demo update is part of the implementation plan, not a separate follow-up.
 
