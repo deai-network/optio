@@ -143,6 +143,56 @@ async def test_ensure_ttyd_installed_downloads_from_github_releases():
     assert download_target == "/root/.local/bin/ttyd"
 
 
+def test_build_claude_flags_all_none():
+    flags = host_actions.build_claude_flags(
+        permission_mode=None, allowed_tools=None, disallowed_tools=None,
+    )
+    assert flags == []
+
+
+def test_build_claude_flags_permission_mode_only():
+    flags = host_actions.build_claude_flags(
+        permission_mode="bypassPermissions",
+        allowed_tools=None, disallowed_tools=None,
+    )
+    assert flags == ["--permission-mode", "bypassPermissions"]
+
+
+def test_build_claude_flags_allowed_disallowed_joined_with_commas():
+    flags = host_actions.build_claude_flags(
+        permission_mode=None,
+        allowed_tools=["Read", "Write"],
+        disallowed_tools=["Bash"],
+    )
+    assert flags == [
+        "--allowed-tools", "Read,Write",
+        "--disallowed-tools", "Bash",
+    ]
+
+
+def test_build_claude_flags_all_three():
+    flags = host_actions.build_claude_flags(
+        permission_mode="acceptEdits",
+        allowed_tools=["Read"],
+        disallowed_tools=["Bash", "Write"],
+    )
+    assert flags == [
+        "--permission-mode", "acceptEdits",
+        "--allowed-tools", "Read",
+        "--disallowed-tools", "Bash,Write",
+    ]
+
+
+def test_build_claude_flags_empty_list_treated_as_none():
+    """An empty list is equivalent to None: no flag emitted."""
+    flags = host_actions.build_claude_flags(
+        permission_mode=None,
+        allowed_tools=[],
+        disallowed_tools=[],
+    )
+    assert flags == []
+
+
 async def test_ensure_ttyd_installed_unsupported_os_raises():
     host = _FakeHost([
         RunResult(stdout="", stderr="not found", exit_code=1),

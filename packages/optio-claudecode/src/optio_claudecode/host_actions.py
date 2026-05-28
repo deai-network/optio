@@ -200,3 +200,25 @@ async def ensure_ttyd_installed(
             f"chmod result."
         )
     return ttyd_path
+
+
+def build_claude_flags(
+    *,
+    permission_mode: str | None,
+    allowed_tools: list[str] | None,
+    disallowed_tools: list[str] | None,
+) -> list[str]:
+    """Translate ClaudeCodeTaskConfig permission knobs to an argv list.
+
+    Empty lists are treated as None: no flag is emitted.
+    Validation of ``permission_mode`` values lives in
+    ``ClaudeCodeTaskConfig.__post_init__``.
+    """
+    out: list[str] = []
+    if permission_mode is not None:
+        out += ["--permission-mode", permission_mode]
+    if allowed_tools:
+        out += ["--allowed-tools", ",".join(allowed_tools)]
+    if disallowed_tools:
+        out += ["--disallowed-tools", ",".join(disallowed_tools)]
+    return out
