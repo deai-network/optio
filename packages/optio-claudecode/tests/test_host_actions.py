@@ -264,6 +264,52 @@ async def test_plant_home_files_none_writes_nothing():
     assert host.write_text.call_count == 0
 
 
+def test_build_ttyd_argv_basic():
+    argv = host_actions.build_ttyd_argv(
+        ttyd_path="/usr/bin/ttyd",
+        claude_path="/opt/claude/claude",
+        workdir="/tmp/optio-claudecode-x",
+        bind_iface="127.0.0.1",
+        port=8765,
+        extra_env={"ANTHROPIC_BASE_URL": "https://api.example.com"},
+        claude_flags=["--permission-mode", "bypassPermissions"],
+    )
+    assert argv[0] == "/usr/bin/ttyd"
+    assert "-W" in argv
+    assert "-i" in argv and "127.0.0.1" in argv
+    assert "-p" in argv and "8765" in argv
+    assert "-m" in argv and "1" in argv
+    assert "-T" in argv and "xterm-256color" in argv
+    assert "--" in argv
+    sep_idx = argv.index("--")
+    assert argv[sep_idx + 1] == "env"
+    assert any(a.startswith("HOME=") for a in argv[sep_idx + 1:])
+    assert "HOME=/tmp/optio-claudecode-x/home" in argv
+    assert "ANTHROPIC_BASE_URL=https://api.example.com" in argv
+    bash_idx = argv.index("bash", sep_idx)
+    assert argv[bash_idx + 1] == "-c"
+    bash_payload = argv[bash_idx + 2]
+    assert "cd /tmp/optio-claudecode-x" in bash_payload
+    assert "exec /opt/claude/claude" in bash_payload
+    assert "--permission-mode bypassPermissions" in bash_payload
+
+
+def test_build_ttyd_argv_no_extra_env():
+    argv = host_actions.build_ttyd_argv(
+        ttyd_path="/usr/bin/ttyd",
+        claude_path="/opt/claude/claude",
+        workdir="/tmp/cc",
+        bind_iface="0.0.0.0",
+        port=9000,
+        extra_env=None,
+        claude_flags=[],
+    )
+    sep_idx = argv.index("--")
+    env_section = argv[sep_idx + 1:argv.index("bash", sep_idx)]
+    # Only HOME assignment (no extra vars when extra_env=None)
+    assert env_section == ["env", "HOME=/tmp/cc/home"]
+
+
 async def test_ensure_ttyd_installed_unsupported_os_raises():
     host = _FakeHost([
         RunResult(stdout="", stderr="not found", exit_code=1),

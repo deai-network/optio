@@ -249,6 +249,75 @@ async def plant_home_files(
         await host.write_text(settings_rel, json.dumps(claude_config, indent=2))
 
 
+def build_ttyd_argv(
+    *,
+    ttyd_path: str,
+    claude_path: str,
+    workdir: str,
+    bind_iface: str,
+    port: int,
+    extra_env: dict[str, str] | None,
+    claude_flags: list[str],
+) -> list[str]:
+    """Construct the full argv for the ttyd subprocess.
+
+    Layout:
+      <ttyd_path> -W -i <iface> -p <port> -m 1 -T xterm-256color --
+      env HOME=<workdir>/home [<extra-env...>]
+      bash -c 'cd <workdir> && exec <claude_path> [<claude_flags...>]'
+    """
+    workdir_clean = workdir.rstrip("/")
+    home_dir = f"{workdir_clean}/home"
+    env_assignments: list[str] = [f"HOME={home_dir}"]
+    if extra_env:
+        for k, v in extra_env.items():
+            env_assignments.append(f"{k}={v}")
+    claude_argv = " ".join(shlex.quote(c) for c in [claude_path, *claude_flags])
+    bash_payload = f"cd {shlex.quote(workdir_clean)} && exec {claude_argv}"
+    return [
+        ttyd_path,
+        "-W",
+        "-i", bind_iface,
+        "-p", str(port),
+        "-m", "1",
+        "-T", "xterm-256color",
+        "--",
+        "env",
+        *env_assignments,
+        "bash", "-c", bash_payload,
+    ]
+
+
+async def launch_ttyd_with_claude(
+    host: "Host",
+    *,
+    ttyd_path: str,
+    claude_path: str,
+    bind_iface: str,
+    port: int,
+    extra_env: dict[str, str] | None,
+    claude_flags: list[str],
+    ready_timeout_s: float = 30.0,
+) -> "ProcessHandle":
+    """Spawn ttyd wrapping claude under HOME-isolation.
+
+    Returns the ProcessHandle from ``host.launch_subprocess``. Does NOT
+    probe readiness — port readiness is handled by the caller via the
+    existing optio-host tunnel/probe flow.
+    """
+    argv = build_ttyd_argv(
+        ttyd_path=ttyd_path,
+        claude_path=claude_path,
+        workdir=host.workdir,
+        bind_iface=bind_iface,
+        port=port,
+        extra_env=extra_env,
+        claude_flags=claude_flags,
+    )
+    handle = await host.launch_subprocess(argv)
+    return handle
+
+
 def build_claude_flags(
     *,
     permission_mode: str | None,
