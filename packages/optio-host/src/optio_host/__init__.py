@@ -5,6 +5,11 @@ Top-level public API. See ``optio_host.host`` for primitives,
 for the log/deliverables coordination protocol.
 """
 
+from optio_host.agents import (
+    BASE_PROMPT_PRE,
+    BASE_PROMPT_POST,
+    compose_agents_md,
+)
 from optio_host.context import (
     HookContext,
     HookContextProtocol,
@@ -34,4 +39,7 @@ __all__ = [
     "SSHConfig",
     "DownloadFailed",
     "create_download_task",
+    "BASE_PROMPT_PRE",
+    "BASE_PROMPT_POST",
+    "compose_agents_md",
 ]

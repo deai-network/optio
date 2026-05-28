@@ -44,8 +44,9 @@ must stay consistent with the package-level files.
 | 3 — REST API | `optio-api` | TypeScript | `npm install optio-api optio-contracts` |
 | 4 — React UI | `optio-ui` | TypeScript | `npm install optio-ui optio-contracts @tanstack/react-query react-i18next antd` |
 | 1+ — Opencode runner | `optio-opencode` | Python | workspace; runs `opencode web` as an optio task (local subprocess or remote via SSH) |
+| 1+ — Claude Code runner | `optio-claudecode` | Python | workspace; runs `claude` as an optio task via ttyd-served iframe (local subprocess or remote via SSH) |
 
-Dependencies: Python requires `motor>=3.3.0`, `apscheduler>=4.0.0a5`, `quaestor`. Redis support: `redis>=5.0.0` (optional extra). TypeScript API requires `mongodb`, `ioredis`, `@ts-rest/core`. UI requires React 19+, Ant Design 5+.
+Dependencies: Python requires `motor>=3.3.0`, `apscheduler>=4.0.0a5`, `mongo-quaestor` (the migration module; import name is still `quaestor` for backwards compatibility — note the upstream `quaestor` PyPI package is unrelated and will collide if installed). Redis support: `redis>=5.0.0` (optional extra). TypeScript API requires `mongodb`, `ioredis`, `@ts-rest/core`. UI requires React 19+, Ant Design 5+.
 
 ---
 
@@ -1100,7 +1101,7 @@ All components use `react-i18next`. Required keys:
 - **Progress flushing**: buffered every 100ms; override with `OPTIO_PROGRESS_FLUSH_INTERVAL_MS` env var
 - **Child processes**: stored as MongoDB documents with `parentId`/`rootId`; automatically deleted on parent re-launch (`clear_result_fields`)
 - **Ephemeral processes**: deleted from DB after reaching an end state
-- **Migrations**: run automatically on `init()` via quaestor; migrations live in `packages/optio-core/src/optio_core/migrations/`
+- **Migrations**: run automatically on `init()` via `mongo-quaestor` (PyPI name; legacy `quaestor` import name); migrations live in `packages/optio-core/src/optio_core/migrations/`
 - **Scheduler**: APScheduler-backed; cron schedules defined on `TaskInstance.schedule` are synced on init and resync
 - **Process state reconciliation**: on `init()`, any process still in an active state (`scheduled`, `running`, `cancel_requested`, `cancelling`) from a previous session is reset to `failed` with `error="Process was interrupted by server restart"`. On `shutdown(grace_seconds=5.0)`, tasks that do not unwind within the grace period are force-finalized to `failed` with `error="Task did not exit within shutdown grace period"`. Spec: `docs/2026-04-22-process-reconciliation-design.md`
 - **Persistent launch blocks**: `block_launches(..., persist=True)` and `group_cancel*(..., block_new_launches=True, persist=True)` write a record to `{prefix}_launch_blocks` (Mongo); records are reloaded into the in-memory block list on every `init()` so the block survives restarts. Removed only by `unblock_launches(launch_filter)` (exact filter match). When set, `reason` is stored on the record and appended to the `LaunchBlocked` exception message (`...; reason={reason}`). Spec: `docs/2026-04-30-persistent-launch-blocks-design.md`
