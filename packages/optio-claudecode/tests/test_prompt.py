@@ -17,7 +17,16 @@ def test_compose_includes_coordination_preamble():
     assert "./deliverables/" in body
 
 
-def test_compose_has_no_resume_section_in_v1():
+def test_compose_includes_resume_section_by_default():
+    """Resume support landed: the default composer now renders the
+    resume section. (Was test_compose_has_no_resume_section_in_v1 before
+    resume support; updated per the v1 follow-up.)"""
     body = compose_agents_md("Whatever.")
+    assert "resume.log" in body
+    assert "## Resumes" in body
+
+
+def test_compose_omits_resume_section_when_disabled():
+    body = compose_agents_md("Whatever.", supports_resume=False)
     assert "resume.log" not in body
     assert "## Resumes" not in body
