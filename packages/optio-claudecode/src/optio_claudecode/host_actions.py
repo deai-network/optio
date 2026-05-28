@@ -361,10 +361,13 @@ def build_claude_flags(
     permission_mode: str | None,
     allowed_tools: list[str] | None,
     disallowed_tools: list[str] | None,
+    resuming: bool = False,
 ) -> list[str]:
     """Translate ClaudeCodeTaskConfig permission knobs to an argv list.
 
     Empty lists are treated as None: no flag is emitted.
+    When ``resuming`` is True, ``--continue`` is appended so claude picks
+    up the most recent conversation in ``home/.claude/projects/<cwd>/``.
     Validation of ``permission_mode`` values lives in
     ``ClaudeCodeTaskConfig.__post_init__``.
     """
@@ -375,4 +378,6 @@ def build_claude_flags(
         out += ["--allowed-tools", ",".join(allowed_tools)]
     if disallowed_tools:
         out += ["--disallowed-tools", ",".join(disallowed_tools)]
+    if resuming:
+        out += ["--continue"]
     return out

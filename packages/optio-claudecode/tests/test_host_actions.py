@@ -350,3 +350,30 @@ async def test_ensure_ttyd_installed_unsupported_os_raises():
         await host_actions.ensure_ttyd_installed(ctx, install_if_missing=True)
     assert "Darwin" in str(exc_info.value) or "darwin" in str(exc_info.value).lower()
     assert "macOS" in str(exc_info.value) or "unsupported" in str(exc_info.value).lower()
+
+
+def test_build_claude_flags_no_continue_by_default():
+    flags = host_actions.build_claude_flags(
+        permission_mode=None, allowed_tools=None, disallowed_tools=None,
+    )
+    assert "--continue" not in flags
+
+
+def test_build_claude_flags_appends_continue_when_resuming():
+    flags = host_actions.build_claude_flags(
+        permission_mode="bypassPermissions",
+        allowed_tools=None, disallowed_tools=None,
+        resuming=True,
+    )
+    assert "--continue" in flags
+    assert flags.index("--permission-mode") < flags.index("--continue")
+
+
+def test_build_claude_flags_continue_is_last():
+    flags = host_actions.build_claude_flags(
+        permission_mode=None,
+        allowed_tools=["Read"],
+        disallowed_tools=None,
+        resuming=True,
+    )
+    assert flags[-1] == "--continue"
