@@ -6,13 +6,23 @@ primitives (run_command, resolve_host_home, etc.). No isinstance branches.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 import shlex
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from optio_host import HookContextProtocol, Host
     from optio_host.host import ProcessHandle
+
+
+# ttyd prints something like "Listening on port 7681" or
+# "[INFO] tty.c:131 listening on http://127.0.0.1:7681/" depending on
+# build. Match either a `port N` token or a `:N/` token in a URL.
+_TTYD_READY_RE = re.compile(
+    r"(?:port\s+(\d+))|(?:http://[^\s]+?:(\d+)(?:/|\s|$))"
+)
 
 
 _DEFAULT_INSTALL_SUBDIR = ".local/bin"
@@ -294,28 +304,49 @@ async def launch_ttyd_with_claude(
     ttyd_path: str,
     claude_path: str,
     bind_iface: str,
-    port: int,
     extra_env: dict[str, str] | None,
     claude_flags: list[str],
     ready_timeout_s: float = 30.0,
-) -> "ProcessHandle":
-    """Spawn ttyd wrapping claude under HOME-isolation.
+) -> "tuple[ProcessHandle, int]":
+    """Spawn ttyd wrapping claude under HOME-isolation. Wait for ready.
 
-    Returns the ProcessHandle from ``host.launch_subprocess``. Does NOT
-    probe readiness — port readiness is handled by the caller via the
-    existing optio-host tunnel/probe flow.
+    Always passes ``-p 0`` so the OS picks a free port; the actual port
+    is parsed from ttyd's stdout/stderr ready banner.
+
+    Returns ``(handle, port)``. Caller is responsible for terminating
+    the handle.
     """
     argv = build_ttyd_argv(
         ttyd_path=ttyd_path,
         claude_path=claude_path,
         workdir=host.workdir,
         bind_iface=bind_iface,
-        port=port,
+        port=0,
         extra_env=extra_env,
         claude_flags=claude_flags,
     )
     handle = await host.launch_subprocess(argv)
-    return handle
+
+    async def _read_port() -> int:
+        async for raw in handle.stdout:
+            line = raw.decode("utf-8", errors="replace").rstrip() if isinstance(raw, bytes) else str(raw).rstrip()
+            m = _TTYD_READY_RE.search(line)
+            if m:
+                port_str = m.group(1) or m.group(2)
+                return int(port_str)
+        raise RuntimeError("ttyd exited before printing a listening URL")
+
+    try:
+        port = await asyncio.wait_for(_read_port(), timeout=ready_timeout_s)
+    except asyncio.TimeoutError:
+        await host.terminate_subprocess(handle, aggressive=True)
+        raise TimeoutError(
+            f"ttyd did not print a listening URL within {ready_timeout_s}s"
+        )
+    except BaseException:
+        await host.terminate_subprocess(handle, aggressive=True)
+        raise
+    return handle, port
 
 
 def build_claude_flags(
