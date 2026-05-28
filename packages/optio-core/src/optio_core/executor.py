@@ -344,28 +344,44 @@ class Executor:
         if parent_ctx._on_child_progress is not None:
             parent_ctx._notify_child_state_change(process_id, end_state)
 
-        # alpha: abnormal child terminal -> trigger parent's downward
-        # propagation via the lifecycle callback. The callback is
-        # idempotent for an already-cancel_requested parent.
-        abnormal = (
-            (end_state == "cancelled" and not survive_cancel)
-            or (end_state == "failed" and not survive_failure)
-        )
-        if abnormal and self._notify_parent_abnormal is not None:
-            _trace(
-                "CANCEL-TRACE %s: abnormal child %s (%s) → scheduling notify_parent_abnormal(parent=%s)",
-                process_id, name, end_state, parent_ctx.process_id,
-            )
-            asyncio.create_task(
-                self._notify_parent_abnormal(parent_ctx.process_id)
-            )
+        abnormal_failed = end_state == "failed" and not survive_failure
+        abnormal_cancelled = end_state == "cancelled" and not survive_cancel
 
-        if end_state == "failed" and not survive_failure:
+        # Failure breach: cancel parent's OTHER active concurrent children
+        # only. Do NOT set parent's flag, do NOT change parent's row state —
+        # the ChildProcessFailed raise below communicates the failure to
+        # parent's user code, and the parent's terminal state is then
+        # determined by whether the user catches+returns or re-raises.
+        if abnormal_failed:
+            if self._notify_parent_failure is not None:
+                _trace(
+                    "CANCEL-TRACE %s: failed child %s → scheduling notify_parent_failure(parent=%s)",
+                    process_id, name, parent_ctx.process_id,
+                )
+                asyncio.create_task(
+                    self._notify_parent_failure(parent_ctx.process_id)
+                )
+
+        # Cancellation breach: cascade upward. Set parent's flag
+        # synchronously so subsequent operations in the parent's user
+        # code observe should_continue() == False, and schedule
+        # Optio.cancel(parent) so the parent's row transitions through
+        # cancel_requested/cancelling.
+        if abnormal_cancelled:
+            parent_ctx._cancellation_flag.set()
+            if self._notify_parent_abnormal is not None:
+                _trace(
+                    "CANCEL-TRACE %s: cancelled child %s → scheduling notify_parent_abnormal(parent=%s)",
+                    process_id, name, parent_ctx.process_id,
+                )
+                asyncio.create_task(
+                    self._notify_parent_abnormal(parent_ctx.process_id)
+                )
+
+        if abnormal_failed:
             if exc is None:
                 exc = RuntimeError(f"Child process '{name}' failed")
             raise ChildProcessFailed(name, process_id, exc) from exc
-        if end_state == "cancelled" and not survive_cancel:
-            parent_ctx._cancellation_flag.set()
 
         return ChildOutcome(
             state=end_state,
