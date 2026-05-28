@@ -26,7 +26,8 @@ run: check-venv  ## Run optio_demo with auto-restart on Python source change (wa
 	  src \
 	  ../optio-core/src \
 	  ../optio-host/src \
-	  ../optio-opencode/src
+	  ../optio-opencode/src \
+	  ../optio-claudecode/src
 
 run-dashboard:  ## Run the optio-dashboard against the demo Mongo + Redis
 	MONGODB_URL=mongodb://localhost:27017/optio-demo REDIS_URL=redis://localhost:6379 npx optio-dashboard
