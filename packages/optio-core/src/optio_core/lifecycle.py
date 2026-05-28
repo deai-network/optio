@@ -173,6 +173,7 @@ class Optio:
         self._executor = Executor(
             mongo_db, prefix, services, optio=self,
             notify_parent_abnormal=self.cancel,
+            notify_parent_failure=self._cancel_active_children,
         )
 
         # Run migrations
