@@ -98,3 +98,60 @@ async def test_ensure_claude_installed_install_failure_propagates():
         await host_actions.ensure_claude_installed(ctx, install_if_missing=True)
     assert "install" in str(exc_info.value).lower()
     assert "22" in str(exc_info.value) or "404" in str(exc_info.value)
+
+
+async def test_ensure_ttyd_installed_present():
+    host = _FakeHost([
+        RunResult(stdout="ttyd version 1.7.7-9d2", stderr="", exit_code=0),
+    ])
+    ctx = _hook_ctx(host)
+    ctx.download_file = AsyncMock()
+    path = await host_actions.ensure_ttyd_installed(ctx, install_if_missing=True)
+    assert path == "/root/.local/bin/ttyd"
+    assert ctx.download_file.call_count == 0
+
+
+async def test_ensure_ttyd_installed_missing_install_disabled_raises():
+    host = _FakeHost([
+        RunResult(stdout="", stderr="not found", exit_code=1),
+    ])
+    ctx = _hook_ctx(host)
+    ctx.download_file = AsyncMock()
+    with pytest.raises(RuntimeError) as exc_info:
+        await host_actions.ensure_ttyd_installed(ctx, install_if_missing=False)
+    assert "install_ttyd_if_missing" in str(exc_info.value)
+
+
+async def test_ensure_ttyd_installed_downloads_from_github_releases():
+    host = _FakeHost([
+        RunResult(stdout="", stderr="not found", exit_code=1),
+        RunResult(stdout="x86_64\n", stderr="", exit_code=0),
+        RunResult(stdout="Linux\n", stderr="", exit_code=0),
+        RunResult(stdout="", stderr="", exit_code=0),  # mkdir -p
+        RunResult(stdout="", stderr="", exit_code=0),  # chmod +x
+        RunResult(stdout="ttyd version 1.7.7-9d2", stderr="", exit_code=0),
+    ])
+    ctx = _hook_ctx(host)
+    ctx.download_file = AsyncMock()
+    path = await host_actions.ensure_ttyd_installed(ctx, install_if_missing=True)
+    assert path == "/root/.local/bin/ttyd"
+    assert ctx.download_file.call_count == 1
+    download_url = ctx.download_file.call_args.args[0]
+    assert "github.com/tsl0922/ttyd" in download_url
+    assert "ttyd.x86_64" in download_url
+    download_target = ctx.download_file.call_args.args[1]
+    assert download_target == "/root/.local/bin/ttyd"
+
+
+async def test_ensure_ttyd_installed_unsupported_os_raises():
+    host = _FakeHost([
+        RunResult(stdout="", stderr="not found", exit_code=1),
+        RunResult(stdout="x86_64\n", stderr="", exit_code=0),
+        RunResult(stdout="Darwin\n", stderr="", exit_code=0),
+    ])
+    ctx = _hook_ctx(host)
+    ctx.download_file = AsyncMock()
+    with pytest.raises(RuntimeError) as exc_info:
+        await host_actions.ensure_ttyd_installed(ctx, install_if_missing=True)
+    assert "Darwin" in str(exc_info.value) or "darwin" in str(exc_info.value).lower()
+    assert "macOS" in str(exc_info.value) or "unsupported" in str(exc_info.value).lower()
