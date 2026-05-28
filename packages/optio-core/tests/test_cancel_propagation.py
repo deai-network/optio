@@ -355,11 +355,12 @@ async def test_alpha_child_cancel_triggers_parent_cancel_of_siblings(mongo_db):
     c_proc = await _wait_terminal(mongo_db, prefix, "c")
     assert b_proc["status"]["state"] == "cancelled"
     assert c_proc["status"]["state"] == "cancelled"
-    # Parent ends 'failed' because parallel_group(survive_cancel=False)
-    # raises ExceptionGroup[ChildProcessFailed] when any child cancels;
-    # the exception overwrites the prior cancel_requested state. Either
-    # terminal is acceptable.
-    assert a_proc["status"]["state"] in {"failed", "cancelled"}
+    # Parent does not catch the ExceptionGroup, so it re-raises out of
+    # parent's execute_fn. The cancellation cascade still set the
+    # parent's flag and transitioned its row through
+    # cancel_requested/cancelling; the executor's `except Exception` arm
+    # then writes 'failed', overwriting the transient cancel state.
+    assert a_proc["status"]["state"] == "failed"
 
     await optio.shutdown(grace_seconds=0.5)
 
@@ -406,7 +407,11 @@ async def test_parallel_group_fail_fast_under_alpha(mongo_db):
     a_proc = await get_process_by_process_id(mongo_db, prefix, "a")
     assert b_proc["status"]["state"] == "failed"
     assert c_proc["status"]["state"] == "cancelled"
-    assert a_proc["status"]["state"] in {"failed", "cancelled"}
+    # Parent does not catch the ExceptionGroup → re-raises → executor
+    # writes 'failed'. After the alpha-cascade fix, parent's flag is no
+    # longer set on a child-failure breach, so the parent's row stays
+    # 'running' until the executor writes 'failed' directly.
+    assert a_proc["status"]["state"] == "failed"
 
     await optio.shutdown(grace_seconds=0.5)
 
