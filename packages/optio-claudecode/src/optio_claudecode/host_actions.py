@@ -325,7 +325,10 @@ async def launch_ttyd_with_claude(
         extra_env=extra_env,
         claude_flags=claude_flags,
     )
-    handle = await host.launch_subprocess(argv)
+    # launch_subprocess takes a single shell-string passed to `sh -c`.
+    # Quote each argv element to survive shell parsing.
+    command = " ".join(shlex.quote(a) for a in argv)
+    handle = await host.launch_subprocess(command)
 
     async def _read_port() -> int:
         async for raw in handle.stdout:
