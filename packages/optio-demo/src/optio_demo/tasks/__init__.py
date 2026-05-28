@@ -10,6 +10,7 @@ from optio_demo.tasks.wakeup import get_tasks as wakeup_tasks
 from optio_demo.tasks.marimo import get_tasks as marimo_tasks
 from optio_demo.tasks.opencode import get_tasks as opencode_tasks
 from optio_demo.tasks.client_directed import get_tasks as client_directed_tasks
+from optio_demo.tasks.claudecode import get_tasks as claudecode_tasks
 
 
 async def get_task_definitions(
@@ -25,4 +26,5 @@ async def get_task_definitions(
         *marimo_tasks(),
         *opencode_tasks(),
         *client_directed_tasks(),
+        *claudecode_tasks(),
     ]

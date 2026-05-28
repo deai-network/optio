@@ -27,6 +27,7 @@ dependencies = [
     "optio-core[redis]>=0.2,<0.3",
     "marimo>=0.9",
     "optio-opencode>=0.1,<0.2",
+    "optio-claudecode>=0.1,<0.2",
     "watchfiles>=1.0",
 ]
 
