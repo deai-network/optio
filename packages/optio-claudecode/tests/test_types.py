@@ -69,3 +69,12 @@ def test_credentials_json_accepts_dict_bytes_str():
     ClaudeCodeTaskConfig(consumer_instructions="hi", credentials_json={"a": 1})
     ClaudeCodeTaskConfig(consumer_instructions="hi", credentials_json=b"{}")
     ClaudeCodeTaskConfig(consumer_instructions="hi", credentials_json='{"a":1}')
+
+
+def test_minimal_config_resume_defaults():
+    cfg = ClaudeCodeTaskConfig(consumer_instructions="hi")
+    assert cfg.supports_resume is True
+    assert cfg.workdir_exclude is None
+    assert cfg.session_blob_encrypt is None
+    assert cfg.session_blob_decrypt is None
+    assert cfg.on_resume_refresh is None
