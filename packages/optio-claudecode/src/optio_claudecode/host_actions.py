@@ -202,6 +202,53 @@ async def ensure_ttyd_installed(
     return ttyd_path
 
 
+async def plant_home_files(
+    host: "Host",
+    *,
+    credentials_json: dict[str, Any] | bytes | str | None,
+    claude_config: dict[str, Any] | None,
+) -> None:
+    """Plant per-task claude state under <workdir>/home/.claude/.
+
+    Creates <workdir>/home/.claude/ (mkdir -p), writes the credentials
+    payload and settings.json when supplied, and chmod-600s the
+    credentials file. ``credentials_json`` accepts a dict (re-encoded as
+    JSON), bytes (decoded as UTF-8 verbatim), or a string (written
+    verbatim).
+    """
+    workdir = host.workdir.rstrip("/")
+    home_claude_rel = "home/.claude"
+    home_claude_abs = f"{workdir}/{home_claude_rel}"
+
+    r = await host.run_command(f"mkdir -p {shlex.quote(home_claude_abs)}")
+    if r.exit_code != 0:
+        raise RuntimeError(
+            f"mkdir -p {home_claude_abs!r} failed (exit {r.exit_code}): "
+            f"{r.stderr.strip()[:200]}"
+        )
+
+    if credentials_json is not None:
+        if isinstance(credentials_json, dict):
+            payload = json.dumps(credentials_json)
+        elif isinstance(credentials_json, bytes):
+            payload = credentials_json.decode("utf-8")
+        else:
+            payload = credentials_json
+        cred_rel = f"{home_claude_rel}/.credentials.json"
+        await host.write_text(cred_rel, payload)
+        cred_abs = f"{workdir}/{cred_rel}"
+        r = await host.run_command(f"chmod 600 {shlex.quote(cred_abs)}")
+        if r.exit_code != 0:
+            raise RuntimeError(
+                f"chmod 600 {cred_abs!r} failed (exit {r.exit_code}): "
+                f"{r.stderr.strip()[:200]}"
+            )
+
+    if claude_config is not None:
+        settings_rel = f"{home_claude_rel}/settings.json"
+        await host.write_text(settings_rel, json.dumps(claude_config, indent=2))
+
+
 def build_claude_flags(
     *,
     permission_mode: str | None,

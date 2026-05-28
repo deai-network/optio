@@ -193,6 +193,77 @@ def test_build_claude_flags_empty_list_treated_as_none():
     assert flags == []
 
 
+async def test_plant_home_files_credentials_dict():
+    host = MagicMock()
+    host.write_text = AsyncMock()
+    host.run_command = AsyncMock(return_value=RunResult(stdout="", stderr="", exit_code=0))
+    host.workdir = "/tmp/optio-claudecode-abc"
+
+    await host_actions.plant_home_files(
+        host,
+        credentials_json={"oauth_token": "secret"},
+        claude_config=None,
+    )
+
+    paths_written = [c.args[0] for c in host.write_text.call_args_list]
+    assert "home/.claude/.credentials.json" in paths_written
+    cred_call = [c for c in host.write_text.call_args_list
+                 if c.args[0] == "home/.claude/.credentials.json"][0]
+    assert json.loads(cred_call.args[1]) == {"oauth_token": "secret"}
+
+    chmod_cmds = [c.args[0] for c in host.run_command.call_args_list
+                  if "chmod" in c.args[0]]
+    assert any("600" in c and "credentials.json" in c for c in chmod_cmds)
+
+
+async def test_plant_home_files_credentials_bytes_kept_verbatim():
+    host = MagicMock()
+    host.write_text = AsyncMock()
+    host.run_command = AsyncMock(return_value=RunResult(stdout="", stderr="", exit_code=0))
+    host.workdir = "/tmp/x"
+
+    raw = b'{"opaque":"blob"}'
+    await host_actions.plant_home_files(
+        host, credentials_json=raw, claude_config=None,
+    )
+
+    cred_call = [c for c in host.write_text.call_args_list
+                 if c.args[0] == "home/.claude/.credentials.json"][0]
+    assert cred_call.args[1] == raw.decode("utf-8")
+
+
+async def test_plant_home_files_settings_json():
+    host = MagicMock()
+    host.write_text = AsyncMock()
+    host.run_command = AsyncMock(return_value=RunResult(stdout="", stderr="", exit_code=0))
+    host.workdir = "/tmp/x"
+
+    settings = {"permissions": {"allow": ["Read"]}}
+    await host_actions.plant_home_files(
+        host, credentials_json=None, claude_config=settings,
+    )
+
+    paths_written = [c.args[0] for c in host.write_text.call_args_list]
+    assert "home/.claude/settings.json" in paths_written
+    settings_call = [c for c in host.write_text.call_args_list
+                     if c.args[0] == "home/.claude/settings.json"][0]
+    assert json.loads(settings_call.args[1]) == settings
+
+
+async def test_plant_home_files_none_writes_nothing():
+    host = MagicMock()
+    host.write_text = AsyncMock()
+    host.run_command = AsyncMock(return_value=RunResult(stdout="", stderr="", exit_code=0))
+    host.workdir = "/tmp/x"
+
+    await host_actions.plant_home_files(
+        host, credentials_json=None, claude_config=None,
+    )
+
+    # No files written; mkdir -p still runs for home/.claude
+    assert host.write_text.call_count == 0
+
+
 async def test_ensure_ttyd_installed_unsupported_os_raises():
     host = _FakeHost([
         RunResult(stdout="", stderr="not found", exit_code=1),
