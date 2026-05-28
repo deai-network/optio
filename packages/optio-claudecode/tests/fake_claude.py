@@ -8,13 +8,17 @@ wrapping ttyd process at that point.
 """
 
 import argparse
+import json
 import os
 import sys
 import time
 from pathlib import Path
 
 
-SCENARIOS = ("happy", "deliverable", "error", "long")
+SCENARIOS = (
+    "happy", "deliverable", "error", "long",
+    "long_then_signaled", "idempotent_done",
+)
 
 
 def _log(line: str) -> None:
@@ -59,6 +63,42 @@ def _scenario_long() -> None:
         time.sleep(0.5)
 
 
+def _record_argv(argv: list[str]) -> None:
+    """Record the argv claude was launched with, so resume tests can
+    assert that ``--continue`` was passed. Written under the isolated
+    HOME (``$HOME`` is ``<workdir>/home`` under HOME-isolation) so it
+    travels in the session blob, not the plaintext workdir blob.
+
+    Appends one JSON line per launch so multiple runs are observable.
+    """
+    home = os.environ.get("HOME")
+    if not home:
+        return
+    target = Path(home) / ".claude" / "fake_claude_argv.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(argv) + "\n")
+        fh.flush()
+
+
+def _scenario_long_then_signaled() -> None:
+    # Emit a STATUS so the dashboard sees life, then stay alive
+    # indefinitely until SIGTERM/SIGKILL from the framework.
+    _log("STATUS: 10% long-running, awaiting signal")
+    while True:
+        time.sleep(0.5)
+
+
+def _scenario_idempotent_done() -> None:
+    # Emits the same DONE line as `happy`; used across two runs to verify
+    # the agent's perspective of continuity survives capture+restore.
+    time.sleep(0.05)
+    _log("STATUS: 10% resumed claude alive")
+    time.sleep(0.05)
+    _log("DONE: scenario completed")
+    time.sleep(30.0)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", action="store_true")
@@ -74,11 +114,14 @@ def main() -> int:
     if scenario not in SCENARIOS:
         print(f"unknown FAKE_CLAUDE_SCENARIO={scenario!r}", file=sys.stderr)
         return 2
+    _record_argv(sys.argv[1:])
     {
         "happy": _scenario_happy,
         "deliverable": _scenario_deliverable,
         "error": _scenario_error,
         "long": _scenario_long,
+        "long_then_signaled": _scenario_long_then_signaled,
+        "idempotent_done": _scenario_idempotent_done,
     }[scenario]()
     return 0
 

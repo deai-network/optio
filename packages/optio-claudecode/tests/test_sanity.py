@@ -20,3 +20,13 @@ def test_re_exports_from_optio_host():
 def test_re_exports_callable_types():
     assert hasattr(optio_claudecode, "HookCallback")
     assert hasattr(optio_claudecode, "DeliverableCallback")
+
+
+def test_fake_claude_has_resume_scenarios():
+    import importlib.util, pathlib
+    p = pathlib.Path(__file__).parent / "fake_claude.py"
+    spec = importlib.util.spec_from_file_location("fake_claude_probe", p)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert "long_then_signaled" in mod.SCENARIOS
+    assert "idempotent_done" in mod.SCENARIOS
