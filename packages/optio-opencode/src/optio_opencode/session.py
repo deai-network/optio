@@ -160,6 +160,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         """
         nonlocal launched_handle, opencode_exec, session_id, preserved_session_id
 
+        refreshed_files: list[str] = []
         if not resuming:
             # Fresh start: the protocol driver has already created the
             # workdir, deliverables/ subdir, and empty optio.log. Ensure
@@ -189,9 +190,14 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             # self-healing (snapshot lookup returns None → fresh-start
             # fallback) handles the rare case where the flag is true but
             # no snapshot exists.
+        else:
+            # Resume: when on_resume_refresh is wired, recompute AGENTS.md
+            # from the refreshed config and overwrite the workdir copy if
+            # the rendered text differs from the snapshot-restored file.
+            refreshed_files = await _maybe_refresh_on_resume(host, hook_ctx, config)
 
         if config.supports_resume:
-            await _append_resume_log_entry(host)
+            await _append_resume_log_entry(host, refreshed=refreshed_files)
 
         # opencode is already installed by run_opencode_session before
         # this body runs (so resume restore can call opencode_import
@@ -469,22 +475,72 @@ async def _rotate_optio_log(host: Host) -> None:
     await host.write_text("optio.log", "")
 
 
-async def _append_resume_log_entry(host) -> None:
-    """Append one ISO 8601 UTC timestamp line to <workdir>/resume.log.
+async def _append_resume_log_entry(
+    host, *, refreshed: list[str] | None = None,
+) -> None:
+    """Append one line to <workdir>/resume.log.
+
+    Line format: ``<ISO 8601 UTC timestamp>[ REFRESHED:<comma-separated names>]``.
+    The optional ``REFRESHED:`` suffix signals that the harness rewrote
+    the listed files on this session start. Agents are instructed (via
+    the resume section of AGENTS.md) to re-read tagged files.
 
     Creates the file if missing (via shell `>>`). Caller is responsible
     for gating this on config.supports_resume.
     """
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    line = ts
+    if refreshed:
+        line = f"{ts} REFRESHED:{','.join(refreshed)}"
     target = f"{host.workdir}/resume.log"
     result = await host.run_command(
-        f"echo {shlex.quote(ts)} >> {shlex.quote(target)}"
+        f"echo {shlex.quote(line)} >> {shlex.quote(target)}"
     )
     if result.exit_code != 0:
         raise RuntimeError(
             f"failed to append to resume.log: exit {result.exit_code}: "
             f"{result.stderr!r}"
         )
+
+
+async def _maybe_refresh_on_resume(
+    host, hook_ctx, config: OpencodeTaskConfig,
+) -> list[str]:
+    """Run the on_resume_refresh hook (if any) and rewrite AGENTS.md when
+    the rendered content differs from the workdir copy.
+
+    Returns the list of filenames the harness rewrote (currently at most
+    ``["AGENTS.md"]``), suitable for tagging the next ``resume.log`` line.
+    A hook that raises is logged and ignored — the resumed session keeps
+    whatever AGENTS.md the snapshot restored.
+    """
+    if config.on_resume_refresh is None:
+        return []
+    try:
+        new_config = config.on_resume_refresh(config)
+    except Exception:
+        _LOG.exception(
+            "on_resume_refresh raised; keeping existing AGENTS.md from snapshot",
+        )
+        return []
+    new_agents_md = compose_agents_md(
+        new_config.consumer_instructions,
+        workdir_exclude=new_config.workdir_exclude,
+        supports_resume=new_config.supports_resume,
+    )
+    try:
+        existing = await hook_ctx.read_text_from_host("AGENTS.md", silent=True)
+    except FileNotFoundError:
+        existing = None
+    except Exception:
+        _LOG.exception(
+            "failed to read existing AGENTS.md on resume; rewriting unconditionally",
+        )
+        existing = None
+    if existing == new_agents_md:
+        return []
+    await host.write_text("AGENTS.md", new_agents_md)
+    return ["AGENTS.md"]
 
 
 def _pick_local_workdir() -> str:

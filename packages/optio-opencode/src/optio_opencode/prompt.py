@@ -79,9 +79,18 @@ caveats:**
 
 ### Detecting a resume: `resume.log`
 
-Each session start (fresh or resumed) appends one ISO 8601 timestamp
-to `./resume.log`. The very first line is the original launch
-timestamp; each subsequent line is a resume.
+Each session start (fresh or resumed) appends one line to
+`./resume.log`. Line format:
+
+```
+<ISO 8601 UTC timestamp>[ REFRESHED:<comma-separated filenames>]
+```
+
+The very first line is the original launch timestamp; each subsequent
+line is a resume. The optional `REFRESHED:` suffix signals that the
+harness rewrote the listed files on that resume (e.g.
+`2026-05-28T13:15:42Z REFRESHED:AGENTS.md`) — your in-memory copy of
+those files is stale and must be re-read before continuing.
 
 **At the start of every new incoming user message, read
 `./resume.log` first.** Compare the latest line to the value you
@@ -92,6 +101,10 @@ the situation as a resume:
   outside the workdir are still where you left them.
 - Re-establish anything that's gone (re-launch a server, re-fetch a
   file, etc.) before continuing.
+- **If the latest line carries a `REFRESHED:` suffix, re-read each
+  listed file** (e.g. `cat ./AGENTS.md`) — the harness updated it
+  since your last context snapshot and the version you remember is
+  out of date.
 - Then resume the work you were doing.
 
 If a resume slips past unnoticed, a failing tool call is the

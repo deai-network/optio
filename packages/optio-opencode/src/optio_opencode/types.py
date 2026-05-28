@@ -43,6 +43,14 @@ class OpencodeTaskConfig:
     # raises a config error: asymmetric usage is always a mistake.
     session_blob_encrypt: Callable[[bytes], bytes] | None = None
     session_blob_decrypt: Callable[[bytes], bytes] | None = None
+    # Optional hook fired on resume only (never on fresh start). Receives
+    # the original task config; returns a (possibly mutated/replaced) config.
+    # The harness re-renders AGENTS.md from the returned config and writes
+    # it back to the workdir only when it differs from the file on disk.
+    # When written, the harness tags the new line in resume.log with
+    # `REFRESHED:AGENTS.md` so the agent knows to re-read. None (default)
+    # → no refresh; the resumed session keeps its original AGENTS.md.
+    on_resume_refresh: Callable[["OpencodeTaskConfig"], "OpencodeTaskConfig"] | None = None
 
     def __post_init__(self) -> None:
         e = self.session_blob_encrypt is not None

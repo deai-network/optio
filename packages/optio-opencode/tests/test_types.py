@@ -95,3 +95,16 @@ def test_opencode_task_config_supports_resume_default_true():
 def test_opencode_task_config_supports_resume_can_be_disabled():
     cfg = OpencodeTaskConfig(consumer_instructions="x", supports_resume=False)
     assert cfg.supports_resume is False
+
+
+def test_opencode_task_config_on_resume_refresh_default_none():
+    cfg = OpencodeTaskConfig(consumer_instructions="x")
+    assert cfg.on_resume_refresh is None
+
+
+def test_opencode_task_config_on_resume_refresh_accepts_callable():
+    def _refresh(c):
+        return c
+
+    cfg = OpencodeTaskConfig(consumer_instructions="x", on_resume_refresh=_refresh)
+    assert cfg.on_resume_refresh is _refresh

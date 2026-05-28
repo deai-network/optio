@@ -184,7 +184,15 @@ async def test_resume_appends_second_line_to_resume_log(mongo_db, task_root):
     lines = [line for line in contents.splitlines() if line]
     assert len(lines) == 2, f"expected 2 lines, got {len(lines)}: {contents!r}"
 
-    iso_re = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+    # Line format: `<ISO 8601 timestamp>[ REFRESHED:<comma-separated names>]`.
+    # This test exercises the no-refresh path (no on_resume_refresh hook),
+    # so every line is a bare timestamp; the regex still accepts the
+    # extended form to stay valid as the format evolves.
+    line_re = re.compile(
+        r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z(?: REFRESHED:\S+)?$"
+    )
     for line in lines:
-        assert iso_re.match(line), f"non-ISO-8601 line: {line!r}"
-    assert lines[0] <= lines[1], f"timestamps not monotonic: {lines!r}"
+        assert line_re.match(line), f"unrecognized resume.log line: {line!r}"
+    # Timestamps (the leading token of each line) are monotonic.
+    timestamps = [line.split()[0] for line in lines]
+    assert timestamps[0] <= timestamps[1], f"timestamps not monotonic: {timestamps!r}"
