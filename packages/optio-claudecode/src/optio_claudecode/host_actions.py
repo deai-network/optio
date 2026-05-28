@@ -17,11 +17,15 @@ if TYPE_CHECKING:
     from optio_host.host import ProcessHandle
 
 
-# ttyd prints something like "Listening on port 7681" or
-# "[INFO] tty.c:131 listening on http://127.0.0.1:7681/" depending on
-# build. Match either a `port N` token or a `:N/` token in a URL.
+# ttyd's ready banner takes a few forms across versions:
+#   * 1.7.x with lws logging:  "N:  Listening on port: 33449"
+#   * older builds:            "Listening on port 7681"
+#   * some forks log a URL:    "[INFO] listening on http://127.0.0.1:7681/"
+# The `port[\s:]+` branch covers the first two (colon OR whitespace
+# between "port" and the digits). The URL branch covers the third.
+# Both expose the captured port number as the first non-None group.
 _TTYD_READY_RE = re.compile(
-    r"(?:port\s+(\d+))|(?:http://[^\s]+?:(\d+)(?:/|\s|$))"
+    r"(?:port[\s:]+(\d+))|(?:http://[^\s]+?:(\d+)(?:/|\s|$))"
 )
 
 
