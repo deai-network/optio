@@ -34,8 +34,11 @@ create_claudecode_task(
 )
 ```
 
-`TaskInstance` returned has `ui_widget="iframe"` and `supports_resume=False`
-baked in.
+`TaskInstance` returned has `ui_widget="iframe"` and `supports_resume`
+tracking the config field (defaults to `True`). Resume snapshots the
+`<workdir>/home/.claude/` subtree (encryptable session blob) plus a plaintext
+workdir blob; on resume the workdir is restored and `--continue` is appended to
+claude's argv. See `docs/2026-05-29-optio-claudecode-resume-design.md`.
 
 ## ClaudeCodeTaskConfig field semantics
 
