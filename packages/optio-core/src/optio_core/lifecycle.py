@@ -173,6 +173,7 @@ class Optio:
         self._executor = Executor(
             mongo_db, prefix, services, optio=self,
             notify_parent_abnormal=self.cancel,
+            notify_parent_failure=self._cancel_active_children,
         )
 
         # Run migrations
@@ -410,6 +411,59 @@ class Optio:
             self._check_launch_blocks(task.metadata)
         await self._executor.launch_process(process_id, resume=resume)
 
+    async def _cancel_active_children(
+        self,
+        parent_process_id: str,
+        *,
+        inherit_deadline: float | None = None,
+    ) -> None:
+        """Cancel the active direct children of ``parent_process_id``
+        cooperatively, using a shared deadline budget. Does NOT cancel
+        the parent itself.
+
+        Honors the parent task's ``auto_cancel_children`` setting
+        (assumes True if the task is not in the registry — fail-safe
+        toward propagation).
+
+        Used by:
+          - ``cancel()`` for its downward-propagation step.
+          - The alpha-cascade failure-breach callback (parallel_group
+            failure breach, non-group run_child with survive_failure=False).
+
+        Safe to invoke multiple times concurrently: ``cancel()`` on an
+        already-cancelled / not-cancellable child is a no-op.
+        """
+        proc = await self._resolve(parent_process_id)
+        if proc is None:
+            return
+        task = self._executor._task_registry.get(proc["processId"])
+        auto = task.auto_cancel_children if task is not None else True
+        if not auto:
+            return
+        effective_deadline = (
+            inherit_deadline
+            if inherit_deadline is not None
+            else time.monotonic() + self._config.cancel_grace_seconds
+        )
+        from optio_core.store import list_direct_children
+        children = await list_direct_children(
+            self._config.mongo_db, self._config.prefix,
+            proc["_id"], states=ACTIVE_STATES,
+        )
+        if not children:
+            return
+        _trace(
+            "CANCEL-TRACE %s: propagating to children=%s",
+            proc["processId"], [c["processId"] for c in children],
+        )
+        await asyncio.gather(
+            *(
+                self.cancel(str(c["_id"]), inherit_deadline=effective_deadline)
+                for c in children
+            ),
+            return_exceptions=True,
+        )
+
     async def cancel(
         self,
         process_id: str,
@@ -505,29 +559,12 @@ class Optio:
                     process_id, result.modified_count,
                 )
 
-        # Downward propagation: recurse over active direct children unless
-        # this process's TaskInstance opts out. Unknown task → assume True
-        # (fail safe toward propagation, not orphan).
-        task = self._executor._task_registry.get(proc["processId"])
-        auto = task.auto_cancel_children if task is not None else True
-        if auto:
-            from optio_core.store import list_direct_children
-            children = await list_direct_children(
-                self._config.mongo_db, self._config.prefix,
-                proc["_id"], states=ACTIVE_STATES,
-            )
-            if children:
-                _trace(
-                    "CANCEL-TRACE %s: propagating to children=%s",
-                    process_id, [c["processId"] for c in children],
-                )
-                await asyncio.gather(
-                    *(
-                        self.cancel(str(c["_id"]), inherit_deadline=effective_deadline)
-                        for c in children
-                    ),
-                    return_exceptions=True,
-                )
+        # Downward propagation: delegate to the shared helper. Honors
+        # auto_cancel_children and shares the deadline budget.
+        await self._cancel_active_children(
+            str(proc["_id"]),
+            inherit_deadline=effective_deadline,
+        )
         _trace("CANCEL-TRACE %s: exit ok=True", process_id)
         # Re-read by OID for the post-cancel snapshot; state has advanced
         # to cancel_requested / cancelling / cancelled depending on the

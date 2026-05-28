@@ -6,7 +6,7 @@ import os
 import time
 from collections import deque
 from contextlib import asynccontextmanager
-from typing import Any, Callable, Awaitable, TYPE_CHECKING
+from typing import Any, Callable, Awaitable, Literal, TYPE_CHECKING
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorGridFSBucket
 
@@ -592,7 +592,12 @@ class ParallelGroup:
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._tasks: list[asyncio.Task] = []
         self._results: list[ChildResult] = []
-        self._failed = False
+        # Breach reason: None until a child's outcome breaches the group's
+        # survive_* settings. "failure" once any non-survived failed outcome
+        # is seen; "cancel" only if no failure has occurred yet. Failure
+        # dominates so the parent is never spuriously marked cancelled when
+        # one of its children actually failed.
+        self._breach_reason: Literal["failure", "cancel", None] = None
         if on_child_progress is not None:
             self._ctx._set_child_callback(on_child_progress)
 
@@ -653,22 +658,29 @@ class ParallelGroup:
                 ))
                 breached = False
                 if outcome.state == "failed" and not self._survive_failure:
-                    self._failed = True
+                    # Failure dominates: any non-survived failure pins
+                    # the breach reason, even if a prior cancellation
+                    # breach already set it to "cancel".
+                    self._breach_reason = "failure"
                     breached = True
                 if outcome.state == "cancelled" and not self._survive_cancel:
-                    self._failed = True
+                    # Only escalate from None to "cancel". Do not
+                    # downgrade from "failure".
+                    if self._breach_reason != "failure":
+                        self._breach_reason = "cancel"
                     breached = True
-                # alpha at group level: when group's own survive_*
-                # aggregate is breached, invoke notify_parent_abnormal so
-                # the parent's cancel propagation reaches sibling spawns.
-                # spawn's run_child uses survive_*=True per-child so the
-                # execute_child alpha path does not fire for individual
-                # children of a parallel_group.
+                # Per-breach: cancel still-running siblings cooperatively
+                # (sibling-only descent, no parent flag set). Fired on
+                # every breach regardless of reason — both reasons need
+                # siblings cancelled, and the helper is idempotent. The
+                # decision whether to ALSO cascade cancel(parent) upward
+                # is deferred to __aexit__ based on the final breach
+                # reason.
                 if breached:
                     executor = self._ctx._executor
-                    if executor is not None and executor._notify_parent_abnormal is not None:
+                    if executor is not None and executor._notify_parent_failure is not None:
                         asyncio.create_task(
-                            executor._notify_parent_abnormal(self._ctx.process_id)
+                            executor._notify_parent_failure(self._ctx.process_id)
                         )
             finally:
                 self._semaphore.release()
@@ -682,7 +694,20 @@ class ParallelGroup:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
-        if self._failed:
+        if self._breach_reason == "cancel":
+            # Cancellation cascade upward. Set parent's flag
+            # synchronously so the user code observes
+            # should_continue() == False immediately upon re-entry
+            # from the `async with`. Also schedule Optio.cancel(parent)
+            # so the parent's Mongo row transitions through
+            # cancel_requested/cancelling correctly.
+            self._ctx._cancellation_flag.set()
+            executor = self._ctx._executor
+            if executor is not None and executor._notify_parent_abnormal is not None:
+                asyncio.create_task(
+                    executor._notify_parent_abnormal(self._ctx.process_id)
+                )
+        if self._breach_reason is not None:
             failed = [r for r in self._results if r.state != "done"]
             failures = [
                 ChildProcessFailed(
