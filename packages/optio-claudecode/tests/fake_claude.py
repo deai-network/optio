@@ -41,7 +41,7 @@ def _scenario_deliverable() -> None:
         "hello from fake claude\n", encoding="utf-8",
     )
     time.sleep(0.05)
-    _log("DELIVERABLE: greeting.txt")
+    _log("DELIVERABLE: ./deliverables/greeting.txt")
     time.sleep(0.05)
     _log("DONE")
     time.sleep(30.0)

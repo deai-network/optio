@@ -67,3 +67,57 @@ async def test_local_happy_path_writes_agents_md_and_home_files(
     assert observed["cred_json"] == {"oauth_token": "test-token"}
     assert observed["cred_mode"] == "600"
     assert observed["settings_json"] == {"permissions": {"allow": ["Read"]}}
+
+
+@pytest.mark.asyncio
+async def test_local_deliverable_callback_fired(
+    shim_install_dir: pathlib.Path,
+    ctx_and_captures,
+    monkeypatch,
+):
+    ctx, _captures, _cancellation_flag = ctx_and_captures
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "deliverable")
+
+    captured: list[tuple[str, str]] = []
+
+    async def on_deliverable(hook_ctx, path, text):
+        captured.append((path, text))
+
+    task = create_claudecode_task(
+        process_id="cc-local-deliverable",
+        name="Local deliverable",
+        config=ClaudeCodeTaskConfig(
+            consumer_instructions="Hand back a file.",
+            claude_install_dir=str(shim_install_dir),
+            ttyd_install_dir=str(shim_install_dir),
+            on_deliverable=on_deliverable,
+        ),
+    )
+    await task.execute(ctx)
+
+    assert len(captured) == 1
+    path, text = captured[0]
+    assert path == "greeting.txt"
+    assert text == "hello from fake claude\n"
+
+
+@pytest.mark.asyncio
+async def test_local_error_keyword_propagates(
+    shim_install_dir: pathlib.Path,
+    ctx_and_captures,
+    monkeypatch,
+):
+    ctx, _captures, _cancellation_flag = ctx_and_captures
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "error")
+    task = create_claudecode_task(
+        process_id="cc-local-error",
+        name="Local error",
+        config=ClaudeCodeTaskConfig(
+            consumer_instructions="Fail please.",
+            claude_install_dir=str(shim_install_dir),
+            ttyd_install_dir=str(shim_install_dir),
+        ),
+    )
+    with pytest.raises(RuntimeError) as exc_info:
+        await task.execute(ctx)
+    assert "scenario asked for failure" in str(exc_info.value)
