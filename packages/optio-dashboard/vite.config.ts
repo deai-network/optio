@@ -4,6 +4,13 @@ import path from 'path';
 
 export default defineConfig({
   plugins: [react()],
+  // optio-ui is consumed as source from the workspace; under pnpm its
+  // @tanstack/react-query (and React) can resolve via a different node_modules
+  // path than the app's, yielding duplicate module instances → separate React
+  // contexts → "No QueryClient set". Dedupe forces a single instance of each.
+  resolve: {
+    dedupe: ['react', 'react-dom', '@tanstack/react-query', '@ts-rest/react-query'],
+  },
   root: path.resolve(__dirname, 'src/app'),
   build: {
     outDir: path.resolve(__dirname, 'dist/public'),
