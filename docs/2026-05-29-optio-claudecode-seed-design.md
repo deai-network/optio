@@ -462,3 +462,19 @@ After those land + manual validation, registering and releasing the new
 **optio-claudecode** package (currently unpublished) is a post-merge **release-ops**
 step — handled via the repo's release tooling like every other package, not an
 implementation-plan task.
+
+## Addendum (2026-05-29): `browser_capture` flag SUPERSEDED
+
+The per-task `browser_capture: bool` opt-in described above (the "Config surface
+and seed_id resolution" → `browser_capture` field and the "**browser_capture**
+opt-in" paragraph) is **superseded** by
+`docs/2026-05-29-optio-protocol-variation-design.md`.
+
+The browser-open handling is not a per-task option and not optional for
+claudecode; it is a per-*agent* protocol variation (claudecode redirects,
+opencode suppresses) that also governs the agent documentation and the parser.
+It now lives in optio-agents' `get_protocol(*, browser=…)` factory: claudecode
+uses `get_protocol(browser="redirect")` and capture is **unconditional** in its
+launch path, driven by the session driver — no `ClaudeCodeTaskConfig.browser_capture`
+field is added. See that spec for the full model. The seed-engine relocation to
+`optio_agents/seeds.py` (the other phase-3 delta) is unaffected.
