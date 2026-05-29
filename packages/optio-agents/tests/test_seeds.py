@@ -1,4 +1,4 @@
-"""Tests for the generic optio-host seed engine."""
+"""Tests for the generic optio-agents seed engine."""
 
 import io
 import tarfile
@@ -6,7 +6,7 @@ import tarfile
 import pytest
 from bson import ObjectId
 
-from optio_host import seeds
+from optio_agents import seeds
 from optio_host.host import LocalHost
 
 

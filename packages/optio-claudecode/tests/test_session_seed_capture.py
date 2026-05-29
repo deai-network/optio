@@ -16,7 +16,7 @@ from optio_core.store import upsert_process
 from optio_claudecode import ClaudeCodeTaskConfig
 from optio_claudecode.seed_manifest import CLAUDE_SEED_SUFFIX
 from optio_claudecode.session import run_claudecode_session
-from optio_host import seeds
+from optio_agents import seeds
 
 
 @pytest_asyncio.fixture

@@ -1,4 +1,4 @@
-"""claudecode adopter of the generic optio-host seed engine.
+"""claudecode adopter of the generic optio-agents seed engine.
 
 Defines the claudecode seed manifest (HOME layout + capture-time include
 triage + consume-time rekey), the Mongo collection suffix, and ergonomic
@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 
-from optio_host import seeds
+from optio_agents import seeds
 from optio_host.host import Host
 
 _LOG = logging.getLogger(__name__)

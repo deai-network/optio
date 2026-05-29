@@ -10,9 +10,11 @@ Seeds are stored in a Mongo collection `{prefix}{suffix}` (the agent
 package owns `suffix`) with the encrypted blob in GridFS. Each capture
 mints a new, opaque, optio-generated id (an `ObjectId` hex string).
 
-optio-host depends on optio-core, so importing `ProcessContext` for
-typing is allowed; we keep `bson`/`motor` as local/TYPE_CHECKING imports
-to keep the hard import surface minimal.
+This is agent-coordination work, so it lives in optio-agents; it drives
+the optio-host `Host` transport (tar/extract/fetch/put). optio-agents
+depends on optio-core and optio-host, so importing `ProcessContext` and
+`Host` for typing is allowed; we keep `bson`/`motor` as local/
+TYPE_CHECKING imports to keep the hard import surface minimal.
 """
 
 from __future__ import annotations
