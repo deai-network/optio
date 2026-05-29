@@ -35,6 +35,7 @@ from optio_host.paths import task_dir
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_opencode import host_actions
 from optio_opencode.prompt import compose_agents_md
+from optio_agents import get_protocol
 from optio_opencode.snapshots import (
     insert_snapshot,
     load_latest_snapshot,
@@ -71,6 +72,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
     """Execute function body for one optio-opencode task instance."""
     # --- per-task filesystem layout ---------------------------------------
     host: Host = _build_host(config, ctx.process_id)
+    protocol = get_protocol(browser="suppress")
     taskdir = task_dir(
         ssh=config.ssh, process_id=ctx.process_id, consumer_name="optio-opencode",
     )
@@ -172,6 +174,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                 "AGENTS.md",
                 compose_agents_md(
                     config.consumer_instructions,
+                    documentation=protocol.documentation,
                     workdir_exclude=config.workdir_exclude,
                     supports_resume=config.supports_resume,
                 ),
@@ -241,6 +244,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             ready_timeout_s=READY_TIMEOUT_S,
             opencode_executable=opencode_exec,
             hostname=opencode_hostname,
+            extra_env=hook_ctx.browser_launch_env,
         )
         launched_handle = handle
 
@@ -308,6 +312,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             body=_opencode_body,
             on_deliverable=config.on_deliverable,
             after_execute=config.after_execute,
+            protocol=protocol,
         )
     except _SessionFailed as fail:
         session_error = fail

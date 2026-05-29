@@ -329,6 +329,7 @@ async def launch_opencode(
     ready_timeout_s: float = 30.0,
     opencode_executable: str = "opencode",
     hostname: str = "127.0.0.1",
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[ProcessHandle, int]:
     """Launch ``opencode web`` on ``host``; wait for the listening URL.
 
@@ -336,10 +337,10 @@ async def launch_opencode(
     and references it via ``$(cat ...)`` in the launch command so the
     literal value never appears on the remote process's argv.
 
-    Lays down no-op browser-opener stubs (xdg-open, gio, open,
-    sensible-browser) under ``<workdir>/bin`` and prepends that
-    directory to PATH so opencode's automatic browser-launch is
-    suppressed.
+    Browser-open suppression is handled by the optio-agents protocol
+    driver (``get_protocol(browser="suppress")``), which installs no-op
+    opener stubs under ``<workdir>/bin`` and returns the ``BROWSER`` /
+    ``PATH`` env additions; the caller passes those in via ``extra_env``.
 
     ``hostname`` is passed to ``opencode web --hostname=`` so callers
     can bind to a non-loopback interface when consumers reach the server
@@ -354,48 +355,35 @@ async def launch_opencode(
     await host.write_text(pw_file, password)
     await host.run_command(f"chmod 600 {host.workdir}/{pw_file}")
 
-    # Browser-suppression bin shadow.
-    for noop in ("xdg-open", "gio", "open", "sensible-browser"):
-        await host.write_text(f"bin/{noop}", "#!/bin/sh\nexit 0\n")
-    chmod_result = await host.run_command(f"chmod +x {host.workdir}/bin/*")
-    if chmod_result.exit_code != 0:
-        # Non-fatal: the noop scripts may fail to be executable, but worst
-        # case opencode tries to open a browser and we just live with it.
-        pass
-
-    # Build cmd: read password from file via $(cat), set BROWSER=true,
-    # cd to workdir so opencode picks up opencode.json.
+    # Build cmd: read password from file via $(cat), cd to workdir so
+    # opencode picks up opencode.json. Browser suppression (the BROWSER
+    # env + the <workdir>/bin PATH prepend that shadows the openers) comes
+    # from the protocol driver's suppress shims, passed in via extra_env.
     #
     # NOTE: do NOT wrap in `bash -lc` / `bash -l`. A login shell sources
     # the user's profile (~/.profile, ~/.bash_profile, /etc/profile),
     # which on most Linux installs rewrites PATH from scratch and
-    # therefore wipes the workdir/bin prefix we set in `env` below. With
-    # the prefix gone, the noop xdg-open / sensible-browser / gio / open
-    # shadows below stop hiding the real ones and opencode succeeds at
-    # opening a real browser window. opencode_executable is an absolute
-    # path (resolved by ensure_opencode_installed), so login-shell PATH
-    # lookup is not needed to find the binary. Let LocalHost / RemoteHost
-    # launch_subprocess do the shell wrapping; we just need the env-var
-    # prefix and $(cat ...) substitution, which any POSIX sh handles.
+    # therefore wipes the workdir/bin prefix carried in `env` below. With
+    # the prefix gone, the suppress stubs stop hiding the real openers and
+    # opencode succeeds at opening a real browser window. opencode_executable
+    # is an absolute path (resolved by ensure_opencode_installed), so
+    # login-shell PATH lookup is not needed to find the binary.
     cmd = (
         f"exec env "
         f"OPENCODE_SERVER_PASSWORD=\"$(cat {shlex.quote(host.workdir + '/' + pw_file)})\" "
-        f"BROWSER=true "
         f"{opencode_executable} web --port=0 --hostname={shlex.quote(hostname)}"
     )
 
-    # Prepend the noop-browsers bin dir to PATH via env on launch_subprocess.
-    workdir_bin = f"{host.workdir}/bin"
-    extra_path = workdir_bin + ":" + os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
     # OPENCODE_DB must point at the same per-task db file used by the
     # subsequent export/import CLI calls. Without this, the server falls
     # back to opencode's global default db while export/import target the
     # taskdir-local file — causing snapshot capture to "Session not found"
     # against an empty file. Convention: opencode.db is a sibling of the
     # workdir under taskdir (session.py: opencode_db = f"{taskdir}/opencode.db").
+    # The browser-suppression env (PATH prepend + BROWSER) comes from extra_env.
     env = {
-        "PATH": extra_path,
         "OPENCODE_DB": f"{host.taskdir}/opencode.db",
+        **(extra_env or {}),
     }
 
     handle = await host.launch_subprocess(cmd, env=env, cwd=host.workdir)

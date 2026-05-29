@@ -7,7 +7,7 @@ addressed. The consumer's own task description is then appended verbatim.
 """
 
 
-from optio_agents.protocol.prompt import LOG_CHANNEL_PROMPT
+from optio_agents.protocol import build_log_channel_prompt
 
 
 _OPENCODE_INTRO = """# Coordination protocol with the host (optio-opencode)
@@ -16,9 +16,6 @@ You are running inside a coordination harness. Follow these conventions
 throughout the session.
 
 """
-
-
-BASE_PROMPT_PRE = _OPENCODE_INTRO + LOG_CHANNEL_PROMPT
 
 
 BASE_PROMPT_POST = """## Task
@@ -120,6 +117,7 @@ def compose_agents_md(
     consumer_instructions: str,
     *,
     workdir_exclude: list[str] | None,
+    documentation: str | None = None,
     supports_resume: bool = True,
 ) -> str:
     """Build the full AGENTS.md body.
@@ -130,12 +128,18 @@ def compose_agents_md(
         callers must pass it explicitly to prevent silent desync between
         archive.py defaults and the prompt's claims about what's preserved.
         Pass None to render with the framework defaults.
+      documentation: the keyword-protocol block; the session passes
+        ``get_protocol(browser="suppress").documentation``. Defaults (for
+        unit tests / standalone callers) to opencode's ``suppress`` docs.
       supports_resume: when False, the resume-detection section is omitted
         from the prompt. Default True.
     """
+    if documentation is None:
+        documentation = build_log_channel_prompt("suppress")
+    base_prompt_pre = _OPENCODE_INTRO + documentation
     body = consumer_instructions.rstrip()
     if supports_resume:
         resume_block = _render_resume_section(workdir_exclude) + "\n"
     else:
         resume_block = ""
-    return f"{BASE_PROMPT_PRE}\n{resume_block}{BASE_PROMPT_POST}\n{body}\n"
+    return f"{base_prompt_pre}\n{resume_block}{BASE_PROMPT_POST}\n{body}\n"
