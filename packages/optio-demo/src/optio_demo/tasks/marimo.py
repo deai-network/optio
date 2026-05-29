@@ -5,7 +5,9 @@ upstream with the widget proxy, and sets widgetData to signal the iframe
 widget to mount. Exits when cancelled.
 """
 import asyncio
+import shutil
 import socket
+import tempfile
 from pathlib import Path
 
 from optio_core.context import ProcessContext
@@ -39,8 +41,17 @@ async def run_marimo(ctx: ProcessContext) -> None:
     port = _free_port()
     ctx.report_progress(None, f"Starting marimo on 127.0.0.1:{port}")
 
+    # `marimo edit` autosaves the notebook and writes a `__marimo__/` cache
+    # next to it. The bundled notebook lives under `src/`, which `make run`
+    # watches — so editing it in place triggers a dev auto-restart that
+    # cancels THIS task. Run against a copy in a scratch dir instead, keeping
+    # all of marimo's writes out of the watched source tree.
+    workdir = tempfile.mkdtemp(prefix="optio-marimo-")
+    notebook = Path(workdir) / NOTEBOOK.name
+    shutil.copy(NOTEBOOK, notebook)
+
     proc = await asyncio.create_subprocess_exec(
-        "marimo", "edit", str(NOTEBOOK),
+        "marimo", "edit", str(notebook),
         "--host", "127.0.0.1",
         "--port", str(port),
         "--headless",
@@ -74,6 +85,7 @@ async def run_marimo(ctx: ProcessContext) -> None:
             except asyncio.TimeoutError:
                 proc.kill()
                 await proc.wait()
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def get_tasks() -> list[TaskInstance]:
