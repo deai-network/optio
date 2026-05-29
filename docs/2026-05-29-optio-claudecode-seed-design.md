@@ -1,4 +1,4 @@
-# Seed Support — Generic Engine (optio-host) + optio-claudecode Adopter
+# Seed Support — Generic Engine (optio-agents) + optio-claudecode Adopter
 
 This spec was written against the following baseline:
 
@@ -19,9 +19,12 @@ are created by a dedicated capture: launch a vanilla session, log in / configure
 interactively, then stop it — on teardown the framework captures the
 environment-only files and returns a generated `seed_id` via a callback.
 
-The seed **mechanism is generic and lives in `optio-host`**, parameterized by a
+The seed **mechanism is generic and lives in `optio-agents`**, parameterized by a
 small agent **adapter** (HOME layout + file manifest + a consume-time
-transform). **optio-claudecode is the first adopter.** **optio-opencode will
+transform). Capturing the *agent's* environment is agent-coordination work, which
+is optio-agents' domain after that layer was extracted from optio-host; the
+engine still depends on optio-host for the `Host` transport
+(`run_command`/`fetch`/`put`). **optio-claudecode is the first adopter.** **optio-opencode will
 adopt it in the next PR** (first per-task HOME/XDG isolation, then seeding) —
 opencode has the same multi-user need but is currently blocked on isolation
 (see "opencode parity").
@@ -63,7 +66,7 @@ process-group reaping on cancel).
   new conversation that reads the per-task AGENTS.md.
 - Capture a seed from an interactively-configured session, returning a generated
   id via callback so the consuming app can record it.
-- **Generic mechanism in `optio-host`**, agent-specific behavior supplied by a
+- **Generic mechanism in `optio-agents`**, agent-specific behavior supplied by a
   small adapter — reusable by opencode after it gains HOME isolation.
 - Per-user seeds: opaque ids, optio owner-agnostic; app owns `user → seed_id`
   and GC.
@@ -88,9 +91,13 @@ process-group reaping on cancel).
 
 ## Architecture: generic engine + agent adapter
 
-The reusable mechanism lives in **`optio-host`**; agents supply an adapter.
+The reusable mechanism lives in **`optio-agents`**; agents supply an adapter. The
+engine still operates against the `Host` abstraction from optio-host (the seed
+tar/extract/fetch/put all go through `Host`), but its home package is
+optio-agents because capturing the agent's environment is agent-coordination
+work.
 
-**`optio_host/seeds.py` — generic engine:**
+**`optio_agents/seeds.py` — generic engine:**
 
 ```python
 @dataclass(frozen=True)
@@ -130,7 +137,8 @@ The engine knows nothing about claude or opencode — only the manifest does.
 
 This keeps agent-specific knowledge (manifest, transform, collection name,
 config surface, session wiring) in the agent package, and the reusable
-tar/encrypt/store/load/extract/GC engine in `optio-host`.
+tar/encrypt/store/load/extract/GC engine in `optio-agents` (driving the
+optio-host `Host` transport).
 
 ## Launch mode matrix (claudecode)
 
@@ -154,7 +162,20 @@ snapshotting; `on_seed_saved` gates seed capture.
 ```python
 seed_id: str | None = None                                          # consume (default/fallback)
 on_seed_saved: Callable[[str], Awaitable[None] | None] | None = None  # capture intent + checkpoint
+browser_capture: bool = False                                       # surface /login URL to operator's client
 ```
+
+**`browser_capture` opt-in (default off).** The seed *setup* session needs an
+interactive Claude Code `/login`, which opens a browser on the worker — unusable
+server-side / in a container. When `browser_capture` is True, `create_claudecode_task`
+calls `optio_agents.browser_capture.enable(host)` on the claude launch, which
+shims `$BROWSER` / `xdg-open` so the agent's browser-open attempt (the `/login`
+URL) surfaces to the operator via the client-directed-events channel rather than
+opening a dead browser on the worker. The **seed setup task enables this flag**
+(see "Demo usage"); ordinary seeded/resumed runs leave it off. This reuses the
+existing client-directed-events design — `browser_capture.enable` is not
+redesigned here, only opted into. opencode does **not** enable it (it keeps its
+own browser-open suppression).
 
 **seed_id is supplied via `config.seed_id`, baked at task-creation time.** The
 launch RPC (`launch(processId, resume)`) deliberately carries no per-launch
@@ -234,7 +255,7 @@ Failure semantics mirror snapshot capture (catch, log, don't propagate, don't
 block teardown — callback not fired on failure, so the app sees no seed):
 
 ```python
-seed_id = await optio_host.seeds.capture_seed(
+seed_id = await optio_agents.seeds.capture_seed(
     ctx, host,
     manifest=CLAUDE_SEED_MANIFEST,
     suffix=CLAUDE_SEED_SUFFIX,
@@ -250,7 +271,7 @@ On seeded-fresh, before launch, after the fresh workdir + HOME skeleton exist
 seed merge overlays them, so seed-provided env wins):
 
 ```python
-await optio_host.seeds.merge_seed(
+await optio_agents.seeds.merge_seed(
     ctx, host,
     seed_id=effective_seed_id,
     manifest=CLAUDE_SEED_MANIFEST,
@@ -277,10 +298,13 @@ with a logged warning.
 
 ## Vanilla session
 
-Fresh launch, no `seed_id`, typically `on_seed_saved` set: the bootstrap session.
-Claude starts blank; operator logs in / configures via the ttyd TUI; stops the
-task; `capture_seed` runs on teardown. No credentials need be planted; "Not
-logged in" is the expected starting state for this mode.
+Fresh launch, no `seed_id`, typically `on_seed_saved` set and `browser_capture`
+enabled: the bootstrap session. Claude starts blank; operator logs in /
+configures via the ttyd TUI; stops the task; `capture_seed` runs on teardown. No
+credentials need be planted; "Not logged in" is the expected starting state for
+this mode. Because `/login` opens a browser, this session sets
+`browser_capture=True` so the `/login` URL reaches the operator's real browser
+via the client-directed-events channel (`optio_agents.browser_capture.enable`).
 
 ## opencode parity
 
@@ -297,7 +321,7 @@ claudecode isolates `HOME=<workdir>/home`), **then** defining an opencode seed
 manifest and wiring `capture_seed`/`merge_seed`.
 
 Plan: **opencode adoption is the immediately following PR** — (1) HOME/XDG
-isolation, (2) seeding via the same `optio_host.seeds` engine with an
+isolation, (2) seeding via the same `optio_agents.seeds` engine with an
 `OPENCODE_SEED_MANIFEST` + `_opencode_seeds` suffix. This spec builds the engine
 generic specifically so that adoption is manifest + wiring, not a rewrite.
 
@@ -318,9 +342,10 @@ demo acting as "the app" that owns the human-facing mapping; optio's
 `{prefix}_claudecode_seeds` engine store holds the actual (encrypted) seed blob.
 
 **Setup task.** A static **"Setup Claude Code seed"** task — vanilla (no
-`seed_id`), `on_seed_saved` wired. The operator launches it, logs in / configures
-in the ttyd TUI, then stops it. On teardown the seed is captured and the
-callback fires.
+`seed_id`), `on_seed_saved` wired, and `browser_capture=True` so the interactive
+`/login` URL surfaces to the operator's browser via the client-directed-events
+channel. The operator launches it, logs in / configures in the ttyd TUI, then
+stops it. On teardown the seed is captured and the callback fires.
 
 **`on_seed_saved` callback (in the demo):**
 1. Compute `name = f"Config #{count + 1}"` where `count` is the current size of
@@ -356,9 +381,10 @@ observe a logged-in, configured, **fresh** session. Crypto hooks left None
 
 ## Testing
 
-`optio-host` tests (`packages/optio-host/tests/`):
+`optio-agents` tests (`packages/optio-agents/tests/`):
 - `test_seeds.py` — engine + Mongo helpers against a fake manifest + a
-  temp/local host: `insert_seed` returns hex; `load_seed` round-trips;
+  temp/local `Host` (from optio-host): `insert_seed` returns hex; `load_seed`
+  round-trips;
   `delete_seed` removes doc + returns blobId; `list_seeds` lists; `capture_seed`
   tars only `manifest.include` (asserts excluded paths absent); `merge_seed`
   extracts include paths and runs `consume_transform`; non-identity
@@ -384,19 +410,22 @@ map keyed to the run's cwd.
 
 ## File structure
 
-- Create `packages/optio-host/src/optio_host/seeds.py` — generic engine +
-  `SeedManifest` + Mongo helpers.
+- Create `packages/optio-agents/src/optio_agents/seeds.py` — generic engine +
+  `SeedManifest` + Mongo helpers (depends on the optio-host `Host` transport).
 - Modify `packages/optio-claudecode/src/optio_claudecode/`:
   - new `seed_manifest.py` (or in `seeds.py`) — `CLAUDE_SEED_MANIFEST`,
     `CLAUDE_SEED_SUFFIX`, `_rekey_claude_json_projects`, and the
     `delete_seed`/`list_seeds` ergonomic wrappers.
-  - `types.py` — add `seed_id`, `on_seed_saved`.
+  - `types.py` — add `seed_id`, `on_seed_saved`, `browser_capture`.
+  - `task.py` / `create_claudecode_task` — when `browser_capture` is set, call
+    `optio_agents.browser_capture.enable(host)` on the claude launch.
   - `session.py` — seed_id resolution, capture/merge wiring, seeded-fresh
     no-`--continue`, D3 safety.
 - Modify `packages/optio-demo/src/optio_demo/` — add the "Setup Claude Code seed"
-  task with the `on_seed_saved` callback (writes `{prefix}_demo_claude_seeds`,
-  calls `resync` in-process), and make the claudecode task-definition code emit
-  one seed-baked task per record in `{prefix}_demo_claude_seeds`.
+  task (vanilla, `browser_capture=True`) with the `on_seed_saved` callback (writes
+  `{prefix}_demo_claude_seeds`, calls `resync` in-process), and make the
+  claudecode task-definition code emit one seed-baked task per record in
+  `{prefix}_demo_claude_seeds`.
 
 ## Out of scope (deferred)
 
@@ -422,3 +451,14 @@ to reach the operator's real browser.
 optio-core/host 0.2.0). This branch has been rebased onto that work, so the seed
 lifecycle can now proceed end-to-end: `/login` URLs surface to the operator's
 browser via `BROWSER:`, after which seed capture/consume validates manually.
+
+The seed feature is otherwise already implemented on this branch; the remaining
+phase-3 implementation deltas are (1) moving the generic engine from optio-host
+to optio-agents (`optio_agents/seeds.py`), and (2) adding the `browser_capture`
+opt-in flag on the claudecode task factory (wired to
+`optio_agents.browser_capture.enable`, enabled by the seed setup task).
+
+After those land + manual validation, registering and releasing the new
+**optio-claudecode** package (currently unpublished) is a post-merge **release-ops**
+step — handled via the repo's release tooling like every other package, not an
+implementation-plan task.
