@@ -17,6 +17,12 @@ from optio_claudecode.types import (
     HookCallback,
     PermissionMode,
 )
+from optio_claudecode.seed_manifest import (
+    CLAUDE_SEED_MANIFEST,
+    CLAUDE_SEED_SUFFIX,
+    delete_seed,
+    list_seeds,
+)
 
 
 # asyncssh emits per-connection INFO lines that flood worker stdout
@@ -36,4 +42,8 @@ __all__ = [
     "HookContextProtocol",
     "HostCommandError",
     "RunResult",
+    "CLAUDE_SEED_MANIFEST",
+    "CLAUDE_SEED_SUFFIX",
+    "delete_seed",
+    "list_seeds",
 ]
