@@ -199,6 +199,7 @@ import logging as _logging
 import os
 import shlex
 import shutil
+import signal as _signal
 import time as _time
 
 _trace_logger = _logging.getLogger("optio_core.cancel_trace")
@@ -324,6 +325,11 @@ class LocalHost:
                 else asyncio.subprocess.PIPE
             ),
             limit=_SUBPROCESS_STREAM_LIMIT,
+            # Put the child in its own session/process group (pgid == its
+            # pid) so terminate_subprocess can kill the whole tree via
+            # killpg. Without this, killing the tracked /bin/sh pid orphans
+            # its children (e.g. ttyd, which then keeps claude alive).
+            start_new_session=True,
         )
 
         async def _stream(reader) -> AsyncIterator[bytes]:
@@ -362,30 +368,51 @@ class LocalHost:
             _trace("LocalHost.terminate: pid=%s already exited rc=%s",
                    proc.pid, proc.returncode)
             return
+        # The subprocess was launched with start_new_session=True, so its
+        # pgid == its pid. Signal the whole group (negative pid semantics
+        # via killpg) to reap forked children — e.g. ttyd, which otherwise
+        # survives a single-pid kill and keeps claude alive as an orphan.
         if aggressive:
-            _trace("LocalHost.terminate aggressive=True: SIGKILL pid=%s", proc.pid)
-            proc.kill()
+            _trace("LocalHost.terminate aggressive=True: SIGKILL group pgid=%s", proc.pid)
+            self._killpg(proc.pid, _signal.SIGKILL)
             try:
                 await asyncio.wait_for(proc.wait(), timeout=1.0)
-                _trace("LocalHost.terminate aggressive: reaped pid=%s rc=%s",
+                _trace("LocalHost.terminate aggressive: reaped pgid=%s rc=%s",
                        proc.pid, proc.returncode)
             except asyncio.TimeoutError:
-                _trace("LocalHost.terminate aggressive: reap TIMEOUT pid=%s", proc.pid)
+                _trace("LocalHost.terminate aggressive: reap TIMEOUT pgid=%s", proc.pid)
                 pass
             return
-        _trace("LocalHost.terminate aggressive=False: SIGTERM pid=%s", proc.pid)
-        proc.terminate()
+        _trace("LocalHost.terminate aggressive=False: SIGTERM group pgid=%s", proc.pid)
+        self._killpg(proc.pid, _signal.SIGTERM)
         try:
             await asyncio.wait_for(proc.wait(), timeout=5.0)
-            _trace("LocalHost.terminate: SIGTERM took effect pid=%s rc=%s",
+            _trace("LocalHost.terminate: SIGTERM took effect pgid=%s rc=%s",
                    proc.pid, proc.returncode)
         except asyncio.TimeoutError:
-            _trace("LocalHost.terminate: SIGTERM grace EXPIRED, escalating to SIGKILL pid=%s",
+            _trace("LocalHost.terminate: SIGTERM grace EXPIRED, escalating to SIGKILL pgid=%s",
                    proc.pid)
-            proc.kill()
+            self._killpg(proc.pid, _signal.SIGKILL)
             await proc.wait()
-            _trace("LocalHost.terminate: SIGKILL reaped pid=%s rc=%s",
+            _trace("LocalHost.terminate: SIGKILL reaped pgid=%s rc=%s",
                    proc.pid, proc.returncode)
+
+    @staticmethod
+    def _killpg(pgid: int, sig: int) -> None:
+        """Send ``sig`` to the process group ``pgid``; tolerate a group that
+        already exited (ProcessLookupError) or that we can't signal."""
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            _logging.getLogger(__name__).warning(
+                "killpg(%s, %s) denied; falling back to single pid", pgid, sig,
+            )
+            try:
+                os.kill(pgid, sig)
+            except ProcessLookupError:
+                pass
 
     async def run_command(
         self,
