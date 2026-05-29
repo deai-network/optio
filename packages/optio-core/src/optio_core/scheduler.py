@@ -7,6 +7,11 @@ from optio_core.models import TaskInstance, ProcessMetadataFilter, matches_filte
 
 logger = logging.getLogger("optio_core_core.scheduler")
 
+# APScheduler logs routine housekeeping ("Cleaned up expired job results and
+# finished schedules", etc.) at INFO, which floods consumer logs. Quiet it to
+# WARNING; mirrors how optio-claudecode quiets asyncssh.
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
+
 
 class ProcessScheduler:
     """Manages cron schedules for process execution.
@@ -39,7 +44,7 @@ class ProcessScheduler:
             self._scheduler = AsyncScheduler()
             await self._scheduler.__aenter__()
             await self._scheduler.start_in_background()
-            logger.info("Scheduler started")
+            logger.debug("Scheduler started")
         except Exception as e:
             logger.warning(f"Could not start scheduler: {e}")
             self._scheduler = None
@@ -51,7 +56,7 @@ class ProcessScheduler:
                 await self._scheduler.__aexit__(None, None, None)
             except Exception:
                 pass
-            logger.info("Scheduler stopped")
+            logger.debug("Scheduler stopped")
 
     async def sync_schedules(
         self,
@@ -105,6 +110,6 @@ class ProcessScheduler:
                     args=[task.process_id],
                 )
                 self._jobs[job_id] = task
-                logger.info(f"Scheduled {task.process_id}: {task.schedule}")
+                logger.debug(f"Scheduled {task.process_id}: {task.schedule}")
             except Exception as e:
                 logger.error(f"Failed to schedule {task.process_id}: {e}")
