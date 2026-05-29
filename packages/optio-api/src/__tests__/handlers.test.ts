@@ -141,7 +141,7 @@ describe('launchProcess — engine RPC', () => {
     const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'p', false);
     expect(result.status).toBe(200);
     expect(engine.launch).toHaveBeenCalledTimes(1);
-    expect(engine.launch).toHaveBeenCalledWith({ processId: 'p', resume: false });
+    expect(engine.launch).toHaveBeenCalledWith({ processId: 'p', resume: false, sessionId: null });
     expect((result as any).body._id).toBeDefined();
   });
 
@@ -149,7 +149,7 @@ describe('launchProcess — engine RPC', () => {
     const engine = makeMockEngine();
     const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, 'q', true);
     expect(result.status).toBe(200);
-    expect(engine.launch).toHaveBeenCalledWith({ processId: 'q', resume: true });
+    expect(engine.launch).toHaveBeenCalledWith({ processId: 'q', resume: true, sessionId: null });
   });
 
   it('409 not-launchable from engine: returns ok=false reason=not-launchable', async () => {
@@ -402,7 +402,7 @@ describe('dual-form id resolution (ObjectId hex OR processId string)', () => {
     };
     const result = await launchProcess(makeCtxWithMockEngine(db, engine), { prefix: PREFIX }, processIdString);
     expect(result.status).toBe(200);
-    expect(engine.launch).toHaveBeenCalledWith({ processId: processIdString, resume: false });
+    expect(engine.launch).toHaveBeenCalledWith({ processId: processIdString, resume: false, sessionId: null });
   });
 
   it('cancelProcess accepts the processId string form', async () => {

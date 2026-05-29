@@ -9,7 +9,7 @@ import type { MongoClient } from 'mongodb';
 import type { Redis } from 'ioredis';
 import * as handlers from '../handlers.js';
 import { findProcessByEitherId } from '../process-id-resolver.js';
-import { createListPoller, createTreePoller, createMultiTreePoller } from '../stream-poller.js';
+import { createListPoller, createTreePoller, createMultiTreePoller, createSessionEventsPoller } from '../stream-poller.js';
 import { discoverInstances } from '../discovery.js';
 import { resolveDb, type DbOptions } from '../resolve.js';
 import httpProxy from '@fastify/http-proxy';
@@ -426,7 +426,9 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       return { status: 200 as const, body: result };
     },
     launch: async ({ params, query, body }) => {
-      const result = await handlers.launchProcess(ctx, query, params.id, body?.resume === true);
+      const result = await handlers.launchProcess(
+        ctx, query, params.id, body?.resume === true, body?.sessionId ?? null,
+      );
       return result as any;
     },
     cancel: async ({ params, query }) => {
@@ -611,6 +613,48 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       sendEvent,
       onError: () => reply.raw.end(),
       metadataFilter: sseOpts.metadataFilter,
+    });
+
+    poller.start();
+    request.raw.on('close', () => poller.stop());
+  });
+
+  app.get('/api/session-events/stream', async (request: any, reply: any) => {
+    const rawQuery = (request.query as Record<string, unknown>) ?? {};
+    const sessionId = typeof rawQuery.sessionId === 'string' ? rawQuery.sessionId : '';
+    let sseOpts;
+    try {
+      sseOpts = parseSseOptions(rawQuery);
+    } catch (e) {
+      reply.code(400).send({ message: (e as Error).message });
+      return;
+    }
+    const { db, prefix } = resolveDb(dbOpts, sseOpts);
+
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    });
+
+    const sendEvent = (data: unknown) => {
+      reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    // No sessionId → match nothing (still keeps the connection open, emitting
+    // nothing). Single-operator deployments always get per-launch routing
+    // because the UI always sends its token.
+    if (!sessionId) {
+      request.raw.on('close', () => {});
+      return;
+    }
+
+    const poller = createSessionEventsPoller({
+      db,
+      prefix,
+      sessionId,
+      sendEvent,
+      onError: () => reply.raw.end(),
     });
 
     poller.start();

@@ -50,6 +50,10 @@ export const optioEngineContract = defineContract('optio-engine', {
     params: z.object({
       processId: ProcessIdParam,
       resume: z.boolean().optional(),
+      // Required (no `.optional()`) but nullable: every caller must
+      // consciously supply the initiating session token, or explicit null
+      // for unattended launches.
+      sessionId: z.string().nullable(),
     }),
     result: launchResult,
   }),

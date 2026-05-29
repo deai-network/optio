@@ -37,7 +37,7 @@ async def test_done_task_with_ttl_sets_expire_at_approximately(mongo_db):
     )
     try:
         before = datetime.now(timezone.utc)
-        await optio.launch("t1")
+        await optio.launch("t1", session_id=None)
         doc = await _wait_state(mongo_db, "test", "t1", "done")
         after = datetime.now(timezone.utc)
         assert "expireAt" in doc, f"expireAt missing on done: {doc!r}"
@@ -71,7 +71,7 @@ async def test_done_task_without_ttl_omits_expire_at(mongo_db):
         get_task_definitions=gen,
     )
     try:
-        await optio.launch("t1")
+        await optio.launch("t1", session_id=None)
         doc = await _wait_state(mongo_db, "test", "t1", "done")
         assert "expireAt" not in doc, f"expireAt should be absent: {doc!r}"
     finally:
@@ -95,7 +95,7 @@ async def test_failed_task_with_ttl_sets_expire_at(mongo_db):
         get_task_definitions=gen,
     )
     try:
-        await optio.launch("t1")
+        await optio.launch("t1", session_id=None)
         doc = await _wait_state(mongo_db, "test", "t1", "failed")
         assert "expireAt" in doc
     finally:
@@ -123,7 +123,7 @@ async def test_cancelled_task_with_ttl_sets_expire_at(mongo_db):
         get_task_definitions=gen, cancel_grace_seconds=2.0,
     )
     try:
-        await optio.launch("t1")
+        await optio.launch("t1", session_id=None)
         await asyncio.wait_for(started.wait(), timeout=2.0)
         await _wait_state(mongo_db, "test", "t1", "running")
         terminal = await optio.cancel_and_wait("t1")

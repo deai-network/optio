@@ -61,7 +61,7 @@ async def test_should_continue_true_inside_except_when_child_fails_in_group(mong
     optio._executor.register_tasks([parent_inst, fc_inst, sc_inst])
 
     try:
-        await asyncio.wait_for(optio.launch_and_wait("p_isct1"), timeout=10.0)
+        await asyncio.wait_for(optio.launch_and_wait("p_isct1", session_id=None), timeout=10.0)
     finally:
         await optio.shutdown(grace_seconds=0.5)
 
@@ -100,7 +100,7 @@ async def test_should_continue_false_when_parent_externally_cancelled(mongo_db):
     await upsert_process(mongo_db, prefix, parent_inst)
     optio._executor.register_tasks([parent_inst, a_inst, b_inst])
 
-    runner = asyncio.create_task(optio.launch_and_wait("p_isct2"))
+    runner = asyncio.create_task(optio.launch_and_wait("p_isct2", session_id=None))
     await parent_started.wait()
     await asyncio.sleep(0.05)
     await optio.cancel("p_isct2")
@@ -147,7 +147,7 @@ async def test_should_continue_false_when_child_cancelled_externally_no_survive(
     await upsert_process(mongo_db, prefix, parent_inst)
     optio._executor.register_tasks([parent_inst, a_inst, b_inst])
 
-    runner = asyncio.create_task(optio.launch_and_wait("p_isct3"))
+    runner = asyncio.create_task(optio.launch_and_wait("p_isct3", session_id=None))
     await a_running.wait()
     await b_running.wait()
     await asyncio.sleep(0.05)
@@ -192,7 +192,7 @@ async def test_parent_terminal_done_when_child_fails_and_parent_catches_returns(
     optio._executor.register_tasks([parent_inst, fc_inst, sc_inst])
 
     try:
-        await asyncio.wait_for(optio.launch_and_wait("p_t1"), timeout=10.0)
+        await asyncio.wait_for(optio.launch_and_wait("p_t1", session_id=None), timeout=10.0)
     finally:
         await optio.shutdown(grace_seconds=0.5)
 
@@ -231,7 +231,7 @@ async def test_parent_terminal_failed_when_child_fails_and_parent_reraises(mongo
     optio._executor.register_tasks([parent_inst, fc_inst, sc_inst])
 
     try:
-        await asyncio.wait_for(optio.launch_and_wait("p_t2"), timeout=10.0)
+        await asyncio.wait_for(optio.launch_and_wait("p_t2", session_id=None), timeout=10.0)
     finally:
         await optio.shutdown(grace_seconds=0.5)
 
@@ -275,7 +275,7 @@ async def test_parent_terminal_cancelled_when_child_cancel_cascades_and_parent_c
     await upsert_process(mongo_db, prefix, parent_inst)
     optio._executor.register_tasks([parent_inst, a_inst, b_inst])
 
-    runner = asyncio.create_task(optio.launch_and_wait("p_t3"))
+    runner = asyncio.create_task(optio.launch_and_wait("p_t3", session_id=None))
     await a_running.wait()
     await b_running.wait()
     await asyncio.sleep(0.05)
@@ -324,7 +324,7 @@ async def test_nongroup_run_child_failure_does_not_set_parent_flag(mongo_db):
     optio._executor.register_tasks([parent_inst, fc_inst, sc_inst])
 
     try:
-        await asyncio.wait_for(optio.launch_and_wait("p_ng1"), timeout=10.0)
+        await asyncio.wait_for(optio.launch_and_wait("p_ng1", session_id=None), timeout=10.0)
     finally:
         await optio.shutdown(grace_seconds=0.5)
 
@@ -359,7 +359,7 @@ async def test_nongroup_run_child_cancel_sets_parent_flag(mongo_db):
     await upsert_process(mongo_db, prefix, parent_inst)
     optio._executor.register_tasks([parent_inst, lc_inst])
 
-    runner = asyncio.create_task(optio.launch_and_wait("p_ng2"))
+    runner = asyncio.create_task(optio.launch_and_wait("p_ng2", session_id=None))
     await child_started.wait()
     await asyncio.sleep(0.05)
     await optio.cancel("nglc1")
@@ -415,7 +415,7 @@ async def test_mixed_breach_failure_dominates_cancel(mongo_db):
     await upsert_process(mongo_db, prefix, parent_inst)
     optio._executor.register_tasks([parent_inst, a_inst, b_inst, f_inst])
 
-    runner = asyncio.create_task(optio.launch_and_wait("p_mix"))
+    runner = asyncio.create_task(optio.launch_and_wait("p_mix", session_id=None))
     await a_running.wait()
     await b_running.wait()
     await asyncio.sleep(0.05)
@@ -469,7 +469,7 @@ async def test_excavator_reproducer_optio_row_correct(mongo_db):
     optio._executor.register_tasks([parent_inst, prod_inst, cons_inst])
 
     try:
-        await asyncio.wait_for(optio.launch_and_wait("exc_parent"), timeout=10.0)
+        await asyncio.wait_for(optio.launch_and_wait("exc_parent", session_id=None), timeout=10.0)
     finally:
         await optio.shutdown(grace_seconds=0.5)
 

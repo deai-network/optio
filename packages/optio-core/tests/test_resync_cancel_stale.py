@@ -37,7 +37,7 @@ async def test_resync_cancels_running_stale_task(mongo_db):
         get_task_definitions=gen, cancel_grace_seconds=2.0,
     )
     try:
-        await optio.launch("t1")
+        await optio.launch("t1", session_id=None)
         await asyncio.wait_for(started.wait(), timeout=2.0)
 
         # Snapshot the running asyncio task so we can confirm it terminated.
@@ -134,7 +134,7 @@ async def test_resync_cancel_grace_exceeded_proceeds_with_deletion(mongo_db):
         get_task_definitions=gen, cancel_grace_seconds=0.3,
     )
     try:
-        await optio.launch("t1")
+        await optio.launch("t1", session_id=None)
         await asyncio.wait_for(started.wait(), timeout=2.0)
 
         state["tasks"] = []
@@ -169,7 +169,7 @@ async def test_resync_does_not_cancel_non_stale_running_task(mongo_db):
         get_task_definitions=gen, cancel_grace_seconds=2.0,
     )
     try:
-        await optio.launch("t1")
+        await optio.launch("t1", session_id=None)
         await asyncio.wait_for(started.wait(), timeout=2.0)
 
         # Resync — same task list, t1 stays.

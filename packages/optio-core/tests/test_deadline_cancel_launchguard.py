@@ -72,7 +72,7 @@ async def test_child_launchblocked_propagates_and_parent_cancellable(mongo_db):
     try:
         # Launch the parent before registering the block so that
         # optio.launch itself is not rejected.
-        await optio.launch("p.parent")
+        await optio.launch("p.parent", session_id=None)
         await parent_started.wait()
 
         # Block launches whose metadata matches kind=parent — this is the
@@ -153,7 +153,7 @@ async def test_force_cancel_with_active_block_does_not_leak(mongo_db):
         await block_active.wait()
         assert len(optio._launch_blocks) == 1
 
-        await optio.launch("p.stub")
+        await optio.launch("p.stub", session_id=None)
         await started.wait()
 
         state = await optio.cancel_and_wait("p.stub")

@@ -3,6 +3,7 @@
 import re as _re
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from uuid import uuid4
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -430,3 +431,34 @@ async def clear_widget_data(
         {"_id": process_oid},
         {"$set": {"widgetData": None}},
     )
+
+
+async def append_browser_open_request(
+    db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId, url: str,
+) -> str:
+    """$push a {requestId, url} record onto browserOpenRequests; return requestId."""
+    request_id = uuid4().hex
+    await _collection(db, prefix).update_one(
+        {"_id": process_oid},
+        {"$push": {"browserOpenRequests": {"requestId": request_id, "url": url}}},
+    )
+    return request_id
+
+
+async def append_session_event(
+    db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId, event: dict,
+) -> str:
+    """$push a session event onto sessionEvents; return its requestId.
+
+    `event` is one of:
+      {"type": "attention", "reason": <str>}
+      {"type": "domain", "keyword": <str>, "data": <json>}
+    A fresh requestId is minted and merged into the stored record.
+    """
+    request_id = uuid4().hex
+    record = {"requestId": request_id, **event}
+    await _collection(db, prefix).update_one(
+        {"_id": process_oid},
+        {"$push": {"sessionEvents": record}},
+    )
+    return request_id

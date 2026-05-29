@@ -3,8 +3,9 @@
 from optio_agents.protocol.prompt import LOG_CHANNEL_PROMPT
 
 
-def test_block_documents_all_four_keywords():
-    for kw in ("STATUS:", "DELIVERABLE:", "DONE", "ERROR"):
+def test_block_documents_all_keywords():
+    for kw in ("STATUS:", "DELIVERABLE:", "DONE", "ERROR",
+               "BROWSER:", "ATTENTION:", "DOMAIN_MESSAGE:"):
         assert kw in LOG_CHANNEL_PROMPT
 
 

@@ -182,7 +182,7 @@ async def test_dismiss_ok_from_done(mongo_db):
 async def test_launch_not_found(mongo_db):
     fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="launchtest")
-    out = await fw.launch("nonexistent")
+    out = await fw.launch("nonexistent", session_id=None)
     assert out == LaunchOutcome(ok=False, reason="not-found")
 
 
@@ -197,7 +197,7 @@ async def test_launch_not_launchable_when_already_running(mongo_db):
         "status": {"state": "running"},
     })
 
-    out = await fw.launch("running1")
+    out = await fw.launch("running1", session_id=None)
     assert out == LaunchOutcome(ok=False, reason="not-launchable")
 
 
@@ -213,7 +213,7 @@ async def test_launch_no_resume_support(mongo_db):
         "supportsResume": False,
     })
 
-    out = await fw.launch("noresume1", resume=True)
+    out = await fw.launch("noresume1", resume=True, session_id=None)
     assert out == LaunchOutcome(ok=False, reason="no-resume-support")
 
 
@@ -231,7 +231,7 @@ async def test_launch_blocked_outcome(mongo_db):
     )
 
     async with fw.block_launches({"project": "p1"}):
-        out = await fw.launch("blocked1")
+        out = await fw.launch("blocked1", session_id=None)
 
     assert out == LaunchOutcome(ok=False, reason="launch-blocked")
 

@@ -201,7 +201,7 @@ async def test_widget_upstream_cleared_on_done(mongo_db):
     executor = Executor(mongo_db, "test", {})
     executor.register_tasks([task])
 
-    result = await executor.launch_process("t-done")
+    result = await executor.launch_process("t-done", session_id=None)
     assert result == "done"
 
     doc = await mongo_db["test_processes"].find_one({"processId": "t-done"})
@@ -219,7 +219,7 @@ async def test_widget_upstream_cleared_on_failed(mongo_db):
     executor = Executor(mongo_db, "test", {})
     executor.register_tasks([task])
 
-    result = await executor.launch_process("t-fail")
+    result = await executor.launch_process("t-fail", session_id=None)
     assert result == "failed"
 
     doc = await mongo_db["test_processes"].find_one({"processId": "t-fail"})
@@ -241,7 +241,7 @@ async def test_widget_upstream_cleared_on_cancelled(mongo_db):
     executor = Executor(mongo_db, "test", {})
     executor.register_tasks([task])
 
-    run = asyncio.create_task(executor.launch_process("t-cancel"))
+    run = asyncio.create_task(executor.launch_process("t-cancel", session_id=None))
     await started.wait()
     doc = await mongo_db["test_processes"].find_one({"processId": "t-cancel"})
     import time as _time

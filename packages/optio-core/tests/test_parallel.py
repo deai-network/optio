@@ -24,7 +24,7 @@ async def test_parallel_basic(mongo_db):
     executor = Executor(mongo_db, "test", {})
     executor.register_tasks([task])
 
-    result = await executor.launch_process("par")
+    result = await executor.launch_process("par", session_id=None)
     assert result == "done"
     starts = [x for x in order if x.startswith("start_")]
     assert len(starts) == 3
@@ -49,7 +49,7 @@ async def test_parallel_concurrency_limit(mongo_db):
     executor = Executor(mongo_db, "test", {})
     executor.register_tasks([task])
 
-    result = await executor.launch_process("lim")
+    result = await executor.launch_process("lim", session_id=None)
     assert result == "done"
     assert running["max"] <= 2
 
@@ -74,7 +74,7 @@ async def test_parallel_survive_failure(mongo_db):
     executor = Executor(mongo_db, "test", {})
     executor.register_tasks([task])
 
-    result = await executor.launch_process("surv")
+    result = await executor.launch_process("surv", session_id=None)
     assert result == "done"
 
 
@@ -91,5 +91,5 @@ async def test_parallel_failure_propagates(mongo_db):
     executor = Executor(mongo_db, "test", {})
     executor.register_tasks([task])
 
-    result = await executor.launch_process("prop")
+    result = await executor.launch_process("prop", session_id=None)
     assert result == "failed"

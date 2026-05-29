@@ -6,7 +6,8 @@ Consumers (e.g. optio-opencode) compose ``LOG_CHANNEL_PROMPT`` into their
 own AGENTS.md framing.
 
 Documents the keywords parsed by ``optio_agents.protocol.parser``:
-``STATUS:`` / ``DELIVERABLE:`` / ``DONE`` / ``ERROR``.
+``STATUS:`` / ``DELIVERABLE:`` / ``DONE`` / ``ERROR`` / ``BROWSER:`` /
+``ATTENTION:`` / ``DOMAIN_MESSAGE:``.
 """
 
 
@@ -23,6 +24,15 @@ must start with one of:
   summary on the same line: `DONE: wrote the report`.
 - `ERROR` — you cannot continue. May be followed by an optional
   message: `ERROR: provider auth failed`.
+- `BROWSER:` — ask the operator's browser to open a URL, e.g.
+  `BROWSER: https://example.com/login`. Use for flows that require the
+  human to visit a page (e.g. an auth/login URL).
+- `ATTENTION:` — request human attention with a short reason, e.g.
+  `ATTENTION: waiting for your approval`.
+- `DOMAIN_MESSAGE:` — push an application-specific message: a keyword
+  token followed by single-line JSON, e.g.
+  `DOMAIN_MESSAGE: build-finished {"artifact":"app.zip"}`. The JSON must
+  be valid and on one line; malformed JSON is dropped.
 
 **Every entry must end with a newline character (`\\n`).** The host
 reads `optio.log` with a line-oriented tailer that only emits a line

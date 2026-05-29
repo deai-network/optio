@@ -1,5 +1,6 @@
 import { createContext, useEffect, useRef, useState, useCallback, type ReactNode } from 'react';
 import { useOptioPrefix, useOptioBaseUrl, useOptioDatabase } from './useOptioContext.js';
+import { handleBrowserOpenRequests } from '../handlers/browserOpen.js';
 
 export interface MultiProcessUpdate {
   _id: string;
@@ -17,6 +18,7 @@ export interface MultiProcessUpdate {
   supportsResume?: boolean;
   hasSavedState?: boolean;
   metadata?: Record<string, unknown>;
+  browserOpenRequests?: { requestId: string; url: string }[];
 }
 
 export interface MultiLogEntry {
@@ -174,6 +176,7 @@ export function MultiProcessStreamProvider({
           setMissing(new Set(data.missing as string[]));
         } else if (data.type === 'update') {
           const procs: MultiProcessUpdate[] = data.processes;
+          for (const p of procs) handleBrowserOpenRequests(p.browserOpenRequests);
           // Capture treeIds/flatIds at the time this event fires (closure over the effect run)
           const currentTreeIds = Array.from(treeRefsRef.current.keys());
           const currentFlatIds = Array.from(flatRefsRef.current.keys());

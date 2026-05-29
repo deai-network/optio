@@ -28,6 +28,16 @@ export const LogEntrySchema = z.object({
   data: z.record(z.unknown()).optional(),
 });
 
+export const BrowserOpenRequestSchema = z.object({
+  requestId: z.string(),
+  url: z.string(),
+});
+
+export const SessionEventSchema = z.discriminatedUnion('type', [
+  z.object({ requestId: z.string(), type: z.literal('attention'), reason: z.string() }),
+  z.object({ requestId: z.string(), type: z.literal('domain'), keyword: z.string(), data: z.unknown() }),
+]);
+
 export const ProcessSchema = z.object({
   _id: ObjectIdSchema,
   processId: z.string(),
@@ -61,6 +71,11 @@ export const ProcessSchema = z.object({
   supportsResume: z.boolean().optional(),
   hasSavedState: z.boolean().optional(),
 
+  // Client-directed events (phase 2). Append-only; never GC'd.
+  browserOpenRequests: z.array(BrowserOpenRequestSchema).optional(),
+  sessionEvents: z.array(SessionEventSchema).optional(),
+  originatingSessionId: z.string().nullable().optional(),
+
   createdAt: DateSchema,
 });
 
@@ -83,3 +98,5 @@ export type Process = z.infer<typeof ProcessSchema>;
 export type ProcessState = z.infer<typeof ProcessStateSchema>;
 export type LogEntry = z.infer<typeof LogEntrySchema>;
 export type ProcessMetadataFilter = z.infer<typeof ProcessMetadataFilterSchema>;
+export type BrowserOpenRequest = z.infer<typeof BrowserOpenRequestSchema>;
+export type SessionEvent = z.infer<typeof SessionEventSchema>;

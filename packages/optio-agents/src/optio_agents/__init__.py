@@ -22,9 +22,11 @@ from optio_agents.protocol import (
     run_log_protocol_session,
     validate_deliverable_path,
 )
+from optio_agents import browser_capture
 
 __all__ = [
     "HookContext",
+    "browser_capture",
     "HookContextProtocol",
     "run_log_protocol_session",
     "fetch_deliverable_text",

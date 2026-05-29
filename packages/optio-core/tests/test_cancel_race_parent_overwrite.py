@@ -67,7 +67,7 @@ async def test_cancel_child_does_not_leave_parent_stuck_at_cancelling(mongo_db):
     await upsert_process(mongo_db, prefix, parent_inst)
     optio._executor.register_tasks([parent_inst, child_inst])
 
-    runner = asyncio.create_task(optio.launch_and_wait("race-parent"))
+    runner = asyncio.create_task(optio.launch_and_wait("race-parent", session_id=None))
     await child_started.wait()
     await asyncio.sleep(0.05)
 

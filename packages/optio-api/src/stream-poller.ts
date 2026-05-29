@@ -33,6 +33,7 @@ export function createListPoller(opts: StreamPollerOptions): ListPollerHandle {
           message: p.progress?.message,
           supportsResume: p.supportsResume ?? false,
           hasSavedState: p.hasSavedState ?? false,
+          browserOpenRequests: p.browserOpenRequests ?? [],
         })),
       );
 
@@ -53,6 +54,7 @@ export function createListPoller(opts: StreamPollerOptions): ListPollerHandle {
             depth: p.depth ?? 0,
             supportsResume: p.supportsResume ?? false,
             hasSavedState: p.hasSavedState ?? false,
+            browserOpenRequests: p.browserOpenRequests ?? [],
           })),
         });
       }
@@ -104,6 +106,7 @@ export function createTreePoller(opts: TreePollerOptions): ListPollerHandle {
           widgetData: p.widgetData, uiWidget: p.uiWidget,
           supportsResume: p.supportsResume ?? false,
           hasSavedState: p.hasSavedState ?? false,
+          browserOpenRequests: p.browserOpenRequests ?? [],
           metadata: p.metadata,
         })),
       );
@@ -126,6 +129,7 @@ export function createTreePoller(opts: TreePollerOptions): ListPollerHandle {
             uiWidget: p.uiWidget,
             supportsResume: p.supportsResume ?? false,
             hasSavedState: p.hasSavedState ?? false,
+            browserOpenRequests: p.browserOpenRequests ?? [],
             metadata: p.metadata,
           })),
         });
@@ -238,6 +242,7 @@ export function createMultiTreePoller(opts: MultiTreePollerOptions): ListPollerH
           widgetData: p.widgetData, uiWidget: p.uiWidget,
           supportsResume: p.supportsResume ?? false,
           hasSavedState: p.hasSavedState ?? false,
+          browserOpenRequests: p.browserOpenRequests ?? [],
           metadata: p.metadata,
         })),
       );
@@ -261,6 +266,7 @@ export function createMultiTreePoller(opts: MultiTreePollerOptions): ListPollerH
             uiWidget: p.uiWidget,
             supportsResume: p.supportsResume ?? false,
             hasSavedState: p.hasSavedState ?? false,
+            browserOpenRequests: p.browserOpenRequests ?? [],
             metadata: p.metadata,
           })),
         });
@@ -302,6 +308,64 @@ export function createMultiTreePoller(opts: MultiTreePollerOptions): ListPollerH
           (a: any, b: any) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
         );
         sendEvent({ type: 'log', entries: newLogEntries });
+      }
+    } catch {
+      stop();
+      onError();
+    }
+  }
+
+  function start() {
+    interval = setInterval(poll, 1000);
+  }
+
+  function stop() {
+    if (interval) {
+      clearInterval(interval);
+      interval = null;
+    }
+  }
+
+  return { start, stop };
+}
+
+export interface SessionEventsPollerOptions {
+  db: Db;
+  prefix: string;
+  sessionId: string;
+  sendEvent: (data: unknown) => void;
+  onError: () => void;
+}
+
+/**
+ * Poll-backed session-events feed. Each ~1s tick reads processes whose
+ * `originatingSessionId` matches `sessionId` and emits each process's NEW
+ * sessionEvents (deduped by length high-water mark per process). Read-only.
+ */
+export function createSessionEventsPoller(opts: SessionEventsPollerOptions): ListPollerHandle {
+  const { db, prefix, sessionId, sendEvent, onError } = opts;
+  const col = db.collection(`${prefix}_processes`);
+  let interval: ReturnType<typeof setInterval> | null = null;
+  const lastCounts = new Map<string, number>();
+
+  async function poll() {
+    try {
+      const procs = await col
+        .find({ originatingSessionId: sessionId })
+        .project({ sessionEvents: 1 })
+        .toArray();
+      for (const p of procs) {
+        const pid = p._id.toString();
+        const events = (p.sessionEvents ?? []) as any[];
+        const seen = lastCounts.get(pid) ?? 0;
+        if (events.length > seen) {
+          sendEvent({
+            type: 'session-events',
+            processId: pid,
+            events: events.slice(seen),
+          });
+          lastCounts.set(pid, events.length);
+        }
       }
     } catch {
       stop();

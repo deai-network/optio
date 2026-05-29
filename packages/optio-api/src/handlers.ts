@@ -258,9 +258,10 @@ export async function launchProcess(
   query: { database?: string; prefix?: string },
   id: string,
   resume: boolean = false,
+  sessionId: string | null = null,
 ): Promise<LaunchCommandResult> {
   const engine = resolveOptioEngine(ctx, query);
-  const result = await engine.launch({ processId: id, resume });
+  const result = await engine.launch({ processId: id, resume, sessionId });
   if (result.ok) return { status: 200, body: toResponse(result.process) };
   return launchFail(result.reason);
 }

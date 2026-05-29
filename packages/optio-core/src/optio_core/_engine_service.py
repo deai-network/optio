@@ -30,7 +30,7 @@ _PROCESS_WIRE_KEYS = frozenset({
     "_id", "processId", "name", "params", "metadata", "parentId", "rootId",
     "depth", "order", "cancellable", "special", "warning", "description",
     "status", "progress", "log", "uiWidget", "widgetData", "supportsResume",
-    "hasSavedState", "createdAt",
+    "hasSavedState", "createdAt", "browserOpenRequests", "sessionEvents",
 })
 
 
@@ -76,6 +76,7 @@ class OptioEngineService(OptioEngineServiceBase):
     async def launch(self, params: LaunchParams) -> LaunchResult:
         outcome = await self._optio.launch(
             params.process_id, resume=bool(params.resume),
+            session_id=params.session_id,
         )
         if not outcome.ok:
             return LaunchResult.model_validate(

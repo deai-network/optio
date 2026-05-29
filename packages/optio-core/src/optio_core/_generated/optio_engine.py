@@ -87,6 +87,33 @@ class LogItem(BaseModel):
     data: dict[str, Any] | None = None
 
 
+class BrowserOpenRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    request_id: str = Field(..., alias="requestId")
+    url: str
+
+
+class SessionEvents(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    request_id: str = Field(..., alias="requestId")
+    type: Literal["attention"]
+    reason: str
+
+
+class SessionEvents1(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    request_id: str = Field(..., alias="requestId")
+    type: Literal["domain"]
+    keyword: str
+    data: Any | None = None
+
+
 class Process(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -111,6 +138,13 @@ class Process(BaseModel):
     widget_data: Any | None = Field(None, alias="widgetData")
     supports_resume: bool | None = Field(None, alias="supportsResume")
     has_saved_state: bool | None = Field(None, alias="hasSavedState")
+    browser_open_requests: list[BrowserOpenRequest] | None = Field(
+        None, alias="browserOpenRequests"
+    )
+    session_events: list[SessionEvents | SessionEvents1] | None = Field(
+        None, alias="sessionEvents"
+    )
+    originating_session_id: str | None = Field(None, alias="originatingSessionId")
     created_at: AwareDatetime = Field(..., alias="createdAt")
 
 
@@ -142,6 +176,14 @@ class Progress1(Progress):
     pass
 
 
+class SessionEvents2(SessionEvents):
+    pass
+
+
+class SessionEvents3(SessionEvents1):
+    pass
+
+
 class Process1(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -166,6 +208,13 @@ class Process1(BaseModel):
     widget_data: Any | None = Field(None, alias="widgetData")
     supports_resume: bool | None = Field(None, alias="supportsResume")
     has_saved_state: bool | None = Field(None, alias="hasSavedState")
+    browser_open_requests: list[BrowserOpenRequest] | None = Field(
+        None, alias="browserOpenRequests"
+    )
+    session_events: list[SessionEvents2 | SessionEvents3] | None = Field(
+        None, alias="sessionEvents"
+    )
+    originating_session_id: str | None = Field(None, alias="originatingSessionId")
     created_at: AwareDatetime = Field(..., alias="createdAt")
 
 
@@ -243,9 +292,18 @@ class LaunchParams(BaseModel):
     )
     process_id: str = Field(..., alias="processId", min_length=1)
     resume: bool | None = None
+    session_id: str | None = Field(..., alias="sessionId")
 
 
 class Progress2(Progress):
+    pass
+
+
+class SessionEvents4(SessionEvents):
+    pass
+
+
+class SessionEvents5(SessionEvents1):
     pass
 
 
@@ -273,6 +331,13 @@ class Process2(BaseModel):
     widget_data: Any | None = Field(None, alias="widgetData")
     supports_resume: bool | None = Field(None, alias="supportsResume")
     has_saved_state: bool | None = Field(None, alias="hasSavedState")
+    browser_open_requests: list[BrowserOpenRequest] | None = Field(
+        None, alias="browserOpenRequests"
+    )
+    session_events: list[SessionEvents4 | SessionEvents5] | None = Field(
+        None, alias="sessionEvents"
+    )
+    originating_session_id: str | None = Field(None, alias="originatingSessionId")
     created_at: AwareDatetime = Field(..., alias="createdAt")
 
 

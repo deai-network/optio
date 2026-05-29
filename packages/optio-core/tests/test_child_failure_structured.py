@@ -114,7 +114,7 @@ async def test_run_child_raises_child_process_failed_with_original(mongo_db):
     executor = Executor(mongo_db, "test_cpf", {})
     executor.register_tasks([parent_inst, child_inst])
 
-    result = await executor.launch_process("parent-cpf")
+    result = await executor.launch_process("parent-cpf", session_id=None)
     assert result == "done"
     assert caught["name"] == "Failing Child"
     assert caught["process_id"] == "failing-child-1"
@@ -147,7 +147,7 @@ async def test_child_process_failed_cause_chain_is_original(mongo_db):
     await upsert_process(mongo_db, "test_cc", parent_inst)
     executor = Executor(mongo_db, "test_cc", {})
     executor.register_tasks([parent_inst, child_inst])
-    await executor.launch_process("parent-cc")
+    await executor.launch_process("parent-cc", session_id=None)
 
     e = caught_cpf["e"]
     assert e.__cause__ is e.original
@@ -178,7 +178,7 @@ async def test_run_child_survive_failure_returns_outcome_with_original(mongo_db)
     await upsert_process(mongo_db, "test_sf", parent_inst)
     executor = Executor(mongo_db, "test_sf", {})
     executor.register_tasks([parent_inst, child_inst])
-    result = await executor.launch_process("parent-sf")
+    result = await executor.launch_process("parent-sf", session_id=None)
 
     assert result == "done"
     o = outcomes["o"]
@@ -203,7 +203,7 @@ async def test_run_child_done_outcome_is_none(mongo_db):
     await upsert_process(mongo_db, "test_ok", parent_inst)
     executor = Executor(mongo_db, "test_ok", {})
     executor.register_tasks([parent_inst, child_inst])
-    await executor.launch_process("parent-ok")
+    await executor.launch_process("parent-ok", session_id=None)
 
     o = outcomes["o"]
     assert o.state == "done"
@@ -229,7 +229,7 @@ async def test_run_child_refused_outcome_is_cancelled_no_exception(mongo_db):
     await upsert_process(mongo_db, "test_ref", parent_inst)
     executor = Executor(mongo_db, "test_ref", {})
     executor.register_tasks([parent_inst, child_inst])
-    await executor.launch_process("parent-ref")
+    await executor.launch_process("parent-ref", session_id=None)
 
     o = outcomes["o"]
     assert o.state == "cancelled"
@@ -257,7 +257,7 @@ async def test_no_execute_fn_synthesizes_runtimeerror_as_original(mongo_db):
     await upsert_process(mongo_db, "test_miss", parent_inst)
     executor = Executor(mongo_db, "test_miss", {})
     executor.register_tasks([parent_inst])
-    await executor.launch_process("p-miss")
+    await executor.launch_process("p-miss", session_id=None)
 
     e = caught["e"]
     assert e.name == "Missing"
@@ -288,7 +288,7 @@ async def test_parallel_group_results_carry_originals(mongo_db):
     await upsert_process(mongo_db, "test_pgr", parent_inst)
     executor = Executor(mongo_db, "test_pgr", {})
     executor.register_tasks([parent_inst, a_inst, b_inst])
-    await executor.launch_process("pgr")
+    await executor.launch_process("pgr", session_id=None)
 
     results = captured_results["r"]
     assert len(results) == 2
@@ -327,7 +327,7 @@ async def test_parallel_group_raises_exception_group_with_per_child_wrappers(mon
     await upsert_process(mongo_db, "test_peg", parent_inst)
     executor = Executor(mongo_db, "test_peg", {})
     executor.register_tasks([parent_inst, a_inst, b_inst])
-    await executor.launch_process("peg")
+    await executor.launch_process("peg", session_id=None)
 
     matched = caught_eg.get("matched", [])
     assert len(matched) == 2
@@ -380,7 +380,7 @@ async def test_parallel_group_mixed_cancel_and_fail_synthesizes_for_cancelled(mo
     optio._executor.register_tasks([parent_inst, a_inst, b_inst])
 
     try:
-        await asyncio.wait_for(optio.launch_and_wait("pmfx"), timeout=10.0)
+        await asyncio.wait_for(optio.launch_and_wait("pmfx", session_id=None), timeout=10.0)
     finally:
         await optio.shutdown(grace_seconds=0.5)
 

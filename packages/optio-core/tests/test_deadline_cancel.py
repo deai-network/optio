@@ -48,7 +48,7 @@ async def test_executor_tracks_running_task_and_cancel_entry(mongo_db):
     executor = Executor(mongo_db, prefix, services={})
     executor.register_tasks([task_inst])
 
-    runner = asyncio.create_task(executor.launch_process("p.hold"))
+    runner = asyncio.create_task(executor.launch_process("p.hold", session_id=None))
     await started.wait()
 
     # Find the oid via the registry's only entry.
@@ -171,7 +171,7 @@ async def test_force_cancel_writes_failed_state_for_stubborn_task(mongo_db):
     executor = Executor(mongo_db, prefix, services={})
     executor.register_tasks([task_inst])
 
-    runner = asyncio.create_task(executor.launch_process("p.stub"))
+    runner = asyncio.create_task(executor.launch_process("p.stub", session_id=None))
     await started.wait()
 
     oid = next(iter(executor._running_tasks))
@@ -216,7 +216,7 @@ async def test_supervisor_force_cancels_past_deadline_entries(mongo_db):
     )
     run_task = asyncio.create_task(optio.run())
     try:
-        await optio.launch("p.supv")
+        await optio.launch("p.supv", session_id=None)
         await started.wait()
         # Capture the inner asyncio.Task before force-cancel pops the registry.
         inner_oid = next(iter(optio._executor._running_tasks))
@@ -274,7 +274,7 @@ async def test_cancel_and_wait_cooperative(mongo_db):
     )
     run_task = asyncio.create_task(optio.run())
     try:
-        await optio.launch("p.coop")
+        await optio.launch("p.coop", session_id=None)
         await asyncio.sleep(0.2)  # let it transition to running
         state = await optio.cancel_and_wait("p.coop")
         assert state == "cancelled"
@@ -311,7 +311,7 @@ async def test_cancel_and_wait_stubborn_returns_failed(mongo_db):
     )
     run_task = asyncio.create_task(optio.run())
     try:
-        await optio.launch("p.stub")
+        await optio.launch("p.stub", session_id=None)
         await asyncio.sleep(0.2)
         state = await optio.cancel_and_wait("p.stub")
         assert state == "failed"
@@ -354,7 +354,7 @@ async def test_cancel_and_wait_short_circuits_for_already_terminal(mongo_db):
     )
     run_task = asyncio.create_task(optio.run())
     try:
-        await optio.launch_and_wait("p.quick")
+        await optio.launch_and_wait("p.quick", session_id=None)
         state = await optio.cancel_and_wait("p.quick")
         assert state == "done"
     finally:
@@ -397,7 +397,7 @@ async def test_cancel_and_wait_raises_timeout_when_force_cancel_neutered(mongo_d
 
     run_task = asyncio.create_task(optio.run())
     try:
-        await optio.launch("p.stub")
+        await optio.launch("p.stub", session_id=None)
         await asyncio.sleep(0.2)
         with pytest.raises(asyncio.TimeoutError):
             await optio.cancel_and_wait("p.stub")
@@ -437,7 +437,7 @@ async def test_handle_cancel_records_deadline_on_running_process(mongo_db):
     )
     run_task = asyncio.create_task(optio.run())
     try:
-        await optio.launch("p.hold")
+        await optio.launch("p.hold", session_id=None)
         await started.wait()
 
         before = _time.monotonic()
@@ -491,8 +491,8 @@ async def test_shutdown_finalizes_mixed_cooperative_and_stubborn_tasks(mongo_db)
     )
     run_task = asyncio.create_task(optio.run())
     try:
-        await optio.launch("p.coop")
-        await optio.launch("p.stub")
+        await optio.launch("p.coop", session_id=None)
+        await optio.launch("p.stub", session_id=None)
         await asyncio.sleep(0.3)
 
         await optio.shutdown()
@@ -534,7 +534,7 @@ async def test_shutdown_grace_seconds_override_honoured(mongo_db):
     )
     run_task = asyncio.create_task(optio.run())
     try:
-        await optio.launch("p.stub")
+        await optio.launch("p.stub", session_id=None)
         await asyncio.sleep(0.3)
 
         # Even though the config grace is 10s, override to 0.3s.
@@ -579,7 +579,7 @@ async def test_re_entry_idempotency_does_not_refresh_deadline(mongo_db):
     )
     run_task = asyncio.create_task(optio.run())
     try:
-        await optio.launch("p.stub")
+        await optio.launch("p.stub", session_id=None)
         await asyncio.sleep(0.2)
 
         await optio.cancel("p.stub")
@@ -644,7 +644,7 @@ async def test_to_thread_blocked_task_reaches_failed_state(mongo_db):
     )
     run_task = asyncio.create_task(optio.run())
     try:
-        await optio.launch("p.thr")
+        await optio.launch("p.thr", session_id=None)
         await asyncio.sleep(0.2)
 
         await optio.cancel("p.thr")

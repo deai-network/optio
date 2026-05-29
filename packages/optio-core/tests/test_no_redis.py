@@ -64,12 +64,12 @@ async def _get_tasks(services, metadata_filter=None):
 
 @pytest.mark.asyncio
 async def test_launch_and_wait(mongo_db):
-    """launch_and_wait() runs process to completion."""
+    """launch_and_wait(session_id=None) runs process to completion."""
     fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="test_direct",
                   get_task_definitions=_get_tasks)
 
-    await fw.launch_and_wait("test_task")
+    await fw.launch_and_wait("test_task", session_id=None)
 
     proc = await get_process_by_process_id(mongo_db, "test_direct", "test_task")
     assert proc["status"]["state"] == "done"
@@ -77,12 +77,12 @@ async def test_launch_and_wait(mongo_db):
 
 @pytest.mark.asyncio
 async def test_launch_fire_and_forget(mongo_db):
-    """launch() returns immediately, process runs in background."""
+    """launch(session_id=None) returns immediately, process runs in background."""
     fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="test_fire",
                   get_task_definitions=_get_tasks)
 
-    await fw.launch("slow_task")
+    await fw.launch("slow_task", session_id=None)
 
     # Give the background task a moment to start
     await asyncio.sleep(0.1)
@@ -103,7 +103,7 @@ async def test_cancel(mongo_db):
     await fw.init(mongo_db=mongo_db, prefix="test_cancel_direct",
                   get_task_definitions=_get_tasks)
 
-    await fw.launch("slow_task")
+    await fw.launch("slow_task", session_id=None)
     await asyncio.sleep(0.1)
 
     await fw.cancel("slow_task")
@@ -120,7 +120,7 @@ async def test_dismiss(mongo_db):
     await fw.init(mongo_db=mongo_db, prefix="test_dismiss_direct",
                   get_task_definitions=_get_tasks)
 
-    await fw.launch_and_wait("test_task")
+    await fw.launch_and_wait("test_task", session_id=None)
     proc = await get_process_by_process_id(mongo_db, "test_dismiss_direct", "test_task")
     assert proc["status"]["state"] == "done"
 
@@ -198,7 +198,7 @@ async def test_list_processes_filter_state(mongo_db):
     procs = await fw.list_processes(state="running")
     assert len(procs) == 0
 
-    await fw.launch_and_wait("test_task")
+    await fw.launch_and_wait("test_task", session_id=None)
     procs = await fw.list_processes(state="done")
     assert len(procs) == 1
     assert procs[0]["processId"] == "test_task"

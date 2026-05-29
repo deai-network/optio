@@ -109,7 +109,10 @@ export const processesContract = c.router({
     path: '/processes/:id/launch',
     pathParams: z.object({ id: ProcessIdParamSchema }),
     query: InstanceQuerySchema,
-    body: z.object({ resume: z.boolean().optional() }).optional(),
+    body: z.object({
+      resume: z.boolean().optional(),
+      sessionId: z.string().nullable().optional(),
+    }).optional(),
     responses: {
       200: ProcessSchema,
       404: LaunchErrorBody,

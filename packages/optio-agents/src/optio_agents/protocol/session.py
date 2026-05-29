@@ -25,7 +25,10 @@ from typing import TYPE_CHECKING, Awaitable, Callable
 from optio_agents.context import HookContext
 from optio_host.host import Host
 from optio_agents.protocol.parser import (
+    AttentionEvent,
+    BrowserEvent,
     DeliverableEvent,
+    DomainMessageEvent,
     DoneEvent,
     ErrorEvent,
     LogEvent,
@@ -258,6 +261,12 @@ async def _tail_and_dispatch(
                 deliverable_queue.put_nowait(item)
             except asyncio.QueueFull:
                 await deliverable_queue.put(item)
+        elif isinstance(ev, BrowserEvent):
+            await ctx.request_browser_open(ev.url)
+        elif isinstance(ev, AttentionEvent):
+            await ctx.need_attention(ev.reason)
+        elif isinstance(ev, DomainMessageEvent):
+            await ctx.domain_message(ev.keyword, ev.data)
         elif isinstance(ev, DoneEvent):
             if ev.summary:
                 ctx.report_progress(None, ev.summary)

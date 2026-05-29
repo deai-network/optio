@@ -7,6 +7,7 @@ unchanged after the optio-host split).
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass
@@ -35,17 +36,39 @@ class ErrorEvent:
 
 
 @dataclass(frozen=True)
+class BrowserEvent:
+    url: str
+
+
+@dataclass(frozen=True)
+class AttentionEvent:
+    reason: str
+
+
+@dataclass(frozen=True)
+class DomainMessageEvent:
+    keyword: str
+    data: object
+
+
+@dataclass(frozen=True)
 class UnknownLine:
     text: str
 
 
-LogEvent = Union[StatusEvent, DeliverableEvent, DoneEvent, ErrorEvent, UnknownLine]
+LogEvent = Union[
+    StatusEvent, DeliverableEvent, DoneEvent, ErrorEvent,
+    BrowserEvent, AttentionEvent, DomainMessageEvent, UnknownLine,
+]
 
 
 _RE_STATUS = re.compile(r"^STATUS:\s*(?:(\d{1,3})%\s+)?(.*)$")
 _RE_DELIVERABLE = re.compile(r"^DELIVERABLE:\s*(.+?)\s*$")
 _RE_DONE = re.compile(r"^DONE(?::\s*(.*))?\s*$")
 _RE_ERROR = re.compile(r"^ERROR(?::\s*(.*))?\s*$")
+_RE_BROWSER = re.compile(r"^BROWSER:\s*(.+?)\s*$")
+_RE_ATTENTION = re.compile(r"^ATTENTION:\s*(.+?)\s*$")
+_RE_DOMAIN_MESSAGE = re.compile(r"^DOMAIN_MESSAGE:\s*(\S+)\s+(.*)$")
 
 
 def parse_log_line(line: str) -> LogEvent:
@@ -74,6 +97,25 @@ def parse_log_line(line: str) -> LogEvent:
     if m:
         msg = m.group(1) if m.group(1) else None
         return ErrorEvent(message=msg)
+
+    m = _RE_BROWSER.match(stripped)
+    if m:
+        return BrowserEvent(url=m.group(1))
+
+    m = _RE_ATTENTION.match(stripped)
+    if m:
+        return AttentionEvent(reason=m.group(1))
+
+    m = _RE_DOMAIN_MESSAGE.match(stripped)
+    if m:
+        keyword, payload = m.group(1), m.group(2)
+        try:
+            data = json.loads(payload)
+        except (ValueError, json.JSONDecodeError):
+            # Malformed JSON: drop (not dispatched). Surfaced as UnknownLine
+            # so the tail loop logs the raw line for diagnosis.
+            return UnknownLine(text=stripped)
+        return DomainMessageEvent(keyword=keyword, data=data)
 
     return UnknownLine(text=stripped)
 

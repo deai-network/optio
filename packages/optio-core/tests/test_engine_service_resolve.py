@@ -230,10 +230,10 @@ async def test_launch_accepts_object_id_hex_form():
     scheduled = {**proc, "status": {"state": "scheduled"}}
     svc._optio.launch = AsyncMock(return_value=LaunchOutcome(ok=True, proc=scheduled))
 
-    result = await svc.launch(LaunchParams.model_validate({"processId": str(proc["_id"])}))
+    result = await svc.launch(LaunchParams.model_validate({"processId": str(proc["_id"]), "sessionId": None}))
 
     assert result.root.ok is True
-    svc._optio.launch.assert_awaited_once_with(str(proc["_id"]), resume=False)
+    svc._optio.launch.assert_awaited_once_with(str(proc["_id"]), resume=False, session_id=None)
 
 
 @pytest.mark.asyncio
@@ -246,7 +246,7 @@ async def test_launch_accepts_process_id_string_form():
     scheduled = {**proc, "status": {"state": "scheduled"}}
     svc._optio.launch = AsyncMock(return_value=LaunchOutcome(ok=True, proc=scheduled))
 
-    result = await svc.launch(LaunchParams.model_validate({"processId": "launch-by-pid"}))
+    result = await svc.launch(LaunchParams.model_validate({"processId": "launch-by-pid", "sessionId": None}))
 
     assert result.root.ok is True
-    svc._optio.launch.assert_awaited_once_with("launch-by-pid", resume=False)
+    svc._optio.launch.assert_awaited_once_with("launch-by-pid", resume=False, session_id=None)

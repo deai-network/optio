@@ -29,6 +29,7 @@ from optio_core.store import (
     update_status, clear_result_fields,
     create_child_process, append_log,
     clear_widget_upstream, compute_expire_at,
+    _collection,
 )
 from optio_core.context import ProcessContext
 from optio_core.exceptions import ChildProcessFailed
@@ -101,7 +102,9 @@ class Executor:
             await delete_process(self._db, self._prefix, str(proc["_id"]))
             self._task_registry.pop(proc["processId"], None)
 
-    async def launch_process(self, process_id: str, resume: bool = False) -> str | None:
+    async def launch_process(
+        self, process_id: str, resume: bool = False, *, session_id: str | None,
+    ) -> str | None:
         """Launch a top-level process by processId OR OID hex (dual-form).
 
         If resume is True, ctx.resume will be True inside the execute function,
@@ -127,6 +130,7 @@ class Executor:
         task = self._task_registry.get(proc["processId"])
         state, _ = await self._execute_process(
             proc, task.execute if task else None, resume=resume,
+            session_id=session_id,
         )
         return state
 
@@ -134,6 +138,7 @@ class Executor:
         self, proc: dict, execute_fn: Callable | None,
         parent_ctx: ProcessContext | None = None,
         resume: bool = False,
+        *, session_id: str | None = None,
     ) -> tuple[str, BaseException | None]:
         """Execute a process."""
         oid = proc["_id"]
@@ -159,6 +164,14 @@ class Executor:
             )
             await append_log(self._db, self._prefix, oid, "event", "State changed to running")
 
+            effective_session_id = (
+                parent_ctx.session_id if parent_ctx is not None else session_id
+            )
+            await _collection(self._db, self._prefix).update_one(
+                {"_id": oid},
+                {"$set": {"originatingSessionId": effective_session_id}},
+            )
+
             ctx = ProcessContext(
                 process_oid=oid,
                 process_id=proc["processId"],
@@ -172,6 +185,7 @@ class Executor:
                 cancellation_flag=cancel_flag,
                 child_counter={"next": 0},
                 resume=resume,
+                session_id=effective_session_id,
             )
             ctx._executor = self
 

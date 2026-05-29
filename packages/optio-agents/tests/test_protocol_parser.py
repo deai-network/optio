@@ -1,7 +1,10 @@
 import pytest
 
 from optio_agents.protocol.parser import (
+    AttentionEvent,
+    BrowserEvent,
     DeliverableEvent,
+    DomainMessageEvent,
     DoneEvent,
     ErrorEvent,
     StatusEvent,
@@ -175,3 +178,35 @@ def test_relativize_deliverables_root_itself_rejected(tmp_workdir):
 def test_relativize_outside_workdir_rejected(tmp_workdir):
     with pytest.raises(ValueError):
         relativize_deliverable_path("/etc/passwd", tmp_workdir)
+
+
+# ---- BROWSER / ATTENTION / DOMAIN_MESSAGE ----
+
+def test_browser_event():
+    ev = parse_log_line('BROWSER: "https://example.com/login"')
+    assert isinstance(ev, BrowserEvent)
+    assert ev.url == '"https://example.com/login"'
+
+
+def test_browser_event_unquoted():
+    ev = parse_log_line("BROWSER: https://example.com")
+    assert isinstance(ev, BrowserEvent)
+    assert ev.url == "https://example.com"
+
+
+def test_attention_event():
+    ev = parse_log_line("ATTENTION: please approve")
+    assert isinstance(ev, AttentionEvent)
+    assert ev.reason == "please approve"
+
+
+def test_domain_message_event():
+    ev = parse_log_line('DOMAIN_MESSAGE: build-done {"artifact": "app.zip"}')
+    assert isinstance(ev, DomainMessageEvent)
+    assert ev.keyword == "build-done"
+    assert ev.data == {"artifact": "app.zip"}
+
+
+def test_domain_message_malformed_json_drops_to_unknown():
+    ev = parse_log_line("DOMAIN_MESSAGE: k {not valid json}")
+    assert isinstance(ev, UnknownLine)

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, useContext } from 'react';
 import { useOptioPrefix, useOptioBaseUrl, useOptioDatabase } from '../context/useOptioContext.js';
 import { MultiProcessStreamContext } from '../context/MultiProcessStreamContext.js';
+import { handleBrowserOpenRequests } from '../handlers/browserOpen.js';
 
 interface ProcessUpdate {
   _id: string;
@@ -14,6 +15,7 @@ interface ProcessUpdate {
   /** Free-form per-task metadata (kept opaque by optio-ui). Backend SSE
    *  whitelist carries this verbatim; callers cast / read by convention. */
   metadata?: Record<string, unknown>;
+  browserOpenRequests?: { requestId: string; url: string }[];
 }
 
 export interface ProcessTreeNode extends ProcessUpdate {
@@ -128,7 +130,10 @@ export function useProcessStream(processId: string | undefined, maxDepth = 10): 
       es.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          if (data.type === 'update') setState((s) => ({ ...s, processes: data.processes }));
+          if (data.type === 'update') {
+            for (const p of data.processes) handleBrowserOpenRequests(p.browserOpenRequests);
+            setState((s) => ({ ...s, processes: data.processes }));
+          }
           else if (data.type === 'log-clear') setState((s) => ({ ...s, logs: [] }));
           else if (data.type === 'log') setState((s) => ({ ...s, logs: [...s.logs, ...data.entries] }));
         } catch { /* ignore */ }

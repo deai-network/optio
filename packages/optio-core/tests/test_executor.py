@@ -19,7 +19,7 @@ async def test_launch_basic_process(mongo_db):
     executor = Executor(mongo_db, "test", {})
     executor.register_tasks([task])
 
-    result = await executor.launch_process("basic")
+    result = await executor.launch_process("basic", session_id=None)
     assert result == "done"
 
     proc = await get_process_by_process_id(mongo_db, "test", "basic")
@@ -38,7 +38,7 @@ async def test_launch_failing_process(mongo_db):
     executor = Executor(mongo_db, "test", {})
     executor.register_tasks([task])
 
-    result = await executor.launch_process("fail")
+    result = await executor.launch_process("fail", session_id=None)
     assert result == "failed"
 
     proc = await get_process_by_process_id(mongo_db, "test", "fail")
@@ -66,7 +66,7 @@ async def test_cooperative_cancellation(mongo_db):
         executor.request_cancel_with_deadline(proc["_id"], deadline=_time.monotonic() + 60.0)
 
     result, _ = await asyncio.gather(
-        executor.launch_process("cancel_me"),
+        executor.launch_process("cancel_me", session_id=None),
         cancel_after_delay(),
     )
     assert result == "cancelled"
@@ -92,7 +92,7 @@ async def test_sequential_child_execution(mongo_db):
     executor = Executor(mongo_db, "test", {})
     executor.register_tasks([task])
 
-    result = await executor.launch_process("parent")
+    result = await executor.launch_process("parent", session_id=None)
     assert result == "done"
     assert results == ["child_1", "child_2"]
 
@@ -145,7 +145,7 @@ async def test_run_child_task_unpacks_task_instance(mongo_db):
     executor = Executor(mongo_db, "test", {})
     executor.register_tasks([task])
 
-    result = await executor.launch_process("parent_rct")
+    result = await executor.launch_process("parent_rct", session_id=None)
     assert result == "done"
     assert results == [("core_child", 1), ("full_child", 2)]
 
@@ -173,7 +173,7 @@ async def test_child_failure_propagates(mongo_db):
     executor = Executor(mongo_db, "test", {})
     executor.register_tasks([task])
 
-    result = await executor.launch_process("parent_fail")
+    result = await executor.launch_process("parent_fail", session_id=None)
     assert result == "failed"
 
 
@@ -195,7 +195,7 @@ async def test_child_failure_survived(mongo_db):
     executor = Executor(mongo_db, "test", {})
     executor.register_tasks([task])
 
-    result = await executor.launch_process("survive")
+    result = await executor.launch_process("survive", session_id=None)
     assert result == "done"
 
 
@@ -211,11 +211,11 @@ async def test_idempotent_launch(mongo_db):
     executor.register_tasks([task])
 
     # Launch in background
-    launch_task = asyncio.create_task(executor.launch_process("idem"))
+    launch_task = asyncio.create_task(executor.launch_process("idem", session_id=None))
     await asyncio.sleep(0.05)
 
     # Try to launch again — should return None (already running)
-    result2 = await executor.launch_process("idem")
+    result2 = await executor.launch_process("idem", session_id=None)
     assert result2 is None
 
     # Clean up
@@ -237,7 +237,7 @@ async def test_lifecycle_log_entries(mongo_db):
 
     executor = Executor(mongo_db, "test", {})
     executor.register_tasks([task])
-    await executor.launch_process("loglife")
+    await executor.launch_process("loglife", session_id=None)
 
     proc = await get_process_by_process_id(mongo_db, "test", "loglife")
     messages = [e["message"] for e in proc["log"]]
@@ -265,7 +265,7 @@ async def test_child_spawn_and_failure_log_entries(mongo_db):
 
     executor = Executor(mongo_db, "test", {})
     executor.register_tasks([task])
-    await executor.launch_process("logparent")
+    await executor.launch_process("logparent", session_id=None)
 
     parent = await get_process_by_process_id(mongo_db, "test", "logparent")
     parent_msgs = [e["message"] for e in parent["log"]]
@@ -297,7 +297,7 @@ async def test_child_inherits_parent_metadata(mongo_db):
     executor = Executor(mongo_db, "test", {})
     executor.register_tasks([task])
 
-    result = await executor.launch_process("meta_parent")
+    result = await executor.launch_process("meta_parent", session_id=None)
     assert result == "done"
     assert child_metadata == {"targetId": "source_99"}
 
@@ -326,7 +326,7 @@ async def test_adhoc_define_root(mongo_db, redis_url):
     assert proc["parentId"] is None
 
     # Should be launchable
-    result = await fw._executor.launch_process("adhoc_root")
+    result = await fw._executor.launch_process("adhoc_root", session_id=None)
     assert result == "done"
 
     await fw.shutdown()
@@ -368,7 +368,7 @@ async def test_ephemeral_process_deleted_after_completion(mongo_db, redis_url):
     task = TaskInstance(execute=my_task, process_id="eph_done", name="Ephemeral Done")
     await fw.adhoc_define(task, ephemeral=True)
 
-    result = await fw._executor.launch_process("eph_done")
+    result = await fw._executor.launch_process("eph_done", session_id=None)
     assert result == "done"
 
     # Process should be deleted
@@ -393,7 +393,7 @@ async def test_mark_ephemeral_during_execution(mongo_db, redis_url):
     task = TaskInstance(execute=my_task, process_id="mark_eph", name="Mark Ephemeral")
     await fw.adhoc_define(task)  # ephemeral=False at define time
 
-    result = await fw._executor.launch_process("mark_eph")
+    result = await fw._executor.launch_process("mark_eph", session_id=None)
     assert result == "done"
 
     # Process should be deleted (mark_ephemeral set it during execution)
@@ -498,7 +498,7 @@ async def test_launch_process_with_unregistered_id_fails(mongo_db):
     executor = Executor(mongo_db, "test", {})
     # Deliberately do NOT call register_tasks — registry is empty.
 
-    result = await executor.launch_process("ghost")
+    result = await executor.launch_process("ghost", session_id=None)
     assert result == "failed"
 
     proc = await get_process_by_process_id(mongo_db, "test", "ghost")

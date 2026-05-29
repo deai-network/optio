@@ -34,6 +34,30 @@ describe('ProcessSchema widget fields', () => {
     expect(() => ProcessSchema.parse(baseProcess())).not.toThrow();
   });
 
+  it('accepts browserOpenRequests', () => {
+    const parsed = ProcessSchema.parse({
+      ...baseProcess(),
+      browserOpenRequests: [{ requestId: 'r1', url: 'https://example.com' }],
+    });
+    expect(parsed.browserOpenRequests).toEqual([{ requestId: 'r1', url: 'https://example.com' }]);
+  });
+
+  it('accepts sessionEvents (attention + domain)', () => {
+    const parsed = ProcessSchema.parse({
+      ...baseProcess(),
+      sessionEvents: [
+        { requestId: 'r1', type: 'attention', reason: 'help' },
+        { requestId: 'r2', type: 'domain', keyword: 'k', data: { n: 1 } },
+      ],
+    });
+    expect(parsed.sessionEvents).toHaveLength(2);
+  });
+
+  it('accepts originatingSessionId string and null', () => {
+    expect(ProcessSchema.parse({ ...baseProcess(), originatingSessionId: 'tok' }).originatingSessionId).toBe('tok');
+    expect(ProcessSchema.parse({ ...baseProcess(), originatingSessionId: null }).originatingSessionId).toBeNull();
+  });
+
   it('accepts uiWidget: null as produced by the Python store', () => {
     const parsed = ProcessSchema.parse({ ...baseProcess(), uiWidget: null });
     expect(parsed.uiWidget).toBeNull();

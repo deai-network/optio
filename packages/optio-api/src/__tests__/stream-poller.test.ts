@@ -481,3 +481,54 @@ describe('createTreePoller rootId propagation', () => {
     expect(procs[1].rootId).toBe(rootId.toString());
   });
 });
+
+describe('browserOpenRequests propagation', () => {
+  it('createTreePoller includes browserOpenRequests in the update payload', async () => {
+    const events: any[] = [];
+    const rootId = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertOne({
+      _id: rootId,
+      processId: 'p', name: 'P',
+      rootId, parentId: null,
+      depth: 0, order: 0,
+      status: { state: 'running' },
+      progress: { percent: null },
+      browserOpenRequests: [{ requestId: 'r1', url: 'https://x' }],
+      cancellable: true,
+      log: [],
+    });
+    const poller = createTreePoller({
+      db, prefix: PREFIX,
+      sendEvent: (data) => events.push(data),
+      onError: () => {},
+      rootId: rootId.toString(),
+      baseDepth: 0,
+    });
+    poller.start();
+    await new Promise((r) => setTimeout(r, 1100));
+    poller.stop();
+    const update = events.find((e) => e.type === 'update');
+    expect(update.processes[0].browserOpenRequests).toEqual([{ requestId: 'r1', url: 'https://x' }]);
+  });
+
+  it('createListPoller includes browserOpenRequests in the update payload', async () => {
+    const events: any[] = [];
+    const id = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertOne({
+      _id: id, processId: 'p2', name: 'P2', rootId: id, parentId: null,
+      depth: 0, order: 0, status: { state: 'running' }, progress: { percent: null },
+      browserOpenRequests: [{ requestId: 'r2', url: 'https://y' }], cancellable: true, log: [],
+    });
+    const poller = createListPoller({
+      db, prefix: PREFIX,
+      sendEvent: (data) => events.push(data),
+      onError: () => {},
+    });
+    poller.start();
+    await new Promise((r) => setTimeout(r, 1100));
+    poller.stop();
+    const update = events.find((e) => e.type === 'update');
+    const p2 = update.processes.find((p: any) => p.processId === 'p2');
+    expect(p2.browserOpenRequests).toEqual([{ requestId: 'r2', url: 'https://y' }]);
+  });
+});

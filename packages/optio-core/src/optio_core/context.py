@@ -67,12 +67,14 @@ class ProcessContext:
         child_counter: dict,
         metadata: dict[str, Any] | None = None,
         resume: bool = False,
+        session_id: str | None = None,
     ):
         self.process_id = process_id
         self.params = params
         self.metadata = metadata or {}
         self.services = services
         self.resume = resume
+        self.session_id = session_id
         self._process_oid = process_oid
         self._root_oid = root_oid
         self._depth = depth
@@ -252,6 +254,33 @@ class ProcessContext:
         """Clear widgetData."""
         from optio_core.store import clear_widget_data
         await clear_widget_data(self._db, self._prefix, self._process_oid)
+
+    async def request_browser_open(self, url: str) -> str:
+        """Ask the operator's client to open `url`. View-scoped: delivered
+        to any observer of this process. Returns the requestId."""
+        from optio_core.store import append_browser_open_request
+        return await append_browser_open_request(
+            self._db, self._prefix, self._process_oid, url,
+        )
+
+    async def need_attention(self, reason: str) -> str:
+        """Ask the launching browser session for human attention.
+        Session-scoped. Returns the requestId."""
+        from optio_core.store import append_session_event
+        return await append_session_event(
+            self._db, self._prefix, self._process_oid,
+            {"type": "attention", "reason": reason},
+        )
+
+    async def domain_message(self, keyword: str, data) -> str:
+        """Push an application-defined message to the launching browser
+        session's frontend. Session-scoped. `data` must be JSON-serializable;
+        optio does not interpret it. Returns the requestId."""
+        from optio_core.store import append_session_event
+        return await append_session_event(
+            self._db, self._prefix, self._process_oid,
+            {"type": "domain", "keyword": keyword, "data": data},
+        )
 
     async def mark_has_saved_state(self) -> None:
         """Flag that a resumable task has durable state.

@@ -51,7 +51,7 @@ async def test_cancel_parent_propagates_to_running_children(mongo_db):
     await upsert_process(mongo_db, prefix, parent_task)
     optio._executor.register_tasks([parent_task, child_task])
 
-    runner = asyncio.create_task(optio.launch_and_wait("parent"))
+    runner = asyncio.create_task(optio.launch_and_wait("parent", session_id=None))
     await child_started.wait()
     await asyncio.sleep(0.05)
 
@@ -96,7 +96,7 @@ async def test_cancel_optout_does_not_auto_cancel_children(mongo_db):
     await upsert_process(mongo_db, prefix, parent_task)
     optio._executor.register_tasks([parent_task, child_task])
 
-    runner = asyncio.create_task(optio.launch_and_wait("parent"))
+    runner = asyncio.create_task(optio.launch_and_wait("parent", session_id=None))
     await child_started.wait()
     await asyncio.sleep(0.1)
 
@@ -153,7 +153,7 @@ async def test_cancel_recursion_honors_per_level_optout(mongo_db):
     await upsert_process(mongo_db, prefix, a_inst)
     optio._executor.register_tasks([a_inst, b_inst, c_inst])
 
-    runner = asyncio.create_task(optio.launch_and_wait("a"))
+    runner = asyncio.create_task(optio.launch_and_wait("a", session_id=None))
     await a_running.wait()
     await b_running.wait()
     await c_running.wait()
@@ -204,7 +204,7 @@ async def test_cancel_shared_deadline_across_subtree(mongo_db):
     await upsert_process(mongo_db, prefix, parent_inst)
     optio._executor.register_tasks([parent_inst, c1_inst, c2_inst])
 
-    runner = asyncio.create_task(optio.launch_and_wait("parent"))
+    runner = asyncio.create_task(optio.launch_and_wait("parent", session_id=None))
     await parent_running.wait()
     await child1_running.wait()
     await child2_running.wait()
@@ -242,7 +242,7 @@ async def test_cancel_concurrent_calls_are_idempotent(mongo_db):
     await upsert_process(mongo_db, prefix, parent_inst)
     optio._executor.register_tasks([parent_inst])
 
-    runner = asyncio.create_task(optio.launch_and_wait("parent"))
+    runner = asyncio.create_task(optio.launch_and_wait("parent", session_id=None))
     await parent_running.wait()
     await asyncio.sleep(0.05)
 
@@ -295,7 +295,7 @@ async def test_run_child_refuses_after_parent_cancel_when_auto(mongo_db):
     await upsert_process(mongo_db, prefix, parent_inst)
     optio._executor.register_tasks([parent_inst, child_inst])
 
-    runner = asyncio.create_task(optio.launch_and_wait("parent"))
+    runner = asyncio.create_task(optio.launch_and_wait("parent", session_id=None))
     await asyncio.sleep(0.1)
 
     await optio.cancel("parent")
@@ -340,7 +340,7 @@ async def test_alpha_child_cancel_triggers_parent_cancel_of_siblings(mongo_db):
     await upsert_process(mongo_db, prefix, parent_inst)
     optio._executor.register_tasks([parent_inst, b_inst, c_inst])
 
-    runner = asyncio.create_task(optio.launch_and_wait("a"))
+    runner = asyncio.create_task(optio.launch_and_wait("a", session_id=None))
     await a_running.wait()
     await b_running.wait()
     await c_running.wait()
@@ -395,7 +395,7 @@ async def test_parallel_group_fail_fast_under_alpha(mongo_db):
     optio._executor.register_tasks([parent_inst, b_inst, c_inst])
 
     t0 = _time.monotonic()
-    runner = asyncio.create_task(optio.launch_and_wait("a"))
+    runner = asyncio.create_task(optio.launch_and_wait("a", session_id=None))
     await started.wait()
     await asyncio.wait_for(runner, timeout=5.0)
     elapsed = _time.monotonic() - t0
@@ -448,7 +448,7 @@ async def test_force_cancel_cascade_auto_propagate(mongo_db):
 
     # Fire-and-forget launch so the test does not have to absorb
     # CancelledError when force-cancel kills the runner task.
-    await optio.launch("parent")
+    await optio.launch("parent", session_id=None)
     await parent_started.wait()
     await child_started.wait()
     await asyncio.sleep(0.05)
@@ -505,7 +505,7 @@ async def test_force_cancel_cascade_optout_path(mongo_db):
     optio._running = True
     optio._supervisor_task = asyncio.create_task(optio._supervisor_loop())
 
-    await optio.launch("parent")
+    await optio.launch("parent", session_id=None)
     await parent_started.wait()
     await child_started.wait()
     await asyncio.sleep(0.05)
@@ -570,7 +570,7 @@ async def test_force_cancel_cascade_catches_late_optout_child(mongo_db):
     optio._running = True
     optio._supervisor_task = asyncio.create_task(optio._supervisor_loop())
 
-    await optio.launch("parent")
+    await optio.launch("parent", session_id=None)
     await parent_started.wait()
     await asyncio.sleep(0.05)
 
@@ -626,7 +626,7 @@ async def test_task_raising_cancelled_error_reaches_cancelled_state(mongo_db):
     await upsert_process(mongo_db, prefix, task)
     optio._executor.register_tasks([task])
 
-    runner = asyncio.create_task(optio.launch_and_wait("raiser"))
+    runner = asyncio.create_task(optio.launch_and_wait("raiser", session_id=None))
     await started.wait()
     await asyncio.sleep(0.05)
 
@@ -675,7 +675,7 @@ async def test_child_raises_cancelled_error_propagates_to_parent(mongo_db):
     await upsert_process(mongo_db, prefix, parent_inst)
     optio._executor.register_tasks([parent_inst, child_inst])
 
-    runner = asyncio.create_task(optio.launch_and_wait("parent"))
+    runner = asyncio.create_task(optio.launch_and_wait("parent", session_id=None))
     await parent_started.wait()
     await child_started.wait()
     await asyncio.sleep(0.05)

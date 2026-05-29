@@ -31,7 +31,7 @@ async def test_run_child_progress_callback(mongo_db):
     await upsert_process(mongo_db, "test", task)
     executor = Executor(mongo_db, "test", {})
     executor.register_tasks([task])
-    await executor.launch_process("cb_parent")
+    await executor.launch_process("cb_parent", session_id=None)
 
     assert len(received) >= 1
     # Last snapshot should show child at 100%
@@ -62,7 +62,7 @@ async def test_parallel_group_progress_callback(mongo_db):
     await upsert_process(mongo_db, "test", task)
     executor = Executor(mongo_db, "test", {})
     executor.register_tasks([task])
-    await executor.launch_process("pg_parent")
+    await executor.launch_process("pg_parent", session_id=None)
 
     # Should have received callbacks with 1 child, then 2 children
     assert any(n == 2 for n in received)
@@ -90,7 +90,7 @@ async def test_child_completion_fires_callback_immediately(mongo_db):
     await upsert_process(mongo_db, "test", task)
     executor = Executor(mongo_db, "test", {})
     executor.register_tasks([task])
-    await executor.launch_process("imm_parent")
+    await executor.launch_process("imm_parent", session_id=None)
 
     assert "done" in completion_states
 
@@ -108,7 +108,7 @@ async def test_configurable_flush_interval(mongo_db):
     with patch.dict(os.environ, {"OPTIO_PROGRESS_FLUSH_INTERVAL_MS": "50"}):
         executor = Executor(mongo_db, "test", {})
         executor.register_tasks([task])
-        result = await executor.launch_process("flush_cfg")
+        result = await executor.launch_process("flush_cfg", session_id=None)
 
     assert result == "done"
     assert observed_interval["value"] == 0.05

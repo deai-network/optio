@@ -5,7 +5,10 @@ consumer task types (opencode, recipe execution, ...).
 """
 
 from optio_agents.protocol.parser import (
+    AttentionEvent,
+    BrowserEvent,
     DeliverableEvent,
+    DomainMessageEvent,
     DoneEvent,
     ErrorEvent,
     LogEvent,
@@ -29,6 +32,9 @@ __all__ = [
     "DeliverableEvent",
     "DoneEvent",
     "ErrorEvent",
+    "BrowserEvent",
+    "AttentionEvent",
+    "DomainMessageEvent",
     "LogEvent",
     "StatusEvent",
     "UnknownLine",

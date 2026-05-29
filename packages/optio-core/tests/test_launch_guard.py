@@ -218,7 +218,7 @@ async def test_execute_child_blocked_when_parent_metadata_matches(mongo_db):
     # Launch parent before the block is activated so launch_and_wait itself
     # does not raise (the block check at launch time would also reject it).
     parent_future = asyncio.create_task(
-        optio._executor.launch_process("parent1")
+        optio._executor.launch_process("parent1", session_id=None)
     )
 
     async with optio.block_launches({"project": "p1"}):
@@ -252,7 +252,7 @@ async def test_launch_blocked_when_task_metadata_matches(mongo_db):
     await optio.adhoc_define(task)
 
     async with optio.block_launches({"project": "p1"}):
-        out = await optio.launch("launch1")
+        out = await optio.launch("launch1", session_id=None)
     assert out.ok is False
     assert out.reason == "launch-blocked"
 
@@ -275,7 +275,7 @@ async def test_launch_and_wait_blocked_when_task_metadata_matches(mongo_db):
 
     async with optio.block_launches({"project": "p1"}):
         with pytest.raises(LaunchBlocked):
-            await optio.launch_and_wait("launch2")
+            await optio.launch_and_wait("launch2", session_id=None)
 
 
 async def test_launch_passes_when_task_metadata_does_not_match(mongo_db):
@@ -296,7 +296,7 @@ async def test_launch_passes_when_task_metadata_does_not_match(mongo_db):
 
     async with optio.block_launches({"project": "p1"}):
         # No exception; awaitable returns normally.
-        await optio.launch_and_wait("launch3")
+        await optio.launch_and_wait("launch3", session_id=None)
 
 
 async def test_launch_passes_when_pid_unknown(mongo_db):
@@ -308,7 +308,7 @@ async def test_launch_passes_when_pid_unknown(mongo_db):
 
     async with optio.block_launches({"project": "p1"}):
         # No raise; the launch is harmless because no record exists.
-        await optio.launch("nope")
+        await optio.launch("nope", session_id=None)
 
 
 async def test_two_concurrent_blocks_both_required_to_unblock(mongo_db):
@@ -336,17 +336,17 @@ async def test_two_concurrent_blocks_both_required_to_unblock(mongo_db):
     try:
         # Both registered.
         with pytest.raises(LaunchBlocked):
-            await optio.launch_and_wait("conc1")
+            await optio.launch_and_wait("conc1", session_id=None)
     finally:
         await inner.__aexit__(None, None, None)
 
     # Inner exited, outer still in force — still blocked.
     with pytest.raises(LaunchBlocked):
-        await optio.launch_and_wait("conc1")
+        await optio.launch_and_wait("conc1", session_id=None)
 
     await outer.__aexit__(None, None, None)
     # Both exited — launch succeeds.
-    await optio.launch_and_wait("conc1")
+    await optio.launch_and_wait("conc1", session_id=None)
 
 
 async def test_nested_block_in_same_coroutine(mongo_db):
@@ -382,4 +382,4 @@ async def test_overlapping_filters(mongo_db):
     async with optio.block_launches({"tenant": "t1"}):
         async with optio.block_launches({"tenant": "t2"}):
             with pytest.raises(LaunchBlocked):
-                await optio.launch_and_wait("ovl1")
+                await optio.launch_and_wait("ovl1", session_id=None)

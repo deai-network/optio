@@ -198,7 +198,7 @@ async def test_launch_blocked_message_includes_reason(mongo_db):
         # the human-readable block reason lives on the raising surfaces.
         # Use launch_and_wait (still raises) to assert the reason text.
         with pytest.raises(LaunchBlocked) as excinfo:
-            await optio.launch_and_wait("p_banned")
+            await optio.launch_and_wait("p_banned", session_id=None)
         assert "; reason=r" in str(excinfo.value)
     finally:
         await _stop_optio(optio, run_task)
@@ -230,7 +230,7 @@ async def test_init_loads_persisted_blocks(mongo_db):
             for entry in optio._launch_blocks.values()
         )
         with pytest.raises(LaunchBlocked) as excinfo:
-            await optio.launch_and_wait("p_x")
+            await optio.launch_and_wait("p_x", session_id=None)
         assert "; reason=precooked" in str(excinfo.value)
     finally:
         await _stop_optio(optio, run_task)
@@ -323,13 +323,13 @@ async def test_unblock_persisted_block_then_launch_succeeds(mongo_db):
     try:
         async with optio.block_launches({"tenant": "banned"}, persist=True, reason=None):
             pass
-        out = await optio.launch("p_y")
+        out = await optio.launch("p_y", session_id=None)
         assert out.ok is False
         assert out.reason == "launch-blocked"
 
         await optio.unblock_launches({"tenant": "banned"})
 
-        await optio.launch_and_wait("p_y")
+        await optio.launch_and_wait("p_y", session_id=None)
         assert completed.is_set()
     finally:
         await _stop_optio(optio, run_task)
@@ -378,7 +378,7 @@ async def test_group_cancel_persist_installs_persistent_block(mongo_db):
         assert rows[0].reason == "banned"
 
         # Subsequent launches blocked.
-        out = await optio.launch("p_gc")
+        out = await optio.launch("p_gc", session_id=None)
         assert out.ok is False
         assert out.reason == "launch-blocked"
     finally:
@@ -416,7 +416,7 @@ async def test_group_cancel_and_wait_persist_installs_persistent_block(mongo_db)
     optio, run_task = await _start_optio(mongo_db, "optio_gcw1", tasks=(task,))
     try:
         # Launch one process; wait for it to start.
-        await optio.launch("p_gcw")
+        await optio.launch("p_gcw", session_id=None)
         await asyncio.wait_for(started.wait(), timeout=5.0)
 
         await optio.group_cancel_and_wait(
@@ -434,7 +434,7 @@ async def test_group_cancel_and_wait_persist_installs_persistent_block(mongo_db)
         assert len(rows) == 1
 
         # Subsequent launch blocked.
-        out = await optio.launch("p_gcw")
+        out = await optio.launch("p_gcw", session_id=None)
         assert out.ok is False
         assert out.reason == "launch-blocked"
     finally:
@@ -477,11 +477,11 @@ async def test_persistent_block_survives_restart(mongo_db):
         )
         # Optio.launch returns a typed outcome; the human-readable reason
         # text only surfaces via launch_and_wait (which still raises).
-        out = await optio2.launch("p_z")
+        out = await optio2.launch("p_z", session_id=None)
         assert out.ok is False
         assert out.reason == "launch-blocked"
         with pytest.raises(LaunchBlocked) as excinfo:
-            await optio2.launch_and_wait("p_z")
+            await optio2.launch_and_wait("p_z", session_id=None)
         assert "; reason=bad" in str(excinfo.value)
     finally:
         await _stop_optio(optio2, run_task2)

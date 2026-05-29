@@ -85,8 +85,8 @@ async def test_group_cancel_only_cancels_in_scope(mongo_db):
 
     optio, run_task = await _start_optio(mongo_db, "gc_scope", [task_a, task_b])
     try:
-        await optio.launch("p.a")
-        await optio.launch("p.b")
+        await optio.launch("p.a", session_id=None)
+        await optio.launch("p.b", session_id=None)
         await started_a.wait()
         await started_b.wait()
 
@@ -129,7 +129,7 @@ async def test_group_cancel_returns_before_terminal(mongo_db):
 
     optio, run_task = await _start_optio(mongo_db, "gc_fire", [task])
     try:
-        await optio.launch("p.slow")
+        await optio.launch("p.slow", session_id=None)
         await started.wait()
 
         # group_cancel should return almost immediately.
@@ -172,7 +172,7 @@ async def test_group_cancel_and_wait_all_cooperative(mongo_db):
     optio, run_task = await _start_optio(mongo_db, "gcw_coop", tasks)
     try:
         for i in range(3):
-            await optio.launch(f"p.coop.{i}")
+            await optio.launch(f"p.coop.{i}", session_id=None)
         for ev in started:
             await ev.wait()
 
@@ -219,8 +219,8 @@ async def test_group_cancel_and_wait_mixed_cooperative_and_stubborn(mongo_db):
         mongo_db, "gcw_mixed", [task_coop, task_stub], cancel_grace_seconds=0.5,
     )
     try:
-        await optio.launch("p.coop")
-        await optio.launch("p.stub")
+        await optio.launch("p.coop", session_id=None)
+        await optio.launch("p.stub", session_id=None)
         await started_coop.wait()
         await started_stub.wait()
 
@@ -261,7 +261,7 @@ async def test_group_cancel_and_wait_raises_on_internal_ceiling(mongo_db, monkey
         mongo_db, "gcw_ceil", [task], cancel_grace_seconds=0.2,
     )
     try:
-        await optio.launch("p.stub")
+        await optio.launch("p.stub", session_id=None)
         await started.wait()
 
         # No-op the executor's force_cancel so the supervisor cannot
@@ -314,7 +314,7 @@ async def test_block_new_launches_rejects_during_call(mongo_db):
         mongo_db, "gcw_guard", [target_task, intruder_task],
     )
     try:
-        await optio.launch("p.target")
+        await optio.launch("p.target", session_id=None)
         await started.wait()
 
         # We need the intruder launch to race with the helper. Spawn a
@@ -325,7 +325,7 @@ async def test_block_new_launches_rejects_during_call(mongo_db):
             # Wait long enough that the helper has registered the guard.
             await asyncio.sleep(0.05)
             with pytest.raises(LaunchBlocked):
-                await optio.launch_and_wait("p.intruder")
+                await optio.launch_and_wait("p.intruder", session_id=None)
             intruder_blocked.set()
 
         intruder_task_handle = asyncio.create_task(attempt_intruder())
@@ -364,7 +364,7 @@ async def test_block_new_launches_false_no_guard_registered(mongo_db, method_nam
 
     optio, run_task = await _start_optio(mongo_db, f"gc_noguard_{method_name}", [task])
     try:
-        await optio.launch("p.x")
+        await optio.launch("p.x", session_id=None)
         await started.wait()
 
         before = set(optio._launch_blocks.keys())
@@ -410,7 +410,7 @@ async def test_leak_sweep_catches_post_snapshot_launch(mongo_db, monkeypatch):
             # happens almost immediately on entry). The 100 ms leak-sweep
             # delay then gives us plenty of time to land the upsert.
             await asyncio.sleep(0.02)
-            await optio.launch("p.intruder")
+            await optio.launch("p.intruder", session_id=None)
 
         intruder_handle = asyncio.create_task(stage_intruder())
 
@@ -449,7 +449,7 @@ async def test_leak_sweep_noop_when_no_concurrent_launch(mongo_db):
 
     optio, run_task = await _start_optio(mongo_db, "gcw_noleak", [task])
     try:
-        await optio.launch("p.solo")
+        await optio.launch("p.solo", session_id=None)
         await started.wait()
 
         # No concurrent stage_intruder; just call the helper.
@@ -491,7 +491,7 @@ async def test_self_cancel_via_group_cancel(mongo_db):
     optio, run_task = await _start_optio(mongo_db, "gc_self", [task])
     optio_handle["optio"] = optio
     try:
-        await optio.launch("p.self")
+        await optio.launch("p.self", session_id=None)
 
         # Wait for the task to reach the post-call point and then unwind.
         for _ in range(200):
@@ -526,7 +526,7 @@ async def test_guard_lifted_on_exception(mongo_db, monkeypatch):
         mongo_db, "gcw_lift", [task], cancel_grace_seconds=0.2,
     )
     try:
-        await optio.launch("p.stub")
+        await optio.launch("p.stub", session_id=None)
         await started.wait()
 
         # Patch out force_cancel + shrink the ceiling — same trick as
@@ -576,7 +576,7 @@ async def test_no_block_new_launches_post_snapshot_not_cancelled(mongo_db):
 
     optio, run_task = await _start_optio(mongo_db, "gcw_noblock_post", [task_a, task_b])
     try:
-        await optio.launch("p.a")
+        await optio.launch("p.a", session_id=None)
         await started_a.wait()
 
         # Stage task_b to launch after the helper's snapshot. The helper
@@ -584,7 +584,7 @@ async def test_no_block_new_launches_post_snapshot_not_cancelled(mongo_db):
         # 100 ms. A 50 ms delay reliably lands b's upsert during the wait.
         async def stage_b():
             await asyncio.sleep(0.05)
-            await optio.launch("p.b")
+            await optio.launch("p.b", session_id=None)
 
         b_handle = asyncio.create_task(stage_b())
 

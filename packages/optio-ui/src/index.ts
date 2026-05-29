@@ -1,6 +1,8 @@
 // Provider
 export { OptioProvider } from './context/OptioProvider.js';
 export { useOptioLive } from './context/useOptioContext.js';
+export { getSessionId, resetSession } from './session/sessionEvents.js';
+export type { SessionEventCallbacks } from './session/sessionEvents.js';
 
 // Multi-process stream
 export {

@@ -107,10 +107,10 @@ async def test_launch_by_objectid_hex(fake_optio, sample_idle_proc):
 
     svc = OptioEngineService(fake_optio)
     hex_id = str(sample_idle_proc["_id"])
-    result = await svc.launch(LaunchParams.model_validate({"processId": hex_id}))
+    result = await svc.launch(LaunchParams.model_validate({"processId": hex_id, "sessionId": None}))
 
     assert result.root.ok is True
-    fake_optio.launch.assert_awaited_once_with(hex_id, resume=False)
+    fake_optio.launch.assert_awaited_once_with(hex_id, resume=False, session_id=None)
 
 
 @pytest.mark.asyncio
@@ -123,12 +123,12 @@ async def test_launch_success(fake_optio, sample_idle_proc):
     fake_optio.launch = AsyncMock(return_value=LaunchOutcome(ok=True, proc=scheduled))
 
     svc = OptioEngineService(fake_optio)
-    result = await svc.launch(LaunchParams.model_validate({"processId": "p1"}))
+    result = await svc.launch(LaunchParams.model_validate({"processId": "p1", "sessionId": None}))
 
     assert isinstance(result, LaunchResult)
     assert result.root.ok is True
     assert result.root.process.process_id == "p1"
-    fake_optio.launch.assert_awaited_once_with("p1", resume=False)
+    fake_optio.launch.assert_awaited_once_with("p1", resume=False, session_id=None)
 
 
 @pytest.mark.asyncio
@@ -136,7 +136,7 @@ async def test_launch_not_found(fake_optio):
     from optio_core._engine_service import OptioEngineService
     fake_optio.launch = AsyncMock(return_value=LaunchOutcome(ok=False, reason="not-found"))
     svc = OptioEngineService(fake_optio)
-    result = await svc.launch(LaunchParams.model_validate({"processId": "missing"}))
+    result = await svc.launch(LaunchParams.model_validate({"processId": "missing", "sessionId": None}))
     assert result.root.ok is False
     assert result.root.reason == "not-found"
 
@@ -146,7 +146,7 @@ async def test_launch_not_launchable(fake_optio):
     from optio_core._engine_service import OptioEngineService
     fake_optio.launch = AsyncMock(return_value=LaunchOutcome(ok=False, reason="not-launchable"))
     svc = OptioEngineService(fake_optio)
-    result = await svc.launch(LaunchParams.model_validate({"processId": "p1"}))
+    result = await svc.launch(LaunchParams.model_validate({"processId": "p1", "sessionId": None}))
     assert result.root.ok is False
     assert result.root.reason == "not-launchable"
 
@@ -156,7 +156,7 @@ async def test_launch_no_resume_support(fake_optio):
     from optio_core._engine_service import OptioEngineService
     fake_optio.launch = AsyncMock(return_value=LaunchOutcome(ok=False, reason="no-resume-support"))
     svc = OptioEngineService(fake_optio)
-    result = await svc.launch(LaunchParams.model_validate({"processId": "p1", "resume": True}))
+    result = await svc.launch(LaunchParams.model_validate({"processId": "p1", "resume": True, "sessionId": None}))
     assert result.root.ok is False
     assert result.root.reason == "no-resume-support"
 
@@ -166,7 +166,7 @@ async def test_launch_blocked(fake_optio):
     from optio_core._engine_service import OptioEngineService
     fake_optio.launch = AsyncMock(return_value=LaunchOutcome(ok=False, reason="launch-blocked"))
     svc = OptioEngineService(fake_optio)
-    result = await svc.launch(LaunchParams.model_validate({"processId": "p1"}))
+    result = await svc.launch(LaunchParams.model_validate({"processId": "p1", "sessionId": None}))
     assert result.root.ok is False
     assert result.root.reason == "launch-blocked"
 
@@ -360,8 +360,8 @@ async def test_launch_redelivery_returns_not_launchable(fake_optio, sample_idle_
     ])
 
     svc = OptioEngineService(fake_optio)
-    first = await svc.launch(LaunchParams.model_validate({"processId": "p1"}))
-    second = await svc.launch(LaunchParams.model_validate({"processId": "p1"}))
+    first = await svc.launch(LaunchParams.model_validate({"processId": "p1", "sessionId": None}))
+    second = await svc.launch(LaunchParams.model_validate({"processId": "p1", "sessionId": None}))
 
     assert first.root.ok is True
     assert second.root.ok is False

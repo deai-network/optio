@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import type { ProcessMetadataFilter } from 'optio-contracts';
 import { useOptioPrefix, useOptioBaseUrl, useOptioDatabase } from '../context/useOptioContext.js';
+import { handleBrowserOpenRequests } from '../handlers/browserOpen.js';
 
 interface ProcessListStreamState {
   processes: any[];
@@ -54,6 +55,7 @@ function connect(baseUrl: string, prefix: string, database: string | undefined, 
     try {
       const data = JSON.parse(event.data);
       if (data.type === 'update') {
+        for (const p of data.processes) handleBrowserOpenRequests(p.browserOpenRequests);
         _state = { processes: data.processes, connected: true };
         notify();
       }

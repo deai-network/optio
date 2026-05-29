@@ -368,7 +368,9 @@ class Optio:
         await delete_process(self._config.mongo_db, self._config.prefix, process_id)
         self._executor._task_registry.pop(process_id, None)
 
-    async def launch(self, process_id: str, resume: bool = False) -> LaunchOutcome:
+    async def launch(
+        self, process_id: str, resume: bool = False, *, session_id: str | None,
+    ) -> LaunchOutcome:
         """Fire-and-forget launch. Returns LaunchOutcome with a typed reason on
         precondition failure (not-found, not-launchable, no-resume-support,
         launch-blocked); on success the executor task is scheduled in the
@@ -389,7 +391,7 @@ class Optio:
 
         oid_str = str(proc["_id"])
         asyncio.create_task(
-            self._executor.launch_process(oid_str, resume=resume),
+            self._executor.launch_process(oid_str, resume=resume, session_id=session_id),
         )
         # Yield once so the executor's first state-write (idle→scheduled)
         # lands before we re-read; then return the post-launch snapshot
@@ -398,7 +400,9 @@ class Optio:
         post = await self._resolve(oid_str)
         return LaunchOutcome(ok=True, proc=post)
 
-    async def launch_and_wait(self, process_id: str, resume: bool = False) -> None:
+    async def launch_and_wait(
+        self, process_id: str, resume: bool = False, *, session_id: str | None,
+    ) -> None:
         """Launch and wait for the process to complete. Full progress tracking.
 
         If resume is True, the task is launched with ctx.resume=True so it can
@@ -409,7 +413,7 @@ class Optio:
         task = self._executor._task_registry.get(process_id)
         if task is not None:
             self._check_launch_blocks(task.metadata)
-        await self._executor.launch_process(process_id, resume=resume)
+        await self._executor.launch_process(process_id, resume=resume, session_id=session_id)
 
     async def _cancel_active_children(
         self,
@@ -1131,7 +1135,7 @@ class Optio:
         """Scheduler hook: funnel through Optio.launch, log on failure.
         APScheduler discards the return value; the warning preserves visibility
         of skipped scheduled fires (e.g. launch blocks active at fire time)."""
-        outcome = await self.launch(process_id)
+        outcome = await self.launch(process_id, session_id=None)
         if not outcome.ok:
             logger.warning(
                 f"Scheduled launch of {process_id} skipped: {outcome.reason}"

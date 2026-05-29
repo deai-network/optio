@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Alert, Button, Layout, Select, Typography } from 'antd';
+import { Alert, Button, Layout, Select, Typography, notification } from 'antd';
 import {
   OptioProvider,
   WithFilteredProcesses,
@@ -17,8 +17,13 @@ import { useSession, signOut } from './auth-client.js';
 const { Header, Sider, Content } = Layout;
 const { Title } = Typography;
 
-function Dashboard() {
-  const [selectedProcessId, setSelectedProcessId] = useState<string | null>(null);
+function Dashboard({
+  selectedProcessId,
+  setSelectedProcessId,
+}: {
+  selectedProcessId: string | null;
+  setSelectedProcessId: (id: string | null) => void;
+}) {
   const { processes, connected: listConnected } = useProcessListStream();
   const { launch, cancel, dismiss } = useProcessActions();
   const live = useOptioLive();
@@ -53,6 +58,19 @@ function instanceKey(inst: { database: string; prefix: string }) {
 function AppContent() {
   const { instances, isLoading, refetch } = useInstances();
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [selectedProcessId, setSelectedProcessId] = useState<string | null>(null);
+
+  // Initiator-scoped attention: navigate to the process that asked for it.
+  const onAttention = (processId: string, reason: string) => {
+    setSelectedProcessId(processId);
+    notification.info({ message: 'A task needs your attention', description: reason });
+  };
+  // Domain messages: surface to the console (apps can do richer handling).
+  const onDomainMessage = (processId: string, keyword: string, data: unknown) => {
+    // eslint-disable-next-line no-console
+    console.log('[optio domain_message]', { processId, keyword, data });
+    notification.info({ message: `Domain message: ${keyword}`, description: JSON.stringify(data) });
+  };
 
   if (isLoading) return null;
 
@@ -107,13 +125,19 @@ function AppContent() {
   }
 
   return (
-    <OptioProvider prefix={selected.prefix} database={selected.database} live={selected.live}>
+    <OptioProvider
+      prefix={selected.prefix}
+      database={selected.database}
+      live={selected.live}
+      onAttention={onAttention}
+      onDomainMessage={onDomainMessage}
+    >
       <Layout style={{ height: '100vh' }}>
         <Header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px' }}>
           <Title level={4} style={{ color: '#fff', margin: 0 }}>Optio Dashboard</Title>
           {headerRight}
         </Header>
-        <Dashboard />
+        <Dashboard selectedProcessId={selectedProcessId} setSelectedProcessId={setSelectedProcessId} />
       </Layout>
     </OptioProvider>
   );
