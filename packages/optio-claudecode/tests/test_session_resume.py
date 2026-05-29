@@ -194,3 +194,33 @@ async def test_resume_with_no_prior_snapshot_falls_back_to_fresh(
     await _run_cycle(mongo_db, pid, shim_install_dir, "happy", True, monkeypatch)
     snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=pid)
     assert snap is not None  # fresh-start cycle still captures a terminal snapshot
+
+
+async def test_resume_with_no_transcript_launches_without_continue(
+    mongo_db, task_root, shim_install_dir, monkeypatch,
+):
+    """D3: a restored snapshot whose home/.claude/projects has no *.jsonl
+    must launch WITHOUT --continue (passing it makes claude exit at
+    startup). The `happy` scenario never writes a transcript, so its
+    snapshot has none — the resumed launch must omit --continue."""
+    import io, tarfile
+
+    pid = "cc_d3_no_transcript"
+    # First cycle: fresh `happy` run captures a snapshot with NO transcript.
+    await _run_cycle(mongo_db, pid, shim_install_dir, "happy", False, monkeypatch)
+    # Second cycle: resume. D3 must suppress --continue.
+    await _run_cycle(mongo_db, pid, shim_install_dir, "happy", True, monkeypatch)
+
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=pid)
+    bucket = AsyncIOMotorGridFSBucket(mongo_db)
+    sstream = await bucket.open_download_stream(snap["sessionBlobId"])
+    session_bytes = await sstream.read()
+    with tarfile.open(fileobj=io.BytesIO(session_bytes), mode="r:gz") as tar:
+        member = next(
+            m for m in tar.getmembers() if m.name.endswith("fake_claude_argv.json")
+        )
+        argv_lines = tar.extractfile(member).read().decode("utf-8").splitlines()
+    launches = [json.loads(line) for line in argv_lines if line]
+    # Neither the fresh launch nor the resumed launch may carry --continue,
+    # because no transcript ever existed.
+    assert all("--continue" not in launch for launch in launches), launches
