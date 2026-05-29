@@ -407,3 +407,13 @@ map keyed to the run's cwd.
 - Moving `.claude.json` out of the plaintext snapshot workdir blob into the
   encrypted session blob (pre-existing snapshot nit, unrelated to seeds).
 ```
+
+## Addendum (2026-05-29): parked, pending browser-open surfacing
+
+The engine, wiring, demo, and tests are implemented and green (see
+`docs/2026-05-29-optio-claudecode-seed-plan.md`), but the seed lifecycle cannot
+be completed end-to-end: creating a seed needs interactive Claude Code `/login`,
+which opens a browser on the worker — unusable server-side / in a container.
+Surfacing that URL to the operator's real browser is a separate, cross-cutting
+optio feature (its own spec + branch off `main`). **This branch is parked until
+it lands**, then the two are integrated and the lifecycle validated manually.
