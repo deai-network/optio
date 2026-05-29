@@ -83,8 +83,6 @@ process-group reaping on cancel).
   `delete_seed`.
 - opencode adoption itself (next PR — needs HOME isolation first). This spec
   only ensures the engine is built generic enough to adopt.
-- A per-launch params channel in the launch API / dashboard seed-picker UI
-  (follow-up — see "Demo and dashboard usage").
 - **D2** (agent exiting at startup should fail the task, not flap) — follow-up;
   the seed model + D3 remove its causes.
 
@@ -158,11 +156,13 @@ seed_id: str | None = None                                          # consume (d
 on_seed_saved: Callable[[str], Awaitable[None] | None] | None = None  # capture intent + checkpoint
 ```
 
-**seed_id resolution (multi-user readiness):** `run_claudecode_session` resolves
-the effective seed as `ctx.params.get("seed_id") or config.seed_id`. Per-launch
-`ctx.params` wins, so the real multi-user path (a per-user task created via
-`adhoc_define` with `params={"seed_id": …}`) supplies it without a static
-config edit; `config.seed_id` remains a convenient default (used by the demo).
+**seed_id is supplied via `config.seed_id`, baked at task-creation time.** The
+launch RPC (`launch(processId, resume)`) deliberately carries no per-launch
+params, and it does not need to: a task that should run on a given seed is
+*created* with that seed in its config. Multi-user apps create a per-user task
+(via `adhoc_define`) whose `ClaudeCodeTaskConfig(seed_id=…)` is the user's seed;
+the demo regenerates its task list so each stored seed yields its own task with
+the seed baked in (see "Demo usage"). No `ctx.params` channel is involved.
 
 `on_seed_saved` is a Python callable (cannot be a launch param); its presence is
 the capture intent. Both are ignored on resume (logged). Both default None, so
@@ -306,28 +306,40 @@ is additive. Until opencode adopts, a consumer that needs per-user identities
 uses optio-claudecode; opencode consumers keep using `opencode_config` for the
 single-tenant case.
 
-## Demo and dashboard usage
+## Demo usage
 
-**Seed_id is param-ready** (`ctx.params["seed_id"]` over `config.seed_id`), so
-the production integration is: the app creates a per-user task via
-`adhoc_define` with `params={"seed_id": …}` and launches it.
+The demo drives the full seed lifecycle through optio's existing surface — no
+launch-param channel, no env-var hand-off, no optio change. The bake-params-at-
+creation-time model plus task-list regeneration is sufficient.
 
-**Demo (in this PR):**
-- A **"Claude setup" task** — vanilla (no `seed_id`), `on_seed_saved` wired to a
-  callback that `report_progress`es `"SEED SAVED: <seed_id>"` (so the operator
-  sees the id in the dashboard log) and prints it to the worker console. Crypto
-  hooks left None (plaintext), matching the existing demo.
-- The **main demo task** reads `seed_id` from `config.seed_id`, populated from an
-  env var (`OPTIO_CLAUDECODE_DEMO_SEED_ID`). Operator flow: run setup → log in →
-  stop → copy the id from the log → set the env → relaunch the demo → observe a
-  logged-in, configured, fresh session.
+**Demo-owned registry.** A demo-owned Mongo collection `{prefix}_demo_claude_seeds`
+holds one record per created seed: `{seedId, name, createdAt}`. This is the
+demo acting as "the app" that owns the human-facing mapping; optio's
+`{prefix}_claudecode_seeds` engine store holds the actual (encrypted) seed blob.
 
-**Known gap (follow-up, not this PR):** the launch API (`launch(processId,
-resume)`) has **no per-launch params channel**, so the dashboard cannot today
-offer a "pick a seed" / "enter input" affordance — per-launch input only comes
-via `adhoc_define`. A polished dashboard seed-picker needs an optio-api +
-dashboard change (extend `LaunchParams` with `params`, surface a launch-input
-UI). Tracked as a separate follow-up; the demo proves the mechanism via env var.
+**Setup task.** A static **"Setup Claude Code seed"** task — vanilla (no
+`seed_id`), `on_seed_saved` wired. The operator launches it, logs in / configures
+in the ttyd TUI, then stops it. On teardown the seed is captured and the
+callback fires.
+
+**`on_seed_saved` callback (in the demo):**
+1. Compute `name = f"Config #{count + 1}"` where `count` is the current size of
+   `{prefix}_demo_claude_seeds` (cosmetic numbering; a concurrent-save race may
+   reuse a number — acceptable, the `seedId` is the real key).
+2. Insert `{seedId, name, createdAt}` into `{prefix}_demo_claude_seeds`.
+3. Trigger task-list regeneration via a **direct in-process Python call** to
+   optio-core's exposed `resync` (the demo runs in-process with the engine, so
+   no RPC client is needed).
+
+**Task generation.** The demo's task-definition code reads
+`{prefix}_demo_claude_seeds` and emits, per record, a task named
+**"Claude Code demo — {name}"** whose `ClaudeCodeTaskConfig` has `seed_id`
+**baked in**. After `resync`, these tasks appear in the dashboard.
+
+**Operator flow:** run "Setup Claude Code seed" → log in → stop → a new
+"Claude Code demo — Config #N" task appears (seed baked in) → launch it →
+observe a logged-in, configured, **fresh** session. Crypto hooks left None
+(plaintext), matching the existing demo.
 
 ## Edge cases
 
@@ -363,7 +375,6 @@ map keyed to the run's cwd.
   (different `process_id`) with that `seed_id`; assert (via `before_execute`
   probe) credentials/settings/plugins present in the new workdir, `.claude.json`
   `projects` rekeyed to the new cwd, and `home/.claude/projects/` NOT restored.
-  Also assert `seed_id` resolves from `ctx.params` over `config.seed_id`.
 - `test_session_seed_unknown_id.py` — bogus `seed_id` raises, no vanilla
   fallback.
 - `test_seed_config.py` — `seed_id`/`on_seed_saved` default None; no validation
@@ -382,14 +393,15 @@ map keyed to the run's cwd.
   - `types.py` — add `seed_id`, `on_seed_saved`.
   - `session.py` — seed_id resolution, capture/merge wiring, seeded-fresh
     no-`--continue`, D3 safety.
-- Modify `packages/optio-demo/src/optio_demo/tasks/claudecode.py` — setup task +
-  env-var seed_id on the main task.
+- Modify `packages/optio-demo/src/optio_demo/` — add the "Setup Claude Code seed"
+  task with the `on_seed_saved` callback (writes `{prefix}_demo_claude_seeds`,
+  calls `resync` in-process), and make the claudecode task-definition code emit
+  one seed-baked task per record in `{prefix}_demo_claude_seeds`.
 
 ## Out of scope (deferred)
 
 - opencode HOME/XDG isolation + seed adoption (immediately following PR).
 - **D2** — agent exiting at startup should fail the task, not flap.
-- Per-launch params channel in the launch API + dashboard seed-picker UI.
 - Caller-supplied / overwrite seed ids; optio-side seed GC/retention.
 - Cross-host seed migration tests.
 - Moving `.claude.json` out of the plaintext snapshot workdir blob into the
