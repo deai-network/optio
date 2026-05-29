@@ -1,14 +1,11 @@
-"""optio-host — local-or-remote host abstraction + log/deliverables protocol.
+"""optio-host — local-or-remote host abstraction.
 
-Top-level public API. See ``optio_host.host`` for primitives,
-``optio_host.context`` for HookContext, and ``optio_host.protocol``
-for the log/deliverables coordination protocol.
+Top-level public API. See ``optio_host.host`` for primitives and the
+``RunResult`` / ``HostCommandError`` transport types. Agent-coordination
+concerns (the optio.log keyword protocol, ``HookContext``) live in the
+``optio-agents`` package.
 """
 
-from optio_host.context import (
-    HookContext,
-    HookContextProtocol,
-)
 from optio_host.download import DownloadFailed, create_download_task
 from optio_host.host import (
     Host,
@@ -27,8 +24,6 @@ __all__ = [
     "RemoteHost",
     "ProcessHandle",
     "make_host",
-    "HookContext",
-    "HookContextProtocol",
     "HostCommandError",
     "RunResult",
     "SSHConfig",

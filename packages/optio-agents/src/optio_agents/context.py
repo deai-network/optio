@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import os
-
-from optio_host.host import HostCommandError, RunResult
-
 from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
 
 # Imported at module top so tests can monkeypatch this name on the module.
 from optio_host.download import create_download_task
+from optio_host.host import HostCommandError, RunResult
 
 
 class HookContext:
