@@ -25,6 +25,8 @@ from optio_agents.protocol.session import (
     fetch_deliverable_text,
     run_log_protocol_session,
 )
+from optio_agents.protocol.protocol import BrowserMode, Protocol, get_protocol
+from optio_agents.protocol.prompt import build_log_channel_prompt
 
 __all__ = [
     # parser
@@ -46,4 +48,9 @@ __all__ = [
     "HookCallback",
     "fetch_deliverable_text",
     "DELIVERABLE_QUEUE_BOUND",
+    # protocol variation
+    "get_protocol",
+    "Protocol",
+    "BrowserMode",
+    "build_log_channel_prompt",
 ]

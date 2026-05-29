@@ -71,8 +71,14 @@ _RE_ATTENTION = re.compile(r"^ATTENTION:\s*(.+?)\s*$")
 _RE_DOMAIN_MESSAGE = re.compile(r"^DOMAIN_MESSAGE:\s*(\S+)\s+(.*)$")
 
 
-def parse_log_line(line: str) -> LogEvent:
-    """Classify one line from optio.log into a LogEvent."""
+def parse_log_line(line: str, *, recognize_browser: bool = True) -> LogEvent:
+    """Classify one line from optio.log into a LogEvent.
+
+    ``recognize_browser`` (default True) controls whether a ``BROWSER:``
+    line yields a ``BrowserEvent``. When False (the ``ignore`` / ``suppress``
+    protocol modes), a ``BROWSER:`` line falls through to ``UnknownLine`` —
+    an agent cannot trigger a browser-open it has no shim for.
+    """
     stripped = line.rstrip("\r\n").rstrip()
     m = _RE_STATUS.match(stripped)
     if m:
@@ -98,9 +104,10 @@ def parse_log_line(line: str) -> LogEvent:
         msg = m.group(1) if m.group(1) else None
         return ErrorEvent(message=msg)
 
-    m = _RE_BROWSER.match(stripped)
-    if m:
-        return BrowserEvent(url=m.group(1))
+    if recognize_browser:
+        m = _RE_BROWSER.match(stripped)
+        if m:
+            return BrowserEvent(url=m.group(1))
 
     m = _RE_ATTENTION.match(stripped)
     if m:

@@ -23,6 +23,10 @@ class HookContext:
         # Use object.__setattr__ to avoid __getattr__ recursion in __init__.
         object.__setattr__(self, "_ctx", ctx)
         object.__setattr__(self, "_host", host)
+        # Set by run_log_protocol_session from the protocol's browser shims
+        # (None when the mode is "ignore"). The agent body merges this into
+        # the launched subprocess's env.
+        object.__setattr__(self, "browser_launch_env", None)
 
     def __getattr__(self, name: str) -> Any:
         # Only called if the attribute isn't found on the instance / class.

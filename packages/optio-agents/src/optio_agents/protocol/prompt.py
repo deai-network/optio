@@ -2,16 +2,20 @@
 
 This module lives next to ``parser.py`` so the prose that teaches an agent
 how to speak the protocol cannot drift from the regexes that enforce it.
-Consumers (e.g. optio-opencode) compose ``LOG_CHANNEL_PROMPT`` into their
-own AGENTS.md framing.
 
-Documents the keywords parsed by ``optio_agents.protocol.parser``:
-``STATUS:`` / ``DELIVERABLE:`` / ``DONE`` / ``ERROR`` / ``BROWSER:`` /
-``ATTENTION:`` / ``DOMAIN_MESSAGE:``.
+``build_log_channel_prompt(browser)`` assembles the mode-specific block:
+the ``BROWSER:`` keyword is documented only for ``redirect``; a trailing
+"no browser here" paragraph is appended only for ``suppress``. All other
+keywords (``STATUS:`` / ``DELIVERABLE:`` / ``DONE`` / ``ERROR`` /
+``ATTENTION:`` / ``DOMAIN_MESSAGE:``) are documented in every mode.
 """
 
+from __future__ import annotations
 
-LOG_CHANNEL_PROMPT = """## Log channel
+from optio_agents.browser_shims import BrowserMode
+
+
+_HEADER = """## Log channel
 
 Append one line per entry to `./optio.log` in this directory. Each line
 must start with one of:
@@ -24,16 +28,27 @@ must start with one of:
   summary on the same line: `DONE: wrote the report`.
 - `ERROR` — you cannot continue. May be followed by an optional
   message: `ERROR: provider auth failed`.
-- `BROWSER:` — ask the operator's browser to open a URL, e.g.
+"""
+
+_BROWSER_BULLET = """- `BROWSER:` — ask the operator's browser to open a URL, e.g.
   `BROWSER: https://example.com/login`. Use for flows that require the
   human to visit a page (e.g. an auth/login URL).
-- `ATTENTION:` — request human attention with a short reason, e.g.
+"""
+
+_TAIL_BULLETS = """- `ATTENTION:` — request human attention with a short reason, e.g.
   `ATTENTION: waiting for your approval`.
 - `DOMAIN_MESSAGE:` — push an application-specific message: a keyword
   token followed by single-line JSON, e.g.
   `DOMAIN_MESSAGE: build-finished {"artifact":"app.zip"}`. The JSON must
   be valid and on one line; malformed JSON is dropped.
+"""
 
+_SUPPRESS_NOTE = """
+In this environment, it's impossible to launch a browser, so don't try to
+run `xdg-open` or similar.
+"""
+
+_RULES = """
 **Every entry must end with a newline character (`\\n`).** The host
 reads `optio.log` with a line-oriented tailer that only emits a line
 once it sees `\\n`; an entry written without a trailing newline (e.g.
@@ -52,3 +67,10 @@ For each file, write a `DELIVERABLE:` log line *after* the file exists
 and its contents are final. The host fetches files by reading these
 log lines.
 """
+
+
+def build_log_channel_prompt(browser: BrowserMode = "ignore") -> str:
+    """Build the keyword-protocol documentation block for ``browser`` mode."""
+    browser_bullet = _BROWSER_BULLET if browser == "redirect" else ""
+    suppress_note = _SUPPRESS_NOTE if browser == "suppress" else ""
+    return _HEADER + browser_bullet + _TAIL_BULLETS + suppress_note + _RULES

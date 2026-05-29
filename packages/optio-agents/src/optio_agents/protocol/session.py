@@ -38,6 +38,7 @@ from optio_agents.protocol.parser import (
     relativize_deliverable_path,
     validate_deliverable_path,
 )
+from optio_agents.protocol.protocol import Protocol, get_protocol
 
 if TYPE_CHECKING:
     from optio_core.context import ProcessContext
@@ -97,6 +98,7 @@ async def run_log_protocol_session(
     on_deliverable: DeliverableCallback | None = None,
     before_execute: HookCallback | None = None,
     after_execute: HookCallback | None = None,
+    protocol: "Protocol | None" = None,
 ) -> None:
     """Run ``body`` against ``host`` while the log/deliverables protocol
     cooperates with it.
@@ -133,6 +135,8 @@ async def run_log_protocol_session(
       * Subprocess termination — body owns its handles.
       * Snapshot / resume — caller brackets around this call.
     """
+    if protocol is None:
+        protocol = get_protocol()
     hook_ctx = HookContext(ctx, host)
 
     # Workdir + protocol artifacts. ``setup_workdir`` mkdirs the workdir
@@ -142,6 +146,11 @@ async def run_log_protocol_session(
     deliverables_dir = f"{host.workdir}/deliverables"
     await host.run_command(f"mkdir -p {deliverables_dir}")
     await host.write_text("optio.log", "")
+
+    # Install the per-agent browser-open shims (if any) and expose the
+    # resulting launch-env additions on the HookContext. The agent body
+    # merges hook_ctx.browser_launch_env into the env it launches with.
+    hook_ctx.browser_launch_env = await protocol.prepare_browser_shims(host)
 
     session_error: BaseException | None = None
     cancelled = False
@@ -166,7 +175,10 @@ async def run_log_protocol_session(
             _deliverable_fetch_loop(host, on_deliverable, deliverable_queue, ctx, hook_ctx),
         )
         tail_task = asyncio.create_task(
-            _tail_and_dispatch(host, ctx, deliverable_queue, done_flag, error_flag),
+            _tail_and_dispatch(
+                host, ctx, deliverable_queue, done_flag, error_flag,
+                protocol.parse_log_line,
+            ),
         )
         body_task = asyncio.create_task(body(host, hook_ctx))
         cancel_task = asyncio.create_task(_watch_cancellation(ctx))
@@ -232,10 +244,11 @@ async def _tail_and_dispatch(
     deliverable_queue: asyncio.Queue[tuple[str, str]],
     done_flag: asyncio.Event,
     error_flag: list,
+    parse_line: "Callable[[str], LogEvent]",
 ) -> None:
     """Consume tail_file(optio.log), parse each line, dispatch by keyword."""
     async for line in host.tail_file(f"{host.workdir}/optio.log"):
-        ev: LogEvent = parse_log_line(line)
+        ev: LogEvent = parse_line(line)
         if isinstance(ev, StatusEvent):
             ctx.report_progress(ev.percent, ev.message)
         elif isinstance(ev, DeliverableEvent):
