@@ -27,7 +27,8 @@ from optio_agents.context import HookContext
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_host.host import Host, LocalHost, ProcessHandle, RemoteHost
 from optio_host.paths import task_dir
-from optio_host import seeds as _seeds
+from optio_agents import seeds as _seeds
+from optio_agents import get_protocol
 
 from optio_claudecode import host_actions
 from optio_claudecode.seed_manifest import CLAUDE_SEED_MANIFEST, CLAUDE_SEED_SUFFIX
@@ -79,6 +80,7 @@ async def run_claudecode_session(
 ) -> None:
     """Execute function body for one optio-claudecode task instance."""
     host: Host = _build_host(config, ctx.process_id)
+    protocol = get_protocol(browser="redirect")
     launched_handle: ProcessHandle | None = None
     cancelled = False
 
@@ -168,6 +170,7 @@ async def run_claudecode_session(
                 "AGENTS.md",
                 compose_agents_md(
                     config.consumer_instructions,
+                    documentation=protocol.documentation,
                     workdir_exclude=config.workdir_exclude,
                     supports_resume=config.supports_resume,
                 ),
@@ -194,13 +197,17 @@ async def run_claudecode_session(
             disallowed_tools=config.disallowed_tools,
             resuming=pass_continue,
         )
+        launch_env = {
+            **(config.env or {}),
+            **(hook_ctx.browser_launch_env or {}),
+        }
         ctx.report_progress(None, "Launching claude (ttyd)…")
         handle, ttyd_port = await host_actions.launch_ttyd_with_claude(
             host,
             ttyd_path=ttyd_path,
             claude_path=claude_path,
             bind_iface=ttyd_iface,
-            extra_env=config.env,
+            extra_env=launch_env,
             claude_flags=claude_flags,
             ready_timeout_s=READY_TIMEOUT_S,
         )
@@ -225,6 +232,7 @@ async def run_claudecode_session(
             body=_claudecode_body,
             on_deliverable=config.on_deliverable,
             after_execute=config.after_execute,
+            protocol=protocol,
         )
     except _SessionFailed as fail:
         raise RuntimeError(str(fail)) from None

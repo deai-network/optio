@@ -8,13 +8,13 @@ needs this because all sensitive agent-continuity state lives there.
 """
 
 from optio_agents.prompt import (
-    BASE_PROMPT_PRE,
     BASE_PROMPT_POST,
     compose_agents_md as _compose_agents_md_host,
 )
+from optio_agents.protocol import build_log_channel_prompt
 
 
-__all__ = ["BASE_PROMPT_PRE", "BASE_PROMPT_POST", "compose_agents_md"]
+__all__ = ["BASE_PROMPT_POST", "compose_agents_md"]
 
 
 RESUME_SECTION_TEMPLATE = """## Resumes
@@ -109,6 +109,7 @@ def _render_resume_section(workdir_exclude: list[str] | None) -> str:
 def compose_agents_md(
     consumer_instructions: str,
     *,
+    documentation: str | None = None,
     workdir_exclude: list[str] | None = None,
     supports_resume: bool = True,
 ) -> str:
@@ -116,8 +117,16 @@ def compose_agents_md(
 
     Renders the claudecode resume section when ``supports_resume`` is
     True and forwards everything else to the shared host composer.
+
+    ``documentation`` is the keyword-protocol block; the session passes
+    ``get_protocol(browser="redirect").documentation``. Defaults (for
+    unit tests / standalone callers) to claudecode's ``redirect`` docs.
     """
+    if documentation is None:
+        documentation = build_log_channel_prompt("redirect")
     resume_section = _render_resume_section(workdir_exclude) if supports_resume else None
     return _compose_agents_md_host(
-        consumer_instructions, resume_section=resume_section,
+        consumer_instructions,
+        documentation=documentation,
+        resume_section=resume_section,
     )
