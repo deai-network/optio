@@ -7,7 +7,7 @@ Section 4 of the design spec.  The public entry point is the factory
 
 Most of the per-session work is generic log/deliverables protocol
 plumbing (parse ``optio.log``, fetch deliverables, watch for cancel) and
-lives in ``optio_host.protocol.run_log_protocol_session``.  This module
+lives in ``optio_agents.protocol.run_log_protocol_session``.  This module
 keeps only the opencode-specific work — write AGENTS.md / opencode.json,
 install/launch the opencode binary, set up tunnel and widget, and the
 resume/snapshot brackets around the protocol session.
