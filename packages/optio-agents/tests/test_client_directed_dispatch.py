@@ -3,6 +3,7 @@
 import pytest
 
 from optio_agents.protocol.session import _tail_and_dispatch
+from optio_agents import get_protocol
 
 
 class _FakeHost:
@@ -49,8 +50,30 @@ async def test_dispatch_routes_browser_attention_domain():
     ctx = _FakeCtx()
     import asyncio
     done = asyncio.Event()
-    await _tail_and_dispatch(host, ctx, asyncio.Queue(), done, [])
+    await _tail_and_dispatch(
+        host, ctx, asyncio.Queue(), done, [],
+        get_protocol(browser="redirect").parse_log_line,
+    )
     assert ctx.browser == ["https://x"]
     assert ctx.attention == ["help me"]
     assert ctx.domain == [("ev", {"n": 1})]
+    assert done.is_set()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_ignores_browser_under_suppress():
+    host = _FakeHost([
+        "BROWSER: https://x\n",
+        "ATTENTION: help me\n",
+        "DONE\n",
+    ])
+    ctx = _FakeCtx()
+    import asyncio
+    done = asyncio.Event()
+    await _tail_and_dispatch(
+        host, ctx, asyncio.Queue(), done, [],
+        get_protocol(browser="suppress").parse_log_line,
+    )
+    assert ctx.browser == []                 # BROWSER line was inert (UnknownLine)
+    assert ctx.attention == ["help me"]      # ATTENTION still routed
     assert done.is_set()

@@ -105,7 +105,7 @@ def _supply_scenario(monkeypatch):
     orig_launch = host_actions.launch_opencode
     scenario_holder: dict = {"name": "happy"}
 
-    async def _launch(host, password, *, ready_timeout_s=30.0, opencode_executable="opencode", hostname="127.0.0.1"):
+    async def _launch(host, password, *, ready_timeout_s=30.0, opencode_executable="opencode", hostname="127.0.0.1", extra_env=None):
         del opencode_executable  # we substitute fully
         return await orig_launch(
             host, password,
@@ -115,6 +115,7 @@ def _supply_scenario(monkeypatch):
                 f"--scenario {scenario_holder['name']}"
             ),
             hostname=hostname,
+            extra_env=extra_env,
         )
     monkeypatch.setattr(host_actions, "launch_opencode", _launch)
 

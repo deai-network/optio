@@ -97,3 +97,14 @@ def test_compose_agents_md_empty_excludes_renders_no_paths_excluded_copy():
     # The 'inside an excluded subdirectory' clause should be absent (it's
     # only relevant when there are exclusions to live inside).
     assert "inside an excluded subdirectory" not in out
+
+
+def test_opencode_docs_omit_browser_keyword():
+    """opencode suppresses browser-opens, so it must NOT advertise BROWSER:."""
+    out = _compose()
+    assert "BROWSER:" not in out
+
+
+def test_opencode_docs_include_suppress_note():
+    out = _compose()
+    assert "impossible to launch a browser" in out

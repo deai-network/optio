@@ -210,3 +210,26 @@ def test_domain_message_event():
 def test_domain_message_malformed_json_drops_to_unknown():
     ev = parse_log_line("DOMAIN_MESSAGE: k {not valid json}")
     assert isinstance(ev, UnknownLine)
+
+
+# ---- recognize_browser toggle ----
+
+def test_browser_recognized_by_default():
+    ev = parse_log_line("BROWSER: https://example.com")
+    assert isinstance(ev, BrowserEvent)
+
+
+def test_browser_recognized_when_enabled():
+    ev = parse_log_line("BROWSER: https://example.com", recognize_browser=True)
+    assert isinstance(ev, BrowserEvent)
+
+
+def test_browser_falls_through_to_unknown_when_disabled():
+    ev = parse_log_line("BROWSER: https://example.com", recognize_browser=False)
+    assert isinstance(ev, UnknownLine)
+    assert ev.text == "BROWSER: https://example.com"
+
+
+def test_attention_still_recognized_when_browser_disabled():
+    ev = parse_log_line("ATTENTION: look", recognize_browser=False)
+    assert isinstance(ev, AttentionEvent)

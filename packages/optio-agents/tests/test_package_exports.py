@@ -17,3 +17,10 @@ def test_top_level_exports_protocol_surface():
         "parse_log_line",
     ):
         assert hasattr(optio_agents, name), name
+
+
+def test_top_level_exports_protocol_variation():
+    import optio_agents
+    for name in ("get_protocol", "Protocol", "BrowserMode",
+                 "build_log_channel_prompt", "browser_shims", "seeds"):
+        assert hasattr(optio_agents, name), name
