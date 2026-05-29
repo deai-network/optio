@@ -1,16 +1,15 @@
 """Public data types for optio-opencode consumers.
 
-The generic ``DeliverableCallback`` / ``HookCallback`` types and
-``SSHConfig`` are owned by ``optio-host`` (since they describe the
-log/deliverables protocol and SSH config in general). This module
-re-exports them so existing ``from optio_opencode.types import ...``
-imports keep working unchanged.
+The generic ``DeliverableCallback`` / ``HookCallback`` types are owned by
+``optio-agents`` (they describe the log/deliverables protocol); ``SSHConfig``
+is owned by ``optio-host``. This module re-exports them so existing
+``from optio_opencode.types import ...`` imports keep working unchanged.
 """
 
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from optio_host.protocol.session import DeliverableCallback, HookCallback
+from optio_agents.protocol.session import DeliverableCallback, HookCallback
 from optio_host.types import SSHConfig
 
 
