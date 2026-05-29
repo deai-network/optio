@@ -8,15 +8,15 @@ for the log/deliverables coordination protocol.
 from optio_host.context import (
     HookContext,
     HookContextProtocol,
-    HostCommandError,
-    RunResult,
 )
 from optio_host.download import DownloadFailed, create_download_task
 from optio_host.host import (
     Host,
+    HostCommandError,
     LocalHost,
     ProcessHandle,
     RemoteHost,
+    RunResult,
     make_host,
 )
 from optio_host.types import SSHConfig

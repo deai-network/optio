@@ -3,33 +3,8 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 
-
-@dataclass
-class RunResult:
-    stdout: str
-    stderr: str
-    exit_code: int
-
-
-class HostCommandError(Exception):
-    def __init__(
-        self,
-        command: str,
-        exit_code: int,
-        stdout: str,
-        stderr: str,
-    ) -> None:
-        self.command = command
-        self.exit_code = exit_code
-        self.stdout = stdout
-        self.stderr = stderr
-        super().__init__(
-            f"command failed (exit {exit_code}): {command!r}\n"
-            f"stderr: {stderr[:200]}"
-        )
-
+from optio_host.host import HostCommandError, RunResult
 
 from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
 
