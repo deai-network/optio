@@ -6,7 +6,7 @@ alongside the package-specific ``ClaudeCodeTaskConfig``.
 """
 
 from dataclasses import dataclass
-from typing import Any, Callable, Literal
+from typing import Any, Awaitable, Callable, Literal
 
 from optio_host.protocol.session import DeliverableCallback, HookCallback
 from optio_host.types import SSHConfig
@@ -69,6 +69,17 @@ class ClaudeCodeTaskConfig:
     # when it differs from the file on disk, tagging the next resume.log
     # line with `REFRESHED:AGENTS.md`. None (default) → no refresh.
     on_resume_refresh: "Callable[[ClaudeCodeTaskConfig], ClaudeCodeTaskConfig] | None" = None
+
+    # --- seed surface (start fresh from a stored environment) -----------
+    # Consumed (default/fallback): merge this seed's environment into a
+    # fresh workdir before launch, beginning a NEW conversation (no
+    # --continue). Baked at task-creation time; no per-launch channel.
+    seed_id: str | None = None
+    # Capture intent: a (sync or async) callback fired with the generated
+    # seed_id after a successful capture on teardown of a fresh session.
+    # Its presence is what enables seed capture. Both default None, so
+    # existing consumers are unaffected. Both are ignored on resume.
+    on_seed_saved: "Callable[[str], Awaitable[None] | None] | None" = None
 
     def __post_init__(self) -> None:
         if self.permission_mode is not None and self.permission_mode not in _VALID_PERMISSION_MODES:
