@@ -7,43 +7,18 @@ addressed. The consumer's own task description is then appended verbatim.
 """
 
 
-BASE_PROMPT_PRE = """# Coordination protocol with the host (optio-opencode)
+from optio_agents.protocol.prompt import LOG_CHANNEL_PROMPT
+
+
+_OPENCODE_INTRO = """# Coordination protocol with the host (optio-opencode)
 
 You are running inside a coordination harness. Follow these conventions
 throughout the session.
 
-## Log channel
-
-Append one line per entry to `./optio.log` in this directory. Each line
-must start with one of:
-
-- `STATUS:` — progress update for the human. Optional leading percent,
-  e.g. `STATUS: 50% counting my fingers`.
-- `DELIVERABLE:` — absolute or workdir-relative path to a file you've
-  just produced, e.g. `DELIVERABLE: ./deliverables/summary.md`.
-- `DONE` — you have finished the task. May be followed by an optional
-  summary on the same line: `DONE: wrote the report`.
-- `ERROR` — you cannot continue. May be followed by an optional
-  message: `ERROR: provider auth failed`.
-
-**Every entry must end with a newline character (`\\n`).** The host
-reads `optio.log` with a line-oriented tailer that only emits a line
-once it sees `\\n`; an entry written without a trailing newline (e.g.
-via `printf 'DONE'`) will be buffered indefinitely and never reach the
-host. Use `echo`, `>>` redirection of a heredoc, or any other mechanism
-that guarantees a trailing newline. If unsure, double-check with
-`tail -c 1 ./optio.log` — the result must be a newline.
-
-After writing `DONE` or `ERROR`, the session will terminate. Do not
-write further lines.
-
-## Deliverables
-
-Place files you want to hand back to the host under `./deliverables/`.
-For each file, write a `DELIVERABLE:` log line *after* the file exists
-and its contents are final. The host fetches files by reading these
-log lines.
 """
+
+
+BASE_PROMPT_PRE = _OPENCODE_INTRO + LOG_CHANNEL_PROMPT
 
 
 BASE_PROMPT_POST = """## Task
