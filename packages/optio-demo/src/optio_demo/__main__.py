@@ -26,7 +26,7 @@ async def main():
         mongo_db=db,
         prefix=prefix,
         redis_url=redis_url,
-        services={"optio": fw},
+        services={"optio": fw, "db": db, "prefix": prefix},
         get_task_definitions=get_task_definitions,
     )
 

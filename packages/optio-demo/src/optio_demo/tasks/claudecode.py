@@ -33,6 +33,7 @@ Hook walkthrough (mirrors the opencode demo):
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 
 from optio_claudecode import (
     ClaudeCodeTaskConfig,
@@ -58,6 +59,19 @@ CONSUMER_PROMPT = (
     "the number 42. Then signal completion by appending a `DONE` line "
     "to the `./optio.log` file (writing `DONE` in the chat has no "
     "effect — it must go into that file)."
+)
+
+
+DEMO_SEED_COLLECTION_SUFFIX = "_demo_claude_seeds"
+
+SEED_SETUP_PROMPT = (
+    "This is a one-time setup session. Use the terminal to log into "
+    "Claude Code (run `/login` and follow the prompts) and install any "
+    "plugins or MCP servers you want available to demo tasks. When you "
+    "are done, STOP this task from the dashboard — your configuration "
+    "(credentials, settings, plugins) will be captured as a reusable "
+    "seed, and a new 'Claude Code demo' task pinned to that seed will "
+    "appear automatically."
 )
 
 
@@ -131,39 +145,99 @@ async def _after_execute(hook_ctx: HookContext) -> None:
     )
 
 
-def get_tasks() -> list[TaskInstance]:
-    return [
+def _make_on_seed_saved(db, prefix: str, fw):
+    coll = db[f"{prefix}{DEMO_SEED_COLLECTION_SUFFIX}"]
+
+    async def _on_seed_saved(seed_id: str) -> None:
+        # Cosmetic numbering; a concurrent-save race may reuse a number —
+        # acceptable, the seedId is the real key.
+        count = await coll.count_documents({})
+        name = f"Config #{count + 1}"
+        await coll.insert_one({
+            "seedId": seed_id,
+            "name": name,
+            "createdAt": datetime.now(timezone.utc),
+        })
+        # Regenerate the task list so a seed-pinned demo task appears.
+        await fw.resync()
+
+    return _on_seed_saved
+
+
+async def get_tasks(services: dict) -> list[TaskInstance]:
+    db = services["db"]
+    prefix = services["prefix"]
+    fw = services["optio"]
+    ssh = _resolve_ssh_config()
+
+    tasks: list[TaskInstance] = [
+        # The existing API-key / credentials demo task (unchanged behavior).
         create_claudecode_task(
             process_id="claudecode-demo",
             name="Claude Code demo",
             description=(
                 "Claude Code session that reads a context file shipped "
                 "by before_execute, asks for a favorite color, ships a "
-                "deliverable combining both colors and a code-name, "
-                "then after_execute reports a session-log summary. Set "
-                "OPTIO_CLAUDECODE_DEMO_SSH_HOST to run remotely; "
-                "otherwise runs locally. Set ANTHROPIC_API_KEY for the "
-                "agent to authenticate (HOME is isolated per-task, so "
-                "the host user's ~/.claude/.credentials.json is NOT "
-                "inherited)."
+                "deliverable combining both colors and a code-name, then "
+                "after_execute reports a session-log summary. Set "
+                "ANTHROPIC_API_KEY for the agent to authenticate."
             ),
             config=ClaudeCodeTaskConfig(
                 consumer_instructions=CONSUMER_PROMPT,
                 env=_resolve_env(),
-                # Demo runs autonomously; skip per-tool prompts so the
-                # agent isn't blocked waiting for user clicks inside
-                # the iframe.
                 permission_mode="bypassPermissions",
-                ssh=_resolve_ssh_config(),
+                ssh=ssh,
                 before_execute=_before_execute,
                 after_execute=_after_execute,
                 on_deliverable=_on_deliverable,
-                # Resume support. Crypto hooks left None → plaintext
-                # session blob (same shape as the opencode demo). Operators
-                # forking the demo for a real deployment supply both hooks
-                # pointing at actual crypto. No on_resume_refresh: AGENTS.md
-                # is reused verbatim on resume. workdir_exclude left default.
                 supports_resume=True,
             ),
-        )
+        ),
+        # The seed setup task: vanilla (no seed_id), on_seed_saved wired.
+        create_claudecode_task(
+            process_id="claudecode-seed-setup",
+            name="Setup Claude Code seed",
+            description=(
+                "One-time: log into Claude Code and configure plugins, "
+                "then stop the task to capture a reusable seed. A new "
+                "seed-pinned demo task appears afterward."
+            ),
+            config=ClaudeCodeTaskConfig(
+                consumer_instructions=SEED_SETUP_PROMPT,
+                ssh=ssh,
+                # Interactive login — no autonomous bypass, no resume.
+                supports_resume=False,
+                on_seed_saved=_make_on_seed_saved(db, prefix, fw),
+            ),
+        ),
     ]
+
+    # One seed-pinned demo task per recorded seed.
+    coll = db[f"{prefix}{DEMO_SEED_COLLECTION_SUFFIX}"]
+    async for rec in coll.find({}, projection={"seedId": 1, "name": 1}):
+        seed_id = rec["seedId"]
+        name = rec.get("name", seed_id)
+        tasks.append(
+            create_claudecode_task(
+                process_id=f"claudecode-demo-seed-{seed_id}",
+                name=f"Claude Code demo — {name}",
+                description=(
+                    "Fresh Claude Code session started from a captured "
+                    f"seed ({name}): logged-in and configured, new "
+                    "conversation. Reads context.txt, asks for a color, "
+                    "ships a deliverable."
+                ),
+                config=ClaudeCodeTaskConfig(
+                    consumer_instructions=CONSUMER_PROMPT,
+                    permission_mode="bypassPermissions",
+                    ssh=ssh,
+                    before_execute=_before_execute,
+                    after_execute=_after_execute,
+                    on_deliverable=_on_deliverable,
+                    seed_id=seed_id,
+                    supports_resume=True,
+                ),
+            )
+        )
+
+    return tasks

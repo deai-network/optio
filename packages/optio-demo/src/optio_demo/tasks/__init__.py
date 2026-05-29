@@ -26,5 +26,5 @@ async def get_task_definitions(
         *marimo_tasks(),
         *opencode_tasks(),
         *client_directed_tasks(),
-        *claudecode_tasks(),
+        *await claudecode_tasks(services),
     ]
