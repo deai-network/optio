@@ -1,22 +1,25 @@
-"""Reference demo task for optio-claudecode.
+"""Reference demo tasks for optio-claudecode — the seed lifecycle.
+
+Exposes a static **"Setup Claude Code seed"** task plus one dynamic
+**"Claude Code demo — {name}"** task per captured seed. The operator
+launches setup, logs into Claude Code interactively (``/login``) in the
+ttyd TUI, configures plugins, then stops the task; on teardown the
+environment is captured as a seed and a seed-pinned demo task appears
+(via in-process ``resync``). Authentication comes from the seed, not an
+``ANTHROPIC_API_KEY`` — claude runs under HOME-isolation
+(``HOME=<workdir>/home``), so the host user's ``~/.claude`` is not
+inherited; the seed supplies credentials/settings/plugins instead.
 
 Defaults to local mode; set the ``OPTIO_CLAUDECODE_DEMO_SSH_HOST``
-environment variable to run the same task via SSH on a remote host.
-Relevant env vars (all optional except ``_HOST``):
+environment variable to run via SSH on a remote host. Relevant env vars
+(all optional except ``_HOST``):
 
 - ``OPTIO_CLAUDECODE_DEMO_SSH_HOST`` — enables remote mode.
 - ``OPTIO_CLAUDECODE_DEMO_SSH_USER`` — default: ``$USER`` on the worker.
 - ``OPTIO_CLAUDECODE_DEMO_SSH_KEY_PATH`` — default: ``~/.ssh/id_ed25519``.
 - ``OPTIO_CLAUDECODE_DEMO_SSH_PORT`` — default: ``22``.
-- ``ANTHROPIC_API_KEY`` — when set, passed through to the claude process
-  via the task's ``env`` config field. Required for any real run because
-  optio-claudecode runs claude under HOME-isolation
-  (``HOME=<workdir>/home``) — the host user's pre-existing
-  ``~/.claude/.credentials.json`` is NOT visible to the agent. Without
-  either ``ANTHROPIC_API_KEY`` or ``credentials_json``, claude will
-  display "Not logged in" inside the TUI and the demo cannot complete.
 
-Hook walkthrough (mirrors the opencode demo):
+Hook walkthrough (mirrors the opencode demo), wired on each seed task:
 
 - ``before_execute`` runs ``whoami`` on the host (proves the hook fires
   inside the session pipeline) and ships ``context.txt`` into the
@@ -98,21 +101,6 @@ def _resolve_ssh_config() -> SSHConfig | None:
     return SSHConfig(host=host, user=user, key_path=key_path, port=port)
 
 
-def _resolve_env() -> dict[str, str] | None:
-    """Pass-through env to the claude process.
-
-    Forwards ``ANTHROPIC_API_KEY`` when set on the worker so the demo
-    can complete without the user also planting a credentials.json. If
-    unset, returns None and the demo will surface a "Not logged in"
-    state inside the TUI — acceptable for a smoke check of the
-    iframe + tunnel plumbing.
-    """
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        return None
-    return {"ANTHROPIC_API_KEY": api_key}
-
-
 async def _before_execute(hook_ctx: HookContext) -> None:
     out = await hook_ctx.run_on_host("whoami")
     hook_ctx.report_progress(None, f"claude will run as {out.strip()}")
@@ -171,28 +159,6 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
     ssh = _resolve_ssh_config()
 
     tasks: list[TaskInstance] = [
-        # The existing API-key / credentials demo task (unchanged behavior).
-        create_claudecode_task(
-            process_id="claudecode-demo",
-            name="Claude Code demo",
-            description=(
-                "Claude Code session that reads a context file shipped "
-                "by before_execute, asks for a favorite color, ships a "
-                "deliverable combining both colors and a code-name, then "
-                "after_execute reports a session-log summary. Set "
-                "ANTHROPIC_API_KEY for the agent to authenticate."
-            ),
-            config=ClaudeCodeTaskConfig(
-                consumer_instructions=CONSUMER_PROMPT,
-                env=_resolve_env(),
-                permission_mode="bypassPermissions",
-                ssh=ssh,
-                before_execute=_before_execute,
-                after_execute=_after_execute,
-                on_deliverable=_on_deliverable,
-                supports_resume=True,
-            ),
-        ),
         # The seed setup task: vanilla (no seed_id), on_seed_saved wired.
         create_claudecode_task(
             process_id="claudecode-seed-setup",
