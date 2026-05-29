@@ -2,7 +2,7 @@
 
 This spec was written against the following baseline:
 
-**Base revision:** `4f2f00a3a7136bf66f728751152f29ec4dfb89d0` on branch `main` (as of 2026-05-29T02:01:10Z)
+**Base revision:** `4f2f00a3a7136bf66f728751152f29ec4dfb89d0` on branch `main`, later updated to reflect `aa697b32ab6a1f5fd9f230529b87c7c12b46305d` (as of 2026-05-29T18:50:21Z)
 
 ## Summary
 
@@ -408,12 +408,17 @@ map keyed to the run's cwd.
   encrypted session blob (pre-existing snapshot nit, unrelated to seeds).
 ```
 
-## Addendum (2026-05-29): parked, pending browser-open surfacing
+## Addendum (2026-05-29): browser-open blocker RESOLVED
 
 The engine, wiring, demo, and tests are implemented and green (see
-`docs/2026-05-29-optio-claudecode-seed-plan.md`), but the seed lifecycle cannot
-be completed end-to-end: creating a seed needs interactive Claude Code `/login`,
-which opens a browser on the worker — unusable server-side / in a container.
-Surfacing that URL to the operator's real browser is a separate, cross-cutting
-optio feature (its own spec + branch off `main`). **This branch is parked until
-it lands**, then the two are integrated and the lifecycle validated manually.
+`docs/2026-05-29-optio-claudecode-seed-plan.md`). The one remaining blocker was
+that creating a seed needs interactive Claude Code `/login`, which opens a
+browser on the worker — unusable server-side / in a container — so the URL had
+to reach the operator's real browser.
+
+**That blocker is now resolved.** The client-directed events feature (the
+`BROWSER:` / `ATTENTION:` / `DOMAIN_MESSAGE:` keywords plus
+`ctx.request_browser_open`) shipped and released on `main` (optio-agents 0.1.0,
+optio-core/host 0.2.0). This branch has been rebased onto that work, so the seed
+lifecycle can now proceed end-to-end: `/login` URLs surface to the operator's
+browser via `BROWSER:`, after which seed capture/consume validates manually.
