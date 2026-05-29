@@ -2,7 +2,7 @@
 
 import pytest
 
-from optio_host.context import RunResult
+from optio_host.host import RunResult
 
 
 class _FakeHost:
@@ -170,7 +170,7 @@ class _ExecutingFakeCtx:
 
 
 async def test_install_opencode_from_zip_happy_path(zip_server, tmp_path):
-    from optio_host.context import HookContext
+    from optio_agents import HookContext
     from optio_host.host import LocalHost
     from optio_opencode.host_actions import _install_opencode_from_zip
 
@@ -212,7 +212,7 @@ async def test_install_opencode_from_zip_happy_path(zip_server, tmp_path):
 
 async def test_install_opencode_from_zip_cleans_up_tempdir(zip_server, tmp_path):
     """The temp dir created on the host should be removed after install."""
-    from optio_host.context import HookContext
+    from optio_agents import HookContext
     from optio_host.host import LocalHost
     from optio_opencode.host_actions import _install_opencode_from_zip
 
@@ -264,7 +264,7 @@ async def test_install_opencode_from_zip_cleans_up_tempdir(zip_server, tmp_path)
 
 async def test_ensure_opencode_installed_returns_existing_path_when_ok(monkeypatch):
     """When smart-install says 'ok', resolve the on-PATH path and return it."""
-    from optio_host.context import HookContext
+    from optio_agents import HookContext
     from optio_opencode import host_actions
 
     async def stub_check(host, *, install_dir=None):
@@ -295,7 +295,7 @@ async def test_ensure_opencode_installed_returns_existing_path_when_ok(monkeypat
 
 
 async def test_ensure_opencode_installed_raises_when_install_disabled(monkeypatch):
-    from optio_host.context import HookContext
+    from optio_agents import HookContext
     from optio_opencode import host_actions
 
     async def stub_check(host, *, install_dir=None):
@@ -324,7 +324,7 @@ async def test_ensure_opencode_installed_installs_when_download_required(
     monkeypatch, zip_server, tmp_path,
 ):
     """End-to-end with a real LocalHost + fake zip server: install path."""
-    from optio_host.context import HookContext
+    from optio_agents import HookContext
     from optio_host.host import LocalHost
     from optio_opencode import host_actions
 
@@ -394,7 +394,7 @@ async def test_ensure_opencode_installed_respects_custom_install_dir(
 ):
     """End-to-end: an explicit ``install_dir`` flows through to the
     install target and to the post-ok ``command -v`` PATH augmentation."""
-    from optio_host.context import HookContext
+    from optio_agents import HookContext
     from optio_host.host import LocalHost
     from optio_opencode import host_actions
 
@@ -439,7 +439,7 @@ async def test_ensure_opencode_installed_default_install_dir_is_home_local_bin(
 ):
     """When ``install_dir`` is omitted, the default is
     ``<host_home>/.local/bin``."""
-    from optio_host.context import HookContext
+    from optio_agents import HookContext
     from optio_opencode import host_actions
 
     fake_home = tmp_path / "home"

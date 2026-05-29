@@ -24,7 +24,7 @@ async def test_setup_workdir_creates_workdir(local_host):
     assert os.path.isdir(local_host.workdir)
     # As of the optio-host split, setup_workdir mkdirs the workdir only.
     # The protocol-specific deliverables/ + optio.log are owned by the
-    # protocol session driver in optio_host.protocol.session.
+    # protocol session driver in optio_agents.protocol.session.
 
 
 @pytest.mark.asyncio
@@ -136,7 +136,7 @@ async def test_tail_file_yields_appended_lines(local_host):
 
 
 async def test_fetch_deliverable_text(local_host):
-    from optio_host.protocol.session import fetch_deliverable_text
+    from optio_agents.protocol.session import fetch_deliverable_text
     await local_host.setup_workdir()
     os.makedirs(os.path.join(local_host.workdir, "deliverables"), exist_ok=True)
     target = os.path.join(local_host.workdir, "deliverables", "a.txt")
@@ -146,7 +146,7 @@ async def test_fetch_deliverable_text(local_host):
 
 
 async def test_fetch_deliverable_non_utf8_raises(local_host):
-    from optio_host.protocol.session import fetch_deliverable_text
+    from optio_agents.protocol.session import fetch_deliverable_text
     await local_host.setup_workdir()
     os.makedirs(os.path.join(local_host.workdir, "deliverables"), exist_ok=True)
     target = os.path.join(local_host.workdir, "deliverables", "b.bin")

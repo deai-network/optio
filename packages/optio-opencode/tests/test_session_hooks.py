@@ -97,7 +97,7 @@ class _RecordingFakeHost:
         return b""
 
     async def run_command(self, *a, **kw):
-        from optio_host.context import RunResult
+        from optio_host.host import RunResult
         self.timeline.append(f"run_command:{a[0]}")
         return RunResult(stdout="", stderr="", exit_code=0)
 
@@ -255,8 +255,8 @@ async def test_on_deliverable_receives_hook_ctx_and_can_use_host_primitives(tmp_
     )
     # We don't run a full session here; we directly invoke
     # _deliverable_fetch_loop with a constructed HookContext.
-    from optio_host.protocol.session import _deliverable_fetch_loop
-    from optio_host.context import HookContext
+    from optio_agents.protocol.session import _deliverable_fetch_loop
+    from optio_agents import HookContext
 
     queue = asyncio.Queue()
     await queue.put(("/wd/deliverables/x.txt", "x.txt"))
