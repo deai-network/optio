@@ -12,6 +12,7 @@ from opencode: sensitive state is the ``<workdir>/home/.claude/`` subtree
 
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 import shlex
@@ -26,8 +27,10 @@ from optio_host.context import HookContext
 from optio_host.host import Host, LocalHost, ProcessHandle, RemoteHost
 from optio_host.paths import task_dir
 from optio_host.protocol.session import _SessionFailed, run_log_protocol_session
+from optio_host import seeds as _seeds
 
 from optio_claudecode import host_actions
+from optio_claudecode.seed_manifest import CLAUDE_SEED_MANIFEST, CLAUDE_SEED_SUFFIX
 from optio_claudecode.prompt import compose_agents_md
 from optio_claudecode.snapshots import (
     insert_snapshot,
@@ -106,7 +109,16 @@ async def run_claudecode_session(
         )
 
     resuming = snapshot is not None
+    # `pass_continue` decides whether claude is launched with --continue.
+    # It is NOT the same as `resuming`: a restored snapshot with no
+    # transcript must launch WITHOUT --continue (D3).
+    pass_continue = False
     if resuming:
+        if config.seed_id is not None or config.on_seed_saved is not None:
+            _LOG.warning(
+                "resume takes precedence; seed_id/on_seed_saved ignored "
+                "(the snapshot already carries the full environment)",
+            )
         # Plaintext workdir first (establishes the tree incl. home/), then
         # decrypt + extract home/.claude on top. Decrypt failure is treated
         # as tampering/key-rotation and propagated — never silent
@@ -118,6 +130,12 @@ async def run_claudecode_session(
         plain = decrypt(payload)
         await _extract_home_claude(host, plain)
         await _rotate_optio_log(host)
+        pass_continue = await _has_transcript(host)
+        if not pass_continue:
+            _LOG.warning(
+                "resume: restored snapshot has no transcript; launching "
+                "without --continue (D3 safety)",
+            )
 
     async def _claudecode_body(host: Host, hook_ctx: HookContext) -> None:
         nonlocal launched_handle
@@ -132,6 +150,20 @@ async def run_claudecode_session(
                 credentials_json=config.credentials_json,
                 claude_config=config.claude_config,
             )
+            if config.seed_id is not None:
+                # Seeded fresh: overlay the stored environment on top of
+                # any consumer-planted creds/config (seed wins), then
+                # rekey .claude.json projects to the new cwd. Begins a NEW
+                # conversation — no --continue.
+                _trace("body: merge_seed START id=%s", config.seed_id)
+                await _seeds.merge_seed(
+                    ctx, host,
+                    seed_id=config.seed_id,
+                    manifest=CLAUDE_SEED_MANIFEST,
+                    suffix=CLAUDE_SEED_SUFFIX,
+                    decrypt=config.session_blob_decrypt,
+                )
+                _trace("body: merge_seed DONE")
             await host.write_text(
                 "AGENTS.md",
                 compose_agents_md(
@@ -160,7 +192,7 @@ async def run_claudecode_session(
             permission_mode=config.permission_mode,
             allowed_tools=config.allowed_tools,
             disallowed_tools=config.disallowed_tools,
-            resuming=resuming,
+            resuming=pass_continue,
         )
         ctx.report_progress(None, "Launching claude (ttyd)…")
         handle, ttyd_port = await host_actions.launch_ttyd_with_claude(
@@ -207,6 +239,24 @@ async def run_claudecode_session(
             except Exception:
                 _LOG.exception("terminate_subprocess failed")
             _trace("finally: terminate_subprocess DONE")
+
+        if not resuming and config.on_seed_saved is not None:
+            _trace("finally: capture_seed START")
+            try:
+                seed_id = await _seeds.capture_seed(
+                    ctx, host,
+                    manifest=CLAUDE_SEED_MANIFEST,
+                    suffix=CLAUDE_SEED_SUFFIX,
+                    encrypt=config.session_blob_encrypt,
+                )
+                _trace("finally: capture_seed DONE id=%s", seed_id)
+                await _call_maybe_async(config.on_seed_saved, seed_id)
+                _trace("finally: on_seed_saved fired")
+            except Exception:
+                _LOG.exception(
+                    "seed capture failed; callback not fired, teardown continues",
+                )
+                _trace("finally: capture_seed RAISED")
 
         if config.supports_resume:
             _trace("finally: capture_snapshot START")
@@ -259,6 +309,28 @@ async def _read_blob_bytes(ctx: ProcessContext, blob_id) -> bytes:
                 break
             out.extend(chunk)
     return bytes(out)
+
+
+async def _call_maybe_async(fn, *args) -> None:
+    """Invoke a callback that may be sync or async."""
+    result = fn(*args)
+    if inspect.isawaitable(result):
+        await result
+
+
+async def _has_transcript(host: Host) -> bool:
+    """True if the restored snapshot carries a claude transcript.
+
+    D3 safety: claude exits at startup if `--continue` is passed with no
+    session to continue. Detect by looking for any `*.jsonl` under
+    home/.claude/projects/.
+    """
+    workdir = host.workdir.rstrip("/")
+    projects = f"{workdir}/home/.claude/projects"
+    r = await host.run_command(
+        f"find {shlex.quote(projects)} -name '*.jsonl' -print -quit 2>/dev/null || true"
+    )
+    return bool(r.stdout.strip())
 
 
 async def _archive_home_claude(host: Host) -> bytes:
