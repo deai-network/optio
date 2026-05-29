@@ -17,7 +17,7 @@ from pathlib import Path
 
 SCENARIOS = (
     "happy", "deliverable", "error", "long",
-    "long_then_signaled", "idempotent_done",
+    "long_then_signaled", "idempotent_done", "seed",
 )
 
 
@@ -92,10 +92,57 @@ def _scenario_long_then_signaled() -> None:
 def _scenario_idempotent_done() -> None:
     # Emits the same DONE line as `happy`; used across two runs to verify
     # the agent's perspective of continuity survives capture+restore.
+    # Also write a claude transcript file under the isolated HOME so that
+    # _has_transcript() returns True for resumed sessions (keeps the
+    # passes-continue resume test green).
+    home = os.environ.get("HOME")
+    if home:
+        transcript = Path(home) / ".claude" / "projects" / "resumed" / "session.jsonl"
+        transcript.parent.mkdir(parents=True, exist_ok=True)
+        transcript.write_text('{"type":"message"}', encoding="utf-8")
     time.sleep(0.05)
     _log("STATUS: 10% resumed claude alive")
     time.sleep(0.05)
     _log("DONE: scenario completed")
+    time.sleep(30.0)
+
+
+def _scenario_seed() -> None:
+    """Plant a representative environment under the isolated HOME so seed
+    capture has INCLUDE files to tar and EXCLUDE files to skip, then DONE.
+
+    `$HOME` is `<workdir>/home` under HOME-isolation. The `.claude.json`
+    `projects` map is keyed to the run's cwd so the consume-time rekey has
+    a single entry to rewrite.
+    """
+    home = os.environ.get("HOME")
+    if home:
+        claude = Path(home) / ".claude"
+        (claude / "plugins" / "marketplace").mkdir(parents=True, exist_ok=True)
+        (claude / "projects" / "session-x").mkdir(parents=True, exist_ok=True)
+        # INCLUDE (environment)
+        (claude / ".credentials.json").write_text('{"token": "abc"}', encoding="utf-8")
+        (claude / "settings.json").write_text('{"theme": "dark"}', encoding="utf-8")
+        (claude / "mcp-needs-auth-cache.json").write_text("{}", encoding="utf-8")
+        (claude / "plugins" / "marketplace" / "p.json").write_text("{}", encoding="utf-8")
+        # EXCLUDE (session / transcript) — must NOT travel in the seed
+        (claude / "projects" / "session-x" / "transcript.jsonl").write_text(
+            '{"msg": "secret-transcript"}', encoding="utf-8",
+        )
+        (claude / "history.jsonl").write_text("h\n", encoding="utf-8")
+        # .claude.json with a single projects entry keyed to the run cwd
+        (Path(home) / ".claude.json").write_text(
+            json.dumps({
+                "userID": "u1",
+                "oauthAccount": {"email": "x@y.z"},
+                "projects": {str(Path.cwd()): {"allowedTools": ["Bash"]}},
+            }),
+            encoding="utf-8",
+        )
+    time.sleep(0.05)
+    _log("STATUS: 10% configuring environment")
+    time.sleep(0.05)
+    _log("DONE: seed environment ready")
     time.sleep(30.0)
 
 
@@ -122,6 +169,7 @@ def main() -> int:
         "long": _scenario_long,
         "long_then_signaled": _scenario_long_then_signaled,
         "idempotent_done": _scenario_idempotent_done,
+        "seed": _scenario_seed,
     }[scenario]()
     return 0
 
