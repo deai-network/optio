@@ -47,7 +47,7 @@ describe('sessionId lifecycle', () => {
   it('resetSession rotates the token and reconnects', () => {
     // A subscription must exist (a callback registered) for a stream to be
     // open — the session-events stream is gated on having a handler.
-    startSessionEvents('', { onAttention: () => {} });
+    startSessionEvents('', 'optio', undefined, { onAttention: () => {} });
     const before = getSessionId();
     const esBefore = FakeES.instances.at(-1)!;
     resetSession();
@@ -62,7 +62,7 @@ describe('dispatch by type', () => {
   it('routes attention and domain events to the right callbacks, deduped by requestId', () => {
     const onAttention = vi.fn();
     const onDomainMessage = vi.fn();
-    startSessionEvents('', { onAttention, onDomainMessage });
+    startSessionEvents('', 'optio', undefined, { onAttention, onDomainMessage });
     const es = FakeES.instances.at(-1)!;
     es.emit({
       type: 'session-events', processId: 'pid-1',

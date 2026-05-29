@@ -52,8 +52,8 @@ export function OptioProvider({ prefix, database, live, baseUrl = '', onAttentio
   // place and only (re)connects on baseUrl change.
   useEffect(() => {
     const callbacks: SessionEventCallbacks = { onAttention, onDomainMessage };
-    startSessionEvents(baseUrl, callbacks);
-  }, [baseUrl, onAttention, onDomainMessage]);
+    startSessionEvents(baseUrl, prefix, database, callbacks);
+  }, [baseUrl, prefix, database, onAttention, onDomainMessage]);
 
   return (
     <OptioContext.Provider value={{ prefix: prefix ?? 'optio', database, live: live ?? false, baseUrl, client, resetSession }}>

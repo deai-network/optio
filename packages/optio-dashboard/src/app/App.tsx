@@ -74,7 +74,13 @@ function AppContent() {
 
   if (isLoading) return null;
 
-  const selected = instances.find((i) => instanceKey(i) === selectedKey) ?? instances[0] ?? null;
+  // Default to the live instance (others are typically stale) when the
+  // operator hasn't explicitly picked one.
+  const selected =
+    instances.find((i) => instanceKey(i) === selectedKey) ??
+    instances.find((i) => i.live) ??
+    instances[0] ??
+    null;
 
   const liveInstances = instances.filter((i) => i.live);
   const offlineInstances = instances.filter((i) => !i.live);

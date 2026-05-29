@@ -25,6 +25,8 @@ let _sessionId: string | null = null;
 let _eventSource: EventSource | null = null;
 let _callbacks: SessionEventCallbacks = {};
 let _baseUrl = '';
+let _prefix: string | undefined;
+let _database: string | undefined;
 const _seen = new Set<string>();
 
 function mintToken(): string {
@@ -62,7 +64,13 @@ function closeStream() {
 function connect() {
   closeStream();
   const sessionId = getSessionId();
-  const url = `${_baseUrl}/api/session-events/stream?sessionId=${encodeURIComponent(sessionId)}`;
+  // Scope the subscription to the selected instance, exactly like the
+  // process-stream feeds — else it resolves the server's default instance.
+  const params = new URLSearchParams();
+  params.set('sessionId', sessionId);
+  if (_prefix) params.set('prefix', _prefix);
+  if (_database) params.set('database', _database);
+  const url = `${_baseUrl}/api/session-events/stream?${params.toString()}`;
   const es = new EventSource(url);
   _eventSource = es;
   es.onmessage = (event) => {
@@ -90,17 +98,27 @@ function connect() {
  * on every render. Updates callbacks + baseUrl in place; (re)connects only
  * when the connection is absent or the baseUrl changed.
  */
-export function startSessionEvents(baseUrl: string, callbacks: SessionEventCallbacks): void {
+export function startSessionEvents(
+  baseUrl: string,
+  prefix: string | undefined,
+  database: string | undefined,
+  callbacks: SessionEventCallbacks,
+): void {
   _callbacks = callbacks;
-  // No handler → nothing to deliver to; don't hold an EventSource open. This
-  // keeps the session-events stream off entirely for apps that don't use it.
-  if (!callbacks.onAttention && !callbacks.onDomainMessage) {
+  // Activate only when there's a handler AND the instance is known. A missing
+  // prefix means the upstream resolver hasn't decided yet — wait (deactivate),
+  // do not guess a default.
+  const active = Boolean((callbacks.onAttention || callbacks.onDomainMessage) && prefix);
+  const unchanged =
+    _eventSource && _baseUrl === baseUrl && _prefix === prefix && _database === database;
+  _baseUrl = baseUrl;
+  _prefix = prefix;
+  _database = database;
+  if (!active) {
     closeStream();
-    _baseUrl = baseUrl;
     return;
   }
-  if (_eventSource && _baseUrl === baseUrl) return;
-  _baseUrl = baseUrl;
+  if (unchanged) return;
   connect();
 }
 
