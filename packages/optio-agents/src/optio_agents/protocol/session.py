@@ -22,9 +22,9 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING, Awaitable, Callable
 
-from optio_host.context import HookContext
+from optio_agents.context import HookContext
 from optio_host.host import Host
-from optio_host.protocol.parser import (
+from optio_agents.protocol.parser import (
     DeliverableEvent,
     DoneEvent,
     ErrorEvent,

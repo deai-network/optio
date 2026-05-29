@@ -15,6 +15,13 @@ from optio_agents.protocol.parser import (
     relativize_deliverable_path,
     validate_deliverable_path,
 )
+from optio_agents.protocol.session import (
+    DELIVERABLE_QUEUE_BOUND,
+    DeliverableCallback,
+    HookCallback,
+    fetch_deliverable_text,
+    run_log_protocol_session,
+)
 
 __all__ = [
     # parser
@@ -27,4 +34,10 @@ __all__ = [
     "UnknownLine",
     "validate_deliverable_path",
     "relativize_deliverable_path",
+    # session
+    "run_log_protocol_session",
+    "DeliverableCallback",
+    "HookCallback",
+    "fetch_deliverable_text",
+    "DELIVERABLE_QUEUE_BOUND",
 ]
