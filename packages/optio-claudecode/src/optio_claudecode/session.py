@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import shlex
+import time as _time
 from datetime import datetime, timezone
 from typing import AsyncIterator, Callable
 
@@ -37,6 +38,18 @@ from optio_claudecode.types import ClaudeCodeTaskConfig
 
 
 _LOG = logging.getLogger(__name__)
+
+# Cancel/capture step tracing — shares the optio_core.cancel_trace logger and
+# the OPTIO_CANCEL_TRACE env gate so its lines interleave with the executor's
+# cancel trace. Diagnostic only; no behavioral effect.
+_trace_logger = logging.getLogger("optio_core.cancel_trace")
+_CANCEL_TRACE = os.environ.get("OPTIO_CANCEL_TRACE", "0").lower() in ("1", "true", "yes")
+
+
+def _trace(fmt: str, *args: object) -> None:
+    if _CANCEL_TRACE:
+        _trace_logger.warning("[%.3f] optio-claudecode " + fmt, _time.monotonic(), *args)
+
 
 READY_TIMEOUT_S = 30.0
 
@@ -186,13 +199,17 @@ async def run_claudecode_session(
     finally:
         if not ctx.should_continue():
             cancelled = True
+        _trace("finally: ENTER cancelled=%s resuming=%s", cancelled, resuming)
         if launched_handle is not None:
+            _trace("finally: terminate_subprocess START aggressive=%s", cancelled)
             try:
                 await host.terminate_subprocess(launched_handle, aggressive=cancelled)
             except Exception:
                 _LOG.exception("terminate_subprocess failed")
+            _trace("finally: terminate_subprocess DONE")
 
         if config.supports_resume:
+            _trace("finally: capture_snapshot START")
             try:
                 await _capture_snapshot(
                     ctx, host,
@@ -200,19 +217,25 @@ async def run_claudecode_session(
                     workdir_exclude=config.workdir_exclude,
                     session_blob_encrypt=config.session_blob_encrypt,
                 )
+                _trace("finally: capture_snapshot DONE")
             except Exception:
                 _LOG.exception(
                     "snapshot capture failed; proceeding with workdir wipe",
                 )
+                _trace("finally: capture_snapshot RAISED")
 
+        _trace("finally: cleanup_taskdir START aggressive=%s", cancelled)
         try:
             await host.cleanup_taskdir(aggressive=cancelled)
         except Exception:
             _LOG.exception("cleanup_taskdir failed")
+        _trace("finally: cleanup_taskdir DONE")
+        _trace("finally: disconnect START")
         try:
             await host.disconnect()
         except Exception:
             _LOG.exception("host.disconnect failed")
+        _trace("finally: disconnect DONE")
 
 
 # --- helpers ---------------------------------------------------------------
@@ -242,16 +265,21 @@ async def _archive_home_claude(host: Host) -> bytes:
     """tar.gz the sensitive ``home/.claude`` subtree and fetch it as bytes."""
     workdir = host.workdir.rstrip("/")
     tmpfile = f"{workdir}/.optio-claudecode-session.tar.gz"
+    _trace("archive_home: tar run_command START")
     r = await host.run_command(
         f"tar -czf {shlex.quote(tmpfile)} -C {shlex.quote(workdir)} home/.claude"
     )
+    _trace("archive_home: tar run_command DONE exit=%d", r.exit_code)
     if r.exit_code != 0:
         raise RuntimeError(
             f"tar home/.claude failed (exit {r.exit_code}): "
             f"{r.stderr.strip()[:200]}"
         )
     try:
-        return await host.fetch_bytes_from_host(tmpfile)
+        _trace("archive_home: fetch_bytes START")
+        out = await host.fetch_bytes_from_host(tmpfile)
+        _trace("archive_home: fetch_bytes DONE bytes=%d", len(out))
+        return out
     finally:
         await host.run_command(f"rm -f {shlex.quote(tmpfile)}")
 
@@ -283,14 +311,18 @@ async def _capture_snapshot(
     session_blob_encrypt: "Callable[[bytes], bytes] | None" = None,
 ) -> None:
     # 1. tar the sensitive subtree into bytes.
+    _trace("capture: archive_home_claude START")
     session_bytes = await _archive_home_claude(host)
+    _trace("capture: archive_home_claude DONE bytes=%d", len(session_bytes))
 
     # 2. encrypt (or plaintext fallthrough).
     encrypt = session_blob_encrypt or (lambda b: b)
     payload = encrypt(session_bytes)
     expected_len = len(payload)
+    _trace("capture: encrypt DONE payload_bytes=%d", expected_len)
 
     # 3. write the session blob.
+    _trace("capture: store_blob(session) START")
     async with ctx.store_blob("session") as swriter:
         await swriter.write(payload)
         session_blob_id = swriter.file_id
@@ -300,18 +332,38 @@ async def _capture_snapshot(
                 f"snapshot session blob short-write: expected "
                 f"{expected_len} bytes, GridIn._position is {written}"
             )
+    _trace("capture: store_blob(session) DONE id=%s", session_blob_id)
 
     # 4. defensive wipe so the workdir tar cannot carry sensitive state.
     workdir = host.workdir.rstrip("/")
+    _trace("capture: rm -rf home/.claude START")
     await host.run_command(f"rm -rf {shlex.quote(workdir)}/home/.claude")
+    _trace("capture: rm -rf home/.claude DONE")
+
+    # 4b. Drop heavy, regenerable junk that accumulates under the isolated
+    # HOME so it does not bloat the workdir snapshot. The claude binary
+    # (home/.local/share/claude, ~230MB) is reinstalled on resume by
+    # ensure_claude_installed; mozilla cache/profile are pure scratch. Left
+    # in place, gzipping them in memory blows the cancellation grace period.
+    _trace("capture: rm -rf regenerable home dirs START")
+    await host.run_command(
+        "rm -rf "
+        f"{shlex.quote(workdir)}/home/.local/share/claude "
+        f"{shlex.quote(workdir)}/home/.cache/mozilla "
+        f"{shlex.quote(workdir)}/home/.mozilla"
+    )
+    _trace("capture: rm -rf regenerable home dirs DONE")
 
     # 5. stream the plaintext workdir tar.
+    _trace("capture: store_blob(workdir)+archive START")
     async with ctx.store_blob("workdir") as wwriter:
         async for chunk in host.archive_workdir(workdir_exclude):
             await wwriter.write(chunk)
         workdir_blob_id = wwriter.file_id
+    _trace("capture: store_blob(workdir)+archive DONE id=%s", workdir_blob_id)
 
     # 6. insert the snapshot doc.
+    _trace("capture: insert_snapshot START")
     await insert_snapshot(
         ctx._db,
         prefix=ctx._prefix,
@@ -321,6 +373,7 @@ async def _capture_snapshot(
         workdir_blob_id=workdir_blob_id,
         deliverables_emitted=[],
     )
+    _trace("capture: insert_snapshot DONE")
 
     # 7. prune + delete stale blobs.
     pruned = await prune_snapshots(
@@ -335,9 +388,11 @@ async def _capture_snapshot(
             await ctx.delete_blob(p["workdirBlobId"])
         except Exception:
             _LOG.exception("delete_blob(workdir) failed")
+    _trace("capture: prune DONE pruned=%d", len(pruned))
 
     # 8. surface the Resume affordance in the dashboard.
     await ctx.mark_has_saved_state()
+    _trace("capture: mark_has_saved_state DONE")
 
 
 async def _rotate_optio_log(host: Host) -> None:

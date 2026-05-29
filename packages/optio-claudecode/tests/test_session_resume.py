@@ -116,6 +116,49 @@ async def test_session_blob_excludes_home_claude_from_workdir_blob(
     assert any("home/.claude" in n for n in snames), snames
 
 
+async def test_workdir_blob_excludes_heavy_regenerable_home_dirs(
+    mongo_db, task_root, shim_install_dir, monkeypatch,
+):
+    """The claude binary install, mozilla cache, and mozilla profile under
+    the isolated HOME are regenerable junk (the binary is reinstalled on
+    resume) and must NOT bloat the workdir snapshot — they are rm -rf'd
+    before the workdir tar. Without this, a real session's 230MB+ binary
+    makes the in-memory gzip blow the cancellation grace period."""
+    import io, tarfile
+    pid = "cc_heavy_excl"
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "happy")
+
+    async def _plant_junk(hook_ctx):
+        wd = hook_ctx._host.workdir
+        await hook_ctx.run_on_host(
+            f"mkdir -p {wd}/home/.local/share/claude/versions/v1 "
+            f"{wd}/home/.cache/mozilla/firefox {wd}/home/.mozilla/firefox && "
+            f"echo BIN > {wd}/home/.local/share/claude/versions/v1/claude && "
+            f"echo C > {wd}/home/.cache/mozilla/firefox/cache && "
+            f"echo M > {wd}/home/.mozilla/firefox/prof"
+        )
+
+    ctx = await _make_ctx(mongo_db, pid, resume=False)
+    cfg = ClaudeCodeTaskConfig(
+        consumer_instructions="(heavy)",
+        claude_install_dir=str(shim_install_dir),
+        ttyd_install_dir=str(shim_install_dir),
+        permission_mode="bypassPermissions",
+        supports_resume=True,
+        before_execute=_plant_junk,
+    )
+    await run_claudecode_session(ctx, cfg)
+
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=pid)
+    bucket = AsyncIOMotorGridFSBucket(mongo_db)
+    wstream = await bucket.open_download_stream(snap["workdirBlobId"])
+    workdir_bytes = await wstream.read()
+    with tarfile.open(fileobj=io.BytesIO(workdir_bytes), mode="r:gz") as tar:
+        names = tar.getnames()
+    for needle in ("home/.local/share/claude", "home/.cache/mozilla", "home/.mozilla"):
+        assert not any(needle in n for n in names), (needle, names)
+
+
 async def test_resume_creates_second_snapshot_and_passes_continue(
     mongo_db, task_root, shim_install_dir, monkeypatch,
 ):
