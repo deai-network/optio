@@ -13,7 +13,8 @@ import shlex
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from optio_host import HookContextProtocol, Host
+    from optio_agents import HookContextProtocol
+    from optio_host import Host
     from optio_host.host import ProcessHandle
 
 

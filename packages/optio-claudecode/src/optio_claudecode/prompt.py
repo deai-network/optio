@@ -1,13 +1,13 @@
 """AGENTS.md composer for optio-claudecode.
 
 Renders the claudecode resume section and forwards to the shared
-``optio_host.agents.compose_agents_md``. The resume text is byte-identical
+``optio_agents.prompt.compose_agents_md``. The resume text is byte-identical
 to optio-opencode's, with one added bullet: ``home/.claude/`` (credentials,
 settings, conversation transcript) is preserved across resumes — claudecode
 needs this because all sensitive agent-continuity state lives there.
 """
 
-from optio_host.agents import (
+from optio_agents.prompt import (
     BASE_PROMPT_PRE,
     BASE_PROMPT_POST,
     compose_agents_md as _compose_agents_md_host,

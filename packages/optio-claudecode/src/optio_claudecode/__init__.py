@@ -2,9 +2,8 @@
 
 import logging as _logging
 
+from optio_agents import HookContext, HookContextProtocol
 from optio_host import (
-    HookContext,
-    HookContextProtocol,
     HostCommandError,
     RunResult,
     SSHConfig,

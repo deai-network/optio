@@ -12,7 +12,7 @@ mints a new, opaque, optio-generated id (an `ObjectId` hex string).
 
 optio-host depends on optio-core, so importing `ProcessContext` for
 typing is allowed; we keep `bson`/`motor` as local/TYPE_CHECKING imports
-to mirror the `optio_host.context` convention.
+to keep the hard import surface minimal.
 """
 
 from __future__ import annotations

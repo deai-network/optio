@@ -23,10 +23,10 @@ from typing import AsyncIterator, Callable
 from optio_core.context import ProcessContext
 from optio_core.models import TaskInstance
 
-from optio_host.context import HookContext
+from optio_agents.context import HookContext
+from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_host.host import Host, LocalHost, ProcessHandle, RemoteHost
 from optio_host.paths import task_dir
-from optio_host.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_host import seeds as _seeds
 
 from optio_claudecode import host_actions

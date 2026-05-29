@@ -1,14 +1,14 @@
 """Public data types for optio-claudecode consumers.
 
-The generic ``DeliverableCallback`` / ``HookCallback`` types and
-``SSHConfig`` are owned by ``optio-host``. This module re-exports them
-alongside the package-specific ``ClaudeCodeTaskConfig``.
+The generic ``DeliverableCallback`` / ``HookCallback`` types are owned by
+``optio-agents`` and ``SSHConfig`` by ``optio-host``. This module
+re-exports them alongside the package-specific ``ClaudeCodeTaskConfig``.
 """
 
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Literal
 
-from optio_host.protocol.session import DeliverableCallback, HookCallback
+from optio_agents.protocol.session import DeliverableCallback, HookCallback
 from optio_host.types import SSHConfig
 
 

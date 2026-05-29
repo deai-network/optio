@@ -6,11 +6,6 @@ concerns (the optio.log keyword protocol, ``HookContext``) live in the
 ``optio-agents`` package.
 """
 
-from optio_host.agents import (
-    BASE_PROMPT_PRE,
-    BASE_PROMPT_POST,
-    compose_agents_md,
-)
 from optio_host.download import DownloadFailed, create_download_task
 from optio_host.host import (
     Host,
@@ -34,7 +29,4 @@ __all__ = [
     "SSHConfig",
     "DownloadFailed",
     "create_download_task",
-    "BASE_PROMPT_PRE",
-    "BASE_PROMPT_POST",
-    "compose_agents_md",
 ]
