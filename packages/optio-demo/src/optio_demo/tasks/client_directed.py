@@ -5,7 +5,7 @@ Four tasks exercising the three new capabilities end-to-end:
   - ``open-optio-repo``: pure-Python ``ctx.request_browser_open`` (view-scoped).
   - ``open-browser-via-tool``: a host task that runs a tiny Python script
     (``import webbrowser; webbrowser.open(URL)`` then ``DONE``) through the
-    optio-agents session driver with ``browser_capture.enable`` on — exercises
+    optio-agents session driver with ``get_protocol(browser="redirect")`` —
     shim → ``BROWSER:`` marker → parser → ``ctx.request_browser_open`` with no
     claude/opencode involved.
   - ``need-attention-demo``: ``ctx.need_attention`` (session-scoped).
@@ -19,7 +19,7 @@ import os
 
 from optio_core.models import TaskInstance
 from optio_host.host import LocalHost
-from optio_agents import browser_capture, run_log_protocol_session
+from optio_agents import run_log_protocol_session, get_protocol
 
 
 OPTIO_REPO_URL = "https://github.com/deai-network/optio"
@@ -39,22 +39,25 @@ async def _open_browser_via_tool(ctx) -> None:
     os.makedirs(host.workdir, exist_ok=True)
 
     async def body(host, hook_ctx) -> None:
-        env_add = await browser_capture.enable(host)
-        # A trivial opener: webbrowser.open routes through xdg-open (our shim),
-        # which appends the BROWSER: marker to optio.log. Then signal DONE.
+        # The driver installed the redirect (capture) shims before the body
+        # ran and exposed their env on hook_ctx.browser_launch_env. A trivial
+        # opener: webbrowser.open routes through xdg-open (the shim), which
+        # appends the BROWSER: marker to optio.log. Then signal DONE.
         script = (
             "import webbrowser; "
             f"webbrowser.open({OPTIO_REPO_URL!r}); "
         )
         await host.run_command(
             f"python3 -c {script!r}",
-            env=env_add,
+            env=hook_ctx.browser_launch_env,
             cwd=host.workdir,
         )
         # The shim has appended BROWSER: by now; close out the session.
         await host.run_command(f"echo DONE >> {host.workdir}/optio.log")
 
-    await run_log_protocol_session(host, ctx, body=body)
+    await run_log_protocol_session(
+        host, ctx, body=body, protocol=get_protocol(browser="redirect"),
+    )
 
 
 async def _need_attention_demo(ctx) -> None:
@@ -98,8 +101,9 @@ def get_tasks() -> list[TaskInstance]:
             name="Open browser via tool (capture bridge)",
             description=(
                 "Host task running a Python webbrowser.open under "
-                "browser_capture shims; exercises shim → BROWSER: marker → "
-                "parser → ctx.request_browser_open end-to-end (no agent)."
+                "get_protocol(redirect) capture shims; exercises shim → "
+                "BROWSER: marker → parser → ctx.request_browser_open "
+                "end-to-end (no agent)."
             ),
         ),
         TaskInstance(
