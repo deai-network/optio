@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import shlex
 from typing import TYPE_CHECKING, Any
@@ -278,17 +279,44 @@ def build_ttyd_argv(
 
     Layout:
       <ttyd_path> -W -i <iface> -p <port> -m 1 -T xterm-256color --
-      env HOME=<workdir>/home [<extra-env...>]
-      bash -c 'cd <workdir> && exec <claude_path> [<claude_flags...>]'
+      env HOME=<workdir>/home PATH=<home>/.local/bin:... [<extra-env...>]
+      bash -c 'mkdir -p <home>/.local/bin && ln -sf <claude_path> <home>/.local/bin/claude
+               && cd <workdir> && exec <claude_path> [<claude_flags...>]'
+
+    claude is installed under the *real* host home's ``.local/bin`` (that's
+    where ``resolve_host_home`` points at install time), but the session
+    runs HOME-isolated (``HOME=<workdir>/home``). So at launch we symlink
+    claude into the isolated home's ``.local/bin`` and prepend that dir to
+    PATH — otherwise claude warns that ``~/.local/bin`` is missing / not on
+    PATH. Any caller-/shim-supplied PATH (e.g. browser shims) is merged in,
+    not dropped.
     """
     workdir_clean = workdir.rstrip("/")
     home_dir = f"{workdir_clean}/home"
-    env_assignments: list[str] = [f"HOME={home_dir}"]
-    if extra_env:
-        for k, v in extra_env.items():
-            env_assignments.append(f"{k}={v}")
+    home_local_bin = f"{home_dir}/.local/bin"
+    claude_link = f"{home_local_bin}/claude"
+
+    extra = dict(extra_env or {})
+    base_path = extra.pop("PATH", None) or os.environ.get(
+        "PATH", "/usr/local/bin:/usr/bin:/bin",
+    )
+    env_assignments: list[str] = [
+        f"HOME={home_dir}",
+        f"PATH={home_local_bin}:{base_path}",
+    ]
+    for k, v in extra.items():
+        env_assignments.append(f"{k}={v}")
+
     claude_argv = " ".join(shlex.quote(c) for c in [claude_path, *claude_flags])
-    bash_payload = f"cd {shlex.quote(workdir_clean)} && exec {claude_argv}"
+    # Symlink claude into the isolated home's bin (idempotent; skipped when
+    # the install dir already IS that bin, which would make ln a same-file
+    # error).
+    link_cmd = (
+        f"mkdir -p {shlex.quote(home_local_bin)} && "
+        f"{{ [ {shlex.quote(claude_path)} = {shlex.quote(claude_link)} ] || "
+        f"ln -sf {shlex.quote(claude_path)} {shlex.quote(claude_link)} ; }} && "
+    )
+    bash_payload = f"{link_cmd}cd {shlex.quote(workdir_clean)} && exec {claude_argv}"
     return [
         ttyd_path,
         "-W",

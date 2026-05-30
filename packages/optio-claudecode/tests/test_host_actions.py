@@ -286,12 +286,22 @@ def test_build_ttyd_argv_basic():
     assert any(a.startswith("HOME=") for a in argv[sep_idx + 1:])
     assert "HOME=/tmp/optio-claudecode-x/home" in argv
     assert "ANTHROPIC_BASE_URL=https://api.example.com" in argv
+    # PATH prepends the isolated home's .local/bin (where claude is symlinked).
+    assert any(
+        a.startswith("PATH=/tmp/optio-claudecode-x/home/.local/bin:") for a in argv
+    ), argv
     bash_idx = argv.index("bash", sep_idx)
     assert argv[bash_idx + 1] == "-c"
     bash_payload = argv[bash_idx + 2]
     assert "cd /tmp/optio-claudecode-x" in bash_payload
     assert "exec /opt/claude/claude" in bash_payload
     assert "--permission-mode bypassPermissions" in bash_payload
+    # claude is symlinked into the isolated home's bin before exec.
+    assert "mkdir -p /tmp/optio-claudecode-x/home/.local/bin" in bash_payload
+    assert (
+        "ln -sf /opt/claude/claude /tmp/optio-claudecode-x/home/.local/bin/claude"
+        in bash_payload
+    )
 
 
 @pytest.mark.parametrize("banner,expected_port", [
@@ -334,8 +344,14 @@ def test_build_ttyd_argv_no_extra_env():
     )
     sep_idx = argv.index("--")
     env_section = argv[sep_idx + 1:argv.index("bash", sep_idx)]
-    # Only HOME assignment (no extra vars when extra_env=None)
-    assert env_section == ["env", "HOME=/tmp/cc/home"]
+    # HOME + a PATH that prepends the isolated home's .local/bin; no other vars.
+    assert env_section[0] == "env"
+    assert "HOME=/tmp/cc/home" in env_section
+    path_entries = [a for a in env_section if a.startswith("PATH=")]
+    assert len(path_entries) == 1
+    assert path_entries[0].startswith("PATH=/tmp/cc/home/.local/bin:")
+    # Only env + HOME + PATH (no extra vars when extra_env=None).
+    assert len(env_section) == 3
 
 
 async def test_ensure_ttyd_installed_unsupported_os_raises():
