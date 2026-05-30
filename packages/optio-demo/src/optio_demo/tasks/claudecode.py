@@ -171,7 +171,13 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
             config=ClaudeCodeTaskConfig(
                 consumer_instructions=SEED_SETUP_PROMPT,
                 ssh=ssh,
-                # Interactive login — no autonomous bypass, no resume.
+                # Run setup in bypassPermissions so the operator accepts the
+                # bypass-mode warning once here; the acknowledgment lands in
+                # ~/.claude.json and is captured into the seed, so every
+                # seed-launched demo task (also bypassPermissions) starts
+                # pre-acked instead of warning on each launch.
+                permission_mode="bypassPermissions",
+                # Interactive login; no resume for a one-time setup session.
                 supports_resume=False,
                 on_seed_saved=_make_on_seed_saved(db, prefix, fw),
             ),
