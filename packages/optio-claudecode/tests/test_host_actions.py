@@ -294,14 +294,20 @@ def test_build_ttyd_argv_basic():
     assert argv[bash_idx + 1] == "-c"
     bash_payload = argv[bash_idx + 2]
     assert "cd /tmp/optio-claudecode-x" in bash_payload
-    assert "exec /opt/claude/claude" in bash_payload
+    assert "/opt/claude/claude" in bash_payload
     assert "--permission-mode bypassPermissions" in bash_payload
-    # claude is symlinked into the isolated home's bin before exec.
+    # claude is symlinked into the isolated home's bin before launch.
     assert "mkdir -p /tmp/optio-claudecode-x/home/.local/bin" in bash_payload
     assert (
         "ln -sf /opt/claude/claude /tmp/optio-claudecode-x/home/.local/bin/claude"
         in bash_payload
     )
+    # claude is run (not exec'd) so the wrapper can signal completion when it
+    # exits without writing DONE itself.
+    assert "exec /opt/claude/claude" not in bash_payload
+    assert "rc=$?" in bash_payload
+    assert "echo DONE >>" in bash_payload
+    assert "ERROR: claude exited" in bash_payload
 
 
 @pytest.mark.parametrize("banner,expected_port", [
@@ -352,6 +358,46 @@ def test_build_ttyd_argv_no_extra_env():
     assert path_entries[0].startswith("PATH=/tmp/cc/home/.local/bin:")
     # Only env + HOME + PATH (no extra vars when extra_env=None).
     assert len(env_section) == 3
+
+
+def _run_payload_with_fake_claude(tmp_path, exit_code: int) -> str:
+    """Build the ttyd payload with a fake claude exiting ``exit_code``, run
+    it under bash, and return the resulting optio.log contents."""
+    import subprocess
+
+    workdir = tmp_path / "wd"
+    (workdir / "home").mkdir(parents=True)
+    (workdir / "optio.log").write_text("")
+    fake = tmp_path / "claude"
+    fake.write_text(f"#!/bin/sh\nexit {exit_code}\n")
+    fake.chmod(0o755)
+
+    argv = host_actions.build_ttyd_argv(
+        ttyd_path="/usr/bin/ttyd",
+        claude_path=str(fake),
+        workdir=str(workdir),
+        bind_iface="127.0.0.1",
+        port=0,
+        extra_env=None,
+        claude_flags=[],
+    )
+    payload = argv[argv.index("bash") + 2]
+    subprocess.run(["bash", "-c", payload], check=True)
+    return (workdir / "optio.log").read_text()
+
+
+def test_payload_appends_done_when_claude_exits_clean(tmp_path):
+    """claude exiting 0 without writing DONE → wrapper appends DONE, so the
+    driver completes the session instead of the task hanging."""
+    log = _run_payload_with_fake_claude(tmp_path, exit_code=0)
+    assert "DONE" in log
+    assert "ERROR" not in log
+
+
+def test_payload_appends_error_when_claude_exits_nonzero(tmp_path):
+    log = _run_payload_with_fake_claude(tmp_path, exit_code=3)
+    assert "ERROR: claude exited 3" in log
+    assert "DONE" not in log
 
 
 async def test_ensure_ttyd_installed_unsupported_os_raises():

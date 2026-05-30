@@ -281,7 +281,8 @@ def build_ttyd_argv(
       <ttyd_path> -W -i <iface> -p <port> -m 1 -T xterm-256color --
       env HOME=<workdir>/home PATH=<home>/.local/bin:... [<extra-env...>]
       bash -c 'mkdir -p <home>/.local/bin && ln -sf <claude_path> <home>/.local/bin/claude
-               && cd <workdir> && exec <claude_path> [<claude_flags...>]'
+               && cd <workdir> && <claude_path> [<claude_flags...>]; rc=$?;
+               <append DONE (rc 0) | ERROR: claude exited <rc> to optio.log>'
 
     claude is installed under the *real* host home's ``.local/bin`` (that's
     where ``resolve_host_home`` points at install time), but the session
@@ -316,7 +317,18 @@ def build_ttyd_argv(
         f"{{ [ {shlex.quote(claude_path)} = {shlex.quote(claude_link)} ] || "
         f"ln -sf {shlex.quote(claude_path)} {shlex.quote(claude_link)} ; }} && "
     )
-    bash_payload = f"{link_cmd}cd {shlex.quote(workdir_clean)} && exec {claude_argv}"
+    # Run claude (NOT exec) so that when it exits — e.g. the operator types
+    # `exit` without writing DONE — the wrapper appends a terminal protocol
+    # line. The driver's optio.log tail then completes the session and its
+    # teardown reaps the (otherwise lingering) ttyd. ttyd 1.7 has no
+    # "exit when child exits" flag; -o/-q key off *client* disconnect and
+    # would kill live tasks on a tab close, so they are the wrong lever.
+    log_path = f"{workdir_clean}/optio.log"
+    bash_payload = (
+        f"{link_cmd}cd {shlex.quote(workdir_clean)} && {claude_argv}; rc=$?; "
+        f'if [ "$rc" = 0 ]; then echo DONE >> {shlex.quote(log_path)}; '
+        f"else printf 'ERROR: claude exited %s\\n' \"$rc\" >> {shlex.quote(log_path)}; fi"
+    )
     return [
         ttyd_path,
         "-W",
