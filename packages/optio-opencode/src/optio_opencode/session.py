@@ -616,8 +616,15 @@ def create_opencode_task(
     name: str,
     config: OpencodeTaskConfig,
     description: str | None = None,
+    metadata: dict | None = None,
 ) -> TaskInstance:
-    """Return a TaskInstance that runs one opencode web session."""
+    """Return a TaskInstance that runs one opencode web session.
+
+    ``metadata`` is the caller app's task-tagging payload (for later
+    filter/select/identify); it is stamped onto the TaskInstance verbatim and
+    never read by the task itself. Construction is the caller's concern — this
+    factory only accepts and forwards it.
+    """
 
     async def _execute(ctx: ProcessContext) -> None:
         await run_opencode_session(ctx, config)
@@ -629,4 +636,5 @@ def create_opencode_task(
         description=description,
         ui_widget="iframe",
         supports_resume=config.supports_resume,
+        metadata=metadata or {},
     )

@@ -565,8 +565,15 @@ def create_claudecode_task(
     name: str,
     config: ClaudeCodeTaskConfig,
     description: str | None = None,
+    metadata: dict | None = None,
 ) -> TaskInstance:
-    """Return a TaskInstance that runs one optio-claudecode session."""
+    """Return a TaskInstance that runs one optio-claudecode session.
+
+    ``metadata`` is the caller app's task-tagging payload (for later
+    filter/select/identify); it is stamped onto the TaskInstance verbatim and
+    never read by the task itself. Construction is the caller's concern — this
+    factory only accepts and forwards it.
+    """
 
     async def _execute(ctx: ProcessContext) -> None:
         await run_claudecode_session(ctx, config)
@@ -578,4 +585,5 @@ def create_claudecode_task(
         description=description,
         ui_widget="iframe",
         supports_resume=config.supports_resume,
+        metadata=metadata or {},
     )

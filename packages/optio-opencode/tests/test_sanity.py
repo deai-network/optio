@@ -36,3 +36,23 @@ def test_create_opencode_task_supports_resume_off():
         config=OpencodeTaskConfig(consumer_instructions="hi", supports_resume=False),
     )
     assert task.supports_resume is False
+
+
+def test_create_opencode_task_stamps_caller_metadata():
+    from optio_opencode import create_opencode_task, OpencodeTaskConfig
+    md = {"dataspace": "p1", "sourceId": "s1"}
+    task = create_opencode_task(
+        process_id="demo-md", name="DemoMd",
+        config=OpencodeTaskConfig(consumer_instructions="hi"),
+        metadata=md,
+    )
+    assert task.metadata == md
+
+
+def test_create_opencode_task_metadata_defaults_empty():
+    from optio_opencode import create_opencode_task, OpencodeTaskConfig
+    task = create_opencode_task(
+        process_id="demo-nomd", name="DemoNoMd",
+        config=OpencodeTaskConfig(consumer_instructions="hi"),
+    )
+    assert task.metadata == {}

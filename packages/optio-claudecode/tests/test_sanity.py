@@ -30,3 +30,23 @@ def test_fake_claude_has_resume_scenarios():
     spec.loader.exec_module(mod)
     assert "long_then_signaled" in mod.SCENARIOS
     assert "idempotent_done" in mod.SCENARIOS
+
+
+def test_create_claudecode_task_stamps_caller_metadata():
+    from optio_claudecode import create_claudecode_task, ClaudeCodeTaskConfig
+    md = {"dataspace": "p1", "sourceId": "s1"}
+    task = create_claudecode_task(
+        process_id="demo-md", name="DemoMd",
+        config=ClaudeCodeTaskConfig(consumer_instructions="hi"),
+        metadata=md,
+    )
+    assert task.metadata == md
+
+
+def test_create_claudecode_task_metadata_defaults_empty():
+    from optio_claudecode import create_claudecode_task, ClaudeCodeTaskConfig
+    task = create_claudecode_task(
+        process_id="demo-nomd", name="DemoNoMd",
+        config=ClaudeCodeTaskConfig(consumer_instructions="hi"),
+    )
+    assert task.metadata == {}
