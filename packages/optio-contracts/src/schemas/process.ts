@@ -79,7 +79,53 @@ export const ProcessSchema = z.object({
   createdAt: DateSchema,
 });
 
-export const ProcessMetadataFilterSchema = z.record(z.unknown());
+// Allowed leaf scalar value types in the filter.
+export const FilterScalar = z.union([z.string(), z.number(), z.boolean(), z.null()]);
+
+// Field-path validator: dotted segments under `metadata.*`, each non-empty,
+// no `$` anywhere (defense against Mongo operator injection through paths).
+export const FilterFieldPath = z
+  .string()
+  .regex(/^[^.$]+(\.[^.$]+)*$/, 'invalid field path');
+
+// Operator object that lives at each leaf.
+export const FilterLeafOps = z
+  .object({
+    eq:     FilterScalar.optional(),
+    ne:     FilterScalar.optional(),
+    in:     z.array(FilterScalar).optional(),
+    nin:    z.array(FilterScalar).optional(),
+    exists: z.boolean().optional(),
+    gt:     FilterScalar.optional(),
+    gte:    FilterScalar.optional(),
+    lt:     FilterScalar.optional(),
+    lte:    FilterScalar.optional(),
+  })
+  .strict()
+  .refine((o) => Object.keys(o).length > 0, 'leaf needs at least one operator');
+
+// Recursive predicate tree. A predicate node is exactly one of:
+//   { AND: [...] }   { OR: [...] }   { NOT: ... }   { "field": LeafOps, ... }
+// .strict() forbids mixing combinator keys with field keys in one object.
+export const ProcessMetadataPredicateSchema: z.ZodType<unknown> = z.lazy(() =>
+  z.union([
+    z.object({ AND: z.array(ProcessMetadataPredicateSchema).min(1) }).strict(),
+    z.object({ OR:  z.array(ProcessMetadataPredicateSchema).min(1) }).strict(),
+    z.object({ NOT: ProcessMetadataPredicateSchema }).strict(),
+    z.record(FilterFieldPath, FilterLeafOps),
+  ]),
+);
+
+// Legacy flat shape: keys are field names, values are scalars (implicit AND of equality).
+export const ProcessMetadataFilterLegacySchema = z.record(FilterFieldPath, FilterScalar);
+
+// Public union (backwards compatible). Predicate branch first so it wins on
+// any input that has combinator keys or operator-object values; flat scalar
+// shapes fall through to the legacy branch.
+export const ProcessMetadataFilterSchema = z.union([
+  ProcessMetadataPredicateSchema,
+  ProcessMetadataFilterLegacySchema,
+]);
 
 export const MetadataFilterQueryParamSchema = z
   .string()
@@ -97,6 +143,9 @@ export const MetadataFilterQueryParamSchema = z
 export type Process = z.infer<typeof ProcessSchema>;
 export type ProcessState = z.infer<typeof ProcessStateSchema>;
 export type LogEntry = z.infer<typeof LogEntrySchema>;
+export type FilterScalar = z.infer<typeof FilterScalar>;
+export type FilterLeafOps = z.infer<typeof FilterLeafOps>;
+export type ProcessMetadataPredicate = z.infer<typeof ProcessMetadataPredicateSchema>;
 export type ProcessMetadataFilter = z.infer<typeof ProcessMetadataFilterSchema>;
 export type BrowserOpenRequest = z.infer<typeof BrowserOpenRequestSchema>;
 export type SessionEvent = z.infer<typeof SessionEventSchema>;

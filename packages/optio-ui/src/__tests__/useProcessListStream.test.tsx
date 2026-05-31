@@ -135,4 +135,40 @@ describe('useProcessListStream metadataFilter', () => {
     expect(MockEventSource.instances.length).toBe(1);
     expect(MockEventSource.last!.closed).toBe(false);
   });
+
+  it('URL-encodes a predicate-tree metadataFilter into the SSE URL', async () => {
+    const { QueryClient, QueryClientProvider } = await import('@tanstack/react-query');
+    const { OptioProvider } = await import('../context/OptioProvider.js');
+    const { useProcessListStream } = await import('../hooks/useProcessListStream.js');
+    const { or, and, eq } = await import('optio-contracts');
+    function wrapper({ children }: { children: ReactNode }) {
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      return (
+        <QueryClientProvider client={client}>
+          <OptioProvider prefix="test" database="test-db" baseUrl="http://localhost:0">
+            {children}
+          </OptioProvider>
+        </QueryClientProvider>
+      );
+    }
+    const filter = or(
+      and(eq('tag', 'demo'), eq('owner', 'kris')),
+      and(eq('tag', 'prod'), eq('region', 'us')),
+    );
+    renderHook(
+      () => useProcessListStream({ metadataFilter: filter }),
+      { wrapper },
+    );
+    expect(MockEventSource.last).not.toBeNull();
+    const url = new URL(MockEventSource.last!.url, 'http://localhost');
+    const param = url.searchParams.get('metadataFilter');
+    expect(param).not.toBeNull();
+    const decoded = JSON.parse(param!);
+    expect(decoded).toEqual({
+      OR: [
+        { AND: [{ tag: { eq: 'demo' } }, { owner: { eq: 'kris' } }] },
+        { AND: [{ tag: { eq: 'prod' } }, { region: { eq: 'us' } }] },
+      ],
+    });
+  });
 });

@@ -2,9 +2,13 @@ import { describe, it, expect } from 'vitest';
 import {
   parseMetadataFilterQuery,
   metadataFilterToMongo,
+  isLegacyFlatFilter,
   detectLegacyMetadataParams,
   formatLegacyMetadataMessage,
 } from '../metadata-filter-query.js';
+import {
+  and, or, not, eq, ne, isIn, notIn, exists, gt, gte, lt, lte,
+} from 'optio-contracts';
 
 describe('parseMetadataFilterQuery', () => {
   it('returns undefined value for undefined input', () => {
@@ -95,5 +99,139 @@ describe('formatLegacyMetadataMessage', () => {
     expect(formatLegacyMetadataMessage(['metadata.a', 'metadata.b'])).toContain(
       'Offending keys: metadata.a, metadata.b',
     );
+  });
+});
+
+describe('isLegacyFlatFilter', () => {
+  it('treats empty object as legacy', () => {
+    expect(isLegacyFlatFilter({})).toBe(true);
+  });
+
+  it('treats flat scalar record as legacy', () => {
+    expect(isLegacyFlatFilter({ a: 1, b: 'x', c: true, d: null })).toBe(true);
+  });
+
+  it('treats AND-key object as predicate', () => {
+    expect(isLegacyFlatFilter({ AND: [{ a: { eq: 1 } }] } as any)).toBe(false);
+  });
+
+  it('treats OR-key object as predicate', () => {
+    expect(isLegacyFlatFilter({ OR: [{ a: { eq: 1 } }] } as any)).toBe(false);
+  });
+
+  it('treats NOT-key object as predicate', () => {
+    expect(isLegacyFlatFilter({ NOT: { a: { eq: 1 } } } as any)).toBe(false);
+  });
+
+  it('treats operator-object values as predicate', () => {
+    expect(isLegacyFlatFilter({ foo: { eq: 'x' } } as any)).toBe(false);
+  });
+});
+
+describe('metadataFilterToMongo (predicate tree)', () => {
+  it('translates single-leaf single-op', () => {
+    expect(metadataFilterToMongo(eq('foo', 'x'))).toEqual({
+      'metadata.foo': { $eq: 'x' },
+    });
+  });
+
+  it('translates single-leaf multi-op (one node, multiple operators)', () => {
+    const p = { foo: { gt: 1, lte: 10 } } as any;
+    expect(metadataFilterToMongo(p)).toEqual({
+      'metadata.foo': { $gt: 1, $lte: 10 },
+    });
+  });
+
+  it('translates multi-leaf node into $and of single-key objects', () => {
+    const p = { foo: { eq: 'x' }, bar: { in: [1, 2] } } as any;
+    expect(metadataFilterToMongo(p)).toEqual({
+      $and: [
+        { 'metadata.foo': { $eq: 'x' } },
+        { 'metadata.bar': { $in: [1, 2] } },
+      ],
+    });
+  });
+
+  it('translates AND into $and', () => {
+    expect(metadataFilterToMongo(and(eq('a', 1), eq('b', 2)))).toEqual({
+      $and: [
+        { 'metadata.a': { $eq: 1 } },
+        { 'metadata.b': { $eq: 2 } },
+      ],
+    });
+  });
+
+  it('translates OR into $or', () => {
+    expect(metadataFilterToMongo(or(eq('a', 1), eq('b', 2)))).toEqual({
+      $or: [
+        { 'metadata.a': { $eq: 1 } },
+        { 'metadata.b': { $eq: 2 } },
+      ],
+    });
+  });
+
+  it('translates NOT into $nor over a singleton array', () => {
+    expect(metadataFilterToMongo(not(eq('a', 1)))).toEqual({
+      $nor: [{ 'metadata.a': { $eq: 1 } }],
+    });
+  });
+
+  it('translates nested (A AND B) OR (C AND D)', () => {
+    const p = or(
+      and(eq('tag', 'demo'), eq('owner', 'kris')),
+      and(eq('tag', 'prod'), isIn('region', ['us', 'eu'])),
+    );
+    expect(metadataFilterToMongo(p)).toEqual({
+      $or: [
+        {
+          $and: [
+            { 'metadata.tag': { $eq: 'demo' } },
+            { 'metadata.owner': { $eq: 'kris' } },
+          ],
+        },
+        {
+          $and: [
+            { 'metadata.tag': { $eq: 'prod' } },
+            { 'metadata.region': { $in: ['us', 'eu'] } },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('translates each leaf operator', () => {
+    expect(metadataFilterToMongo(eq('f', 1)))     .toEqual({ 'metadata.f': { $eq: 1 } });
+    expect(metadataFilterToMongo(ne('f', 1)))     .toEqual({ 'metadata.f': { $ne: 1 } });
+    expect(metadataFilterToMongo(isIn('f', [1]))) .toEqual({ 'metadata.f': { $in: [1] } });
+    expect(metadataFilterToMongo(notIn('f', [1]))).toEqual({ 'metadata.f': { $nin: [1] } });
+    expect(metadataFilterToMongo(exists('f')))    .toEqual({ 'metadata.f': { $exists: true } });
+    expect(metadataFilterToMongo(exists('f', false))).toEqual({ 'metadata.f': { $exists: false } });
+    expect(metadataFilterToMongo(gt('f', 1)))     .toEqual({ 'metadata.f': { $gt: 1 } });
+    expect(metadataFilterToMongo(gte('f', 1)))    .toEqual({ 'metadata.f': { $gte: 1 } });
+    expect(metadataFilterToMongo(lt('f', 1)))     .toEqual({ 'metadata.f': { $lt: 1 } });
+    expect(metadataFilterToMongo(lte('f', 1)))    .toEqual({ 'metadata.f': { $lte: 1 } });
+  });
+
+  it('prefixes dotted paths with metadata.', () => {
+    expect(metadataFilterToMongo(eq('foo.bar.baz', 1))).toEqual({
+      'metadata.foo.bar.baz': { $eq: 1 },
+    });
+  });
+});
+
+describe('parseMetadataFilterQuery (predicate JSON round-trip)', () => {
+  it('parses a JSON-encoded predicate tree', () => {
+    const json = '{"OR":[{"a":{"eq":1}},{"b":{"eq":2}}]}';
+    const r = parseMetadataFilterQuery(json);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.value).toEqual({ OR: [{ a: { eq: 1 } }, { b: { eq: 2 } }] });
+    }
+  });
+
+  it('rejects predicate JSON with invalid field path', () => {
+    const json = '{"$where":{"eq":"x"}}';
+    const r = parseMetadataFilterQuery(json);
+    expect(r.ok).toBe(false);
   });
 });
