@@ -470,3 +470,22 @@ def build_claude_flags(
     if resuming:
         out += ["--continue"]
     return out
+
+
+# Positional prompt appended to the claude launch when ``auto_start`` is set —
+# kicks the agent off without the operator typing anything.
+AUTO_START_PROMPT = "Read CLAUDE.md and execute the task it describes"
+
+
+def build_auto_start_args(*, auto_start: bool, pass_continue: bool) -> list[str]:
+    """Trailing positional prompt for an auto-start fresh launch.
+
+    Returns ``[AUTO_START_PROMPT]`` only on a fresh launch (``auto_start`` set
+    and not resuming with ``--continue``); empty otherwise. Re-issuing the
+    kickoff prompt on a real resume would re-trigger the task, so it is
+    suppressed there (also covers the D3 no-transcript fresh-launch case, where
+    ``pass_continue`` is False).
+    """
+    if auto_start and not pass_continue:
+        return [AUTO_START_PROMPT]
+    return []

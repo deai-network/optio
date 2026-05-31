@@ -14,6 +14,7 @@ def test_minimal_config_uses_defaults():
     assert cfg.permission_mode is None
     assert cfg.allowed_tools is None
     assert cfg.disallowed_tools is None
+    assert cfg.auto_start is False
     assert cfg.ssh is None
     assert cfg.install_if_missing is True
     assert cfg.install_ttyd_if_missing is True

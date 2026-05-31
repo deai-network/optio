@@ -458,3 +458,17 @@ def test_build_claude_flags_continue_is_last():
         resuming=True,
     )
     assert flags[-1] == "--continue"
+
+
+def test_auto_start_args_fresh_appends_prompt():
+    args = host_actions.build_auto_start_args(auto_start=True, pass_continue=False)
+    assert args == [host_actions.AUTO_START_PROMPT]
+    assert "Read CLAUDE.md" in args[0]
+
+
+def test_auto_start_args_suppressed_on_resume():
+    assert host_actions.build_auto_start_args(auto_start=True, pass_continue=True) == []
+
+
+def test_auto_start_args_off_by_default():
+    assert host_actions.build_auto_start_args(auto_start=False, pass_continue=False) == []

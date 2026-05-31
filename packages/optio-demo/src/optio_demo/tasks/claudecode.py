@@ -208,6 +208,8 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     on_deliverable=_on_deliverable,
                     seed_id=seed_id,
                     supports_resume=True,
+                    # Kick the agent off unattended (reads CLAUDE.md + executes).
+                    auto_start=True,
                 ),
             )
         )
