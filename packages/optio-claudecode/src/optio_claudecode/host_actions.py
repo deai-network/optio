@@ -31,9 +31,13 @@ _TTYD_READY_RE = re.compile(
 )
 
 
-_DEFAULT_INSTALL_SUBDIR = ".local/bin"
-
 _CLAUDE_INSTALL_URL = "https://claude.ai/install.sh"
+
+# The optio-owned claude version cache lives on the WORKER, never in the host
+# user's ~/.local/~/.claude. Default: ${XDG_CACHE_HOME:-$HOME/.cache}/optio-claudecode/versions.
+_CACHE_DIR_SHELL_DEFAULT = (
+    '${OPTIO_CLAUDECODE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/optio-claudecode/versions}'
+)
 
 # Pinned ttyd version. Update with care; the URL pattern below is
 # tsl0922/ttyd's release-asset convention as of 1.7.x.
@@ -42,21 +46,52 @@ _TTYD_RELEASE_BASE = (
     f"https://github.com/tsl0922/ttyd/releases/download/{_TTYD_VERSION}"
 )
 
+# ttyd still installs into the worker home's ``.local/bin`` (only claude moved
+# to the optio version cache). Isolating ttyd the same way is a follow-up.
+_DEFAULT_INSTALL_SUBDIR = ".local/bin"
+
 
 async def _resolve_install_dir(host: "Host", install_dir: str | None) -> str:
-    """Return ``install_dir`` if given, else ``<host_home>/<DEFAULT_INSTALL_SUBDIR>``."""
+    """Return ``install_dir`` if given, else ``<host_home>/.local/bin`` (ttyd)."""
     if install_dir is not None:
         return install_dir
     host_home = await host.resolve_host_home()
     return f"{host_home}/{_DEFAULT_INSTALL_SUBDIR}"
 
 
-async def _claude_present(host: "Host", claude_path: str) -> bool:
-    """Return True iff ``claude_path`` is an executable file on the host
-    that produces version output when invoked with --version."""
+async def _resolve_cache_dir(host: "Host", override: str | None) -> str:
+    """Resolve the claude version-cache dir as an absolute path on the worker.
+
+    ``override`` (``config.claude_install_dir``) wins. Otherwise the worker's
+    ``OPTIO_CLAUDECODE_CACHE_DIR`` / ``XDG_CACHE_HOME`` / ``$HOME`` decide it —
+    resolved via a shell echo so RemoteHost gets the remote location.
+    """
+    if override is not None:
+        return override.rstrip("/")
+    r = await host.run_command(f'printf %s "{_CACHE_DIR_SHELL_DEFAULT}"')
+    path = r.stdout.strip()
+    if r.exit_code != 0 or not path:
+        raise RuntimeError(
+            f"failed to resolve claude cache dir on host "
+            f"(exit {r.exit_code}): {r.stderr.strip()[:200]}"
+        )
+    return path.rstrip("/")
+
+
+async def _claude_version_ok(host: "Host", claude_path: str) -> bool:
+    """True iff ``claude_path`` is executable and prints a Claude Code version."""
     cmd = f"[ -x {shlex.quote(claude_path)} ] && {shlex.quote(claude_path)} --version"
     result = await host.run_command(cmd)
     return result.exit_code == 0 and "Claude Code" in result.stdout
+
+
+async def _newest_cached_version(host: "Host", cache_dir: str) -> str | None:
+    """Return the highest-semver version filename in the cache, or None if empty."""
+    r = await host.run_command(
+        f"ls -1 {shlex.quote(cache_dir)} 2>/dev/null | sort -V | tail -1"
+    )
+    name = r.stdout.strip()
+    return name or None
 
 
 async def ensure_claude_installed(
@@ -65,51 +100,80 @@ async def ensure_claude_installed(
     install_if_missing: bool = True,
     install_dir: str | None = None,
 ) -> str:
-    """Ensure the ``claude`` binary is present on the host behind ``hook_ctx``.
+    """Provision claude for this task from the shared, optio-owned version cache.
 
-    The framework looks for a symlink at ``<install_dir>/claude``. When
-    missing and ``install_if_missing=True``, it runs the vendor install
-    script (``curl -fsSL https://claude.ai/install.sh | bash``) on the
-    host. The script downloads + checksum-verifies + places the native
-    binary under ``~/.local/share/claude/versions/<v>/`` and creates a
-    symlink at ``~/.local/bin/claude``. The framework re-checks for the
-    symlink after the install runs.
+    The binary lives in an optio cache dir on the worker (never the host
+    ~/.local/~/.claude). Per task we symlink the isolated home's
+    ``.local/share/claude/versions`` at that cache, so claude's installer and
+    autoupdater write version binaries *through* the symlink into the cache.
 
-    Returns the absolute path of the ``claude`` symlink on the host.
+    - cache miss (+ install_if_missing) → run vendor install.sh with
+      HOME=<workdir>/home, which writes through the symlink into the cache and
+      creates home/.local/bin/claude.
+    - cache hit → point home/.local/bin/claude at the newest cached version
+      (no reinstall).
+    - cache miss + install disabled → raise.
 
-    Raises RuntimeError when the binary is absent and either
-    ``install_if_missing=False`` or the install fails.
+    ``install_dir`` is the cache-dir override (config.claude_install_dir).
+    Returns the per-task launch path ``<workdir>/home/.local/bin/claude``.
     """
     host = hook_ctx._host
-    resolved_install_dir = await _resolve_install_dir(host, install_dir)
-    claude_path = f"{resolved_install_dir}/claude"
+    workdir = host.workdir.rstrip("/")
+    home = f"{workdir}/home"
+    bin_dir = f"{home}/.local/bin"
+    bin_claude = f"{bin_dir}/claude"
+    share_claude = f"{home}/.local/share/claude"
+    versions_link = f"{share_claude}/versions"
 
-    hook_ctx.report_progress(None, "Checking claude installation…")
-    if await _claude_present(host, claude_path):
-        return claude_path
+    cache_dir = await _resolve_cache_dir(host, install_dir)
+
+    hook_ctx.report_progress(None, "Preparing claude runtime…")
+    setup = await host.run_command(
+        f"mkdir -p {shlex.quote(cache_dir)} {shlex.quote(share_claude)} "
+        f"{shlex.quote(bin_dir)} && "
+        f"ln -sfn {shlex.quote(cache_dir)} {shlex.quote(versions_link)}"
+    )
+    if setup.exit_code != 0:
+        raise RuntimeError(
+            f"claude runtime prep (mkdir/symlink) failed (exit {setup.exit_code}): "
+            f"{setup.stderr.strip()[:200]}"
+        )
+
+    newest = await _newest_cached_version(host, cache_dir)
+    if newest is not None:
+        # Cache hit — point the per-task bin at the newest cached version.
+        # Path goes through the versions symlink so it resolves into the cache.
+        await host.run_command(
+            f"ln -sfn {shlex.quote(versions_link + '/' + newest)} {shlex.quote(bin_claude)}"
+        )
+        if await _claude_version_ok(host, bin_claude):
+            return bin_claude
+        # Fall through to (re)install if the cached version is unusable.
 
     if not install_if_missing:
         raise RuntimeError(
-            f"claude not present at {claude_path!r} on host and "
+            f"claude not present in cache {cache_dir!r} on host and "
             f"install_if_missing=False; nothing to do."
         )
 
     hook_ctx.report_progress(None, "Installing claude (vendor install.sh)…")
-    install_cmd = f"curl -fsSL {shlex.quote(_CLAUDE_INSTALL_URL)} | bash"
+    install_cmd = (
+        f"env HOME={shlex.quote(home)} sh -c "
+        f"{shlex.quote(f'curl -fsSL {_CLAUDE_INSTALL_URL} | bash')}"
+    )
     result = await host.run_command(install_cmd)
     if result.exit_code != 0:
         raise RuntimeError(
             f"claude install failed on host (exit {result.exit_code}): "
             f"{result.stderr.strip()[:300]}"
         )
-
-    if not await _claude_present(host, claude_path):
+    if not await _claude_version_ok(host, bin_claude):
         raise RuntimeError(
-            f"claude install reported success but {claude_path!r} is still "
-            f"not executable on the host. Inspect the host's "
-            f"~/.local/bin and ~/.local/share/claude/versions for diagnostics."
+            f"claude install reported success but {bin_claude!r} is still not "
+            f"executable. Inspect the cache {cache_dir!r} and "
+            f"{versions_link!r} on the host for diagnostics."
         )
-    return claude_path
+    return bin_claude
 
 
 async def _ttyd_present(host: "Host", ttyd_path: str) -> bool:
@@ -280,22 +344,20 @@ def build_ttyd_argv(
     Layout:
       <ttyd_path> -W -i <iface> -p <port> -m 1 -T xterm-256color --
       env HOME=<workdir>/home PATH=<home>/.local/bin:... [<extra-env...>]
-      bash -c 'mkdir -p <home>/.local/bin && ln -sf <claude_path> <home>/.local/bin/claude
-               && cd <workdir> && <claude_path> [<claude_flags...>]; rc=$?;
+      bash -c 'cd <workdir> && <claude_path> [<flags...>]; rc=$?;
                <append DONE (rc 0) | ERROR: claude exited <rc> to optio.log>'
 
-    claude is installed under the *real* host home's ``.local/bin`` (that's
-    where ``resolve_host_home`` points at install time), but the session
-    runs HOME-isolated (``HOME=<workdir>/home``). So at launch we symlink
-    claude into the isolated home's ``.local/bin`` and prepend that dir to
-    PATH — otherwise claude warns that ``~/.local/bin`` is missing / not on
-    PATH. Any caller-/shim-supplied PATH (e.g. browser shims) is merged in,
-    not dropped.
+    ``claude_path`` is ``<workdir>/home/.local/bin/claude`` (provisioned by
+    ensure_claude_installed: a symlink into the shared version cache via
+    home/.local/share/claude/versions). We prepend home/.local/bin to PATH so
+    the agent's own ``claude`` invocations resolve. claude runs (NOT exec'd) so
+    that when it exits without writing DONE, the wrapper appends a terminal
+    protocol line; the driver's optio.log tail then completes the session and
+    its teardown reaps the (otherwise lingering) ttyd.
     """
     workdir_clean = workdir.rstrip("/")
     home_dir = f"{workdir_clean}/home"
     home_local_bin = f"{home_dir}/.local/bin"
-    claude_link = f"{home_local_bin}/claude"
 
     extra = dict(extra_env or {})
     base_path = extra.pop("PATH", None) or os.environ.get(
@@ -309,23 +371,9 @@ def build_ttyd_argv(
         env_assignments.append(f"{k}={v}")
 
     claude_argv = " ".join(shlex.quote(c) for c in [claude_path, *claude_flags])
-    # Symlink claude into the isolated home's bin (idempotent; skipped when
-    # the install dir already IS that bin, which would make ln a same-file
-    # error).
-    link_cmd = (
-        f"mkdir -p {shlex.quote(home_local_bin)} && "
-        f"{{ [ {shlex.quote(claude_path)} = {shlex.quote(claude_link)} ] || "
-        f"ln -sf {shlex.quote(claude_path)} {shlex.quote(claude_link)} ; }} && "
-    )
-    # Run claude (NOT exec) so that when it exits — e.g. the operator types
-    # `exit` without writing DONE — the wrapper appends a terminal protocol
-    # line. The driver's optio.log tail then completes the session and its
-    # teardown reaps the (otherwise lingering) ttyd. ttyd 1.7 has no
-    # "exit when child exits" flag; -o/-q key off *client* disconnect and
-    # would kill live tasks on a tab close, so they are the wrong lever.
     log_path = f"{workdir_clean}/optio.log"
     bash_payload = (
-        f"{link_cmd}cd {shlex.quote(workdir_clean)} && {claude_argv}; rc=$?; "
+        f"cd {shlex.quote(workdir_clean)} && {claude_argv}; rc=$?; "
         f'if [ "$rc" = 0 ]; then echo DONE >> {shlex.quote(log_path)}; '
         f"else printf 'ERROR: claude exited %s\\n' \"$rc\" >> {shlex.quote(log_path)}; fi"
     )

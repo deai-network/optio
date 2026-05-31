@@ -127,6 +127,16 @@ async def run_claudecode_session(
         # fresh-start (the decrypt call is intentionally outside any
         # except, so it surfaces straight to the caller).
         await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
+        # restore_workdir empties + repopulates the workdir, wiping the claude
+        # runtime set up above (home/.local/share/claude/versions symlink +
+        # bin/claude — they live IN the workdir now, unlike the old real-home
+        # install). Re-establish it on the restored tree so launch finds claude.
+        # Idempotent: cache hit → just relinks; no reinstall.
+        await host_actions.ensure_claude_installed(
+            hook_ctx_outer,
+            install_if_missing=config.install_if_missing,
+            install_dir=config.claude_install_dir,
+        )
         payload = await _read_blob_bytes(ctx, snapshot["sessionBlobId"])
         decrypt = config.session_blob_decrypt or (lambda b: b)
         plain = decrypt(payload)
@@ -420,15 +430,14 @@ async def _capture_snapshot(
     await host.run_command(f"rm -rf {shlex.quote(workdir)}/home/.claude")
     _trace("capture: rm -rf home/.claude DONE")
 
-    # 4b. Drop heavy, regenerable junk that accumulates under the isolated
-    # HOME so it does not bloat the workdir snapshot. The claude binary
-    # (home/.local/share/claude, ~230MB) is reinstalled on resume by
-    # ensure_claude_installed; mozilla cache/profile are pure scratch. Left
-    # in place, gzipping them in memory blows the cancellation grace period.
+    # 4b. Drop regenerable scratch that would bloat the workdir snapshot.
+    # The claude binary is NOT here: home/.local/share/claude/versions is a
+    # symlink to the shared optio cache, which os.walk does not follow and CLI
+    # tar stores as a symlink, so it never enters the archive. mozilla
+    # cache/profile are pure scratch.
     _trace("capture: rm -rf regenerable home dirs START")
     await host.run_command(
         "rm -rf "
-        f"{shlex.quote(workdir)}/home/.local/share/claude "
         f"{shlex.quote(workdir)}/home/.cache/mozilla "
         f"{shlex.quote(workdir)}/home/.mozilla"
     )

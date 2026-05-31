@@ -47,6 +47,11 @@ class ClaudeCodeTaskConfig:
 
     install_if_missing: bool = True
     install_ttyd_if_missing: bool = True
+    # Override for the optio-owned claude **version cache** directory (where
+    # claude version binaries are installed/cached on the worker, via the
+    # per-task home/.local/share/claude/versions symlink). None → the worker's
+    # ``OPTIO_CLAUDECODE_CACHE_DIR`` or ``${XDG_CACHE_HOME:-$HOME/.cache}/
+    # optio-claudecode/versions``. Never the host user's ~/.local/~/.claude.
     claude_install_dir: str | None = None
     ttyd_install_dir: str | None = None
 
