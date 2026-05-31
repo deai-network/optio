@@ -136,6 +136,7 @@ async def run_claudecode_session(
             hook_ctx_outer,
             install_if_missing=config.install_if_missing,
             install_dir=config.claude_install_dir,
+            progress_label="Restoring Claude Code runtime…",
         )
         payload = await _read_blob_bytes(ctx, snapshot["sessionBlobId"])
         decrypt = config.session_blob_decrypt or (lambda b: b)
@@ -152,6 +153,12 @@ async def run_claudecode_session(
     async def _claudecode_body(host: Host, hook_ctx: HookContext) -> None:
         nonlocal launched_handle
 
+        # focus_mode: layer the quiet-TUI knobs (focus view + fullscreen) onto
+        # the planted settings, plus the no-flicker launch env. Off → passthrough.
+        effective_claude_config, focus_env = host_actions.build_focus_mode(
+            focus_mode=config.focus_mode, claude_config=config.claude_config,
+        )
+
         refreshed_files: list[str] = []
         if not resuming:
             # Fresh start: protocol driver has created workdir,
@@ -160,7 +167,7 @@ async def run_claudecode_session(
             await host_actions.plant_home_files(
                 host,
                 credentials_json=config.credentials_json,
-                claude_config=config.claude_config,
+                claude_config=effective_claude_config,
             )
             if config.seed_id is not None:
                 # Seeded fresh: overlay the stored environment on top of
@@ -218,6 +225,7 @@ async def run_claudecode_session(
         ]
         launch_env = {
             **(config.env or {}),
+            **focus_env,
             **(hook_ctx.browser_launch_env or {}),
         }
         ctx.report_progress(None, "Launching Claude Code…")

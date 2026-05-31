@@ -210,6 +210,8 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     supports_resume=True,
                     # Kick the agent off unattended (reads CLAUDE.md + executes).
                     auto_start=True,
+                    # Quiet TUI: one-line tool-call summaries, no bash spam.
+                    focus_mode=True,
                 ),
             )
         )

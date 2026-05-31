@@ -99,6 +99,7 @@ async def ensure_claude_installed(
     *,
     install_if_missing: bool = True,
     install_dir: str | None = None,
+    progress_label: str = "Preparing Claude Code…",
 ) -> str:
     """Provision claude for this task from the shared, optio-owned version cache.
 
@@ -127,7 +128,7 @@ async def ensure_claude_installed(
 
     cache_dir = await _resolve_cache_dir(host, install_dir)
 
-    hook_ctx.report_progress(None, "Preparing Claude Code…")
+    hook_ctx.report_progress(None, progress_label)
     setup = await host.run_command(
         f"mkdir -p {shlex.quote(cache_dir)} {shlex.quote(share_claude)} "
         f"{shlex.quote(bin_dir)} && "
@@ -489,3 +490,21 @@ def build_auto_start_args(*, auto_start: bool, pass_continue: bool) -> list[str]
     if auto_start and not pass_continue:
         return [AUTO_START_PROMPT]
     return []
+
+
+def build_focus_mode(
+    *, focus_mode: bool, claude_config: "dict[str, Any] | None",
+) -> "tuple[dict[str, Any] | None, dict[str, str]]":
+    """Layer the quiet-TUI knobs onto settings + launch env when focus_mode is set.
+
+    Returns ``(effective_claude_config, env_additions)``. When on:
+      - settings.json gains ``tui=fullscreen`` + ``viewMode=focus`` (focus view
+        collapses tool calls to one-line summaries; requires fullscreen TUI),
+      - the launch env gains ``CLAUDE_CODE_NO_FLICKER=1`` (enables fullscreen
+        rendering, the prerequisite for focus view).
+    Off → passthrough (config unchanged, no env additions).
+    """
+    if not focus_mode:
+        return claude_config, {}
+    merged = {**(claude_config or {}), "tui": "fullscreen", "viewMode": "focus"}
+    return merged, {"CLAUDE_CODE_NO_FLICKER": "1"}

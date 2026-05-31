@@ -472,3 +472,21 @@ def test_auto_start_args_suppressed_on_resume():
 
 def test_auto_start_args_off_by_default():
     assert host_actions.build_auto_start_args(auto_start=False, pass_continue=False) == []
+
+
+def test_focus_mode_off_passthrough():
+    cfg, env = host_actions.build_focus_mode(focus_mode=False, claude_config={"x": 1})
+    assert cfg == {"x": 1}
+    assert env == {}
+
+
+def test_focus_mode_on_layers_settings_and_env():
+    cfg, env = host_actions.build_focus_mode(focus_mode=True, claude_config={"x": 1})
+    assert cfg == {"x": 1, "tui": "fullscreen", "viewMode": "focus"}
+    assert env == {"CLAUDE_CODE_NO_FLICKER": "1"}
+
+
+def test_focus_mode_on_with_none_config():
+    cfg, env = host_actions.build_focus_mode(focus_mode=True, claude_config=None)
+    assert cfg == {"tui": "fullscreen", "viewMode": "focus"}
+    assert env == {"CLAUDE_CODE_NO_FLICKER": "1"}

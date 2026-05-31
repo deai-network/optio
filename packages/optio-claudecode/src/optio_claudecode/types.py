@@ -46,6 +46,11 @@ class ClaudeCodeTaskConfig:
     # ("Read CLAUDE.md and execute the task it describes") so claude starts the
     # task unattended. Suppressed on resume (--continue) to avoid re-triggering.
     auto_start: bool = False
+    # When True, run claude in focus view + fullscreen TUI (settings.json
+    # tui=fullscreen, viewMode=focus) with CLAUDE_CODE_NO_FLICKER=1 in the launch
+    # env, so tool calls collapse to one-line summaries instead of showing every
+    # bash command/output. Layered onto any consumer-supplied claude_config.
+    focus_mode: bool = False
 
     ssh: SSHConfig | None = None
 
