@@ -156,7 +156,7 @@ async def ensure_claude_installed(
             f"install_if_missing=False; nothing to do."
         )
 
-    hook_ctx.report_progress(None, "Installing claude (vendor install.sh)…")
+    hook_ctx.report_progress(None, "Installing Claude Code…")
     install_cmd = (
         f"env HOME={shlex.quote(home)} sh -c "
         f"{shlex.quote(f'curl -fsSL {_CLAUDE_INSTALL_URL} | bash')}"
