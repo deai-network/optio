@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import inspect
 import json
 import logging
 import os
@@ -33,8 +34,10 @@ from optio_agents import HookContext
 from optio_host.host import Host, LocalHost, ProcessHandle, RemoteHost
 from optio_host.paths import task_dir
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
+from optio_agents import seeds as _seeds
 from optio_opencode import host_actions
 from optio_opencode.prompt import compose_agents_md
+from optio_opencode.seed_manifest import OPENCODE_SEED_MANIFEST, OPENCODE_SEED_SUFFIX
 from optio_agents import get_protocol
 from optio_opencode.snapshots import (
     insert_snapshot,
@@ -48,6 +51,10 @@ _LOG = logging.getLogger(__name__)
 
 
 READY_TIMEOUT_S = 30.0
+
+# Fresh-launch kickoff prompt POSTed to the pre-created opencode session so the
+# agent starts the task unattended. Suppressed on resume.
+AUTO_START_PROMPT = "Read AGENTS.md and execute the task it describes"
 
 
 def _build_host(config: OpencodeTaskConfig, process_id: str) -> Host:
@@ -182,6 +189,18 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             await host.write_text(
                 "opencode.json", json.dumps(config.opencode_config, indent=2),
             )
+            if config.seed_id is not None:
+                # Seeded fresh: overlay the stored environment into
+                # <workdir>/home, where the launch's XDG_DATA_HOME /
+                # XDG_CONFIG_HOME point, so the seeded auth.json / opencode.json
+                # are used. Begins a NEW session — no resume.
+                await _seeds.merge_seed(
+                    ctx, host,
+                    seed_id=config.seed_id,
+                    manifest=OPENCODE_SEED_MANIFEST,
+                    suffix=OPENCODE_SEED_SUFFIX,
+                    decrypt=config.session_blob_decrypt,
+                )
             # Note: do NOT call ctx.clear_has_saved_state() here. The spec
             # described it as "belt-and-braces", but in practice it makes
             # `hasSavedState` track the live session rather than the durable
@@ -286,6 +305,15 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         })
         ctx.report_progress(None, "opencode is live")
 
+        # auto_start: on a fresh launch, POST the kickoff prompt to the
+        # pre-created session so opencode starts the task unattended.
+        # Suppressed on resume (the restored session already carries its
+        # conversation; re-prompting would re-trigger the task).
+        if config.auto_start and not resuming:
+            await _post_opencode_prompt(
+                worker_port, password, session_id, AUTO_START_PROMPT,
+            )
+
         # --- await opencode subprocess exit -----------------------------
         # The protocol driver runs this body alongside the tail dispatcher
         # and a cancel watcher.  When the user cancels, the driver cancels
@@ -335,6 +363,18 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             except Exception:  # noqa: BLE001
                 _LOG.exception("terminate_subprocess failed")
 
+        if not resuming and config.on_seed_saved is not None:
+            try:
+                seed_id_out = await _seeds.capture_seed(
+                    ctx, host,
+                    manifest=OPENCODE_SEED_MANIFEST,
+                    suffix=OPENCODE_SEED_SUFFIX,
+                    encrypt=config.session_blob_encrypt,
+                )
+                await _call_maybe_async(config.on_seed_saved, seed_id_out)
+            except Exception:  # noqa: BLE001
+                _LOG.exception("opencode seed capture failed; callback not fired")
+
         if config.supports_resume and session_id is not None:
             try:
                 await _capture_snapshot(
@@ -382,6 +422,13 @@ async def _read_blob_bytes(ctx: ProcessContext, blob_id) -> bytes:
                 break
             out.extend(chunk)
     return bytes(out)
+
+
+async def _call_maybe_async(fn, *args) -> None:
+    """Invoke a callback that may be sync or async."""
+    result = fn(*args)
+    if inspect.isawaitable(result):
+        await result
 
 
 async def _capture_snapshot(
@@ -608,6 +655,62 @@ async def _create_opencode_session(port: int, password: str, directory: str) -> 
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None, _create_opencode_session_sync, port, password, directory
+    )
+
+
+def _post_opencode_prompt_sync(
+    port: int, password: str, session_id: str, message: str,
+) -> None:
+    """Blocking HTTP POST of a kickoff prompt to opencode's session route.
+
+    Called via an executor from :func:`_post_opencode_prompt`. Mirrors
+    :func:`_create_opencode_session_sync`'s BasicAuth + transient-retry pattern
+    (the first request over a freshly-opened SSH local forward occasionally
+    drops while asyncssh wires up the channel).
+
+    NOTE: the request body shape below is PENDING live-spike confirmation
+    (Task 7 Step 4 of the parity plan). The plan's suggested shape is
+    ``{"parts": [{"type": "text", "text": <message>}]}``; the live spike against
+    a running opencode server confirms the accepted shape. Update here once
+    the spike resolves.
+    """
+    import base64 as _b64
+    import time
+    import urllib.request
+    from urllib.error import URLError
+
+    auth_token = _b64.b64encode(f"opencode:{password}".encode("utf-8")).decode("ascii")
+    url = f"http://127.0.0.1:{port}/api/session/{session_id}/prompt"
+    headers = {
+        "content-type": "application/json",
+        "authorization": f"Basic {auth_token}",
+    }
+    # PENDING live-spike confirmation (Task 7 Step 4): see docstring above.
+    payload = json.dumps({"parts": [{"type": "text", "text": message}]}).encode("utf-8")
+
+    last_exc: Exception | None = None
+    for attempt in range(4):
+        if attempt > 0:
+            time.sleep(0.15 * attempt)
+        req = urllib.request.Request(url, method="POST", data=payload, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                resp.read()
+            return
+        except (URLError, ConnectionError, OSError) as exc:
+            last_exc = exc
+            continue
+    raise RuntimeError(
+        f"opencode session prompt failed after retries: {last_exc!r}"
+    )
+
+
+async def _post_opencode_prompt(
+    port: int, password: str, session_id: str, message: str,
+) -> None:
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None, _post_opencode_prompt_sync, port, password, session_id, message
     )
 
 

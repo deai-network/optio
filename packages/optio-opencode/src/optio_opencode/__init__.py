@@ -14,6 +14,13 @@ from optio_opencode.types import (
     HookCallback,
     OpencodeTaskConfig,
 )
+from optio_opencode.seed_manifest import (
+    OPENCODE_SEED_MANIFEST,
+    OPENCODE_SEED_SUFFIX,
+    delete_seed,
+    list_seeds,
+    purge_seed,
+)
 
 # asyncssh emits per-connection / per-channel INFO lines ("Opening SSH
 # connection...", "Received channel close", etc.) that flood the worker's
@@ -34,4 +41,9 @@ __all__ = [
     "HostCommandError",
     "RunResult",
     "HookCallback",
+    "OPENCODE_SEED_MANIFEST",
+    "OPENCODE_SEED_SUFFIX",
+    "delete_seed",
+    "list_seeds",
+    "purge_seed",
 ]

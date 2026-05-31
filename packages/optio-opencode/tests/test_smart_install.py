@@ -14,6 +14,13 @@ class _FakeHost:
         self.calls = []
 
     async def run_command(self, command, *, cwd=None, env=None):
+        # The binary-cache resolver issues `printf %s "${OPENCODE_CACHE_DIR:-…}"`
+        # first when no install_dir is given; answer with a canned cache path so
+        # the scripted results still feed the real (smart-install) commands.
+        if command.startswith("printf %s"):
+            return RunResult(
+                stdout="/home/test/.cache/optio-opencode/bin", stderr="", exit_code=0,
+            )
         self.calls.append(command)
         return self._results.pop(0)
 
@@ -197,7 +204,7 @@ async def test_install_opencode_from_zip_happy_path(zip_server, tmp_path):
 
         path = await _install_opencode_from_zip(hook_ctx, url)
 
-        assert path == str(fake_home / ".local" / "bin" / "opencode")
+        assert path == str(fake_home / ".cache" / "optio-opencode" / "bin" / "opencode")
         # Installed and executable.
         st = os.stat(path)
         assert st.st_mode & 0o111, "install path is not executable"
@@ -290,7 +297,7 @@ async def test_ensure_opencode_installed_returns_existing_path_when_ok(monkeypat
     parent = _ExecutingFakeCtx()
     hook_ctx = HookContext(parent, host)
 
-    path = await host_actions.ensure_opencode_installed(hook_ctx)
+    path = await host_actions.ensure_opencode_installed(hook_ctx, install_dir="/opt/bin")
     assert path == "/usr/local/bin/opencode"
 
 
@@ -316,7 +323,7 @@ async def test_ensure_opencode_installed_raises_when_install_disabled(monkeypatc
 
     with pytest.raises(RuntimeError, match="install_if_missing"):
         await host_actions.ensure_opencode_installed(
-            hook_ctx, install_if_missing=False,
+            hook_ctx, install_if_missing=False, install_dir="/opt/bin",
         )
 
 
@@ -351,7 +358,7 @@ async def test_ensure_opencode_installed_installs_when_download_required(
         hook_ctx = HookContext(parent, host)
 
         path = await host_actions.ensure_opencode_installed(hook_ctx)
-        assert path == str(fake_home / ".local" / "bin" / "opencode")
+        assert path == str(fake_home / ".cache" / "optio-opencode" / "bin" / "opencode")
         st = os.stat(path)
         assert st.st_mode & 0o111
     finally:
@@ -434,17 +441,18 @@ async def test_ensure_opencode_installed_respects_custom_install_dir(
     assert observed_install_dirs == [str(custom_dir)]
 
 
-async def test_ensure_opencode_installed_default_install_dir_is_home_local_bin(
+async def test_ensure_opencode_installed_default_install_dir_is_cache(
     monkeypatch, tmp_path,
 ):
-    """When ``install_dir`` is omitted, the default is
-    ``<host_home>/.local/bin``."""
+    """When ``install_dir`` is omitted, the default is the optio-owned binary
+    cache (``${XDG_CACHE_HOME:-$HOME/.cache}/optio-opencode/bin``), resolved on
+    the worker — NEVER the host ~/.local/bin."""
     from optio_agents import HookContext
     from optio_opencode import host_actions
 
     fake_home = tmp_path / "home"
     fake_home.mkdir()
-    expected_default = f"{fake_home}/.local/bin"
+    expected_default = f"{fake_home}/.cache/optio-opencode/bin"
 
     observed: list[str] = []
 
@@ -461,11 +469,14 @@ async def test_ensure_opencode_installed_default_install_dir_is_home_local_bin(
             return str(fake_home)
 
         async def run_command(self, command, *, cwd=None, env=None):
-            # Sole expected call: the post-ok ``bash -lc 'export
-            # PATH=...; command -v opencode'`` lookup. Return a path.
+            # First: the cache-dir resolve (printf %s "${OPENCODE_CACHE_DIR:-…}")
+            # — answer with the resolved cache path. Then: the post-ok
+            # ``command -v opencode`` lookup carrying that dir on PATH.
+            if command.startswith("printf %s"):
+                return RunResult(stdout=expected_default, stderr="", exit_code=0)
             assert "command -v opencode" in command, command
-            assert str(fake_home) in command, (
-                "post-ok lookup must carry the default install_dir on PATH"
+            assert expected_default in command, (
+                "post-ok lookup must carry the default cache dir on PATH"
             )
             return RunResult(
                 stdout=f"{expected_default}/opencode\n", stderr="", exit_code=0,
@@ -477,4 +488,5 @@ async def test_ensure_opencode_installed_default_install_dir_is_home_local_bin(
 
     path = await host_actions.ensure_opencode_installed(hook_ctx)
     assert path == f"{expected_default}/opencode"
+    assert observed == [expected_default]  # resolved cache flows into smart-install
     assert observed == [expected_default]

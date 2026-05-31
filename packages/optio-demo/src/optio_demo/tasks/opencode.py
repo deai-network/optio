@@ -1,7 +1,18 @@
-"""Reference demo task for optio-opencode.
+"""Reference demo tasks for optio-opencode — the seed lifecycle.
+
+Exposes a static **"Opencode demo"** task (the original additive demo),
+a static **"Setup opencode seed"** task, plus one dynamic **"opencode
+demo — {name}"** task per captured seed. The operator launches setup,
+connects a provider in the web TUI, configures plugins, then stops the
+task; on teardown the environment is captured as a seed and a
+seed-pinned demo task appears (via in-process ``resync``).
+Authentication comes from the seed — opencode runs under HOME/XDG
+isolation (``HOME=<workdir>/home``, ``XDG_*`` underneath), so the host
+user's ``~/.local/share/opencode`` is not inherited; the seed supplies
+``auth.json`` / config / plugins instead.
 
 Defaults to local mode; set the ``OPTIO_OPENCODE_DEMO_SSH_HOST``
-environment variable to run the same task via SSH on a remote host.
+environment variable to run the same tasks via SSH on a remote host.
 Relevant env vars (all optional except ``_HOST``):
 
 - ``OPTIO_OPENCODE_DEMO_SSH_HOST`` — enables remote mode.
@@ -26,6 +37,7 @@ Hook walkthrough:
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 
 from optio_core.models import TaskInstance
 from optio_opencode import (
@@ -50,6 +62,19 @@ CONSUMER_PROMPT = (
     "color, and the number 42. Then signal completion by appending a "
     "`DONE` line to the `./optio.log` file (writing `DONE` in the chat "
     "has no effect — it must go into that file)."
+)
+
+
+DEMO_SEED_COLLECTION_SUFFIX = "_demo_opencode_seeds"
+
+SEED_SETUP_PROMPT = (
+    "This is a one-time setup session. Use the terminal to connect a "
+    "provider in opencode (open the web TUI and authenticate) and "
+    "install any plugins or MCP servers you want available to demo "
+    "tasks. When you are done, STOP this task from the dashboard — your "
+    "configuration (credentials, settings, plugins) will be captured as "
+    "a reusable seed, and a new 'opencode demo' task pinned to that seed "
+    "will appear automatically."
 )
 
 
@@ -108,8 +133,33 @@ async def _after_execute(hook_ctx: HookContext) -> None:
     )
 
 
-def get_tasks() -> list[TaskInstance]:
-    return [
+def _make_on_seed_saved(db, prefix: str, fw):
+    coll = db[f"{prefix}{DEMO_SEED_COLLECTION_SUFFIX}"]
+
+    async def _on_seed_saved(seed_id: str) -> None:
+        # Cosmetic numbering; a concurrent-save race may reuse a number —
+        # acceptable, the seedId is the real key.
+        count = await coll.count_documents({})
+        name = f"Config #{count + 1}"
+        await coll.insert_one({
+            "seedId": seed_id,
+            "name": name,
+            "createdAt": datetime.now(timezone.utc),
+        })
+        # Regenerate the task list so a seed-pinned demo task appears.
+        await fw.resync()
+
+    return _on_seed_saved
+
+
+async def get_tasks(services: dict) -> list[TaskInstance]:
+    db = services["db"]
+    prefix = services["prefix"]
+    fw = services["optio"]
+    ssh = _resolve_ssh_config()
+
+    tasks: list[TaskInstance] = [
+        # The original, additive demo task (no seed; vanilla session).
         create_opencode_task(
             process_id="opencode-demo",
             name="Opencode demo",
@@ -123,10 +173,60 @@ def get_tasks() -> list[TaskInstance]:
             ),
             config=OpencodeTaskConfig(
                 consumer_instructions=CONSUMER_PROMPT,
-                ssh=_resolve_ssh_config(),
+                ssh=ssh,
                 before_execute=_before_execute,
                 after_execute=_after_execute,
                 on_deliverable=_on_deliverable,
             ),
-        )
+        ),
+        # The seed setup task: vanilla (no seed_id), on_seed_saved wired.
+        # The login browser stays suppressed (the opencode launch default);
+        # no redirect/OAuth handling is built here.
+        create_opencode_task(
+            process_id="opencode-seed-setup",
+            name="Setup opencode seed",
+            description=(
+                "One-time: connect a provider in opencode and configure "
+                "plugins, then stop the task to capture a reusable seed. "
+                "A new seed-pinned demo task appears afterward."
+            ),
+            config=OpencodeTaskConfig(
+                consumer_instructions=SEED_SETUP_PROMPT,
+                ssh=ssh,
+                # Interactive login; no resume for a one-time setup session.
+                supports_resume=False,
+                on_seed_saved=_make_on_seed_saved(db, prefix, fw),
+            ),
+        ),
     ]
+
+    # One seed-pinned demo task per recorded seed.
+    coll = db[f"{prefix}{DEMO_SEED_COLLECTION_SUFFIX}"]
+    async for rec in coll.find({}, projection={"seedId": 1, "name": 1}):
+        seed_id = rec["seedId"]
+        name = rec.get("name", seed_id)
+        tasks.append(
+            create_opencode_task(
+                process_id=f"opencode-demo-seed-{seed_id}",
+                name=f"opencode demo — {name}",
+                description=(
+                    "Fresh opencode session started from a captured "
+                    f"seed ({name}): authenticated and configured, new "
+                    "conversation. Reads context.txt, asks for a color, "
+                    "ships a deliverable."
+                ),
+                config=OpencodeTaskConfig(
+                    consumer_instructions=CONSUMER_PROMPT,
+                    ssh=ssh,
+                    before_execute=_before_execute,
+                    after_execute=_after_execute,
+                    on_deliverable=_on_deliverable,
+                    seed_id=seed_id,
+                    supports_resume=True,
+                    # Kick the agent off unattended (reads AGENTS.md + executes).
+                    auto_start=True,
+                ),
+            )
+        )
+
+    return tasks

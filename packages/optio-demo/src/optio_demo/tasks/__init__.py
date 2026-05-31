@@ -24,7 +24,7 @@ async def get_task_definitions(
         *festival_tasks(),
         *wakeup_tasks(),
         *marimo_tasks(),
-        *opencode_tasks(),
+        *await opencode_tasks(services),
         *client_directed_tasks(),
         *await claudecode_tasks(services),
     ]

@@ -7,7 +7,7 @@ is owned by ``optio-host``. This module re-exports them so existing
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from optio_agents.protocol.session import DeliverableCallback, HookCallback
 from optio_host.types import SSHConfig
@@ -24,12 +24,14 @@ class OpencodeTaskConfig:
     ssh: SSHConfig | None = None
     on_deliverable: DeliverableCallback | None = None
     install_if_missing: bool = True
-    # Absolute path on the host where the opencode binary is/should be
-    # installed. ``None`` (default) → ``~/.local/bin`` (user home resolved
-    # at task start). The same directory is used for installation, for
-    # smart-install's PATH lookup, and for the post-"ok" ``command -v``
-    # resolution, so an explicit override stays consistent across all
-    # three. Must be an absolute path when set.
+    # Override for the optio-owned opencode binary **cache** directory (where
+    # the opencode binary is installed/cached on the worker). ``None``
+    # (default) → the worker's ``OPENCODE_CACHE_DIR`` or
+    # ``${XDG_CACHE_HOME:-$HOME/.cache}/optio-opencode/bin``. Never the host
+    # user's ``~/.local/bin``. The same directory is used for installation,
+    # for smart-install's ``--check`` lookup, and for the post-"ok"
+    # ``command -v`` resolution, so an explicit override stays consistent
+    # across all three. Must be an absolute path when set.
     opencode_install_dir: str | None = None
     workdir_exclude: list[str] | None = None
     supports_resume: bool = True
@@ -50,6 +52,14 @@ class OpencodeTaskConfig:
     # `REFRESHED:AGENTS.md` so the agent knows to re-read. None (default)
     # → no refresh; the resumed session keeps its original AGENTS.md.
     on_resume_refresh: Callable[["OpencodeTaskConfig"], "OpencodeTaskConfig"] | None = None
+
+    # --- seed surface (mirrors optio-claudecode) ---
+    seed_id: str | None = None
+    on_seed_saved: "Callable[[str], Awaitable[None] | None] | None" = None
+    # Fresh launch kicks the agent off unattended via the opencode session API
+    # (POST /api/session/<id>/prompt "Read AGENTS.md and execute the task it
+    # describes"); suppressed on resume.
+    auto_start: bool = False
 
     def __post_init__(self) -> None:
         e = self.session_blob_encrypt is not None

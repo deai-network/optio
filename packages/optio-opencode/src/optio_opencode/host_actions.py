@@ -9,8 +9,10 @@ Install path is uniform: ``ensure_opencode_installed`` drives
 csillag/opencode's ``smart-install.sh --check`` and, when needed, downloads
 the release zip as an optio child task (`HookContext.download_file`),
 unpacks it on the host, and places the binary at
-``<install_dir>/opencode``. ``install_dir`` defaults to
-``~/.local/bin`` (resolved per host) and is overridable via the
+``<install_dir>/opencode``. ``install_dir`` defaults to the optio-owned
+binary cache on the worker
+(``OPENCODE_CACHE_DIR`` / ``${XDG_CACHE_HOME:-$HOME/.cache}/optio-opencode/bin``,
+resolved per host — never the host home bin dir) and is overridable via the
 ``install_dir`` keyword argument on the public entry points; consumers
 expose this as ``OpencodeTaskConfig.opencode_install_dir``.
 No isinstance branches.
@@ -36,23 +38,53 @@ _SMART_INSTALL_URL = (
     "https://raw.githubusercontent.com/csillag/opencode/main/smart-install.sh"
 )
 
-# Sub-path of the host's $HOME used as the default opencode install
-# directory when no explicit ``install_dir`` is supplied. Kept as a
-# constant so the three places that care about it (smart-install PATH
-# augmentation, post-ok ``command -v`` lookup, ``_install_opencode_from_zip``
-# install target) stay in agreement.
-DEFAULT_INSTALL_SUBDIR = ".local/bin"
+# The optio-owned opencode binary cache lives on the WORKER, never in the host
+# user's home bin dir. Default cache:
+# ``${XDG_CACHE_HOME:-$HOME/.cache}/optio-opencode/bin``, overridable via the
+# ``OPENCODE_CACHE_DIR`` env var on the worker. Kept as a constant so the places
+# that care about it (smart-install PATH augmentation, post-ok ``command -v``
+# lookup, ``_install_opencode_from_zip`` install target) stay in agreement.
+_OPENCODE_CACHE_SHELL_DEFAULT = (
+    '${OPENCODE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/optio-opencode/bin}'
+)
 
 
 async def _resolve_install_dir(host: "Host", install_dir: str | None) -> str:
-    """Return ``install_dir`` if given, else the host's default install dir.
+    """Resolve the opencode binary-cache dir as an absolute path on the worker.
 
-    Default: ``<host_home>/<DEFAULT_INSTALL_SUBDIR>``.
-    """
+    ``install_dir`` (config.opencode_install_dir) overrides. Else the worker's
+    OPENCODE_CACHE_DIR / XDG_CACHE_HOME / $HOME decide it — resolved via a shell
+    echo so RemoteHost gets the remote cache. Resolved from the worker's REAL env
+    (this runs before per-task XDG isolation), so the cache stays shared and
+    outside any workdir → never snapshotted; evictable → smart-install re-downloads."""
     if install_dir is not None:
-        return install_dir
-    host_home = await host.resolve_host_home()
-    return f"{host_home}/{DEFAULT_INSTALL_SUBDIR}"
+        return install_dir.rstrip("/")
+    r = await host.run_command(f'printf %s "{_OPENCODE_CACHE_SHELL_DEFAULT}"')
+    path = r.stdout.strip()
+    if r.exit_code != 0 or not path:
+        raise RuntimeError(
+            f"failed to resolve opencode cache dir on host (exit {r.exit_code}): "
+            f"{r.stderr.strip()[:200]}"
+        )
+    return path.rstrip("/")
+
+
+def _isolation_env(host: "Host") -> dict[str, str]:
+    """Per-task HOME/XDG isolation env, derived from ``host.workdir``.
+
+    Merged into the launch env AND the export/import env so opencode's
+    auth/config/data go per-task under ``<workdir>/home`` (where the seed
+    manifest's ``home_subdir`` and merge/capture target). Distinct from the
+    binary cache (``_resolve_install_dir``), which is shared and resolved from
+    the worker's REAL env before this isolation applies.
+    """
+    home = f"{host.workdir.rstrip('/')}/home"
+    return {
+        "HOME": home,
+        "XDG_CONFIG_HOME": f"{home}/.config",
+        "XDG_DATA_HOME": f"{home}/.local/share",
+        "XDG_CACHE_HOME": f"{home}/.cache",
+    }
 
 
 def _path_augmented(cmd: str, install_dir: str) -> str:
@@ -61,9 +93,9 @@ def _path_augmented(cmd: str, install_dir: str) -> str:
     Used so smart-install's internal ``command -v opencode`` and the
     post-"ok" lookup find the binary at the install location even when
     the calling shell's PATH doesn't already include it (common: the
-    python process inherits a slimmed-down PATH that doesn't add
-    ``~/.local/bin``, so smart-install would falsely report "download"
-    and we'd reinstall on every task run).
+    python process inherits a slimmed-down PATH that doesn't add the
+    optio-owned opencode binary cache dir, so smart-install would falsely
+    report "download" and we'd reinstall on every task run).
     """
     return f'export PATH={shlex.quote(install_dir)}:"$PATH"; {cmd}'
 
@@ -80,8 +112,9 @@ async def _smart_install_check(
 
     ``install_dir`` is prepended to PATH inside the remote shell so
     smart-install's internal ``command -v opencode`` can see binaries
-    installed by a prior ``_install_opencode_from_zip``. Defaults to
-    ``~/.local/bin`` on the host.
+    installed by a prior ``_install_opencode_from_zip``. Defaults to the
+    optio-owned opencode binary cache on the worker (see
+    ``_resolve_install_dir``).
 
     Raises RuntimeError on non-zero exit or unparseable output.
     """
@@ -124,7 +157,8 @@ async def _install_opencode_from_zip(
       4. mkdir -p ``install_dir``; move binary there; chmod +x.
       5. Remove the tempdir.
 
-    ``install_dir`` defaults to ``~/.local/bin`` on the host when None.
+    ``install_dir`` defaults to the optio-owned opencode binary cache on
+    the worker when None (see ``_resolve_install_dir``).
 
     Returns the absolute install path on the host.
     """
@@ -194,7 +228,9 @@ async def ensure_opencode_installed(
 
     ``install_dir`` is the absolute path of the directory that holds (or
     will hold) the ``opencode`` binary on the host. When None (default),
-    resolves to ``<host_home>/.local/bin``. Pass an explicit absolute path
+    resolves to the optio-owned binary cache on the worker
+    (``OPENCODE_CACHE_DIR`` / ``${XDG_CACHE_HOME:-$HOME/.cache}/optio-opencode/bin``;
+    see ``_resolve_install_dir``). Pass an explicit absolute path
     to opt out of the default — the same dir is used for installation, for
     smart-install's PATH lookup, and for the post-"ok" ``command -v``
     resolution, so all three stay in agreement.
@@ -278,7 +314,7 @@ async def opencode_import(
     try:
         result = await host.run_command(
             f"bash -lc {shlex.quote(opencode_executable + ' import ' + shlex.quote(scratch))}",
-            env={"OPENCODE_DB": opencode_db_path},
+            env={**_isolation_env(host), "OPENCODE_DB": opencode_db_path},
         )
         if result.exit_code != 0:
             raise RuntimeError(
@@ -310,7 +346,7 @@ async def opencode_export(
         result = await host.run_command(
             f"bash -lc "
             f"{shlex.quote(opencode_executable + ' export ' + shlex.quote(session_id) + ' > ' + shlex.quote(scratch))}",
-            env={"OPENCODE_DB": opencode_db_path},
+            env={**_isolation_env(host), "OPENCODE_DB": opencode_db_path},
         )
         if result.exit_code != 0:
             raise RuntimeError(
@@ -381,7 +417,10 @@ async def launch_opencode(
     # against an empty file. Convention: opencode.db is a sibling of the
     # workdir under taskdir (session.py: opencode_db = f"{taskdir}/opencode.db").
     # The browser-suppression env (PATH prepend + BROWSER) comes from extra_env.
+    # The HOME/XDG isolation env (from _isolation_env) points opencode's
+    # auth/config/data at <workdir>/home so per-task seeding works.
     env = {
+        **_isolation_env(host),
         "OPENCODE_DB": f"{host.taskdir}/opencode.db",
         **(extra_env or {}),
     }
