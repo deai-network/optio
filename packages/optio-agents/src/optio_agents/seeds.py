@@ -117,6 +117,25 @@ async def list_seeds(
     return out
 
 
+async def purge_seed(
+    db: "AsyncIOMotorDatabase", *, prefix: str, suffix: str, seed_id: str,
+) -> None:
+    """Fully expunge a seed: remove its Mongo doc AND its GridFS blob.
+
+    Raises KeyError if no seed with that id exists. The blob is deleted
+    from the default GridFS bucket (the same one capture_seed/ctx blob
+    I/O use); a missing/already-deleted blob is tolerated since the doc
+    (the queryable record) is what matters."""
+    blob_id = await delete_seed(db, prefix=prefix, suffix=suffix, seed_id=seed_id)
+    if blob_id is None:
+        raise KeyError(f"unknown seed_id: {seed_id!r}")
+    from motor.motor_asyncio import AsyncIOMotorGridFSBucket
+    try:
+        await AsyncIOMotorGridFSBucket(db).delete(blob_id)
+    except Exception:
+        pass
+
+
 # --- engine ----------------------------------------------------------------
 
 

@@ -21,6 +21,7 @@ from optio_claudecode.seed_manifest import (
     CLAUDE_SEED_SUFFIX,
     delete_seed,
     list_seeds,
+    purge_seed,
 )
 
 
@@ -45,4 +46,5 @@ __all__ = [
     "CLAUDE_SEED_SUFFIX",
     "delete_seed",
     "list_seeds",
+    "purge_seed",
 ]

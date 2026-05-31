@@ -75,6 +75,11 @@ async def delete_seed(db, prefix: str, seed_id: str):
     )
 
 
+async def purge_seed(db, prefix: str, seed_id: str) -> None:
+    """Fully expunge a claudecode seed (doc + GridFS blob); raises KeyError if absent."""
+    await seeds.purge_seed(db, prefix=prefix, suffix=CLAUDE_SEED_SUFFIX, seed_id=seed_id)
+
+
 async def list_seeds(db, prefix: str) -> list[dict]:
     """List claudecode seeds as [{seedId, createdAt}, ...]."""
     return await seeds.list_seeds(db, prefix=prefix, suffix=CLAUDE_SEED_SUFFIX)

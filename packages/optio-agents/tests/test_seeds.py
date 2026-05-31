@@ -44,6 +44,32 @@ async def test_load_and_delete_tolerate_bad_id(mongo_db):
     assert await seeds.delete_seed(mongo_db, prefix="t", suffix=SUFFIX, seed_id=missing) is None
 
 
+async def test_purge_removes_doc_and_blob(mongo_db):
+    from motor.motor_asyncio import AsyncIOMotorGridFSBucket
+
+    bucket = AsyncIOMotorGridFSBucket(mongo_db)
+    blob_id = await bucket.upload_from_stream("seed", b"x")
+    seed_id = await seeds.insert_seed(
+        mongo_db, prefix="t", suffix=SUFFIX, blob_id=blob_id, manifest_version=1,
+    )
+
+    await seeds.purge_seed(mongo_db, prefix="t", suffix=SUFFIX, seed_id=seed_id)
+
+    assert await seeds.load_seed(mongo_db, prefix="t", suffix=SUFFIX, seed_id=seed_id) is None
+
+    import gridfs
+
+    with pytest.raises(gridfs.errors.NoFile):
+        await bucket.open_download_stream(blob_id)
+
+
+async def test_purge_unknown_seed_raises(mongo_db):
+    with pytest.raises(KeyError):
+        await seeds.purge_seed(
+            mongo_db, prefix="t", suffix=SUFFIX, seed_id=str(ObjectId()),
+        )
+
+
 async def _local_ctx(mongo_db, taskdir):
     """A minimal real ProcessContext for GridFS blob I/O."""
     import asyncio
