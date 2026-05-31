@@ -272,7 +272,7 @@ Extend `src/__tests__/metadata-filter-query.test.ts`:
 - `isLegacyFlatFilter`: legacy vs predicate selection
 - `parseMetadataFilterQuery`: JSON-string-encoded predicate parses and round-trips
 
-Integration smoke (`optio-api`): one end-to-end test against `mongodb-memory-server` (per `feedback_mongodb_docker.md`) inserting representative process docs, querying with a predicate tree, asserting matched docs.
+Integration smoke (`optio-api`): one end-to-end test against the running Docker MongoDB (`mongodb://localhost:27017`, per `feedback_mongodb_docker.md` — do NOT use `mongodb-memory-server`) inserting representative process docs into a test-specific database, querying with a predicate tree, asserting matched docs.
 
 ### `optio-ui`
 
