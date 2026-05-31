@@ -291,6 +291,27 @@ async def delete_process(
     await _collection(db, prefix).delete_one({"_id": proc["_id"]})
 
 
+async def purge_processes(
+    db: AsyncIOMotorDatabase,
+    prefix: str,
+    metadata_filter: dict,
+) -> int:
+    """Delete every process record whose metadata matches `metadata_filter`
+    (flat AND-equality), plus all descendants of the matched records. Used by
+    group-cancel teardown when the caller owns the matched processes wholesale
+    (dataspace / customer deletion). Returns the number of docs deleted."""
+    coll = _collection(db, prefix)
+    query = {f"metadata.{k}": v for k, v in metadata_filter.items()}
+    matched = await coll.find(query, {"_id": 1}).to_list(None)
+    deleted = 0
+    for m in matched:
+        deleted += await delete_descendants(db, prefix, m["_id"])
+    if matched:
+        result = await coll.delete_many({"_id": {"$in": [m["_id"] for m in matched]}})
+        deleted += result.deleted_count
+    return deleted
+
+
 async def clear_result_fields(
     db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId,
 ) -> None:

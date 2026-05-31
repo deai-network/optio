@@ -33,7 +33,7 @@ from optio_core.models import (
 from optio_core.store import (
     upsert_process, remove_stale_processes, find_stale_process_ids,
     get_process_by_process_id, update_status, clear_result_fields,
-    append_log, compute_expire_at,
+    append_log, compute_expire_at, purge_processes,
 )
 from optio_core.state_machine import (
     ACTIVE_STATES, CANCELLABLE_STATES, DISMISSABLE_STATES, END_STATES,
@@ -668,6 +668,7 @@ class Optio:
         *,
         persist: bool = False,
         reason: str | None = None,
+        purge_records: bool = False,
     ) -> int:
         """Cancel every active process matching `metadata_filter`. Does NOT
         wait for terminal state.
@@ -694,6 +695,10 @@ class Optio:
                     )
                 )
             pending_ids = await self._group_cancel_issue(metadata_filter, block_new_launches)
+            if purge_records:
+                await purge_processes(
+                    self._config.mongo_db, self._config.prefix, metadata_filter,
+                )
             return len(pending_ids)
 
     async def group_cancel_and_wait(
@@ -703,6 +708,7 @@ class Optio:
         *,
         persist: bool = False,
         reason: str | None = None,
+        purge_records: bool = False,
     ) -> int:
         """Cancel every active process matching `metadata_filter` and wait
         for all of them to reach a terminal state. See
@@ -752,6 +758,10 @@ class Optio:
                         f"(filter={metadata_filter})"
                     )
                 await asyncio.sleep(0.1)
+            if purge_records:
+                await purge_processes(
+                    self._config.mongo_db, self._config.prefix, metadata_filter,
+                )
             return len(pending)
 
     async def dismiss(self, process_id: str) -> DismissOutcome:

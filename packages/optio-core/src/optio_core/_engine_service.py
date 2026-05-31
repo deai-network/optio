@@ -126,6 +126,7 @@ class OptioEngineService(OptioEngineServiceBase):
             block_new_launches=bool(params.block_new_launches),
             persist=bool(params.persist),
             reason=params.reason,
+            purge_records=bool(params.purge_records),
         )
         return GroupCancelResult.model_validate({"ok": True, "cancelledCount": count})
 
@@ -141,6 +142,7 @@ class OptioEngineService(OptioEngineServiceBase):
             block_new_launches=bool(params.block_new_launches),
             persist=bool(params.persist),
             reason=params.reason,
+            purge_records=bool(params.purge_records),
         )
         return GroupCancelAndWaitResult.model_validate({"ok": True, "cancelledCount": count})
 

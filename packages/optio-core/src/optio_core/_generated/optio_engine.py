@@ -246,6 +246,7 @@ class GroupCancelParams(BaseModel):
     block_new_launches: bool | None = Field(None, alias="blockNewLaunches")
     persist: bool | None = None
     reason: str | None = None
+    purge_records: bool | None = Field(None, alias="purgeRecords")
 
 
 class GroupCancelResult1(BaseModel):
