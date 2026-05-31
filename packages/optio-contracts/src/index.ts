@@ -10,7 +10,7 @@ export { SessionEventsStreamMessageSchema } from './schemas/session-events.js';
 
 // Types
 export type { Process, ProcessState, LogEntry, ProcessMetadataFilter,
-              ProcessMetadataPredicate, FilterScalar, FilterLeafOps,
+              ProcessMetadataPredicate,
               BrowserOpenRequest, SessionEvent } from './schemas/process.js';
 export type { SessionEventsStreamMessage } from './schemas/session-events.js';
 
