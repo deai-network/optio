@@ -211,7 +211,7 @@ async def run_claudecode_session(
             **(config.env or {}),
             **(hook_ctx.browser_launch_env or {}),
         }
-        ctx.report_progress(None, "Launching claude (ttyd)…")
+        ctx.report_progress(None, "Launching Claude Code…")
         handle, ttyd_port = await host_actions.launch_ttyd_with_claude(
             host,
             ttyd_path=ttyd_path,

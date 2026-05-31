@@ -103,7 +103,7 @@ def _resolve_ssh_config() -> SSHConfig | None:
 
 async def _before_execute(hook_ctx: HookContext) -> None:
     out = await hook_ctx.run_on_host("whoami")
-    hook_ctx.report_progress(None, f"claude will run as {out.strip()}")
+    hook_ctx.report_progress(None, f"Claude Code will run as {out.strip()}")
     await hook_ctx.copy_file(CONTEXT_TXT, "context.txt")
 
 

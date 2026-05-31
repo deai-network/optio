@@ -127,7 +127,7 @@ async def ensure_claude_installed(
 
     cache_dir = await _resolve_cache_dir(host, install_dir)
 
-    hook_ctx.report_progress(None, "Preparing claude runtime…")
+    hook_ctx.report_progress(None, "Preparing Claude Code…")
     setup = await host.run_command(
         f"mkdir -p {shlex.quote(cache_dir)} {shlex.quote(share_claude)} "
         f"{shlex.quote(bin_dir)} && "
