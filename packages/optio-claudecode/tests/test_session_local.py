@@ -2,7 +2,7 @@
 
 Uses the shim binaries from conftest. The session should:
 
-  * write AGENTS.md, HOME-isolation files (under the test).
+  * write CLAUDE.md, HOME-isolation files (under the test).
   * never touch the host user's real ~/.claude/.
 """
 
@@ -25,7 +25,7 @@ async def test_local_happy_path_writes_agents_md_and_home_files(
     ctx_and_captures,
     monkeypatch,
 ):
-    """Assert AGENTS.md / credentials.json / settings.json placement.
+    """Assert CLAUDE.md / credentials.json / settings.json placement.
 
     Reads them inside ``before_execute`` because the session's
     ``finally`` calls ``cleanup_taskdir`` after the run, removing the
@@ -40,7 +40,7 @@ async def test_local_happy_path_writes_agents_md_and_home_files(
 
     async def assert_in_before(hook_ctx):
         workdir = pathlib.Path(hook_ctx._host.workdir)
-        observed["agents_md"] = (workdir / "AGENTS.md").read_text()
+        observed["agents_md"] = (workdir / "CLAUDE.md").read_text()
         cred_path = workdir / "home" / ".claude" / ".credentials.json"
         observed["cred_json"] = json.loads(cred_path.read_text())
         observed["cred_mode"] = oct(cred_path.stat().st_mode)[-3:]

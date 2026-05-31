@@ -1,4 +1,4 @@
-"""AGENTS.md composer for optio-claudecode.
+"""CLAUDE.md composer for optio-claudecode.
 
 Renders the claudecode resume section and forwards to the shared
 ``optio_agents.prompt.compose_agents_md``. The resume text is byte-identical
@@ -54,7 +54,7 @@ Each session start (fresh or resumed) appends one line to
 The very first line is the original launch timestamp; each subsequent
 line is a resume. The optional `REFRESHED:` suffix signals that the
 harness rewrote the listed files on that resume (e.g.
-`2026-05-28T13:15:42Z REFRESHED:AGENTS.md`) — your in-memory copy of
+`2026-05-28T13:15:42Z REFRESHED:CLAUDE.md`) — your in-memory copy of
 those files is stale and must be re-read before continuing.
 
 **At the start of every new incoming user message, read
@@ -67,7 +67,7 @@ the situation as a resume:
 - Re-establish anything that's gone (re-launch a server, re-fetch a
   file, etc.) before continuing.
 - **If the latest line carries a `REFRESHED:` suffix, re-read each
-  listed file** (e.g. `cat ./AGENTS.md`) — the harness updated it
+  listed file** (e.g. `cat ./CLAUDE.md`) — the harness updated it
   since your last context snapshot and the version you remember is
   out of date.
 - Then resume the work you were doing.
@@ -113,7 +113,7 @@ def compose_agents_md(
     workdir_exclude: list[str] | None = None,
     supports_resume: bool = True,
 ) -> str:
-    """Render <workdir>/AGENTS.md for an optio-claudecode task.
+    """Render <workdir>/CLAUDE.md for an optio-claudecode task.
 
     Renders the claudecode resume section when ``supports_resume`` is
     True and forwards everything else to the shared host composer.

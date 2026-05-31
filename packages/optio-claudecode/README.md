@@ -54,7 +54,7 @@ the per-task workdir and never touches the host user's real
 `~/.claude/`. Two tasks on the same host can run concurrently without
 shared-state races.
 
-The agent is given a `<workdir>/AGENTS.md` that includes the
+The agent is given a `<workdir>/CLAUDE.md` that includes the
 `optio.log` coordination protocol — `STATUS:` / `DELIVERABLE:` /
 `DONE` / `ERROR` — verbatim from `optio_host.agents`. The same protocol
 is used by `optio-opencode`, so the same `consumer_instructions` can be

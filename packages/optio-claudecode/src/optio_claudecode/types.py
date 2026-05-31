@@ -65,9 +65,9 @@ class ClaudeCodeTaskConfig:
     session_blob_decrypt: Callable[[bytes], bytes] | None = None
     # Optional hook fired on resume only (never on fresh start). Receives
     # the original config; returns a (possibly mutated) config. The harness
-    # re-renders AGENTS.md from the returned config and writes it back only
+    # re-renders CLAUDE.md from the returned config and writes it back only
     # when it differs from the file on disk, tagging the next resume.log
-    # line with `REFRESHED:AGENTS.md`. None (default) → no refresh.
+    # line with `REFRESHED:CLAUDE.md`. None (default) → no refresh.
     on_resume_refresh: "Callable[[ClaudeCodeTaskConfig], ClaudeCodeTaskConfig] | None" = None
 
     # --- seed surface (start fresh from a stored environment) -----------

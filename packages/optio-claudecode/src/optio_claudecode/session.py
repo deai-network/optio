@@ -146,7 +146,7 @@ async def run_claudecode_session(
         if not resuming:
             # Fresh start: protocol driver has created workdir,
             # deliverables/, and an empty optio.log. Plant per-task HOME
-            # files and AGENTS.md before launching ttyd.
+            # files and CLAUDE.md before launching ttyd.
             await host_actions.plant_home_files(
                 host,
                 credentials_json=config.credentials_json,
@@ -167,7 +167,7 @@ async def run_claudecode_session(
                 )
                 _trace("body: merge_seed DONE")
             await host.write_text(
-                "AGENTS.md",
+                "CLAUDE.md",
                 compose_agents_md(
                     config.consumer_instructions,
                     documentation=protocol.documentation,
@@ -177,7 +177,7 @@ async def run_claudecode_session(
             )
         else:
             # Resume: home/.claude (credentials, settings) was restored from
-            # the session blob — do NOT re-plant. Optionally refresh AGENTS.md.
+            # the session blob — do NOT re-plant. Optionally refresh CLAUDE.md.
             refreshed_files = await _maybe_refresh_on_resume(host, hook_ctx, config)
 
         if config.supports_resume:
@@ -526,10 +526,10 @@ async def _append_resume_log_entry(
 async def _maybe_refresh_on_resume(
     host, hook_ctx, config: ClaudeCodeTaskConfig,
 ) -> list[str]:
-    """Run on_resume_refresh (if any) and rewrite AGENTS.md when changed.
+    """Run on_resume_refresh (if any) and rewrite CLAUDE.md when changed.
 
     Returns the list of filenames rewritten (currently at most
-    ``["AGENTS.md"]``). A hook that raises is logged and ignored.
+    ``["CLAUDE.md"]``). A hook that raises is logged and ignored.
     """
     if config.on_resume_refresh is None:
         return []
@@ -537,27 +537,27 @@ async def _maybe_refresh_on_resume(
         new_config = config.on_resume_refresh(config)
     except Exception:
         _LOG.exception(
-            "on_resume_refresh raised; keeping existing AGENTS.md from snapshot",
+            "on_resume_refresh raised; keeping existing CLAUDE.md from snapshot",
         )
         return []
-    new_agents_md = compose_agents_md(
+    new_claude_md = compose_agents_md(
         new_config.consumer_instructions,
         workdir_exclude=new_config.workdir_exclude,
         supports_resume=new_config.supports_resume,
     )
     try:
-        existing = await hook_ctx.read_text_from_host("AGENTS.md", silent=True)
+        existing = await hook_ctx.read_text_from_host("CLAUDE.md", silent=True)
     except FileNotFoundError:
         existing = None
     except Exception:
         _LOG.exception(
-            "failed to read existing AGENTS.md on resume; rewriting unconditionally",
+            "failed to read existing CLAUDE.md on resume; rewriting unconditionally",
         )
         existing = None
-    if existing == new_agents_md:
+    if existing == new_claude_md:
         return []
-    await host.write_text("AGENTS.md", new_agents_md)
-    return ["AGENTS.md"]
+    await host.write_text("CLAUDE.md", new_claude_md)
+    return ["CLAUDE.md"]
 
 
 def create_claudecode_task(

@@ -1,4 +1,4 @@
-"""on_resume_refresh fires only on resume and rewrites AGENTS.md."""
+"""on_resume_refresh fires only on resume and rewrites CLAUDE.md."""
 
 import asyncio
 import io
@@ -92,4 +92,4 @@ async def test_resume_refresh_tags_resume_log(
         contents = tar.extractfile(member).read().decode("utf-8")
     lines = [l for l in contents.splitlines() if l]
     assert len(lines) == 2
-    assert "REFRESHED:AGENTS.md" in lines[1]
+    assert "REFRESHED:CLAUDE.md" in lines[1]

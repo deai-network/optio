@@ -1,4 +1,4 @@
-"""Tests for the claudecode AGENTS.md composer."""
+"""Tests for the claudecode CLAUDE.md composer."""
 
 from optio_claudecode.prompt import compose_agents_md
 

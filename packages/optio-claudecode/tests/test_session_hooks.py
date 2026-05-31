@@ -15,7 +15,7 @@ async def test_before_execute_called_after_home_files_planted(
     ctx_and_captures,
     monkeypatch,
 ):
-    """before_execute must run after credentials/AGENTS.md exist but
+    """before_execute must run after credentials/CLAUDE.md exist but
     before claude launches."""
     ctx, _captures, _cancellation_flag = ctx_and_captures
     monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "happy")
@@ -23,7 +23,7 @@ async def test_before_execute_called_after_home_files_planted(
 
     async def before(hook_ctx):
         workdir = pathlib.Path(hook_ctx._host.workdir)
-        observed["agents_md_exists"] = (workdir / "AGENTS.md").exists()
+        observed["agents_md_exists"] = (workdir / "CLAUDE.md").exists()
         observed["cred_exists"] = (workdir / "home" / ".claude" / ".credentials.json").exists()
         observed["called"] = True
 
