@@ -237,7 +237,7 @@ async def run_claudecode_session(
         await ctx.set_widget_data({
             "iframeSrc": "{widgetProxyUrl}/",
         })
-        ctx.report_progress(None, "claude is live")
+        ctx.report_progress(None, "Claude Code is live")
 
         # Await ttyd subprocess exit. Protocol driver cancels this body
         # when it sees DONE/ERROR; otherwise we get here only on a
