@@ -139,3 +139,20 @@ async def ctx_and_captures(mongo_db, monkeypatch):
     ctx.set_widget_data = _data  # type: ignore[method-assign]
 
     yield ctx, cap, cancellation_flag
+
+
+@pytest.fixture
+def claude_cache_dir(tmp_path: pathlib.Path) -> pathlib.Path:
+    """A pre-populated fake claude version cache.
+
+    Contains a single version file ``9.9.9`` symlinked to the claude shim, so
+    ``ensure_claude_installed`` takes the cache-hit path (points
+    home/.local/bin/claude at it) and never runs the real install.sh. Pass as
+    ``claude_install_dir`` in ClaudeCodeTaskConfig.
+    """
+    cache = tmp_path / "claude-cache"
+    cache.mkdir()
+    version_file = cache / "9.9.9"
+    os.symlink(TESTS_DIR / "claude-shim.sh", version_file)
+    os.chmod(TESTS_DIR / "claude-shim.sh", 0o755)
+    return cache

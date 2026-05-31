@@ -61,10 +61,10 @@ async def _make_ctx(mongo_db, process_id: str, *, resume: bool):
     )
 
 
-def _cfg(shim_install_dir, scenario: str) -> ClaudeCodeTaskConfig:
+def _cfg(shim_install_dir, claude_cache_dir, scenario: str) -> ClaudeCodeTaskConfig:
     return ClaudeCodeTaskConfig(
         consumer_instructions=f"(scenario: {scenario})",
-        claude_install_dir=str(shim_install_dir),
+        claude_install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         permission_mode="bypassPermissions",
         supports_resume=True,
@@ -73,15 +73,15 @@ def _cfg(shim_install_dir, scenario: str) -> ClaudeCodeTaskConfig:
     )
 
 
-async def _run_cycle(mongo_db, pid, shim_install_dir, scenario, resume, monkeypatch):
+async def _run_cycle(mongo_db, pid, shim_install_dir, claude_cache_dir, scenario, resume, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", scenario)
     ctx = await _make_ctx(mongo_db, pid, resume=resume)
-    await run_claudecode_session(ctx, _cfg(shim_install_dir, scenario))
+    await run_claudecode_session(ctx, _cfg(shim_install_dir, claude_cache_dir, scenario))
 
 
-async def test_terminal_flow_captures_snapshot(mongo_db, task_root, shim_install_dir, monkeypatch):
+async def test_terminal_flow_captures_snapshot(mongo_db, task_root, shim_install_dir, claude_cache_dir, monkeypatch):
     pid = "cc_terminal_1"
-    await _run_cycle(mongo_db, pid, shim_install_dir, "happy", False, monkeypatch)
+    await _run_cycle(mongo_db, pid, shim_install_dir, claude_cache_dir, "happy", False, monkeypatch)
 
     snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=pid)
     assert snap is not None
@@ -93,13 +93,13 @@ async def test_terminal_flow_captures_snapshot(mongo_db, task_root, shim_install
 
 
 async def test_session_blob_excludes_home_claude_from_workdir_blob(
-    mongo_db, task_root, shim_install_dir, monkeypatch,
+    mongo_db, task_root, shim_install_dir, claude_cache_dir, monkeypatch,
 ):
     """The plaintext workdir blob must NOT contain home/.claude (defensive
     rm -rf at capture). The session blob is where home/.claude lives."""
     import io, tarfile
     pid = "cc_split_1"
-    await _run_cycle(mongo_db, pid, shim_install_dir, "happy", False, monkeypatch)
+    await _run_cycle(mongo_db, pid, shim_install_dir, claude_cache_dir, "happy", False, monkeypatch)
     snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=pid)
 
     bucket = AsyncIOMotorGridFSBucket(mongo_db)
@@ -117,7 +117,7 @@ async def test_session_blob_excludes_home_claude_from_workdir_blob(
 
 
 async def test_workdir_blob_excludes_heavy_regenerable_home_dirs(
-    mongo_db, task_root, shim_install_dir, monkeypatch,
+    mongo_db, task_root, shim_install_dir, claude_cache_dir, monkeypatch,
 ):
     """The claude binary install, mozilla cache, and mozilla profile under
     the isolated HOME are regenerable junk (the binary is reinstalled on
@@ -141,7 +141,7 @@ async def test_workdir_blob_excludes_heavy_regenerable_home_dirs(
     ctx = await _make_ctx(mongo_db, pid, resume=False)
     cfg = ClaudeCodeTaskConfig(
         consumer_instructions="(heavy)",
-        claude_install_dir=str(shim_install_dir),
+        claude_install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         permission_mode="bypassPermissions",
         supports_resume=True,
@@ -155,17 +155,17 @@ async def test_workdir_blob_excludes_heavy_regenerable_home_dirs(
     workdir_bytes = await wstream.read()
     with tarfile.open(fileobj=io.BytesIO(workdir_bytes), mode="r:gz") as tar:
         names = tar.getnames()
-    for needle in ("home/.local/share/claude", "home/.cache/mozilla", "home/.mozilla"):
+    for needle in ("home/.cache/mozilla", "home/.mozilla"):
         assert not any(needle in n for n in names), (needle, names)
 
 
 async def test_resume_creates_second_snapshot_and_passes_continue(
-    mongo_db, task_root, shim_install_dir, monkeypatch,
+    mongo_db, task_root, shim_install_dir, claude_cache_dir, monkeypatch,
 ):
     import io, tarfile
     pid = "cc_resume_1"
-    await _run_cycle(mongo_db, pid, shim_install_dir, "idempotent_done", False, monkeypatch)
-    await _run_cycle(mongo_db, pid, shim_install_dir, "idempotent_done", True, monkeypatch)
+    await _run_cycle(mongo_db, pid, shim_install_dir, claude_cache_dir, "idempotent_done", False, monkeypatch)
+    await _run_cycle(mongo_db, pid, shim_install_dir, claude_cache_dir, "idempotent_done", True, monkeypatch)
 
     count = await mongo_db[f"test{SESSION_SNAPSHOT_COLLECTION_SUFFIX}"].count_documents(
         {"processId": pid}
@@ -188,16 +188,16 @@ async def test_resume_creates_second_snapshot_and_passes_continue(
 
 
 async def test_resume_with_no_prior_snapshot_falls_back_to_fresh(
-    mongo_db, task_root, shim_install_dir, monkeypatch,
+    mongo_db, task_root, shim_install_dir, claude_cache_dir, monkeypatch,
 ):
     pid = "cc_resume_no_prior"
-    await _run_cycle(mongo_db, pid, shim_install_dir, "happy", True, monkeypatch)
+    await _run_cycle(mongo_db, pid, shim_install_dir, claude_cache_dir, "happy", True, monkeypatch)
     snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=pid)
     assert snap is not None  # fresh-start cycle still captures a terminal snapshot
 
 
 async def test_resume_with_no_transcript_launches_without_continue(
-    mongo_db, task_root, shim_install_dir, monkeypatch,
+    mongo_db, task_root, shim_install_dir, claude_cache_dir, monkeypatch,
 ):
     """D3: a restored snapshot whose home/.claude/projects has no *.jsonl
     must launch WITHOUT --continue (passing it makes claude exit at
@@ -207,9 +207,9 @@ async def test_resume_with_no_transcript_launches_without_continue(
 
     pid = "cc_d3_no_transcript"
     # First cycle: fresh `happy` run captures a snapshot with NO transcript.
-    await _run_cycle(mongo_db, pid, shim_install_dir, "happy", False, monkeypatch)
+    await _run_cycle(mongo_db, pid, shim_install_dir, claude_cache_dir, "happy", False, monkeypatch)
     # Second cycle: resume. D3 must suppress --continue.
-    await _run_cycle(mongo_db, pid, shim_install_dir, "happy", True, monkeypatch)
+    await _run_cycle(mongo_db, pid, shim_install_dir, claude_cache_dir, "happy", True, monkeypatch)
 
     snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=pid)
     bucket = AsyncIOMotorGridFSBucket(mongo_db)

@@ -54,7 +54,7 @@ def _raise_on_decrypt(_b: bytes) -> bytes:
 
 
 async def test_decrypt_failure_propagates_and_no_fresh_start(
-    mongo_db, task_root, shim_install_dir, monkeypatch,
+    mongo_db, task_root, shim_install_dir, claude_cache_dir, monkeypatch,
 ):
     pid = "cc_decrypt_fail"
     monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "happy")
@@ -63,7 +63,7 @@ async def test_decrypt_failure_propagates_and_no_fresh_start(
     ctx1 = await _make_ctx(mongo_db, pid, resume=False)
     cfg1 = ClaudeCodeTaskConfig(
         consumer_instructions="x",
-        claude_install_dir=str(shim_install_dir),
+        claude_install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         supports_resume=True,
     )
@@ -77,7 +77,7 @@ async def test_decrypt_failure_propagates_and_no_fresh_start(
     ctx2 = await _make_ctx(mongo_db, pid, resume=True)
     cfg2 = ClaudeCodeTaskConfig(
         consumer_instructions="x",
-        claude_install_dir=str(shim_install_dir),
+        claude_install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         supports_resume=True,
         session_blob_encrypt=lambda b: b,

@@ -22,6 +22,7 @@ from optio_claudecode import (
 @pytest.mark.asyncio
 async def test_local_happy_path_writes_agents_md_and_home_files(
     shim_install_dir: pathlib.Path,
+    claude_cache_dir: pathlib.Path,
     ctx_and_captures,
     monkeypatch,
 ):
@@ -55,7 +56,7 @@ async def test_local_happy_path_writes_agents_md_and_home_files(
             credentials_json={"oauth_token": "test-token"},
             claude_config={"permissions": {"allow": ["Read"]}},
             permission_mode="bypassPermissions",
-            claude_install_dir=str(shim_install_dir),
+            claude_install_dir=str(claude_cache_dir),
             ttyd_install_dir=str(shim_install_dir),
             before_execute=assert_in_before,
         ),
@@ -72,6 +73,7 @@ async def test_local_happy_path_writes_agents_md_and_home_files(
 @pytest.mark.asyncio
 async def test_local_deliverable_callback_fired(
     shim_install_dir: pathlib.Path,
+    claude_cache_dir: pathlib.Path,
     ctx_and_captures,
     monkeypatch,
 ):
@@ -88,7 +90,7 @@ async def test_local_deliverable_callback_fired(
         name="Local deliverable",
         config=ClaudeCodeTaskConfig(
             consumer_instructions="Hand back a file.",
-            claude_install_dir=str(shim_install_dir),
+            claude_install_dir=str(claude_cache_dir),
             ttyd_install_dir=str(shim_install_dir),
             on_deliverable=on_deliverable,
         ),
@@ -104,6 +106,7 @@ async def test_local_deliverable_callback_fired(
 @pytest.mark.asyncio
 async def test_local_error_keyword_propagates(
     shim_install_dir: pathlib.Path,
+    claude_cache_dir: pathlib.Path,
     ctx_and_captures,
     monkeypatch,
 ):
@@ -114,7 +117,7 @@ async def test_local_error_keyword_propagates(
         name="Local error",
         config=ClaudeCodeTaskConfig(
             consumer_instructions="Fail please.",
-            claude_install_dir=str(shim_install_dir),
+            claude_install_dir=str(claude_cache_dir),
             ttyd_install_dir=str(shim_install_dir),
         ),
     )

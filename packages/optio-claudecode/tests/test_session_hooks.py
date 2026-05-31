@@ -12,6 +12,7 @@ from optio_claudecode import ClaudeCodeTaskConfig, create_claudecode_task
 @pytest.mark.asyncio
 async def test_before_execute_called_after_home_files_planted(
     shim_install_dir: pathlib.Path,
+    claude_cache_dir: pathlib.Path,
     ctx_and_captures,
     monkeypatch,
 ):
@@ -33,7 +34,7 @@ async def test_before_execute_called_after_home_files_planted(
         config=ClaudeCodeTaskConfig(
             consumer_instructions="Hi.",
             credentials_json={"a": 1},
-            claude_install_dir=str(shim_install_dir),
+            claude_install_dir=str(claude_cache_dir),
             ttyd_install_dir=str(shim_install_dir),
             before_execute=before,
         ),
@@ -49,6 +50,7 @@ async def test_before_execute_called_after_home_files_planted(
 @pytest.mark.asyncio
 async def test_after_execute_called_on_success(
     shim_install_dir: pathlib.Path,
+    claude_cache_dir: pathlib.Path,
     ctx_and_captures,
     monkeypatch,
 ):
@@ -64,7 +66,7 @@ async def test_after_execute_called_on_success(
         name="After hook ok",
         config=ClaudeCodeTaskConfig(
             consumer_instructions="Hi.",
-            claude_install_dir=str(shim_install_dir),
+            claude_install_dir=str(claude_cache_dir),
             ttyd_install_dir=str(shim_install_dir),
             after_execute=after,
         ),
@@ -76,6 +78,7 @@ async def test_after_execute_called_on_success(
 @pytest.mark.asyncio
 async def test_after_execute_called_on_error(
     shim_install_dir: pathlib.Path,
+    claude_cache_dir: pathlib.Path,
     ctx_and_captures,
     monkeypatch,
 ):
@@ -91,7 +94,7 @@ async def test_after_execute_called_on_error(
         name="After hook err",
         config=ClaudeCodeTaskConfig(
             consumer_instructions="Hi.",
-            claude_install_dir=str(shim_install_dir),
+            claude_install_dir=str(claude_cache_dir),
             ttyd_install_dir=str(shim_install_dir),
             after_execute=after,
         ),

@@ -48,12 +48,12 @@ async def _make_ctx(mongo_db, process_id):
     )
 
 
-async def test_unknown_seed_id_raises(mongo_db, task_root, shim_install_dir, monkeypatch):
+async def test_unknown_seed_id_raises(mongo_db, task_root, shim_install_dir, claude_cache_dir, monkeypatch):
     monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "happy")
     ctx = await _make_ctx(mongo_db, "cc_seed_unknown")
     cfg = ClaudeCodeTaskConfig(
         consumer_instructions="(bad seed)",
-        claude_install_dir=str(shim_install_dir),
+        claude_install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         permission_mode="bypassPermissions",
         supports_resume=False,

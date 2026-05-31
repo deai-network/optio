@@ -20,6 +20,7 @@ from optio_claudecode import ClaudeCodeTaskConfig, create_claudecode_task
 async def test_real_home_credentials_untouched(
     tmp_path: pathlib.Path,
     shim_install_dir: pathlib.Path,
+    claude_cache_dir: pathlib.Path,
     ctx_and_captures,
     monkeypatch,
 ):
@@ -41,7 +42,7 @@ async def test_real_home_credentials_untouched(
         config=ClaudeCodeTaskConfig(
             consumer_instructions="Hi.",
             credentials_json={"injected": True},
-            claude_install_dir=str(shim_install_dir),
+            claude_install_dir=str(claude_cache_dir),
             ttyd_install_dir=str(shim_install_dir),
         ),
     )

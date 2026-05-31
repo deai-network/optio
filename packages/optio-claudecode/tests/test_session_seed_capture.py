@@ -52,7 +52,7 @@ async def _make_ctx(mongo_db, process_id, *, resume=False):
 
 
 async def test_capture_fires_callback_and_stores_env_only_seed(
-    mongo_db, task_root, shim_install_dir, monkeypatch,
+    mongo_db, task_root, shim_install_dir, claude_cache_dir, monkeypatch,
 ):
     monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "seed")
     captured: list[str] = []
@@ -63,7 +63,7 @@ async def test_capture_fires_callback_and_stores_env_only_seed(
     ctx = await _make_ctx(mongo_db, "cc_seed_cap")
     cfg = ClaudeCodeTaskConfig(
         consumer_instructions="(seed setup)",
-        claude_install_dir=str(shim_install_dir),
+        claude_install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         permission_mode="bypassPermissions",
         supports_resume=False,
