@@ -305,6 +305,15 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             "iframeSrc": f"{{widgetProxyUrl}}{_workdir_b64}/session/{session_id}",
             "localStorageOverrides": {
                 "opencode.settings.dat:defaultServerUrl": "{widgetProxyUrl}",
+                # Start with the review/diff panel collapsed. opencode defaults
+                # it OPEN (layout store `review.panelOpened ?? true`), eating
+                # the right half of the iframe with a panel that is useless in
+                # this embedded context. The persist layer deep-merges this
+                # partial blob into the layout defaults, so only panelOpened is
+                # forced false; the operator can still toggle it open per
+                # session. (UI-state key — if opencode renames the `layout`
+                # store it silently reverts to default-open.)
+                "opencode.global.dat:layout": '{"review": {"panelOpened": false}}',
             },
         })
         ctx.report_progress(None, "opencode is live")
