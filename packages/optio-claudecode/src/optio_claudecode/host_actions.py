@@ -407,19 +407,21 @@ def build_ttyd_argv(
     netns_wrap = os.environ.get("OPTIO_CLAUDECODE_NETNS", "").strip()
     if netns_wrap:
         # Rootless netns (pasta/unshare) maps the user to root inside a user
-        # namespace, and Claude refuses --dangerously-skip-permissions /
-        # --permission-mode bypassPermissions as root. The seal is for the
-        # human-login setup flow, which doesn't need permission bypass (the
-        # human approves in the TUI), so drop those root-unsafe flags here.
+        # namespace, so two adjustments are needed:
+        #  1. Claude refuses --dangerously-skip-permissions / --permission-mode
+        #     bypassPermissions as root; the seal targets the human-login setup
+        #     flow (which doesn't need bypass), so drop those flags.
+        #  2. pasta can't directly exec a binary under $HOME (EACCES) but a
+        #     shell child can, so run claude via `bash -c` inside the wrapper.
         effective_flags = _drop_root_unsafe_flags(effective_flags)
-    claude_cmd = [claude_path, *effective_flags]
-    if netns_wrap:
-        claude_cmd = [*shlex.split(netns_wrap), *claude_cmd]
+        inner = " ".join(shlex.quote(c) for c in [claude_path, *effective_flags])
+        claude_cmd = [*shlex.split(netns_wrap), "bash", "-c", inner]
         _LOG.info(
-            "OPTIO_CLAUDECODE_NETNS active — claude wrapped: %r (root-unsafe "
-            "permission flags dropped)", netns_wrap,
+            "OPTIO_CLAUDECODE_NETNS active — claude wrapped via %r (bash -c; "
+            "root-unsafe permission flags dropped)", netns_wrap,
         )
     else:
+        claude_cmd = [claude_path, *effective_flags]
         _LOG.info(
             "OPTIO_CLAUDECODE_NETNS not set (value=%r) — no loopback isolation",
             os.environ.get("OPTIO_CLAUDECODE_NETNS"),

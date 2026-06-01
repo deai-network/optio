@@ -341,9 +341,10 @@ def test_build_ttyd_argv_netns_wraps_claude_and_drops_root_unsafe_flags(monkeypa
         claude_flags=["--permission-mode", "bypassPermissions", "--model", "x"],
     )
     payload = argv[argv.index("bash") + 2]
-    # claude is run through the isolation command (ttyd itself is NOT wrapped),
-    # and the root-unsafe bypass flag is stripped (rootless netns runs as root).
-    assert "pasta --config-net -- /opt/claude/claude --model x" in payload
+    # claude is run via `bash -c` inside the isolation command (pasta can't
+    # directly exec a $HOME binary); ttyd itself is NOT wrapped; and the
+    # root-unsafe bypass flag is stripped (rootless netns runs as root).
+    assert "pasta --config-net -- bash -c '/opt/claude/claude --model x'" in payload
     assert "bypassPermissions" not in payload
     assert argv[0] == "/usr/bin/ttyd"
 
