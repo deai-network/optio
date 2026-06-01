@@ -189,6 +189,25 @@ async def _ttyd_present(host: "Host", ttyd_path: str) -> bool:
     return result.exit_code == 0 and "ttyd" in blob.lower()
 
 
+async def _require_tmux(host: "Host") -> str:
+    """Return the absolute path to tmux on the host, or raise a clear error.
+
+    claudecode runs claude inside a detached tmux session (so the agent
+    survives viewer disconnects); tmux is a worker prerequisite. Resolved via a
+    login shell so PATH additions from the worker profile apply. No
+    auto-install: a missing tmux fails fast with an actionable message.
+    """
+    result = await host.run_command("bash -lc 'command -v tmux'")
+    path = (result.stdout or "").strip()
+    if result.exit_code != 0 or not path:
+        raise RuntimeError(
+            "tmux is required on the worker for optio-claudecode (claude runs "
+            "inside a detached tmux session). Install tmux (e.g. apt-get install "
+            "tmux) or add it to the worker/container image."
+        )
+    return path
+
+
 async def _detect_ttyd_asset_name(host: "Host") -> str:
     """Return the upstream release-asset filename for the host's arch/OS.
 

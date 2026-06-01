@@ -532,3 +532,36 @@ def test_focus_mode_on_with_none_config():
     cfg, env = host_actions.build_focus_mode(focus_mode=True, claude_config=None)
     assert cfg == {"tui": "fullscreen", "viewMode": "focus"}
     assert env == {"CLAUDE_CODE_NO_FLICKER": "1"}
+
+
+class _RequireTmuxFakeResult:
+    def __init__(self, exit_code, stdout="", stderr=""):
+        self.exit_code = exit_code
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class _RequireTmuxFakeHost:
+    def __init__(self, *, tmux_ok):
+        self._tmux_ok = tmux_ok
+        self.workdir = "/wd"
+
+    async def run_command(self, cmd, **kwargs):
+        # _require_tmux runs `bash -lc 'command -v tmux'`
+        if "command -v tmux" in cmd:
+            return (
+                _RequireTmuxFakeResult(0, "/usr/bin/tmux\n")
+                if self._tmux_ok
+                else _RequireTmuxFakeResult(1, "")
+            )
+        return _RequireTmuxFakeResult(0, "")
+
+
+async def test_require_tmux_returns_path_when_present():
+    path = await host_actions._require_tmux(_RequireTmuxFakeHost(tmux_ok=True))
+    assert path == "/usr/bin/tmux"
+
+
+async def test_require_tmux_raises_clear_error_when_missing():
+    with pytest.raises(RuntimeError, match="tmux is required"):
+        await host_actions._require_tmux(_RequireTmuxFakeHost(tmux_ok=False))
