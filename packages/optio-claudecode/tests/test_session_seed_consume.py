@@ -56,7 +56,7 @@ async def test_second_session_consumes_seed(
     # 1) capture
     captured: list[str] = []
 
-    async def _on_seed_saved(seed_id: str) -> None:
+    async def _on_seed_saved(seed_id, info=None) -> None:
         captured.append(seed_id)
 
     ctx1 = await _make_ctx(mongo_db, "cc_seed_src")

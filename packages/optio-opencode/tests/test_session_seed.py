@@ -160,7 +160,7 @@ async def test_capture_fires_callback_and_stores_env_only_seed(
     _supply_scenario["name"] = "happy"
     captured: list[str] = []
 
-    async def _on_seed_saved(seed_id: str) -> None:
+    async def _on_seed_saved(seed_id, info=None) -> None:
         captured.append(seed_id)
 
     ctx = await _make_ctx(mongo_db, "oc_seed_cap")
@@ -214,10 +214,10 @@ async def test_capture_synthesises_model_into_opencode_json(
 
     monkeypatch.setattr(session_mod, "_resolve_session_model", _fake_resolve)
 
-    captured: list[str] = []
+    captured: list[tuple[str, str | None]] = []
 
-    async def _on_seed_saved(seed_id: str) -> None:
-        captured.append(seed_id)
+    async def _on_seed_saved(seed_id, info=None) -> None:
+        captured.append((seed_id, info))
 
     ctx = await _make_ctx(mongo_db, "oc_seed_model")
     await run_opencode_session(ctx, OpencodeTaskConfig(
@@ -227,7 +227,9 @@ async def test_capture_synthesises_model_into_opencode_json(
         before_execute=_plant_env,
     ))
     assert len(captured) == 1
-    seed_id = captured[0]
+    seed_id, info = captured[0]
+    # the resolved model is passed as on_seed_saved's 2nd arg
+    assert info == "xai/grok-4.3"
 
     doc = await seeds.load_seed(
         mongo_db, prefix="test", suffix=OPENCODE_SEED_SUFFIX, seed_id=seed_id,
@@ -257,7 +259,7 @@ async def test_second_session_consumes_seed(
     # 1) capture
     captured: list[str] = []
 
-    async def _on_seed_saved(seed_id: str) -> None:
+    async def _on_seed_saved(seed_id, info=None) -> None:
         captured.append(seed_id)
 
     ctx1 = await _make_ctx(mongo_db, "oc_seed_src")

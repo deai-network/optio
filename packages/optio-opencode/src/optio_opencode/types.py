@@ -55,7 +55,11 @@ class OpencodeTaskConfig:
 
     # --- seed surface (mirrors optio-claudecode) ---
     seed_id: str | None = None
-    on_seed_saved: "Callable[[str], Awaitable[None] | None] | None" = None
+    # Fired on teardown of a fresh session after a successful capture, with
+    # two args: (seed_id, info). ``info`` is a human-readable summary of the
+    # captured configuration — for opencode the resolved "providerID/modelID"
+    # (or None if no model was used), mirroring claudecode's account summary.
+    on_seed_saved: "Callable[[str, str | None], Awaitable[None] | None] | None" = None
     # Fresh launch kicks the agent off unattended via the opencode session API
     # (POST /api/session/<id>/prompt "Read AGENTS.md and execute the task it
     # describes"); suppressed on resume.

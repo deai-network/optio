@@ -89,11 +89,14 @@ class ClaudeCodeTaskConfig:
     # fresh workdir before launch, beginning a NEW conversation (no
     # --continue). Baked at task-creation time; no per-launch channel.
     seed_id: str | None = None
-    # Capture intent: a (sync or async) callback fired with the generated
-    # seed_id after a successful capture on teardown of a fresh session.
-    # Its presence is what enables seed capture. Both default None, so
-    # existing consumers are unaffected. Both are ignored on resume.
-    on_seed_saved: "Callable[[str], Awaitable[None] | None] | None" = None
+    # Capture intent: a (sync or async) callback fired on teardown of a fresh
+    # session after a successful capture, with two args: (seed_id, info).
+    # ``info`` is a human-readable account summary derived from the seeded
+    # OAuth token (e.g. "Plan: Claude Max 20x for Jane Doe <jane@x.com>"), or
+    # None if it could not be resolved. Its presence is what enables seed
+    # capture. Both default None, so existing consumers are unaffected. Both
+    # are ignored on resume.
+    on_seed_saved: "Callable[[str, str | None], Awaitable[None] | None] | None" = None
 
     def __post_init__(self) -> None:
         if self.permission_mode is not None and self.permission_mode not in _VALID_PERMISSION_MODES:

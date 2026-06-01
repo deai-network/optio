@@ -31,6 +31,7 @@ from optio_agents import seeds as _seeds
 from optio_agents import get_protocol
 
 from optio_claudecode import host_actions
+from optio_claudecode.account import resolve_account_summary
 from optio_claudecode.seed_manifest import CLAUDE_SEED_MANIFEST, CLAUDE_SEED_SUFFIX
 from optio_claudecode.prompt import compose_agents_md
 from optio_claudecode.snapshots import (
@@ -285,8 +286,12 @@ async def run_claudecode_session(
                     encrypt=config.session_blob_encrypt,
                 )
                 _trace("finally: capture_seed DONE id=%s", seed_id)
-                await _call_maybe_async(config.on_seed_saved, seed_id)
-                _trace("finally: on_seed_saved fired")
+                # 2nd arg: best-effort account summary from the seeded OAuth
+                # token (the isolated home creds are still on disk pre-cleanup).
+                # Returns None on any failure; never disturbs capture.
+                summary = await resolve_account_summary(host)
+                await _call_maybe_async(config.on_seed_saved, seed_id, summary)
+                _trace("finally: on_seed_saved fired (summary=%s)", summary)
             except Exception:
                 _LOG.exception(
                     "seed capture failed; callback not fired, teardown continues",

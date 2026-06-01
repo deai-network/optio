@@ -136,7 +136,10 @@ async def _after_execute(hook_ctx: HookContext) -> None:
 def _make_on_seed_saved(db, prefix: str, fw):
     coll = db[f"{prefix}{DEMO_SEED_COLLECTION_SUFFIX}"]
 
-    async def _on_seed_saved(seed_id: str) -> None:
+    async def _on_seed_saved(seed_id: str, info: str | None = None) -> None:
+        # info: account summary from the seeded OAuth token, e.g.
+        # "Plan: Claude Max 20x for Jane Doe <jane@x.com>" (or None).
+        print(f"[claudecode-demo] seed saved {seed_id}: {info}")
         # Cosmetic numbering; a concurrent-save race may reuse a number —
         # acceptable, the seedId is the real key.
         count = await coll.count_documents({})

@@ -399,7 +399,10 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                     suffix=OPENCODE_SEED_SUFFIX,
                     encrypt=config.session_blob_encrypt,
                 )
-                await _call_maybe_async(config.on_seed_saved, seed_id_out)
+                # 2nd arg: the resolved "providerID/modelID" (or None).
+                await _call_maybe_async(
+                    config.on_seed_saved, seed_id_out, seed_model,
+                )
             except Exception:  # noqa: BLE001
                 _LOG.exception("opencode seed capture failed; callback not fired")
 

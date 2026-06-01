@@ -55,10 +55,21 @@ async def test_capture_fires_callback_and_stores_env_only_seed(
     mongo_db, task_root, shim_install_dir, claude_cache_dir, monkeypatch,
 ):
     monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "seed")
-    captured: list[str] = []
 
-    async def _on_seed_saved(seed_id: str) -> None:
-        captured.append(seed_id)
+    # The account summary is fetched from api.anthropic.com with the seeded
+    # token; stub it so the test asserts the 2nd callback arg without a network
+    # call. (Resolution itself is unit-tested in test_account_summary.py.)
+    import optio_claudecode.session as session_mod
+
+    async def _fake_summary(host):
+        return "Plan: Claude Max 20x for Jane Doe <jane@x.com>"
+
+    monkeypatch.setattr(session_mod, "resolve_account_summary", _fake_summary)
+
+    captured: list[tuple[str, str | None]] = []
+
+    async def _on_seed_saved(seed_id, info=None) -> None:
+        captured.append((seed_id, info))
 
     ctx = await _make_ctx(mongo_db, "cc_seed_cap")
     cfg = ClaudeCodeTaskConfig(
@@ -71,9 +82,10 @@ async def test_capture_fires_callback_and_stores_env_only_seed(
     )
     await run_claudecode_session(ctx, cfg)
 
-    # callback fired with a hex id
+    # callback fired with a hex id + the account summary as 2nd arg
     assert len(captured) == 1
-    seed_id = captured[0]
+    seed_id, info = captured[0]
+    assert info == "Plan: Claude Max 20x for Jane Doe <jane@x.com>"
 
     # a seed doc + blob exist
     doc = await seeds.load_seed(mongo_db, prefix="test", suffix=CLAUDE_SEED_SUFFIX, seed_id=seed_id)
