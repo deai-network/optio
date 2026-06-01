@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import shlex
@@ -17,6 +18,8 @@ if TYPE_CHECKING:
     from optio_agents import HookContextProtocol
     from optio_host import Host
     from optio_host.host import ProcessHandle
+
+_LOG = logging.getLogger(__name__)
 
 
 # ttyd's ready banner takes a few forms across versions:
@@ -384,6 +387,12 @@ def build_ttyd_argv(
     netns_wrap = os.environ.get("OPTIO_CLAUDECODE_NETNS", "").strip()
     if netns_wrap:
         claude_cmd = [*shlex.split(netns_wrap), *claude_cmd]
+        _LOG.info("OPTIO_CLAUDECODE_NETNS active — claude wrapped: %r", netns_wrap)
+    else:
+        _LOG.info(
+            "OPTIO_CLAUDECODE_NETNS not set (value=%r) — no loopback isolation",
+            os.environ.get("OPTIO_CLAUDECODE_NETNS"),
+        )
     claude_argv = " ".join(shlex.quote(c) for c in claude_cmd)
     log_path = f"{workdir_clean}/optio.log"
     bash_payload = (
@@ -436,6 +445,7 @@ async def launch_ttyd_with_claude(
     # launch_subprocess takes a single shell-string passed to `sh -c`.
     # Quote each argv element to survive shell parsing.
     command = " ".join(shlex.quote(a) for a in argv)
+    _LOG.info("launch_ttyd_with_claude command: %s", command)
     handle = await host.launch_subprocess(command, env_remove=env_remove)
 
     async def _read_port() -> int:
