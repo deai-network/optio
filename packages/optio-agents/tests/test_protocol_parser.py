@@ -185,7 +185,8 @@ def test_relativize_outside_workdir_rejected(tmp_workdir):
 def test_browser_event():
     ev = parse_log_line('BROWSER: "https://example.com/login"')
     assert isinstance(ev, BrowserEvent)
-    assert ev.url == '"https://example.com/login"'
+    # The shim's delimiter quotes are stripped — the consumer opens the bare URL.
+    assert ev.url == 'https://example.com/login'
 
 
 def test_browser_event_unquoted():

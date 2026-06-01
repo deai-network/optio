@@ -59,4 +59,5 @@ async def test_redirect_captures_browser_marker_end_to_end(tmp_path):
     assert len(lines) == 1
     ev = parse_log_line(lines[0])
     assert isinstance(ev, BrowserEvent)
-    assert ev.url == '"https://example.com/login"'
+    # Shim quotes the URL for transport; the parser strips them to the bare URL.
+    assert ev.url == 'https://example.com/login'

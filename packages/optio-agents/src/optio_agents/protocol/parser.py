@@ -107,7 +107,10 @@ def parse_log_line(line: str, *, recognize_browser: bool = True) -> LogEvent:
     if recognize_browser:
         m = _RE_BROWSER.match(stripped)
         if m:
-            return BrowserEvent(url=m.group(1))
+            # The browser shim emits `BROWSER: "<url>"` (printf '"%s"') — the
+            # quotes delimit the value so a URL with spaces stays one token.
+            # Strip them; the consumer wants the bare URL.
+            return BrowserEvent(url=m.group(1).strip('"'))
 
     m = _RE_ATTENTION.match(stripped)
     if m:
