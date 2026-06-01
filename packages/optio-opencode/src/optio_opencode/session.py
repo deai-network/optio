@@ -668,11 +668,21 @@ def _post_opencode_prompt_sync(
     (the first request over a freshly-opened SSH local forward occasionally
     drops while asyncssh wires up the channel).
 
-    Body shape matches opencode's ``POST /api/session/:sessionID/prompt``
-    schema (``v2/session-prompt.ts``): payload ``{"prompt": <Prompt>}`` where
-    ``Prompt`` is ``{text, files?, agents?}`` — so ``{"prompt": {"text": msg}}``.
-    (An earlier ``{"parts": [...]}`` guess 400'd, exhausting the retries and
-    tearing opencode down — the ECONNREFUSED crash.)
+    Targets opencode's v1 fire-and-forget route ``POST
+    /session/:sessionID/prompt_async`` (same ``/session`` prefix as
+    :func:`_create_opencode_session_sync`). Its ``PromptPayload`` body
+    requires ``parts`` — so ``{"parts": [{"type": "text", "text": msg}]}``.
+    ``prompt_async`` "starts the session if needed and returns immediately"
+    (204 No Content), which is the unattended auto-start semantics we want;
+    the sync ``/session/:id/message`` route blocks streaming the whole AI
+    response. Instance routing comes from opencode's ``process.cwd()`` (the
+    workdir), so no ``?directory=`` query is needed.
+
+    (Earlier targets were both wrong against opencode 1.14.x and crashed the
+    task: the experimental v2 route ``/api/session/:id/prompt`` 400s every
+    body with ``Expected Session.Message`` — the retries exhaust, a
+    RuntimeError aborts the session, opencode is torn down, and the web UI
+    502s its own backend.)
     """
     import base64 as _b64
     import time
@@ -680,12 +690,14 @@ def _post_opencode_prompt_sync(
     from urllib.error import URLError
 
     auth_token = _b64.b64encode(f"opencode:{password}".encode("utf-8")).decode("ascii")
-    url = f"http://127.0.0.1:{port}/api/session/{session_id}/prompt"
+    url = f"http://127.0.0.1:{port}/session/{session_id}/prompt_async"
     headers = {
         "content-type": "application/json",
         "authorization": f"Basic {auth_token}",
     }
-    payload = json.dumps({"prompt": {"text": message}}).encode("utf-8")
+    payload = json.dumps(
+        {"parts": [{"type": "text", "text": message}]}
+    ).encode("utf-8")
 
     last_exc: Exception | None = None
     for attempt in range(4):

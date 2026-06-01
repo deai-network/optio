@@ -289,12 +289,19 @@ async def test_auto_start_posts_on_fresh_and_not_on_resume(
     assert len(posts) == 1, posts
 
 
-def test_post_opencode_prompt_uses_v2_prompt_body(monkeypatch):
-    """The auto-start POST body must match opencode's
-    /api/session/:sessionID/prompt schema: payload {"prompt": {"text": <msg>}}
-    (the Prompt class is {text, files?, agents?}) — NOT {"parts": [...]}. A
-    wrong body 400s, the retries exhaust, and opencode is torn down (the
-    ECONNREFUSED crash)."""
+def test_post_opencode_prompt_uses_prompt_async_parts_body(monkeypatch):
+    """The auto-start POST must hit opencode's v1 fire-and-forget route
+    ``POST /session/:sessionID/prompt_async`` with a ``PromptPayload`` body:
+    ``{"parts": [{"type": "text", "text": <msg>}]}`` (``parts`` is required).
+
+    The earlier targets were both wrong against opencode 1.14.x and crashed
+    the task: ``{"parts": [{"type": "text", ...}]}`` to the experimental v2
+    route ``/api/session/:id/prompt`` (and the ``{"prompt": {"text": ...}}``
+    guess) 400 with ``Expected Session.Message`` — the retries exhaust, a
+    RuntimeError aborts the session, and opencode is torn down (the web UI
+    then 502s its own backend). ``prompt_async`` returns 204 immediately,
+    which is the unattended-kickoff semantics we want; the sync ``/message``
+    route would block streaming the whole AI response."""
     import json
     import urllib.request
     from optio_opencode import session as session_mod
@@ -319,5 +326,7 @@ def test_post_opencode_prompt_uses_v2_prompt_body(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     session_mod._post_opencode_prompt_sync(4096, "pw", "ses_abc", "do the thing")
 
-    assert captured["url"].endswith("/api/session/ses_abc/prompt")
-    assert captured["body"] == {"prompt": {"text": "do the thing"}}
+    assert captured["url"].endswith("/session/ses_abc/prompt_async")
+    assert captured["body"] == {
+        "parts": [{"type": "text", "text": "do the thing"}]
+    }
