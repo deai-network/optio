@@ -612,3 +612,21 @@ def test_build_tmux_session_argv_netns_seal(monkeypatch):
     cmd = argv[-1]
     assert "pasta --config-net --" in cmd
     assert "IS_SANDBOX=1" in cmd
+
+
+def test_build_ttyd_attach_argv_shape():
+    argv = host_actions.build_ttyd_attach_argv(
+        ttyd_path="/bin/ttyd",
+        tmux_path="/usr/bin/tmux",
+        socket_path="/wd/tmux.sock",
+        session_name="optio",
+        bind_iface="127.0.0.1",
+        port=0,
+    )
+    assert argv == [
+        "/bin/ttyd", "-W", "-i", "127.0.0.1", "-p", "0",
+        "-T", "xterm-256color", "--",
+        "/usr/bin/tmux", "-S", "/wd/tmux.sock", "attach", "-t", "optio",
+    ]
+    # single-viewer cap is gone (N observers)
+    assert "-m" not in argv

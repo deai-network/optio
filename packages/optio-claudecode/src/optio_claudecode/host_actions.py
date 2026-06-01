@@ -539,6 +539,31 @@ def build_tmux_session_argv(
     ]
 
 
+def build_ttyd_attach_argv(
+    *,
+    ttyd_path: str,
+    tmux_path: str,
+    socket_path: str,
+    session_name: str,
+    bind_iface: str,
+    port: int,
+) -> list[str]:
+    """Argv for ttyd attaching viewers to the live tmux session.
+
+    ttyd no longer runs claude — it runs ``tmux attach``. ``-m 1`` is dropped so
+    multiple viewers can attach to the same session simultaneously (the agent's
+    life is owned by the tmux session, not by any connection).
+    """
+    return [
+        ttyd_path, "-W",
+        "-i", bind_iface,
+        "-p", str(port),
+        "-T", "xterm-256color",
+        "--",
+        tmux_path, "-S", socket_path, "attach", "-t", session_name,
+    ]
+
+
 async def launch_ttyd_with_claude(
     host: "Host",
     *,
