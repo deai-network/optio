@@ -456,11 +456,16 @@ def build_ttyd_attach_argv(
     ttyd no longer runs claude — it runs ``tmux attach``. ``-m 1`` is dropped so
     multiple viewers can attach to the same session simultaneously (the agent's
     life is owned by the tmux session, not by any connection).
+
+    ``-t disableLeaveAlert=true`` turns off ttyd's web client ``beforeunload``
+    prompt ("leave? data may be lost"). With tmux persistence that warning is
+    false — leaving the page only detaches a viewer; the session keeps running.
     """
     return [
         ttyd_path, "-W",
         "-i", bind_iface,
         "-p", str(port),
+        "-t", "disableLeaveAlert=true",
         "-T", "xterm-256color",
         "--",
         tmux_path, "-S", socket_path, "attach", "-t", session_name,

@@ -524,11 +524,15 @@ def test_build_ttyd_attach_argv_shape():
     )
     assert argv == [
         "/bin/ttyd", "-W", "-i", "127.0.0.1", "-p", "0",
+        "-t", "disableLeaveAlert=true",
         "-T", "xterm-256color", "--",
         "/usr/bin/tmux", "-S", "/wd/tmux.sock", "attach", "-t", "optio",
     ]
     # single-viewer cap is gone (N observers)
     assert "-m" not in argv
+    # ttyd's "leave? data may be lost" beforeunload alert is disabled — with
+    # tmux persistence, leaving the page loses nothing (the session keeps running)
+    assert "disableLeaveAlert=true" in argv
 
 
 class _LaunchFakeResult:
