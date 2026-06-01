@@ -66,7 +66,7 @@ CLAUDE_SEED_MANIFEST = seeds.SeedManifest(
 async def delete_seed(store, seed_id: str):
     """Delete a claudecode seed doc; returns its GridFS blobId (or None).
 
-    Takes an optio store binding (``optio.store`` — exposes ``db`` and
+    Takes an optio store binding (``optio.mongo_store`` — exposes ``db`` and
     ``prefix``) as-is, so consuming apps hand over the whole namespace handle
     instead of threading db+prefix (or knowing the collection suffix). The
     caller still removes the returned blob from GridFS.
@@ -78,11 +78,11 @@ async def delete_seed(store, seed_id: str):
 
 async def purge_seed(store, seed_id: str) -> None:
     """Fully expunge a claudecode seed (doc + GridFS blob); raises KeyError if
-    absent. Takes an optio store binding (``optio.store``) as-is."""
+    absent. Takes an optio store binding (``optio.mongo_store``) as-is."""
     await seeds.purge_seed(store.db, prefix=store.prefix, suffix=CLAUDE_SEED_SUFFIX, seed_id=seed_id)
 
 
 async def list_seeds(store) -> list[dict]:
     """List claudecode seeds as [{seedId, createdAt}, ...]. Takes an optio
-    store binding (``optio.store``) as-is."""
+    store binding (``optio.mongo_store``) as-is."""
     return await seeds.list_seeds(store.db, prefix=store.prefix, suffix=CLAUDE_SEED_SUFFIX)

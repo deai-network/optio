@@ -32,7 +32,7 @@ OPENCODE_SEED_MANIFEST = seeds.SeedManifest(
 async def delete_seed(store, seed_id: str):
     """Delete an opencode seed doc; returns its GridFS blobId (or None).
 
-    Takes an optio store binding (``optio.store`` — exposes ``db`` and
+    Takes an optio store binding (``optio.mongo_store`` — exposes ``db`` and
     ``prefix``) as-is, so consuming apps hand over the whole namespace handle
     instead of threading db+prefix (or knowing the collection suffix). The
     caller still removes the returned blob from GridFS.
@@ -44,14 +44,14 @@ async def delete_seed(store, seed_id: str):
 
 async def list_seeds(store) -> list[dict]:
     """List opencode seeds as [{seedId, createdAt}, ...]. Takes an optio store
-    binding (``optio.store``) as-is."""
+    binding (``optio.mongo_store``) as-is."""
     return await seeds.list_seeds(store.db, prefix=store.prefix, suffix=OPENCODE_SEED_SUFFIX)
 
 
 async def purge_seed(store, seed_id: str):
     """Purge an opencode seed (doc + its GridFS blob) in one call.
 
-    Takes an optio store binding (``optio.store``) as-is, per the Shared-
+    Takes an optio store binding (``optio.mongo_store``) as-is, per the Shared-
     contracts surface. Mirrors `optio_claudecode.purge_seed`; both are thin
     re-exports of the `optio_agents.seeds.purge_seed` engine, which expunges
     the seed doc and its GridFS blob and raises KeyError if absent.

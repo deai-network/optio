@@ -34,7 +34,7 @@ __all__ = [
     "get_process", "list_processes",
     "block_launches", "unblock_launches",
     "group_cancel", "group_cancel_and_wait",
-    "rpc_server", "store", "MongoStore",
+    "rpc_server", "mongo_store", "MongoStore",
 ]
 
 
@@ -47,7 +47,8 @@ def __getattr__(name: str):
     """
     if name == "rpc_server":
         return _instance.rpc_server
-    if name == "store":
+    if name == "mongo_store":
         # Runtime-populated: the (db, prefix) binding only exists after init().
-        return _instance.store
+        # NB: not "store" — that name is the optio_core.store submodule.
+        return _instance.mongo_store
     raise AttributeError(f"module 'optio_core' has no attribute {name!r}")

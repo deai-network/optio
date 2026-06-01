@@ -87,15 +87,17 @@ class Optio:
         self._launch_blocks: dict[uuid.UUID, _BlockEntry] = {}
 
     @property
-    def store(self) -> MongoStore:
+    def mongo_store(self) -> MongoStore:
         """The (db, prefix) binding this instance was initialized with.
 
+        Named ``mongo_store`` (not ``store``) because ``optio_core.store`` is a
+        submodule — a module-level ``store`` attribute would be shadowed by it.
         Hand it as-is to helpers that need db+prefix (e.g.
         ``optio_claudecode.delete_seed``) instead of re-deriving the prefix
         from your own config. Raises if accessed before ``init()``.
         """
         if self._config is None:
-            raise RuntimeError("optio.store accessed before init()")
+            raise RuntimeError("optio.mongo_store accessed before init()")
         return MongoStore(db=self._config.mongo_db, prefix=self._config.prefix)
 
     async def init(
