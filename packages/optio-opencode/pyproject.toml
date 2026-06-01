@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "optio-opencode"
-version = "0.1.7"
+version = "0.1.8"
 description = "Run opencode web as an optio task; local subprocess or remote via SSH."
 readme = "README.md"
 license = "Apache-2.0"
