@@ -497,7 +497,7 @@ def test_build_tmux_session_argv_shape(monkeypatch):
     assert "ERROR: claude exited" in cmd
 
 
-def test_build_tmux_session_argv_netns_seal(monkeypatch):
+def test_build_tmux_session_argv_netns_seal_local_only(monkeypatch):
     monkeypatch.setenv("OPTIO_CLAUDECODE_NETNS", "pasta --config-net --")
     argv = host_actions.build_tmux_session_argv(
         tmux_path="/usr/bin/tmux",
@@ -507,10 +507,34 @@ def test_build_tmux_session_argv_netns_seal(monkeypatch):
         session_name="optio",
         extra_env=None,
         claude_flags=[],
+        local_mode=True,
     )
     cmd = argv[-1]
     assert "pasta --config-net --" in cmd
     assert "IS_SANDBOX=1" in cmd
+
+
+def test_build_tmux_session_argv_no_netns_seal_when_remote(monkeypatch):
+    # The netns seal isolates claude's OAuth loopback callback — meaningful
+    # ONLY for a local session. Over SSH there is no localhost to seal and the
+    # netns tools may be absent on the remote, so the seal must be skipped even
+    # when OPTIO_CLAUDECODE_NETNS is set in the engine env.
+    monkeypatch.setenv("OPTIO_CLAUDECODE_NETNS", "pasta --config-net --")
+    argv = host_actions.build_tmux_session_argv(
+        tmux_path="/usr/bin/tmux",
+        claude_path="/wd/home/.local/bin/claude",
+        workdir="/wd",
+        socket_path="/wd/tmux.sock",
+        session_name="optio",
+        extra_env=None,
+        claude_flags=[],
+        local_mode=False,
+    )
+    cmd = argv[-1]
+    assert "pasta" not in cmd
+    assert "IS_SANDBOX=1" not in cmd
+    # claude is invoked directly (no netns wrapper)
+    assert "/wd/home/.local/bin/claude" in cmd
 
 
 def test_build_ttyd_attach_argv_shape():

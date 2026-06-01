@@ -358,15 +358,23 @@ def _build_claude_shell_command(
     workdir: str,
     extra_env: dict[str, str] | None,
     claude_flags: list[str],
+    local_mode: bool = False,
 ) -> tuple[list[str], str]:
     """Return (env_assignments, shell_command).
 
     ``env_assignments`` is the list of ``KEY=VALUE`` strings (HOME, PATH,
     extras). ``shell_command`` is the full ``env <assignments> bash -c
-    <payload>`` string that runs claude under HOME-isolation, applies the
-    optional OPTIO_CLAUDECODE_NETNS seal, and appends DONE/ERROR to optio.log
-    when claude exits. Consumed by build_tmux_session_argv (claude now runs
-    inside the detached tmux session, not as a direct ttyd child).
+    <payload>`` string that runs claude under HOME-isolation, optionally
+    applies the OPTIO_CLAUDECODE_NETNS seal, and appends DONE/ERROR to
+    optio.log when claude exits. Consumed by build_tmux_session_argv (claude
+    now runs inside the detached tmux session, not as a direct ttyd child).
+
+    The netns seal is applied ONLY when ``local_mode`` is True. The seal
+    isolates claude's OAuth loopback callback inside a private network
+    namespace — meaningful only for a local session. Over SSH there is no
+    localhost to seal and the netns tools (pasta/unshare) may be absent on the
+    remote, so the seal is skipped even if OPTIO_CLAUDECODE_NETNS is set in the
+    engine env.
     """
     workdir_clean = workdir.rstrip("/")
     home_dir = f"{workdir_clean}/home"
@@ -384,21 +392,28 @@ def _build_claude_shell_command(
         env_assignments.append(f"{k}={v}")
 
     netns_wrap = os.environ.get("OPTIO_CLAUDECODE_NETNS", "").strip()
-    if netns_wrap:
+    if netns_wrap and local_mode:
         inner = "IS_SANDBOX=1 " + " ".join(
             shlex.quote(c) for c in [claude_path, *claude_flags]
         )
         claude_cmd = [*shlex.split(netns_wrap), "bash", "-c", inner]
         _LOG.info(
-            "OPTIO_CLAUDECODE_NETNS active — claude wrapped via %r "
+            "OPTIO_CLAUDECODE_NETNS active (local mode) — claude wrapped via %r "
             "(bash -c, IS_SANDBOX=1, flags kept)", netns_wrap,
         )
     else:
         claude_cmd = [claude_path, *claude_flags]
-        _LOG.info(
-            "OPTIO_CLAUDECODE_NETNS not set (value=%r) — no loopback isolation",
-            os.environ.get("OPTIO_CLAUDECODE_NETNS"),
-        )
+        if netns_wrap and not local_mode:
+            _LOG.info(
+                "OPTIO_CLAUDECODE_NETNS set (value=%r) but host is remote — seal "
+                "skipped (no localhost to seal over SSH; netns tools may be "
+                "absent on the remote)", netns_wrap,
+            )
+        else:
+            _LOG.info(
+                "OPTIO_CLAUDECODE_NETNS not set (value=%r) — no loopback isolation",
+                os.environ.get("OPTIO_CLAUDECODE_NETNS"),
+            )
     claude_argv = " ".join(shlex.quote(c) for c in claude_cmd)
     log_path = f"{workdir_clean}/optio.log"
     bash_payload = (
@@ -421,6 +436,7 @@ def build_tmux_session_argv(
     session_name: str,
     extra_env: dict[str, str] | None,
     claude_flags: list[str],
+    local_mode: bool = False,
 ) -> list[str]:
     """Argv for the detached ``tmux new-session`` that starts claude.
 
@@ -428,12 +444,16 @@ def build_tmux_session_argv(
     wrapper is a single trailing shell-string element. The private socket
     (``-S socket_path``) isolates this task's tmux server. ``-x/-y`` give the
     detached pane a sane initial size before any viewer attaches.
+
+    ``local_mode`` gates the OPTIO_CLAUDECODE_NETNS seal (local sessions only;
+    see _build_claude_shell_command).
     """
     _, shell_command = _build_claude_shell_command(
         claude_path=claude_path,
         workdir=workdir,
         extra_env=extra_env,
         claude_flags=claude_flags,
+        local_mode=local_mode,
     )
     return [
         tmux_path, "-S", socket_path, "new-session", "-d",
@@ -493,6 +513,11 @@ async def launch_ttyd_with_claude(
     tmux_path = await _require_tmux(host)
     socket_path = f"{host.workdir.rstrip('/')}/tmux.sock"
 
+    # The netns OAuth-loopback seal applies to LOCAL sessions only — over SSH
+    # there is no localhost to seal and the netns tools may be absent remotely.
+    from optio_host.host import LocalHost
+    local_mode = isinstance(host, LocalHost)
+
     # 1) Start claude detached in tmux. The env scrub (env_remove) must apply
     #    here so the tmux server — which holds claude — does not inherit
     #    scrubbed vars. ``run_command`` has no ``env_remove`` kwarg (only
@@ -506,6 +531,7 @@ async def launch_ttyd_with_claude(
         session_name=session_name,
         extra_env=extra_env,
         claude_flags=claude_flags,
+        local_mode=local_mode,
     )
     session_cmd = " ".join(shlex.quote(a) for a in session_argv)
     _LOG.info("tmux session start command: %s", session_cmd)
