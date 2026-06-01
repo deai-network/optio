@@ -50,14 +50,9 @@ async def purge_seed(db, prefix: str, seed_id: str):
     """Purge an opencode seed (doc + its GridFS blob) in one call.
 
     Ergonomic wrapper binding `OPENCODE_SEED_SUFFIX`, per the frozen
-    Shared-contracts surface.
-
-    NOTE: this binds `seeds.purge_seed`, which the optio-agents seed engine
-    does not yet expose (the engine only has `delete_seed` / `list_seeds`,
-    and the claudecode reference has no purge wrapper). The frozen contract
-    asserts this function exists; the engine addition is out of this task's
-    file scope and must land before this wrapper resolves at call time. See
-    Phase-4 verification.
+    Shared-contracts surface. Mirrors `optio_claudecode.purge_seed`; both
+    are thin re-exports of the `optio_agents.seeds.purge_seed` engine, which
+    expunges the seed doc and its GridFS blob and raises KeyError if absent.
     """
     return await seeds.purge_seed(
         db, prefix=prefix, suffix=OPENCODE_SEED_SUFFIX, seed_id=seed_id,
