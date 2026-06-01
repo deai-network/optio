@@ -449,6 +449,96 @@ def build_ttyd_argv(
     ]
 
 
+def _build_claude_shell_command(
+    *,
+    claude_path: str,
+    workdir: str,
+    extra_env: dict[str, str] | None,
+    claude_flags: list[str],
+) -> tuple[list[str], str]:
+    """Return (env_assignments, shell_command).
+
+    ``env_assignments`` is the list of ``KEY=VALUE`` strings (HOME, PATH,
+    extras). ``shell_command`` is the full ``env <assignments> bash -c
+    <payload>`` string that runs claude under HOME-isolation, applies the
+    optional OPTIO_CLAUDECODE_NETNS seal, and appends DONE/ERROR to optio.log
+    when claude exits. Shared by build_ttyd_argv (legacy/no longer used for the
+    direct child) and build_tmux_session_argv.
+    """
+    workdir_clean = workdir.rstrip("/")
+    home_dir = f"{workdir_clean}/home"
+    home_local_bin = f"{home_dir}/.local/bin"
+
+    extra = dict(extra_env or {})
+    base_path = extra.pop("PATH", None) or os.environ.get(
+        "PATH", "/usr/local/bin:/usr/bin:/bin",
+    )
+    env_assignments: list[str] = [
+        f"HOME={home_dir}",
+        f"PATH={home_local_bin}:{base_path}",
+    ]
+    for k, v in extra.items():
+        env_assignments.append(f"{k}={v}")
+
+    netns_wrap = os.environ.get("OPTIO_CLAUDECODE_NETNS", "").strip()
+    if netns_wrap:
+        inner = "IS_SANDBOX=1 " + " ".join(
+            shlex.quote(c) for c in [claude_path, *claude_flags]
+        )
+        claude_cmd = [*shlex.split(netns_wrap), "bash", "-c", inner]
+        _LOG.info(
+            "OPTIO_CLAUDECODE_NETNS active — claude wrapped via %r "
+            "(bash -c, IS_SANDBOX=1, flags kept)", netns_wrap,
+        )
+    else:
+        claude_cmd = [claude_path, *claude_flags]
+        _LOG.info(
+            "OPTIO_CLAUDECODE_NETNS not set (value=%r) — no loopback isolation",
+            os.environ.get("OPTIO_CLAUDECODE_NETNS"),
+        )
+    claude_argv = " ".join(shlex.quote(c) for c in claude_cmd)
+    log_path = f"{workdir_clean}/optio.log"
+    bash_payload = (
+        f"cd {shlex.quote(workdir_clean)} && {claude_argv}; rc=$?; "
+        f'if [ "$rc" = 0 ]; then echo DONE >> {shlex.quote(log_path)}; '
+        f"else printf 'ERROR: claude exited %s\\n' \"$rc\" >> {shlex.quote(log_path)}; fi"
+    )
+    shell_command = "env " + " ".join(
+        shlex.quote(x) for x in [*env_assignments, "bash", "-c", bash_payload]
+    )
+    return env_assignments, shell_command
+
+
+def build_tmux_session_argv(
+    *,
+    tmux_path: str,
+    claude_path: str,
+    workdir: str,
+    socket_path: str,
+    session_name: str,
+    extra_env: dict[str, str] | None,
+    claude_flags: list[str],
+) -> list[str]:
+    """Argv for the detached ``tmux new-session`` that starts claude.
+
+    tmux runs its command argument via ``/bin/sh -c``, so the env + claude
+    wrapper is a single trailing shell-string element. The private socket
+    (``-S socket_path``) isolates this task's tmux server. ``-x/-y`` give the
+    detached pane a sane initial size before any viewer attaches.
+    """
+    _, shell_command = _build_claude_shell_command(
+        claude_path=claude_path,
+        workdir=workdir,
+        extra_env=extra_env,
+        claude_flags=claude_flags,
+    )
+    return [
+        tmux_path, "-S", socket_path, "new-session", "-d",
+        "-s", session_name, "-x", "200", "-y", "50",
+        shell_command,
+    ]
+
+
 async def launch_ttyd_with_claude(
     host: "Host",
     *,

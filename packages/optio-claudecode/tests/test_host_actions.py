@@ -565,3 +565,50 @@ async def test_require_tmux_returns_path_when_present():
 async def test_require_tmux_raises_clear_error_when_missing():
     with pytest.raises(RuntimeError, match="tmux is required"):
         await host_actions._require_tmux(_RequireTmuxFakeHost(tmux_ok=False))
+
+
+def test_build_tmux_session_argv_shape(monkeypatch):
+    monkeypatch.delenv("OPTIO_CLAUDECODE_NETNS", raising=False)
+    argv = host_actions.build_tmux_session_argv(
+        tmux_path="/usr/bin/tmux",
+        claude_path="/wd/home/.local/bin/claude",
+        workdir="/wd",
+        socket_path="/wd/tmux.sock",
+        session_name="optio",
+        extra_env={"FOO": "bar"},
+        claude_flags=["--flag"],
+    )
+    # tmux invocation on the private socket, detached, named session
+    assert argv[:9] == [
+        "/usr/bin/tmux", "-S", "/wd/tmux.sock", "new-session", "-d",
+        "-s", "optio", "-x", "200",
+    ]
+    assert argv[9:11] == ["-y", "50"]
+    # the command is a SINGLE trailing shell-string element
+    cmd = argv[-1]
+    assert cmd.startswith("env ")
+    assert "HOME=/wd/home" in cmd
+    assert "PATH=/wd/home/.local/bin:" in cmd
+    assert "FOO=bar" in cmd
+    assert "bash -c " in cmd
+    # the wrapper still cds + runs claude + appends DONE/ERROR to optio.log
+    assert "cd /wd &&" in cmd
+    assert "/wd/home/.local/bin/claude --flag" in cmd
+    assert "echo DONE >> /wd/optio.log" in cmd
+    assert "ERROR: claude exited" in cmd
+
+
+def test_build_tmux_session_argv_netns_seal(monkeypatch):
+    monkeypatch.setenv("OPTIO_CLAUDECODE_NETNS", "pasta --config-net --")
+    argv = host_actions.build_tmux_session_argv(
+        tmux_path="/usr/bin/tmux",
+        claude_path="/wd/home/.local/bin/claude",
+        workdir="/wd",
+        socket_path="/wd/tmux.sock",
+        session_name="optio",
+        extra_env=None,
+        claude_flags=[],
+    )
+    cmd = argv[-1]
+    assert "pasta --config-net --" in cmd
+    assert "IS_SANDBOX=1" in cmd
