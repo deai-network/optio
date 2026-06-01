@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "optio-demo"
-version = "0.1.0"
+version = "0.1.1"
 description = "Demo application exercising all optio-core features"
 readme = "README.md"
 license = "Apache-2.0"
