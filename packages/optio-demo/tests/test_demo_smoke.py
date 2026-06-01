@@ -5,13 +5,20 @@ import inspect
 from optio_demo.tasks.opencode import get_tasks
 
 
-def test_get_tasks_returns_one_task_instance():
-    tasks = get_tasks()
-    assert len(tasks) == 1
-    t = tasks[0]
-    assert t.process_id == "opencode-demo"
-    assert t.name == "Opencode demo"
-    assert t.ui_widget == "iframe"
+def test_get_tasks_is_async_services_factory():
+    """The opencode demo is a seed-lifecycle factory: an async
+    ``get_tasks(services)`` returning the static demo + seed-setup tasks plus
+    one seed-pinned task per captured seed (the latter discovered from Mongo
+    via ``services``). Structural check only — calling it needs a db, which
+    the seed integration tests already cover."""
+    assert inspect.iscoroutinefunction(get_tasks)
+    assert list(inspect.signature(get_tasks).parameters) == ["services"]
+
+    src = inspect.getsource(inspect.getmodule(get_tasks))
+    # the static tasks the factory always emits
+    assert 'process_id="opencode-demo"' in src
+    assert 'process_id="opencode-seed-setup"' in src
+    assert "create_opencode_task" in src
 
 
 def test_demo_does_not_use_wrapper_execute_pattern():
