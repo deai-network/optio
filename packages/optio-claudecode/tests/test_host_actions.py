@@ -329,6 +329,39 @@ def test_build_ttyd_argv_basic():
     assert "ERROR: claude exited" in bash_payload
 
 
+def test_build_ttyd_argv_netns_wraps_only_claude(monkeypatch):
+    monkeypatch.setenv("OPTIO_CLAUDECODE_NETNS", "pasta --config-net --")
+    argv = host_actions.build_ttyd_argv(
+        ttyd_path="/usr/bin/ttyd",
+        claude_path="/opt/claude/claude",
+        workdir="/tmp/wd",
+        bind_iface="127.0.0.1",
+        port=8765,
+        extra_env=None,
+        claude_flags=["--permission-mode", "bypassPermissions"],
+    )
+    payload = argv[argv.index("bash") + 2]
+    # claude is run through the isolation command; ttyd is NOT wrapped.
+    assert "pasta --config-net -- /opt/claude/claude --permission-mode bypassPermissions" in payload
+    assert argv[0] == "/usr/bin/ttyd"
+
+
+def test_build_ttyd_argv_no_netns_by_default(monkeypatch):
+    monkeypatch.delenv("OPTIO_CLAUDECODE_NETNS", raising=False)
+    argv = host_actions.build_ttyd_argv(
+        ttyd_path="/usr/bin/ttyd",
+        claude_path="/opt/claude/claude",
+        workdir="/tmp/wd",
+        bind_iface="127.0.0.1",
+        port=8765,
+        extra_env=None,
+        claude_flags=[],
+    )
+    payload = argv[argv.index("bash") + 2]
+    assert "pasta" not in payload
+    assert "/opt/claude/claude" in payload
+
+
 @pytest.mark.parametrize("banner,expected_port", [
     # ttyd 1.7.x with libwebsockets logging prefix + colon after "port"
     ("[2026/05/28 23:20:13:3422] N:  Listening on port: 33449", 33449),

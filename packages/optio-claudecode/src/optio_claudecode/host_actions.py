@@ -371,7 +371,20 @@ def build_ttyd_argv(
     for k, v in extra.items():
         env_assignments.append(f"{k}={v}")
 
-    claude_argv = " ".join(shlex.quote(c) for c in [claude_path, *claude_flags])
+    # Test seal: when OPTIO_CLAUDECODE_NETNS holds an isolation command, run
+    # claude through it so its OAuth loopback callback server binds inside a
+    # private network namespace — unreachable from the operator's host browser,
+    # exactly like prod's container. This forces the manual (hosted-redirect)
+    # login path instead of letting the local loopback silently auto-complete.
+    # The value is the wrapper argv (tokenized), e.g. "pasta --config-net --"
+    # (pasta/slirp4netns give the netns egress claude needs for the token
+    # exchange; a bare `unshare --net` would seal the loopback but kill egress).
+    # ttyd itself is NOT wrapped, so it stays reachable on the host.
+    claude_cmd = [claude_path, *claude_flags]
+    netns_wrap = os.environ.get("OPTIO_CLAUDECODE_NETNS", "").strip()
+    if netns_wrap:
+        claude_cmd = [*shlex.split(netns_wrap), *claude_cmd]
+    claude_argv = " ".join(shlex.quote(c) for c in claude_cmd)
     log_path = f"{workdir_clean}/optio.log"
     bash_payload = (
         f"cd {shlex.quote(workdir_clean)} && {claude_argv}; rc=$?; "
