@@ -333,6 +333,26 @@ async def plant_home_files(
         await host.write_text(settings_rel, json.dumps(claude_config, indent=2))
 
 
+def _drop_root_unsafe_flags(flags: list[str]) -> list[str]:
+    """Strip Claude flags it refuses to honor as root: the standalone
+    ``--dangerously-skip-permissions`` and the ``--permission-mode
+    bypassPermissions`` pair. Other flags (incl. other --permission-mode
+    values) pass through untouched."""
+    out: list[str] = []
+    i = 0
+    while i < len(flags):
+        f = flags[i]
+        if f == "--dangerously-skip-permissions":
+            i += 1
+            continue
+        if f == "--permission-mode" and i + 1 < len(flags) and flags[i + 1] == "bypassPermissions":
+            i += 2
+            continue
+        out.append(f)
+        i += 1
+    return out
+
+
 def build_ttyd_argv(
     *,
     ttyd_path: str,
@@ -383,11 +403,22 @@ def build_ttyd_argv(
     # (pasta/slirp4netns give the netns egress claude needs for the token
     # exchange; a bare `unshare --net` would seal the loopback but kill egress).
     # ttyd itself is NOT wrapped, so it stays reachable on the host.
-    claude_cmd = [claude_path, *claude_flags]
+    effective_flags = list(claude_flags)
     netns_wrap = os.environ.get("OPTIO_CLAUDECODE_NETNS", "").strip()
     if netns_wrap:
+        # Rootless netns (pasta/unshare) maps the user to root inside a user
+        # namespace, and Claude refuses --dangerously-skip-permissions /
+        # --permission-mode bypassPermissions as root. The seal is for the
+        # human-login setup flow, which doesn't need permission bypass (the
+        # human approves in the TUI), so drop those root-unsafe flags here.
+        effective_flags = _drop_root_unsafe_flags(effective_flags)
+    claude_cmd = [claude_path, *effective_flags]
+    if netns_wrap:
         claude_cmd = [*shlex.split(netns_wrap), *claude_cmd]
-        _LOG.info("OPTIO_CLAUDECODE_NETNS active — claude wrapped: %r", netns_wrap)
+        _LOG.info(
+            "OPTIO_CLAUDECODE_NETNS active — claude wrapped: %r (root-unsafe "
+            "permission flags dropped)", netns_wrap,
+        )
     else:
         _LOG.info(
             "OPTIO_CLAUDECODE_NETNS not set (value=%r) — no loopback isolation",

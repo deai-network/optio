@@ -329,7 +329,7 @@ def test_build_ttyd_argv_basic():
     assert "ERROR: claude exited" in bash_payload
 
 
-def test_build_ttyd_argv_netns_wraps_only_claude(monkeypatch):
+def test_build_ttyd_argv_netns_wraps_claude_and_drops_root_unsafe_flags(monkeypatch):
     monkeypatch.setenv("OPTIO_CLAUDECODE_NETNS", "pasta --config-net --")
     argv = host_actions.build_ttyd_argv(
         ttyd_path="/usr/bin/ttyd",
@@ -338,12 +338,28 @@ def test_build_ttyd_argv_netns_wraps_only_claude(monkeypatch):
         bind_iface="127.0.0.1",
         port=8765,
         extra_env=None,
-        claude_flags=["--permission-mode", "bypassPermissions"],
+        claude_flags=["--permission-mode", "bypassPermissions", "--model", "x"],
     )
     payload = argv[argv.index("bash") + 2]
-    # claude is run through the isolation command; ttyd is NOT wrapped.
-    assert "pasta --config-net -- /opt/claude/claude --permission-mode bypassPermissions" in payload
+    # claude is run through the isolation command (ttyd itself is NOT wrapped),
+    # and the root-unsafe bypass flag is stripped (rootless netns runs as root).
+    assert "pasta --config-net -- /opt/claude/claude --model x" in payload
+    assert "bypassPermissions" not in payload
     assert argv[0] == "/usr/bin/ttyd"
+
+
+def test_drop_root_unsafe_flags():
+    assert host_actions._drop_root_unsafe_flags(
+        ["--permission-mode", "bypassPermissions", "--model", "x"]
+    ) == ["--model", "x"]
+    assert host_actions._drop_root_unsafe_flags(
+        ["--dangerously-skip-permissions", "--foo"]
+    ) == ["--foo"]
+    # A non-bypass --permission-mode value is preserved.
+    assert host_actions._drop_root_unsafe_flags(
+        ["--permission-mode", "acceptEdits"]
+    ) == ["--permission-mode", "acceptEdits"]
+    assert host_actions._drop_root_unsafe_flags([]) == []
 
 
 def test_build_ttyd_argv_no_netns_by_default(monkeypatch):
