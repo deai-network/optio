@@ -630,3 +630,55 @@ def test_build_ttyd_attach_argv_shape():
     ]
     # single-viewer cap is gone (N observers)
     assert "-m" not in argv
+
+
+class _LaunchFakeResult:
+    def __init__(self, exit_code, stdout="", stderr=""):
+        self.exit_code = exit_code
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class _LaunchFakeHost:
+    """Records the tmux-start command, serves a fake ttyd ready banner."""
+    def __init__(self):
+        self.workdir = "/wd"
+        self.commands = []
+
+    async def run_command(self, cmd, **kwargs):
+        self.commands.append(cmd)
+        if "command -v tmux" in cmd:
+            return _LaunchFakeResult(0, "/usr/bin/tmux\n")
+        return _LaunchFakeResult(0, "")
+
+    async def launch_subprocess(self, command, **kwargs):
+        self.commands.append(command)
+        return _FakeTtydHandle()
+
+
+class _FakeTtydHandle:
+    @property
+    def stdout(self):
+        async def _gen():
+            yield b"http://127.0.0.1:45999/\n"
+        return _gen()
+
+
+async def test_launch_returns_handle_port_socket_session(monkeypatch):
+    monkeypatch.delenv("OPTIO_CLAUDECODE_NETNS", raising=False)
+    host = _LaunchFakeHost()
+    handle, port, socket_path, session = await host_actions.launch_ttyd_with_claude(
+        host,
+        ttyd_path="/bin/ttyd",
+        claude_path="/wd/home/.local/bin/claude",
+        bind_iface="127.0.0.1",
+        extra_env={},
+        claude_flags=[],
+        ready_timeout_s=5.0,
+        env_remove=None,
+    )
+    assert port == 45999
+    assert socket_path == "/wd/tmux.sock"
+    assert session == "optio"
+    # a detached tmux new-session was started before ttyd
+    assert any("new-session -d" in c or "new-session" in c for c in host.commands)

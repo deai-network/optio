@@ -574,29 +574,55 @@ async def launch_ttyd_with_claude(
     claude_flags: list[str],
     ready_timeout_s: float = 30.0,
     env_remove: list[str] | None = None,
-) -> "tuple[ProcessHandle, int]":
-    """Spawn ttyd wrapping claude under HOME-isolation. Wait for ready.
+    session_name: str = "optio",
+) -> "tuple[ProcessHandle, int, str, str]":
+    """Start claude in a detached tmux session, then ttyd attaching to it.
 
-    Always passes ``-p 0`` so the OS picks a free port; the actual port
-    is parsed from ttyd's stdout/stderr ready banner.
-
-    Returns ``(handle, port)``. Caller is responsible for terminating
-    the handle.
+    Returns ``(ttyd_handle, port, socket_path, session_name)``. claude runs in
+    the tmux session independent of ttyd; the caller awaits tmux-session
+    liveness for completion and tears down BOTH the tmux session and ttyd.
     """
-    argv = build_ttyd_argv(
-        ttyd_path=ttyd_path,
+    tmux_path = await _require_tmux(host)
+    socket_path = f"{host.workdir.rstrip('/')}/tmux.sock"
+
+    # 1) Start claude detached in tmux. The env scrub (env_remove) must apply
+    #    here so the tmux server — which holds claude — does not inherit
+    #    scrubbed vars. ``run_command`` has no ``env_remove`` kwarg (only
+    #    ``cwd``/``env``), so we go through ``launch_subprocess`` (which does)
+    #    and await its exit — ``new-session -d`` returns immediately.
+    session_argv = build_tmux_session_argv(
+        tmux_path=tmux_path,
         claude_path=claude_path,
         workdir=host.workdir,
-        bind_iface=bind_iface,
-        port=0,
+        socket_path=socket_path,
+        session_name=session_name,
         extra_env=extra_env,
         claude_flags=claude_flags,
     )
-    # launch_subprocess takes a single shell-string passed to `sh -c`.
-    # Quote each argv element to survive shell parsing.
-    command = " ".join(shlex.quote(a) for a in argv)
-    _LOG.info("launch_ttyd_with_claude command: %s", command)
-    handle = await host.launch_subprocess(command, env_remove=env_remove)
+    session_cmd = " ".join(shlex.quote(a) for a in session_argv)
+    _LOG.info("tmux session start command: %s", session_cmd)
+    start_handle = await host.launch_subprocess(session_cmd, env_remove=env_remove)
+    # new-session -d returns at once; drain stdout to await the process exit.
+    start_output: list[str] = []
+    async for raw in start_handle.stdout:
+        line = (
+            raw.decode("utf-8", errors="replace")
+            if isinstance(raw, bytes) else str(raw)
+        )
+        start_output.append(line)
+
+    # 2) Start ttyd attaching to the live session.
+    ttyd_argv = build_ttyd_attach_argv(
+        ttyd_path=ttyd_path,
+        tmux_path=tmux_path,
+        socket_path=socket_path,
+        session_name=session_name,
+        bind_iface=bind_iface,
+        port=0,
+    )
+    command = " ".join(shlex.quote(a) for a in ttyd_argv)
+    _LOG.info("launch ttyd attach command: %s", command)
+    handle = await host.launch_subprocess(command)
 
     async def _read_port() -> int:
         async for raw in handle.stdout:
@@ -611,13 +637,39 @@ async def launch_ttyd_with_claude(
         port = await asyncio.wait_for(_read_port(), timeout=ready_timeout_s)
     except asyncio.TimeoutError:
         await host.terminate_subprocess(handle, aggressive=True)
+        await _kill_tmux_session(host, tmux_path, socket_path, session_name)
         raise TimeoutError(
             f"ttyd did not print a listening URL within {ready_timeout_s}s"
         )
     except BaseException:
         await host.terminate_subprocess(handle, aggressive=True)
+        await _kill_tmux_session(host, tmux_path, socket_path, session_name)
         raise
-    return handle, port
+    return handle, port, socket_path, session_name
+
+
+async def _kill_tmux_session(
+    host: "Host", tmux_path: str, socket_path: str, session_name: str,
+) -> None:
+    """Best-effort kill of the per-task tmux session (stops claude)."""
+    try:
+        await host.run_command(
+            f"{shlex.quote(tmux_path)} -S {shlex.quote(socket_path)} "
+            f"kill-session -t {shlex.quote(session_name)}"
+        )
+    except Exception:  # noqa: BLE001
+        _LOG.exception("tmux kill-session failed (socket=%s)", socket_path)
+
+
+async def tmux_session_alive(
+    host: "Host", tmux_path: str, socket_path: str, session_name: str,
+) -> bool:
+    """True while the claude-bearing tmux session exists."""
+    r = await host.run_command(
+        f"{shlex.quote(tmux_path)} -S {shlex.quote(socket_path)} "
+        f"has-session -t {shlex.quote(session_name)}"
+    )
+    return r.exit_code == 0
 
 
 def build_claude_flags(
