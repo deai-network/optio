@@ -329,7 +329,7 @@ def test_build_ttyd_argv_basic():
     assert "ERROR: claude exited" in bash_payload
 
 
-def test_build_ttyd_argv_netns_wraps_claude_and_drops_root_unsafe_flags(monkeypatch):
+def test_build_ttyd_argv_netns_wraps_claude_keeps_flags_with_is_sandbox(monkeypatch):
     monkeypatch.setenv("OPTIO_CLAUDECODE_NETNS", "pasta --config-net --")
     argv = host_actions.build_ttyd_argv(
         ttyd_path="/usr/bin/ttyd",
@@ -342,25 +342,14 @@ def test_build_ttyd_argv_netns_wraps_claude_and_drops_root_unsafe_flags(monkeypa
     )
     payload = argv[argv.index("bash") + 2]
     # claude is run via `bash -c` inside the isolation command (pasta can't
-    # directly exec a $HOME binary); ttyd itself is NOT wrapped; and the
-    # root-unsafe bypass flag is stripped (rootless netns runs as root).
-    assert "pasta --config-net -- bash -c '/opt/claude/claude --model x'" in payload
-    assert "bypassPermissions" not in payload
+    # directly exec a $HOME binary); ttyd itself is NOT wrapped; IS_SANDBOX=1
+    # lets Claude honor bypass as root (rootless netns), and the flags are KEPT
+    # so the analyzer behaves as in prod under the seal.
+    assert (
+        "pasta --config-net -- bash -c 'IS_SANDBOX=1 /opt/claude/claude "
+        "--permission-mode bypassPermissions --model x'"
+    ) in payload
     assert argv[0] == "/usr/bin/ttyd"
-
-
-def test_drop_root_unsafe_flags():
-    assert host_actions._drop_root_unsafe_flags(
-        ["--permission-mode", "bypassPermissions", "--model", "x"]
-    ) == ["--model", "x"]
-    assert host_actions._drop_root_unsafe_flags(
-        ["--dangerously-skip-permissions", "--foo"]
-    ) == ["--foo"]
-    # A non-bypass --permission-mode value is preserved.
-    assert host_actions._drop_root_unsafe_flags(
-        ["--permission-mode", "acceptEdits"]
-    ) == ["--permission-mode", "acceptEdits"]
-    assert host_actions._drop_root_unsafe_flags([]) == []
 
 
 def test_build_ttyd_argv_no_netns_by_default(monkeypatch):

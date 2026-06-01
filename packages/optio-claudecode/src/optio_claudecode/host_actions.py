@@ -333,26 +333,6 @@ async def plant_home_files(
         await host.write_text(settings_rel, json.dumps(claude_config, indent=2))
 
 
-def _drop_root_unsafe_flags(flags: list[str]) -> list[str]:
-    """Strip Claude flags it refuses to honor as root: the standalone
-    ``--dangerously-skip-permissions`` and the ``--permission-mode
-    bypassPermissions`` pair. Other flags (incl. other --permission-mode
-    values) pass through untouched."""
-    out: list[str] = []
-    i = 0
-    while i < len(flags):
-        f = flags[i]
-        if f == "--dangerously-skip-permissions":
-            i += 1
-            continue
-        if f == "--permission-mode" and i + 1 < len(flags) and flags[i + 1] == "bypassPermissions":
-            i += 2
-            continue
-        out.append(f)
-        i += 1
-    return out
-
-
 def build_ttyd_argv(
     *,
     ttyd_path: str,
@@ -403,25 +383,28 @@ def build_ttyd_argv(
     # (pasta/slirp4netns give the netns egress claude needs for the token
     # exchange; a bare `unshare --net` would seal the loopback but kill egress).
     # ttyd itself is NOT wrapped, so it stays reachable on the host.
-    effective_flags = list(claude_flags)
     netns_wrap = os.environ.get("OPTIO_CLAUDECODE_NETNS", "").strip()
     if netns_wrap:
         # Rootless netns (pasta/unshare) maps the user to root inside a user
-        # namespace, so two adjustments are needed:
-        #  1. Claude refuses --dangerously-skip-permissions / --permission-mode
-        #     bypassPermissions as root; the seal targets the human-login setup
-        #     flow (which doesn't need bypass), so drop those flags.
+        # namespace, which has two consequences we handle here so that BOTH the
+        # human-login setup AND the autonomous analyzer behave exactly as in
+        # prod under the seal:
+        #  1. Claude refuses --dangerously-skip-permissions as root unless it
+        #     believes it's sandboxed (`process.env.IS_SANDBOX!=="1"` gates the
+        #     refusal). The netns IS a sandbox, so set IS_SANDBOX=1 and KEEP the
+        #     permission flags — the analyzer still gets its bypass.
         #  2. pasta can't directly exec a binary under $HOME (EACCES) but a
-        #     shell child can, so run claude via `bash -c` inside the wrapper.
-        effective_flags = _drop_root_unsafe_flags(effective_flags)
-        inner = " ".join(shlex.quote(c) for c in [claude_path, *effective_flags])
+        #     shell child can, so run claude via `bash -c`.
+        inner = "IS_SANDBOX=1 " + " ".join(
+            shlex.quote(c) for c in [claude_path, *claude_flags]
+        )
         claude_cmd = [*shlex.split(netns_wrap), "bash", "-c", inner]
         _LOG.info(
-            "OPTIO_CLAUDECODE_NETNS active — claude wrapped via %r (bash -c; "
-            "root-unsafe permission flags dropped)", netns_wrap,
+            "OPTIO_CLAUDECODE_NETNS active — claude wrapped via %r "
+            "(bash -c, IS_SANDBOX=1, flags kept)", netns_wrap,
         )
     else:
-        claude_cmd = [claude_path, *effective_flags]
+        claude_cmd = [claude_path, *claude_flags]
         _LOG.info(
             "OPTIO_CLAUDECODE_NETNS not set (value=%r) — no loopback isolation",
             os.environ.get("OPTIO_CLAUDECODE_NETNS"),
