@@ -68,13 +68,13 @@ CONSUMER_PROMPT = (
 DEMO_SEED_COLLECTION_SUFFIX = "_demo_claude_seeds"
 
 SEED_SETUP_PROMPT = (
-    "This is a one-time setup session. Use the terminal to log into "
-    "Claude Code (run `/login` and follow the prompts) and install any "
-    "plugins or MCP servers you want available to demo tasks. When you "
-    "are done, STOP this task from the dashboard — your configuration "
-    "(credentials, settings, plugins) will be captured as a reusable "
-    "seed, and a new 'Claude Code demo' task pinned to that seed will "
-    "appear automatically."
+    "This is a one-time setup session for a human operator. You do not "
+    "need to do anything. The operator will log into Claude Code (run "
+    "`/login`) and install any plugins/MCP servers directly in this "
+    "terminal, then stop this task — their credentials/settings/plugins "
+    "are then captured as a reusable seed and a seed-pinned demo task "
+    "appears automatically. Do not run setup commands or narrate; if the "
+    "operator asks you something, answer briefly, otherwise stay idle."
 )
 
 
