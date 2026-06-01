@@ -38,6 +38,7 @@ run: check-venv  ## Run optio_demo with auto-restart on Python source change (wa
 	  src \
 	  ../optio-core/src \
 	  ../optio-host/src \
+	  ../optio-agents/src \
 	  ../optio-opencode/src \
 	  ../optio-claudecode/src
 
