@@ -268,6 +268,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             opencode_executable=opencode_exec,
             hostname=opencode_hostname,
             extra_env=hook_ctx.browser_launch_env,
+            env_remove=config.scrub_env,
         )
         launched_handle = handle
 

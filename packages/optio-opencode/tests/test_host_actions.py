@@ -128,6 +128,7 @@ class _RecordingLaunchHost:
 
     async def launch_subprocess(
         self, command, *, env=None, cwd=None, merge_stderr=True, stdin=False,
+        env_remove=None,
     ) -> ProcessHandle:
         self.launch_cmd = command
         self.launch_env = env

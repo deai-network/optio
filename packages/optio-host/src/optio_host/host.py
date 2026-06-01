@@ -116,6 +116,7 @@ class Host(Protocol):
         command: str,
         *,
         env: dict[str, str] | None = None,
+        env_remove: list[str] | None = None,
         cwd: str | None = None,
         merge_stderr: bool = True,
         stdin: bool = False,
@@ -194,6 +195,7 @@ class Host(Protocol):
 # --- implementation -----------------------------------------------------
 
 import asyncio
+import fnmatch
 import hashlib
 import logging as _logging
 import os
@@ -217,6 +219,18 @@ _SUBPROCESS_STREAM_LIMIT = 256 * 1024 * 1024
 def _trace(fmt: str, *args: object) -> None:
     if _CANCEL_TRACE:
         _trace_logger.warning("[%.3f] optio-host " + fmt, _time.monotonic(), *args)
+
+
+def _scrub_env(proc_env: dict, patterns: "list[str] | None") -> None:
+    """Remove every env var whose NAME matches any glob pattern (in place).
+
+    Used to strip inherited LLM provider creds (e.g. *_API_KEY / *_TOKEN) from
+    agent subprocesses so they authenticate only from their captured seed."""
+    if not patterns:
+        return
+    for name in list(proc_env):
+        if any(fnmatch.fnmatchcase(name, p) for p in patterns):
+            del proc_env[name]
 
 
 class LocalHost:
@@ -307,11 +321,13 @@ class LocalHost:
         command: str,
         *,
         env: dict[str, str] | None = None,
+        env_remove: list[str] | None = None,
         cwd: str | None = None,
         merge_stderr: bool = True,
         stdin: bool = False,
     ) -> ProcessHandle:
         proc_env = os.environ.copy()
+        _scrub_env(proc_env, env_remove)
         if env:
             proc_env.update(env)
         proc = await asyncio.create_subprocess_exec(
@@ -692,11 +708,22 @@ class RemoteHost:
         command: str,
         *,
         env: dict[str, str] | None = None,
+        env_remove: list[str] | None = None,
         cwd: str | None = None,
         merge_stderr: bool = True,
         stdin: bool = False,
     ) -> ProcessHandle:
         assert self._conn is not None
+        # The remote env isn't enumerable locally, so prepend a POSIX snippet
+        # that unsets inherited vars matching any glob BEFORE the explicit
+        # `export` injection (so the injected env still wins).
+        unset_prefix = ""
+        if env_remove:
+            arms = "|".join(env_remove)
+            unset_prefix = (
+                f'for v in $(env | cut -d= -f1); do '
+                f'case "$v" in {arms}) unset "$v";; esac; done; '
+            )
         env_prefix = ""
         if env:
             env_prefix = " ".join(
@@ -707,9 +734,9 @@ class RemoteHost:
             cd_prefix = f"cd {shlex.quote(cwd)} && "
         if merge_stderr:
             # Merge stderr into stdout so caller iterating handle.stdout sees both.
-            full = f"{cd_prefix}{env_prefix}{command} 2>&1"
+            full = f"{cd_prefix}{unset_prefix}{env_prefix}{command} 2>&1"
         else:
-            full = f"{cd_prefix}{env_prefix}{command}"
+            full = f"{cd_prefix}{unset_prefix}{env_prefix}{command}"
         proc = await self._conn.create_process(full, encoding=None)
 
         async def _stream(reader) -> AsyncIterator[bytes]:

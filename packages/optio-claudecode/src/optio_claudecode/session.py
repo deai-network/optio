@@ -238,6 +238,7 @@ async def run_claudecode_session(
             extra_env=launch_env,
             claude_flags=claude_flags,
             ready_timeout_s=READY_TIMEOUT_S,
+            env_remove=config.scrub_env,
         )
         launched_handle = handle
 

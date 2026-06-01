@@ -38,6 +38,10 @@ class ClaudeCodeTaskConfig:
     credentials_json: dict[str, Any] | bytes | str | None = None
     claude_config: dict[str, Any] | None = None
     env: dict[str, str] | None = None
+    # Glob patterns (fnmatch) of env var NAMES to strip from the Claude Code
+    # subprocess, so inherited provider creds (e.g. ANTHROPIC_API_KEY) don't
+    # override the customer's subscription seed. e.g. ["*_API_KEY", "*_TOKEN"].
+    scrub_env: list[str] | None = None
 
     permission_mode: PermissionMode | None = None
     allowed_tools: list[str] | None = None

@@ -401,6 +401,7 @@ async def launch_ttyd_with_claude(
     extra_env: dict[str, str] | None,
     claude_flags: list[str],
     ready_timeout_s: float = 30.0,
+    env_remove: list[str] | None = None,
 ) -> "tuple[ProcessHandle, int]":
     """Spawn ttyd wrapping claude under HOME-isolation. Wait for ready.
 
@@ -422,7 +423,7 @@ async def launch_ttyd_with_claude(
     # launch_subprocess takes a single shell-string passed to `sh -c`.
     # Quote each argv element to survive shell parsing.
     command = " ".join(shlex.quote(a) for a in argv)
-    handle = await host.launch_subprocess(command)
+    handle = await host.launch_subprocess(command, env_remove=env_remove)
 
     async def _read_port() -> int:
         async for raw in handle.stdout:

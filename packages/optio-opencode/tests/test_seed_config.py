@@ -32,6 +32,11 @@ def test_seed_config_defaults_none():
     assert cfg.auto_start is False
 
 
+def test_opencode_config_scrub_env_default_none():
+    from optio_opencode.types import OpencodeTaskConfig
+    assert OpencodeTaskConfig(consumer_instructions="hi").scrub_env is None
+
+
 def test_manifest_shape():
     assert OPENCODE_SEED_SUFFIX == "_opencode_seeds"
     assert OPENCODE_SEED_MANIFEST.home_subdir == "home"

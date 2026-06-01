@@ -19,6 +19,11 @@ def test_seed_config_defaults_none():
     assert cfg.on_seed_saved is None
 
 
+def test_claudecode_config_scrub_env_default_none():
+    from optio_claudecode.types import ClaudeCodeTaskConfig
+    assert ClaudeCodeTaskConfig(consumer_instructions="hi").scrub_env is None
+
+
 def test_manifest_shape():
     assert CLAUDE_SEED_SUFFIX == "_claudecode_seeds"
     assert CLAUDE_SEED_MANIFEST.home_subdir == "home"

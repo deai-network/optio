@@ -366,6 +366,7 @@ async def launch_opencode(
     opencode_executable: str = "opencode",
     hostname: str = "127.0.0.1",
     extra_env: dict[str, str] | None = None,
+    env_remove: list[str] | None = None,
 ) -> tuple[ProcessHandle, int]:
     """Launch ``opencode web`` on ``host``; wait for the listening URL.
 
@@ -425,7 +426,9 @@ async def launch_opencode(
         **(extra_env or {}),
     }
 
-    handle = await host.launch_subprocess(cmd, env=env, cwd=host.workdir)
+    handle = await host.launch_subprocess(
+        cmd, env=env, cwd=host.workdir, env_remove=env_remove,
+    )
 
     async def _read_url() -> int:
         async for raw in handle.stdout:

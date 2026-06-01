@@ -64,6 +64,10 @@ class OpencodeTaskConfig:
     # (POST /api/session/<id>/prompt "Read AGENTS.md and execute the task it
     # describes"); suppressed on resume.
     auto_start: bool = False
+    # Glob patterns (fnmatch) of env var NAMES to strip from the opencode
+    # subprocess, so inherited provider creds don't override the seed. e.g.
+    # ["*_API_KEY", "*_TOKEN"].
+    scrub_env: list[str] | None = None
 
     def __post_init__(self) -> None:
         e = self.session_blob_encrypt is not None

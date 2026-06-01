@@ -71,7 +71,7 @@ async def test_launch_opencode_passes_hostname_into_cmd(local_host, monkeypatch)
     --hostname=`` argument."""
     captured: dict[str, str] = {}
 
-    async def fake_launch_subprocess(self, cmd, *, env=None, cwd=None):
+    async def fake_launch_subprocess(self, cmd, *, env=None, cwd=None, env_remove=None):
         captured["cmd"] = cmd
         raise RuntimeError("stop before waiting on stdout")
 
@@ -92,7 +92,7 @@ async def test_launch_opencode_default_hostname_is_loopback(local_host, monkeypa
     """Default keeps single-host / RemoteHost-over-SSH behaviour intact."""
     captured: dict[str, str] = {}
 
-    async def fake_launch_subprocess(self, cmd, *, env=None, cwd=None):
+    async def fake_launch_subprocess(self, cmd, *, env=None, cwd=None, env_remove=None):
         captured["cmd"] = cmd
         raise RuntimeError("stop")
 
