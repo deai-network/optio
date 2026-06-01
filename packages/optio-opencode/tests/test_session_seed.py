@@ -287,3 +287,37 @@ async def test_auto_start_posts_on_fresh_and_not_on_resume(
         auto_start=True,
     ))
     assert len(posts) == 1, posts
+
+
+def test_post_opencode_prompt_uses_v2_prompt_body(monkeypatch):
+    """The auto-start POST body must match opencode's
+    /api/session/:sessionID/prompt schema: payload {"prompt": {"text": <msg>}}
+    (the Prompt class is {text, files?, agents?}) — NOT {"parts": [...]}. A
+    wrong body 400s, the retries exhaust, and opencode is torn down (the
+    ECONNREFUSED crash)."""
+    import json
+    import urllib.request
+    from optio_opencode import session as session_mod
+
+    captured: dict = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b""
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _Resp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    session_mod._post_opencode_prompt_sync(4096, "pw", "ses_abc", "do the thing")
+
+    assert captured["url"].endswith("/api/session/ses_abc/prompt")
+    assert captured["body"] == {"prompt": {"text": "do the thing"}}

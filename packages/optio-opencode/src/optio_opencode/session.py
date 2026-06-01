@@ -668,11 +668,11 @@ def _post_opencode_prompt_sync(
     (the first request over a freshly-opened SSH local forward occasionally
     drops while asyncssh wires up the channel).
 
-    NOTE: the request body shape below is PENDING live-spike confirmation
-    (Task 7 Step 4 of the parity plan). The plan's suggested shape is
-    ``{"parts": [{"type": "text", "text": <message>}]}``; the live spike against
-    a running opencode server confirms the accepted shape. Update here once
-    the spike resolves.
+    Body shape matches opencode's ``POST /api/session/:sessionID/prompt``
+    schema (``v2/session-prompt.ts``): payload ``{"prompt": <Prompt>}`` where
+    ``Prompt`` is ``{text, files?, agents?}`` — so ``{"prompt": {"text": msg}}``.
+    (An earlier ``{"parts": [...]}`` guess 400'd, exhausting the retries and
+    tearing opencode down — the ECONNREFUSED crash.)
     """
     import base64 as _b64
     import time
@@ -685,8 +685,7 @@ def _post_opencode_prompt_sync(
         "content-type": "application/json",
         "authorization": f"Basic {auth_token}",
     }
-    # PENDING live-spike confirmation (Task 7 Step 4): see docstring above.
-    payload = json.dumps({"parts": [{"type": "text", "text": message}]}).encode("utf-8")
+    payload = json.dumps({"prompt": {"text": message}}).encode("utf-8")
 
     last_exc: Exception | None = None
     for attempt in range(4):
