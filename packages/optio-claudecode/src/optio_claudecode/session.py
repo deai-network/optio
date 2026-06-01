@@ -12,6 +12,7 @@ from opencode: sensitive state is the ``<workdir>/home/.claude/`` subtree
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import os
@@ -84,6 +85,9 @@ async def run_claudecode_session(
     host: Host = _build_host(config, ctx.process_id)
     protocol = get_protocol(browser="redirect")
     launched_handle: ProcessHandle | None = None
+    tmux_path: str | None = None
+    tmux_socket: str | None = None
+    tmux_session: str | None = None
     cancelled = False
 
     await host.connect()
@@ -153,7 +157,7 @@ async def run_claudecode_session(
             )
 
     async def _claudecode_body(host: Host, hook_ctx: HookContext) -> None:
-        nonlocal launched_handle
+        nonlocal launched_handle, tmux_path, tmux_socket, tmux_session
 
         # focus_mode: layer the quiet-TUI knobs (focus view + fullscreen) onto
         # the planted settings, plus the no-flicker launch env. Off → passthrough.
@@ -232,7 +236,7 @@ async def run_claudecode_session(
             **(hook_ctx.browser_launch_env or {}),
         }
         ctx.report_progress(None, "Launching Claude Code…")
-        handle, ttyd_port = await host_actions.launch_ttyd_with_claude(
+        handle, ttyd_port, tmux_socket, tmux_session = await host_actions.launch_ttyd_with_claude(
             host,
             ttyd_path=ttyd_path,
             claude_path=claude_path,
@@ -243,6 +247,7 @@ async def run_claudecode_session(
             env_remove=config.scrub_env,
         )
         launched_handle = handle
+        tmux_path = await host_actions._require_tmux(host)
 
         worker_port = await host.establish_tunnel(ttyd_port, bind_addr=bind_addr)
         await ctx.set_widget_upstream(f"http://{upstream_host}:{worker_port}")
@@ -251,11 +256,15 @@ async def run_claudecode_session(
         })
         ctx.report_progress(None, "Claude Code is live")
 
-        # Await ttyd subprocess exit. Protocol driver cancels this body
-        # when it sees DONE/ERROR; otherwise we get here only on a
-        # premature exit, which the driver detects as failure.
-        proc = launched_handle.pid_like
-        await proc.wait()  # type: ignore[union-attr]
+        # Await the claude process inside tmux (NOT the ttyd connection). ttyd
+        # stays up serving viewers; the task is alive while the tmux session is.
+        # The protocol driver cancels this body when it sees DONE/ERROR in
+        # optio.log; if claude exits some other way, has-session goes false and
+        # the body returns -> driver treats it as premature exit.
+        while await host_actions.tmux_session_alive(
+            host, tmux_path, tmux_socket, tmux_session,
+        ):
+            await asyncio.sleep(1.0)
 
     try:
         await run_log_protocol_session(
@@ -279,6 +288,14 @@ async def run_claudecode_session(
             except Exception:
                 _LOG.exception("terminate_subprocess failed")
             _trace("finally: terminate_subprocess DONE")
+
+        if tmux_path is not None and tmux_socket is not None and tmux_session is not None:
+            try:
+                await host_actions._kill_tmux_session(
+                    host, tmux_path, tmux_socket, tmux_session,
+                )
+            except Exception:
+                _LOG.exception("tmux session teardown failed")
 
         if not resuming and config.on_seed_saved is not None:
             _trace("finally: capture_seed START")
