@@ -19,6 +19,7 @@ from optio_claudecode import ClaudeCodeTaskConfig, create_claudecode_task
 @pytest.mark.asyncio
 async def test_real_home_credentials_untouched(
     tmp_path: pathlib.Path,
+    task_root,
     shim_install_dir: pathlib.Path,
     claude_cache_dir: pathlib.Path,
     ctx_and_captures,

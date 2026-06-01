@@ -284,90 +284,6 @@ async def test_plant_home_files_none_writes_nothing():
     assert host.write_text.call_count == 0
 
 
-def test_build_ttyd_argv_basic():
-    argv = host_actions.build_ttyd_argv(
-        ttyd_path="/usr/bin/ttyd",
-        claude_path="/opt/claude/claude",
-        workdir="/tmp/optio-claudecode-x",
-        bind_iface="127.0.0.1",
-        port=8765,
-        extra_env={"ANTHROPIC_BASE_URL": "https://api.example.com"},
-        claude_flags=["--permission-mode", "bypassPermissions"],
-    )
-    assert argv[0] == "/usr/bin/ttyd"
-    assert "-W" in argv
-    assert "-i" in argv and "127.0.0.1" in argv
-    assert "-p" in argv and "8765" in argv
-    assert "-m" in argv and "1" in argv
-    assert "-T" in argv and "xterm-256color" in argv
-    assert "--" in argv
-    sep_idx = argv.index("--")
-    assert argv[sep_idx + 1] == "env"
-    assert any(a.startswith("HOME=") for a in argv[sep_idx + 1:])
-    assert "HOME=/tmp/optio-claudecode-x/home" in argv
-    assert "ANTHROPIC_BASE_URL=https://api.example.com" in argv
-    # PATH prepends the isolated home's .local/bin (where claude is symlinked).
-    assert any(
-        a.startswith("PATH=/tmp/optio-claudecode-x/home/.local/bin:") for a in argv
-    ), argv
-    bash_idx = argv.index("bash", sep_idx)
-    assert argv[bash_idx + 1] == "-c"
-    bash_payload = argv[bash_idx + 2]
-    assert "cd /tmp/optio-claudecode-x" in bash_payload
-    assert "/opt/claude/claude" in bash_payload
-    assert "--permission-mode bypassPermissions" in bash_payload
-    # prep owns the bin symlink now — build_ttyd_argv no longer creates it.
-    assert "ln -sf" not in bash_payload
-    # PATH still prepends the isolated home's .local/bin.
-    assert any(
-        a.startswith("PATH=/tmp/optio-claudecode-x/home/.local/bin:") for a in argv
-    ), argv
-    # claude is run (not exec'd) so the wrapper can signal completion.
-    assert "exec /opt/claude/claude" not in bash_payload
-    assert "rc=$?" in bash_payload
-    assert "echo DONE >>" in bash_payload
-    assert "ERROR: claude exited" in bash_payload
-
-
-def test_build_ttyd_argv_netns_wraps_claude_keeps_flags_with_is_sandbox(monkeypatch):
-    monkeypatch.setenv("OPTIO_CLAUDECODE_NETNS", "pasta --config-net --")
-    argv = host_actions.build_ttyd_argv(
-        ttyd_path="/usr/bin/ttyd",
-        claude_path="/opt/claude/claude",
-        workdir="/tmp/wd",
-        bind_iface="127.0.0.1",
-        port=8765,
-        extra_env=None,
-        claude_flags=["--permission-mode", "bypassPermissions", "--model", "x"],
-    )
-    payload = argv[argv.index("bash") + 2]
-    # claude is run via `bash -c` inside the isolation command (pasta can't
-    # directly exec a $HOME binary); ttyd itself is NOT wrapped; IS_SANDBOX=1
-    # lets Claude honor bypass as root (rootless netns), and the flags are KEPT
-    # so the analyzer behaves as in prod under the seal.
-    assert (
-        "pasta --config-net -- bash -c 'IS_SANDBOX=1 /opt/claude/claude "
-        "--permission-mode bypassPermissions --model x'"
-    ) in payload
-    assert argv[0] == "/usr/bin/ttyd"
-
-
-def test_build_ttyd_argv_no_netns_by_default(monkeypatch):
-    monkeypatch.delenv("OPTIO_CLAUDECODE_NETNS", raising=False)
-    argv = host_actions.build_ttyd_argv(
-        ttyd_path="/usr/bin/ttyd",
-        claude_path="/opt/claude/claude",
-        workdir="/tmp/wd",
-        bind_iface="127.0.0.1",
-        port=8765,
-        extra_env=None,
-        claude_flags=[],
-    )
-    payload = argv[argv.index("bash") + 2]
-    assert "pasta" not in payload
-    assert "/opt/claude/claude" in payload
-
-
 @pytest.mark.parametrize("banner,expected_port", [
     # ttyd 1.7.x with libwebsockets logging prefix + colon after "port"
     ("[2026/05/28 23:20:13:3422] N:  Listening on port: 33449", 33449),
@@ -396,31 +312,14 @@ def test_ttyd_ready_regex_ignores_noise(noise: str):
     assert host_actions._TTYD_READY_RE.search(noise) is None
 
 
-def test_build_ttyd_argv_no_extra_env():
-    argv = host_actions.build_ttyd_argv(
-        ttyd_path="/usr/bin/ttyd",
-        claude_path="/opt/claude/claude",
-        workdir="/tmp/cc",
-        bind_iface="0.0.0.0",
-        port=9000,
-        extra_env=None,
-        claude_flags=[],
-    )
-    sep_idx = argv.index("--")
-    env_section = argv[sep_idx + 1:argv.index("bash", sep_idx)]
-    # HOME + a PATH that prepends the isolated home's .local/bin; no other vars.
-    assert env_section[0] == "env"
-    assert "HOME=/tmp/cc/home" in env_section
-    path_entries = [a for a in env_section if a.startswith("PATH=")]
-    assert len(path_entries) == 1
-    assert path_entries[0].startswith("PATH=/tmp/cc/home/.local/bin:")
-    # Only env + HOME + PATH (no extra vars when extra_env=None).
-    assert len(env_section) == 3
-
-
 def _run_payload_with_fake_claude(tmp_path, exit_code: int) -> str:
-    """Build the ttyd payload with a fake claude exiting ``exit_code``, run
-    it under bash, and return the resulting optio.log contents."""
+    """Run the tmux-session claude wrapper with a fake claude exiting
+    ``exit_code`` and return the resulting optio.log contents.
+
+    The wrapper (HOME/PATH env + DONE/ERROR signalling) is the trailing
+    shell-string element of ``build_tmux_session_argv`` — i.e. the exact
+    command tmux runs via ``/bin/sh -c``. We execute it directly under bash
+    (no tmux) to assert the completion-signalling contract in isolation."""
     import subprocess
 
     workdir = tmp_path / "wd"
@@ -430,17 +329,17 @@ def _run_payload_with_fake_claude(tmp_path, exit_code: int) -> str:
     fake.write_text(f"#!/bin/sh\nexit {exit_code}\n")
     fake.chmod(0o755)
 
-    argv = host_actions.build_ttyd_argv(
-        ttyd_path="/usr/bin/ttyd",
+    argv = host_actions.build_tmux_session_argv(
+        tmux_path="/usr/bin/tmux",
         claude_path=str(fake),
         workdir=str(workdir),
-        bind_iface="127.0.0.1",
-        port=0,
+        socket_path=str(workdir / "tmux.sock"),
+        session_name="optio",
         extra_env=None,
         claude_flags=[],
     )
-    payload = argv[argv.index("bash") + 2]
-    subprocess.run(["bash", "-c", payload], check=True)
+    shell_command = argv[-1]
+    subprocess.run(["bash", "-c", shell_command], check=True)
     return (workdir / "optio.log").read_text()
 
 

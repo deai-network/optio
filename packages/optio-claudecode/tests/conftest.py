@@ -62,6 +62,25 @@ def tmp_workdir():
         shutil.rmtree(path, ignore_errors=True)
 
 
+@pytest.fixture
+def task_root(monkeypatch):
+    """Point ``OPTIO_CLAUDECODE_TASK_ROOT`` at a SHORT temp dir.
+
+    Session-flow tests run claude inside a detached tmux session whose control
+    socket is ``<taskdir>/workdir/tmux.sock``. Unix domain socket paths are
+    capped at ~104 bytes (``sun_path``), and pytest's ``tmp_path`` is far too
+    deep — a socket under it overflows the limit and tmux fails with "File name
+    too long". A short ``/tmp/cctr-*`` root keeps the socket path well within
+    the cap, mirroring the short production taskdir (``~/.local/share/...``).
+    """
+    path = tempfile.mkdtemp(prefix="cctr-")
+    monkeypatch.setenv("OPTIO_CLAUDECODE_TASK_ROOT", path)
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
+
+
 @pytest_asyncio.fixture
 async def mongo_db():
     """Per-test MongoDB database, dropped after each test."""

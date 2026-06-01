@@ -352,103 +352,6 @@ async def plant_home_files(
         await host.write_text(settings_rel, json.dumps(claude_config, indent=2))
 
 
-def build_ttyd_argv(
-    *,
-    ttyd_path: str,
-    claude_path: str,
-    workdir: str,
-    bind_iface: str,
-    port: int,
-    extra_env: dict[str, str] | None,
-    claude_flags: list[str],
-) -> list[str]:
-    """Construct the full argv for the ttyd subprocess.
-
-    Layout:
-      <ttyd_path> -W -i <iface> -p <port> -m 1 -T xterm-256color --
-      env HOME=<workdir>/home PATH=<home>/.local/bin:... [<extra-env...>]
-      bash -c 'cd <workdir> && <claude_path> [<flags...>]; rc=$?;
-               <append DONE (rc 0) | ERROR: claude exited <rc> to optio.log>'
-
-    ``claude_path`` is ``<workdir>/home/.local/bin/claude`` (provisioned by
-    ensure_claude_installed: a symlink into the shared version cache via
-    home/.local/share/claude/versions). We prepend home/.local/bin to PATH so
-    the agent's own ``claude`` invocations resolve. claude runs (NOT exec'd) so
-    that when it exits without writing DONE, the wrapper appends a terminal
-    protocol line; the driver's optio.log tail then completes the session and
-    its teardown reaps the (otherwise lingering) ttyd.
-    """
-    workdir_clean = workdir.rstrip("/")
-    home_dir = f"{workdir_clean}/home"
-    home_local_bin = f"{home_dir}/.local/bin"
-
-    extra = dict(extra_env or {})
-    base_path = extra.pop("PATH", None) or os.environ.get(
-        "PATH", "/usr/local/bin:/usr/bin:/bin",
-    )
-    env_assignments: list[str] = [
-        f"HOME={home_dir}",
-        f"PATH={home_local_bin}:{base_path}",
-    ]
-    for k, v in extra.items():
-        env_assignments.append(f"{k}={v}")
-
-    # Test seal: when OPTIO_CLAUDECODE_NETNS holds an isolation command, run
-    # claude through it so its OAuth loopback callback server binds inside a
-    # private network namespace — unreachable from the operator's host browser,
-    # exactly like prod's container. This forces the manual (hosted-redirect)
-    # login path instead of letting the local loopback silently auto-complete.
-    # The value is the wrapper argv (tokenized), e.g. "pasta --config-net --"
-    # (pasta/slirp4netns give the netns egress claude needs for the token
-    # exchange; a bare `unshare --net` would seal the loopback but kill egress).
-    # ttyd itself is NOT wrapped, so it stays reachable on the host.
-    netns_wrap = os.environ.get("OPTIO_CLAUDECODE_NETNS", "").strip()
-    if netns_wrap:
-        # Rootless netns (pasta/unshare) maps the user to root inside a user
-        # namespace, which has two consequences we handle here so that BOTH the
-        # human-login setup AND the autonomous analyzer behave exactly as in
-        # prod under the seal:
-        #  1. Claude refuses --dangerously-skip-permissions as root unless it
-        #     believes it's sandboxed (`process.env.IS_SANDBOX!=="1"` gates the
-        #     refusal). The netns IS a sandbox, so set IS_SANDBOX=1 and KEEP the
-        #     permission flags — the analyzer still gets its bypass.
-        #  2. pasta can't directly exec a binary under $HOME (EACCES) but a
-        #     shell child can, so run claude via `bash -c`.
-        inner = "IS_SANDBOX=1 " + " ".join(
-            shlex.quote(c) for c in [claude_path, *claude_flags]
-        )
-        claude_cmd = [*shlex.split(netns_wrap), "bash", "-c", inner]
-        _LOG.info(
-            "OPTIO_CLAUDECODE_NETNS active — claude wrapped via %r "
-            "(bash -c, IS_SANDBOX=1, flags kept)", netns_wrap,
-        )
-    else:
-        claude_cmd = [claude_path, *claude_flags]
-        _LOG.info(
-            "OPTIO_CLAUDECODE_NETNS not set (value=%r) — no loopback isolation",
-            os.environ.get("OPTIO_CLAUDECODE_NETNS"),
-        )
-    claude_argv = " ".join(shlex.quote(c) for c in claude_cmd)
-    log_path = f"{workdir_clean}/optio.log"
-    bash_payload = (
-        f"cd {shlex.quote(workdir_clean)} && {claude_argv}; rc=$?; "
-        f'if [ "$rc" = 0 ]; then echo DONE >> {shlex.quote(log_path)}; '
-        f"else printf 'ERROR: claude exited %s\\n' \"$rc\" >> {shlex.quote(log_path)}; fi"
-    )
-    return [
-        ttyd_path,
-        "-W",
-        "-i", bind_iface,
-        "-p", str(port),
-        "-m", "1",
-        "-T", "xterm-256color",
-        "--",
-        "env",
-        *env_assignments,
-        "bash", "-c", bash_payload,
-    ]
-
-
 def _build_claude_shell_command(
     *,
     claude_path: str,
@@ -462,8 +365,8 @@ def _build_claude_shell_command(
     extras). ``shell_command`` is the full ``env <assignments> bash -c
     <payload>`` string that runs claude under HOME-isolation, applies the
     optional OPTIO_CLAUDECODE_NETNS seal, and appends DONE/ERROR to optio.log
-    when claude exits. Shared by build_ttyd_argv (legacy/no longer used for the
-    direct child) and build_tmux_session_argv.
+    when claude exits. Consumed by build_tmux_session_argv (claude now runs
+    inside the detached tmux session, not as a direct ttyd child).
     """
     workdir_clean = workdir.rstrip("/")
     home_dir = f"{workdir_clean}/home"

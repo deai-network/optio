@@ -4,7 +4,6 @@ import asyncio
 import json
 import os
 
-import pytest
 import pytest_asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -24,12 +23,6 @@ async def mongo_db():
     yield db
     await client.drop_database(db_name)
     client.close()
-
-
-@pytest.fixture
-def task_root(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPTIO_CLAUDECODE_TASK_ROOT", str(tmp_path))
-    return tmp_path
 
 
 async def _make_ctx(mongo_db, process_id, *, resume=False):

@@ -26,12 +26,6 @@ async def mongo_db():
     client.close()
 
 
-@pytest.fixture
-def task_root(tmp_path, monkeypatch):
-    monkeypatch.setenv("OPTIO_CLAUDECODE_TASK_ROOT", str(tmp_path))
-    return tmp_path
-
-
 async def _make_ctx(mongo_db, process_id):
     task = TaskInstance(
         execute=lambda c: None,  # type: ignore[arg-type, return-value]

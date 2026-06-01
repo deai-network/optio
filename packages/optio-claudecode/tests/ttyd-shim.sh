@@ -11,9 +11,11 @@
 #   3. Skips ttyd's networking flags and exec's the inner command
 #      after the `--` separator.
 #
-# Args layout (from build_ttyd_argv):
-#   ttyd -W -i <iface> -p <port> -m 1 -T xterm-256color --
-#        env HOME=... bash -c '...'
+# Args layout (from build_ttyd_attach_argv):
+#   ttyd -W -i <iface> -p <port> -T xterm-256color --
+#        tmux -S <socket> attach -t <session>
+# (claude now runs inside the detached tmux session; ttyd only attaches a
+# viewer, so there is no -m 1 single-viewer cap any more.)
 
 if [ "$1" = "--version" ]; then
     echo "ttyd 1.0.0-test-shim"
