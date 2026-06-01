@@ -29,31 +29,33 @@ OPENCODE_SEED_MANIFEST = seeds.SeedManifest(
 )
 
 
-async def delete_seed(db, prefix: str, seed_id: str):
+async def delete_seed(store, seed_id: str):
     """Delete an opencode seed doc; returns its GridFS blobId (or None).
 
-    Ergonomic wrapper binding `OPENCODE_SEED_SUFFIX` so consuming apps don't
-    need to know the collection suffix. The caller still removes the
-    returned blob from GridFS.
+    Takes an optio store binding (``optio.store`` — exposes ``db`` and
+    ``prefix``) as-is, so consuming apps hand over the whole namespace handle
+    instead of threading db+prefix (or knowing the collection suffix). The
+    caller still removes the returned blob from GridFS.
     """
     return await seeds.delete_seed(
-        db, prefix=prefix, suffix=OPENCODE_SEED_SUFFIX, seed_id=seed_id,
+        store.db, prefix=store.prefix, suffix=OPENCODE_SEED_SUFFIX, seed_id=seed_id,
     )
 
 
-async def list_seeds(db, prefix: str) -> list[dict]:
-    """List opencode seeds as [{seedId, createdAt}, ...]."""
-    return await seeds.list_seeds(db, prefix=prefix, suffix=OPENCODE_SEED_SUFFIX)
+async def list_seeds(store) -> list[dict]:
+    """List opencode seeds as [{seedId, createdAt}, ...]. Takes an optio store
+    binding (``optio.store``) as-is."""
+    return await seeds.list_seeds(store.db, prefix=store.prefix, suffix=OPENCODE_SEED_SUFFIX)
 
 
-async def purge_seed(db, prefix: str, seed_id: str):
+async def purge_seed(store, seed_id: str):
     """Purge an opencode seed (doc + its GridFS blob) in one call.
 
-    Ergonomic wrapper binding `OPENCODE_SEED_SUFFIX`, per the frozen
-    Shared-contracts surface. Mirrors `optio_claudecode.purge_seed`; both
-    are thin re-exports of the `optio_agents.seeds.purge_seed` engine, which
-    expunges the seed doc and its GridFS blob and raises KeyError if absent.
+    Takes an optio store binding (``optio.store``) as-is, per the Shared-
+    contracts surface. Mirrors `optio_claudecode.purge_seed`; both are thin
+    re-exports of the `optio_agents.seeds.purge_seed` engine, which expunges
+    the seed doc and its GridFS blob and raises KeyError if absent.
     """
     return await seeds.purge_seed(
-        db, prefix=prefix, suffix=OPENCODE_SEED_SUFFIX, seed_id=seed_id,
+        store.db, prefix=store.prefix, suffix=OPENCODE_SEED_SUFFIX, seed_id=seed_id,
     )

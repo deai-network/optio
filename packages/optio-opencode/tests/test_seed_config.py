@@ -15,6 +15,7 @@ from bson import ObjectId
 from optio_agents import seeds
 
 from optio_opencode import OpencodeTaskConfig
+from optio_core import MongoStore
 from optio_opencode.seed_manifest import (
     OPENCODE_SEED_MANIFEST,
     OPENCODE_SEED_SUFFIX,
@@ -49,16 +50,17 @@ async def test_wrappers_bind_suffix_roundtrip(mongo_db):
         blob_id=blob_id, manifest_version=1,
     )
 
-    listed = await list_seeds(mongo_db, prefix="t")
+    store = MongoStore(db=mongo_db, prefix="t")
+    listed = await list_seeds(store)
     assert [d["seedId"] for d in listed] == [seed_id]
 
-    removed_blob = await delete_seed(mongo_db, prefix="t", seed_id=seed_id)
+    removed_blob = await delete_seed(store, seed_id)
     assert removed_blob == blob_id
-    assert await list_seeds(mongo_db, prefix="t") == []
+    assert await list_seeds(store) == []
 
 
 async def test_delete_seed_tolerates_bad_id(mongo_db):
-    assert await delete_seed(mongo_db, prefix="t", seed_id="not-hex") is None
+    assert await delete_seed(MongoStore(db=mongo_db, prefix="t"), "not-hex") is None
 
 
 def test_purge_seed_wrapper_exists():

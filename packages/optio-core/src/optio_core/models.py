@@ -151,6 +151,19 @@ class OptioConfig:
     cancel_grace_seconds: float = 5.0
 
 
+@dataclass(frozen=True)
+class MongoStore:
+    """The (db, prefix) pair identifying where optio's Mongo data lives.
+
+    Exposed by an initialized Optio instance (``optio.store``) so consumers can
+    hand the whole binding to helpers that need db+prefix (e.g. seed APIs)
+    instead of threading the two through their own config. ``db`` is the motor
+    AsyncIOMotorDatabase; ``prefix`` is the collection/stream namespace.
+    """
+    db: Any
+    prefix: str
+
+
 @dataclass
 class BasicAuth:
     username: str

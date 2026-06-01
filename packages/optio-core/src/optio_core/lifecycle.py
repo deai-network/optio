@@ -26,7 +26,7 @@ except ImportError:
     Redis = None  # type: ignore[assignment,misc]
 
 from optio_core.models import (
-    TaskInstance, OptioConfig, ProcessStatus, ProcessMetadataFilter,
+    TaskInstance, OptioConfig, MongoStore, ProcessStatus, ProcessMetadataFilter,
     matches_filter, LaunchBlocked,
     LaunchOutcome, CancelOutcome, DismissOutcome,
 )
@@ -85,6 +85,18 @@ class Optio:
         self._heartbeat_task: asyncio.Task | None = None
         self._supervisor_task: asyncio.Task | None = None
         self._launch_blocks: dict[uuid.UUID, _BlockEntry] = {}
+
+    @property
+    def store(self) -> MongoStore:
+        """The (db, prefix) binding this instance was initialized with.
+
+        Hand it as-is to helpers that need db+prefix (e.g.
+        ``optio_claudecode.delete_seed``) instead of re-deriving the prefix
+        from your own config. Raises if accessed before ``init()``.
+        """
+        if self._config is None:
+            raise RuntimeError("optio.store accessed before init()")
+        return MongoStore(db=self._config.mongo_db, prefix=self._config.prefix)
 
     async def init(
         self,

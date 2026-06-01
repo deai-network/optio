@@ -14,6 +14,7 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 from optio_agents import seeds
 from optio_agents.seeds import insert_seed
 
+from optio_core import MongoStore
 from optio_opencode import purge_seed
 from optio_opencode.seed_manifest import OPENCODE_SEED_SUFFIX
 
@@ -36,7 +37,7 @@ async def test_purge_removes_doc_and_blob(mongo_db):
         blob_id=blob_id, manifest_version=1,
     )
 
-    await purge_seed(mongo_db, "test", seed_id)
+    await purge_seed(MongoStore(db=mongo_db, prefix="test"), seed_id)
 
     # the seed doc is gone
     assert await seeds.load_seed(
@@ -52,4 +53,4 @@ async def test_purge_removes_doc_and_blob(mongo_db):
 
 async def test_purge_unknown_id_raises(mongo_db):
     with pytest.raises(KeyError):
-        await purge_seed(mongo_db, "test", str(ObjectId()))
+        await purge_seed(MongoStore(db=mongo_db, prefix="test"), str(ObjectId()))

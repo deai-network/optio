@@ -2,7 +2,7 @@
 
 from optio_core.models import (
     TaskInstance, TaskInstanceCore, ChildResult, LaunchBlocked,
-    LaunchOutcome, CancelOutcome, DismissOutcome,
+    LaunchOutcome, CancelOutcome, DismissOutcome, MongoStore,
 )
 from optio_core.lifecycle import Optio
 
@@ -34,7 +34,7 @@ __all__ = [
     "get_process", "list_processes",
     "block_launches", "unblock_launches",
     "group_cancel", "group_cancel_and_wait",
-    "rpc_server",
+    "rpc_server", "store", "MongoStore",
 ]
 
 
@@ -47,4 +47,7 @@ def __getattr__(name: str):
     """
     if name == "rpc_server":
         return _instance.rpc_server
+    if name == "store":
+        # Runtime-populated: the (db, prefix) binding only exists after init().
+        return _instance.store
     raise AttributeError(f"module 'optio_core' has no attribute {name!r}")
