@@ -479,16 +479,17 @@ def build_claude_flags(
 AUTO_START_PROMPT = "Read CLAUDE.md and execute the task it describes"
 
 
-def build_auto_start_args(*, auto_start: bool, pass_continue: bool) -> list[str]:
+def build_auto_start_args(*, auto_start: bool, resuming: bool) -> list[str]:
     """Trailing positional prompt for an auto-start fresh launch.
 
-    Returns ``[AUTO_START_PROMPT]`` only on a fresh launch (``auto_start`` set
-    and not resuming with ``--continue``); empty otherwise. Re-issuing the
-    kickoff prompt on a real resume would re-trigger the task, so it is
-    suppressed there (also covers the D3 no-transcript fresh-launch case, where
-    ``pass_continue`` is False).
+    Returns ``[AUTO_START_PROMPT]`` only on a genuine fresh launch (``auto_start``
+    set and NOT resuming); empty otherwise. Gated on ``resuming`` (snapshot
+    restored), NOT on ``--continue``/transcript presence: a no-transcript resume
+    still launches without ``--continue`` (D3 safety), but must NOT re-issue the
+    kickoff — doing so would restart the task instead of leaving the restored
+    session as-is.
     """
-    if auto_start and not pass_continue:
+    if auto_start and not resuming:
         return [AUTO_START_PROMPT]
     return []
 

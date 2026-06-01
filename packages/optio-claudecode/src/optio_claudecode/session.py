@@ -215,13 +215,14 @@ async def run_claudecode_session(
             disallowed_tools=config.disallowed_tools,
             resuming=pass_continue,
         )
-        # auto_start: on a fresh launch, append the kickoff prompt as a
-        # trailing positional so claude starts the task unattended. Suppressed
-        # on resume (--continue) to avoid re-triggering the task.
+        # auto_start: append the kickoff prompt ONLY on a genuine fresh launch.
+        # Gated on `resuming` (not pass_continue): a no-transcript resume still
+        # drops --continue (D3) but must NOT re-issue the kickoff, which would
+        # restart the task instead of leaving the restored session as-is.
         claude_flags = [
             *claude_flags,
             *host_actions.build_auto_start_args(
-                auto_start=config.auto_start, pass_continue=pass_continue,
+                auto_start=config.auto_start, resuming=resuming,
             ),
         ]
         launch_env = {
