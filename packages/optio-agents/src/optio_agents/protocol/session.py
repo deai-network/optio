@@ -99,6 +99,7 @@ async def run_log_protocol_session(
     before_execute: HookCallback | None = None,
     after_execute: HookCallback | None = None,
     protocol: "Protocol | None" = None,
+    browser_url_rewrite: "Callable[[str], str] | None" = None,
 ) -> None:
     """Run ``body`` against ``host`` while the log/deliverables protocol
     cooperates with it.
@@ -177,7 +178,7 @@ async def run_log_protocol_session(
         tail_task = asyncio.create_task(
             _tail_and_dispatch(
                 host, ctx, deliverable_queue, done_flag, error_flag,
-                protocol.parse_log_line,
+                protocol.parse_log_line, browser_url_rewrite,
             ),
         )
         body_task = asyncio.create_task(body(host, hook_ctx))
@@ -245,6 +246,7 @@ async def _tail_and_dispatch(
     done_flag: asyncio.Event,
     error_flag: list,
     parse_line: "Callable[[str], LogEvent]",
+    browser_url_rewrite: "Callable[[str], str] | None" = None,
 ) -> None:
     """Consume tail_file(optio.log), parse each line, dispatch by keyword."""
     async for line in host.tail_file(f"{host.workdir}/optio.log"):
@@ -275,7 +277,8 @@ async def _tail_and_dispatch(
             except asyncio.QueueFull:
                 await deliverable_queue.put(item)
         elif isinstance(ev, BrowserEvent):
-            await ctx.request_browser_open(ev.url)
+            url = browser_url_rewrite(ev.url) if browser_url_rewrite else ev.url
+            await ctx.request_browser_open(url)
         elif isinstance(ev, AttentionEvent):
             await ctx.need_attention(ev.reason)
         elif isinstance(ev, DomainMessageEvent):

@@ -32,6 +32,7 @@ from optio_agents import get_protocol
 
 from optio_claudecode import host_actions
 from optio_claudecode.account import resolve_account_summary
+from optio_claudecode.oauth_redirect import rewrite_oauth_redirect
 from optio_claudecode.seed_manifest import CLAUDE_SEED_MANIFEST, CLAUDE_SEED_SUFFIX
 from optio_claudecode.prompt import compose_agents_md
 from optio_claudecode.snapshots import (
@@ -263,6 +264,7 @@ async def run_claudecode_session(
             on_deliverable=config.on_deliverable,
             after_execute=config.after_execute,
             protocol=protocol,
+            browser_url_rewrite=rewrite_oauth_redirect,
         )
     except _SessionFailed as fail:
         raise RuntimeError(str(fail)) from None
