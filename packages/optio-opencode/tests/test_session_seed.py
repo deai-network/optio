@@ -195,6 +195,60 @@ async def test_capture_fires_callback_and_stores_env_only_seed(
     assert not any("messages.json" in n for n in names), names
 
 
+async def test_capture_synthesises_model_into_opencode_json(
+    mongo_db, task_root, _supply_scenario, monkeypatch,
+):
+    """At seed capture, the operator's last-used model is resolved from the
+    live opencode session and merged into the seed's ``opencode.json``
+    ``model`` field — so an unattended seeded session runs that model instead
+    of opencode's first-provider fallback. ``_plant_env`` writes
+    ``opencode.json`` with ``{"theme": "dark"}``; the synthesis must add
+    ``model`` while preserving ``theme``."""
+    import json
+    import optio_opencode.session as session_mod
+
+    _supply_scenario["name"] = "happy"
+
+    async def _fake_resolve(port, password, session_id):
+        return "xai/grok-4.3"
+
+    monkeypatch.setattr(session_mod, "_resolve_session_model", _fake_resolve)
+
+    captured: list[str] = []
+
+    async def _on_seed_saved(seed_id: str) -> None:
+        captured.append(seed_id)
+
+    ctx = await _make_ctx(mongo_db, "oc_seed_model")
+    await run_opencode_session(ctx, OpencodeTaskConfig(
+        consumer_instructions="(seed setup)",
+        supports_resume=False,
+        on_seed_saved=_on_seed_saved,
+        before_execute=_plant_env,
+    ))
+    assert len(captured) == 1
+    seed_id = captured[0]
+
+    doc = await seeds.load_seed(
+        mongo_db, prefix="test", suffix=OPENCODE_SEED_SUFFIX, seed_id=seed_id,
+    )
+    assert doc is not None
+
+    bucket = AsyncIOMotorGridFSBucket(mongo_db)
+    stream = await bucket.open_download_stream(doc["blobId"])
+    blob = await stream.read()
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        member = next(
+            m for m in tar.getmembers()
+            if m.name.endswith(".config/opencode/opencode.json")
+        )
+        cfg = json.loads(tar.extractfile(member).read().decode("utf-8"))
+
+    assert cfg["model"] == "xai/grok-4.3"
+    # the pre-existing config key planted by _plant_env survives the merge
+    assert cfg["theme"] == "dark"
+
+
 async def test_second_session_consumes_seed(
     mongo_db, task_root, _supply_scenario,
 ):
@@ -330,3 +384,106 @@ def test_post_opencode_prompt_uses_prompt_async_parts_body(monkeypatch):
     assert captured["body"] == {
         "parts": [{"type": "text", "text": "do the thing"}]
     }
+
+
+def test_resolve_session_model_returns_last_assistant_model(monkeypatch):
+    """``_resolve_session_model_sync`` GETs ``/session/:id/message`` and returns
+    the operator's last-used model as ``"providerID/modelID"`` — the LAST
+    assistant message wins (the operator may switch models mid-session; e.g.
+    start on anthropic's default, then switch to xai/grok). This value is
+    synthesised into the seed's ``opencode.json`` ``model`` so an unattended
+    seeded session runs the operator's model instead of opencode's
+    first-provider fallback (anthropic, no key → ``invalid x-api-key``)."""
+    import json
+    import urllib.request
+    from optio_opencode import session as session_mod
+
+    messages = [
+        {"info": {"role": "user",
+                  "model": {"providerID": "anthropic", "modelID": "claude-sonnet-4-6"}},
+         "parts": []},
+        {"info": {"role": "assistant",
+                  "providerID": "anthropic", "modelID": "claude-sonnet-4-6"},
+         "parts": []},
+        {"info": {"role": "assistant",
+                  "providerID": "xai", "modelID": "grok-4.3"},
+         "parts": []},
+    ]
+    captured: dict = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(messages).encode("utf-8")
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["method"] = req.get_method()
+        return _Resp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    model = session_mod._resolve_session_model_sync(4096, "pw", "ses_abc")
+
+    assert model == "xai/grok-4.3"
+    assert captured["url"].endswith("/session/ses_abc/message")
+    assert captured["method"] == "GET"
+
+
+def test_resolve_session_model_none_when_no_assistant(monkeypatch):
+    """No assistant message (operator connected but never sent one) → None, so
+    the caller skips writing a model default (seed behaviour unchanged)."""
+    import json
+    import urllib.request
+    from optio_opencode import session as session_mod
+
+    messages = [{"info": {"role": "user",
+                          "model": {"providerID": "xai", "modelID": "grok-4.3"}},
+                 "parts": []}]
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(messages).encode("utf-8")
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: _Resp())
+    assert session_mod._resolve_session_model_sync(4096, "pw", "ses_x") is None
+
+
+async def test_write_seed_model_config_creates_and_merges(tmp_path):
+    """``_write_seed_model_config`` writes ``model`` into the seed's XDG
+    ``<workdir>/home/.config/opencode/opencode.json`` — creating the file when
+    absent and merging (preserving other keys) when present."""
+    import json
+    from optio_host.host import LocalHost
+    from optio_opencode import session as session_mod
+
+    taskdir = str(tmp_path / "task")
+    os.makedirs(taskdir, exist_ok=True)
+    host = LocalHost(taskdir=taskdir)
+    os.makedirs(host.workdir, exist_ok=True)
+    cfg_path = f"{host.workdir}/home/.config/opencode/opencode.json"
+
+    # case 1: no existing config → created with model
+    await session_mod._write_seed_model_config(host, "xai/grok-4.3")
+    with open(cfg_path) as f:
+        data = json.load(f)
+    assert data["model"] == "xai/grok-4.3"
+
+    # case 2: existing config with other keys → model added/updated, rest kept
+    with open(cfg_path, "w") as f:
+        json.dump({"theme": "dark"}, f)
+    await session_mod._write_seed_model_config(host, "anthropic/claude-x")
+    with open(cfg_path) as f:
+        data = json.load(f)
+    assert data["model"] == "anthropic/claude-x"
+    assert data["theme"] == "dark"

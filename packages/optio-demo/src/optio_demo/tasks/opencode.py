@@ -68,13 +68,15 @@ CONSUMER_PROMPT = (
 DEMO_SEED_COLLECTION_SUFFIX = "_demo_opencode_seeds"
 
 SEED_SETUP_PROMPT = (
-    "This is a one-time setup session for a human operator. You do not "
-    "need to do anything. The operator will connect a provider and "
-    "configure opencode (plugins, MCP servers) directly in the web "
-    "interface, then stop this task — their credentials/settings/plugins "
-    "are then captured as a reusable seed and a seed-pinned demo task "
-    "appears automatically. Do not run setup commands or narrate; if the "
-    "operator asks you something, answer briefly, otherwise stay idle."
+    "This is a one-time setup session for a human operator. The operator "
+    "will connect a provider, pick the model they want to use, and send at "
+    "least one message with it (so that model choice is recorded and "
+    "captured into the seed as the default for unattended runs), then stop "
+    "this task — their credentials/settings and chosen model are then "
+    "captured as a reusable seed and a seed-pinned demo task appears "
+    "automatically. If the operator sends you a message, answer briefly so "
+    "they get a reply; otherwise stay idle and do not run setup commands or "
+    "narrate."
 )
 
 
@@ -186,9 +188,10 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
             process_id="opencode-seed-setup",
             name="Setup opencode seed",
             description=(
-                "One-time: connect a provider in opencode and configure "
-                "plugins, then stop the task to capture a reusable seed. "
-                "A new seed-pinned demo task appears afterward."
+                "One-time: connect a provider in opencode, pick your model "
+                "and send one message with it (this records the model as the "
+                "seed's default), then stop the task to capture a reusable "
+                "seed. A new seed-pinned demo task appears afterward."
             ),
             config=OpencodeTaskConfig(
                 consumer_instructions=SEED_SETUP_PROMPT,

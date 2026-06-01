@@ -91,6 +91,9 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
     opencode_exec: str = "opencode"
     session_id: str | None = None
     preserved_session_id: str | None = None
+    # Worker-side opencode port; hoisted so the finally can query the live
+    # server (for the seed model default) before terminating it.
+    worker_port: int | None = None
 
     # --- resume decision (BEFORE the protocol session starts) -------------
     resume_requested = bool(getattr(ctx, "resume", False))
@@ -168,6 +171,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         terminate the subprocess and capture the snapshot.
         """
         nonlocal launched_handle, opencode_exec, session_id, preserved_session_id
+        nonlocal worker_port
 
         refreshed_files: list[str] = []
         if not resuming:
@@ -357,6 +361,26 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         if not ctx.should_continue():
             cancelled = True
 
+        # Resolve the operator's last-used model BEFORE terminating opencode
+        # (the query needs the live server). Synthesised into the seed's
+        # opencode.json below so an unattended seeded session runs that model
+        # rather than opencode's first-provider fallback. Best-effort.
+        seed_model: str | None = None
+        if (
+            not resuming
+            and config.on_seed_saved is not None
+            and worker_port is not None
+            and session_id is not None
+        ):
+            try:
+                seed_model = await _resolve_session_model(
+                    worker_port, password, session_id,
+                )
+            except Exception:  # noqa: BLE001
+                _LOG.exception(
+                    "seed model resolution failed; seed will carry no model default",
+                )
+
         if launched_handle is not None:
             try:
                 await host.terminate_subprocess(launched_handle, aggressive=cancelled)
@@ -365,6 +389,10 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
 
         if not resuming and config.on_seed_saved is not None:
             try:
+                if seed_model is not None:
+                    # Write the model default into the seed's opencode.json
+                    # before capture so it travels in the seed.
+                    await _write_seed_model_config(host, seed_model)
                 seed_id_out = await _seeds.capture_seed(
                     ctx, host,
                     manifest=OPENCODE_SEED_MANIFEST,
@@ -722,6 +750,91 @@ async def _post_opencode_prompt(
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(
         None, _post_opencode_prompt_sync, port, password, session_id, message
+    )
+
+
+def _resolve_session_model_sync(
+    port: int, password: str, session_id: str,
+) -> str | None:
+    """Best-effort: return the operator's last-used model as
+    ``"providerID/modelID"``, or None.
+
+    GETs opencode's ``/session/:sessionID/message`` (the same ``/session``
+    prefix as :func:`_create_opencode_session_sync`) and walks the message
+    list; each ``info.role == "assistant"`` message carries ``providerID`` /
+    ``modelID``. The LAST such message wins — the operator may switch models
+    mid-session, and their final choice is the one to seed.
+
+    Used at seed-capture time (opencode must still be alive) to synthesise the
+    model default into the seed's ``opencode.json``. Returns None on any
+    transport/parse error or when no assistant message exists; the caller then
+    skips writing a default, leaving opencode's own resolution in place (no
+    worse than before)."""
+    import base64 as _b64
+    import urllib.request
+    from urllib.error import URLError
+
+    auth_token = _b64.b64encode(f"opencode:{password}".encode("utf-8")).decode("ascii")
+    url = f"http://127.0.0.1:{port}/session/{session_id}/message"
+    req = urllib.request.Request(
+        url, method="GET", headers={"authorization": f"Basic {auth_token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (URLError, ConnectionError, OSError, ValueError):
+        return None
+    if not isinstance(data, list):
+        return None
+
+    model: str | None = None
+    for item in data:
+        info = item.get("info", item) if isinstance(item, dict) else {}
+        if not isinstance(info, dict) or info.get("role") != "assistant":
+            continue
+        prov, mod = info.get("providerID"), info.get("modelID")
+        if isinstance(prov, str) and prov and isinstance(mod, str) and mod:
+            model = f"{prov}/{mod}"
+    return model
+
+
+async def _resolve_session_model(
+    port: int, password: str, session_id: str,
+) -> str | None:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None, _resolve_session_model_sync, port, password, session_id
+    )
+
+
+async def _write_seed_model_config(host: Host, model_str: str) -> None:
+    """Merge ``{"model": model_str}`` into the seed's XDG opencode config at
+    ``<workdir>/home/.config/opencode/opencode.json`` (creating it if absent,
+    preserving any existing keys).
+
+    ``<workdir>/home`` is the seed manifest's ``home_subdir``, and
+    ``.config/opencode/opencode.json`` is in the manifest's include list, so
+    the file travels in the captured seed. On consume, opencode's
+    ``defaultModel()`` reads ``cfg.model`` first — so an unattended seeded
+    session (auto-start ``prompt_async`` sends no model) runs the operator's
+    model instead of the first-provider fallback (anthropic with no key →
+    ``invalid x-api-key``)."""
+    cfg_dir = f"{host.workdir}/home/.config/opencode"
+    cfg_path = f"{cfg_dir}/opencode.json"
+    await host.run_command(f"mkdir -p {shlex.quote(cfg_dir)}")
+
+    existing: dict = {}
+    r = await host.run_command(f"cat {shlex.quote(cfg_path)}")
+    if r.exit_code == 0 and r.stdout.strip():
+        try:
+            parsed = json.loads(r.stdout)
+            if isinstance(parsed, dict):
+                existing = parsed
+        except ValueError:
+            existing = {}
+    existing["model"] = model_str
+    await host.write_text(
+        "home/.config/opencode/opencode.json", json.dumps(existing, indent=2),
     )
 
 
