@@ -578,8 +578,19 @@ async def test_force_cancel_cascade_catches_late_optout_child(mongo_db):
     await late_child_spawned.wait()
 
     # Within force-cancel window, late child exists in DB and is active.
-    late_proc = await get_process_by_process_id(mongo_db, prefix, "late")
-    assert late_proc is not None
+    # spawn() schedules child persistence as a background task
+    # (context.py: asyncio.create_task(_run())); it does not await the DB
+    # write. Poll for the late child to appear and be active within the
+    # force-cancel window instead of reading eagerly (the eager read raced
+    # cold-start persistence and failed when this test ran first/alone).
+    late_proc = None
+    end = _time.monotonic() + 0.4
+    while _time.monotonic() < end:
+        late_proc = await get_process_by_process_id(mongo_db, prefix, "late")
+        if late_proc is not None and late_proc["status"]["state"] in {"running", "scheduled"}:
+            break
+        await asyncio.sleep(0.01)
+    assert late_proc is not None, "late child never persisted/active within window"
     assert late_proc["status"]["state"] in {"running", "scheduled"}
 
     # After grace + cascade, late child reaches terminal.
