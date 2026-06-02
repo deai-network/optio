@@ -121,9 +121,30 @@ async def _make_ctx(mongo_db, process_id: str, *, resume: bool):
     return ctx, proc["_id"]
 
 
-async def _run_one_cycle(mongo_db, process_id: str, resume: bool) -> None:
+async def _plant_auth_json(hook_ctx) -> None:
+    """before_execute hook: plant a non-empty opencode auth.json in the workdir.
+
+    The snapshot-capture defense-in-depth guard refuses to mark a session
+    resumable unless ``home/.local/share/opencode/auth.json`` exists and is
+    non-empty on the host. Capture-expecting tests must therefore plant a
+    credentials file the same way a real seeded launch would, mirroring how
+    claudecode tests plant ``.credentials.json``.
+    """
+    await hook_ctx.run_on_host(
+        "mkdir -p home/.local/share/opencode && "
+        "printf '{\"anthropic\": {\"type\": \"api\", \"key\": \"sk-test\"}}' "
+        "> home/.local/share/opencode/auth.json"
+    )
+
+
+async def _run_one_cycle(
+    mongo_db, process_id: str, resume: bool, *, plant_auth: bool = True,
+) -> None:
     ctx, _ = await _make_ctx(mongo_db, process_id, resume=resume)
-    cfg = OpencodeTaskConfig(consumer_instructions=f"(scenario: happy {process_id})")
+    cfg = OpencodeTaskConfig(
+        consumer_instructions=f"(scenario: happy {process_id})",
+        before_execute=_plant_auth_json if plant_auth else None,
+    )
     await run_opencode_session(ctx, cfg)
 
 
@@ -140,6 +161,27 @@ async def test_terminal_flow_captures_snapshot_and_wipes_workdir(mongo_db, task_
 
     wd = Path(task_dir(ssh=None, process_id=pid, consumer_name="optio-opencode")) / "workdir"
     assert not wd.exists() or not any(wd.iterdir())
+
+
+async def test_no_auth_json_refuses_to_capture_snapshot(mongo_db, task_root):
+    """Defense-in-depth: a normal launch (session_id created) but with NO
+    opencode auth.json on the host must NOT capture a snapshot or mark the
+    process resumable. Guards against marking a degenerate, credential-less
+    workdir as resumable.
+    """
+    pid = "oc_no_auth_1"
+    await _run_one_cycle(mongo_db, pid, resume=False, plant_auth=False)
+
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=pid)
+    assert snap is None
+
+    count = await mongo_db[f"test{SESSION_SNAPSHOT_COLLECTION_SUFFIX}"].count_documents(
+        {"processId": pid}
+    )
+    assert count == 0
+
+    proc = await mongo_db["test_processes"].find_one({"processId": pid})
+    assert proc.get("hasSavedState") is not True
 
 
 async def test_resume_creates_second_snapshot(mongo_db, task_root):

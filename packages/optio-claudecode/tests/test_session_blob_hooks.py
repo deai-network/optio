@@ -113,7 +113,9 @@ async def test_capture_writes_through_session_blob_encrypt(monkeypatch):
     fake_host = MagicMock()
     fake_host.workdir = "/tmp/wd"
     fake_host.archive_workdir = _fake_archive
-    fake_host.run_command = AsyncMock()
+    # The credentials-present capture guard runs `test -s …/.credentials.json`
+    # first; model a configured (logged-in) session so capture proceeds.
+    fake_host.run_command = AsyncMock(return_value=MagicMock(stdout="OK\n"))
 
     await _capture_snapshot(
         fake_ctx, fake_host,

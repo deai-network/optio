@@ -107,6 +107,9 @@ async def test_snapshot_excludes_claude_binary(
             claude_install_dir=str(claude_cache_dir),
             ttyd_install_dir=str(shim_install_dir),
             supports_resume=True,
+            # Configured (logged-in) session: creds on disk so the snapshot
+            # passes the credentials-present capture guard.
+            credentials_json={"token": "test"},
         ),
     )
     await task.execute(ctx)

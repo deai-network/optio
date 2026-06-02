@@ -60,6 +60,9 @@ async def test_decrypt_failure_propagates_and_no_fresh_start(
         claude_install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         supports_resume=True,
+        # Configured (logged-in) session: creds on disk so the snapshot
+        # passes the credentials-present capture guard.
+        credentials_json={"token": "test"},
     )
     await run_claudecode_session(ctx1, cfg1)
 

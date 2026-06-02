@@ -330,6 +330,10 @@ async def test_auto_start_posts_on_fresh_and_not_on_resume(
     await run_opencode_session(ctx_fresh, OpencodeTaskConfig(
         consumer_instructions="(scenario: happy)",
         auto_start=True,
+        # Plant auth.json so the snapshot-capture defense-in-depth guard does
+        # not refuse to mark this resumable; otherwise the resume leg would
+        # fall back to a fresh launch and POST the kickoff prompt again.
+        before_execute=_plant_env,
     ))
     assert len(posts) == 1
     posted_session_id, posted_message = posts[0]
@@ -341,6 +345,7 @@ async def test_auto_start_posts_on_fresh_and_not_on_resume(
     await run_opencode_session(ctx_resume, OpencodeTaskConfig(
         consumer_instructions="(scenario: happy)",
         auto_start=True,
+        before_execute=_plant_env,
     ))
     assert len(posts) == 1, posts
 

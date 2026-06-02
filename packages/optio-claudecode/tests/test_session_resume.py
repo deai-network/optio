@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 
+import pytest
 import pytest_asyncio
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorGridFSBucket
 
@@ -61,6 +62,10 @@ def _cfg(shim_install_dir, claude_cache_dir, scenario: str) -> ClaudeCodeTaskCon
         ttyd_install_dir=str(shim_install_dir),
         permission_mode="bypassPermissions",
         supports_resume=True,
+        # A real configured (logged-in) session has credentials on disk;
+        # plant_home_files writes this to home/.claude/.credentials.json.
+        # Required by the credentials-present snapshot guard.
+        credentials_json={"token": "test"},
         session_blob_encrypt=lambda b: b,
         session_blob_decrypt=lambda b: b,
     )
@@ -138,6 +143,7 @@ async def test_workdir_blob_excludes_heavy_regenerable_home_dirs(
         ttyd_install_dir=str(shim_install_dir),
         permission_mode="bypassPermissions",
         supports_resume=True,
+        credentials_json={"token": "test"},
         before_execute=_plant_junk,
     )
     await run_claudecode_session(ctx, cfg)
@@ -217,3 +223,73 @@ async def test_resume_with_no_transcript_launches_without_continue(
     # Neither the fresh launch nor the resumed launch may carry --continue,
     # because no transcript ever existed.
     assert all("--continue" not in launch for launch in launches), launches
+
+
+async def test_interrupt_before_launch_captures_no_snapshot(
+    mongo_db, task_root, shim_install_dir, claude_cache_dir, monkeypatch,
+):
+    """CHANGE #1 (reached-live gate): if the session is interrupted before
+    claude is launched (launch_ttyd_with_claude raises), launched_handle stays
+    None, so the finally block must NOT capture a snapshot and must NOT mark
+    the process resumable — even though credentials were planted."""
+    from optio_claudecode import host_actions
+
+    pid = "cc_interrupt_pre_launch"
+
+    async def _boom(*a, **kw):
+        raise RuntimeError("simulated interrupt before launch")
+
+    monkeypatch.setattr(host_actions, "launch_ttyd_with_claude", _boom)
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "happy")
+    ctx = await _make_ctx(mongo_db, pid, resume=False)
+    cfg = ClaudeCodeTaskConfig(
+        consumer_instructions="(interrupt)",
+        claude_install_dir=str(claude_cache_dir),
+        ttyd_install_dir=str(shim_install_dir),
+        permission_mode="bypassPermissions",
+        supports_resume=True,
+        credentials_json={"token": "test"},
+        session_blob_encrypt=lambda b: b,
+        session_blob_decrypt=lambda b: b,
+    )
+
+    with pytest.raises(Exception):
+        await run_claudecode_session(ctx, cfg)
+
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=pid)
+    assert snap is None
+
+    proc = await mongo_db["test_processes"].find_one({"processId": pid})
+    assert proc.get("hasSavedState") is not True
+
+
+async def test_no_credentials_captures_no_snapshot(
+    mongo_db, task_root, shim_install_dir, claude_cache_dir, monkeypatch,
+):
+    """CHANGE #2 (credentials-present guard): a session that launches normally
+    but has no home/.claude/.credentials.json (unconfigured environment) must
+    NOT capture a snapshot and must NOT mark the process resumable. Restoring
+    such a snapshot would drop the agent to /login."""
+    pid = "cc_no_creds"
+    # `happy` launches normally but never writes .credentials.json, and this
+    # config plants no credentials_json either — so home/.claude/.credentials.json
+    # is absent at capture time. (Cannot use _cfg/_run_cycle here: _cfg now
+    # plants creds to model a logged-in session.)
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "happy")
+    ctx = await _make_ctx(mongo_db, pid, resume=False)
+    cfg = ClaudeCodeTaskConfig(
+        consumer_instructions="(no creds)",
+        claude_install_dir=str(claude_cache_dir),
+        ttyd_install_dir=str(shim_install_dir),
+        permission_mode="bypassPermissions",
+        supports_resume=True,
+        session_blob_encrypt=lambda b: b,
+        session_blob_decrypt=lambda b: b,
+    )
+    await run_claudecode_session(ctx, cfg)
+
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=pid)
+    assert snap is None
+
+    proc = await mongo_db["test_processes"].find_one({"processId": pid})
+    assert proc.get("hasSavedState") is not True

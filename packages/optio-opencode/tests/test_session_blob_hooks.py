@@ -99,6 +99,11 @@ async def test_capture_writes_through_session_blob_encrypt(monkeypatch):
         yield b"workdir-bytes"
     fake_host = MagicMock()
     fake_host.archive_workdir = _fake_archive
+    # Satisfy the snapshot-capture defense-in-depth guard: it runs a
+    # `test -s .../auth.json && echo OK` probe on the host and refuses to
+    # capture unless the output contains "OK".
+    fake_host.workdir = "/work"
+    fake_host.run_command = AsyncMock(return_value=MagicMock(stdout="OK\n"))
 
     await _capture_snapshot(
         fake_ctx, fake_host,

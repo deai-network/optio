@@ -319,7 +319,13 @@ async def run_claudecode_session(
                 )
                 _trace("finally: capture_seed RAISED")
 
-        if config.supports_resume:
+        # Reached-live gate: only capture if claude actually came up.
+        # launched_handle is assigned strictly AFTER merge_seed and a
+        # successful ttyd/claude launch, so non-None ⟹ the environment was
+        # fully planted+seeded and claude live. An interrupt or merge_seed
+        # failure before launch leaves it None — skip capture entirely (do
+        # NOT touch hasSavedState, so any prior good snapshot survives).
+        if config.supports_resume and launched_handle is not None:
             _trace("finally: capture_snapshot START")
             try:
                 await _capture_snapshot(
@@ -443,6 +449,24 @@ async def _capture_snapshot(
     workdir_exclude: list[str] | None,
     session_blob_encrypt: "Callable[[bytes], bytes] | None" = None,
 ) -> None:
+    # 0. Credentials-present guard. Refuse to snapshot an unconfigured
+    # environment: without home/.claude/.credentials.json a restored snapshot
+    # drops the agent to /login (looking like a zero-config seed session).
+    # This MUST be first — the resume path (load_latest_snapshot) ignores
+    # hasSavedState, so the degenerate snapshot must never be CREATED, not
+    # merely have its flag skipped.
+    workdir = host.workdir.rstrip("/")
+    chk = await host.run_command(
+        f"test -s {shlex.quote(workdir)}/home/.claude/.credentials.json "
+        f"&& echo OK || true"
+    )
+    if "OK" not in chk.stdout:
+        _LOG.warning(
+            "snapshot capture skipped: home/.claude/.credentials.json "
+            "absent/empty; refusing to mark resumable",
+        )
+        return
+
     # 1. tar the sensitive subtree into bytes.
     _trace("capture: archive_home_claude START")
     session_bytes = await _archive_home_claude(host)
@@ -468,7 +492,6 @@ async def _capture_snapshot(
     _trace("capture: store_blob(session) DONE id=%s", session_blob_id)
 
     # 4. defensive wipe so the workdir tar cannot carry sensitive state.
-    workdir = host.workdir.rstrip("/")
     _trace("capture: rm -rf home/.claude START")
     await host.run_command(f"rm -rf {shlex.quote(workdir)}/home/.claude")
     _trace("capture: rm -rf home/.claude DONE")

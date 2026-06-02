@@ -483,6 +483,24 @@ async def _capture_snapshot(
     opencode_executable: str = "opencode",
     session_blob_encrypt: "Callable[[bytes], bytes] | None" = None,
 ) -> None:
+    # Defense-in-depth (guard #2): refuse to capture a resumable snapshot
+    # unless opencode's auth.json exists and is non-empty on the host. A
+    # credential-less workdir is degenerate — restoring it would relaunch
+    # opencode with no auth, so marking it resumable is worse than useless.
+    # (Live-reach is already covered by the session_id is not None gate at
+    # the call site; this covers the bad/empty-seed edge.)
+    workdir = host.workdir.rstrip("/")
+    chk = await host.run_command(
+        f"test -s {shlex.quote(workdir)}/home/.local/share/opencode/auth.json "
+        f"&& echo OK || true"
+    )
+    if "OK" not in chk.stdout:
+        _LOG.warning(
+            "snapshot capture skipped: opencode auth.json absent/empty; "
+            "refusing to mark resumable"
+        )
+        return
+
     session_json = await host_actions.opencode_export(
         host, opencode_db, session_id,
         opencode_executable=opencode_executable,

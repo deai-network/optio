@@ -61,6 +61,9 @@ async def test_resume_refresh_tags_resume_log(
         claude_install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         supports_resume=True,
+        # Configured (logged-in) session: creds on disk so the fresh-cycle
+        # snapshot passes the credentials-present capture guard.
+        credentials_json={"token": "test"},
     )
 
     ctx1 = await _make_ctx(mongo_db, pid, resume=False)

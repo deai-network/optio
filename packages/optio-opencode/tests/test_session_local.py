@@ -92,6 +92,21 @@ def _config(scenario: str, deliverable_cb=None, raises: bool = False) -> Opencod
     )
 
 
+async def _plant_auth_json(hook_ctx) -> None:
+    """before_execute hook: plant a non-empty opencode auth.json in the workdir.
+
+    The snapshot-capture defense-in-depth guard refuses to mark a session
+    resumable unless ``home/.local/share/opencode/auth.json`` exists and is
+    non-empty on the host, so capture-expecting tests must plant credentials
+    the same way a real seeded launch would.
+    """
+    await hook_ctx.run_on_host(
+        "mkdir -p home/.local/share/opencode && "
+        "printf '{\"anthropic\": {\"type\": \"api\", \"key\": \"sk-test\"}}' "
+        "> home/.local/share/opencode/auth.json"
+    )
+
+
 @pytest.fixture(autouse=True)
 def _supply_scenario(monkeypatch):
     """Substitute fake_opencode.py for the real opencode binary.
@@ -596,11 +611,14 @@ async def test_session_local_supports_resume_true_captures_snapshot(
     ctx_and_captures, _supply_scenario, tmp_workdir,
 ):
     """With supports_resume=True (default), a snapshot IS captured."""
+    import dataclasses
     from optio_opencode.snapshots import SESSION_SNAPSHOT_COLLECTION_SUFFIX
     ctx, _, _ = ctx_and_captures
     _supply_scenario["name"] = "happy"
 
-    cfg = _config("happy")  # default supports_resume=True
+    # Plant auth.json so the snapshot-capture defense-in-depth guard permits
+    # capture; without credentials it would refuse to mark resumable.
+    cfg = dataclasses.replace(_config("happy"), before_execute=_plant_auth_json)
     await run_opencode_session(ctx, cfg)
 
     coll_name = f"{ctx._prefix}{SESSION_SNAPSHOT_COLLECTION_SUFFIX}"
