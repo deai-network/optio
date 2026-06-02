@@ -15,6 +15,7 @@ class LaunchOutcome:
     ok: bool
     reason: Literal[
         "not-found", "not-launchable", "launch-blocked", "no-resume-support",
+        "shutting-down",
     ] | None = None
     proc: dict[str, Any] | None = None
 

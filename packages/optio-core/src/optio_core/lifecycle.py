@@ -82,6 +82,8 @@ class Optio:
         self._owned_rpc_server: bool = False
         self._scheduler: ProcessScheduler | None = None
         self._running = False
+        self._shutting_down = False
+        self._shutdown_task: "asyncio.Task | None" = None
         self._heartbeat_task: asyncio.Task | None = None
         self._supervisor_task: asyncio.Task | None = None
         self._launch_blocks: dict[uuid.UUID, _BlockEntry] = {}
@@ -391,6 +393,11 @@ class Optio:
         background and the outcome is ok=True with `proc` populated from a
         post-schedule re-read (state will typically be 'scheduled' or
         already advanced to 'running' depending on event-loop timing)."""
+        # Stop sign: once shutdown has begun, refuse new launches so nothing
+        # half-boots into a shutting-down engine. Covers scheduler, RPC, and
+        # programmatic launch paths.
+        if self._shutting_down:
+            return LaunchOutcome(ok=False, reason="shutting-down")
         proc = await self._resolve(process_id)
         if proc is None:
             return LaunchOutcome(ok=False, reason="not-found")
@@ -879,10 +886,15 @@ class Optio:
         # Set up signal handlers (only works in main thread)
         try:
             loop = asyncio.get_event_loop()
+
+            def _request_shutdown() -> None:
+                # Store the task so run() can await it to completion before the
+                # loop is torn down; guard against a second signal.
+                if self._shutdown_task is None:
+                    self._shutdown_task = asyncio.create_task(self.shutdown())
+
             for sig in (signal.SIGTERM, signal.SIGINT):
-                loop.add_signal_handler(
-                    sig, lambda: asyncio.create_task(self.shutdown()),
-                )
+                loop.add_signal_handler(sig, _request_shutdown)
         except (NotImplementedError, RuntimeError):
             pass  # Signal handlers not available (e.g., in tests)
 
@@ -908,6 +920,16 @@ class Optio:
         try:
             await self._shutdown_event.wait()
         finally:
+            # A signal dispatches shutdown() as a detached task. Wait for its
+            # cooperative drain to finish before returning — otherwise main()
+            # returns and asyncio.run() tear-down cancels the drain mid-capture.
+            # (When shutdown() is called directly rather than via signal,
+            # _shutdown_task is None and the caller already awaited it.)
+            if self._shutdown_task is not None:
+                try:
+                    await self._shutdown_task
+                except Exception:
+                    logger.exception("shutdown task raised")
             await self._scheduler.stop()
 
     async def shutdown(self, grace_seconds: float | None = None) -> None:
@@ -922,67 +944,75 @@ class Optio:
         """
         logger.info("Shutdown requested")
         self._running = False
+        # Stop sign: refuse new launches (scheduler, RPC, programmatic) for the
+        # entire drain so nothing half-boots into a shutting-down engine.
+        self._shutting_down = True
 
-        # 1. Heartbeat
-        if self._heartbeat_task:
-            self._heartbeat_task.cancel()
-            try:
-                await self._heartbeat_task
-            except asyncio.CancelledError:
-                pass
-            self._heartbeat_task = None
+        try:
+            # 1. Heartbeat
+            if self._heartbeat_task:
+                self._heartbeat_task.cancel()
+                try:
+                    await self._heartbeat_task
+                except asyncio.CancelledError:
+                    pass
+                self._heartbeat_task = None
 
-        # 2. Signal shutdown to the main run() loop
-        if hasattr(self, '_shutdown_event'):
-            self._shutdown_event.set()
+            # 2. RPC server (clamator)
+            if self.rpc_server is not None and self._owned_rpc_server:
+                grace_ms = int(
+                    (grace_seconds if grace_seconds is not None else self._config.cancel_grace_seconds) * 1000
+                )
+                await self.rpc_server.stop(grace_ms=grace_ms)
 
-        # 2b. RPC server (clamator)
-        if self.rpc_server is not None and self._owned_rpc_server:
-            grace_ms = int(
-                (grace_seconds if grace_seconds is not None else self._config.cancel_grace_seconds) * 1000
+            # 3. Cancel everything via the unified mechanism.
+            grace = (
+                grace_seconds
+                if grace_seconds is not None
+                else self._config.cancel_grace_seconds
             )
-            await self.rpc_server.stop(grace_ms=grace_ms)
+            if self._executor:
+                now_mono = time.monotonic()
+                for oid in list(self._executor._cancellation_flags.keys()):
+                    entry = self._executor._cancellation_flags.get(oid)
+                    if entry is None:
+                        continue
+                    entry.flag.set()
+                    if entry.deadline is None:
+                        entry.deadline = now_mono + grace
 
-        # 3. Cancel everything via the unified mechanism.
-        grace = (
-            grace_seconds
-            if grace_seconds is not None
-            else self._config.cancel_grace_seconds
-        )
-        if self._executor:
-            now_mono = time.monotonic()
-            for oid in list(self._executor._cancellation_flags.keys()):
-                entry = self._executor._cancellation_flags.get(oid)
-                if entry is None:
-                    continue
-                entry.flag.set()
-                if entry.deadline is None:
-                    entry.deadline = now_mono + grace
+                # Wait for entries to drain. The supervisor handles force-cancel.
+                ceiling = time.monotonic() + grace + 5.0
+                while self._executor._cancellation_flags and time.monotonic() < ceiling:
+                    await asyncio.sleep(0.1)
 
-            # Wait for entries to drain. The supervisor handles force-cancel.
-            ceiling = time.monotonic() + grace + 5.0
-            while self._executor._cancellation_flags and time.monotonic() < ceiling:
-                await asyncio.sleep(0.1)
+                # Belt and braces: anything still left, force-cancel directly.
+                # (Handles the case where the supervisor was slow or already stopped.)
+                for oid in list(self._executor._cancellation_flags.keys()):
+                    await self._executor.force_cancel(oid)
 
-            # Belt and braces: anything still left, force-cancel directly.
-            # (Handles the case where the supervisor was slow or already stopped.)
-            for oid in list(self._executor._cancellation_flags.keys()):
-                await self._executor.force_cancel(oid)
+            # 4. Stop supervisor (after final force-cancel pass).
+            if self._supervisor_task:
+                self._supervisor_task.cancel()
+                try:
+                    await self._supervisor_task
+                except asyncio.CancelledError:
+                    pass
+                self._supervisor_task = None
 
-        # 4. Stop supervisor (after final force-cancel pass).
-        if self._supervisor_task:
-            self._supervisor_task.cancel()
-            try:
-                await self._supervisor_task
-            except asyncio.CancelledError:
-                pass
-            self._supervisor_task = None
+            # 5. Redis
+            if self._redis:
+                await self._redis.aclose()
 
-        # 5. Redis
-        if self._redis:
-            await self._redis.aclose()
-
-        logger.info("Shutdown complete")
+            logger.info("Shutdown complete")
+        finally:
+            # Unblock run() ONLY after the drain has fully run (or failed). The
+            # finally guarantees run() still unblocks if the drain raised —
+            # otherwise run() would hang until the external SIGKILL backstop.
+            # (Moved here from an early "step 2": setting it before the drain let
+            # run() return and asyncio.run() tear-down cancel the drain.)
+            if hasattr(self, '_shutdown_event'):
+                self._shutdown_event.set()
 
     async def _reconcile_interrupted_processes(self) -> None:
         """Mark processes left in active states by a previous session as failed.
