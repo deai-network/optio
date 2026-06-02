@@ -34,7 +34,11 @@ clean: check-venv  ## Uninstall all editable optio packages (purge stale install
 	$(PIP) uninstall -y $(LOCAL_PKGS) || true
 
 run: check-venv  ## Run optio_demo with auto-restart on Python source change (watches all locally-developed deps)
-	$(WATCHFILES) "$(PY) -m optio_demo" \
+	# --sigint-timeout 15: on a file change watchfiles SIGINTs optio_demo then
+	# SIGKILLs after this timeout (default 5s). The optio runloop's graceful
+	# cooperative-cancel shutdown can take up to ~10s; 15s lets an in-flight
+	# task finish before the SIGKILL. Idle restarts stay instant.
+	$(WATCHFILES) --sigint-timeout 15 "$(PY) -m optio_demo" \
 	  src \
 	  ../optio-core/src \
 	  ../optio-host/src \
