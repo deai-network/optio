@@ -18,6 +18,12 @@ export function useInstances(): UseInstancesResult {
   const { data, isLoading, error, refetch } = client.discovery.instances.useQuery({
     queryKey: ['optio-instances'],
     queryData: {},
+    // Poll so an instance going offline (heartbeat expiry) is reflected
+    // without waiting for a window-focus refetch — drives engine-offline UI
+    // (e.g. consumers' "engine not live" banner). Background tabs are paused
+    // by react-query's default refetchIntervalInBackground=false; they catch
+    // up on refocus.
+    refetchInterval: 10_000,
   });
   return {
     instances: data?.body?.instances ?? [],
