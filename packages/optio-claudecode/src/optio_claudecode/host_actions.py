@@ -409,11 +409,6 @@ def _build_claude_shell_command(
                 "skipped (no localhost to seal over SSH; netns tools may be "
                 "absent on the remote)", netns_wrap,
             )
-        else:
-            _LOG.info(
-                "OPTIO_CLAUDECODE_NETNS not set (value=%r) — no loopback isolation",
-                os.environ.get("OPTIO_CLAUDECODE_NETNS"),
-            )
     claude_argv = " ".join(shlex.quote(c) for c in claude_cmd)
     log_path = f"{workdir_clean}/optio.log"
     bash_payload = (
@@ -534,7 +529,6 @@ async def launch_ttyd_with_claude(
         local_mode=local_mode,
     )
     session_cmd = " ".join(shlex.quote(a) for a in session_argv)
-    _LOG.info("tmux session start command: %s", session_cmd)
     start_handle = await host.launch_subprocess(session_cmd, env_remove=env_remove)
     # new-session -d returns at once; drain stdout to await the process exit.
     start_output: list[str] = []
@@ -555,7 +549,6 @@ async def launch_ttyd_with_claude(
         port=0,
     )
     command = " ".join(shlex.quote(a) for a in ttyd_argv)
-    _LOG.info("launch ttyd attach command: %s", command)
     handle = await host.launch_subprocess(command)
 
     async def _read_port() -> int:
