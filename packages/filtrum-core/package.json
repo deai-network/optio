@@ -1,0 +1,16 @@
+{
+  "name": "filtrum-core",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "description": "Backend-agnostic, extensible filter predicate language: schema, builders, and a pluggable-dialect compiler.",
+  "repository": { "type": "git", "url": "git+https://github.com/deai-network/optio.git", "directory": "packages/filtrum-core" },
+  "author": "Kristof Csillag <kristof.csillag@deai-labs.com>",
+  "type": "module",
+  "files": ["dist", "README.md", "LICENSE"],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": { ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" } },
+  "scripts": { "build": "tsc", "dev": "tsc --watch", "test": "vitest run", "test:watch": "vitest" },
+  "dependencies": { "zod": "^3.24.0" },
+  "devDependencies": { "typescript": "^5.7.0", "vitest": "^3.0.0" }
+}

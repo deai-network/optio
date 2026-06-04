@@ -88,64 +88,30 @@ export const FilterFieldPath = z
   .string()
   .regex(/^[^.$]+(\.[^.$]+)*$/, 'invalid field path');
 
-// Operator object that lives at each leaf.
-export const FilterLeafOps = z
-  .object({
-    eq:     FilterScalar.optional(),
-    ne:     FilterScalar.optional(),
-    in:     z.array(FilterScalar).optional(),
-    nin:    z.array(FilterScalar).optional(),
-    exists: z.boolean().optional(),
-    gt:     FilterScalar.optional(),
-    gte:    FilterScalar.optional(),
-    lt:     FilterScalar.optional(),
-    lte:    FilterScalar.optional(),
-  })
-  .strict()
-  .refine((o) => Object.keys(o).length > 0, 'leaf needs at least one operator');
+// Filter language is provided by filtrum-core (extracted, backend-agnostic).
+// FilterScalar + FilterFieldPath above remain the optio public contract and are
+// fed to filtrum. metadata.* prefixing + Mongo translation live in optio-api.
+import { makeFilterSchema } from 'filtrum-core';
 
-// Recursive predicate tree. A predicate node is exactly one of:
-//   { AND: [...] }   { OR: [...] }   { NOT: ... }   { "field": LeafOps, ... }
-// .strict() forbids mixing combinator keys with field keys in one object.
-export const ProcessMetadataPredicateSchema: z.ZodType<unknown> = z.lazy(() =>
-  z.union([
-    z.object({ AND: z.array(ProcessMetadataPredicateSchema).min(1) }).strict(),
-    z.object({ OR:  z.array(ProcessMetadataPredicateSchema).min(1) }).strict(),
-    z.object({ NOT: ProcessMetadataPredicateSchema }).strict(),
-    z.record(FilterFieldPath, FilterLeafOps),
-  ]),
-);
+const _filter = makeFilterSchema({
+  allowLegacyFlat: true,
+  fieldPath: FilterFieldPath,
+  jsonErrorMessage: 'metadataFilter must be valid JSON',
+});
 
-// Legacy flat shape: keys are field names, values are scalars (implicit AND of equality).
-export const ProcessMetadataFilterLegacySchema = z.record(FilterFieldPath, FilterScalar);
+export const FilterLeafOps = _filter.LeafOps;
+export const ProcessMetadataPredicateSchema = _filter.PredicateSchema;
+export const ProcessMetadataFilterLegacySchema = _filter.LegacySchema;
+export const ProcessMetadataFilterSchema = _filter.FilterSchema;
+export const MetadataFilterQueryParamSchema = _filter.QueryParamSchema;
 
-// Public union (backwards compatible). Predicate branch first so it wins on
-// any input that has combinator keys or operator-object values; flat scalar
-// shapes fall through to the legacy branch.
-export const ProcessMetadataFilterSchema = z.union([
-  ProcessMetadataPredicateSchema,
-  ProcessMetadataFilterLegacySchema,
-]);
-
-export const MetadataFilterQueryParamSchema = z
-  .string()
-  .transform((s, ctx) => {
-    try {
-      return JSON.parse(s);
-    } catch {
-      ctx.addIssue({ code: 'custom', message: 'metadataFilter must be valid JSON' });
-      return z.NEVER;
-    }
-  })
-  .pipe(ProcessMetadataFilterSchema)
-  .optional();
+export type FilterLeafOps = z.infer<typeof FilterLeafOps>;
+export type ProcessMetadataPredicate = z.infer<typeof ProcessMetadataPredicateSchema>;
+export type ProcessMetadataFilter = z.infer<typeof ProcessMetadataFilterSchema>;
 
 export type Process = z.infer<typeof ProcessSchema>;
 export type ProcessState = z.infer<typeof ProcessStateSchema>;
 export type LogEntry = z.infer<typeof LogEntrySchema>;
 export type FilterScalar = z.infer<typeof FilterScalar>;
-export type FilterLeafOps = z.infer<typeof FilterLeafOps>;
-export type ProcessMetadataPredicate = z.infer<typeof ProcessMetadataPredicateSchema>;
-export type ProcessMetadataFilter = z.infer<typeof ProcessMetadataFilterSchema>;
 export type BrowserOpenRequest = z.infer<typeof BrowserOpenRequestSchema>;
 export type SessionEvent = z.infer<typeof SessionEventSchema>;

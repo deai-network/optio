@@ -1,0 +1,18 @@
+{
+  "name": "filtrum-mongo",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "description": "MongoDB dialect for filtrum: translate filter predicates to Mongo query filters.",
+  "repository": { "type": "git", "url": "git+https://github.com/deai-network/optio.git", "directory": "packages/filtrum-mongo" },
+  "author": "Kristof Csillag <kristof.csillag@deai-labs.com>",
+  "type": "module",
+  "files": ["dist", "README.md", "LICENSE"],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": { ".": { "import": "./dist/index.js", "types": "./dist/index.d.ts" } },
+  "scripts": { "build": "tsc", "dev": "tsc --watch", "test": "vitest run", "test:watch": "vitest" },
+  "dependencies": { "filtrum-core": "workspace:*" },
+  "peerDependencies": { "mongodb": ">=5" },
+  "peerDependenciesMeta": { "mongodb": { "optional": true } },
+  "devDependencies": { "mongodb": "^6.0.0", "typescript": "^5.7.0", "vitest": "^3.0.0" }
+}

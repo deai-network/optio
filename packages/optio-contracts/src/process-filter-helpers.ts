@@ -1,45 +1,29 @@
-import type {
-  ProcessMetadataPredicate,
-  FilterScalar,
-} from './schemas/process.js';
+import * as f from 'filtrum-core';
+import type { ProcessMetadataPredicate, FilterScalar } from './schemas/process.js';
 
-// Combinators.
+// Builders are provided by filtrum-core; these wrappers preserve optio's
+// ProcessMetadataPredicate return type and the isIn/notIn naming.
 export const and = (...preds: ProcessMetadataPredicate[]): ProcessMetadataPredicate =>
-  ({ AND: preds } as ProcessMetadataPredicate);
-
+  f.and(...(preds as f.Predicate[])) as ProcessMetadataPredicate;
 export const or = (...preds: ProcessMetadataPredicate[]): ProcessMetadataPredicate =>
-  ({ OR: preds } as ProcessMetadataPredicate);
-
+  f.or(...(preds as f.Predicate[])) as ProcessMetadataPredicate;
 export const not = (pred: ProcessMetadataPredicate): ProcessMetadataPredicate =>
-  ({ NOT: pred } as ProcessMetadataPredicate);
-
-// Leaf builders. `field` is a dotted path under `metadata.*` (auto-prefixed
-// at translation time). `isIn` / `notIn` avoid the `in` JS reserved-word
-// collision; `not` is the combinator and does not double as a leaf negation
-// (use `not(eq(...))`).
+  f.not(pred as f.Predicate) as ProcessMetadataPredicate;
 export const eq = (field: string, v: FilterScalar): ProcessMetadataPredicate =>
-  ({ [field]: { eq: v } } as ProcessMetadataPredicate);
-
+  f.eq(field, v) as ProcessMetadataPredicate;
 export const ne = (field: string, v: FilterScalar): ProcessMetadataPredicate =>
-  ({ [field]: { ne: v } } as ProcessMetadataPredicate);
-
+  f.ne(field, v) as ProcessMetadataPredicate;
 export const isIn = (field: string, v: FilterScalar[]): ProcessMetadataPredicate =>
-  ({ [field]: { in: v } } as ProcessMetadataPredicate);
-
+  f.isIn(field, v) as ProcessMetadataPredicate;
 export const notIn = (field: string, v: FilterScalar[]): ProcessMetadataPredicate =>
-  ({ [field]: { nin: v } } as ProcessMetadataPredicate);
-
+  f.notIn(field, v) as ProcessMetadataPredicate;
 export const exists = (field: string, v: boolean = true): ProcessMetadataPredicate =>
-  ({ [field]: { exists: v } } as ProcessMetadataPredicate);
-
+  f.exists(field, v) as ProcessMetadataPredicate;
 export const gt = (field: string, v: FilterScalar): ProcessMetadataPredicate =>
-  ({ [field]: { gt: v } } as ProcessMetadataPredicate);
-
+  f.gt(field, v) as ProcessMetadataPredicate;
 export const gte = (field: string, v: FilterScalar): ProcessMetadataPredicate =>
-  ({ [field]: { gte: v } } as ProcessMetadataPredicate);
-
+  f.gte(field, v) as ProcessMetadataPredicate;
 export const lt = (field: string, v: FilterScalar): ProcessMetadataPredicate =>
-  ({ [field]: { lt: v } } as ProcessMetadataPredicate);
-
+  f.lt(field, v) as ProcessMetadataPredicate;
 export const lte = (field: string, v: FilterScalar): ProcessMetadataPredicate =>
-  ({ [field]: { lte: v } } as ProcessMetadataPredicate);
+  f.lte(field, v) as ProcessMetadataPredicate;

@@ -61,14 +61,16 @@ describe('metadataFilterToMongo', () => {
 
   it('prefixes single key with metadata.', () => {
     expect(metadataFilterToMongo({ targetId: 'abc' })).toEqual({
-      'metadata.targetId': 'abc',
+      'metadata.targetId': { $eq: 'abc' },
     });
   });
 
   it('prefixes multiple keys with metadata.', () => {
     expect(metadataFilterToMongo({ a: 1, b: 'x' })).toEqual({
-      'metadata.a': 1,
-      'metadata.b': 'x',
+      $and: [
+        { 'metadata.a': { $eq: 1 } },
+        { 'metadata.b': { $eq: 'x' } },
+      ],
     });
   });
 });
@@ -138,7 +140,10 @@ describe('metadataFilterToMongo (predicate tree)', () => {
   it('translates single-leaf multi-op (one node, multiple operators)', () => {
     const p = { foo: { gt: 1, lte: 10 } } as any;
     expect(metadataFilterToMongo(p)).toEqual({
-      'metadata.foo': { $gt: 1, $lte: 10 },
+      $and: [
+        { 'metadata.foo': { $gt: 1 } },
+        { 'metadata.foo': { $lte: 10 } },
+      ],
     });
   });
 
