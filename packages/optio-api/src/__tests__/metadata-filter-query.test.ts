@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   parseMetadataFilterQuery,
   metadataFilterToMongo,
-  isLegacyFlatFilter,
   detectLegacyMetadataParams,
   formatLegacyMetadataMessage,
 } from '../metadata-filter-query.js';
@@ -101,32 +100,6 @@ describe('formatLegacyMetadataMessage', () => {
     expect(formatLegacyMetadataMessage(['metadata.a', 'metadata.b'])).toContain(
       'Offending keys: metadata.a, metadata.b',
     );
-  });
-});
-
-describe('isLegacyFlatFilter', () => {
-  it('treats empty object as legacy', () => {
-    expect(isLegacyFlatFilter({})).toBe(true);
-  });
-
-  it('treats flat scalar record as legacy', () => {
-    expect(isLegacyFlatFilter({ a: 1, b: 'x', c: true, d: null })).toBe(true);
-  });
-
-  it('treats AND-key object as predicate', () => {
-    expect(isLegacyFlatFilter({ AND: [{ a: { eq: 1 } }] } as any)).toBe(false);
-  });
-
-  it('treats OR-key object as predicate', () => {
-    expect(isLegacyFlatFilter({ OR: [{ a: { eq: 1 } }] } as any)).toBe(false);
-  });
-
-  it('treats NOT-key object as predicate', () => {
-    expect(isLegacyFlatFilter({ NOT: { a: { eq: 1 } } } as any)).toBe(false);
-  });
-
-  it('treats operator-object values as predicate', () => {
-    expect(isLegacyFlatFilter({ foo: { eq: 'x' } } as any)).toBe(false);
   });
 });
 

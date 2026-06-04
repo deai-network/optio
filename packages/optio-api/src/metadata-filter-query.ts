@@ -18,15 +18,6 @@ export function parseMetadataFilterQuery(raw: unknown): ParseResult {
   return { ok: true, value: result.data as ProcessMetadataFilter };
 }
 
-// Kept for back-compat (was exported before the filtrum migration).
-export function isLegacyFlatFilter(filter: ProcessMetadataFilter): boolean {
-  for (const [k, v] of Object.entries(filter as Record<string, unknown>)) {
-    if (k === 'AND' || k === 'OR' || k === 'NOT') return false;
-    if (v !== null && typeof v === 'object' && !Array.isArray(v)) return false;
-  }
-  return true;
-}
-
 const translate = createMongoFilterTranslator({ fieldPrefix: 'metadata.' });
 
 // MongoDB query fragment ready to merge into a `find` filter or an aggregation `$match`.

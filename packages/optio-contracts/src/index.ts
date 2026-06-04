@@ -15,7 +15,7 @@ export type { Process, ProcessState, LogEntry, ProcessMetadataFilter,
 export type { SessionEventsStreamMessage } from './schemas/session-events.js';
 
 // Filter builder helpers
-export { and, or, not, eq, ne, isIn, notIn, exists, gt, gte, lt, lte } from './process-filter-helpers.js';
+export { and, or, not, leaf, eq, ne, isIn, notIn, exists, gt, gte, lt, lte } from './process-filter-helpers.js';
 
 // Contract
 export { processesContract, discoveryContract } from './api-to-frontend.js';
