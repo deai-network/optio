@@ -114,6 +114,13 @@ async def run_log_protocol_session(
     after_execute: HookCallback | None = None,
     protocol: "Protocol | None" = None,
     browser_url_rewrite: "Callable[[str], str] | None" = None,
+    # Mandatory for agent backends that emit deliverables: the deliverable
+    # acknowledgment in _deliverable_fetch_loop calls send_to_agent for EVERY
+    # deliverable, and the agent is instructed to wait for that ack before
+    # DONE — so without a sender a deliverable-emitting agent would hang.
+    # opencode + claudecode both wire one. The default stays None only to
+    # serve non-agent driver tasks that emit no deliverables (e.g. the
+    # browser-bridge demo), where no agent is waiting.
     agent_sender: "AgentSender | None" = None,
 ) -> None:
     """Run ``body`` against ``host`` while the log/deliverables protocol
