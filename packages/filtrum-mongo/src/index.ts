@@ -1,2 +1,2 @@
-export * from './dialect'
-export * from './translator'
+export * from './dialect.js'
+export * from './translator.js'

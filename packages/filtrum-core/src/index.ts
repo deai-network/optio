@@ -1,3 +1,3 @@
-export * from './schema'
-export * from './builders'
-export * from './compile'
+export * from './schema.js'
+export * from './builders.js'
+export * from './compile.js'

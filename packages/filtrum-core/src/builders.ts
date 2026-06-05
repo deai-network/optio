@@ -1,4 +1,4 @@
-import type { FilterScalar } from './schema'
+import type { FilterScalar } from './schema.js'
 
 export type Predicate = Record<string, unknown>
 

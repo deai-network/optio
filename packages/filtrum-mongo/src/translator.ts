@@ -1,6 +1,6 @@
 import type { Filter, Document } from 'mongodb'
 import { compile } from 'filtrum-core'
-import { makeMongoDialect, type MongoOpHandler } from './dialect'
+import { makeMongoDialect, type MongoOpHandler } from './dialect.js'
 
 export interface CreateMongoFilterTranslatorOptions {
   fieldPrefix?: string
