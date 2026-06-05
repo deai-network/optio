@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from optio_agents.context import HookContext
@@ -342,17 +343,38 @@ async def _deliverable_fetch_loop(
                 )
                 continue
 
+            # Mandatory acknowledgment: every deliverable gets exactly one
+            # `System: deliverable <name>: ...` reply so the agent (told to
+            # wait after a DELIVERABLE line) never hangs. Three routes:
+            #   - no callback / None / "" / "ok"  -> accepted
+            #   - any other returned string       -> that string (revision msg)
+            #   - callback raised                 -> harness-side trouble note
+            name = os.path.basename(display) or display
             if callback is None:
-                continue
-            try:
-                feedback = await callback(hook_ctx, display, text)
-            except Exception as exc:  # noqa: BLE001
-                ctx.report_progress(
-                    None, f"on_deliverable callback raised: {exc!r}",
-                )
+                reply = "accepted. thanks for the good work."
             else:
-                if isinstance(feedback, str) and feedback.strip():
-                    await hook_ctx.send_to_agent(feedback)
+                try:
+                    feedback = await callback(hook_ctx, display, text)
+                except Exception as exc:  # noqa: BLE001
+                    ctx.report_progress(
+                        None, f"on_deliverable callback raised: {exc!r}",
+                    )
+                    reply = (
+                        "I have trouble with this one. Not your fault, but "
+                        "mine. I will probably need human help. Please remember "
+                        "to deliver this one again later, after you are resumed "
+                        "next time."
+                    )
+                else:
+                    if (
+                        isinstance(feedback, str)
+                        and feedback.strip()
+                        and feedback.strip().lower() != "ok"
+                    ):
+                        reply = feedback.strip()
+                    else:
+                        reply = "accepted. thanks for the good work."
+            await hook_ctx.send_to_agent(f"deliverable {name}: {reply}")
         finally:
             queue.task_done()
 

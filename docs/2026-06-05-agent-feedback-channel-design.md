@@ -273,3 +273,22 @@ def make_feedback_on_deliverable(tag: str):
 
 **Additional test (`optio-demo`):**
 - `make_feedback_on_deliverable` with a stub `hook_ctx`: a delivery missing the marker returns the nudge and increments the per-`process_id` count; a delivery ending with `over and out` (case/period tolerant) returns `None`; past `_CAP`, a missing-marker delivery returns `None` and logs the cap.
+
+## Addendum 6: mandatory deliverable acknowledgment (supersedes Addendum 1's silent path) (2026-06-05)
+
+Real testing surfaced a race: the demo agent emitted `DELIVERABLE` and `DONE` in the same turn, so the rejection nudge arrived after the session was already tearing down — the agent never acted on it and never re-delivered. The fix is a **mandatory acknowledgment** protocol: the harness replies to **every** deliverable, and the agent is told to **wait** for that reply before declaring `DONE`. This keeps the session alive across the round-trip.
+
+**Divergence from the body:** Addendum 1 said `on_deliverable` returning `None`/empty sends nothing. That is **superseded** — every deliverable now produces exactly one reply.
+
+**Change — `optio-agents` (`protocol/session.py`, `_deliverable_fetch_loop`):** after fetching each deliverable, send exactly one `send_to_agent` message, wrapped as `deliverable <basename>: <reply>` (the `System:` prefix is added by `send_to_agent`). The reply has three routes:
+- **no callback / `None` / `""` / `"ok"`** → `accepted. thanks for the good work.`
+- **any other returned non-empty string** → that string verbatim (the revision request).
+- **callback raised** → a harness-side trouble note: `I have trouble with this one. Not your fault, but mine. I will probably need human help. Please remember to deliver this one again later, after you are resumed next time.` (logged via `report_progress`; a hook bug must never hang the agent waiting for a reply.)
+
+The ack fires **unconditionally**, including when no `on_deliverable` is wired — otherwise an agent told to wait would hang.
+
+**Change — protocol documentation (`protocol/prompt.py`, `_FEEDBACK`):** instruct the agent that after a `DELIVERABLE:` line it must **end its turn and wait** for the `System: deliverable <name>: ...` reply, and **not declare `DONE`** until every emitted deliverable is accepted. Three handling routes mirror the replies: *accepted* → proceed; *points out something specific about the deliverable* → revise and re-emit that `DELIVERABLE:` line; *reports trouble on the harness side* → don't retry now, remember to re-emit it after the next resume.
+
+**Scope:** this is the generic `optio-agents` layer, so the acknowledgment protocol applies to **all** consumers (opencode + claudecode backends, and downstream consumers such as excavator), by design.
+
+**Updated test (`optio-agents`):** `test_deliverable_routing` now asserts the wrapped `deliverable x.md: ...` message for each route — revision string passes through, `None`/`""`/`"ok"`/no-callback all produce the accept ack, and a raising callback produces the trouble note.

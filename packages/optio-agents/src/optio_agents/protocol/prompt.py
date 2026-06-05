@@ -75,12 +75,22 @@ log lines.
 _FEEDBACK = """
 ## Messages from the harness
 
-After you emit a deliverable, the harness may send you a message on the
-same input channel where the user normally talks — that channel carries
-both genuine user input and harness messages. Every harness message is
-prefixed `System:`. Treat a `System:` message as an instruction. In
-particular, if it tells you a delivered artifact was rejected, revise the
-artifact and emit the `DELIVERABLE:` line again.
+The harness replies to you on the same input channel where the user normally
+talks — that channel carries both genuine user input and harness messages.
+Every harness message is prefixed `System:`.
+
+**After writing a `DELIVERABLE:` line, end your turn and wait.** The harness
+acknowledges every deliverable with a `System: deliverable <name>: ...` reply.
+Do not declare `DONE` until every deliverable you have emitted has been
+accepted. Handle each reply by its content:
+
+- **Accepted** (e.g. `accepted. thanks for the good work.`) — you may proceed;
+  emit `DONE` once all your deliverables are accepted.
+- **Points out something specific about the deliverable** — treat it as a
+  revision request: fix the artifact and emit its `DELIVERABLE:` line again.
+- **Reports trouble on the harness side** (it says the problem is on its end,
+  not yours) — do not keep retrying now; remember to emit that deliverable
+  again later, after you are next resumed.
 """
 
 
