@@ -192,3 +192,35 @@ async def verify_and_refresh_seed(
         },
     )
     return {"alive": True, "usage": usage, "account": account}
+
+
+def usage_limited(usage: dict | None, now, models_required: list[str] | None = None) -> bool:
+    """True if a relevant usage bucket is maxed (utilization >= 100) and its
+    window has not reset yet (resets_at in the future). `now` is a timezone-aware
+    datetime. Gates global five_hour + seven_day always, plus seven_day_<model>
+    for each model in `models_required`. `usage` is the raw /api/oauth/usage
+    JSON (utilization is a percentage 0-100)."""
+    from datetime import datetime
+
+    if not isinstance(usage, dict):
+        return False
+    keys = ["five_hour", "seven_day"]
+    for m in models_required or []:
+        keys.append(f"seven_day_{m}")
+    for k in keys:
+        bucket = usage.get(k)
+        if not isinstance(bucket, dict):
+            continue
+        util = bucket.get("utilization")
+        if not isinstance(util, (int, float)) or util < 100:
+            continue
+        resets_at = bucket.get("resets_at")
+        if not resets_at:
+            return True  # maxed, no reset time -> treat as limited
+        try:
+            reset_dt = datetime.fromisoformat(resets_at)
+        except (ValueError, TypeError):
+            return True
+        if reset_dt > now:
+            return True
+    return False

@@ -119,3 +119,19 @@ async def test_verify_dead_on_invalid_grant(mongo_db, tmp_workdir, monkeypatch):
         mongo_db, prefix="t", suffix="_cc_seeds", seed_id=sid, encrypt=None, decrypt=None,
     )
     assert res["alive"] is False
+
+
+def test_usage_limited():
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    future = (now + timedelta(hours=1)).isoformat()
+    past = (now - timedelta(hours=1)).isoformat()
+    from optio_claudecode import oauth
+    assert oauth.usage_limited({"five_hour": {"utilization": 100.0, "resets_at": future}}, now) is True
+    assert oauth.usage_limited({"five_hour": {"utilization": 100.0, "resets_at": past}}, now) is False
+    assert oauth.usage_limited({"five_hour": {"utilization": 16.0, "resets_at": future}}, now) is False
+    assert oauth.usage_limited(None, now) is False
+    # per-model gating
+    u = {"five_hour": {"utilization": 1.0}, "seven_day_opus": {"utilization": 100.0, "resets_at": future}}
+    assert oauth.usage_limited(u, now) is False
+    assert oauth.usage_limited(u, now, models_required=["opus"]) is True

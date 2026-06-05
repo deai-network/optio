@@ -576,6 +576,13 @@ async def test_list_pool_reports_status_leased_and_timestamps(mongo_db):
     assert "lastVerifiedAt" in listed[a]
 
 
+async def test_list_pool_returns_metadata(mongo_db):
+    sid = await _pooled_seed(mongo_db, "pm")
+    await seeds.declare_metadata(mongo_db, prefix="t", suffix=SUFFIX, seed_id=sid, metadata={"account": {"uuid": "u9"}})
+    listed = await seeds.list_pool(mongo_db, prefix="t", suffix=SUFFIX, poolKey="pm")
+    assert listed[0]["metadata"]["account"]["uuid"] == "u9"
+
+
 async def test_reap_expired_leases(mongo_db):
     live = await _pooled_seed(mongo_db, "p13")
     expired = await _pooled_seed(mongo_db, "p13")
