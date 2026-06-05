@@ -589,3 +589,53 @@ async def test_reap_expired_leases(mongo_db):
     assert (await seeds.load_seed(mongo_db, prefix="t", suffix=SUFFIX, seed_id=expired))["lease"] is None
     # the live lease is untouched
     assert (await seeds.load_seed(mongo_db, prefix="t", suffix=SUFFIX, seed_id=live))["lease"] is not None
+
+
+async def test_declare_metadata_merges_keys(mongo_db):
+    sid = await seeds.insert_seed(
+        mongo_db, prefix="t", suffix=SUFFIX, blob_id=ObjectId(), manifest_version=1,
+    )
+    await seeds.declare_metadata(
+        mongo_db, prefix="t", suffix=SUFFIX, seed_id=sid, metadata={"usage": {"a": 1}},
+    )
+    await seeds.declare_metadata(
+        mongo_db, prefix="t", suffix=SUFFIX, seed_id=sid, metadata={"account": {"uuid": "u1"}},
+    )
+    doc = await seeds.load_seed(mongo_db, prefix="t", suffix=SUFFIX, seed_id=sid)
+    assert doc["metadata"]["usage"] == {"a": 1}
+    assert doc["metadata"]["account"] == {"uuid": "u1"}
+
+
+async def test_overwrite_seed_member_replaces_in_place(mongo_db, tmp_workdir):
+    import os
+
+    src = LocalHost(taskdir=os.path.join(tmp_workdir, "ov"))
+    await src.setup_workdir()
+    _plant_env(src.workdir)
+    ctx = await _local_ctx(mongo_db, src.taskdir)
+    seed_id = await seeds.capture_seed(
+        ctx, src, manifest=FAKE_MANIFEST, suffix=SUFFIX, encrypt=None,
+    )
+    old_blob = (await seeds.load_seed(mongo_db, prefix="t", suffix=SUFFIX, seed_id=seed_id))["blobId"]
+
+    await seeds.overwrite_seed_member(
+        mongo_db, prefix="t", suffix=SUFFIX, seed_id=seed_id,
+        member_path=".claude/.credentials.json", content=b'{"token": "NEW"}',
+        encrypt=None, decrypt=None,
+    )
+
+    # blob swapped; member replaced; other members intact; reflected by merge
+    doc = await seeds.load_seed(mongo_db, prefix="t", suffix=SUFFIX, seed_id=seed_id)
+    assert doc["blobId"] != old_blob
+    dst = LocalHost(taskdir=os.path.join(tmp_workdir, "ovdst"))
+    await dst.setup_workdir()
+    await seeds.merge_seed(
+        ctx, dst, seed_id=seed_id, manifest=FAKE_MANIFEST, suffix=SUFFIX, decrypt=None,
+    )
+    with open(os.path.join(dst.workdir, "home", ".claude", ".credentials.json")) as fh:
+        assert fh.read() == '{"token": "NEW"}'
+    assert os.path.exists(os.path.join(dst.workdir, "home", ".claude.json"))
+    import gridfs
+    from motor.motor_asyncio import AsyncIOMotorGridFSBucket
+    with pytest.raises(gridfs.errors.NoFile):
+        await AsyncIOMotorGridFSBucket(mongo_db).open_download_stream(old_blob)

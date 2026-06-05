@@ -18,7 +18,17 @@ __all__ = [
     "SSHConfig",
     "ClaudeCodeTaskConfig",
     "PermissionMode",
+    "SeedProvider",
+    "SeedUnavailableError",
 ]
+
+
+SeedProvider = Callable[[str], Awaitable[str]]
+
+
+class SeedUnavailableError(Exception):
+    """Raised by a seed provider when no usable seed is available; the message
+    is surfaced as the process failure."""
 
 
 PermissionMode = Literal["default", "plan", "acceptEdits", "bypassPermissions"]
@@ -92,7 +102,7 @@ class ClaudeCodeTaskConfig:
     # Consumed (default/fallback): merge this seed's environment into a
     # fresh workdir before launch, beginning a NEW conversation (no
     # --continue). Baked at task-creation time; no per-launch channel.
-    seed_id: str | None = None
+    seed_id: "str | SeedProvider | None" = None
     # Capture intent: a (sync or async) callback fired on teardown of a fresh
     # session after a successful capture, with two args: (seed_id, info).
     # ``info`` is a human-readable account summary derived from the seeded

@@ -537,3 +537,67 @@ async def reap_expired_leases(
         {"$set": {"lease": None}},
     )
     return res.modified_count
+
+
+async def declare_metadata(
+    db: "AsyncIOMotorDatabase", *, prefix: str, suffix: str, seed_id: str, metadata: dict,
+) -> None:
+    """$set-merge opaque `metadata.<k>` keys onto a seed doc. The pool stores
+    metadata opaquely; consumers own its meaning."""
+    oid = _oid_or_none(seed_id)
+    if oid is None:
+        return
+    sets = {f"metadata.{k}": v for k, v in metadata.items()}
+    sets["updatedAt"] = datetime.now(timezone.utc)
+    await _collection(db, prefix, suffix).update_one({"_id": oid}, {"$set": sets})
+
+
+def _single_member_targz(member_path: str, content: bytes) -> bytes:
+    """A tar.gz containing exactly one file member."""
+    import io
+    import tarfile
+
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w:gz") as tar:
+        info = tarfile.TarInfo(name=member_path)
+        info.size = len(content)
+        info.mtime = 0
+        tar.addfile(info, io.BytesIO(content))
+    return out.getvalue()
+
+
+async def overwrite_seed_member(
+    db: "AsyncIOMotorDatabase", *, prefix: str, suffix: str, seed_id: str,
+    member_path: str, content: bytes,
+    encrypt: "Callable[[bytes], bytes] | None",
+    decrypt: "Callable[[bytes], bytes] | None",
+) -> None:
+    """Host-free: overwrite one member of a seed's tar blob with `content`,
+    in place. Crash-safe blob swap (store new -> repoint doc -> delete old).
+    Reads/writes GridFS from `db` directly (no ProcessContext). Raises KeyError
+    if the seed is unknown."""
+    from motor.motor_asyncio import AsyncIOMotorGridFSBucket
+
+    doc = await load_seed(db, prefix=prefix, suffix=suffix, seed_id=seed_id)
+    if doc is None:
+        raise KeyError(f"unknown seed_id: {seed_id!r}")
+    old_blob_id = doc["blobId"]
+    bucket = AsyncIOMotorGridFSBucket(db)
+
+    import io
+    buf = io.BytesIO()
+    await bucket.download_to_stream(old_blob_id, buf)
+    dec = decrypt or (lambda b: b)
+    enc = encrypt or (lambda b: b)
+    base = dec(buf.getvalue())
+    overlay = _single_member_targz(member_path, content)
+    merged = _merge_tar_members(base, overlay)
+    new_blob_id = await bucket.upload_from_stream("seed", enc(merged))
+
+    await update_seed_blob(
+        db, prefix=prefix, suffix=suffix, seed_id=seed_id, new_blob_id=new_blob_id,
+    )
+    try:
+        await bucket.delete(old_blob_id)
+    except Exception:
+        pass

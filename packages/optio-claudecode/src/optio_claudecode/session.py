@@ -105,6 +105,8 @@ async def run_claudecode_session(
     pass_continue = False
     cred_baseline: str | None = None
     cred_watch_task: "asyncio.Task | None" = None
+    resolved_seed_id: str | None = None
+    lease_holder: str | None = None
 
     await host.connect()
 
@@ -176,6 +178,13 @@ async def run_claudecode_session(
     async def _claudecode_body(host: Host, hook_ctx: HookContext) -> None:
         nonlocal launched_handle, tmux_path, tmux_socket, tmux_session
         nonlocal cred_baseline, cred_watch_task
+        nonlocal resolved_seed_id, lease_holder
+
+        if callable(config.seed_id):
+            resolved_seed_id = await config.seed_id(ctx.process_id)  # may raise SeedUnavailableError
+            lease_holder = ctx.process_id  # provider holds the lease under this holder
+        else:
+            resolved_seed_id = config.seed_id
 
         # focus_mode: layer the quiet-TUI knobs (focus view + fullscreen) onto
         # the planted settings, plus the no-flicker launch env. Off → passthrough.
@@ -193,15 +202,15 @@ async def run_claudecode_session(
                 credentials_json=config.credentials_json,
                 claude_config=effective_claude_config,
             )
-            if config.seed_id is not None:
+            if resolved_seed_id is not None:
                 # Seeded fresh: overlay the stored environment on top of
                 # any consumer-planted creds/config (seed wins), then
                 # rekey .claude.json projects to the new cwd. Begins a NEW
                 # conversation — no --continue.
-                _trace("body: merge_seed START id=%s", config.seed_id)
+                _trace("body: merge_seed START id=%s", resolved_seed_id)
                 await _seeds.merge_seed(
                     ctx, host,
-                    seed_id=config.seed_id,
+                    seed_id=resolved_seed_id,
                     manifest=CLAUDE_SEED_MANIFEST,
                     suffix=CLAUDE_SEED_SUFFIX,
                     decrypt=config.session_blob_decrypt,
@@ -222,10 +231,10 @@ async def run_claudecode_session(
             # the session blob. Overlay the seed's CURRENT credentials on top
             # (the seed is the source of truth for creds; the snapshot may carry
             # a now-rotated/dead token). Non-credential home files are untouched.
-            if config.seed_id is not None:
+            if resolved_seed_id is not None:
                 await _seeds.merge_seed(
                     ctx, host,
-                    seed_id=config.seed_id,
+                    seed_id=resolved_seed_id,
                     manifest=CLAUDE_CRED_MANIFEST,
                     suffix=CLAUDE_SEED_SUFFIX,
                     decrypt=config.session_blob_decrypt,
@@ -301,16 +310,17 @@ async def run_claudecode_session(
         # The protocol driver cancels this body when it sees DONE/ERROR in
         # optio.log; if claude exits some other way, has-session goes false and
         # the body returns -> driver treats it as premature exit.
-        if config.seed_id is not None:
+        if resolved_seed_id is not None:
             cred_watch_task = asyncio.create_task(cred_watcher.run_credential_watcher(
                 ctx, host,
-                seed_id=config.seed_id,
+                seed_id=resolved_seed_id,
                 baseline=cred_baseline,
                 encrypt=config.session_blob_encrypt,
                 decrypt=config.session_blob_decrypt,
+                lease_holder=lease_holder,
             ))
 
-        while await host_actions.tmux_session_alive(
+        while ctx.should_continue() and await host_actions.tmux_session_alive(
             host, tmux_path, tmux_socket, tmux_session,
         ):
             await asyncio.sleep(1.0)
@@ -391,11 +401,20 @@ async def run_claudecode_session(
             except asyncio.CancelledError:
                 pass
 
-        if config.seed_id is not None:
+        if lease_holder is not None and resolved_seed_id is not None:
+            try:
+                await _seeds.release(
+                    ctx._db, prefix=ctx._prefix, suffix=CLAUDE_SEED_SUFFIX,
+                    seed_id=resolved_seed_id, holder=lease_holder,
+                )
+            except Exception:
+                _LOG.exception("lease release failed (TTL will reclaim)")
+
+        if resolved_seed_id is not None:
             try:
                 await cred_watcher.save_back_if_changed(
                     ctx, host,
-                    seed_id=config.seed_id,
+                    seed_id=resolved_seed_id,
                     baseline=cred_baseline,
                     encrypt=config.session_blob_encrypt,
                     decrypt=config.session_blob_decrypt,

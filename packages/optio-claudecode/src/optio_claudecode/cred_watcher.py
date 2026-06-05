@@ -83,10 +83,12 @@ async def run_credential_watcher(
     baseline: str | None,
     encrypt: "Callable[[bytes], bytes] | None",
     decrypt: "Callable[[bytes], bytes] | None",
+    lease_holder: str | None = None,
 ) -> None:
-    """Poll the live credentials every CRED_WATCH_INTERVAL_S; save back to the
-    seed on change. Runs until cancelled. Best-effort: a save-back failure is
-    logged and the loop continues."""
+    """Poll every CRED_WATCH_INTERVAL_S: save back rotated creds, and (when
+    `lease_holder` is set) renew the seed's lease. If the lease is lost, signal
+    the session to stop (set the cancellation flag) and exit. Runs until
+    cancelled. Best-effort save-back; lease-loss is decisive."""
     current = baseline
     while True:
         await asyncio.sleep(CRED_WATCH_INTERVAL_S)
@@ -94,3 +96,12 @@ async def run_credential_watcher(
             ctx, host, seed_id=seed_id, baseline=current,
             encrypt=encrypt, decrypt=decrypt,
         )
+        if lease_holder is not None:
+            ok = await seeds.renew_lease(
+                ctx._db, prefix=ctx._prefix, suffix=CLAUDE_SEED_SUFFIX,
+                seed_id=seed_id, holder=lease_holder,
+            )
+            if not ok:
+                _LOG.warning("seed %s: lease lost; aborting session", seed_id)
+                ctx.cancellation_flag.set()
+                return
