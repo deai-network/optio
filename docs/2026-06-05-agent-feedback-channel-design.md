@@ -101,6 +101,8 @@ async def send_text_to_claude(
 ```
 (Match the exact `tmux -S <socket>` invocation form used by the launch path in this module — `launch_ttyd_with_claude` / `_require_tmux` establish `tmux_path`, `tmux_socket`, `tmux_session`.)
 
+**Verified manually (2026-06-05):** the `set-buffer` → `paste-buffer` → `send-keys Enter` sequence injected a message into a live `claude` TUI (running detached under tmux), which landed in the input box and was submitted as a new turn — claude processed it and replied. The fake-typing transport works; this is no longer an assumption.
+
 In `run_claudecode_session` (`session.py`), at the `run_log_protocol_session(...)` call (the body has `tmux_path`, `tmux_socket`, `tmux_session` set by `launch_ttyd_with_claude`), pass a sender:
 
 ```python
@@ -177,3 +179,97 @@ Both paths now exist and compose: a hook may call `hook_ctx.send_to_agent(...)` 
 
 **Additional test (`optio-agents`):**
 - `on_deliverable` returning `"reason"` → the deliverable loop calls `send_to_agent("reason")` once (spy the sender / `hook_ctx.send_to_agent`); returning `None` or `""` → no send.
+
+## Addendum 2: `System:` prefix on every engine→agent message (2026-06-05)
+
+Every message that reaches a running agent through this channel originates from the harness / a hook — never from a real user. The agent must be able to tell harness-originated input apart from genuine user turns (they arrive on the same input channel). So all outbound traffic through the channel is prefixed.
+
+**Change — `optio-agents`:**
+- New constant `SYSTEM_MESSAGE_PREFIX = "System: "` in `context.py` (exported from the package).
+- `send_to_agent` prepends it once, at the single chokepoint, before handing to the backend sender:
+  ```python
+  await sender(f"{SYSTEM_MESSAGE_PREFIX}{message}")
+  ```
+  The chokepoint covers both paths that flow through `send_to_agent`: the imperative `send_to_agent(...)` call and the `on_deliverable` return-value sugar (Addendum 1, which calls `send_to_agent`). The resume notification (Addendum 4) is emitted at the backend launch site, where no `hook_ctx`/`send_to_agent` is available, so it applies the **same** `SYSTEM_MESSAGE_PREFIX` constant explicitly in its message string. Either way the one constant is the single source of the prefix; backends stay dumb transports and never add it themselves.
+
+**Additional test (`optio-agents`):**
+- `send_to_agent("hi")` with a spy sender → sender awaited once with exactly `"System: hi"`.
+
+## Addendum 3: protocol documentation — the inbound channel (2026-06-05)
+
+The agent-facing protocol prose is currently output-only (it teaches `STATUS:`/`DELIVERABLE:`/`DONE`/`ERROR`, all agent→harness). It says nothing about the agent *receiving* messages. Now that a real harness→agent channel exists, the agent must be told about it, or a `System:` message will read as a confusing user turn.
+
+**Change — `optio-agents` (`protocol/prompt.py`):**
+- Add a new block, always included by `build_log_channel_prompt(...)` (independent of `browser` mode), with agent-facing prose along these lines:
+  > After you emit a deliverable, the harness may send you a message on the same input channel where the user normally talks — that channel carries both user input and harness messages. Harness messages are prefixed `System:`. Treat a `System:` message as an instruction. In particular, if it tells you a delivered artifact was rejected, revise the artifact and emit the deliverable again.
+- The block is documented as "always present" because it describes a *possibility* (`may send`); a backend with no sender wired simply never sends, which is harmless.
+
+**Additional test (`optio-agents`):**
+- `build_log_channel_prompt(...)` output contains the `System:` inbound-channel block for every `browser` mode.
+
+## Addendum 4: resume notification over the channel — keep `resume.log`, add a push (2026-06-05)
+
+`resume.log` (the polled file the agent reads at the start of each message) stays exactly as is — it is the right tool for resume: **pull-based** (robust to the agent not yet being at its prompt at restart), re-readable (can't be missed), and able to carry bulk context and the `REFRESHED:` suffix. We do **not** fold it into the channel. We only **add** a push notification so the agent *notices* a resume promptly instead of waiting to poll. Because nothing is removed, there is no regression risk.
+
+Survey of the harness→agent inbound surface justified this: of four inbound mechanisms, the initial `AGENTS.md`/`CLAUDE.md` prompt cannot fold (it precedes a live agent and is bulky), both auto-start prompts already *are* injections over the channel's transports, and only `resume.log` was foldable — and it is the riskiest to move (snapshot/resume + restart timing). So the high-value, low-risk change is notify-via-channel + payload-via-file.
+
+Both backends already have a **proven** inject point on resume — the same site fresh auto-start uses (auto-start is currently gated off on resume):
+
+- **opencode:** on resume, at the auto-start site (`session.py`, where `worker_port`/`password`/`session_id` are in scope), send the notice via the existing live transport:
+  ```python
+  await _post_opencode_prompt(
+      worker_port, password, session_id,
+      f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}",
+  )
+  ```
+  Fires on every resume, independent of `auto_start`.
+- **claudecode:** on resume, pass the notice as the **positional prompt arg** to `claude` (extend `build_auto_start_args` with a `resuming` branch returning `[f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}"]`). claudecode relaunches `claude` fresh in a new tmux session on resume (restored `home/.claude` carries the transcript) and appends `--continue`, so the positional is appended as a new turn against the restored conversation. **Verified manually (2026-06-05):** `claude --continue '<positional>'` resumes the prior conversation *and* processes the positional as a fresh new turn (does not ignore/prepend it). This is distinct from the live tmux paste transport used by `send_to_agent` (Part C) — resume reuses the launch-time positional-arg mechanism, not a live paste.
+
+**Shared constant:** `RESUME_NOTICE` (e.g. `"you have been resumed"`) lives in `optio-agents` (`protocol/prompt.py`, next to the resume prose) and is imported by both backends so the doc and both transports agree on one string.
+
+**Resume doc — one added sentence (both backends' resume section):** keep the entire existing `resume.log` procedure; append:
+  > You may also be notified of a resume by a `System:` message on your input channel; when you see one, follow the `resume.log` procedure above.
+
+The push only makes the agent *notice*; `resume.log` (incl. `REFRESHED:`) remains the source of truth, so no resume logic is duplicated into the message.
+
+**Additional tests:**
+- `optio-opencode`: on a resume launch, the wired path calls `_post_opencode_prompt` with `f"System: {RESUME_NOTICE}"`; on a fresh launch it does not.
+- `optio-claudecode`: `build_auto_start_args(auto_start=…, resuming=True)` returns `[f"System: {RESUME_NOTICE}"]`; `resuming=False` keeps existing fresh/auto-start behavior.
+- Resume section prose (both backends) contains the added `System:` sentence.
+
+## Addendum 5: in-repo demo exercise (`optio-demo`) (2026-06-05)
+
+The channel is exercised end-to-end in-repo (no external consumer needed), proving the round-trip on **both** live transports (opencode HTTP `prompt_async`, claudecode tmux paste-buffer). This is a focused "prank" round-trip: the harness withholds one formatting requirement, rejects the first delivery, and the agent re-emits a corrected one.
+
+**New shared helper** `packages/optio-demo/src/optio_demo/tasks/_feedback.py` (one helper, both backends — no duplication):
+```python
+_MARKER = "over and out"
+_NUDGE = ('Always finish your deliverables by "over and out." '
+          "Otherwise I won't know that you have finished talking.")
+_CAP = 2
+_nudges: dict[str, int] = {}  # process_id -> count
+
+def make_feedback_on_deliverable(tag: str):
+    async def _on_deliverable(hook_ctx, path, text) -> str | None:
+        print(f"[{tag}] deliverable {path}:\n{text}")
+        if text.strip().rstrip(".").lower().endswith(_MARKER):
+            return None                                  # accept
+        pid = hook_ctx.process_id
+        n = _nudges.get(pid, 0)
+        if n >= _CAP:                                    # runaway guard
+            hook_ctx.report_progress(None, "feedback: nudge cap reached, accepting")
+            return None
+        _nudges[pid] = n + 1
+        hook_ctx.report_progress(None, f"feedback: nudging agent (#{n + 1})")
+        return _NUDGE                                    # loop auto-sends (Addendum 1)
+    return _on_deliverable
+```
+
+**Wiring:** both `tasks/opencode.py` and `tasks/claudecode.py` replace their inline `_on_deliverable` with `make_feedback_on_deliverable("opencode-demo")` / `("claudecode-demo")`, preserving the existing print behavior.
+
+**No consumer-prompt edit.** The marker requirement is deliberately *withheld* from the prompt (that is the prank). The agent's willingness to act on feedback and re-emit now lives in the protocol documentation (Addendum 3), so it is general, not demo-specific. The nudge string itself is sent plain; the `System:` prefix (Addendum 2) is added by `send_to_agent`.
+
+**Observable round-trip:** deliverable #1 (no marker) → hook returns the nudge → loop `send_to_agent` → live transport → agent re-emits #2 ending `over and out` → accepted. The `_CAP` guard bounds a non-complying agent to 2 nudges, preventing a runaway loop / token spend.
+
+**Additional test (`optio-demo`):**
+- `make_feedback_on_deliverable` with a stub `hook_ctx`: a delivery missing the marker returns the nudge and increments the per-`process_id` count; a delivery ending with `over and out` (case/period tolerant) returns `None`; past `_CAP`, a missing-marker delivery returns `None` and logs the cap.
