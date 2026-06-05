@@ -96,74 +96,76 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
     # server (for the seed model default) before terminating it.
     worker_port: int | None = None
 
-    # --- resume decision (BEFORE the protocol session starts) -------------
-    resume_requested = bool(getattr(ctx, "resume", False))
-    snapshot: dict | None = None
-    if resume_requested:
-        snapshot = await load_latest_snapshot(
-            ctx._db, prefix=ctx._prefix, process_id=ctx.process_id,
+    # Set by _prepare (the driver runs it after the workdir wipe, before the
+    # optio.log tail); read by the body and the teardown finally.
+    resuming = False
+
+    await host.connect()
+
+    async def _prepare(host: Host, hook_ctx: HookContext) -> None:
+        """Install opencode and restore a resume snapshot.
+
+        Handed to run_log_protocol_session, which runs it AFTER
+        host.setup_workdir() wiped the workdir and BEFORE it subscribes the
+        optio.log tail. The resume path needs ``opencode import`` to replay
+        the saved session DB (so opencode must be installed + resolved to an
+        absolute path first), and the restored optio.log is rotated away below
+        before the tail can re-emit its stale DELIVERABLE/DONE/ERROR lines.
+        """
+        nonlocal opencode_exec, resuming, preserved_session_id
+        opencode_exec = await host_actions.ensure_opencode_installed(
+            hook_ctx,
+            install_if_missing=config.install_if_missing,
+            install_dir=config.opencode_install_dir,
         )
 
-    # Connect + install BEFORE deciding fresh vs resume. The resume path
-    # needs ``opencode import`` to replay the saved session DB, which
-    # requires opencode to be installed on the host and resolved to an
-    # absolute path. Hoisting also lets the fresh path skip the redundant
-    # ``host.connect()`` later. ``setup_workdir`` is idempotent (mkdir -p)
-    # and the protocol driver still calls it again for the fresh path —
-    # harmless. Install progress reports through ``ctx``, so the
-    # dashboard sees activity from the very first step.
-    await host.connect()
-    await host.setup_workdir()
-    opencode_exec = await host_actions.ensure_opencode_installed(
-        HookContext(ctx, host),
-        install_if_missing=config.install_if_missing,
-        install_dir=config.opencode_install_dir,
-    )
+        resume_requested = bool(getattr(ctx, "resume", False))
+        snapshot: dict | None = None
+        if resume_requested:
+            snapshot = await load_latest_snapshot(
+                ctx._db, prefix=ctx._prefix, process_id=ctx.process_id,
+            )
 
-    # Resume restore must run BEFORE the protocol session begins, so the
-    # driver's tail_task does not subscribe to the restored stale optio.log
-    # (which contains last run's DONE / ERROR events). The body below sees
-    # ``resuming`` already decided.
-    resuming = snapshot is not None
-    if resuming:
-        await host.remove_file(opencode_db)
-        try:
-            await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
-            session_bytes_raw = await _read_blob_bytes(ctx, snapshot["sessionBlobId"])
-            decrypt = config.session_blob_decrypt or (lambda b: b)
-            session_bytes = decrypt(session_bytes_raw)
-            await host_actions.opencode_import(
-                host, opencode_db, session_bytes,
-                opencode_executable=opencode_exec,
-            )
-            # Move the restored log channel out of the way BEFORE the
-            # protocol driver subscribes its tail. The snapshot tar
-            # includes optio.log from the previous run; without rotation,
-            # ``tail -F -n +1`` would re-emit every old DELIVERABLE /
-            # DONE / ERROR line and the resumed process would terminate
-            # within seconds of launch.  Preserve the historical content
-            # by appending it to optio.log.old.
-            await _rotate_optio_log(host)
-            preserved_session_id = snapshot["sessionId"]
-        except Exception as resume_exc:
-            # If the failure was the session-blob decrypt hook raising,
-            # this indicates the snapshot was tampered with or the
-            # consumer's keypair changed. Fail loud — silently dropping
-            # to fresh-start would mask the security-relevant signal.
-            if "decrypt" in repr(resume_exc).lower() and "blob" in repr(resume_exc).lower():
-                _LOG.error(
-                    "resume restore failed inside session_blob_decrypt; "
-                    "refusing to fall through to fresh-start. Operator must "
-                    "investigate the snapshot blob.",
-                )
-                raise
-            _LOG.exception(
-                "resume restore failed; falling back to fresh-start path "
-                "(Mongo blob preserved for inspection)",
-            )
+        resuming = snapshot is not None
+        if resuming:
             await host.remove_file(opencode_db)
-            resuming = False
-            preserved_session_id = None
+            try:
+                await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
+                session_bytes_raw = await _read_blob_bytes(ctx, snapshot["sessionBlobId"])
+                decrypt = config.session_blob_decrypt or (lambda b: b)
+                session_bytes = decrypt(session_bytes_raw)
+                await host_actions.opencode_import(
+                    host, opencode_db, session_bytes,
+                    opencode_executable=opencode_exec,
+                )
+                # Move the restored log channel out of the way BEFORE the
+                # protocol driver subscribes its tail. The snapshot tar
+                # includes optio.log from the previous run; without rotation,
+                # ``tail -F -n +1`` would re-emit every old DELIVERABLE /
+                # DONE / ERROR line and the resumed process would terminate
+                # within seconds of launch.  Preserve the historical content
+                # by appending it to optio.log.old.
+                await _rotate_optio_log(host)
+                preserved_session_id = snapshot["sessionId"]
+            except Exception as resume_exc:
+                # If the failure was the session-blob decrypt hook raising,
+                # this indicates the snapshot was tampered with or the
+                # consumer's keypair changed. Fail loud — silently dropping
+                # to fresh-start would mask the security-relevant signal.
+                if "decrypt" in repr(resume_exc).lower() and "blob" in repr(resume_exc).lower():
+                    _LOG.error(
+                        "resume restore failed inside session_blob_decrypt; "
+                        "refusing to fall through to fresh-start. Operator must "
+                        "investigate the snapshot blob.",
+                    )
+                    raise
+                _LOG.exception(
+                    "resume restore failed; falling back to fresh-start path "
+                    "(Mongo blob preserved for inspection)",
+                )
+                await host.remove_file(opencode_db)
+                resuming = False
+                preserved_session_id = None
 
     async def _opencode_body(host: Host, hook_ctx: HookContext) -> None:
         """Opencode-specific body that runs inside the protocol driver.
@@ -368,6 +370,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         await run_log_protocol_session(
             host, ctx,
             body=_opencode_body,
+            prepare=_prepare,
             on_deliverable=config.on_deliverable,
             after_execute=config.after_execute,
             protocol=protocol,

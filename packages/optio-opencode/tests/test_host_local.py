@@ -22,9 +22,27 @@ def local_host(tmp_workdir):
 async def test_setup_workdir_creates_workdir(local_host):
     await local_host.setup_workdir()
     assert os.path.isdir(local_host.workdir)
-    # As of the optio-host split, setup_workdir mkdirs the workdir only.
-    # The protocol-specific deliverables/ + optio.log are owned by the
-    # protocol session driver in optio_agents.protocol.session.
+    # setup_workdir destructively (re)creates the workdir (see the clean-start
+    # test below). The protocol-specific deliverables/ + optio.log are owned by
+    # the protocol session driver in optio_agents.protocol.session.
+
+
+async def test_setup_workdir_wipes_stale_workdir_but_keeps_taskdir(local_host):
+    # Clean-start invariant: a destructive wipe of the workdir on every setup, so
+    # leftovers from a prior run (e.g. a force-cancel that skipped teardown) never
+    # leak into a fresh run. taskdir-side state (opencode.db / .env) lives OUTSIDE
+    # the workdir and must survive.
+    await local_host.setup_workdir()
+    with open(os.path.join(local_host.workdir, "stale.txt"), "w") as fh:
+        fh.write("leftover from a previous run")
+    taskdir_db = os.path.join(local_host.taskdir, "opencode.db")
+    with open(taskdir_db, "w") as fh:
+        fh.write("session transcript")
+
+    await local_host.setup_workdir()
+
+    assert not os.path.exists(os.path.join(local_host.workdir, "stale.txt"))
+    assert os.path.exists(taskdir_db)
 
 
 @pytest.mark.asyncio

@@ -266,9 +266,16 @@ class LocalHost:
         Sets taskdir + workdir to mode 0o700 so that only the engine UID
         can traverse them. opencode.db (session transcript) and
         workdir/.env are both inside taskdir and inherit this protection.
+
+        Clean-start invariant: the workdir is wiped first, so stale state
+        from a prior run of the same process_id (e.g. a force-cancel that
+        skipped teardown cleanup) never leaks into a fresh run. Snapshot /
+        seed state is re-planted AFTER this; opencode.db/.env live in the
+        taskdir (not the workdir), so they survive the wipe.
         """
         os.makedirs(self.taskdir, exist_ok=True)
         os.chmod(self.taskdir, 0o700)
+        shutil.rmtree(self.workdir, ignore_errors=True)
         os.makedirs(self.workdir, exist_ok=True)
         os.chmod(self.workdir, 0o700)
 
@@ -652,11 +659,17 @@ class RemoteHost:
                 self._conn = None
 
     async def setup_workdir(self) -> None:
-        """Create the workdir directory if it does not exist."""
+        """Create the workdir directory if it does not exist.
+
+        Clean-start invariant (see LocalHost.setup_workdir): wipe the workdir
+        first so stale state from a prior run never leaks in. Snapshot/seed
+        state is re-planted afterwards; the taskdir (opencode.db/.env) is left
+        intact.
+        """
         assert self._conn is not None and self._sftp is not None
         qt = shlex.quote(self.taskdir)
         qw = shlex.quote(self.workdir)
-        await self._conn.run(f"mkdir -p {qw}", check=True)
+        await self._conn.run(f"rm -rf {qw} && mkdir -p {qw}", check=True)
         await self._conn.run(f"chmod 700 {qt} {qw}", check=True)
 
     async def write_text(self, relpath: str, content: str) -> None:

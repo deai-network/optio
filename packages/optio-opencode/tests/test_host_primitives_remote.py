@@ -240,3 +240,19 @@ async def test_remote_setup_workdir_sets_taskdir_and_workdir_mode_0o700(remote_h
     res_w = await remote_host._conn.run(f"stat -c %a {qw}", check=True)
     assert res_t.stdout.strip() == "700", f"taskdir mode is {res_t.stdout!r}"
     assert res_w.stdout.strip() == "700", f"workdir mode is {res_w.stdout!r}"
+
+
+@pytest.mark.asyncio
+async def test_remote_setup_workdir_wipes_stale_workdir_but_keeps_taskdir(remote_host: RemoteHost):
+    """Clean-start invariant asserted over SSH (mirrors the local test)."""
+    await remote_host.setup_workdir()
+    qt = shlex.quote(remote_host.taskdir)
+    qw = shlex.quote(remote_host.workdir)
+    await remote_host._conn.run(
+        f"touch {qw}/stale.txt {qt}/opencode.db", check=True,
+    )
+    await remote_host.setup_workdir()
+    stale = await remote_host._conn.run(f"test -e {qw}/stale.txt; echo $?")
+    keep = await remote_host._conn.run(f"test -e {qt}/opencode.db; echo $?")
+    assert stale.stdout.strip() == "1", "workdir was not wiped"
+    assert keep.stdout.strip() == "0", "taskdir state was lost"

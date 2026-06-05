@@ -122,13 +122,21 @@ async def run_log_protocol_session(
     # serve non-agent driver tasks that emit no deliverables (e.g. the
     # browser-bridge demo), where no agent is waiting.
     agent_sender: "AgentSender | None" = None,
+    # Per-agent runtime install + resume-restore. The driver runs it in the one
+    # correct window — after the workdir wipe, before the optio.log tail — so
+    # callers never hand-sequence the workdir lifecycle (which is how the
+    # double-wipe regression slipped in). None for driver tasks that install
+    # nothing (e.g. the browser-bridge demo).
+    prepare: "Callable[[Host, HookContext], Awaitable[None]] | None" = None,
 ) -> None:
     """Run ``body`` against ``host`` while the log/deliverables protocol
     cooperates with it.
 
     Lifecycle:
-      1. ``host.setup_workdir()`` (mkdir workdir).
-      2. Create ``<workdir>/deliverables/`` and an empty
+      1. ``host.setup_workdir()`` — destructive clean-start of the workdir.
+      2. ``prepare(host, hook_ctx)`` if set — per-agent runtime install +
+         resume-restore, after the wipe and before the optio.log tail.
+      3. Create ``<workdir>/deliverables/`` and an empty
          ``<workdir>/optio.log``.
       3. ``before_execute(hook_ctx)`` if set.
       4. Spawn three concurrent tasks:
@@ -163,10 +171,22 @@ async def run_log_protocol_session(
     hook_ctx = HookContext(ctx, host)
     hook_ctx._agent_sender = agent_sender
 
-    # Workdir + protocol artifacts. ``setup_workdir`` mkdirs the workdir
-    # only; the protocol-specific deliverables/ dir + empty optio.log
-    # channel are owned by the protocol driver itself.
+    # Workdir lifecycle, centralized here (exactly once, no caller can forget
+    # it, no double-wipe possible):
+    #   1. setup_workdir() — destructive clean-start that kills stale state
+    #      from a prior run (e.g. a force-cancel that skipped teardown).
+    #   2. prepare() — the caller's per-agent runtime install + resume-restore,
+    #      run AFTER the wipe but BEFORE the optio.log reset + tail subscription
+    #      below, so a restored optio.log is cleared and never replayed as a
+    #      stale DONE/ERROR.
+    # Teardown (snapshot capture + cleanup_taskdir) stays the caller's bracket
+    # around this call — it may want the workdir intact to snapshot first.
     await host.setup_workdir()
+    if prepare is not None:
+        await prepare(host, hook_ctx)
+
+    # Protocol artifacts over the now-prepared workdir: the deliverables/ dir
+    # and the empty optio.log channel the tail subscribes to.
     deliverables_dir = f"{host.workdir}/deliverables"
     await host.run_command(f"mkdir -p {deliverables_dir}")
     await host.write_text("optio.log", "")

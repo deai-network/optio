@@ -596,26 +596,53 @@ async def _kill_tmux_session(
         _LOG.exception("tmux kill-session failed (socket=%s)", socket_path)
 
 
+def _claude_pgrep_pattern(claude_path: str) -> str:
+    """Anchored pgrep/pkill pattern matching ONLY the real claude.
+
+    The real claude execs with the path as the FIRST token of its cmdline
+    (argv[0]), whereas the tmux server, pasta, and the bash/env wrappers all
+    carry the same path only as a LATER argument (the tmux server's argv embeds
+    the whole launch command string). An unanchored ``pgrep -f <path>`` matched
+    those long-lived wrappers and false-waited the full timeout under netns.
+    ``^`` excludes them; only a process whose cmdline starts with the path
+    matches. ``[c]laude`` keeps pgrep/pkill's own cmdline from self-matching.
+    """
+    body = (
+        claude_path[:-6] + "[c]laude" if claude_path.endswith("claude") else claude_path
+    )
+    return "^" + body
+
+
+async def kill_claude_processes(
+    host: "Host", claude_path: str, *, signal: str = "KILL",
+) -> None:
+    """Force the per-task claude process tree to exit.
+
+    Teardown SIGKILLs ttyd and kill-sessions tmux, but claude runs under pasta
+    in its own process group and ignores the tmux pane's SIGHUP, so it is
+    orphaned and survives — ``await_claude_gone`` then waits for a process
+    nothing kills, blowing the cancel grace. pasta isolates only the network
+    namespace (not PID), so a host-side ``pkill`` on the anchored argv[0] path
+    reaches it. Best-effort: pkill exits non-zero when nothing matches.
+    """
+    pattern = _claude_pgrep_pattern(claude_path)
+    await host.run_command(f"pkill -{signal} -f {shlex.quote(pattern)} || true")
+
+
 async def await_claude_gone(
     host: "Host", claude_path: str, *, timeout_s: float = 15.0, poll_s: float = 1.0,
 ) -> bool:
     """Block (polling once per ``poll_s``) until no process matching the
     per-task ``claude_path`` remains.
 
-    Called after ``_kill_tmux_session`` and before snapshot capture so the tar
-    of ``home/.claude`` reads a quiescent tree. claude flushes its transcript
-    incrementally, but may still be writing settings / mcp-cache / lock files
-    as it dies; tarring during that races and fails with "file changed as we
-    read it". Scoped to ``claude_path`` (unique per task workdir) so it ignores
-    unrelated claude processes on the host. Bounded by ``timeout_s``: on
-    timeout it logs a warning and returns False (the strict tar exit check in
-    ``_archive_home_claude`` is the backstop). Returns True once claude is gone.
+    Called after the claude tree is killed and before snapshot capture so the
+    tar of ``home/.claude`` reads a quiescent tree. Scoped to ``claude_path``
+    (unique per task workdir) so it ignores unrelated claude processes. Bounded
+    by ``timeout_s``: on timeout it logs a warning and returns False (the strict
+    tar exit check in ``_archive_home_claude`` is the backstop). Returns True
+    once claude is gone.
     """
-    # `[c]laude` so pgrep's OWN command line does not match the pattern
-    # (the classic ps|grep self-match trick); still matches the real process.
-    pattern = (
-        claude_path[:-6] + "[c]laude" if claude_path.endswith("claude") else claude_path
-    )
+    pattern = _claude_pgrep_pattern(claude_path)
     waited = 0.0
     while True:
         r = await host.run_command(f"pgrep -f {shlex.quote(pattern)} || true")

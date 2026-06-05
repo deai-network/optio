@@ -89,72 +89,82 @@ async def run_claudecode_session(
     tmux_socket: str | None = None
     tmux_session: str | None = None
     cancelled = False
-
-    await host.connect()
-    await host.setup_workdir()
-
-    hook_ctx_outer = HookContext(ctx, host)
-    claude_path = await host_actions.ensure_claude_installed(
-        hook_ctx_outer,
-        install_if_missing=config.install_if_missing,
-        install_dir=config.claude_install_dir,
-    )
-    ttyd_path = await host_actions.ensure_ttyd_installed(
-        hook_ctx_outer,
-        install_if_missing=config.install_ttyd_if_missing,
-        install_dir=config.ttyd_install_dir,
-    )
-
-    # --- resume decision (BEFORE the protocol session starts) -------------
-    # Restore must happen before run_log_protocol_session subscribes its
-    # tail, so the driver does not replay the previous run's DONE/ERROR
-    # out of the restored optio.log.
-    resume_requested = bool(getattr(ctx, "resume", False))
-    snapshot: dict | None = None
-    if resume_requested:
-        snapshot = await load_latest_snapshot(
-            ctx._db, prefix=ctx._prefix, process_id=ctx.process_id,
-        )
-
-    resuming = snapshot is not None
+    # Set by _prepare (the driver runs it after the workdir wipe, before the
+    # optio.log tail); read by the body and the teardown finally.
+    claude_path: str | None = None
+    ttyd_path: str | None = None
+    resuming = False
     # `pass_continue` decides whether claude is launched with --continue.
     # It is NOT the same as `resuming`: a restored snapshot with no
     # transcript must launch WITHOUT --continue (D3).
     pass_continue = False
-    if resuming:
-        if config.seed_id is not None or config.on_seed_saved is not None:
-            _LOG.warning(
-                "resume takes precedence; seed_id/on_seed_saved ignored "
-                "(the snapshot already carries the full environment)",
-            )
-        # Plaintext workdir first (establishes the tree incl. home/), then
-        # decrypt + extract home/.claude on top. Decrypt failure is treated
-        # as tampering/key-rotation and propagated — never silent
-        # fresh-start (the decrypt call is intentionally outside any
-        # except, so it surfaces straight to the caller).
-        await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
-        # restore_workdir empties + repopulates the workdir, wiping the claude
-        # runtime set up above (home/.local/share/claude/versions symlink +
-        # bin/claude — they live IN the workdir now, unlike the old real-home
-        # install). Re-establish it on the restored tree so launch finds claude.
-        # Idempotent: cache hit → just relinks; no reinstall.
-        await host_actions.ensure_claude_installed(
-            hook_ctx_outer,
+
+    await host.connect()
+
+    async def _prepare(host: Host, hook_ctx: HookContext) -> None:
+        """Install the claude+ttyd runtime and restore a resume snapshot.
+
+        Handed to run_log_protocol_session, which runs it AFTER
+        host.setup_workdir() has wiped the workdir and BEFORE it subscribes
+        the optio.log tail. That ordering is exactly why install + restore
+        belong here: the runtime planted now survives to launch (the old
+        double-wipe nuked it), and a restored optio.log is rotated away below
+        before the tail can replay its stale DONE/ERROR.
+        """
+        nonlocal claude_path, ttyd_path, resuming, pass_continue
+        claude_path = await host_actions.ensure_claude_installed(
+            hook_ctx,
             install_if_missing=config.install_if_missing,
             install_dir=config.claude_install_dir,
-            progress_label="Restoring Claude Code runtime…",
         )
-        payload = await _read_blob_bytes(ctx, snapshot["sessionBlobId"])
-        decrypt = config.session_blob_decrypt or (lambda b: b)
-        plain = decrypt(payload)
-        await _extract_home_claude(host, plain)
-        await _rotate_optio_log(host)
-        pass_continue = await _has_transcript(host)
-        if not pass_continue:
-            _LOG.warning(
-                "resume: restored snapshot has no transcript; launching "
-                "without --continue (D3 safety)",
+        ttyd_path = await host_actions.ensure_ttyd_installed(
+            hook_ctx,
+            install_if_missing=config.install_ttyd_if_missing,
+            install_dir=config.ttyd_install_dir,
+        )
+
+        resume_requested = bool(getattr(ctx, "resume", False))
+        snapshot: dict | None = None
+        if resume_requested:
+            snapshot = await load_latest_snapshot(
+                ctx._db, prefix=ctx._prefix, process_id=ctx.process_id,
             )
+
+        resuming = snapshot is not None
+        if resuming:
+            if config.seed_id is not None or config.on_seed_saved is not None:
+                _LOG.warning(
+                    "resume takes precedence; seed_id/on_seed_saved ignored "
+                    "(the snapshot already carries the full environment)",
+                )
+            # Plaintext workdir first (establishes the tree incl. home/), then
+            # decrypt + extract home/.claude on top. Decrypt failure is treated
+            # as tampering/key-rotation and propagated — never silent
+            # fresh-start (the decrypt call is intentionally outside any
+            # except, so it surfaces straight to the caller).
+            await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
+            # restore_workdir empties + repopulates the workdir, wiping the claude
+            # runtime set up above (home/.local/share/claude/versions symlink +
+            # bin/claude — they live IN the workdir now, unlike the old real-home
+            # install). Re-establish it on the restored tree so launch finds claude.
+            # Idempotent: cache hit → just relinks; no reinstall.
+            await host_actions.ensure_claude_installed(
+                hook_ctx,
+                install_if_missing=config.install_if_missing,
+                install_dir=config.claude_install_dir,
+                progress_label="Restoring Claude Code runtime…",
+            )
+            payload = await _read_blob_bytes(ctx, snapshot["sessionBlobId"])
+            decrypt = config.session_blob_decrypt or (lambda b: b)
+            plain = decrypt(payload)
+            await _extract_home_claude(host, plain)
+            await _rotate_optio_log(host)
+            pass_continue = await _has_transcript(host)
+            if not pass_continue:
+                _LOG.warning(
+                    "resume: restored snapshot has no transcript; launching "
+                    "without --continue (D3 safety)",
+                )
 
     async def _claudecode_body(host: Host, hook_ctx: HookContext) -> None:
         nonlocal launched_handle, tmux_path, tmux_socket, tmux_session
@@ -288,6 +298,7 @@ async def run_claudecode_session(
         await run_log_protocol_session(
             host, ctx,
             body=_claudecode_body,
+            prepare=_prepare,
             on_deliverable=config.on_deliverable,
             after_execute=config.after_execute,
             protocol=protocol,
@@ -323,6 +334,14 @@ async def run_claudecode_session(
         # "file changed as we read it". Best-effort + bounded; the strict tar
         # exit check in _archive_home_claude is the backstop.
         if launched_handle is not None and claude_path:
+            # claude runs under pasta in its own process group and ignores the
+            # tmux pane's SIGHUP from kill-session, so it is orphaned by the
+            # ttyd/tmux teardown above. Kill it explicitly, else await_claude_gone
+            # waits on a process nothing kills and the cancel grace is exceeded.
+            try:
+                await host_actions.kill_claude_processes(host, claude_path)
+            except Exception:
+                _LOG.exception("kill_claude_processes failed")
             try:
                 await host_actions.await_claude_gone(host, claude_path)
             except Exception:
