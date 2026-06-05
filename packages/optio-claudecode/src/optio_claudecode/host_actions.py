@@ -38,6 +38,12 @@ _TTYD_READY_RE = re.compile(
 
 _CLAUDE_INSTALL_URL = "https://claude.ai/install.sh"
 
+# Settle (seconds) between pasting a message into the claude TUI and sending
+# Enter. Without it the Enter is glued to the paste and claude treats the CR
+# as a newline inside the input box instead of a submit (see
+# send_text_to_claude). A shell-literal string (used in a `sleep` invocation).
+_SUBMIT_SETTLE_S = "1.0"
+
 # The optio-owned claude version cache lives on the WORKER, never in the host
 # user's ~/.local/~/.claude. Default: ${XDG_CACHE_HOME:-$HOME/.cache}/optio-claudecode/versions.
 _CACHE_DIR_SHELL_DEFAULT = (
@@ -703,10 +709,15 @@ async def send_text_to_claude(
     """Fake-type a message into the claude TUI and submit it.
 
     Uses ``set-buffer`` + ``paste-buffer`` (robust for arbitrary text incl.
-    spaces, which ``send-keys -l`` would mistreat) then a single ``Enter``.
-    Raises on a tmux failure (the caller treats that as 'agent unreachable',
-    which ``send_to_agent`` converts to False). Verified manually against a
-    live claude TUI (see the spec's Part C)."""
+    spaces, which ``send-keys -l`` would mistreat), then — after a brief
+    settle — a single ``Enter`` to submit. The settle is essential: an
+    ``Enter`` sent in the same burst as the paste lands while claude is still
+    settling the (bracketed) paste, so claude consumes the CR as a literal
+    newline *inside* the input box rather than a submit — the message then
+    sits unsent. Decoupling the Enter by ``_SUBMIT_SETTLE_S`` makes it a
+    distinct keypress that submits. Raises on a tmux failure (the caller
+    treats that as 'agent unreachable', which ``send_to_agent`` converts to
+    False)."""
     s = shlex.quote(tmux_socket)
     sess = shlex.quote(tmux_session)
     tp = shlex.quote(tmux_path)
@@ -714,6 +725,7 @@ async def send_text_to_claude(
     cmd = (
         f"{tp} -S {s} set-buffer -b {buf} -- {shlex.quote(text)} && "
         f"{tp} -S {s} paste-buffer -d -b {buf} -t {sess} && "
+        f"sleep {_SUBMIT_SETTLE_S} && "
         f"{tp} -S {s} send-keys -t {sess} Enter"
     )
     result = await host.run_command(cmd)

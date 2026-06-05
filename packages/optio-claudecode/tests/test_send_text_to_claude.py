@@ -38,6 +38,9 @@ async def test_send_text_sequence_and_quoting():
     assert "/usr/bin/tmux -S /tmp/sock set-buffer -b optio-feedback -- " in cmd
     assert "paste-buffer -d -b optio-feedback -t optio" in cmd
     assert cmd.rstrip().endswith("send-keys -t optio Enter")
+    # settle between paste and Enter, ordered: paste-buffer ... sleep ... send-keys
+    assert "sleep 1.0" in cmd
+    assert cmd.index("paste-buffer") < cmd.index("sleep 1.0") < cmd.rindex("send-keys")
     # the message is shell-quoted (contains the embedded double-quote intact)
     assert '\'hi "there"\'' in cmd
 
