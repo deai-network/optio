@@ -336,10 +336,16 @@ async def test_auto_start_posts_on_fresh_and_not_on_resume(
         # fall back to a fresh launch and POST the kickoff prompt again.
         before_execute=_plant_env,
     ))
-    assert len(posts) == 1
-    posted_session_id, posted_message = posts[0]
-    assert posted_message == session_mod.AUTO_START_PROMPT
-    assert posted_session_id  # a real (pre-created) session id
+    # The 'happy' scenario also emits a DELIVERABLE, which the mandatory
+    # acknowledgment POSTs as a "deliverable ...: accepted" ack via the same
+    # _post_opencode_prompt. This test is about the kickoff / resume-notice
+    # posts, so filter those out.
+    notice = f"{session_mod.SYSTEM_MESSAGE_PREFIX}{session_mod.RESUME_NOTICE}"
+    kickoffs = [m for _sid, m in posts if m == session_mod.AUTO_START_PROMPT]
+    notices = [m for _sid, m in posts if m == notice]
+    assert kickoffs == [session_mod.AUTO_START_PROMPT]  # kickoff posted exactly once
+    assert notices == []                                # no resume notice on fresh
+    assert all(sid for sid, _m in posts)                # real (pre-created) session ids
 
     # resume the same process → the kickoff is suppressed, but a System:
     # resume notice is POSTed so the agent notices the resume.
@@ -349,12 +355,10 @@ async def test_auto_start_posts_on_fresh_and_not_on_resume(
         auto_start=True,
         before_execute=_plant_env,
     ))
-    assert len(posts) == 2, posts
-    resume_session_id, resume_message = posts[1]
-    assert resume_message == (
-        f"{session_mod.SYSTEM_MESSAGE_PREFIX}{session_mod.RESUME_NOTICE}"
-    )
-    assert resume_message != session_mod.AUTO_START_PROMPT
+    kickoffs = [m for _sid, m in posts if m == session_mod.AUTO_START_PROMPT]
+    notices = [m for _sid, m in posts if m == notice]
+    assert kickoffs == [session_mod.AUTO_START_PROMPT]  # no NEW kickoff on resume
+    assert notices == [notice]                          # resume notice posted once
 
 
 def test_post_opencode_prompt_uses_prompt_async_parts_body(monkeypatch):
