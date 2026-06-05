@@ -135,3 +135,42 @@ def test_usage_limited():
     u = {"five_hour": {"utilization": 1.0}, "seven_day_opus": {"utilization": 100.0, "resets_at": future}}
     assert oauth.usage_limited(u, now) is False
     assert oauth.usage_limited(u, now, models_required=["opus"]) is True
+
+
+def test_seed_signature_excludes_auth_and_noise(tmp_path):
+    import io
+    import tarfile
+
+    def mk(members):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            for name, data in members.items():
+                info = tarfile.TarInfo(name=name)
+                info.size = len(data)
+                info.mtime = 0
+                tar.addfile(info, io.BytesIO(data))
+        return buf.getvalue()
+    from optio_claudecode import oauth
+    good = mk({
+        ".claude/.credentials.json": b'{"x":1}',
+        ".claude/settings.json": b'{"theme":"dark","skipDangerousModePermissionPrompt":true}',
+        ".claude/mcp-needs-auth-cache.json": b'{}',
+        ".claude.json": b'{"firstStartTime":"A"}',
+    })
+    # same shape, different auth + different .claude.json -> SAME signature
+    good2 = mk({
+        ".claude/.credentials.json": b'{"x":2}',
+        ".claude/settings.json": b'{"theme":"dark","skipDangerousModePermissionPrompt":true}',
+        ".claude/mcp-needs-auth-cache.json": b'{}',
+        ".claude.json": b'{"firstStartTime":"B","userID":"u"}',
+    })
+    # degenerate: missing mcp-cache + missing the settings key
+    bad = mk({
+        ".claude/.credentials.json": b'{"x":3}',
+        ".claude/settings.json": b'{"theme":"dark"}',
+        ".claude.json": b'{"firstStartTime":"C"}',
+    })
+    assert oauth.seed_signature(good) == oauth.seed_signature(good2)
+    assert oauth.seed_signature(bad) != oauth.seed_signature(good)
+    assert ".claude/.credentials.json" not in oauth.seed_signature(good)["members"]
+    assert ".claude.json" not in oauth.seed_signature(good)["members"]

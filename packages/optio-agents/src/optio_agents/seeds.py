@@ -506,6 +506,7 @@ async def list_pool(
             "lastRefreshedAt": 1,
             "lastVerifiedAt": 1,
             "updatedAt": 1,
+            "createdAt": 1,
             "metadata": 1,
             "leased": {"$gt": [{"$ifNull": ["$lease.expiresAt", None]}, "$$NOW"]},
         }},
@@ -517,6 +518,7 @@ async def list_pool(
             "leased": bool(d.get("leased")),
             "lastRefreshedAt": d.get("lastRefreshedAt") or d.get("updatedAt"),
             "lastVerifiedAt": d.get("lastVerifiedAt"),
+            "createdAt": d.get("createdAt"),
             "metadata": d.get("metadata") or {},
         })
     return out

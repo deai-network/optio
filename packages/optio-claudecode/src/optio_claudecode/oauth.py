@@ -159,7 +159,8 @@ async def verify_and_refresh_seed(
     buf = io.BytesIO()
     await AsyncIOMotorGridFSBucket(db).download_to_stream(doc["blobId"], buf)
     dec = decrypt or (lambda b: b)
-    oauth = _read_seed_creds(dec(buf.getvalue()))
+    plain = dec(buf.getvalue())
+    oauth = _read_seed_creds(plain)
     if not oauth or not oauth.get("refreshToken"):
         return {"alive": False, "usage": None, "account": None}
 
@@ -189,6 +190,7 @@ async def verify_and_refresh_seed(
             "usage": usage,
             "usageFetchedAt": datetime.now(timezone.utc),
             "account": account,
+            "signature": seed_signature(plain),
         },
     )
     return {"alive": True, "usage": usage, "account": account}
@@ -224,3 +226,27 @@ def usage_limited(usage: dict | None, now, models_required: list[str] | None = N
         if reset_dt > now:
             return True
     return False
+
+
+def seed_signature(blob_plain: bytes) -> dict:
+    """Format/value-agnostic structural signature of a seed's non-auth
+    environment, for divergence comparison against the pool's reference seed:
+    the sorted member paths plus the sorted key set of .claude/settings.json,
+    EXCLUDING .claude/.credentials.json (auth -- differs per seed) and
+    .claude.json (noisy: timestamps/userID differ between good seeds)."""
+    members = []
+    settings_keys = []
+    try:
+        with tarfile.open(fileobj=io.BytesIO(blob_plain), mode="r:gz") as tar:
+            for m in tar.getmembers():
+                if not m.isfile() or m.name in (".claude/.credentials.json", ".claude.json"):
+                    continue
+                members.append(m.name)
+                if m.name == ".claude/settings.json":
+                    try:
+                        settings_keys = sorted(json.loads(tar.extractfile(m).read().decode("utf-8")).keys())
+                    except (ValueError, UnicodeDecodeError, AttributeError):
+                        settings_keys = []
+    except tarfile.TarError:
+        return {"members": [], "settingsKeys": []}
+    return {"members": sorted(members), "settingsKeys": settings_keys}

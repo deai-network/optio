@@ -583,6 +583,12 @@ async def test_list_pool_returns_metadata(mongo_db):
     assert listed[0]["metadata"]["account"]["uuid"] == "u9"
 
 
+async def test_list_pool_returns_created_at(mongo_db):
+    await _pooled_seed(mongo_db, "pc")
+    listed = await seeds.list_pool(mongo_db, prefix="t", suffix=SUFFIX, poolKey="pc")
+    assert listed[0]["createdAt"] is not None
+
+
 async def test_reap_expired_leases(mongo_db):
     live = await _pooled_seed(mongo_db, "p13")
     expired = await _pooled_seed(mongo_db, "p13")
