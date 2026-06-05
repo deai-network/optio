@@ -90,7 +90,9 @@ async def test_second_session_consumes_seed(
     ))
 
     assert observed["creds"] is True
-    assert observed["plugins"] is True
+    # plugins are not seeded since manifest v2 (re-installed on launch), so the
+    # consumed seed does not bring a plugins dir.
+    assert observed["plugins"] is False
     # transcript dir from the seed-source session must NOT be restored
     assert observed["projects_dir"] is False
     # .claude.json projects rekeyed to the new cwd

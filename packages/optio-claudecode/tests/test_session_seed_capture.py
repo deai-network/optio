@@ -93,6 +93,8 @@ async def test_capture_fires_callback_and_stores_env_only_seed(
     assert any(n.endswith(".credentials.json") for n in names)
     assert any(n.endswith("settings.json") for n in names)
     assert any(n == ".claude.json" for n in names)
-    assert any("plugins" in n for n in names)
+    # plugins (the official marketplace) are NOT seeded since manifest v2 --
+    # claude re-installs them on launch; keeps the seed lean.
+    assert not any("plugins" in n for n in names), names
     assert not any("projects" in n for n in names), names
     assert not any("history.jsonl" in n for n in names), names
