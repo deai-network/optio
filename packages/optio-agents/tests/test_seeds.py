@@ -1,5 +1,6 @@
 """Tests for the generic optio-agents seed engine."""
 
+import datetime as _dt
 import io
 import tarfile
 
@@ -426,3 +427,165 @@ async def test_refresh_seed_crash_before_doc_update_keeps_old_blob(
     )
     with open(os.path.join(dst.workdir, "home", ".claude", ".credentials.json")) as fh:
         assert fh.read() == '{"token": "x"}'
+
+
+# --- pool / lease layer ----------------------------------------------------
+
+
+async def _pooled_seed(mongo_db, pool_key):
+    """Insert a seed and assign it to `pool_key`; return its seed_id."""
+    sid = await seeds.insert_seed(
+        mongo_db, prefix="t", suffix=SUFFIX, blob_id=ObjectId(), manifest_version=1,
+    )
+    await seeds.assign_to_pool(
+        mongo_db, prefix="t", suffix=SUFFIX, seed_id=sid, poolKey=pool_key,
+    )
+    return sid
+
+
+def _coll(mongo_db):
+    return mongo_db[f"t{SUFFIX}"]
+
+
+async def test_acquire_leases_a_free_seed(mongo_db):
+    sid = await _pooled_seed(mongo_db, "p1")
+    got = await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p1", holder="h1")
+    assert got == sid
+    doc = await seeds.load_seed(mongo_db, prefix="t", suffix=SUFFIX, seed_id=sid)
+    assert doc["lease"]["holder"] == "h1"
+    # Mongo's $$NOW (and the round-tripped expiresAt) is UTC; compare to a UTC
+    # now made naive to match the document_class tz-awareness of the client.
+    assert doc["lease"]["expiresAt"] > _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+    assert "lastLeasedAt" in doc
+
+
+async def test_acquire_is_exclusive_and_returns_none_when_exhausted(mongo_db):
+    a = await _pooled_seed(mongo_db, "p2")
+    b = await _pooled_seed(mongo_db, "p2")
+    first = await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p2", holder="h1")
+    second = await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p2", holder="h2")
+    assert {first, second} == {a, b}
+    third = await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p2", holder="h3")
+    assert third is None
+
+
+async def test_acquire_skips_dead_seeds(mongo_db):
+    sid = await _pooled_seed(mongo_db, "p3")
+    await seeds.mark_seed_status(mongo_db, prefix="t", suffix=SUFFIX, seed_id=sid, status="dead")
+    assert await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p3", holder="h1") is None
+
+
+async def test_acquire_ignores_other_pools(mongo_db):
+    await _pooled_seed(mongo_db, "pA")
+    assert await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="pB", holder="h1") is None
+
+
+async def test_acquire_reclaims_expired_lease(mongo_db):
+    sid = await _pooled_seed(mongo_db, "p4")
+    past = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=120)
+    await _coll(mongo_db).update_one(
+        {"_id": ObjectId(sid)}, {"$set": {"lease": {"holder": "stale", "expiresAt": past}}},
+    )
+    got = await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p4", holder="h2")
+    assert got == sid
+    doc = await seeds.load_seed(mongo_db, prefix="t", suffix=SUFFIX, seed_id=sid)
+    assert doc["lease"]["holder"] == "h2"
+
+
+async def test_acquire_does_not_reclaim_live_lease(mongo_db):
+    await _pooled_seed(mongo_db, "p5")
+    await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p5", holder="h1")
+    assert await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p5", holder="h2") is None
+
+
+async def test_acquire_round_robin(mongo_db):
+    a = await _pooled_seed(mongo_db, "p6")
+    b = await _pooled_seed(mongo_db, "p6")
+    first = await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p6", holder="h1")
+    await seeds.release(mongo_db, prefix="t", suffix=SUFFIX, seed_id=first, holder="h1")
+    # the never-leased seed (no lastLeasedAt) sorts first -> the OTHER seed wins
+    second = await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p6", holder="h2")
+    assert second != first
+    assert {first, second} == {a, b}
+
+
+async def test_renew_extends_for_holder_and_cas_rejects_others(mongo_db):
+    sid = await _pooled_seed(mongo_db, "p7")
+    await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p7", holder="h1")
+    before = (await seeds.load_seed(mongo_db, prefix="t", suffix=SUFFIX, seed_id=sid))["lease"]["expiresAt"]
+    ok = await seeds.renew_lease(mongo_db, prefix="t", suffix=SUFFIX, seed_id=sid, holder="h1")
+    assert ok is True
+    after = (await seeds.load_seed(mongo_db, prefix="t", suffix=SUFFIX, seed_id=sid))["lease"]["expiresAt"]
+    assert after >= before
+    # a non-holder cannot renew
+    assert await seeds.renew_lease(mongo_db, prefix="t", suffix=SUFFIX, seed_id=sid, holder="other") is False
+
+
+async def test_renew_false_after_steal(mongo_db):
+    sid = await _pooled_seed(mongo_db, "p8")
+    # h1 holds, lease expires, h2 steals it
+    past = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=120)
+    await _coll(mongo_db).update_one(
+        {"_id": ObjectId(sid)}, {"$set": {"lease": {"holder": "h1", "expiresAt": past}}},
+    )
+    stolen = await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p8", holder="h2")
+    assert stolen == sid
+    # the original holder's renewal now fails
+    assert await seeds.renew_lease(mongo_db, prefix="t", suffix=SUFFIX, seed_id=sid, holder="h1") is False
+
+
+async def test_release_frees_and_is_holder_guarded(mongo_db):
+    sid = await _pooled_seed(mongo_db, "p9")
+    await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p9", holder="h1")
+    # wrong holder cannot release
+    await seeds.release(mongo_db, prefix="t", suffix=SUFFIX, seed_id=sid, holder="other")
+    assert await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p9", holder="h2") is None
+    # right holder releases
+    await seeds.release(mongo_db, prefix="t", suffix=SUFFIX, seed_id=sid, holder="h1")
+    assert await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p9", holder="h2") == sid
+
+
+async def test_mark_status_alive_again_revives(mongo_db):
+    sid = await _pooled_seed(mongo_db, "p10")
+    await seeds.mark_seed_status(mongo_db, prefix="t", suffix=SUFFIX, seed_id=sid, status="dead")
+    assert await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p10", holder="h1") is None
+    await seeds.mark_seed_status(mongo_db, prefix="t", suffix=SUFFIX, seed_id=sid, status="alive")
+    assert await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p10", holder="h1") == sid
+
+
+async def test_assign_to_pool_makes_seed_eligible(mongo_db):
+    sid = await seeds.insert_seed(
+        mongo_db, prefix="t", suffix=SUFFIX, blob_id=ObjectId(), manifest_version=1,
+    )
+    # unassigned -> not acquirable
+    assert await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p11", holder="h1") is None
+    await seeds.assign_to_pool(mongo_db, prefix="t", suffix=SUFFIX, seed_id=sid, poolKey="p11")
+    assert await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p11", holder="h1") == sid
+
+
+async def test_list_pool_reports_status_leased_and_timestamps(mongo_db):
+    a = await _pooled_seed(mongo_db, "p12")
+    b = await _pooled_seed(mongo_db, "p12")
+    await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p12", holder="h1")  # leases one
+    await seeds.mark_seed_status(mongo_db, prefix="t", suffix=SUFFIX, seed_id=b, status="dead")
+    listed = {d["seedId"]: d for d in await seeds.list_pool(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p12")}
+    assert set(listed) == {a, b}
+    assert listed[a]["leased"] is True
+    assert listed[b]["status"] == "dead"
+    assert listed[b]["leased"] is False
+    assert "lastVerifiedAt" in listed[a]
+
+
+async def test_reap_expired_leases(mongo_db):
+    live = await _pooled_seed(mongo_db, "p13")
+    expired = await _pooled_seed(mongo_db, "p13")
+    await seeds.acquire(mongo_db, prefix="t", suffix=SUFFIX, poolKey="p13", holder="h1")  # leases `live`
+    past = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=120)
+    await _coll(mongo_db).update_one(
+        {"_id": ObjectId(expired)}, {"$set": {"lease": {"holder": "old", "expiresAt": past}}},
+    )
+    n = await seeds.reap_expired_leases(mongo_db, prefix="t", suffix=SUFFIX)
+    assert n == 1
+    assert (await seeds.load_seed(mongo_db, prefix="t", suffix=SUFFIX, seed_id=expired))["lease"] is None
+    # the live lease is untouched
+    assert (await seeds.load_seed(mongo_db, prefix="t", suffix=SUFFIX, seed_id=live))["lease"] is not None

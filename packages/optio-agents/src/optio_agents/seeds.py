@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Awaitable, Callable
 
+from pymongo import ReturnDocument
+
 if TYPE_CHECKING:
     from bson import ObjectId
     from motor.motor_asyncio import AsyncIOMotorDatabase
@@ -368,3 +370,170 @@ async def refresh_seed(
         seed_id=seed_id, new_blob_id=new_blob_id,
     )
     await ctx.delete_blob(old_blob_id)
+
+
+# --- pool / lease layer ----------------------------------------------------
+#
+# Generic exclusive leasing over the seed collection so a pool of N seeds per
+# owner can be shared across concurrent sessions without two using one seed at
+# once. Self-renewing TTL lease on the Mongo server clock ($$NOW); acquire/
+# renew/reap are single atomic ops; lazy reclaim (no sweeper). See
+# docs/superpowers/specs/2026-06-05-seed-pool-lease-foundation-design.md.
+
+LEASE_TTL_SECONDS = 60
+
+
+def _oid_or_none(seed_id: str):
+    from bson import ObjectId
+    from bson.errors import InvalidId
+
+    try:
+        return ObjectId(seed_id)
+    except (InvalidId, TypeError):
+        return None
+
+
+async def acquire(
+    db: "AsyncIOMotorDatabase", *, prefix: str, suffix: str, poolKey: str, holder: str,
+) -> str | None:
+    """Atomically lease the least-recently-leased free, non-dead seed in the
+    pool. Returns its seed_id, or None if none is available. Lazy reclaim: a
+    seed whose lease is null or whose lease.expiresAt is not in the future
+    counts as free. Selection is round-robin via `lastLeasedAt` (missing sorts
+    first)."""
+    coll = _collection(db, prefix, suffix)
+    doc = await coll.find_one_and_update(
+        {
+            "poolKey": poolKey,
+            "status": {"$ne": "dead"},
+            "$expr": {
+                "$or": [
+                    {"$eq": [{"$ifNull": ["$lease", None]}, None]},
+                    {"$not": {"$gt": ["$lease.expiresAt", "$$NOW"]}},
+                ]
+            },
+        },
+        [
+            {
+                "$set": {
+                    "lease": {
+                        "holder": holder,
+                        "expiresAt": {"$add": ["$$NOW", LEASE_TTL_SECONDS * 1000]},
+                    },
+                    "lastLeasedAt": "$$NOW",
+                }
+            }
+        ],
+        sort=[("lastLeasedAt", 1)],
+        return_document=ReturnDocument.AFTER,
+    )
+    return str(doc["_id"]) if doc else None
+
+
+async def renew_lease(
+    db: "AsyncIOMotorDatabase", *, prefix: str, suffix: str, seed_id: str, holder: str,
+) -> bool:
+    """Slide this holder's lease forward by LEASE_TTL_SECONDS. CAS on holder:
+    True if renewed, False if the lease was lost (expired + re-acquired by
+    someone else) -- the caller MUST then stop using the seed."""
+    oid = _oid_or_none(seed_id)
+    if oid is None:
+        return False
+    res = await _collection(db, prefix, suffix).update_one(
+        {"_id": oid, "lease.holder": holder},
+        [{"$set": {"lease.expiresAt": {"$add": ["$$NOW", LEASE_TTL_SECONDS * 1000]}}}],
+    )
+    return res.matched_count == 1
+
+
+async def release(
+    db: "AsyncIOMotorDatabase", *, prefix: str, suffix: str, seed_id: str, holder: str,
+) -> None:
+    """Clear this holder's lease (holder-guarded; no-op if not held by
+    `holder`). TTL/liveness is the backstop, so a missed release is harmless."""
+    oid = _oid_or_none(seed_id)
+    if oid is None:
+        return
+    await _collection(db, prefix, suffix).update_one(
+        {"_id": oid, "lease.holder": holder}, {"$set": {"lease": None}},
+    )
+
+
+async def mark_seed_status(
+    db: "AsyncIOMotorDatabase", *, prefix: str, suffix: str, seed_id: str, status: str,
+) -> None:
+    """Set status ('alive' | 'dead'). A 'dead' seed is never handed out by
+    acquire. Consumer policy decides when a seed is dead (e.g. invalid_grant)."""
+    oid = _oid_or_none(seed_id)
+    if oid is None:
+        return
+    await _collection(db, prefix, suffix).update_one(
+        {"_id": oid},
+        {"$set": {"status": status, "updatedAt": datetime.now(timezone.utc)}},
+    )
+
+
+async def assign_to_pool(
+    db: "AsyncIOMotorDatabase", *, prefix: str, suffix: str, seed_id: str, poolKey: str,
+) -> None:
+    """Set a seed's poolKey (membership). Also the single->pool migration
+    primitive used by Spec B."""
+    oid = _oid_or_none(seed_id)
+    if oid is None:
+        return
+    await _collection(db, prefix, suffix).update_one(
+        {"_id": oid},
+        {"$set": {"poolKey": poolKey, "updatedAt": datetime.now(timezone.utc)}},
+    )
+
+
+async def list_pool(
+    db: "AsyncIOMotorDatabase", *, prefix: str, suffix: str, poolKey: str,
+) -> list[dict]:
+    """Return [{seedId, status, leased, lastRefreshedAt, lastVerifiedAt}] for
+    the pool (UI/observability). `leased` = a lease present and not yet expired.
+    `lastRefreshedAt` falls back to `updatedAt` when not separately tracked.
+
+    `leased` is computed on the Mongo server clock (`$$NOW`) via the same
+    `$gt: [lease.expiresAt, $$NOW]` predicate that `acquire`/`reap` use, so the
+    notion of "leased" is identical across all ops and does not depend on the
+    client's tz-awareness."""
+    out: list[dict] = []
+    cursor = _collection(db, prefix, suffix).aggregate([
+        {"$match": {"poolKey": poolKey}},
+        {"$project": {
+            "status": 1,
+            "lastRefreshedAt": 1,
+            "lastVerifiedAt": 1,
+            "updatedAt": 1,
+            "leased": {"$gt": [{"$ifNull": ["$lease.expiresAt", None]}, "$$NOW"]},
+        }},
+    ])
+    async for d in cursor:
+        out.append({
+            "seedId": str(d["_id"]),
+            "status": d.get("status", "alive"),
+            "leased": bool(d.get("leased")),
+            "lastRefreshedAt": d.get("lastRefreshedAt") or d.get("updatedAt"),
+            "lastVerifiedAt": d.get("lastVerifiedAt"),
+        })
+    return out
+
+
+async def reap_expired_leases(
+    db: "AsyncIOMotorDatabase", *, prefix: str, suffix: str,
+) -> int:
+    """Clear all expired leases; return the count. Optional explicit cleanup /
+    observability -- NOTHING depends on it running (acquire reclaims lazily)."""
+    res = await _collection(db, prefix, suffix).update_many(
+        {
+            "$expr": {
+                "$and": [
+                    {"$ne": [{"$ifNull": ["$lease", None]}, None]},
+                    {"$not": {"$gt": ["$lease.expiresAt", "$$NOW"]}},
+                ]
+            }
+        },
+        {"$set": {"lease": None}},
+    )
+    return res.modified_count
