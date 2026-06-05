@@ -49,10 +49,16 @@ async def _rekey_claude_json_projects(host: Host) -> None:
     )
 
 
+CLAUDE_CRED_MANIFEST = seeds.SeedManifest(
+    home_subdir="home",
+    include=[".claude/.credentials.json"],
+    version=CLAUDE_SEED_MANIFEST_VERSION,
+)
+
+
 CLAUDE_SEED_MANIFEST = seeds.SeedManifest(
     home_subdir="home",
-    include=[
-        ".claude/.credentials.json",
+    include=CLAUDE_CRED_MANIFEST.include + [
         ".claude/settings.json",
         ".claude/mcp-needs-auth-cache.json",
         ".claude/plugins",

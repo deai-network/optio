@@ -31,10 +31,15 @@ from optio_host.paths import task_dir
 from optio_agents import seeds as _seeds
 from optio_agents import get_protocol
 
+from optio_claudecode import cred_watcher
 from optio_claudecode import host_actions
 from optio_claudecode.account import resolve_account_summary
 from optio_claudecode.oauth_redirect import rewrite_oauth_redirect
-from optio_claudecode.seed_manifest import CLAUDE_SEED_MANIFEST, CLAUDE_SEED_SUFFIX
+from optio_claudecode.seed_manifest import (
+    CLAUDE_CRED_MANIFEST,
+    CLAUDE_SEED_MANIFEST,
+    CLAUDE_SEED_SUFFIX,
+)
 from optio_claudecode.prompt import compose_agents_md
 from optio_claudecode.snapshots import (
     insert_snapshot,
@@ -98,6 +103,8 @@ async def run_claudecode_session(
     # It is NOT the same as `resuming`: a restored snapshot with no
     # transcript must launch WITHOUT --continue (D3).
     pass_continue = False
+    cred_baseline: str | None = None
+    cred_watch_task: "asyncio.Task | None" = None
 
     await host.connect()
 
@@ -132,10 +139,10 @@ async def run_claudecode_session(
 
         resuming = snapshot is not None
         if resuming:
-            if config.seed_id is not None or config.on_seed_saved is not None:
+            if config.on_seed_saved is not None:
                 _LOG.warning(
-                    "resume takes precedence; seed_id/on_seed_saved ignored "
-                    "(the snapshot already carries the full environment)",
+                    "resume: on_seed_saved ignored (no full capture on resume); "
+                    "seed_id is still used to overlay current credentials",
                 )
             # Plaintext workdir first (establishes the tree incl. home/), then
             # decrypt + extract home/.claude on top. Decrypt failure is treated
@@ -168,6 +175,7 @@ async def run_claudecode_session(
 
     async def _claudecode_body(host: Host, hook_ctx: HookContext) -> None:
         nonlocal launched_handle, tmux_path, tmux_socket, tmux_session
+        nonlocal cred_baseline, cred_watch_task
 
         # focus_mode: layer the quiet-TUI knobs (focus view + fullscreen) onto
         # the planted settings, plus the no-flicker launch env. Off → passthrough.
@@ -199,6 +207,7 @@ async def run_claudecode_session(
                     decrypt=config.session_blob_decrypt,
                 )
                 _trace("body: merge_seed DONE")
+                cred_baseline = await cred_watcher.cred_fingerprint(host)
             await host.write_text(
                 "CLAUDE.md",
                 compose_agents_md(
@@ -210,7 +219,18 @@ async def run_claudecode_session(
             )
         else:
             # Resume: home/.claude (credentials, settings) was restored from
-            # the session blob — do NOT re-plant. Optionally refresh CLAUDE.md.
+            # the session blob. Overlay the seed's CURRENT credentials on top
+            # (the seed is the source of truth for creds; the snapshot may carry
+            # a now-rotated/dead token). Non-credential home files are untouched.
+            if config.seed_id is not None:
+                await _seeds.merge_seed(
+                    ctx, host,
+                    seed_id=config.seed_id,
+                    manifest=CLAUDE_CRED_MANIFEST,
+                    suffix=CLAUDE_SEED_SUFFIX,
+                    decrypt=config.session_blob_decrypt,
+                )
+            cred_baseline = await cred_watcher.cred_fingerprint(host)
             refreshed_files = await _maybe_refresh_on_resume(host, hook_ctx, config)
 
         if config.supports_resume:
@@ -281,10 +301,27 @@ async def run_claudecode_session(
         # The protocol driver cancels this body when it sees DONE/ERROR in
         # optio.log; if claude exits some other way, has-session goes false and
         # the body returns -> driver treats it as premature exit.
+        if config.seed_id is not None:
+            cred_watch_task = asyncio.create_task(cred_watcher.run_credential_watcher(
+                ctx, host,
+                seed_id=config.seed_id,
+                baseline=cred_baseline,
+                encrypt=config.session_blob_encrypt,
+                decrypt=config.session_blob_decrypt,
+            ))
+
         while await host_actions.tmux_session_alive(
             host, tmux_path, tmux_socket, tmux_session,
         ):
             await asyncio.sleep(1.0)
+
+        if cred_watch_task is not None:
+            cred_watch_task.cancel()
+            try:
+                await cred_watch_task
+            except asyncio.CancelledError:
+                pass
+            cred_watch_task = None
 
     async def _agent_sender(message: str) -> None:
         # tmux_* are set by _claudecode_body at launch; host is the session's
@@ -346,6 +383,25 @@ async def run_claudecode_session(
                 await host_actions.await_claude_gone(host, claude_path)
             except Exception:
                 _LOG.exception("await_claude_gone failed; proceeding to capture")
+
+        if cred_watch_task is not None:
+            cred_watch_task.cancel()
+            try:
+                await cred_watch_task
+            except asyncio.CancelledError:
+                pass
+
+        if config.seed_id is not None:
+            try:
+                await cred_watcher.save_back_if_changed(
+                    ctx, host,
+                    seed_id=config.seed_id,
+                    baseline=cred_baseline,
+                    encrypt=config.session_blob_encrypt,
+                    decrypt=config.session_blob_decrypt,
+                )
+            except Exception:
+                _LOG.exception("final credential save-back failed")
 
         if not resuming and config.on_seed_saved is not None:
             _trace("finally: capture_seed START")

@@ -70,3 +70,17 @@ async def test_rekey_missing_file_is_noop(tmp_workdir):
     host = LocalHost(taskdir=os.path.join(tmp_workdir, "n"))
     await host.setup_workdir()
     await _rekey_claude_json_projects(host)  # must not raise
+
+
+def test_cred_manifest_is_credentials_only():
+    from optio_claudecode.seed_manifest import (
+        CLAUDE_CRED_MANIFEST, CLAUDE_SEED_MANIFEST,
+    )
+
+    assert CLAUDE_CRED_MANIFEST.include == [".claude/.credentials.json"]
+    # narrow manifest needs no rekey transform
+    assert CLAUDE_CRED_MANIFEST.consume_transform is None
+    # full manifest is composed FROM the narrow one (no duplicated path)
+    assert CLAUDE_SEED_MANIFEST.include[:1] == CLAUDE_CRED_MANIFEST.include
+    assert ".claude/plugins" in CLAUDE_SEED_MANIFEST.include
+    assert CLAUDE_SEED_MANIFEST.consume_transform is not None
