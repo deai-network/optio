@@ -154,3 +154,26 @@ hook (e.g. on_deliverable rejects an artifact)
 - No new backend transports beyond opencode + claudecode.
 - The consumer behavior (excavator rejecting a recipe and calling `send_to_agent`) lives in the excavator repo, not here.
 </content>
+
+## Addendum: return-value routing (supersedes the imperative-only decision)
+
+After review, the deliverable callback **also** gets return-value routing as ergonomic sugar on top of the imperative method. The `send_to_agent` method (Part A) stays exactly as specified; this adds an automatic path for the common "reject a deliverable and tell the agent why" case.
+
+**Divergences from the body above (explicit):**
+- Part A's "No change to ... `DeliverableCallback`'s signature" and "the return type stays `Awaitable[None]`" are **superseded** by this addendum.
+- "Out of scope: No return-value routing for `DeliverableCallback`" is **superseded** by this addendum.
+
+**Change — `optio-agents` (`protocol/session.py`):**
+- `DeliverableCallback` becomes `Callable[["HookContext", str, str], Awaitable["str | None"]]`.
+- In the deliverable loop, route a non-empty returned string through the same channel:
+  ```python
+  feedback = await callback(hook_ctx, display, text)
+  if isinstance(feedback, str) and feedback.strip():
+      await hook_ctx.send_to_agent(feedback)
+  ```
+  (Replaces the current `await callback(hook_ctx, display, text)` that drops the return. The existing `try/except` around the callback is unchanged — a callback that raises is still logged, not routed.)
+
+Both paths now exist and compose: a hook may call `hook_ctx.send_to_agent(...)` directly at any time, **and/or** return a string from `on_deliverable` to have the loop send it. A `None`/empty return sends nothing.
+
+**Additional test (`optio-agents`):**
+- `on_deliverable` returning `"reason"` → the deliverable loop calls `send_to_agent("reason")` once (spy the sender / `hook_ctx.send_to_agent`); returning `None` or `""` → no send.
