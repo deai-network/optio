@@ -14,6 +14,10 @@ from __future__ import annotations
 
 from optio_agents.browser_shims import BrowserMode
 
+# The push notification a backend sends a resumed agent over the channel.
+# Shared so the doc prose and both backends agree on one string.
+RESUME_NOTICE = "you have been resumed"
+
 
 _HEADER = """## Log channel
 
@@ -68,9 +72,20 @@ and its contents are final. The host fetches files by reading these
 log lines.
 """
 
+_FEEDBACK = """
+## Messages from the harness
+
+After you emit a deliverable, the harness may send you a message on the
+same input channel where the user normally talks — that channel carries
+both genuine user input and harness messages. Every harness message is
+prefixed `System:`. Treat a `System:` message as an instruction. In
+particular, if it tells you a delivered artifact was rejected, revise the
+artifact and emit the `DELIVERABLE:` line again.
+"""
+
 
 def build_log_channel_prompt(browser: BrowserMode = "ignore") -> str:
     """Build the keyword-protocol documentation block for ``browser`` mode."""
     browser_bullet = _BROWSER_BULLET if browser == "redirect" else ""
     suppress_note = _SUPPRESS_NOTE if browser == "suppress" else ""
-    return _HEADER + browser_bullet + _TAIL_BULLETS + suppress_note + _RULES
+    return _HEADER + browser_bullet + _TAIL_BULLETS + suppress_note + _RULES + _FEEDBACK

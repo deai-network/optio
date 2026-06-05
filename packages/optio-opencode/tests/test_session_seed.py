@@ -308,9 +308,10 @@ async def test_second_session_consumes_seed(
 async def test_auto_start_posts_on_fresh_and_not_on_resume(
     mongo_db, task_root, _supply_scenario, monkeypatch,
 ):
-    """auto_start=True POSTs the kickoff prompt on a fresh launch and is
-    suppressed on resume (the restored session already carries its
-    conversation)."""
+    """auto_start=True POSTs the kickoff prompt on a fresh launch; on resume
+    the kickoff is suppressed (the restored session already carries its
+    conversation) but a System: resume notice is POSTed so the agent notices
+    the resume."""
     import optio_opencode.session as session_mod
 
     _supply_scenario["name"] = "happy"
@@ -340,14 +341,20 @@ async def test_auto_start_posts_on_fresh_and_not_on_resume(
     assert posted_message == session_mod.AUTO_START_PROMPT
     assert posted_session_id  # a real (pre-created) session id
 
-    # resume the same process → must NOT POST again
+    # resume the same process → the kickoff is suppressed, but a System:
+    # resume notice is POSTed so the agent notices the resume.
     ctx_resume = await _make_ctx(mongo_db, pid, resume=True)
     await run_opencode_session(ctx_resume, OpencodeTaskConfig(
         consumer_instructions="(scenario: happy)",
         auto_start=True,
         before_execute=_plant_env,
     ))
-    assert len(posts) == 1, posts
+    assert len(posts) == 2, posts
+    resume_session_id, resume_message = posts[1]
+    assert resume_message == (
+        f"{session_mod.SYSTEM_MESSAGE_PREFIX}{session_mod.RESUME_NOTICE}"
+    )
+    assert resume_message != session_mod.AUTO_START_PROMPT
 
 
 def test_post_opencode_prompt_uses_prompt_async_parts_body(monkeypatch):

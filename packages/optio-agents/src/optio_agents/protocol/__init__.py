@@ -20,13 +20,14 @@ from optio_agents.protocol.parser import (
 )
 from optio_agents.protocol.session import (
     DELIVERABLE_QUEUE_BOUND,
+    AgentSender,
     DeliverableCallback,
     HookCallback,
     fetch_deliverable_text,
     run_log_protocol_session,
 )
 from optio_agents.protocol.protocol import BrowserMode, Protocol, get_protocol
-from optio_agents.protocol.prompt import build_log_channel_prompt
+from optio_agents.protocol.prompt import RESUME_NOTICE, build_log_channel_prompt
 
 __all__ = [
     # parser
@@ -44,6 +45,7 @@ __all__ = [
     "relativize_deliverable_path",
     # session
     "run_log_protocol_session",
+    "AgentSender",
     "DeliverableCallback",
     "HookCallback",
     "fetch_deliverable_text",
@@ -52,5 +54,6 @@ __all__ = [
     "get_protocol",
     "Protocol",
     "BrowserMode",
+    "RESUME_NOTICE",
     "build_log_channel_prompt",
 ]

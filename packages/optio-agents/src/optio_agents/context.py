@@ -9,6 +9,10 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Protocol
 from optio_host.download import create_download_task
 from optio_host.host import HostCommandError, RunResult
 
+# Prefix on every harness→agent message pushed through send_to_agent. Marks
+# input that originates from the engine/hooks rather than a real user.
+SYSTEM_MESSAGE_PREFIX = "System: "
+
 
 class HookContext:
     """ProcessContext + host primitives, passed to before/after_execute hooks
@@ -27,10 +31,31 @@ class HookContext:
         # (None when the mode is "ignore"). The agent body merges this into
         # the launched subprocess's env.
         object.__setattr__(self, "browser_launch_env", None)
+        # Optional best-effort engine→agent sender, injected by
+        # run_log_protocol_session from the backend's transport. None when no
+        # channel is wired; send_to_agent then returns False.
+        object.__setattr__(self, "_agent_sender", None)
 
     def __getattr__(self, name: str) -> Any:
         # Only called if the attribute isn't found on the instance / class.
         return getattr(self._ctx, name)
+
+    async def send_to_agent(self, message: str) -> bool:
+        """Best-effort: push a message into the live agent session. Returns
+        True if delivered, False if no channel is wired or the send failed.
+        A dead/unreachable agent must never crash a hook. The message is
+        prefixed with SYSTEM_MESSAGE_PREFIX so the agent can tell harness
+        input from a real user turn."""
+        sender = self._agent_sender
+        if sender is None:
+            self._ctx.report_progress(None, "send_to_agent: no channel for this agent")
+            return False
+        try:
+            await sender(f"{SYSTEM_MESSAGE_PREFIX}{message}")
+            return True
+        except Exception as e:  # noqa: BLE001
+            self._ctx.report_progress(None, f"send_to_agent failed: {e!r}")
+            return False
 
     async def run_on_host(
         self,
@@ -218,6 +243,7 @@ class HookContextProtocol(Protocol):
         description: str | None = None,
         cleanup_on_fail: bool = True,
     ) -> None: ...
+    async def send_to_agent(self, message: str) -> bool: ...
 
 
 def _resolve_target_path(path: str, workdir: str, host_home: str) -> str:

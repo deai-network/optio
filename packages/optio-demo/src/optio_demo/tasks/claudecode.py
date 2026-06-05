@@ -46,6 +46,8 @@ from optio_claudecode import (
 )
 from optio_core.models import TaskInstance
 
+from optio_demo.tasks._feedback import make_feedback_on_deliverable
+
 
 CONTEXT_TXT = b"""\
 Mission code-name: Project Petunia
@@ -107,10 +109,9 @@ async def _before_execute(hook_ctx: HookContext) -> None:
     await hook_ctx.copy_file(CONTEXT_TXT, "context.txt")
 
 
-async def _on_deliverable(
-    hook_ctx: HookContext, path: str, text: str,
-) -> None:
-    print(f"[claudecode-demo] deliverable {path}:\n{text}")
+# Exercises the agent feedback channel (tmux fake-typing transport): rejects
+# a first delivery missing "over and out", nudges, accepts the re-delivery.
+_on_deliverable = make_feedback_on_deliverable("claudecode-demo")
 
 
 async def _after_execute(hook_ctx: HookContext) -> None:

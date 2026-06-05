@@ -5,9 +5,11 @@ Owns the optio.log keyword protocol (parser + session driver), the
 truth for the LLM-facing keyword-protocol documentation.
 """
 
-from optio_agents.context import HookContext, HookContextProtocol
+from optio_agents.context import HookContext, HookContextProtocol, SYSTEM_MESSAGE_PREFIX
 from optio_agents.protocol import (
     DELIVERABLE_QUEUE_BOUND,
+    RESUME_NOTICE,
+    AgentSender,
     BrowserMode,
     DeliverableCallback,
     DeliverableEvent,
@@ -32,10 +34,12 @@ from optio_agents import seeds
 __all__ = [
     "HookContext",
     "HookContextProtocol",
+    "SYSTEM_MESSAGE_PREFIX",
     "browser_shims",
     "seeds",
     "run_log_protocol_session",
     "fetch_deliverable_text",
+    "AgentSender",
     "DeliverableCallback",
     "HookCallback",
     "DELIVERABLE_QUEUE_BOUND",
@@ -51,5 +55,6 @@ __all__ = [
     "get_protocol",
     "Protocol",
     "BrowserMode",
+    "RESUME_NOTICE",
     "build_log_channel_prompt",
 ]

@@ -47,6 +47,8 @@ from optio_opencode import (
     create_opencode_task,
 )
 
+from optio_demo.tasks._feedback import make_feedback_on_deliverable
+
 
 CONTEXT_TXT = b"""\
 Mission code-name: Project Petunia
@@ -109,10 +111,10 @@ async def _before_execute(hook_ctx: HookContext) -> None:
     await hook_ctx.copy_file(CONTEXT_TXT, "context.txt")
 
 
-async def _on_deliverable(
-    hook_ctx: HookContext, path: str, text: str,
-) -> None:
-    print(f"[opencode-demo] deliverable {path}:\n{text}")
+# Exercises the agent feedback channel: rejects a first delivery that
+# doesn't end with "over and out" (withheld from the prompt — the prank),
+# nudges the agent, accepts the corrected re-delivery. Keeps the print.
+_on_deliverable = make_feedback_on_deliverable("opencode-demo")
 
 
 async def _after_execute(hook_ctx: HookContext) -> None:

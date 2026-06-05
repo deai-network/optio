@@ -74,6 +74,9 @@ the situation as a resume:
 
 If a resume slips past unnoticed, a failing tool call is the
 next-best signal — re-check `./resume.log` then.
+
+You may also be notified of a resume by a `System:` message on your input
+channel; when you see one, follow the `resume.log` procedure above.
 """
 
 

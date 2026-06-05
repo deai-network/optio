@@ -52,10 +52,16 @@ DELIVERABLE_QUEUE_BOUND = 64
 
 # Public type aliases. ``HookContext`` is forward-quoted in these aliases
 # so consumers don't need to import HookContext to type-check.
-DeliverableCallback = Callable[["HookContext", str, str], Awaitable[None]]
+DeliverableCallback = Callable[["HookContext", str, str], Awaitable["str | None"]]
 """Consumer callback invoked per fetched DELIVERABLE.
 
 Arguments: ``(hook_ctx, deliverable_path, decoded_text)``.
+
+May return a non-empty string to send back to the running agent (the
+deliverable loop routes it through ``hook_ctx.send_to_agent``); return
+``None`` or ``""`` to send nothing. A hook may also call
+``hook_ctx.send_to_agent(...)`` directly instead of / in addition to
+returning.
 
 ``deliverable_path`` is the path of the deliverable file relative to
 ``<workdir>/deliverables/`` (e.g. ``"summary.md"`` or
@@ -67,6 +73,13 @@ auto-generated ``"Deliverable: <path>"`` progress message.
 HookCallback = Callable[["HookContext"], Awaitable[None]]
 """Hook callback receiving a HookContext. Used by before_execute and
 after_execute."""
+
+
+AgentSender = Callable[[str], Awaitable[None]]
+"""Backend transport that pushes one message into the live agent session.
+
+Raises on transport failure (worker down / tmux session gone / non-zero
+exit); ``HookContext.send_to_agent`` catches that and returns False."""
 
 
 class _SessionFailed(Exception):
@@ -100,6 +113,7 @@ async def run_log_protocol_session(
     after_execute: HookCallback | None = None,
     protocol: "Protocol | None" = None,
     browser_url_rewrite: "Callable[[str], str] | None" = None,
+    agent_sender: "AgentSender | None" = None,
 ) -> None:
     """Run ``body`` against ``host`` while the log/deliverables protocol
     cooperates with it.
@@ -139,6 +153,7 @@ async def run_log_protocol_session(
     if protocol is None:
         protocol = get_protocol()
     hook_ctx = HookContext(ctx, host)
+    hook_ctx._agent_sender = agent_sender
 
     # Workdir + protocol artifacts. ``setup_workdir`` mkdirs the workdir
     # only; the protocol-specific deliverables/ dir + empty optio.log
@@ -330,11 +345,14 @@ async def _deliverable_fetch_loop(
             if callback is None:
                 continue
             try:
-                await callback(hook_ctx, display, text)
+                feedback = await callback(hook_ctx, display, text)
             except Exception as exc:  # noqa: BLE001
                 ctx.report_progress(
                     None, f"on_deliverable callback raised: {exc!r}",
                 )
+            else:
+                if isinstance(feedback, str) and feedback.strip():
+                    await hook_ctx.send_to_agent(feedback)
         finally:
             queue.task_done()
 

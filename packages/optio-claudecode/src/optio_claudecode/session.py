@@ -230,6 +230,16 @@ async def run_claudecode_session(
                 auto_start=config.auto_start, resuming=resuming,
             ),
         ]
+        # Resume notification: a System:-prefixed positional appended after
+        # --continue, so the restored conversation gets a "you have been
+        # resumed" turn. Gated on pass_continue (a transcript is actually
+        # being continued); a no-transcript resume sends nothing.
+        claude_flags = [
+            *claude_flags,
+            *host_actions.build_resume_notice_args(
+                resuming=resuming, pass_continue=pass_continue,
+            ),
+        ]
         launch_env = {
             **(config.env or {}),
             **focus_env,
@@ -266,6 +276,14 @@ async def run_claudecode_session(
         ):
             await asyncio.sleep(1.0)
 
+    async def _agent_sender(message: str) -> None:
+        # tmux_* are set by _claudecode_body at launch; host is the session's
+        # Host. send_text_to_claude raises on a tmux failure, which
+        # send_to_agent converts to False.
+        await host_actions.send_text_to_claude(
+            host, tmux_path, tmux_socket, tmux_session, message,
+        )
+
     try:
         await run_log_protocol_session(
             host, ctx,
@@ -274,6 +292,7 @@ async def run_claudecode_session(
             after_execute=config.after_execute,
             protocol=protocol,
             browser_url_rewrite=rewrite_oauth_redirect,
+            agent_sender=_agent_sender,
         )
     except _SessionFailed as fail:
         raise RuntimeError(str(fail)) from None

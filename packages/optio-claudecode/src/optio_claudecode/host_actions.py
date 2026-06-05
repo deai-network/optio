@@ -14,6 +14,8 @@ import re
 import shlex
 from typing import TYPE_CHECKING, Any
 
+from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
+
 if TYPE_CHECKING:
     from optio_agents import HookContextProtocol
     from optio_host import Host
@@ -679,6 +681,47 @@ def build_auto_start_args(*, auto_start: bool, resuming: bool) -> list[str]:
     if auto_start and not resuming:
         return [AUTO_START_PROMPT]
     return []
+
+
+def build_resume_notice_args(*, resuming: bool, pass_continue: bool) -> list[str]:
+    """Trailing positional prompt that notifies a resumed claude session.
+
+    Returns ``[f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}"]`` ONLY when the
+    session is both resuming AND continuing a transcript (``pass_continue``).
+    The positional only *appends* to the restored conversation when claude is
+    launched with ``--continue`` (verified: ``claude --continue '<text>'``
+    resumes and processes the text as a new turn). On a no-transcript resume
+    there is nothing to append to, so no notice is sent. Empty otherwise."""
+    if resuming and pass_continue:
+        return [f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}"]
+    return []
+
+
+async def send_text_to_claude(
+    host: "Host", tmux_path: str, tmux_socket: str, tmux_session: str, text: str,
+) -> None:
+    """Fake-type a message into the claude TUI and submit it.
+
+    Uses ``set-buffer`` + ``paste-buffer`` (robust for arbitrary text incl.
+    spaces, which ``send-keys -l`` would mistreat) then a single ``Enter``.
+    Raises on a tmux failure (the caller treats that as 'agent unreachable',
+    which ``send_to_agent`` converts to False). Verified manually against a
+    live claude TUI (see the spec's Part C)."""
+    s = shlex.quote(tmux_socket)
+    sess = shlex.quote(tmux_session)
+    tp = shlex.quote(tmux_path)
+    buf = "optio-feedback"
+    cmd = (
+        f"{tp} -S {s} set-buffer -b {buf} -- {shlex.quote(text)} && "
+        f"{tp} -S {s} paste-buffer -d -b {buf} -t {sess} && "
+        f"{tp} -S {s} send-keys -t {sess} Enter"
+    )
+    result = await host.run_command(cmd)
+    if result.exit_code != 0:
+        raise RuntimeError(
+            f"send_text_to_claude: tmux injection failed "
+            f"(exit {result.exit_code}): {result.stderr!r}"
+        )
 
 
 def build_focus_mode(

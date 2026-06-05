@@ -31,6 +31,7 @@ from optio_core.context import ProcessContext
 from optio_core.models import BasicAuth, TaskInstance
 
 from optio_agents import HookContext
+from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
 from optio_host.host import Host, LocalHost, ProcessHandle, RemoteHost
 from optio_host.paths import task_dir
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
@@ -327,6 +328,13 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             await _post_opencode_prompt(
                 worker_port, password, session_id, AUTO_START_PROMPT,
             )
+        elif resuming and config.supports_resume:
+            # Push notification: make the resumed agent NOTICE the resume
+            # promptly (resume.log remains the pull-based source of truth).
+            await _post_opencode_prompt(
+                worker_port, password, session_id,
+                f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}",
+            )
 
         # --- await opencode subprocess exit -----------------------------
         # The protocol driver runs this body alongside the tail dispatcher
@@ -343,6 +351,14 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
     # --- run the protocol session -----------------------------------------
     # host.connect() already happened up-front (before install + resume).
     session_error: BaseException | None = None
+
+    async def _agent_sender(message: str) -> None:
+        # worker_port / session_id are set by _opencode_body at launch;
+        # password is established at function scope. _post_opencode_prompt
+        # raises on a non-2xx / unreachable worker, which
+        # send_to_agent converts to False.
+        await _post_opencode_prompt(worker_port, password, session_id, message)
+
     try:
         # before_execute is wired manually inside _opencode_body (after
         # install, before launch) per opencode's documented timing.
@@ -355,6 +371,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             on_deliverable=config.on_deliverable,
             after_execute=config.after_execute,
             protocol=protocol,
+            agent_sender=_agent_sender,
         )
     except _SessionFailed as fail:
         session_error = fail
