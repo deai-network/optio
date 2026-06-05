@@ -29,7 +29,9 @@ def test_manifest_shape():
     assert CLAUDE_SEED_MANIFEST.home_subdir == "home"
     assert ".claude/.credentials.json" in CLAUDE_SEED_MANIFEST.include
     assert ".claude.json" in CLAUDE_SEED_MANIFEST.include
-    assert ".claude/plugins" in CLAUDE_SEED_MANIFEST.include
+    assert ".claude/settings.json" in CLAUDE_SEED_MANIFEST.include
+    # plugins (the official marketplace) are NOT seeded -- re-installed on launch
+    assert ".claude/plugins" not in CLAUDE_SEED_MANIFEST.include
 
 
 async def test_rekey_single_entry_to_new_cwd(tmp_workdir):
@@ -82,5 +84,5 @@ def test_cred_manifest_is_credentials_only():
     assert CLAUDE_CRED_MANIFEST.consume_transform is None
     # full manifest is composed FROM the narrow one (no duplicated path)
     assert CLAUDE_SEED_MANIFEST.include[:1] == CLAUDE_CRED_MANIFEST.include
-    assert ".claude/plugins" in CLAUDE_SEED_MANIFEST.include
+    assert ".claude/plugins" not in CLAUDE_SEED_MANIFEST.include
     assert CLAUDE_SEED_MANIFEST.consume_transform is not None

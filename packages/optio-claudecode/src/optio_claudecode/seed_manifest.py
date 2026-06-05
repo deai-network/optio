@@ -17,7 +17,11 @@ from optio_host.host import Host
 _LOG = logging.getLogger(__name__)
 
 CLAUDE_SEED_SUFFIX = "_claudecode_seeds"
-CLAUDE_SEED_MANIFEST_VERSION = 1
+# v2: dropped ".claude/plugins" from the seed (was the official marketplace
+# tree -- ~376 files / 4.2 MB, 99% of the seed). Claude re-installs the
+# marketplace on launch (network is available in analyze), so the seed stays
+# ~26 KB and save-back repacks are trivial.
+CLAUDE_SEED_MANIFEST_VERSION = 2
 
 
 async def _rekey_claude_json_projects(host: Host) -> None:
@@ -61,7 +65,6 @@ CLAUDE_SEED_MANIFEST = seeds.SeedManifest(
     include=CLAUDE_CRED_MANIFEST.include + [
         ".claude/settings.json",
         ".claude/mcp-needs-auth-cache.json",
-        ".claude/plugins",
         ".claude.json",
     ],
     version=CLAUDE_SEED_MANIFEST_VERSION,
