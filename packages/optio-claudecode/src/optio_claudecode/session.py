@@ -297,6 +297,18 @@ async def run_claudecode_session(
             except Exception:
                 _LOG.exception("tmux session teardown failed")
 
+        # Wait for claude to fully exit before snapshotting, so the tar of
+        # home/.claude reads a quiescent tree. kill-session only SIGHUPs
+        # claude and returns; claude may still be flushing settings / mcp-cache
+        # / locks as it dies, which would make the capture tar fail with
+        # "file changed as we read it". Best-effort + bounded; the strict tar
+        # exit check in _archive_home_claude is the backstop.
+        if launched_handle is not None and claude_path:
+            try:
+                await host_actions.await_claude_gone(host, claude_path)
+            except Exception:
+                _LOG.exception("await_claude_gone failed; proceeding to capture")
+
         if not resuming and config.on_seed_saved is not None:
             _trace("finally: capture_seed START")
             try:

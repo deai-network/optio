@@ -588,6 +588,41 @@ async def _kill_tmux_session(
         _LOG.exception("tmux kill-session failed (socket=%s)", socket_path)
 
 
+async def await_claude_gone(
+    host: "Host", claude_path: str, *, timeout_s: float = 15.0, poll_s: float = 1.0,
+) -> bool:
+    """Block (polling once per ``poll_s``) until no process matching the
+    per-task ``claude_path`` remains.
+
+    Called after ``_kill_tmux_session`` and before snapshot capture so the tar
+    of ``home/.claude`` reads a quiescent tree. claude flushes its transcript
+    incrementally, but may still be writing settings / mcp-cache / lock files
+    as it dies; tarring during that races and fails with "file changed as we
+    read it". Scoped to ``claude_path`` (unique per task workdir) so it ignores
+    unrelated claude processes on the host. Bounded by ``timeout_s``: on
+    timeout it logs a warning and returns False (the strict tar exit check in
+    ``_archive_home_claude`` is the backstop). Returns True once claude is gone.
+    """
+    # `[c]laude` so pgrep's OWN command line does not match the pattern
+    # (the classic ps|grep self-match trick); still matches the real process.
+    pattern = (
+        claude_path[:-6] + "[c]laude" if claude_path.endswith("claude") else claude_path
+    )
+    waited = 0.0
+    while True:
+        r = await host.run_command(f"pgrep -f {shlex.quote(pattern)} || true")
+        if not (r.stdout or "").strip():
+            return True
+        if waited >= timeout_s:
+            _LOG.warning(
+                "await_claude_gone: claude still running after %.0fs (path=%s); "
+                "proceeding to capture anyway", timeout_s, claude_path,
+            )
+            return False
+        await asyncio.sleep(poll_s)
+        waited += poll_s
+
+
 async def tmux_session_alive(
     host: "Host", tmux_path: str, socket_path: str, session_name: str,
 ) -> bool:
