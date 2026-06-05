@@ -76,6 +76,22 @@ async def insert_seed(
     return str(result.inserted_id)
 
 
+async def update_seed_blob(
+    db: "AsyncIOMotorDatabase", *, prefix: str, suffix: str, seed_id: str,
+    new_blob_id: "ObjectId",
+) -> None:
+    """Point an existing seed doc at a new blob and stamp `updatedAt`.
+
+    Used by `refresh_seed` for in-place credential save-back; the seed id is
+    stable, only the blob changes."""
+    from bson import ObjectId
+
+    await _collection(db, prefix, suffix).update_one(
+        {"_id": ObjectId(seed_id)},
+        {"$set": {"blobId": new_blob_id, "updatedAt": datetime.now(timezone.utc)}},
+    )
+
+
 async def load_seed(
     db: "AsyncIOMotorDatabase", *, prefix: str, suffix: str, seed_id: str,
 ) -> dict | None:
@@ -181,16 +197,54 @@ async def _archive_include(host: "Host", *, home_subdir: str, include: list[str]
         await host.run_command(f"rm -f {shlex.quote(tmpfile)}")
 
 
-async def _extract_seed(host: "Host", *, home_subdir: str, plain: bytes) -> None:
-    """Extract the decrypted seed tar over <workdir>/<home_subdir>."""
+async def _extract_seed(
+    host: "Host", *, home_subdir: str, plain: bytes, include: list[str] | None = None,
+) -> None:
+    """Extract the decrypted seed tar over <workdir>/<home_subdir>.
+
+    When `include` is given, extract ONLY the archive members that match one
+    of those paths (exact file, or a directory prefix); members absent from the
+    archive are silently skipped. Extraction is overlay — it overwrites the
+    listed members and never deletes others. `include=None` extracts everything.
+    """
     workdir = host.workdir.rstrip("/")
     home_abs = f"{workdir}/{home_subdir}"
     tmpfile = f"{workdir}/.optio-seed-restore.tar.gz"
     await host.run_command(f"mkdir -p {shlex.quote(home_abs)}")
     await host.put_file_to_host(plain, tmpfile)
     try:
+        members_arg = ""
+        if include is not None:
+            listing = await host.run_command(f"tar -tzf {shlex.quote(tmpfile)}")
+            if listing.exit_code != 0:
+                raise RuntimeError(
+                    f"seed list failed (exit {listing.exit_code}): "
+                    f"{listing.stderr.strip()[:200]}"
+                )
+            names = [n for n in listing.stdout.splitlines() if n]
+            matched = [
+                n for n in names
+                if any(
+                    n == rel or n.rstrip("/") == rel or n.startswith(rel + "/")
+                    for rel in include
+                )
+            ]
+            # A matched directory member (e.g. ".claude/plugins/") extracts
+            # recursively, so passing its children as separate args makes tar
+            # report them "not found in archive". Keep only top-level matches:
+            # drop any member that is a descendant of another matched member.
+            prefixes = sorted(
+                {n for n in matched if n.endswith("/")}, key=len,
+            )
+            wanted = [
+                n for n in matched
+                if not any(n != p and n.startswith(p) for p in prefixes)
+            ]
+            if not wanted:
+                return  # nothing in the archive matches the requested members
+            members_arg = " " + " ".join(shlex.quote(n) for n in wanted)
         r = await host.run_command(
-            f"tar -xzf {shlex.quote(tmpfile)} -C {shlex.quote(home_abs)}"
+            f"tar -xzf {shlex.quote(tmpfile)} -C {shlex.quote(home_abs)}{members_arg}"
         )
         if r.exit_code != 0:
             raise RuntimeError(
@@ -198,6 +252,28 @@ async def _extract_seed(host: "Host", *, home_subdir: str, plain: bytes) -> None
             )
     finally:
         await host.run_command(f"rm -f {shlex.quote(tmpfile)}")
+
+
+def _merge_tar_members(base_gz: bytes, overlay_gz: bytes) -> bytes:
+    """Return a new tar.gz = base with `overlay`'s members overwriting any
+    same-named base member; all other base members are preserved. Pure
+    in-memory; no host access."""
+    import io
+    import tarfile
+
+    out = io.BytesIO()
+    with tarfile.open(fileobj=io.BytesIO(overlay_gz), mode="r:gz") as ov:
+        ov_members = ov.getmembers()
+        overlay_names = {m.name for m in ov_members}
+        with tarfile.open(fileobj=out, mode="w:gz") as w:
+            with tarfile.open(fileobj=io.BytesIO(base_gz), mode="r:gz") as base:
+                for m in base.getmembers():
+                    if m.name in overlay_names:
+                        continue
+                    w.addfile(m, base.extractfile(m) if m.isfile() else None)
+            for m in ov_members:
+                w.addfile(m, ov.extractfile(m) if m.isfile() else None)
+    return out.getvalue()
 
 
 async def capture_seed(
@@ -243,6 +319,52 @@ async def merge_seed(
     payload = await _read_blob_bytes(ctx, doc["blobId"])
     dec = decrypt or (lambda b: b)
     plain = dec(payload)
-    await _extract_seed(host, home_subdir=manifest.home_subdir, plain=plain)
+    await _extract_seed(
+        host, home_subdir=manifest.home_subdir, plain=plain, include=manifest.include,
+    )
     if manifest.consume_transform is not None:
         await manifest.consume_transform(host)
+
+
+async def refresh_seed(
+    ctx: "ProcessContext",
+    host: "Host",
+    *,
+    seed_id: str,
+    manifest: SeedManifest,
+    suffix: str,
+    encrypt: "Callable[[bytes], bytes] | None",
+    decrypt: "Callable[[bytes], bytes] | None",
+) -> None:
+    """Merge the live host's `manifest.include` files INTO an existing seed,
+    in place: the seed id is stable, only the blob is replaced.
+
+    Crash-safe ordering: store the new blob fully, then atomically repoint the
+    doc, then delete the old blob. A crash at any point leaves at worst an
+    orphan GridFS blob; the doc never points at a half-written blob.
+
+    Raises KeyError if `seed_id` is unknown.
+    """
+    doc = await load_seed(ctx._db, prefix=ctx._prefix, suffix=suffix, seed_id=seed_id)
+    if doc is None:
+        raise KeyError(f"unknown seed_id: {seed_id!r}")
+    old_blob_id = doc["blobId"]
+
+    dec = decrypt or (lambda b: b)
+    enc = encrypt or (lambda b: b)
+    base = dec(await _read_blob_bytes(ctx, old_blob_id))
+    overlay = await _archive_include(
+        host, home_subdir=manifest.home_subdir, include=manifest.include,
+    )
+    merged = _merge_tar_members(base, overlay)
+    payload = enc(merged)
+
+    async with ctx.store_blob("seed") as writer:
+        await writer.write(payload)
+        new_blob_id = writer.file_id
+
+    await update_seed_blob(
+        ctx._db, prefix=ctx._prefix, suffix=suffix,
+        seed_id=seed_id, new_blob_id=new_blob_id,
+    )
+    await ctx.delete_blob(old_blob_id)

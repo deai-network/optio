@@ -219,3 +219,210 @@ async def test_consume_transform_runs_after_extract(mongo_db, tmp_workdir):
         ctx, dst, seed_id=seed_id, manifest=manifest, suffix=SUFFIX, decrypt=None,
     )
     assert os.path.exists(os.path.join(dst.workdir, "home", ".transform-ran"))
+
+
+async def test_merge_narrow_overlay_extracts_only_listed_members(mongo_db, tmp_workdir):
+    import os
+
+    # capture a FULL seed (creds + plugins + .claude.json)
+    src = LocalHost(taskdir=os.path.join(tmp_workdir, "nsrc"))
+    await src.setup_workdir()
+    _plant_env(src.workdir)
+    ctx = await _local_ctx(mongo_db, src.taskdir)
+    seed_id = await seeds.capture_seed(
+        ctx, src, manifest=FAKE_MANIFEST, suffix=SUFFIX, encrypt=None,
+    )
+
+    # destination already has an OLD creds file + an unrelated file that a
+    # narrow overlay must NOT delete
+    dst = LocalHost(taskdir=os.path.join(tmp_workdir, "ndst"))
+    await dst.setup_workdir()
+    claude = os.path.join(dst.workdir, "home", ".claude")
+    os.makedirs(claude, exist_ok=True)
+    with open(os.path.join(claude, ".credentials.json"), "w") as fh:
+        fh.write('{"token": "OLD"}')
+    with open(os.path.join(claude, "keep.txt"), "w") as fh:
+        fh.write("keep me")
+
+    narrow = seeds.SeedManifest(
+        home_subdir="home", include=[".claude/.credentials.json"], version=7,
+    )
+    await seeds.merge_seed(
+        ctx, dst, seed_id=seed_id, manifest=narrow, suffix=SUFFIX, decrypt=None,
+    )
+
+    # creds overwritten from the seed; plugins NOT injected; unrelated file kept
+    with open(os.path.join(claude, ".credentials.json")) as fh:
+        assert fh.read() == '{"token": "x"}'  # the seed value from _plant_env
+    assert not os.path.exists(os.path.join(claude, "plugins"))
+    assert os.path.exists(os.path.join(claude, "keep.txt"))
+
+
+async def test_merge_tolerates_include_member_absent_from_archive(mongo_db, tmp_workdir):
+    import os
+
+    src = LocalHost(taskdir=os.path.join(tmp_workdir, "asrc"))
+    await src.setup_workdir()
+    _plant_env(src.workdir)
+    ctx = await _local_ctx(mongo_db, src.taskdir)
+    seed_id = await seeds.capture_seed(
+        ctx, src, manifest=FAKE_MANIFEST, suffix=SUFFIX, encrypt=None,
+    )
+    dst = LocalHost(taskdir=os.path.join(tmp_workdir, "adst"))
+    await dst.setup_workdir()
+    # ask for a member the archive does not contain -> no error, no extraction
+    narrow = seeds.SeedManifest(
+        home_subdir="home", include=[".claude/settings.json"], version=7,
+    )
+    await seeds.merge_seed(
+        ctx, dst, seed_id=seed_id, manifest=narrow, suffix=SUFFIX, decrypt=None,
+    )
+    assert not os.path.exists(os.path.join(dst.workdir, "home", ".claude", "settings.json"))
+
+
+async def test_update_seed_blob_swaps_blobid_and_stamps_updatedat(mongo_db):
+    old = ObjectId()
+    seed_id = await seeds.insert_seed(
+        mongo_db, prefix="t", suffix=SUFFIX, blob_id=old, manifest_version=1,
+    )
+    new = ObjectId()
+    await seeds.update_seed_blob(
+        mongo_db, prefix="t", suffix=SUFFIX, seed_id=seed_id, new_blob_id=new,
+    )
+    doc = await seeds.load_seed(mongo_db, prefix="t", suffix=SUFFIX, seed_id=seed_id)
+    assert doc["blobId"] == new
+    assert "updatedAt" in doc
+
+
+def _mk_targz(members: dict) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, data in members.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            info.mtime = 0
+            tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def test_merge_tar_members_overrides_and_preserves():
+    base = _mk_targz({"a.txt": b"OLD-A", "b.txt": b"B"})
+    overlay = _mk_targz({"a.txt": b"NEW-A"})
+    merged = seeds._merge_tar_members(base, overlay)
+    with tarfile.open(fileobj=io.BytesIO(merged), mode="r:gz") as tar:
+        got = {m.name: tar.extractfile(m).read() for m in tar.getmembers()}
+    assert got == {"a.txt": b"NEW-A", "b.txt": b"B"}
+
+
+async def test_refresh_seed_replaces_credentials_in_place(mongo_db, tmp_workdir):
+    import os
+
+    # capture a full seed with creds={"token":"x"}
+    src = LocalHost(taskdir=os.path.join(tmp_workdir, "rsrc"))
+    await src.setup_workdir()
+    _plant_env(src.workdir)
+    ctx = await _local_ctx(mongo_db, src.taskdir)
+    seed_id = await seeds.capture_seed(
+        ctx, src, manifest=FAKE_MANIFEST, suffix=SUFFIX, encrypt=None,
+    )
+    old_blob = (await seeds.load_seed(mongo_db, prefix="t", suffix=SUFFIX, seed_id=seed_id))["blobId"]
+
+    # a NEW live home whose creds have rotated
+    live = LocalHost(taskdir=os.path.join(tmp_workdir, "rlive"))
+    await live.setup_workdir()
+    claude = os.path.join(live.workdir, "home", ".claude")
+    os.makedirs(claude, exist_ok=True)
+    with open(os.path.join(claude, ".credentials.json"), "w") as fh:
+        fh.write('{"token": "ROTATED"}')
+
+    narrow = seeds.SeedManifest(
+        home_subdir="home", include=[".claude/.credentials.json"], version=7,
+    )
+    await seeds.refresh_seed(
+        ctx, live, seed_id=seed_id, manifest=narrow, suffix=SUFFIX,
+        encrypt=None, decrypt=None,
+    )
+
+    # seed id unchanged; blob swapped; updatedAt stamped
+    doc = await seeds.load_seed(mongo_db, prefix="t", suffix=SUFFIX, seed_id=seed_id)
+    assert doc["blobId"] != old_blob
+    assert "updatedAt" in doc
+
+    # merging the refreshed seed yields the rotated creds, and the rest of the
+    # full environment is still intact
+    dst = LocalHost(taskdir=os.path.join(tmp_workdir, "rdst"))
+    await dst.setup_workdir()
+    await seeds.merge_seed(
+        ctx, dst, seed_id=seed_id, manifest=FAKE_MANIFEST, suffix=SUFFIX, decrypt=None,
+    )
+    with open(os.path.join(dst.workdir, "home", ".claude", ".credentials.json")) as fh:
+        assert fh.read() == '{"token": "ROTATED"}'
+    assert os.path.exists(os.path.join(dst.workdir, "home", ".claude", "plugins"))
+
+    # old blob removed
+    import gridfs
+    from motor.motor_asyncio import AsyncIOMotorGridFSBucket
+    with pytest.raises(gridfs.errors.NoFile):
+        await AsyncIOMotorGridFSBucket(mongo_db).open_download_stream(old_blob)
+
+
+async def test_refresh_seed_unknown_id_raises(mongo_db, tmp_workdir):
+    import os
+
+    live = LocalHost(taskdir=os.path.join(tmp_workdir, "rk"))
+    await live.setup_workdir()
+    ctx = await _local_ctx(mongo_db, live.taskdir)
+    narrow = seeds.SeedManifest(
+        home_subdir="home", include=[".claude/.credentials.json"], version=7,
+    )
+    with pytest.raises(KeyError):
+        await seeds.refresh_seed(
+            ctx, live, seed_id=str(ObjectId()), manifest=narrow, suffix=SUFFIX,
+            encrypt=None, decrypt=None,
+        )
+
+
+async def test_refresh_seed_crash_before_doc_update_keeps_old_blob(
+    mongo_db, tmp_workdir, monkeypatch,
+):
+    import os
+
+    src = LocalHost(taskdir=os.path.join(tmp_workdir, "csrc"))
+    await src.setup_workdir()
+    _plant_env(src.workdir)
+    ctx = await _local_ctx(mongo_db, src.taskdir)
+    seed_id = await seeds.capture_seed(
+        ctx, src, manifest=FAKE_MANIFEST, suffix=SUFFIX, encrypt=None,
+    )
+    old_blob = (await seeds.load_seed(mongo_db, prefix="t", suffix=SUFFIX, seed_id=seed_id))["blobId"]
+
+    live = LocalHost(taskdir=os.path.join(tmp_workdir, "clive"))
+    await live.setup_workdir()
+    claude = os.path.join(live.workdir, "home", ".claude")
+    os.makedirs(claude, exist_ok=True)
+    with open(os.path.join(claude, ".credentials.json"), "w") as fh:
+        fh.write('{"token": "ROTATED"}')
+
+    async def boom(*a, **k):
+        raise RuntimeError("simulated crash before doc update")
+
+    monkeypatch.setattr(seeds, "update_seed_blob", boom)
+    narrow = seeds.SeedManifest(
+        home_subdir="home", include=[".claude/.credentials.json"], version=7,
+    )
+    with pytest.raises(RuntimeError):
+        await seeds.refresh_seed(
+            ctx, live, seed_id=seed_id, manifest=narrow, suffix=SUFFIX,
+            encrypt=None, decrypt=None,
+        )
+
+    # doc still points at the original blob and still decodes to the old creds
+    doc = await seeds.load_seed(mongo_db, prefix="t", suffix=SUFFIX, seed_id=seed_id)
+    assert doc["blobId"] == old_blob
+    dst = LocalHost(taskdir=os.path.join(tmp_workdir, "cdst"))
+    await dst.setup_workdir()
+    await seeds.merge_seed(
+        ctx, dst, seed_id=seed_id, manifest=FAKE_MANIFEST, suffix=SUFFIX, decrypt=None,
+    )
+    with open(os.path.join(dst.workdir, "home", ".claude", ".credentials.json")) as fh:
+        assert fh.read() == '{"token": "x"}'
