@@ -1,5 +1,5 @@
 import { Tag, Tooltip } from 'antd';
-import { ExclamationCircleOutlined } from '@ant-design/icons';
+import { ExclamationCircleOutlined, ClockCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { useState, useEffect } from 'react';
 import type { CSSProperties } from 'react';
@@ -56,14 +56,19 @@ interface ProcessStatusBadgeProps {
   error?: string;
   runningSince?: string | null;
   size?: ProcessStatusBadgeSize;
+  /** When true, render a stopwatch indicator: this process is stamped for
+   *  automatic resume after an engine restart. */
+  autoResumeScheduled?: boolean;
 }
 
-export function ProcessStatusBadge({ state, error, runningSince, size = 'small' }: ProcessStatusBadgeProps) {
+export function ProcessStatusBadge({ state, error, runningSince, size = 'small', autoResumeScheduled }: ProcessStatusBadgeProps) {
   const { t } = useTranslation();
   const color = STATUS_COLORS[state] ?? 'default';
   const label = t(`status.${state}`, state);
   const isActive = isActiveState(state);
   const elapsed = useElapsed(runningSince, isActive);
+
+  const autoResumeLabel = t('status.autoResumeScheduled', 'Scheduled for auto-restart');
 
   return (
     <span>
@@ -74,6 +79,11 @@ export function ProcessStatusBadge({ state, error, runningSince, size = 'small' 
       {state === 'failed' && error && (
         <Tooltip title={error}>
           <ExclamationCircleOutlined style={{ color: '#ff4d4f', marginLeft: 4 }} />
+        </Tooltip>
+      )}
+      {autoResumeScheduled && (
+        <Tooltip title={autoResumeLabel}>
+          <ClockCircleOutlined aria-label={autoResumeLabel} style={{ color: '#722ed1', marginLeft: 4 }} />
         </Tooltip>
       )}
     </span>

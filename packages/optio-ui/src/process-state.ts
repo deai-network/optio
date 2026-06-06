@@ -44,6 +44,7 @@ export interface ProcessStateLike {
   cancellable?: boolean;
   supportsResume?: boolean;
   hasSavedState?: boolean;
+  autoResumeScheduled?: boolean;
 }
 
 export function isLaunchableState(state: string | null | undefined): boolean {
