@@ -195,3 +195,62 @@ async def test_stamp_eligibility_is_top_level_only(mongo_db):
         assert child_doc["autoResumeScheduled"] is False
     finally:
         await fw.shutdown()
+
+
+async def test_force_cancel_clears_stamp(mongo_db):
+    """An uncooperative auto_resume root is stamped at shutdown, then
+    force-cancelled to failed — the stamp must be cleared."""
+    prefix = "arclear_force"
+    started = asyncio.Event()
+
+    async def uncooperative(ctx):
+        started.set()
+        await asyncio.sleep(30)  # ignore cancellation
+
+    async def get_tasks(_services, metadata_filter=None):
+        return [TaskInstance(
+            execute=uncooperative, process_id="stuck", name="Stuck",
+            supports_resume=True, auto_resume=True,
+        )]
+
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix=prefix, get_task_definitions=get_tasks)
+    await fw.launch("stuck", session_id=None)
+    await asyncio.wait_for(started.wait(), timeout=2.0)
+
+    await fw.shutdown(grace_seconds=0.2)
+
+    proc = await get_process_by_process_id(mongo_db, prefix, "stuck")
+    assert proc["status"]["state"] == "failed"
+    assert proc.get("autoResumeScheduled") is False
+
+
+async def test_reconcile_clears_stamp(mongo_db):
+    """A stamped, still-running process from a previous session is reconciled
+    to failed on init — the stamp must be cleared."""
+    prefix = "arclear_recon"
+    coll = mongo_db[f"{prefix}_processes"]
+    await coll.insert_one({
+        "processId": "ghost", "name": "Ghost", "params": {}, "metadata": {},
+        "parentId": None, "rootId": None, "depth": 0, "order": 0,
+        "adhoc": False, "ephemeral": False,
+        "status": {"state": "running", "runningSince": datetime.now(timezone.utc)},
+        "progress": {"percent": None, "message": None}, "log": [],
+        "createdAt": datetime.now(timezone.utc),
+        "autoResumeScheduled": True,
+    })
+
+    async def get_tasks(_services, metadata_filter=None):
+        return [TaskInstance(
+            execute=_noop, process_id="ghost", name="Ghost",
+            supports_resume=True, auto_resume=True,
+        )]
+
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix=prefix, get_task_definitions=get_tasks)
+    try:
+        proc = await get_process_by_process_id(mongo_db, prefix, "ghost")
+        assert proc["status"]["state"] == "failed"
+        assert proc.get("autoResumeScheduled") is False
+    finally:
+        await fw.shutdown()

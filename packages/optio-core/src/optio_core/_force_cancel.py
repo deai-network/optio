@@ -53,7 +53,11 @@ async def _write_force_cancelled_state(
     # Read ttlSeconds so we can compute expireAt for the TTL index.
     ttl_doc = await coll.find_one({"_id": oid}, {"ttlSeconds": 1})
     expire_at = compute_expire_at((ttl_doc or {}).get("ttlSeconds"), now=now)
-    set_doc: dict = {"status": status_doc, "widgetUpstream": None}
+    set_doc: dict = {
+        "status": status_doc,
+        "widgetUpstream": None,
+        "autoResumeScheduled": False,
+    }
     if expire_at is not None:
         set_doc["expireAt"] = expire_at
 

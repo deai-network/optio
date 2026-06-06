@@ -1074,7 +1074,10 @@ class Optio:
                 ProcessStatus(state="failed", error=error_msg, failed_at=now),
                 expire_at=expire_at,
             )
-            await coll.update_one({"_id": oid}, {"$set": {"widgetUpstream": None}})
+            await coll.update_one(
+                {"_id": oid},
+                {"$set": {"widgetUpstream": None, "autoResumeScheduled": False}},
+            )
             await append_log(
                 self._config.mongo_db, self._config.prefix, oid,
                 "event", f"State reconciled: {prev_state} -> failed (server restart)",
