@@ -107,6 +107,7 @@ export function ProcessItem({
         error={process.status?.error}
         runningSince={process.status?.runningSince}
         size={size}
+        autoResumeScheduled={process.autoResumeScheduled}
       />
       {!readonly && (
         <LaunchControls

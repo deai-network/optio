@@ -19,6 +19,7 @@ interface ProcessNode {
   warning?: string;
   supportsResume?: boolean;
   hasSavedState?: boolean;
+  autoResumeScheduled?: boolean;
   children?: ProcessNode[];
 }
 
@@ -72,7 +73,7 @@ function treeNodeToDataNode(
           <Text style={{ whiteSpace: 'nowrap' }}>{node.name}</Text>
         )}
         <span style={{ display: 'flex', alignItems: 'center', gap: 8, marginLeft: 'auto', minWidth: 120, justifyContent: 'flex-end' }}>
-          <ProcessStatusBadge state={node.status.state} error={node.status.error} runningSince={node.status.runningSince} />
+          <ProcessStatusBadge state={node.status.state} error={node.status.error} runningSince={node.status.runningSince} autoResumeScheduled={node.autoResumeScheduled} />
           {/* Progress bar visibility rules (keep consistent across ProcessList,
               RecentProcesses):
               - active with percent: determinate bar
