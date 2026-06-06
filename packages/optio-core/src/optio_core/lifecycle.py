@@ -114,6 +114,7 @@ class Optio:
             Awaitable[list[TaskInstance]],
         ] | None = None,
         cancel_grace_seconds: float = 5.0,
+        auto_resume_delay_seconds: float = 300.0,
     ) -> None:
         """Initialize optio.
 
@@ -150,6 +151,7 @@ class Optio:
             services=services,
             get_task_definitions=get_task_definitions,
             cancel_grace_seconds=cancel_grace_seconds,
+            auto_resume_delay_seconds=auto_resume_delay_seconds,
         )
 
         # Connect to Redis (if configured)

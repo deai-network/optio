@@ -29,3 +29,18 @@ def test_task_instance_auto_resume_defaults_false():
 def test_optio_config_auto_resume_delay_default():
     cfg = OptioConfig(mongo_db=None)
     assert cfg.auto_resume_delay_seconds == 300.0
+
+
+async def test_init_threads_auto_resume_delay(mongo_db):
+    async def get_tasks(_services, metadata_filter=None):
+        return [TaskInstance(execute=_noop, process_id="p", name="P")]
+
+    fw = Optio()
+    await fw.init(
+        mongo_db=mongo_db, prefix="ardelay",
+        get_task_definitions=get_tasks, auto_resume_delay_seconds=0.05,
+    )
+    try:
+        assert fw._config.auto_resume_delay_seconds == 0.05
+    finally:
+        await fw.shutdown()
