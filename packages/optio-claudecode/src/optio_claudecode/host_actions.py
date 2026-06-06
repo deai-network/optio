@@ -97,9 +97,15 @@ async def _claude_version_ok(host: "Host", claude_path: str) -> bool:
 
 
 async def _newest_cached_version(host: "Host", cache_dir: str) -> str | None:
-    """Return the highest-semver version filename in the cache, or None if empty."""
+    """Return the highest-semver *valid* version filename in the cache, or None.
+
+    Only non-empty, executable regular files count: claude's autoupdater (active
+    in a session) can leave a 0-byte partial when killed at teardown, and a stub
+    named like the newest version must not be picked as a cache hit (it fails
+    `claude --version` and triggers a full reinstall every launch)."""
     r = await host.run_command(
-        f"ls -1 {shlex.quote(cache_dir)} 2>/dev/null | sort -V | tail -1"
+        f"find {shlex.quote(cache_dir)} -maxdepth 1 -type f -size +0c -perm -u+x "
+        f"-printf '%f\\n' 2>/dev/null | sort -V | tail -1"
     )
     name = r.stdout.strip()
     return name or None
