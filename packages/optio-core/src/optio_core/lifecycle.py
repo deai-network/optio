@@ -416,6 +416,13 @@ class Optio:
         asyncio.create_task(
             self._executor.launch_process(oid_str, resume=resume, session_id=session_id),
         )
+        # A launch (manual or timer-driven) supersedes any pending auto-resume
+        # stamp on this process — clear it so the post-boot sweep won't
+        # double-launch it.
+        if proc.get("autoResumeScheduled"):
+            await set_auto_resume_scheduled(
+                self._config.mongo_db, self._config.prefix, proc["_id"], False,
+            )
         # Yield once so the executor's first state-write (idle→scheduled)
         # lands before we re-read; then return the post-launch snapshot
         # via OID (unambiguous).

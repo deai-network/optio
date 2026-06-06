@@ -254,3 +254,35 @@ async def test_reconcile_clears_stamp(mongo_db):
         assert proc.get("autoResumeScheduled") is False
     finally:
         await fw.shutdown()
+
+
+async def test_launch_clears_stamp(mongo_db):
+    """Launching a stamped process clears the stamp (human beat the timer)."""
+    prefix = "arlaunch_clear"
+    coll = mongo_db[f"{prefix}_processes"]
+
+    async def get_tasks(_services, metadata_filter=None):
+        return [TaskInstance(
+            execute=_noop, process_id="r", name="R",
+            supports_resume=True, auto_resume=True,
+        )]
+
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix=prefix, get_task_definitions=get_tasks)
+    try:
+        # Put the synced doc into a stamped, resumable, cancelled state.
+        await coll.update_one(
+            {"processId": "r"},
+            {"$set": {
+                "status": {"state": "cancelled"},
+                "hasSavedState": True,
+                "autoResumeScheduled": True,
+            }},
+        )
+        outcome = await fw.launch("r", resume=True, session_id=None)
+        assert outcome.ok, outcome.reason
+
+        proc = await get_process_by_process_id(mongo_db, prefix, "r")
+        assert proc.get("autoResumeScheduled") is False
+    finally:
+        await fw.shutdown()
