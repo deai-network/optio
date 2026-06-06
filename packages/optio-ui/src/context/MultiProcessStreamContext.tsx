@@ -17,6 +17,7 @@ export interface MultiProcessUpdate {
   uiWidget?: unknown;
   supportsResume?: boolean;
   hasSavedState?: boolean;
+  autoResumeScheduled?: boolean;
   metadata?: Record<string, unknown>;
   browserOpenRequests?: { requestId: string; url: string }[];
 }

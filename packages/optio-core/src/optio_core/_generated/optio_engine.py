@@ -138,6 +138,7 @@ class Process(BaseModel):
     widget_data: Any | None = Field(None, alias="widgetData")
     supports_resume: bool | None = Field(None, alias="supportsResume")
     has_saved_state: bool | None = Field(None, alias="hasSavedState")
+    auto_resume_scheduled: bool | None = Field(None, alias="autoResumeScheduled")
     browser_open_requests: list[BrowserOpenRequest] | None = Field(
         None, alias="browserOpenRequests"
     )
@@ -208,6 +209,7 @@ class Process1(BaseModel):
     widget_data: Any | None = Field(None, alias="widgetData")
     supports_resume: bool | None = Field(None, alias="supportsResume")
     has_saved_state: bool | None = Field(None, alias="hasSavedState")
+    auto_resume_scheduled: bool | None = Field(None, alias="autoResumeScheduled")
     browser_open_requests: list[BrowserOpenRequest] | None = Field(
         None, alias="browserOpenRequests"
     )
@@ -332,6 +334,7 @@ class Process2(BaseModel):
     widget_data: Any | None = Field(None, alias="widgetData")
     supports_resume: bool | None = Field(None, alias="supportsResume")
     has_saved_state: bool | None = Field(None, alias="hasSavedState")
+    auto_resume_scheduled: bool | None = Field(None, alias="autoResumeScheduled")
     browser_open_requests: list[BrowserOpenRequest] | None = Field(
         None, alias="browserOpenRequests"
     )

@@ -16,6 +16,9 @@ interface ProcessUpdate {
    *  whitelist carries this verbatim; callers cast / read by convention. */
   metadata?: Record<string, unknown>;
   browserOpenRequests?: { requestId: string; url: string }[];
+  /** Stamped for automatic resume after an engine restart (cancelled,
+   *  state-saved top-level process). Surfaced as a badge indicator. */
+  autoResumeScheduled?: boolean;
 }
 
 export interface ProcessTreeNode extends ProcessUpdate {

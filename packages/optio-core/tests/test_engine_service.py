@@ -387,3 +387,15 @@ async def test_module_rpc_server_attribute_reflects_instance(mongo_db):
         assert optio_core.rpc_server == "sentinel"
     finally:
         optio_core._instance.rpc_server = None
+
+
+def test_to_process_dict_carries_auto_resume_scheduled():
+    """The wire projection must forward autoResumeScheduled so the UI can
+    surface the pending-auto-resume badge. Regression guard: the field is in
+    the wire-key whitelist and survives _to_process_dict."""
+    from optio_core._engine_service import _to_process_dict, _PROCESS_WIRE_KEYS
+    assert "autoResumeScheduled" in _PROCESS_WIRE_KEYS
+    oid = ObjectId()
+    doc = {"_id": oid, "processId": "p", "name": "n", "autoResumeScheduled": True}
+    out = _to_process_dict(doc)
+    assert out["autoResumeScheduled"] is True

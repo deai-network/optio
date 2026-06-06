@@ -532,3 +532,34 @@ describe('browserOpenRequests propagation', () => {
     expect(p2.browserOpenRequests).toEqual([{ requestId: 'r2', url: 'https://y' }]);
   });
 });
+
+describe('autoResumeScheduled propagation', () => {
+  it('createTreePoller includes autoResumeScheduled in the update payload', async () => {
+    const events: any[] = [];
+    const rootId = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertOne({
+      _id: rootId,
+      processId: 'par', name: 'PAR',
+      rootId, parentId: null,
+      depth: 0, order: 0,
+      status: { state: 'cancelled' },
+      progress: { percent: null },
+      hasSavedState: true,
+      autoResumeScheduled: true,
+      cancellable: true,
+      log: [],
+    });
+    const poller = createTreePoller({
+      db, prefix: PREFIX,
+      sendEvent: (data) => events.push(data),
+      onError: () => {},
+      rootId: rootId.toString(),
+      baseDepth: 0,
+    });
+    poller.start();
+    await new Promise((r) => setTimeout(r, 1100));
+    poller.stop();
+    const update = events.find((e) => e.type === 'update');
+    expect(update.processes[0].autoResumeScheduled).toBe(true);
+  });
+});

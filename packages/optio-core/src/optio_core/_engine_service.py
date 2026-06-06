@@ -30,7 +30,8 @@ _PROCESS_WIRE_KEYS = frozenset({
     "_id", "processId", "name", "params", "metadata", "parentId", "rootId",
     "depth", "order", "cancellable", "special", "warning", "description",
     "status", "progress", "log", "uiWidget", "widgetData", "supportsResume",
-    "hasSavedState", "createdAt", "browserOpenRequests", "sessionEvents",
+    "hasSavedState", "autoResumeScheduled", "createdAt", "browserOpenRequests",
+    "sessionEvents",
 })
 
 
