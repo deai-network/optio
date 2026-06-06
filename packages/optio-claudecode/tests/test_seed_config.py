@@ -48,24 +48,26 @@ async def test_rekey_single_entry_to_new_cwd(tmp_workdir):
     with open(cj) as fh:
         data = json.load(fh)
     assert list(data["projects"].keys()) == [host.workdir]
-    assert data["projects"][host.workdir] == {"allowedTools": ["Bash"]}
+    # value preserved + trust forced so an autonomous launch isn't prompted
+    assert data["projects"][host.workdir] == {"allowedTools": ["Bash"], "hasTrustDialogAccepted": True}
     assert data["userID"] == "u"
 
 
-async def test_rekey_multi_entry_left_untouched(tmp_workdir):
+async def test_rekey_multi_entry_collapses_to_single_trusted(tmp_workdir):
     host = LocalHost(taskdir=os.path.join(tmp_workdir, "m"))
     await host.setup_workdir()
     home = os.path.join(host.workdir, "home")
     os.makedirs(home, exist_ok=True)
     cj = os.path.join(home, ".claude.json")
-    original = {"projects": {"/a": {}, "/b": {}}}
+    # two foreign entries, neither the new cwd -> collapse to one trusted entry
     with open(cj, "w") as fh:
-        json.dump(original, fh)
+        json.dump({"projects": {"/a": {}, "/b": {}}}, fh)
 
     await _rekey_claude_json_projects(host)
 
     with open(cj) as fh:
-        assert json.load(fh) == original
+        data = json.load(fh)
+    assert data["projects"] == {host.workdir: {"hasTrustDialogAccepted": True}}
 
 
 async def test_rekey_missing_file_is_noop(tmp_workdir):
