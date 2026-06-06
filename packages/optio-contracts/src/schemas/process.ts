@@ -71,6 +71,11 @@ export const ProcessSchema = z.object({
   supportsResume: z.boolean().optional(),
   hasSavedState: z.boolean().optional(),
 
+  // Auto-resume on restart: set on a cancelled, state-saved top-level process
+  // whose task opted into auto_resume; the engine re-launches it (resume=true)
+  // after a post-boot delay. Cleared on resume / manual launch / failed.
+  autoResumeScheduled: z.boolean().optional(),
+
   // Client-directed events (phase 2). Append-only; never GC'd.
   browserOpenRequests: z.array(BrowserOpenRequestSchema).optional(),
   sessionEvents: z.array(SessionEventSchema).optional(),
