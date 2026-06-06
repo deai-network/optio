@@ -44,3 +44,26 @@ async def test_init_threads_auto_resume_delay(mongo_db):
         assert fw._config.auto_resume_delay_seconds == 0.05
     finally:
         await fw.shutdown()
+
+
+async def test_upsert_sets_auto_resume_scheduled_false(mongo_db):
+    from optio_core.store import upsert_process
+    prefix = "arstore"
+    ti = TaskInstance(execute=_noop, process_id="p", name="P")
+    proc = await upsert_process(mongo_db, prefix, ti)
+    assert proc["autoResumeScheduled"] is False
+
+
+async def test_set_auto_resume_scheduled_flips_flag(mongo_db):
+    from optio_core.store import upsert_process
+    prefix = "arstore2"
+    ti = TaskInstance(execute=_noop, process_id="p", name="P")
+    proc = await upsert_process(mongo_db, prefix, ti)
+
+    await set_auto_resume_scheduled(mongo_db, prefix, proc["_id"], True)
+    again = await get_process_by_process_id(mongo_db, prefix, "p")
+    assert again["autoResumeScheduled"] is True
+
+    await set_auto_resume_scheduled(mongo_db, prefix, proc["_id"], False)
+    again2 = await get_process_by_process_id(mongo_db, prefix, "p")
+    assert again2["autoResumeScheduled"] is False

@@ -75,6 +75,7 @@ async def upsert_process(db: AsyncIOMotorDatabase, prefix: str, task: TaskInstan
                 "log": [],
                 "createdAt": now,
                 "hasSavedState": False,
+                "autoResumeScheduled": False,
             },
         },
         upsert=True,
@@ -187,6 +188,21 @@ async def update_status(
     await _collection(db, prefix).update_one(
         {"_id": process_oid},
         {"$set": update},
+    )
+
+
+async def set_auto_resume_scheduled(
+    db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId, value: bool,
+) -> None:
+    """Set the `autoResumeScheduled` stamp on a process.
+
+    The stamp marks a cancelled, state-saved top-level process for automatic
+    resume after the next engine start. Set True at shutdown (for eligible
+    processes), cleared on resume / manual launch / any transition to failed.
+    """
+    await _collection(db, prefix).update_one(
+        {"_id": process_oid},
+        {"$set": {"autoResumeScheduled": value}},
     )
 
 
