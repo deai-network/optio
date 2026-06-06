@@ -25,12 +25,21 @@ CLAUDE_SEED_MANIFEST_VERSION = 2
 
 
 async def _rekey_claude_json_projects(host: Host) -> None:
-    """Rewrite the single `projects` entry in home/.claude.json to the new
-    cwd, preserving its value (trust flags, allowedTools, MCP enablement)
-    so an autonomous task isn't blocked by claude's trust prompt.
+    """Collapse home/.claude.json `projects` to a SINGLE trusted entry keyed at
+    the launch workdir, so an autonomous task is never blocked by claude's
+    folder-trust prompt ("Is this a project you trust?", which
+    `--permission-mode bypassPermissions` does NOT suppress -> the session exits
+    in tmux).
 
-    Empty / multi-entry / missing / malformed -> left as-is (a fresh trust
-    prompt is the safe fallback).
+    Works for any entry count: reuse an existing entry's value (preserving trust
+    flags / allowedTools / MCP enablement), else synthesize one, force
+    `hasTrustDialogAccepted: true`, and drop every other (stale, foreign) workdir
+    entry. Earlier this only handled a single entry; a seed that accumulated a
+    second `projects` key (a prior session's cwd) fell through to the trust
+    prompt and the launch died. Collapsing to one entry also keeps the seed
+    clean across re-captures.
+
+    Missing / malformed .claude.json -> left as-is.
     """
     workdir = host.workdir.rstrip("/")
     path = f"{workdir}/home/.claude.json"
@@ -43,11 +52,21 @@ async def _rekey_claude_json_projects(host: Host) -> None:
     except (ValueError, UnicodeDecodeError):
         _LOG.warning("seed: .claude.json is not valid JSON; leaving projects as-is")
         return
-    projects = data.get("projects")
-    if not isinstance(projects, dict) or len(projects) != 1:
+    if not isinstance(data, dict):
         return
-    (old_value,) = projects.values()
-    data["projects"] = {workdir: old_value}
+    projects = data.get("projects")
+    value: dict = {}
+    if isinstance(projects, dict) and projects:
+        # Prefer an already-trusted entry's value; else any entry's.
+        chosen = next(
+            (v for v in projects.values()
+             if isinstance(v, dict) and v.get("hasTrustDialogAccepted")),
+            next(iter(projects.values())),
+        )
+        if isinstance(chosen, dict):
+            value = dict(chosen)
+    value["hasTrustDialogAccepted"] = True
+    data["projects"] = {workdir: value}
     await host.put_file_to_host(
         json.dumps(data).encode("utf-8"), path,
     )
