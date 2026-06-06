@@ -72,6 +72,11 @@ class TaskInstance(TaskInstanceCore):
     supports_resume: bool = False
     ttl_seconds: int | None = None
     auto_cancel_children: bool = True
+    # When True, a *top-level* process of this task that is interrupted by an
+    # engine shutdown and that gracefully saved its state is re-launched
+    # (resume=True) automatically after the next engine start, post-delay.
+    # Requires supports_resume=True (validated at task-sync time).
+    auto_resume: bool = False
 
 
 @dataclass
@@ -150,6 +155,10 @@ class OptioConfig:
     services: dict[str, Any] = field(default_factory=dict)
     get_task_definitions: Callable[..., Awaitable[list[TaskInstance]]] | None = None
     cancel_grace_seconds: float = 5.0
+    # One-shot post-boot delay before auto-resume re-launches stamped
+    # processes. The wait lets the environment settle (dev-mode code edits
+    # cause rapid restart bursts) so we don't thrash re-launches.
+    auto_resume_delay_seconds: float = 300.0
 
 
 @dataclass(frozen=True)
