@@ -138,6 +138,10 @@ async def ensure_claude_installed(
     versions_link = f"{share_claude}/versions"
 
     cache_dir = await _resolve_cache_dir(host, install_dir)
+    _LOG.info(
+        "ensure_claude_installed: resolved cache_dir=%s (override=%r) workdir=%s",
+        cache_dir, install_dir, workdir,
+    )
 
     hook_ctx.report_progress(None, progress_label)
     setup = await host.run_command(
@@ -152,6 +156,7 @@ async def ensure_claude_installed(
         )
 
     newest = await _newest_cached_version(host, cache_dir)
+    _LOG.info("ensure_claude_installed: newest cached version in %s = %r", cache_dir, newest)
     if newest is not None:
         # Cache hit — point the per-task bin at the newest cached version.
         # Path goes through the versions symlink so it resolves into the cache.
@@ -159,7 +164,12 @@ async def ensure_claude_installed(
             f"ln -sfn {shlex.quote(versions_link + '/' + newest)} {shlex.quote(bin_claude)}"
         )
         if await _claude_version_ok(host, bin_claude):
+            _LOG.info("ensure_claude_installed: cache HIT (%s) -> no download", newest)
             return bin_claude
+        _LOG.warning(
+            "ensure_claude_installed: cached version %s present but _claude_version_ok "
+            "FAILED -> falling through to reinstall", newest,
+        )
         # Fall through to (re)install if the cached version is unusable.
 
     if not install_if_missing:
@@ -168,6 +178,11 @@ async def ensure_claude_installed(
             f"install_if_missing=False; nothing to do."
         )
 
+    _LOG.warning(
+        "ensure_claude_installed: cache MISS (cache_dir=%s newest=%r) -> running vendor "
+        "install.sh (downloads, ~1min). If this repeats every launch, the cache_dir is "
+        "wrong/ephemeral or being wiped.", cache_dir, newest,
+    )
     hook_ctx.report_progress(None, "Installing Claude Code…")
     install_cmd = (
         f"env HOME={shlex.quote(home)} sh -c "
