@@ -579,11 +579,25 @@ async def test_no_block_new_launches_post_snapshot_not_cancelled(mongo_db):
         await optio.launch("p.a", session_id=None)
         await started_a.wait()
 
-        # Stage task_b to launch after the helper's snapshot. The helper
-        # snapshots almost immediately on entry; the wait loop polls every
-        # 100 ms. A 50 ms delay reliably lands b's upsert during the wait.
+        # Stage task_b to launch *strictly after* the helper takes its
+        # snapshot, so b is provably not in the snapshot. With
+        # block_new_launches=False the only list_processes call in the
+        # cancel path is that snapshot; wrap it to fire an event the
+        # instant the snapshot read completes, and gate b's launch on it.
+        # (Gating on a completion signal, not a sleep guess, makes the
+        # ordering deterministic — the prior sleep(0.05) raced.)
+        snapshot_taken = asyncio.Event()
+        orig_list_processes = optio.list_processes
+
+        async def list_processes_signalling(*args, **kwargs):
+            result = await orig_list_processes(*args, **kwargs)
+            snapshot_taken.set()
+            return result
+
+        optio.list_processes = list_processes_signalling
+
         async def stage_b():
-            await asyncio.sleep(0.05)
+            await snapshot_taken.wait()
             await optio.launch("p.b", session_id=None)
 
         b_handle = asyncio.create_task(stage_b())
