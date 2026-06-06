@@ -33,7 +33,7 @@ from optio_core.models import (
 from optio_core.store import (
     upsert_process, remove_stale_processes, find_stale_process_ids,
     get_process_by_process_id, update_status, clear_result_fields,
-    append_log, compute_expire_at, purge_processes,
+    append_log, compute_expire_at, purge_processes, set_auto_resume_scheduled,
 )
 from optio_core.state_machine import (
     ACTIVE_STATES, CANCELLABLE_STATES, DISMISSABLE_STATES, END_STATES,
@@ -934,6 +934,30 @@ class Optio:
                     logger.exception("shutdown task raised")
             await self._scheduler.stop()
 
+    async def _stamp_auto_resume_if_eligible(self, oid: ObjectId) -> None:
+        """Stamp `autoResumeScheduled=True` on a process iff it is a top-level
+        (depth 0) process whose task opted into auto_resume.
+
+        Called during shutdown for every process being cancelled. The depth
+        check enforces the top-level-only restriction at the point where the
+        concrete process depth is known (a task definition does not know the
+        depth of its future instances).
+        """
+        coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
+        doc = await coll.find_one({"_id": oid}, {"processId": 1, "depth": 1})
+        if doc is None or doc.get("depth", 0) != 0:
+            return
+        task = self._executor._task_registry.get(doc["processId"])
+        if task is None or not getattr(task, "auto_resume", False):
+            return
+        await set_auto_resume_scheduled(
+            self._config.mongo_db, self._config.prefix, oid, True,
+        )
+        await append_log(
+            self._config.mongo_db, self._config.prefix, oid,
+            "event", "Scheduled for auto-resume after restart",
+        )
+
     async def shutdown(self, grace_seconds: float | None = None) -> None:
         """Graceful shutdown unified on the deadline-cancel mechanism.
 
@@ -979,6 +1003,7 @@ class Optio:
                     entry = self._executor._cancellation_flags.get(oid)
                     if entry is None:
                         continue
+                    await self._stamp_auto_resume_if_eligible(oid)
                     entry.flag.set()
                     if entry.deadline is None:
                         entry.deadline = now_mono + grace
