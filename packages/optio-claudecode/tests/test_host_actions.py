@@ -76,7 +76,7 @@ async def test_prep_cache_override_skips_resolve():
     )
     assert path == "/wd/home/.local/bin/claude"
     assert any("/opt/claude-cache" in c for c in host.commands)
-    assert not any("printf" in c for c in host.commands)  # override → no resolve
+    assert not any("printf %s" in c for c in host.commands)  # override → no _resolve_cache_dir
 
 
 async def test_prep_cache_miss_runs_install_through_symlink():
