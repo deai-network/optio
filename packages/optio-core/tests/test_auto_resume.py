@@ -67,3 +67,35 @@ async def test_set_auto_resume_scheduled_flips_flag(mongo_db):
     await set_auto_resume_scheduled(mongo_db, prefix, proc["_id"], False)
     again2 = await get_process_by_process_id(mongo_db, prefix, "p")
     assert again2["autoResumeScheduled"] is False
+
+
+async def test_auto_resume_without_supports_resume_hard_fails(mongo_db):
+    async def get_tasks(_services, metadata_filter=None):
+        return [
+            TaskInstance(
+                execute=_noop, process_id="bad", name="Bad",
+                auto_resume=True, supports_resume=False,
+            )
+        ]
+
+    fw = Optio()
+    with pytest.raises(ValueError, match="auto_resume"):
+        await fw.init(mongo_db=mongo_db, prefix="arvalid", get_task_definitions=get_tasks)
+
+
+async def test_auto_resume_with_supports_resume_is_accepted(mongo_db):
+    async def get_tasks(_services, metadata_filter=None):
+        return [
+            TaskInstance(
+                execute=_noop, process_id="good", name="Good",
+                auto_resume=True, supports_resume=True,
+            )
+        ]
+
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix="arvalid_ok", get_task_definitions=get_tasks)
+    try:
+        proc = await get_process_by_process_id(mongo_db, "arvalid_ok", "good")
+        assert proc is not None
+    finally:
+        await fw.shutdown()

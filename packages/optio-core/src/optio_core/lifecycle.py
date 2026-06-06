@@ -1156,6 +1156,16 @@ class Optio:
         if metadata_filter:
             tasks = [t for t in tasks if matches_filter(t.metadata, metadata_filter)]
 
+        # Validate auto_resume coherence: you cannot resume a task that does
+        # not support resume. Catch the misconfiguration loudly at sync time
+        # (engine startup) rather than silently no-op'ing at restart.
+        for task in tasks:
+            if task.auto_resume and not task.supports_resume:
+                raise ValueError(
+                    f"Task '{task.process_id}': auto_resume=True requires "
+                    f"supports_resume=True"
+                )
+
         pid_to_oid: dict[str, str] = {}
         for task in tasks:
             proc = await upsert_process(self._config.mongo_db, self._config.prefix, task)
