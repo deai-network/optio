@@ -270,6 +270,7 @@ async def test_run_child_refuses_after_parent_cancel_when_auto(mongo_db):
     is set, ctx.run_child returns ChildOutcome(state="cancelled")
     immediately without creating a child doc."""
     prefix = "p3t1"
+    parent_started = asyncio.Event()
     spawn_after_cancel = asyncio.Event()
     refusal_result: dict = {}
 
@@ -277,6 +278,7 @@ async def test_run_child_refuses_after_parent_cancel_when_auto(mongo_db):
         ctx.report_progress(50, "doing")
 
     async def parent(ctx):
+        parent_started.set()
         # Wait for cancel.
         while ctx.should_continue():
             await asyncio.sleep(0.01)
@@ -296,7 +298,7 @@ async def test_run_child_refuses_after_parent_cancel_when_auto(mongo_db):
     optio._executor.register_tasks([parent_inst, child_inst])
 
     runner = asyncio.create_task(optio.launch_and_wait("parent", session_id=None))
-    await asyncio.sleep(0.1)
+    await parent_started.wait()  # parent is running -> its cancel flag is registered
 
     await optio.cancel("parent")
     await spawn_after_cancel.wait()

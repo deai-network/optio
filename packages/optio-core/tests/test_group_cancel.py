@@ -322,8 +322,15 @@ async def test_block_new_launches_rejects_during_call(mongo_db):
         intruder_blocked = asyncio.Event()
 
         async def attempt_intruder():
-            # Wait long enough that the helper has registered the guard.
-            await asyncio.sleep(0.05)
+            # Attempt the launch the instant the helper has registered the
+            # guard (block_launches populates _launch_blocks synchronously on
+            # entry, before the snapshot). Gating on that state — not a fixed
+            # sleep — makes "launch during the call" deterministic.
+            deadline = time.monotonic() + 5.0
+            while not optio._launch_blocks:
+                if time.monotonic() >= deadline:
+                    raise AssertionError("launch guard was never registered")
+                await asyncio.sleep(0.005)
             with pytest.raises(LaunchBlocked):
                 await optio.launch_and_wait("p.intruder", session_id=None)
             intruder_blocked.set()
@@ -404,12 +411,24 @@ async def test_leak_sweep_catches_post_snapshot_launch(mongo_db, monkeypatch):
         # the racing launch that passed the check before the guard arrived.
         monkeypatch.setattr(optio, "_check_launch_blocks", lambda _md: None)
 
-        # Helper that launches the intruder concurrently with the helper.
+        # Launch the intruder *strictly after* the helper's initial snapshot
+        # so it is provably post-snapshot (not in the snapshot, caught only by
+        # the leak sweep). Wrap list_processes to fire an event the instant the
+        # snapshot read completes; the 100 ms leak-sweep delay then leaves
+        # ample room for the intruder's upsert to land before the re-read.
+        # (Gating on the snapshot signal, not a fixed sleep, is race-free.)
+        snapshot_taken = asyncio.Event()
+        orig_list_processes = optio.list_processes
+
+        async def list_processes_signalling(*args, **kwargs):
+            result = await orig_list_processes(*args, **kwargs)
+            snapshot_taken.set()
+            return result
+
+        optio.list_processes = list_processes_signalling
+
         async def stage_intruder():
-            # Wait until we're confident the helper has snapshotted (which
-            # happens almost immediately on entry). The 100 ms leak-sweep
-            # delay then gives us plenty of time to land the upsert.
-            await asyncio.sleep(0.02)
+            await snapshot_taken.wait()
             await optio.launch("p.intruder", session_id=None)
 
         intruder_handle = asyncio.create_task(stage_intruder())
@@ -604,6 +623,10 @@ async def test_no_block_new_launches_post_snapshot_not_cancelled(mongo_db):
 
         await optio.group_cancel_and_wait({"team": "alpha"})  # default False
         await b_handle
+        # Wait until b is genuinely executing (long_runner sets started_b only
+        # after the executor has written its 'running' row). Gating the read on
+        # this — not on group_cancel's return — makes the assertion race-free.
+        await started_b.wait()
 
         # b is still running — was not in the snapshot.
         proc_b = await optio.get_process("p.b")

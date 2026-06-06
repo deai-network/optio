@@ -293,8 +293,10 @@ async def test_cancel_and_wait_stubborn_returns_failed(mongo_db):
     from optio_core.models import TaskInstance
 
     prefix = "caw2"
+    started = asyncio.Event()
 
     async def stubborn(ctx):  # noqa: ARG001
+        started.set()
         while True:
             await asyncio.sleep(0.05)
 
@@ -312,7 +314,7 @@ async def test_cancel_and_wait_stubborn_returns_failed(mongo_db):
     run_task = asyncio.create_task(optio.run())
     try:
         await optio.launch("p.stub", session_id=None)
-        await asyncio.sleep(0.2)
+        await started.wait()  # task is running -> cancel hits the force path
         state = await optio.cancel_and_wait("p.stub")
         assert state == "failed"
     finally:
@@ -372,8 +374,10 @@ async def test_cancel_and_wait_raises_timeout_when_force_cancel_neutered(mongo_d
     from optio_core.models import TaskInstance
 
     prefix = "cawto"
+    started = asyncio.Event()
 
     async def stubborn(ctx):  # noqa: ARG001
+        started.set()
         while True:
             await asyncio.sleep(0.05)
 
@@ -398,7 +402,7 @@ async def test_cancel_and_wait_raises_timeout_when_force_cancel_neutered(mongo_d
     run_task = asyncio.create_task(optio.run())
     try:
         await optio.launch("p.stub", session_id=None)
-        await asyncio.sleep(0.2)
+        await started.wait()  # task is running -> cancel hits the force path
         with pytest.raises(asyncio.TimeoutError):
             await optio.cancel_and_wait("p.stub")
     finally:
@@ -466,14 +470,18 @@ async def test_shutdown_finalizes_mixed_cooperative_and_stubborn_tasks(mongo_db)
     from optio_core.models import TaskInstance
 
     prefix = "shutmix"
+    started_coop = asyncio.Event()
+    started_stub = asyncio.Event()
 
     async def cooperative(ctx):
+        started_coop.set()
         for _ in range(200):
             if ctx.cancellation_flag.is_set():
                 return
             await asyncio.sleep(0.05)
 
     async def stubborn(ctx):  # noqa: ARG001
+        started_stub.set()
         while True:
             await asyncio.sleep(0.05)
 
@@ -493,7 +501,8 @@ async def test_shutdown_finalizes_mixed_cooperative_and_stubborn_tasks(mongo_db)
     try:
         await optio.launch("p.coop", session_id=None)
         await optio.launch("p.stub", session_id=None)
-        await asyncio.sleep(0.3)
+        await started_coop.wait()  # both running before shutdown finalizes them
+        await started_stub.wait()
 
         await optio.shutdown()
 
@@ -516,8 +525,10 @@ async def test_shutdown_grace_seconds_override_honoured(mongo_db):
     from optio_core.models import TaskInstance
 
     prefix = "shutov"
+    started = asyncio.Event()
 
     async def stubborn(ctx):  # noqa: ARG001
+        started.set()
         while True:
             await asyncio.sleep(0.05)
 
@@ -535,7 +546,7 @@ async def test_shutdown_grace_seconds_override_honoured(mongo_db):
     run_task = asyncio.create_task(optio.run())
     try:
         await optio.launch("p.stub", session_id=None)
-        await asyncio.sleep(0.3)
+        await started.wait()  # task is running before shutdown force-cancels it
 
         # Even though the config grace is 10s, override to 0.3s.
         import time as _time
@@ -561,8 +572,10 @@ async def test_re_entry_idempotency_does_not_refresh_deadline(mongo_db):
     from optio_core.models import TaskInstance
 
     prefix = "reidem"
+    started = asyncio.Event()
 
     async def stubborn(ctx):  # noqa: ARG001
+        started.set()
         while True:
             await asyncio.sleep(0.05)
 
@@ -580,7 +593,7 @@ async def test_re_entry_idempotency_does_not_refresh_deadline(mongo_db):
     run_task = asyncio.create_task(optio.run())
     try:
         await optio.launch("p.stub", session_id=None)
-        await asyncio.sleep(0.2)
+        await started.wait()  # task is running -> cancel registers a flag entry
 
         await optio.cancel("p.stub")
         oid = next(iter(optio._executor._cancellation_flags))

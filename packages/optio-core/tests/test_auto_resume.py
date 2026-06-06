@@ -3,6 +3,7 @@
 Spec: docs/superpowers/specs/2026-06-06-auto-resume-on-restart-design.md
 """
 import asyncio
+import time
 from datetime import datetime, timezone
 
 import pytest
@@ -408,8 +409,21 @@ async def test_timer_fires_after_delay_via_run(mongo_db):
 
     run_task = asyncio.create_task(fw.run())
     try:
-        await asyncio.sleep(0.6)  # delay (0.2) + executor advance margin
-        proc = await get_process_by_process_id(mongo_db, prefix, "r")
+        # The one-shot timer fires after auto_resume_delay_seconds (0.2s) and
+        # resumes the process via launch(), which also clears the stamp before
+        # the state leaves 'cancelled'. Poll for the resume to land rather than
+        # guessing a fixed delay+advance margin.
+        deadline = time.monotonic() + 5.0
+        while True:
+            proc = await get_process_by_process_id(mongo_db, prefix, "r")
+            if proc["status"]["state"] != "cancelled":
+                break
+            if time.monotonic() >= deadline:
+                raise AssertionError(
+                    "process was not auto-resumed within the deadline "
+                    f"(state={proc['status']['state']})"
+                )
+            await asyncio.sleep(0.02)
         assert proc["status"]["state"] != "cancelled"
         assert proc.get("autoResumeScheduled") is False
     finally:
@@ -439,7 +453,13 @@ async def test_timer_does_not_fire_if_shutdown_first(mongo_db):
         "autoResumeScheduled": True}})
 
     run_task = asyncio.create_task(fw.run())
-    await asyncio.sleep(0.2)  # let run() arm the timer
+    # Wait until run() has actually armed the one-shot timer (created the task),
+    # so shutdown provably cancels a pending timer — vs. guessing with a sleep.
+    deadline = time.monotonic() + 5.0
+    while fw._auto_resume_task is None:
+        if time.monotonic() >= deadline:
+            raise AssertionError("run() did not arm the auto-resume timer")
+        await asyncio.sleep(0.005)
     await fw.shutdown()
     await asyncio.wait_for(run_task, timeout=5.0)
 

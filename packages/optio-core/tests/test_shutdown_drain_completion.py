@@ -7,6 +7,7 @@ _shutdown_event before the cooperative drain, so run() returned and
 asyncio.run() teardown cancelled the drain mid-capture.
 """
 import asyncio
+import time
 
 import pytest
 
@@ -92,8 +93,14 @@ async def test_launch_refused_during_shutdown(mongo_db):
         await asyncio.wait_for(running.wait(), timeout=5)
 
         shutdown_task = asyncio.create_task(optio.shutdown())
-        # Give shutdown() a tick to set _shutting_down at its start.
-        await asyncio.sleep(0.05)
+        # Wait until shutdown() has actually entered its shutting-down state
+        # (set synchronously at the top of shutdown()), then verify the launch
+        # is refused. Gating on the state, not a fixed sleep, is race-free.
+        deadline = time.monotonic() + 5.0
+        while not optio._shutting_down:
+            if time.monotonic() >= deadline:
+                raise AssertionError("shutdown did not enter shutting-down state")
+            await asyncio.sleep(0.005)
 
         outcome = await optio.launch("t.b", session_id=None)
         assert outcome.ok is False
