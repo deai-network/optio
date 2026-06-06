@@ -286,3 +286,163 @@ async def test_launch_clears_stamp(mongo_db):
         assert proc.get("autoResumeScheduled") is False
     finally:
         await fw.shutdown()
+
+
+async def test_sweep_resumes_eligible_and_clears_stamp(mongo_db):
+    """_auto_resume_scheduled_processes launches cancelled+saved+stamped roots."""
+    prefix = "arsweep"
+    coll = mongo_db[f"{prefix}_processes"]
+
+    async def get_tasks(_services, metadata_filter=None):
+        return [TaskInstance(
+            execute=_noop, process_id="r", name="R",
+            supports_resume=True, auto_resume=True,
+        )]
+
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix=prefix, get_task_definitions=get_tasks)
+    try:
+        await coll.update_one(
+            {"processId": "r"},
+            {"$set": {
+                "status": {"state": "cancelled"},
+                "hasSavedState": True,
+                "autoResumeScheduled": True,
+            }},
+        )
+        await fw._auto_resume_scheduled_processes()
+        await asyncio.sleep(0.1)  # let the fire-and-forget executor advance
+
+        proc = await get_process_by_process_id(mongo_db, prefix, "r")
+        assert proc["status"]["state"] != "cancelled"  # got (re)launched
+        assert proc.get("autoResumeScheduled") is False
+    finally:
+        await fw.shutdown()
+
+
+async def test_sweep_ignores_failed_and_unsaved(mongo_db):
+    prefix = "arsweep_neg"
+    coll = mongo_db[f"{prefix}_processes"]
+
+    async def get_tasks(_services, metadata_filter=None):
+        return [
+            TaskInstance(execute=_noop, process_id="f", name="F",
+                         supports_resume=True, auto_resume=True),
+            TaskInstance(execute=_noop, process_id="u", name="U",
+                         supports_resume=True, auto_resume=True),
+        ]
+
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix=prefix, get_task_definitions=get_tasks)
+    try:
+        # 'f' is stamped but failed (force-killed) — must not resume.
+        await coll.update_one({"processId": "f"}, {"$set": {
+            "status": {"state": "failed"}, "hasSavedState": False,
+            "autoResumeScheduled": True}})
+        # 'u' is stamped + cancelled but has no saved state — must not resume.
+        await coll.update_one({"processId": "u"}, {"$set": {
+            "status": {"state": "cancelled"}, "hasSavedState": False,
+            "autoResumeScheduled": True}})
+
+        await fw._auto_resume_scheduled_processes()
+        await asyncio.sleep(0.1)
+
+        f = await get_process_by_process_id(mongo_db, prefix, "f")
+        u = await get_process_by_process_id(mongo_db, prefix, "u")
+        assert f["status"]["state"] == "failed"
+        assert u["status"]["state"] == "cancelled"
+    finally:
+        await fw.shutdown()
+
+
+async def test_sweep_skips_blocked_and_clears_stamp(mongo_db):
+    """A blocked launch is logged, skipped, and un-stamped (no retry)."""
+    prefix = "arsweep_block"
+    coll = mongo_db[f"{prefix}_processes"]
+
+    async def get_tasks(_services, metadata_filter=None):
+        return [TaskInstance(
+            execute=_noop, process_id="b", name="B",
+            metadata={"banned": "yes"},
+            supports_resume=True, auto_resume=True,
+        )]
+
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix=prefix, get_task_definitions=get_tasks)
+    try:
+        await coll.update_one({"processId": "b"}, {"$set": {
+            "status": {"state": "cancelled"}, "hasSavedState": True,
+            "autoResumeScheduled": True}})
+        # Register a persistent-style in-memory block matching the task metadata.
+        async with fw.block_launches({"banned": "yes"}):
+            await fw._auto_resume_scheduled_processes()
+
+        proc = await get_process_by_process_id(mongo_db, prefix, "b")
+        assert proc["status"]["state"] == "cancelled"  # not launched
+        assert proc.get("autoResumeScheduled") is False  # un-stamped
+    finally:
+        await fw.shutdown()
+
+
+async def test_timer_fires_after_delay_via_run(mongo_db):
+    """End-to-end: run() arms the one-shot timer; after the (tiny) delay the
+    eligible process is resumed."""
+    prefix = "artimer"
+    coll = mongo_db[f"{prefix}_processes"]
+
+    async def get_tasks(_services, metadata_filter=None):
+        return [TaskInstance(
+            execute=_noop, process_id="r", name="R",
+            supports_resume=True, auto_resume=True,
+        )]
+
+    fw = Optio()
+    await fw.init(
+        mongo_db=mongo_db, prefix=prefix, get_task_definitions=get_tasks,
+        auto_resume_delay_seconds=0.2,
+    )
+    # Seed eligible state AFTER init (init's reconcile leaves 'cancelled' alone).
+    await coll.update_one({"processId": "r"}, {"$set": {
+        "status": {"state": "cancelled"}, "hasSavedState": True,
+        "autoResumeScheduled": True}})
+
+    run_task = asyncio.create_task(fw.run())
+    try:
+        await asyncio.sleep(0.6)  # delay (0.2) + executor advance margin
+        proc = await get_process_by_process_id(mongo_db, prefix, "r")
+        assert proc["status"]["state"] != "cancelled"
+        assert proc.get("autoResumeScheduled") is False
+    finally:
+        await fw.shutdown()
+        await asyncio.wait_for(run_task, timeout=5.0)
+
+
+async def test_timer_does_not_fire_if_shutdown_first(mongo_db):
+    """Shutdown before the delay elapses cancels the one-shot timer; the
+    stamped process is NOT resumed and the stamp persists for next boot."""
+    prefix = "artimer_cancel"
+    coll = mongo_db[f"{prefix}_processes"]
+
+    async def get_tasks(_services, metadata_filter=None):
+        return [TaskInstance(
+            execute=_noop, process_id="r", name="R",
+            supports_resume=True, auto_resume=True,
+        )]
+
+    fw = Optio()
+    await fw.init(
+        mongo_db=mongo_db, prefix=prefix, get_task_definitions=get_tasks,
+        auto_resume_delay_seconds=10.0,
+    )
+    await coll.update_one({"processId": "r"}, {"$set": {
+        "status": {"state": "cancelled"}, "hasSavedState": True,
+        "autoResumeScheduled": True}})
+
+    run_task = asyncio.create_task(fw.run())
+    await asyncio.sleep(0.2)  # let run() arm the timer
+    await fw.shutdown()
+    await asyncio.wait_for(run_task, timeout=5.0)
+
+    proc = await get_process_by_process_id(mongo_db, prefix, "r")
+    assert proc["status"]["state"] == "cancelled"  # not resumed
+    assert proc.get("autoResumeScheduled") is True  # stamp survives

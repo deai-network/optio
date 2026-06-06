@@ -86,6 +86,7 @@ class Optio:
         self._shutdown_task: "asyncio.Task | None" = None
         self._heartbeat_task: asyncio.Task | None = None
         self._supervisor_task: asyncio.Task | None = None
+        self._auto_resume_task: asyncio.Task | None = None
         self._launch_blocks: dict[uuid.UUID, _BlockEntry] = {}
 
     @property
@@ -925,6 +926,9 @@ class Optio:
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
         self._supervisor_task = asyncio.create_task(self._supervisor_loop())
+        # One-shot post-boot auto-resume timer. Fires once after
+        # auto_resume_delay_seconds, re-launching stamped+saved processes.
+        self._auto_resume_task = asyncio.create_task(self._auto_resume_timer())
 
         try:
             await self._shutdown_event.wait()
@@ -990,6 +994,15 @@ class Optio:
                 except asyncio.CancelledError:
                     pass
                 self._heartbeat_task = None
+
+            # 1b. Auto-resume one-shot timer (cancel if it hasn't fired yet).
+            if self._auto_resume_task:
+                self._auto_resume_task.cancel()
+                try:
+                    await self._auto_resume_task
+                except asyncio.CancelledError:
+                    pass
+                self._auto_resume_task = None
 
             # 2. RPC server (clamator)
             if self.rpc_server is not None and self._owned_rpc_server:
@@ -1110,6 +1123,53 @@ class Optio:
             except Exception as e:
                 logger.exception(f"Supervisor loop error: {e}")
             await asyncio.sleep(0.5)
+
+    async def _auto_resume_timer(self) -> None:
+        """One-shot: wait auto_resume_delay_seconds, then sweep for stamped
+        processes and re-launch them. Cancelled cleanly at shutdown if it has
+        not fired yet (stamps persist for the next boot's timer)."""
+        delay = self._config.auto_resume_delay_seconds
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        if not self._running:
+            return
+        try:
+            await self._auto_resume_scheduled_processes()
+        except Exception:
+            logger.exception("auto-resume sweep failed")
+
+    async def _auto_resume_scheduled_processes(self) -> None:
+        """Re-launch every process stamped for auto-resume that genuinely saved
+        its state: autoResumeScheduled=True AND state='cancelled' AND
+        hasSavedState=True. Force-killed (failed) and unsaved processes are
+        excluded by the query. On a blocked / non-launchable target, log, clear
+        the stamp, and skip (no retry). launch() clears the stamp on success."""
+        coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
+        cursor = coll.find(
+            {
+                "autoResumeScheduled": True,
+                "status.state": "cancelled",
+                "hasSavedState": True,
+            },
+            {"_id": 1, "processId": 1},
+        )
+        docs = [doc async for doc in cursor]
+        if not docs:
+            return
+        logger.info(f"Auto-resuming {len(docs)} scheduled process(es)")
+        for doc in docs:
+            outcome = await self.launch(str(doc["_id"]), resume=True, session_id=None)
+            if outcome.ok:
+                logger.info(f"Auto-resumed {doc['processId']}")
+            else:
+                logger.warning(
+                    f"Auto-resume skipped {doc['processId']}: {outcome.reason}"
+                )
+                await set_auto_resume_scheduled(
+                    self._config.mongo_db, self._config.prefix, doc["_id"], False,
+                )
 
     async def _heartbeat_loop(self) -> None:
         """Periodically set a heartbeat key in Redis with TTL."""
