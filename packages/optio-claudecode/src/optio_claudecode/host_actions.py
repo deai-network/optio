@@ -103,8 +103,11 @@ async def _newest_cached_version(host: "Host", cache_dir: str) -> str | None:
     in a session) can leave a 0-byte partial when killed at teardown, and a stub
     named like the newest version must not be picked as a cache hit (it fails
     `claude --version` and triggers a full reinstall every launch)."""
+    # -L: follow symlinks, so a version entry that is a symlink to the real
+    # binary (as the test cache and some real installs use) still matches
+    # -type f / -size / -perm on its target.
     r = await host.run_command(
-        f"find {shlex.quote(cache_dir)} -maxdepth 1 -type f -size +0c -perm -u+x "
+        f"find -L {shlex.quote(cache_dir)} -maxdepth 1 -type f -size +0c -perm -u+x "
         f"-printf '%f\\n' 2>/dev/null | sort -V | tail -1"
     )
     name = r.stdout.strip()
