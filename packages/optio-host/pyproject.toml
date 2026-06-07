@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "optio-host"
-version = "0.2.3"
+version = "0.2.4"
 description = "Local-or-remote host abstraction for optio task types (run commands local or remote, transfer files, tunnels)."
 readme = "README.md"
 license = "Apache-2.0"
