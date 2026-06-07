@@ -7,6 +7,7 @@ primitives (run_command, resolve_host_home, etc.). No isinstance branches.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ import shlex
 from typing import TYPE_CHECKING, Any
 
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
+from optio_host.host import proc_wait
 
 if TYPE_CHECKING:
     from optio_agents import HookContextProtocol
@@ -519,6 +521,46 @@ def build_ttyd_attach_argv(
     ]
 
 
+def _tmux_socket_path(host: "Host") -> str:
+    """Short, bounded, per-task tmux socket path under ``/tmp``.
+
+    The socket must NOT live under ``host.workdir``: a deep ``$HOME`` plus a
+    long processId can push ``${workdir}/tmux.sock`` past the Linux
+    ``sun_path`` limit (108 bytes), at which point tmux fails with "File name
+    too long" and claude never launches. tmux sockets are ephemeral runtime
+    state, not workdir content, so co-locating them buys nothing.
+    ``sha256(workdir)`` keys the socket per task (deterministic across the
+    task's calls, collision-safe); ``/tmp`` always exists so no mkdir is
+    needed. The result is ~35 bytes regardless of workdir length.
+    """
+    digest = hashlib.sha256(host.workdir.encode("utf-8")).hexdigest()[:16]
+    return f"/tmp/optio-cc-{digest}.sock"
+
+
+async def _launch_detached_checked(
+    host: "Host", cmd: str, *, env_remove: list[str] | None, what: str,
+) -> list[str]:
+    """Launch a detached command, drain its (stderr-merged) stdout, then check
+    the exit code. Non-zero raises ``RuntimeError`` carrying the output.
+
+    ``launch_subprocess`` returns a streaming handle with no ``exit_code``, so
+    the code is recovered via ``proc_wait``. Silently swallowing it is what
+    turned tmux's clear "File name too long" into the misleading "body
+    returned before DONE was observed" downstream.
+    """
+    handle = await host.launch_subprocess(cmd, env_remove=env_remove)
+    out: list[str] = []
+    async for raw in handle.stdout:
+        out.append(
+            raw.decode("utf-8", errors="replace")
+            if isinstance(raw, bytes) else str(raw)
+        )
+    code = await proc_wait(handle)
+    if code != 0:
+        raise RuntimeError(f"{what} failed (exit {code}): {''.join(out).strip()[:500]}")
+    return out
+
+
 async def launch_ttyd_with_claude(
     host: "Host",
     *,
@@ -538,7 +580,7 @@ async def launch_ttyd_with_claude(
     liveness for completion and tears down BOTH the tmux session and ttyd.
     """
     tmux_path = await _require_tmux(host)
-    socket_path = f"{host.workdir.rstrip('/')}/tmux.sock"
+    socket_path = _tmux_socket_path(host)
 
     # The netns OAuth-loopback seal applies to LOCAL sessions only — over SSH
     # there is no localhost to seal and the netns tools may be absent remotely.
@@ -549,7 +591,10 @@ async def launch_ttyd_with_claude(
     #    here so the tmux server — which holds claude — does not inherit
     #    scrubbed vars. ``run_command`` has no ``env_remove`` kwarg (only
     #    ``cwd``/``env``), so we go through ``launch_subprocess`` (which does)
-    #    and await its exit — ``new-session -d`` returns immediately.
+    #    and await its exit — ``new-session -d`` returns immediately. The exit
+    #    code IS checked (via ``_launch_detached_checked``): a swallowed tmux
+    #    failure here is what previously surfaced as the misleading "body
+    #    returned before DONE was observed".
     session_argv = build_tmux_session_argv(
         tmux_path=tmux_path,
         claude_path=claude_path,
@@ -561,15 +606,9 @@ async def launch_ttyd_with_claude(
         local_mode=local_mode,
     )
     session_cmd = " ".join(shlex.quote(a) for a in session_argv)
-    start_handle = await host.launch_subprocess(session_cmd, env_remove=env_remove)
-    # new-session -d returns at once; drain stdout to await the process exit.
-    start_output: list[str] = []
-    async for raw in start_handle.stdout:
-        line = (
-            raw.decode("utf-8", errors="replace")
-            if isinstance(raw, bytes) else str(raw)
-        )
-        start_output.append(line)
+    await _launch_detached_checked(
+        host, session_cmd, env_remove=env_remove, what="tmux new-session",
+    )
 
     # 2) Start ttyd attaching to the live session.
     ttyd_argv = build_ttyd_attach_argv(

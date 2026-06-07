@@ -17,6 +17,7 @@ from collections import deque
 from typing import Any, TYPE_CHECKING
 
 from optio_core.models import TaskInstance
+from optio_host.host import proc_wait
 
 if TYPE_CHECKING:
     from optio_host.host import Host
@@ -185,7 +186,7 @@ def create_download_task(
             watcher_t = asyncio.create_task(_cancel_watcher())
             await asyncio.gather(stdout_t, stderr_t, return_exceptions=True)
             watcher_t.cancel()
-            exit_code = await _host_proc_wait(handle)
+            exit_code = await proc_wait(handle)
 
         if cancelled:
             if cleanup_on_fail:
@@ -333,29 +334,6 @@ async def _drain_stderr_tail(stream, tail: deque) -> None:
         tail.append(chunk)
         while sum(len(c) for c in tail) > _STDERR_TAIL_CAP and len(tail) > 1:
             tail.popleft()
-
-
-async def _host_proc_wait(handle) -> int:
-    """Wait for the subprocess behind ``handle`` and return its exit code.
-
-    Handles both LocalHost (asyncio.subprocess.Process) and RemoteHost
-    (asyncssh.SSHClientProcess) variants of ``pid_like``.
-    """
-    pid_like = handle.pid_like
-    if hasattr(pid_like, "wait") and asyncio.iscoroutinefunction(pid_like.wait):
-        result = await pid_like.wait()
-        if isinstance(result, int):
-            return result
-        rc = getattr(result, "returncode", None)
-        if rc is not None:
-            return int(rc)
-        es = getattr(result, "exit_status", None)
-        return int(es) if es is not None else -1
-    if hasattr(pid_like, "exit_status"):
-        if hasattr(pid_like, "wait_closed") and asyncio.iscoroutinefunction(pid_like.wait_closed):
-            await pid_like.wait_closed()
-        return int(pid_like.exit_status) if pid_like.exit_status is not None else -1
-    raise RuntimeError(f"unable to determine exit code for {pid_like!r}")
 
 
 async def _maybe_remove(host, target: str) -> None:

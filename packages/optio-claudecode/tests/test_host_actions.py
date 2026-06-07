@@ -583,7 +583,16 @@ class _LaunchFakeHost:
         return _FakeTtydHandle()
 
 
+class _FakePid:
+    async def wait(self) -> int:
+        return 0
+
+
 class _FakeTtydHandle:
+    # ``new-session`` (drained + exit-checked) and ttyd (read for the ready
+    # banner) both flow through this handle; both need an exit code now.
+    pid_like = _FakePid()
+
     @property
     def stdout(self):
         async def _gen():
@@ -605,7 +614,9 @@ async def test_launch_returns_handle_port_socket_session(monkeypatch):
         env_remove=None,
     )
     assert port == 45999
-    assert socket_path == "/wd/tmux.sock"
+    # Socket lives off the workdir (short /tmp path) to stay under sun_path.
+    assert socket_path == host_actions._tmux_socket_path(host)
+    assert socket_path.startswith("/tmp/") and socket_path.endswith(".sock")
     assert session == "optio"
     # a detached tmux new-session was started before ttyd
     assert any("new-session -d" in c or "new-session" in c for c in host.commands)

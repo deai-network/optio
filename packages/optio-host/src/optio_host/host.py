@@ -69,6 +69,34 @@ class ProcessHandle:
     stdin: object | None = None
 
 
+async def proc_wait(handle: ProcessHandle) -> int:
+    """Wait for the subprocess behind ``handle`` and return its exit code.
+
+    Handles both LocalHost (``asyncio.subprocess.Process``) and RemoteHost
+    (``asyncssh.SSHClientProcess``) variants of ``pid_like``. Callers that
+    drive a ``launch_subprocess`` handle (whose ``stdout`` they drain
+    themselves) use this to recover the exit code that ``run_command``
+    would otherwise return.
+    """
+    import asyncio
+
+    pid_like = handle.pid_like
+    if hasattr(pid_like, "wait") and asyncio.iscoroutinefunction(pid_like.wait):
+        result = await pid_like.wait()
+        if isinstance(result, int):
+            return result
+        rc = getattr(result, "returncode", None)
+        if rc is not None:
+            return int(rc)
+        es = getattr(result, "exit_status", None)
+        return int(es) if es is not None else -1
+    if hasattr(pid_like, "exit_status"):
+        if hasattr(pid_like, "wait_closed") and asyncio.iscoroutinefunction(pid_like.wait_closed):
+            await pid_like.wait_closed()
+        return int(pid_like.exit_status) if pid_like.exit_status is not None else -1
+    raise RuntimeError(f"unable to determine exit code for {pid_like!r}")
+
+
 class Host(Protocol):
     """Generic local-or-remote host primitives — no opencode awareness."""
 
