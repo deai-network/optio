@@ -33,6 +33,7 @@ import {
   LegacyMetadataParamError,
 } from '../sse-options.js';
 import { createOptioContext, type OptioContext } from '../context.js';
+import { forwardAgentInput } from '../agent-input.js';
 
 const WIDGET_CACHE_TTL_MS = 5000;
 
@@ -463,6 +464,29 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
     const instances = await discoverInstances(dbOpts, redis);
     reply.send({ instances });
   });
+
+  app.post(
+    '/api/widget-control/:database/:prefix/:processId',
+    async (request: any, reply: any) => {
+      const { database, prefix, processId } = request.params as {
+        database: string; prefix: string; processId: string;
+      };
+      const text = (request.body as { text?: unknown })?.text;
+      if (typeof text !== 'string' || text.length === 0) {
+        reply.code(400).send({ message: 'body.text (non-empty string) required' });
+        return;
+      }
+      let db;
+      try {
+        ({ db } = resolveDb(dbOpts, { database, prefix }));
+      } catch {
+        reply.code(404).send({ message: 'session not running' });
+        return;
+      }
+      const result = await forwardAgentInput(db, prefix, processId, text);
+      reply.code(result.status).send(result.body);
+    },
+  );
 
   app.get('/api/processes/:id/tree/stream', async (request: any, reply: any) => {
     const { id } = request.params as { id: string };
