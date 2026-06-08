@@ -42,6 +42,7 @@ export type { ProcessTreeNode } from './hooks/useProcessStream.js';
 export { registerWidget } from './widgets/registry.js';
 export type { WidgetProps, WidgetComponent } from './widgets/registry.js';
 export { IframeWidget } from './widgets/IframeWidget.js';
+export { IframeInputWidget } from './widgets/IframeInputWidget.js';
 
 // Components
 export { ProcessDetailView } from './components/ProcessDetailView.js';
