@@ -110,6 +110,11 @@ async def run_claudecode_session(
 
     await host.connect()
 
+    # Crash-orphan rescue: if a non-graceful host death left this task's
+    # tmux/ttyd/claude tree running with unsaved state, harvest it into a fresh
+    # snapshot and kill it BEFORE the driver wipes the workdir. No-op otherwise.
+    await _rescue_orphan_if_present(ctx, config=config, host=host)
+
     async def _prepare(host: Host, hook_ctx: HookContext) -> None:
         """Install the claude+ttyd runtime and restore a resume snapshot.
 
@@ -550,6 +555,89 @@ async def _extract_home_claude(host: Host, plain: bytes) -> None:
             )
     finally:
         await host.run_command(f"rm -f {shlex.quote(tmpfile)}")
+
+
+_RESCUE_MARKER = ".optio-rescue-pending"
+
+
+def _claude_bin_path(host: "Host") -> str:
+    """Deterministic launch path of claude inside the isolated HOME."""
+    return f"{host.workdir.rstrip('/')}/home/.local/bin/claude"
+
+
+async def _marker_present(host: "Host", marker_path: str) -> bool:
+    r = await host.run_command(
+        f"test -e {shlex.quote(marker_path)} && echo YES || true"
+    )
+    return "YES" in r.stdout
+
+
+async def _rescue_orphan_if_present(
+    ctx: ProcessContext, host: Host, config: ClaudeCodeTaskConfig,
+) -> None:
+    """Before the driver wipes the workdir, recover a crash-surviving orphan.
+
+    A non-graceful host death (disk-full, OOM, power loss) leaves the
+    tmux/ttyd/claude sub-tree running, re-parented to init, with unsaved state
+    on disk — but no snapshot. This bracket, run before
+    ``run_log_protocol_session`` (hence before ``setup_workdir``), detects that
+    orphan on the deterministic per-task socket, kills it, and captures its
+    live state into a fresh snapshot that the unchanged resume path then
+    restores. No-op unless an orphan (or a leftover rescue marker) is found.
+
+    Kill-before-capture is deliberate: a dead, static workdir prevents a live
+    claude from repopulating ``home/.claude`` into the plaintext workdir blob
+    after the expunge, and yields a race-free tar. See spec decisions D3/D4."""
+    if not getattr(config, "supports_resume", True):
+        return
+    if not bool(getattr(ctx, "resume", False)):
+        return
+
+    socket = host_actions._tmux_socket_path(host)
+    session = "optio"
+    marker_path = f"{host.workdir.rstrip('/')}/{_RESCUE_MARKER}"
+
+    tmux_path = await host_actions._require_tmux(host)
+    alive = await host_actions.tmux_session_alive(
+        host, tmux_path, socket, session,
+    )
+    if not alive and not await _marker_present(host, marker_path):
+        return  # normal resume; nothing to rescue
+
+    _LOG.warning(
+        "crash-orphan rescue: live=%s socket=%s — capturing live state before wipe",
+        alive, socket,
+    )
+
+    # 1. Durable marker (retry guard: kill removes the has-session signal).
+    await host.write_text(_RESCUE_MARKER, "")
+
+    # 2. Kill the orphan tree (handle-less: orphan ttyd reaped by socket).
+    claude_path = _claude_bin_path(host)
+    await host_actions.teardown_session_tree(
+        host,
+        tmux_path=tmux_path,
+        tmux_socket=socket,
+        tmux_session=session,
+        claude_path=claude_path,
+        ttyd_handle=None,
+        aggressive=True,
+    )
+
+    # 3. Capture the now-static workdir — identical artifacts to a normal
+    #    teardown capture. Exclude the marker so a restored workdir cannot
+    #    re-trigger rescue in a loop.
+    exclude = [*(config.workdir_exclude or []), _RESCUE_MARKER]
+    await _capture_snapshot(
+        ctx, host,
+        end_state="rescued",
+        workdir_exclude=exclude,
+        session_blob_encrypt=config.session_blob_encrypt,
+    )
+
+    # 4. Capture durable — clear the marker.
+    await host.run_command(f"rm -f {shlex.quote(marker_path)}")
+    _LOG.warning("crash-orphan rescue: fresh snapshot captured; orphan killed")
 
 
 async def _capture_snapshot(
