@@ -245,6 +245,23 @@ class ProcessContext:
         from optio_core.store import clear_widget_upstream
         await clear_widget_upstream(self._db, self._prefix, self._process_oid)
 
+    async def set_control_upstream(
+        self,
+        url: str,
+        inner_auth: InnerAuth | None = None,
+    ) -> None:
+        """Register the URL of this session's input listener for the
+        agent-input proxy route. Mirrors set_widget_upstream."""
+        from optio_core.store import update_control_upstream
+        await update_control_upstream(
+            self._db, self._prefix, self._process_oid, url, inner_auth,
+        )
+
+    async def clear_control_upstream(self) -> None:
+        """Clear controlUpstream (teardown)."""
+        from optio_core.store import clear_control_upstream
+        await clear_control_upstream(self._db, self._prefix, self._process_oid)
+
     async def set_widget_data(self, data) -> None:
         """Overwrite widgetData. Must be JSON-serializable. Optio does not interpret."""
         from optio_core.store import update_widget_data

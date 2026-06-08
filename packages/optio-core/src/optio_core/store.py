@@ -450,6 +450,33 @@ async def clear_widget_upstream(
     )
 
 
+async def update_control_upstream(
+    db: AsyncIOMotorDatabase,
+    prefix: str,
+    process_oid: ObjectId,
+    url: str,
+    inner_auth: InnerAuth | None = None,
+) -> None:
+    """Set controlUpstream (the session's in-process input listener) — used by
+    the agent-input proxy route to forward human messages into the session."""
+    entry: dict = {"url": url}
+    entry["innerAuth"] = inner_auth.to_dict() if inner_auth is not None else None
+    await _collection(db, prefix).update_one(
+        {"_id": process_oid},
+        {"$set": {"controlUpstream": entry}},
+    )
+
+
+async def clear_control_upstream(
+    db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId,
+) -> None:
+    """Clear controlUpstream on a process (teardown)."""
+    await _collection(db, prefix).update_one(
+        {"_id": process_oid},
+        {"$set": {"controlUpstream": None}},
+    )
+
+
 async def update_widget_data(
     db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId, data,
 ) -> None:
