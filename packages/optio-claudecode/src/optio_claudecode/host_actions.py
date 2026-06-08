@@ -704,15 +704,13 @@ async def _kill_ttyd_by_socket(host: "Host", socket_path: str) -> None:
 async def kill_claude_processes(
     host: "Host", claude_path: str, *, signal: str = "KILL",
 ) -> None:
-    """Force the per-task claude process tree to exit.
+    """Kill the per-task claude via an anchored host-side ``pkill``.
 
-    Teardown SIGKILLs ttyd and kill-sessions tmux, but claude runs under pasta
-    in its own process group and ignores the tmux pane's SIGHUP, so it is
-    orphaned and survives — ``await_claude_gone`` then waits for a process
-    nothing kills, blowing the cancel grace. pasta isolates only the network
-    namespace (not PID), so a host-side ``pkill`` on the anchored argv[0] path
-    reaches it. Best-effort: pkill exits non-zero when nothing matches.
-    """
+    claude ignores the tmux pane SIGHUP, and MAY run under a pasta netns
+    wrapper (only when ``OPTIO_CLAUDECODE_NETNS`` is set AND the host is
+    local). The anchored pkill on claude's argv[0] reaches it regardless of
+    whether pasta wraps it, because pasta isolates the network namespace, not
+    PID. Best-effort: pkill exits non-zero when nothing matches."""
     pattern = _claude_pgrep_pattern(claude_path)
     await host.run_command(f"pkill -{signal} -f {shlex.quote(pattern)} || true")
 
