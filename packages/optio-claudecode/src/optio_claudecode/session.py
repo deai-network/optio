@@ -358,41 +358,27 @@ async def run_claudecode_session(
         if not ctx.should_continue():
             cancelled = True
         _trace("finally: ENTER cancelled=%s resuming=%s", cancelled, resuming)
-        if launched_handle is not None:
-            _trace("finally: terminate_subprocess START aggressive=%s", cancelled)
+        if (
+            launched_handle is not None
+            and tmux_path is not None
+            and tmux_socket is not None
+            and tmux_session is not None
+            and claude_path
+        ):
+            _trace("finally: teardown_session_tree START aggressive=%s", cancelled)
             try:
-                await host.terminate_subprocess(launched_handle, aggressive=cancelled)
-            except Exception:
-                _LOG.exception("terminate_subprocess failed")
-            _trace("finally: terminate_subprocess DONE")
-
-        if tmux_path is not None and tmux_socket is not None and tmux_session is not None:
-            try:
-                await host_actions._kill_tmux_session(
-                    host, tmux_path, tmux_socket, tmux_session,
+                await host_actions.teardown_session_tree(
+                    host,
+                    tmux_path=tmux_path,
+                    tmux_socket=tmux_socket,
+                    tmux_session=tmux_session,
+                    claude_path=claude_path,
+                    ttyd_handle=launched_handle,
+                    aggressive=cancelled,
                 )
             except Exception:
-                _LOG.exception("tmux session teardown failed")
-
-        # Wait for claude to fully exit before snapshotting, so the tar of
-        # home/.claude reads a quiescent tree. kill-session only SIGHUPs
-        # claude and returns; claude may still be flushing settings / mcp-cache
-        # / locks as it dies, which would make the capture tar fail with
-        # "file changed as we read it". Best-effort + bounded; the strict tar
-        # exit check in _archive_home_claude is the backstop.
-        if launched_handle is not None and claude_path:
-            # claude runs under pasta in its own process group and ignores the
-            # tmux pane's SIGHUP from kill-session, so it is orphaned by the
-            # ttyd/tmux teardown above. Kill it explicitly, else await_claude_gone
-            # waits on a process nothing kills and the cancel grace is exceeded.
-            try:
-                await host_actions.kill_claude_processes(host, claude_path)
-            except Exception:
-                _LOG.exception("kill_claude_processes failed")
-            try:
-                await host_actions.await_claude_gone(host, claude_path)
-            except Exception:
-                _LOG.exception("await_claude_gone failed; proceeding to capture")
+                _LOG.exception("teardown_session_tree failed")
+            _trace("finally: teardown_session_tree DONE")
 
         if cred_watch_task is not None:
             cred_watch_task.cancel()
