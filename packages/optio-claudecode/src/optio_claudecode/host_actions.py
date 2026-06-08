@@ -676,6 +676,31 @@ def _claude_pgrep_pattern(claude_path: str) -> str:
     return "^" + body
 
 
+def _socket_pkill_pattern(socket_path: str) -> str:
+    """Anchored pkill -f pattern matching the orphan ttyd that carries
+    ``socket_path`` in its cmdline (``ttyd ... -- tmux -S <socket> attach``).
+
+    The ``ttyd`` binary token is bracket-escaped (``[t]tyd``) so pkill's own
+    argv does not self-match — same trick as ``_claude_pgrep_pattern``'s
+    ``[c]laude``. The full ``socket_path`` is kept verbatim so the match is
+    scoped to this task's private socket (and not some other ttyd)."""
+    if not socket_path:
+        return socket_path
+    return f"[t]tyd.*{socket_path}"
+
+
+async def _kill_ttyd_by_socket(host: "Host", socket_path: str) -> None:
+    """Reap a detached orphan ttyd that has no tracked launch handle.
+
+    Normal teardown kills ttyd via ``terminate_subprocess(launched_handle)``.
+    A crash orphan's ttyd is re-parented to init with no handle, so it is
+    reaped host-side by an anchored ``pkill -f`` on the private socket path it
+    carries in its cmdline. Best-effort: pkill exits non-zero when nothing
+    matches."""
+    pattern = _socket_pkill_pattern(socket_path)
+    await host.run_command(f"pkill -KILL -f {shlex.quote(pattern)} || true")
+
+
 async def kill_claude_processes(
     host: "Host", claude_path: str, *, signal: str = "KILL",
 ) -> None:
