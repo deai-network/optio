@@ -746,6 +746,58 @@ async def await_claude_gone(
         waited += poll_s
 
 
+async def teardown_session_tree(
+    host: "Host",
+    *,
+    tmux_path: str,
+    tmux_socket: str,
+    tmux_session: str,
+    claude_path: str,
+    ttyd_handle: "ProcessHandle | None" = None,
+    aggressive: bool,
+) -> None:
+    """Kill a full claudecode session tree (ttyd + tmux + claude), reused by
+    both normal teardown and crash-orphan rescue.
+
+    Four best-effort steps, each isolated so one failure does not abort the
+    rest:
+      1. ttyd — via the tracked launch handle (normal teardown) or, when no
+         handle exists (a crash orphan re-parented to init), an anchored
+         host-side pkill on the socket path.
+      2. ``kill-session`` — SIGHUPs the tmux pane.
+      3. ``kill_claude_processes`` — claude ignores the pane SIGHUP (and may
+         run under a pasta netns wrapper), so it is killed explicitly via an
+         anchored host-side pkill on its argv[0]; this reaches it whether or
+         not pasta wraps it (pasta isolates the network namespace, not PID).
+      4. ``await_claude_gone`` — waits for quiescence so a subsequent capture
+         tar does not race a dying claude."""
+    if ttyd_handle is not None:
+        try:
+            await host.terminate_subprocess(ttyd_handle, aggressive=aggressive)
+        except Exception:
+            _LOG.exception("terminate_subprocess (ttyd) failed")
+    else:
+        try:
+            await _kill_ttyd_by_socket(host, tmux_socket)
+        except Exception:
+            _LOG.exception("orphan ttyd reap failed (socket=%s)", tmux_socket)
+
+    try:
+        await _kill_tmux_session(host, tmux_path, tmux_socket, tmux_session)
+    except Exception:
+        _LOG.exception("tmux session teardown failed")
+
+    try:
+        await kill_claude_processes(host, claude_path)
+    except Exception:
+        _LOG.exception("kill_claude_processes failed")
+
+    try:
+        await await_claude_gone(host, claude_path)
+    except Exception:
+        _LOG.exception("await_claude_gone failed; proceeding")
+
+
 async def tmux_session_alive(
     host: "Host", tmux_path: str, socket_path: str, session_name: str,
 ) -> bool:
