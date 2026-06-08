@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import type { WidgetProps } from './registry.js';
 import { registerWidget } from './registry.js';
 import { IframeWidget } from './IframeWidget.js';
@@ -7,6 +7,7 @@ export function IframeInputWidget(props: WidgetProps) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const controlUrl =
     `${props.apiBaseUrl}/api/widget-control/${encodeURIComponent(props.database ?? '')}` +
@@ -32,6 +33,10 @@ export function IframeInputWidget(props: WidgetProps) {
       setError('Send failed — retry.');
     } finally {
       setBusy(false);
+      // Keep the keyboard on the input so the operator can keep typing after
+      // Enter without a mouse click. The textarea is never disabled (disabling
+      // is what blurred it); this refocus also covers any other blur source.
+      inputRef.current?.focus();
     }
   }
 
@@ -49,9 +54,9 @@ export function IframeInputWidget(props: WidgetProps) {
       </div>
       <div style={{ borderTop: '1px solid #ddd', padding: 8, display: 'flex', gap: 8, alignItems: 'flex-end' }}>
         <textarea
+          ref={inputRef}
           data-testid="agent-input-box"
           value={text}
-          disabled={busy}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
           placeholder="Message Claude…  (Enter to send, Shift+Enter for newline)"
