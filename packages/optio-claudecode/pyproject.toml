@@ -30,6 +30,7 @@ dependencies = [
     "optio-host>=0.2,<0.3",
     "optio-agents>=0.2,<0.3",
     "asyncssh>=2.14",
+    "aiohttp>=3.9",
 ]
 
 [project.optional-dependencies]

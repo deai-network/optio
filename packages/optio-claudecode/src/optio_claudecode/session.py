@@ -33,6 +33,7 @@ from optio_agents import get_protocol
 
 from optio_claudecode import cred_watcher
 from optio_claudecode import host_actions
+from optio_claudecode.input_listener import serialized, start_input_listener
 from optio_claudecode.account import resolve_account_summary
 from optio_claudecode.oauth_redirect import rewrite_oauth_redirect
 from optio_claudecode.seed_manifest import (
@@ -93,6 +94,8 @@ async def run_claudecode_session(
     tmux_path: str | None = None
     tmux_socket: str | None = None
     tmux_session: str | None = None
+    injection_lock = asyncio.Lock()
+    input_runner = None  # aiohttp AppRunner | None
     cancelled = False
     # Set by _prepare (the driver runs it after the workdir wipe, before the
     # optio.log tail); read by the body and the teardown finally.
@@ -181,7 +184,7 @@ async def run_claudecode_session(
                 )
 
     async def _claudecode_body(host: Host, hook_ctx: HookContext) -> None:
-        nonlocal launched_handle, tmux_path, tmux_socket, tmux_session
+        nonlocal launched_handle, tmux_path, tmux_socket, tmux_session, input_runner
         nonlocal cred_baseline, cred_watch_task
         nonlocal resolved_seed_id, lease_holder
 
@@ -308,6 +311,18 @@ async def run_claudecode_session(
         await ctx.set_widget_data({
             "iframeSrc": "{widgetProxyUrl}/",
         })
+        # In-session input listener: receives human messages from the
+        # iframe-input widget via the API widget-control proxy and injects
+        # them under the same lock as system messages (no garbling).
+        async def _inject_raw(text: str) -> None:
+            await host_actions.send_text_to_claude(
+                host, tmux_path, tmux_socket, tmux_session, text,
+            )
+        input_runner, input_port = await start_input_listener(
+            bind_iface=ttyd_iface,
+            on_input=serialized(injection_lock, _inject_raw),
+        )
+        await ctx.set_control_upstream(f"http://{upstream_host}:{input_port}")
         ctx.report_progress(None, "Claude Code is live")
 
         # Await the claude process inside tmux (NOT the ttyd connection). ttyd
@@ -339,12 +354,12 @@ async def run_claudecode_session(
             cred_watch_task = None
 
     async def _agent_sender(message: str) -> None:
-        # tmux_* are set by _claudecode_body at launch; host is the session's
-        # Host. send_text_to_claude raises on a tmux failure, which
-        # send_to_agent converts to False.
-        await host_actions.send_text_to_claude(
-            host, tmux_path, tmux_socket, tmux_session, message,
-        )
+        # Serialized against the human-input listener via injection_lock so a
+        # system message can never interleave with a human burst.
+        async with injection_lock:
+            await host_actions.send_text_to_claude(
+                host, tmux_path, tmux_socket, tmux_session, message,
+            )
 
     try:
         await run_log_protocol_session(
@@ -384,6 +399,16 @@ async def run_claudecode_session(
             except Exception:
                 _LOG.exception("teardown_session_tree failed")
             _trace("finally: teardown_session_tree DONE")
+
+        if input_runner is not None:
+            try:
+                await input_runner.cleanup()
+            except Exception:
+                _LOG.exception("input listener cleanup failed")
+            try:
+                await ctx.clear_control_upstream()
+            except Exception:
+                _LOG.exception("clear control upstream failed")
 
         if cred_watch_task is not None:
             cred_watch_task.cancel()
@@ -857,7 +882,7 @@ def create_claudecode_task(
         process_id=process_id,
         name=name,
         description=description,
-        ui_widget="iframe",
+        ui_widget="iframe-input",
         supports_resume=config.supports_resume,
         metadata=metadata or {},
     )
