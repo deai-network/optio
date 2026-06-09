@@ -137,8 +137,10 @@ def _scenario_seed() -> None:
             '{"msg": "secret-transcript"}', encoding="utf-8",
         )
         (claude / "history.jsonl").write_text("h\n", encoding="utf-8")
-        # .claude.json with a single projects entry keyed to the run cwd
-        (Path(home) / ".claude.json").write_text(
+        # .claude.json with a single projects entry keyed to the run cwd.
+        # Under CLAUDE_CONFIG_DIR=<home>/.claude it lives inside .claude/ (real
+        # claude's location), not the old home root.
+        (claude / ".claude.json").write_text(
             json.dumps({
                 "userID": "u1",
                 "oauthAccount": {"email": "x@y.z"},

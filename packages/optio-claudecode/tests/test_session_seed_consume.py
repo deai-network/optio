@@ -71,7 +71,7 @@ async def test_second_session_consumes_seed(
         observed["creds"] = os.path.exists(f"{wd}/home/.claude/.credentials.json")
         observed["plugins"] = os.path.exists(f"{wd}/home/.claude/plugins")
         observed["projects_dir"] = os.path.exists(f"{wd}/home/.claude/projects")
-        cj = await hook_ctx.read_text_from_host("home/.claude.json")
+        cj = await hook_ctx.read_text_from_host("home/.claude/.claude.json")
         observed["projects_key"] = list(json.loads(cj)["projects"].keys())
         observed["new_cwd"] = wd
 

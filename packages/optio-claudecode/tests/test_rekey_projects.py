@@ -13,12 +13,14 @@ from optio_claudecode.seed_manifest import _rekey_claude_json_projects
 async def _run(tmp_workdir, name, claude_json):
     host = LocalHost(taskdir=os.path.join(tmp_workdir, name))
     await host.setup_workdir()
-    home = os.path.join(host.workdir, "home")
-    os.makedirs(home, exist_ok=True)
-    with open(os.path.join(home, ".claude.json"), "w") as fh:
+    # claude runs under CLAUDE_CONFIG_DIR=<home>/.claude, so .claude.json lives
+    # inside .claude/ (not the old home root).
+    cdir = os.path.join(host.workdir, "home", ".claude")
+    os.makedirs(cdir, exist_ok=True)
+    with open(os.path.join(cdir, ".claude.json"), "w") as fh:
         json.dump(claude_json, fh)
     await _rekey_claude_json_projects(host)
-    with open(os.path.join(home, ".claude.json")) as fh:
+    with open(os.path.join(cdir, ".claude.json")) as fh:
         return host, json.load(fh)
 
 
