@@ -80,3 +80,42 @@ def test_minimal_config_resume_defaults():
     assert cfg.session_blob_encrypt is None
     assert cfg.session_blob_decrypt is None
     assert cfg.on_resume_refresh is None
+
+
+import pytest
+from optio_claudecode.types import ClaudeCodeTaskConfig, AllowedDir
+
+
+def test_fs_isolation_defaults_on():
+    cfg = ClaudeCodeTaskConfig(consumer_instructions="x", delivery_type="bug-report")
+    assert cfg.fs_isolation is True
+    assert cfg.delivery_type == "bug-report"
+
+
+def test_fs_isolation_requires_delivery_type():
+    with pytest.raises(ValueError, match="delivery_type"):
+        ClaudeCodeTaskConfig(consumer_instructions="x")  # fs_isolation defaults True, no delivery_type
+
+
+def test_fs_isolation_off_allows_missing_delivery_type():
+    cfg = ClaudeCodeTaskConfig(consumer_instructions="x", fs_isolation=False)
+    assert cfg.fs_isolation is False
+    assert cfg.delivery_type is None
+
+
+def test_extra_allowed_dirs_mode_validated():
+    with pytest.raises(ValueError, match="mode"):
+        ClaudeCodeTaskConfig(
+            consumer_instructions="x",
+            delivery_type="d",
+            extra_allowed_dirs=[AllowedDir(path="/data", mode="exec")],  # invalid
+        )
+
+
+def test_extra_allowed_dirs_ok():
+    cfg = ClaudeCodeTaskConfig(
+        consumer_instructions="x",
+        delivery_type="d",
+        extra_allowed_dirs=[AllowedDir(path="/data", mode="ro"), AllowedDir(path="/scratch", mode="rw")],
+    )
+    assert cfg.extra_allowed_dirs[0].path == "/data"

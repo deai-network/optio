@@ -5,13 +5,26 @@ The generic ``DeliverableCallback`` / ``HookCallback`` types are owned by
 re-exports them alongside the package-specific ``ClaudeCodeTaskConfig``.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal
 
 from bson import ObjectId
 
 from optio_agents.protocol.session import DeliverableCallback, HookCallback
 from optio_host.types import SSHConfig
+
+
+@dataclass
+class AllowedDir:
+    """A caller-supplied extra path grant for filesystem isolation.
+
+    ``mode`` is exactly ``"ro"`` (read-only) or ``"rw"`` (read-write).
+    Grants are additive: callers may widen the allowlist but never mask
+    the security baseline.
+    """
+
+    path: str
+    mode: Literal["ro", "rw"]
 
 
 __all__ = [
@@ -23,6 +36,7 @@ __all__ = [
     "PermissionMode",
     "SeedProvider",
     "SeedUnavailableError",
+    "AllowedDir",
 ]
 
 
@@ -71,6 +85,19 @@ class ClaudeCodeTaskConfig:
     # env, so tool calls collapse to one-line summaries instead of showing every
     # bash command/output. Layered onto any consumer-supplied claude_config.
     focus_mode: bool = False
+
+    # --- filesystem isolation (claustrum) ------------------------------
+    # When True (default), claude runs confined to an explicit filesystem
+    # allowlist via the claustrum Landlock sandbox. Fail-closed: if claustrum
+    # cannot be provisioned or the kernel lacks Landlock, the task refuses to
+    # launch rather than run unconfined. Set False to opt a single task out.
+    fs_isolation: bool = True
+    # Additive caller extensions to the allowlist (never masks the baseline).
+    extra_allowed_dirs: list[AllowedDir] | None = None
+    # Top-level subdir under <workdir>/deliverables/ used to route the
+    # pre-launch "newer claustrum release available" notice through the
+    # existing on_deliverable callback. MANDATORY when fs_isolation is True.
+    delivery_type: str | None = None
 
     ssh: SSHConfig | None = None
 
@@ -220,3 +247,16 @@ class ClaudeCodeTaskConfig:
                 "session_restore_from is incompatible with auto_start "
                 "(a restored conversation is continued by the caller)"
             )
+        if self.fs_isolation and not (self.delivery_type and self.delivery_type.strip()):
+            raise ValueError(
+                "ClaudeCodeTaskConfig: fs_isolation is on (default) but "
+                "delivery_type is unset. Set delivery_type=<subdir> (the "
+                "deliverables/ prefix for filesystem-isolation notices), or "
+                "set fs_isolation=False to opt out."
+            )
+        for ad in self.extra_allowed_dirs or []:
+            if ad.mode not in ("ro", "rw"):
+                raise ValueError(
+                    f"ClaudeCodeTaskConfig.extra_allowed_dirs: mode={ad.mode!r} "
+                    f"must be 'ro' or 'rw' (path={ad.path!r})."
+                )
