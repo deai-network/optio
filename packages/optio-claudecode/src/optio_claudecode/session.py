@@ -108,6 +108,8 @@ async def run_claudecode_session(
     # optio.log tail); read by the body and the teardown finally.
     claude_path: str | None = None
     ttyd_path: str | None = None
+    claustrum_path: str | None = None
+    claustrum_newer: str | None = None
     resuming = False
     # `pass_continue` decides whether claude is launched with --continue.
     # It is NOT the same as `resuming`: a restored snapshot with no
@@ -136,6 +138,7 @@ async def run_claudecode_session(
         before the tail can replay its stale DONE/ERROR.
         """
         nonlocal claude_path, ttyd_path, resuming, pass_continue
+        nonlocal claustrum_path, claustrum_newer
         claude_path = await host_actions.ensure_claude_installed(
             hook_ctx,
             install_if_missing=config.install_if_missing,
@@ -146,6 +149,14 @@ async def run_claudecode_session(
             install_if_missing=config.install_ttyd_if_missing,
             install_dir=config.ttyd_install_dir,
         )
+
+        claustrum_path = None
+        claustrum_newer = None
+        if config.fs_isolation:
+            claustrum_path = await host_actions.ensure_claustrum_installed(
+                hook_ctx, install_dir=config.claude_install_dir,
+            )
+            claustrum_newer = await host_actions.claustrum_newer_tag()
 
         resume_requested = bool(getattr(ctx, "resume", False))
         snapshot: dict | None = None
@@ -233,6 +244,24 @@ async def run_claudecode_session(
         upstream_host = os.environ.get("OPTIO_WIDGET_TUNNEL_HOST", "127.0.0.1")
         ttyd_iface = bind_addr if isinstance(host, LocalHost) else "127.0.0.1"
 
+        if config.fs_isolation and claustrum_newer and config.on_deliverable is not None:
+            rel = f"{config.delivery_type}/claustrum-update-{claustrum_newer}.md"
+            text = (
+                f"A newer claustrum release ({claustrum_newer}) is available; "
+                f"the pinned version is {host_actions._CLAUSTRUM_PINNED_TAG}. "
+                f"Audit it and consider bumping the pin."
+            )
+            await host.write_text(f"deliverables/{rel}", text)
+            try:
+                await config.on_deliverable(hook_ctx, rel, text)
+            finally:
+                # Clean slate for the real agent: remove the notice file. (No
+                # optio.log "Deliverable:" line is written — this is a direct
+                # callback invocation, not the tail loop.)
+                await host.run_command(
+                    f"rm -f {__import__('shlex').quote(host.workdir.rstrip('/') + '/deliverables/' + rel)}"
+                )
+
         claude_flags = host_actions.build_claude_flags(
             permission_mode=config.permission_mode,
             allowed_tools=config.allowed_tools,
@@ -266,6 +295,18 @@ async def run_claudecode_session(
             **(hook_ctx.browser_launch_env or {}),
         }
         ctx.report_progress(None, "Launching Claude Code…")
+        claustrum_wrap = None
+        if config.fs_isolation:
+            from . import fs_allowlist
+            cache_dir = await host_actions._resolve_cache_dir(host, config.claude_install_dir)
+            grants = fs_allowlist.build_grant_flags(
+                workdir=host.workdir,
+                claude_cache_dir=cache_dir,
+                extra_allowed_dirs=config.extra_allowed_dirs,
+            )
+            claustrum_wrap = [
+                claustrum_path, "--best-effort", "--abi-min", "1", *grants, "--",
+            ]
         handle, ttyd_port, tmux_socket, tmux_session = await host_actions.launch_ttyd_with_claude(
             host,
             ttyd_path=ttyd_path,
@@ -275,6 +316,7 @@ async def run_claudecode_session(
             claude_flags=claude_flags,
             ready_timeout_s=READY_TIMEOUT_S,
             env_remove=config.scrub_env,
+            claustrum_wrap=claustrum_wrap,
         )
         launched_handle = handle
         tmux_path = await host_actions._require_tmux(host)
