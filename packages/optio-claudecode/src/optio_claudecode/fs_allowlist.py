@@ -30,11 +30,14 @@ _BASELINE: list[tuple[str, str]] = [
     ("--ro", "/etc/ssl"),
     ("--ro", "/etc/resolv.conf"),
     ("--ro", "/proc"),
-    ("--ro", "/dev/null"),
-    ("--ro", "/dev/zero"),
+    ("--rw", "/dev/null"),
+    ("--rw", "/dev/zero"),
     ("--ro", "/dev/urandom"),
     ("--ro", "/dev/random"),
     ("--rw", "/dev/tty"),
+    # Pseudo-terminals: claude runs in a TUI inside tmux, which allocates a pty.
+    ("--rw", "/dev/pts"),
+    ("--rw", "/dev/ptmx"),
 ]
 
 

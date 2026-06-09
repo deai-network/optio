@@ -66,7 +66,7 @@ _DEFAULT_INSTALL_SUBDIR = ".local/bin"
 # claustrum: standalone Landlock filesystem-sandbox CLI, vendored by pinned tag.
 # Bumping is deliberate (a newer tag triggers a delivery notice, never auto-use).
 _CLAUSTRUM_REPO = "https://github.com/deai-network/claustrum"
-_CLAUSTRUM_PINNED_TAG = "v0.1.0"
+_CLAUSTRUM_PINNED_TAG = "v0.1.1"
 # uname -m -> Go GOARCH.
 _GOARCH_BY_UNAME = {"x86_64": "amd64", "aarch64": "arm64"}
 
