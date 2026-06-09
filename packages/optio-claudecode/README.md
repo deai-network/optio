@@ -61,3 +61,30 @@ is used by `optio-opencode`, so the same `consumer_instructions` can be
 swapped between the two packages.
 
 See `docs/2026-05-28-optio-claudecode-design.md` for the full design.
+
+## Conversation mode
+
+With `mode="conversation"` the task runs claude headlessly (no ttyd, no
+iframe) over its bidirectional stream-json stdio protocol, and the
+launching code receives a live `Conversation` object — send messages,
+subscribe to events and answers, gate tool permissions, interrupt,
+close:
+
+```python
+config = ClaudeCodeTaskConfig(
+    consumer_instructions=None,   # defaults to a plain conversation prompt
+    credentials_json=...,
+    mode="conversation",
+    host_protocol=False,          # no optio.log keyword channel
+    permission_mode="acceptEdits",
+)
+# ... register the task, then:
+conv = await optio.launch_and_await_result("example-task", session_id=None)
+conv.on_message(lambda text: print("claude:", text))
+await conv.send("hello")
+await conv.close()
+```
+
+All new config fields default to existing behavior (`mode="iframe"`,
+`host_protocol=True`, `permission_gate=False`), so existing callers run
+unchanged. See `docs/2026-06-10-claudecode-conversation-gate-design.md`.

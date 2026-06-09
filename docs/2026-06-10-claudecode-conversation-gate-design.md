@@ -314,7 +314,12 @@ own types while staying inside the transparent dict stream.
   ("claude exited unexpectedly (exit N)"). No DONE-wrapper indirection — the engine
   owns the process handle and observes the exit directly.
 - With `host_protocol=True` in conversation mode (legal combo), the optio.log keyword
-  channel runs in parallel and DONE/ERROR terminate exactly as today.
+  channel runs in parallel and DONE/ERROR terminate exactly as today. Because the
+  keyword driver treats a body return without DONE as a premature exit, a caller
+  `close()` in this combo emits a harness-side `DONE` line to optio.log (the same
+  convention as the tmux wrapper's exit echo) so the session resolves **done**, then
+  parks until the driver observes it. *(Added during implementation — surfaced by the
+  session tests.)*
 
 Teardown (snapshot capture, seed capture/save-back, cleanup, disconnect) is the
 existing `finally` bracket, with `teardown_session_tree` replaced in this mode by

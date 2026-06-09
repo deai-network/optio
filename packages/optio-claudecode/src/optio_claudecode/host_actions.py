@@ -834,6 +834,51 @@ def build_claude_flags(
     return out
 
 
+def build_conversation_argv(
+    claude_path: str, *, claude_flags: list[str], permission_gate: bool,
+) -> list[str]:
+    """Argv for a headless stream-json conversation session.
+
+    ``--verbose`` is required for stream-json output in -p mode. When
+    ``permission_gate`` is set, the stdio permission-prompt plumbing is added
+    so can_use_tool questions arrive as control_request lines on stdout.
+    (Flag spelling verified against the live CLI in the plan's V1 phase.)
+
+    The netns seal and the DONE/ERROR bash wrapper are deliberately NOT
+    applied here (engine observes the exit directly; conversation mode
+    assumes seeded/planted creds — no in-session OAuth loopback).
+    """
+    out = [
+        claude_path, "-p",
+        "--input-format", "stream-json",
+        "--output-format", "stream-json",
+        "--verbose",
+        *claude_flags,
+    ]
+    if permission_gate:
+        out += ["--permission-prompt-tool", "stdio"]  # V1-VERIFY
+    return out
+
+
+def conversation_launch_env(
+    workdir: str, extra_env: dict[str, str] | None,
+) -> dict[str, str]:
+    """Launch env for conversation mode: same HOME isolation + PATH shape as
+    the tmux path (_build_claude_shell_command), minus tmux/netns concerns."""
+    workdir_clean = workdir.rstrip("/")
+    home_dir = f"{workdir_clean}/home"
+    home_local_bin = f"{home_dir}/.local/bin"
+    extra = dict(extra_env or {})
+    base_path = extra.pop("PATH", None) or os.environ.get(
+        "PATH", "/usr/local/bin:/usr/bin:/bin",
+    )
+    return {
+        "HOME": home_dir,
+        "PATH": f"{home_local_bin}:{base_path}",
+        **extra,
+    }
+
+
 # Positional prompt appended to the claude launch when ``auto_start`` is set —
 # kicks the agent off without the operator typing anything.
 AUTO_START_PROMPT = "Read CLAUDE.md and execute the task it describes"

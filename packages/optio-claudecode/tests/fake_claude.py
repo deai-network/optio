@@ -1,10 +1,17 @@
 """Stand-in for the `claude` CLI during integration tests.
 
-Reads the scenario name from the env var ``FAKE_CLAUDE_SCENARIO``
-(default ``happy``) and runs a deterministic script of optio.log writes
-+ sleeps + (optionally) deliverable writes. Stays alive until DONE or
-ERROR has been emitted; the framework signals SIGTERM to terminate the
-wrapping ttyd process at that point.
+Two modes:
+
+- **Scenario mode** (default, tmux/iframe-era): reads the scenario name
+  from the env var ``FAKE_CLAUDE_SCENARIO`` (default ``happy``) and runs
+  a deterministic script of optio.log writes + sleeps + (optionally)
+  deliverable writes. Stays alive until DONE or ERROR has been emitted;
+  the framework signals SIGTERM to terminate the wrapping ttyd process
+  at that point.
+- **Stream-json mode** (conversation-era): activated when
+  ``--input-format`` appears in argv. Speaks bidirectional NDJSON on
+  stdin/stdout — one scripted reply per user message; see
+  ``run_stream_json_mode`` for the env knobs.
 """
 
 import argparse
@@ -146,7 +153,74 @@ def _scenario_seed() -> None:
     time.sleep(30.0)
 
 
+def run_stream_json_mode(argv: list[str]) -> int:
+    """Bidirectional NDJSON fake: one scripted reply per user message.
+
+    Env knobs:
+      FAKE_CLAUDE_REPLY          — reply text template; '{n}' = turn number
+                                   (default 'reply-{n}')
+      FAKE_CLAUDE_PERMISSION     — '1': before the first result, emit a
+                                   can_use_tool control_request and wait for
+                                   the control_response; the decision is
+                                   echoed into the result text.
+      FAKE_CLAUDE_EXIT_AFTER     — int: exit(7) after that many results
+                                   (simulates unexpected death).
+    """
+    def emit(obj):
+        sys.stdout.write(json.dumps(obj) + "\n")
+        sys.stdout.flush()
+
+    reply_tpl = os.environ.get("FAKE_CLAUDE_REPLY", "reply-{n}")
+    want_permission = os.environ.get("FAKE_CLAUDE_PERMISSION") == "1"
+    exit_after = int(os.environ.get("FAKE_CLAUDE_EXIT_AFTER", "0"))
+    session_id = "fake-session-0000"
+    emit({"type": "system", "subtype": "init", "session_id": session_id,
+          "model": "fake-model", "cwd": os.getcwd()})
+    n = 0
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        msg = json.loads(line)
+        if msg.get("type") == "control_request":
+            sub = (msg.get("request") or {}).get("subtype")
+            if sub == "interrupt":
+                emit({"type": "control_response", "response": {
+                    "subtype": "success", "request_id": msg.get("request_id"),
+                }})
+                emit({"type": "result", "subtype": "error_during_execution",
+                      "result": "", "session_id": session_id, "is_error": True})
+                n += 1
+            continue
+        if msg.get("type") != "user":
+            continue
+        n += 1
+        decision_note = ""
+        if want_permission and n == 1:
+            emit({"type": "control_request", "request_id": "perm-1",
+                  "request": {"subtype": "can_use_tool", "tool_name": "Bash",
+                              "input": {"command": "echo hi"}}})
+            for resp_line in sys.stdin:
+                resp = json.loads(resp_line)
+                if resp.get("type") == "control_response":
+                    inner = (resp.get("response") or {}).get("response") or {}
+                    decision_note = f" perm:{inner.get('behavior')}"
+                    break
+        text = reply_tpl.format(n=n) + decision_note
+        emit({"type": "assistant", "message": {
+            "role": "assistant", "content": [{"type": "text", "text": text}],
+        }, "session_id": session_id})
+        emit({"type": "result", "subtype": "success", "result": text,
+              "session_id": session_id, "is_error": False,
+              "total_cost_usd": 0.0})
+        if exit_after and n >= exit_after:
+            return 7
+    return 0
+
+
 def main() -> int:
+    if "--input-format" in sys.argv:
+        return run_stream_json_mode(sys.argv)
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--permission-mode", default=None)

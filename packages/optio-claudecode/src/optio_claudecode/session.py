@@ -26,13 +26,14 @@ from optio_core.models import TaskInstance
 
 from optio_agents.context import HookContext
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
-from optio_host.host import Host, LocalHost, ProcessHandle, RemoteHost
+from optio_host.host import Host, LocalHost, ProcessHandle, RemoteHost, proc_wait
 from optio_host.paths import task_dir
 from optio_agents import seeds as _seeds
-from optio_agents import get_protocol
+from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
 
 from optio_claudecode import cred_watcher
 from optio_claudecode import host_actions
+from optio_claudecode.conversation import ClaudeCodeConversation
 from optio_claudecode.input_listener import serialized, start_input_listener
 from optio_claudecode.account import resolve_account_summary
 from optio_claudecode.oauth_redirect import rewrite_oauth_redirect
@@ -41,7 +42,7 @@ from optio_claudecode.seed_manifest import (
     CLAUDE_SEED_MANIFEST,
     CLAUDE_SEED_SUFFIX,
 )
-from optio_claudecode.prompt import compose_agents_md
+from optio_claudecode.prompt import DEFAULT_CONVERSATION_INSTRUCTIONS, compose_agents_md
 from optio_claudecode.snapshots import (
     insert_snapshot,
     load_latest_snapshot,
@@ -194,67 +195,10 @@ async def run_claudecode_session(
         else:
             resolved_seed_id = config.seed_id
 
-        # focus_mode: layer the quiet-TUI knobs (focus view + fullscreen) onto
-        # the planted settings, plus the no-flicker launch env. Off → passthrough.
-        effective_claude_config, focus_env = host_actions.build_focus_mode(
-            focus_mode=config.focus_mode, claude_config=config.claude_config,
+        cred_baseline, focus_env = await _plant_session_content(
+            ctx, host, hook_ctx, config, protocol,
+            resuming=resuming, resolved_seed_id=resolved_seed_id,
         )
-
-        refreshed_files: list[str] = []
-        if not resuming:
-            # Fresh start: protocol driver has created workdir,
-            # deliverables/, and an empty optio.log. Plant per-task HOME
-            # files and CLAUDE.md before launching ttyd.
-            await host_actions.plant_home_files(
-                host,
-                credentials_json=config.credentials_json,
-                claude_config=effective_claude_config,
-            )
-            if resolved_seed_id is not None:
-                # Seeded fresh: overlay the stored environment on top of
-                # any consumer-planted creds/config (seed wins), then
-                # rekey .claude.json projects to the new cwd. Begins a NEW
-                # conversation — no --continue.
-                _trace("body: merge_seed START id=%s", resolved_seed_id)
-                await _seeds.merge_seed(
-                    ctx, host,
-                    seed_id=resolved_seed_id,
-                    manifest=CLAUDE_SEED_MANIFEST,
-                    suffix=CLAUDE_SEED_SUFFIX,
-                    decrypt=config.session_blob_decrypt,
-                )
-                _trace("body: merge_seed DONE")
-                cred_baseline = await cred_watcher.cred_fingerprint(host)
-            await host.write_text(
-                "CLAUDE.md",
-                compose_agents_md(
-                    config.consumer_instructions,
-                    documentation=protocol.documentation,
-                    workdir_exclude=config.workdir_exclude,
-                    supports_resume=config.supports_resume,
-                ),
-            )
-        else:
-            # Resume: home/.claude (credentials, settings) was restored from
-            # the session blob. Overlay the seed's CURRENT credentials on top
-            # (the seed is the source of truth for creds; the snapshot may carry
-            # a now-rotated/dead token). Non-credential home files are untouched.
-            if resolved_seed_id is not None:
-                await _seeds.merge_seed(
-                    ctx, host,
-                    seed_id=resolved_seed_id,
-                    manifest=CLAUDE_CRED_MANIFEST,
-                    suffix=CLAUDE_SEED_SUFFIX,
-                    decrypt=config.session_blob_decrypt,
-                )
-            cred_baseline = await cred_watcher.cred_fingerprint(host)
-            refreshed_files = await _maybe_refresh_on_resume(host, hook_ctx, config)
-
-        if config.supports_resume:
-            await _append_resume_log_entry(host, refreshed=refreshed_files)
-
-        if config.before_execute is not None:
-            await config.before_execute(hook_ctx)
 
         # Network binding (same env handling as opencode for multi-container deploys)
         bind_addr = os.environ.get("OPTIO_WIDGET_TUNNEL_BIND", "127.0.0.1")
@@ -353,7 +297,121 @@ async def run_claudecode_session(
                 pass
             cred_watch_task = None
 
+    conversation: ClaudeCodeConversation | None = None
+    if config.mode == "conversation":
+        conversation = ClaudeCodeConversation(permission_gate=config.permission_gate)
+
+    async def _conversation_body(host: Host, hook_ctx: HookContext) -> None:
+        nonlocal launched_handle, cred_baseline, cred_watch_task
+        nonlocal resolved_seed_id, lease_holder
+
+        if callable(config.seed_id):
+            resolved_seed_id = await config.seed_id(ctx.process_id)  # may raise SeedUnavailableError
+            lease_holder = ctx.process_id  # provider holds the lease under this holder
+        else:
+            resolved_seed_id = config.seed_id
+
+        cred_baseline_out, focus_env = await _plant_session_content(
+            ctx, host, hook_ctx, config, protocol,
+            resuming=resuming, resolved_seed_id=resolved_seed_id,
+        )
+        cred_baseline = cred_baseline_out
+
+        claude_flags = host_actions.build_claude_flags(
+            permission_mode=config.permission_mode,
+            allowed_tools=config.allowed_tools,
+            disallowed_tools=config.disallowed_tools,
+            resuming=pass_continue,
+        )
+        argv = host_actions.build_conversation_argv(
+            claude_path, claude_flags=claude_flags,
+            permission_gate=config.permission_gate,
+        )
+        env = host_actions.conversation_launch_env(
+            host.workdir,
+            {**(config.env or {}), **focus_env, **(hook_ctx.browser_launch_env or {})},
+        )
+        ctx.report_progress(None, "Launching Claude Code (conversation)…")
+        cmd = " ".join(shlex.quote(a) for a in argv)
+        handle = await host.launch_subprocess(
+            cmd, env=env, cwd=host.workdir,
+            env_remove=config.scrub_env, stdin=True,
+        )
+        launched_handle = handle
+        conversation.attach(handle)
+        reader_task = asyncio.create_task(conversation.run_reader())
+
+        ctx.publish_result(conversation)
+        ctx.report_progress(None, "Claude Code conversation is live")
+
+        # Kickoff / resume notice as first stdin messages (print mode with
+        # --input-format stream-json takes no positional prompt).
+        if config.auto_start and not resuming:
+            await conversation.send(host_actions.AUTO_START_PROMPT)
+        elif resuming and pass_continue:
+            await conversation.send(f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}")
+
+        if resolved_seed_id is not None:
+            cred_watch_task = asyncio.create_task(cred_watcher.run_credential_watcher(
+                ctx, host,
+                seed_id=resolved_seed_id,
+                baseline=cred_baseline,
+                encrypt=config.session_blob_encrypt,
+                decrypt=config.session_blob_decrypt,
+                lease_holder=lease_holder,
+            ))
+
+        try:
+            # proc_wait handles both pid_like variants (asyncio subprocess on
+            # LocalHost, asyncssh process on RemoteHost) and yields the exit code.
+            wait_task = asyncio.create_task(proc_wait(handle))
+            close_task = asyncio.create_task(conversation.close_requested.wait())
+            done, _ = await asyncio.wait(
+                {wait_task, close_task}, return_when=asyncio.FIRST_COMPLETED,
+            )
+            if close_task in done and wait_task not in done:
+                # Caller asked to close: cooperative shutdown, clean end.
+                wait_task.cancel()
+                if config.host_protocol:
+                    # The keyword driver treats a body return without DONE as
+                    # a premature exit. A caller-requested close IS the clean
+                    # end of the session, so emit the DONE ourselves (same
+                    # harness-side convention as the tmux wrapper's exit echo)
+                    # and park until the driver observes it and cancels us.
+                    log_path = f"{host.workdir}/optio.log"
+                    await host.run_command(
+                        f"echo DONE >> {shlex.quote(log_path)}"
+                    )
+                    await asyncio.Event().wait()  # cancelled by the driver
+                return
+            # Subprocess exited on its own.
+            close_task.cancel()
+            try:
+                rc = wait_task.result()
+            except Exception:
+                rc = None
+            if not conversation.close_requested.is_set() and ctx.should_continue():
+                raise RuntimeError(
+                    f"claude exited unexpectedly (exit {rc})"
+                )
+        finally:
+            if cred_watch_task is not None:
+                cred_watch_task.cancel()
+                try:
+                    await cred_watch_task
+                except asyncio.CancelledError:
+                    pass
+                cred_watch_task = None
+            reader_task.cancel()
+            try:
+                await reader_task
+            except asyncio.CancelledError:
+                pass
+
     async def _agent_sender(message: str) -> None:
+        if config.mode == "conversation":
+            await conversation.send(message)
+            return
         # Serialized against the human-input listener via injection_lock so a
         # system message can never interleave with a human burst.
         async with injection_lock:
@@ -361,16 +419,18 @@ async def run_claudecode_session(
                 host, tmux_path, tmux_socket, tmux_session, message,
             )
 
+    body = _conversation_body if config.mode == "conversation" else _claudecode_body
     try:
         await run_log_protocol_session(
             host, ctx,
-            body=_claudecode_body,
+            body=body,
             prepare=_prepare,
             on_deliverable=config.on_deliverable,
             after_execute=config.after_execute,
             protocol=protocol,
             browser_url_rewrite=rewrite_oauth_redirect,
             agent_sender=_agent_sender,
+            keywords=config.host_protocol,
         )
     except _SessionFailed as fail:
         raise RuntimeError(str(fail)) from None
@@ -399,6 +459,21 @@ async def run_claudecode_session(
             except Exception:
                 _LOG.exception("teardown_session_tree failed")
             _trace("finally: teardown_session_tree DONE")
+
+        # Conversation mode has no tmux/ttyd tree (the gate above never fires):
+        # kill the pipe-bound claude directly, then wait for quiescence so the
+        # snapshot capture below tars a static home/.claude.
+        if config.mode == "conversation" and launched_handle is not None:
+            _trace("finally: terminate_subprocess (conversation) START aggressive=%s", cancelled)
+            try:
+                await host.terminate_subprocess(launched_handle, aggressive=cancelled)
+            except Exception:
+                _LOG.exception("terminate_subprocess (conversation) failed")
+            try:
+                await host_actions.await_claude_gone(host, claude_path or "claude")
+            except Exception:
+                _LOG.exception("await_claude_gone failed; proceeding")
+            _trace("finally: terminate_subprocess (conversation) DONE")
 
         if input_runner is not None:
             try:
@@ -497,6 +572,86 @@ async def run_claudecode_session(
 
 
 # --- helpers ---------------------------------------------------------------
+
+
+async def _plant_session_content(
+    ctx: ProcessContext, host: Host, hook_ctx: HookContext,
+    config: ClaudeCodeTaskConfig, protocol, *,
+    resuming: bool, resolved_seed_id: str | None,
+) -> "tuple[str | None, dict[str, str]]":
+    """Fresh/resume content planting shared by both modes.
+
+    Returns ``(cred_baseline, focus_env)``. Mirrors the pre-existing inline
+    logic exactly for the iframe path; conversation mode reuses it unchanged
+    except for the prompt-composition kwargs (mode-aware).
+    """
+    # focus_mode: layer the quiet-TUI knobs (focus view + fullscreen) onto
+    # the planted settings, plus the no-flicker launch env. Off → passthrough.
+    effective_claude_config, focus_env = host_actions.build_focus_mode(
+        focus_mode=config.focus_mode, claude_config=config.claude_config,
+    )
+    cred_baseline: str | None = None
+    refreshed_files: list[str] = []
+    instructions = config.consumer_instructions
+    omit_task_framing = False
+    if config.mode == "conversation" and not instructions:
+        instructions = DEFAULT_CONVERSATION_INSTRUCTIONS
+        omit_task_framing = True
+    if not resuming:
+        # Fresh start: protocol driver has created workdir,
+        # deliverables/, and an empty optio.log. Plant per-task HOME
+        # files and CLAUDE.md before launching claude.
+        await host_actions.plant_home_files(
+            host,
+            credentials_json=config.credentials_json,
+            claude_config=effective_claude_config,
+        )
+        if resolved_seed_id is not None:
+            # Seeded fresh: overlay the stored environment on top of
+            # any consumer-planted creds/config (seed wins), then
+            # rekey .claude.json projects to the new cwd. Begins a NEW
+            # conversation — no --continue.
+            _trace("body: merge_seed START id=%s", resolved_seed_id)
+            await _seeds.merge_seed(
+                ctx, host,
+                seed_id=resolved_seed_id,
+                manifest=CLAUDE_SEED_MANIFEST,
+                suffix=CLAUDE_SEED_SUFFIX,
+                decrypt=config.session_blob_decrypt,
+            )
+            _trace("body: merge_seed DONE")
+            cred_baseline = await cred_watcher.cred_fingerprint(host)
+        await host.write_text(
+            "CLAUDE.md",
+            compose_agents_md(
+                instructions,
+                documentation=protocol.documentation if config.host_protocol else None,
+                workdir_exclude=config.workdir_exclude,
+                supports_resume=config.supports_resume,
+                host_protocol=config.host_protocol,
+                omit_task_framing=omit_task_framing,
+            ),
+        )
+    else:
+        # Resume: home/.claude (credentials, settings) was restored from
+        # the session blob. Overlay the seed's CURRENT credentials on top
+        # (the seed is the source of truth for creds; the snapshot may carry
+        # a now-rotated/dead token). Non-credential home files are untouched.
+        if resolved_seed_id is not None:
+            await _seeds.merge_seed(
+                ctx, host,
+                seed_id=resolved_seed_id,
+                manifest=CLAUDE_CRED_MANIFEST,
+                suffix=CLAUDE_SEED_SUFFIX,
+                decrypt=config.session_blob_decrypt,
+            )
+        cred_baseline = await cred_watcher.cred_fingerprint(host)
+        refreshed_files = await _maybe_refresh_on_resume(host, hook_ctx, config)
+    if config.supports_resume:
+        await _append_resume_log_entry(host, refreshed=refreshed_files)
+    if config.before_execute is not None:
+        await config.before_execute(hook_ctx)
+    return cred_baseline, focus_env
 
 
 async def _stream_blob(ctx: ProcessContext, blob_id) -> "AsyncIterator[bytes]":
@@ -839,10 +994,19 @@ async def _maybe_refresh_on_resume(
             "on_resume_refresh raised; keeping existing CLAUDE.md from snapshot",
         )
         return []
+    # Mode-aware prompt kwargs, recomputed from the refreshed config (same
+    # defaulting as _plant_session_content's fresh-start composition).
+    instructions = new_config.consumer_instructions
+    omit_task_framing = False
+    if new_config.mode == "conversation" and not instructions:
+        instructions = DEFAULT_CONVERSATION_INSTRUCTIONS
+        omit_task_framing = True
     new_claude_md = compose_agents_md(
-        new_config.consumer_instructions,
+        instructions,
         workdir_exclude=new_config.workdir_exclude,
         supports_resume=new_config.supports_resume,
+        host_protocol=new_config.host_protocol,
+        omit_task_framing=omit_task_framing,
     )
     try:
         existing = await hook_ctx.read_text_from_host("CLAUDE.md", silent=True)
@@ -882,7 +1046,7 @@ def create_claudecode_task(
         process_id=process_id,
         name=name,
         description=description,
-        ui_widget="iframe-input",
+        ui_widget=("iframe-input" if config.mode == "iframe" else None),
         supports_resume=config.supports_resume,
         metadata=metadata or {},
     )

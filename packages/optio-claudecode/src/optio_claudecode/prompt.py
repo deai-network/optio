@@ -14,7 +14,21 @@ from optio_agents.prompt import (
 from optio_agents.protocol import build_log_channel_prompt
 
 
-__all__ = ["BASE_PROMPT_POST", "compose_agents_md"]
+__all__ = [
+    "BASE_PROMPT_POST",
+    "DEFAULT_CONVERSATION_INSTRUCTIONS",
+    "compose_agents_md",
+]
+
+
+DEFAULT_CONVERSATION_INSTRUCTIONS = "Let's have a conversation with the user."
+
+# Appended to the resume section when the keyword-protocol docs (which
+# normally explain the System: convention) are omitted (host_protocol=False).
+_SYSTEM_PREFIX_EXPLAINER = """
+(Messages prefixed `System:` on your input channel originate from the
+harness coordinating this session, not from the human user.)
+"""
 
 
 RESUME_SECTION_TEMPLATE = """## Resumes
@@ -115,6 +129,8 @@ def compose_agents_md(
     documentation: str | None = None,
     workdir_exclude: list[str] | None = None,
     supports_resume: bool = True,
+    host_protocol: bool = True,
+    omit_task_framing: bool = False,
 ) -> str:
     """Render <workdir>/CLAUDE.md for an optio-claudecode task.
 
@@ -124,10 +140,31 @@ def compose_agents_md(
     ``documentation`` is the keyword-protocol block; the session passes
     ``get_protocol(browser="redirect").documentation``. Defaults (for
     unit tests / standalone callers) to claudecode's ``redirect`` docs.
+
+    ``host_protocol=False`` omits the keyword-protocol documentation
+    block entirely (conversation mode without the optio.log channel);
+    the resume section then gains a self-contained ``System:`` explainer
+    that the protocol docs would otherwise provide.
+
+    ``omit_task_framing=True`` drops the ``## Task`` framing block
+    (used when the conversation instructions were defaulted).
     """
-    if documentation is None:
-        documentation = build_log_channel_prompt("redirect")
+    if host_protocol:
+        if documentation is None:
+            documentation = build_log_channel_prompt("redirect")
+    else:
+        documentation = None
     resume_section = _render_resume_section(workdir_exclude) if supports_resume else None
+    if resume_section is not None and not host_protocol:
+        resume_section = resume_section + _SYSTEM_PREFIX_EXPLAINER
+    if omit_task_framing:
+        body = consumer_instructions.rstrip()
+        resume_block = (resume_section + "\n") if resume_section else ""
+        doc_block = ""
+        if documentation:
+            from optio_agents.prompt import _INTRO  # same framing as shared composer
+            doc_block = _INTRO + documentation + "\n"
+        return f"{doc_block}{resume_block}{body}\n"
     return _compose_agents_md_host(
         consumer_instructions,
         documentation=documentation,

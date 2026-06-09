@@ -17,6 +17,7 @@ __all__ = [
     "HookCallback",
     "SSHConfig",
     "ClaudeCodeTaskConfig",
+    "ConversationMode",
     "PermissionMode",
     "SeedProvider",
     "SeedUnavailableError",
@@ -31,8 +32,11 @@ class SeedUnavailableError(Exception):
     is surfaced as the process failure."""
 
 
-PermissionMode = Literal["default", "plan", "acceptEdits", "bypassPermissions"]
-_VALID_PERMISSION_MODES = {"default", "plan", "acceptEdits", "bypassPermissions"}
+PermissionMode = Literal["default", "plan", "acceptEdits", "bypassPermissions", "dontAsk"]
+_VALID_PERMISSION_MODES = {"default", "plan", "acceptEdits", "bypassPermissions", "dontAsk"}
+_HEADLESS_SAFE_PERMISSION_MODES = {"acceptEdits", "bypassPermissions", "dontAsk"}
+
+ConversationMode = Literal["iframe", "conversation"]
 
 
 @dataclass
@@ -112,6 +116,19 @@ class ClaudeCodeTaskConfig:
     # are ignored on resume.
     on_seed_saved: "Callable[[str, str | None], Awaitable[None] | None] | None" = None
 
+    # --- conversation surface (spec: 2026-06-10 conversation gate) -------
+    # "iframe" = today's tmux+ttyd behavior (default, unchanged).
+    # "conversation" = headless stream-json session; the task publishes a
+    # ClaudeCodeConversation via ctx.publish_result.
+    mode: ConversationMode = "iframe"
+    # Opt-out for the optio.log keyword channel (STATUS/DELIVERABLE/DONE/…).
+    # iframe mode requires True (it is the only completion signal there).
+    host_protocol: bool = True
+    # Conversation mode only: route Claude Code's can_use_tool permission
+    # questions to the Conversation's on_permission_request handler over the
+    # stream-json control protocol.
+    permission_gate: bool = False
+
     def __post_init__(self) -> None:
         if self.permission_mode is not None and self.permission_mode not in _VALID_PERMISSION_MODES:
             raise ValueError(
@@ -133,3 +150,33 @@ class ClaudeCodeTaskConfig:
                 "session_blob_decrypt must be set together (both callables) "
                 "or both left as None; one without the other is a config error."
             )
+        if self.mode not in ("iframe", "conversation"):
+            raise ValueError(
+                f"ClaudeCodeTaskConfig.mode={self.mode!r} is not one of "
+                "['iframe', 'conversation']"
+            )
+        if self.mode == "iframe" and not self.host_protocol:
+            raise ValueError(
+                "ClaudeCodeTaskConfig: host_protocol=False requires "
+                "mode='conversation' (in iframe mode the optio.log keyword "
+                "channel is the only completion signal)."
+            )
+        if self.permission_gate and self.mode != "conversation":
+            raise ValueError(
+                "ClaudeCodeTaskConfig: permission_gate=True requires "
+                "mode='conversation'."
+            )
+        if self.mode == "conversation" and not self.permission_gate:
+            headless_ok = (
+                self.permission_mode in _HEADLESS_SAFE_PERMISSION_MODES
+                or bool(self.allowed_tools)
+            )
+            if not headless_ok:
+                raise ValueError(
+                    "ClaudeCodeTaskConfig: conversation mode without "
+                    "permission_gate needs a non-interactive permission "
+                    "setup — permission_mode in "
+                    f"{sorted(_HEADLESS_SAFE_PERMISSION_MODES)} or a "
+                    "non-empty allowed_tools (headless Claude cannot show "
+                    "a permission dialog)."
+                )
