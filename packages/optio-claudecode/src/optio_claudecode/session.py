@@ -45,6 +45,7 @@ from optio_claudecode.seed_manifest import (
     CLAUDE_CRED_MANIFEST,
     CLAUDE_SEED_MANIFEST,
     CLAUDE_SEED_SUFFIX,
+    _rekey_claude_json_projects,
 )
 from optio_claudecode.prompt import DEFAULT_CONVERSATION_INSTRUCTIONS, compose_agents_md
 from optio_claudecode.snapshots import (
@@ -198,6 +199,13 @@ async def run_claudecode_session(
             decrypt = config.session_blob_decrypt or (lambda b: b)
             plain = decrypt(payload)
             await _extract_home_claude(host, plain)
+            # CLAUDE_CONFIG_DIR relocated `.claude.json` from the HOME root into
+            # `.claude/`. A snapshot captured before that change restores it at
+            # the old root path, where claude (driven by CLAUDE_CONFIG_DIR) never
+            # looks -> folder-trust prompt -> bypassPermissions can't suppress ->
+            # the session hangs. Apply the SAME old->new relocation the seed
+            # consume path uses, so a resumed old-layout snapshot is normalized.
+            await _rekey_claude_json_projects(host)
             await _rotate_optio_log(host)
             pass_continue = await _has_transcript(host)
             if not pass_continue:

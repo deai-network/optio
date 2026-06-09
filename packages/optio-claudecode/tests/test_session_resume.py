@@ -297,3 +297,47 @@ async def test_no_credentials_captures_no_snapshot(
 
     proc = await mongo_db["test_processes"].find_one({"processId": pid})
     assert proc.get("hasSavedState") is not True
+
+
+async def test_resume_relocates_old_root_claude_json(
+    mongo_db, task_root, shim_install_dir, claude_cache_dir, monkeypatch,
+):
+    """Regression: an OLD-layout `.claude.json` (HOME root) carried in a restored
+    snapshot must be relocated into `.claude/` on resume, mirroring the seed
+    consume path's `_rekey_claude_json_projects`. Without it, claude (driven by
+    CLAUDE_CONFIG_DIR=<home>/.claude) cannot find `.claude.json` -> folder-trust
+    prompt -> which bypassPermissions does NOT suppress -> the session hangs.
+    """
+    pid = "cc_resume_reloc"
+
+    # 1) Fresh run: plant an old-root home/.claude.json so it lands in the workdir
+    #    blob (it sits OUTSIDE home/.claude, so the capture-time wipe spares it).
+    async def _plant_old_root(hook_ctx):
+        wd = hook_ctx._host.workdir
+        await hook_ctx.run_on_host(
+            "printf %s "
+            "'{\"projects\":{\"/old/cwd\":{\"hasTrustDialogAccepted\":true}}}' "
+            f"> {wd}/home/.claude.json"
+        )
+
+    ctx = await _make_ctx(mongo_db, pid, resume=False)
+    cfg = _cfg(shim_install_dir, claude_cache_dir, "idempotent_done")
+    cfg.before_execute = _plant_old_root
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "idempotent_done")
+    await run_claudecode_session(ctx, cfg)
+
+    # 2) Resume: assert the old-root file was relocated into .claude/ and removed.
+    observed: dict[str, bool] = {}
+
+    async def _assert_relocated(hook_ctx):
+        wd = hook_ctx._host.workdir
+        observed["new"] = os.path.exists(f"{wd}/home/.claude/.claude.json")
+        observed["old"] = os.path.exists(f"{wd}/home/.claude.json")
+
+    ctx2 = await _make_ctx(mongo_db, pid, resume=True)
+    cfg2 = _cfg(shim_install_dir, claude_cache_dir, "idempotent_done")
+    cfg2.before_execute = _assert_relocated
+    await run_claudecode_session(ctx2, cfg2)
+
+    assert observed.get("new") is True, "resume must relocate .claude.json into .claude/"
+    assert observed.get("old") is False, "old-root .claude.json must be removed after relocation"
