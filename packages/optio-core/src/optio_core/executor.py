@@ -68,6 +68,12 @@ class Executor:
         self._cancellation_flags: dict[ObjectId, _CancelEntry] = {}
         self._running_tasks: dict[ObjectId, asyncio.Task] = {}
         self._task_registry: dict[str, TaskInstance] = {}
+        # Task→launcher return channel (in-memory only, same-process).
+        # Keyed by processId string. Registry holds published objects for
+        # the lifetime of the run; futures exist only while a
+        # launch_and_await_result caller is (about to be) waiting.
+        self._result_registry: dict[str, Any] = {}
+        self._result_futures: dict[str, asyncio.Future] = {}
 
     def register_tasks(
         self,
@@ -91,6 +97,34 @@ class Executor:
                 del self._task_registry[pid]
         for t in tasks:
             self._task_registry[t.process_id] = t
+
+    def publish_result(self, process_id: str, obj: Any) -> None:
+        """Register a task-published result; resolve any waiting launcher."""
+        if process_id in self._result_registry:
+            raise RuntimeError(
+                f"publish_result: '{process_id}' already published a result "
+                "for this run"
+            )
+        self._result_registry[process_id] = obj
+        fut = self._result_futures.get(process_id)
+        if fut is not None and not fut.done():
+            fut.set_result(obj)
+
+    def get_published_result(self, process_id: str) -> Any | None:
+        """Return the live published object for a running process, or None."""
+        return self._result_registry.get(process_id)
+
+    def ensure_result_future(self, process_id: str) -> "asyncio.Future[Any]":
+        """Create (or return) the launcher-side future for process_id.
+
+        Called by launch_and_await_result BEFORE scheduling the launch so a
+        task that publishes immediately cannot race the waiter.
+        """
+        fut = self._result_futures.get(process_id)
+        if fut is None or fut.done():
+            fut = asyncio.get_event_loop().create_future()
+            self._result_futures[process_id] = fut
+        return fut
 
     async def _cleanup_ephemeral(self, process_id: str) -> None:
         """Delete the process if it's marked ephemeral. Accepts processId OR OID hex."""
@@ -321,6 +355,14 @@ class Executor:
         finally:
             self._cancellation_flags.pop(oid, None)
             self._running_tasks.pop(oid, None)
+            # Result channel teardown: drop the registry entry; fail any
+            # still-waiting launcher with ResultNotPublished.
+            _pid = proc["processId"]
+            self._result_registry.pop(_pid, None)
+            _fut = self._result_futures.pop(_pid, None)
+            if _fut is not None and not _fut.done():
+                from optio_core.exceptions import ResultNotPublished
+                _fut.set_exception(ResultNotPublished(_pid))
 
     async def execute_child(
         self,

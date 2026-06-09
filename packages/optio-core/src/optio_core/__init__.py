@@ -4,6 +4,7 @@ from optio_core.models import (
     TaskInstance, TaskInstanceCore, ChildResult, LaunchBlocked,
     LaunchOutcome, CancelOutcome, DismissOutcome, MongoStore,
 )
+from optio_core.exceptions import LaunchError, ResultNotPublished
 from optio_core.lifecycle import Optio
 
 _instance = Optio()
@@ -15,6 +16,8 @@ adhoc_define = _instance.adhoc_define
 adhoc_delete = _instance.adhoc_delete
 launch = _instance.launch
 launch_and_wait = _instance.launch_and_wait
+launch_and_await_result = _instance.launch_and_await_result
+get_published_result = _instance.get_published_result
 cancel = _instance.cancel
 dismiss = _instance.dismiss
 resync = _instance.resync
@@ -28,9 +31,11 @@ group_cancel_and_wait = _instance.group_cancel_and_wait
 __all__ = [
     "TaskInstance", "TaskInstanceCore", "ChildResult", "LaunchBlocked",
     "LaunchOutcome", "CancelOutcome", "DismissOutcome",
+    "LaunchError", "ResultNotPublished",
     "init", "run", "shutdown",
     "adhoc_define", "adhoc_delete",
-    "launch", "launch_and_wait", "cancel", "dismiss", "resync",
+    "launch", "launch_and_wait", "launch_and_await_result",
+    "get_published_result", "cancel", "dismiss", "resync",
     "get_process", "list_processes",
     "block_launches", "unblock_launches",
     "group_cancel", "group_cancel_and_wait",

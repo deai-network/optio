@@ -39,6 +39,7 @@ from optio_core.state_machine import (
     ACTIVE_STATES, CANCELLABLE_STATES, DISMISSABLE_STATES, END_STATES,
     LAUNCHABLE_STATES,
 )
+from optio_core.exceptions import LaunchError
 from optio_core.executor import Executor
 from clamator_protocol import RpcServerCore
 from clamator_over_redis import RedisRpcServer
@@ -445,6 +446,41 @@ class Optio:
         if task is not None:
             self._check_launch_blocks(task.metadata)
         await self._executor.launch_process(process_id, resume=resume, session_id=session_id)
+
+    async def launch_and_await_result(
+        self, process_id: str, resume: bool = False, *,
+        session_id: str | None, timeout: float | None = None,
+    ) -> Any:
+        """Launch like ``launch()`` and wait for the task to call
+        ``ctx.publish_result(obj)``; return that object while the task keeps
+        running.
+
+        Raises LaunchError(reason) when the launch is refused,
+        ResultNotPublished when the task ends without publishing, and
+        asyncio.TimeoutError on ``timeout`` expiry (the task keeps running).
+        """
+        # Resolve the canonical processId first: the future map is keyed by
+        # processId, but callers may pass OID hex (dual-form, like launch()).
+        proc = await self._resolve(process_id)
+        canonical = proc["processId"] if proc is not None else process_id
+        fut = self._executor.ensure_result_future(canonical)
+        outcome = await self.launch(
+            process_id, resume=resume, session_id=session_id,
+        )
+        if not outcome.ok:
+            self._executor._result_futures.pop(canonical, None)
+            raise LaunchError(process_id, outcome.reason or "unknown")
+        if timeout is not None:
+            return await asyncio.wait_for(fut, timeout)
+        return await fut
+
+    def get_published_result(self, process_id: str) -> Any | None:
+        """Live published object for a running process, or None.
+
+        Phase II attachment point: RPC/listener handlers look the live
+        object up here by process_id.
+        """
+        return self._executor.get_published_result(process_id)
 
     async def _cancel_active_children(
         self,

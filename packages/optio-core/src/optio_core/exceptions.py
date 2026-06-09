@@ -23,3 +23,25 @@ class ChildProcessFailed(Exception):
         super().__init__(
             f"Child '{name}' (process_id={process_id}) failed: {original!r}"
         )
+
+
+class LaunchError(Exception):
+    """Raised by Optio.launch_and_await_result when the launch itself is
+    refused (the LaunchOutcome was not ok). ``reason`` carries the typed
+    LaunchOutcome reason string (e.g. "not-found", "not-launchable")."""
+
+    def __init__(self, process_id: str, reason: str):
+        self.process_id = process_id
+        self.reason = reason
+        super().__init__(f"launch of '{process_id}' refused: {reason}")
+
+
+class ResultNotPublished(Exception):
+    """Raised by Optio.launch_and_await_result when the process reached a
+    terminal state without ever calling ctx.publish_result."""
+
+    def __init__(self, process_id: str):
+        self.process_id = process_id
+        super().__init__(
+            f"process '{process_id}' ended without publishing a result"
+        )

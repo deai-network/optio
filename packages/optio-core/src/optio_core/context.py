@@ -212,6 +212,20 @@ class ProcessContext:
         if self._parent_listener is not None:
             self._parent_listener(percent, message)
 
+    def publish_result(self, obj: Any) -> None:
+        """Publish an opaque result object to this process's launcher.
+
+        May be called at most once per run; a second call raises RuntimeError.
+        The object is held in memory only (never persisted): it reaches a
+        same-process caller awaiting ``launch_and_await_result`` and the
+        engine-side result registry. The task keeps running after publishing.
+        """
+        if self._executor is None:
+            raise RuntimeError(
+                "publish_result: no executor attached to this context"
+            )
+        self._executor.publish_result(self.process_id, obj)
+
     @property
     def cancellation_flag(self) -> asyncio.Event:
         """The cooperative cancellation Event. Set when cancel has been requested."""
