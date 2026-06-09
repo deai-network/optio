@@ -37,7 +37,7 @@ def test_create_claudecode_task_stamps_caller_metadata():
     md = {"dataspace": "p1", "sourceId": "s1"}
     task = create_claudecode_task(
         process_id="demo-md", name="DemoMd",
-        config=ClaudeCodeTaskConfig(consumer_instructions="hi"),
+        config=ClaudeCodeTaskConfig(consumer_instructions="hi", fs_isolation=False),
         metadata=md,
     )
     assert task.metadata == md
@@ -47,6 +47,6 @@ def test_create_claudecode_task_metadata_defaults_empty():
     from optio_claudecode import create_claudecode_task, ClaudeCodeTaskConfig
     task = create_claudecode_task(
         process_id="demo-nomd", name="DemoNoMd",
-        config=ClaudeCodeTaskConfig(consumer_instructions="hi"),
+        config=ClaudeCodeTaskConfig(consumer_instructions="hi", fs_isolation=False),
     )
     assert task.metadata == {}

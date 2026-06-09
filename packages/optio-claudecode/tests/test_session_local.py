@@ -53,6 +53,7 @@ async def test_local_happy_path_writes_agents_md_and_home_files(
         name="Local happy",
         config=ClaudeCodeTaskConfig(
             consumer_instructions="Hello from the test.",
+            fs_isolation=False,
             credentials_json={"oauth_token": "test-token"},
             claude_config={"permissions": {"allow": ["Read"]}},
             permission_mode="bypassPermissions",
@@ -90,6 +91,7 @@ async def test_local_deliverable_callback_fired(
         name="Local deliverable",
         config=ClaudeCodeTaskConfig(
             consumer_instructions="Hand back a file.",
+            fs_isolation=False,
             claude_install_dir=str(claude_cache_dir),
             ttyd_install_dir=str(shim_install_dir),
             on_deliverable=on_deliverable,
@@ -117,6 +119,7 @@ async def test_local_error_keyword_propagates(
         name="Local error",
         config=ClaudeCodeTaskConfig(
             consumer_instructions="Fail please.",
+            fs_isolation=False,
             claude_install_dir=str(claude_cache_dir),
             ttyd_install_dir=str(shim_install_dir),
         ),

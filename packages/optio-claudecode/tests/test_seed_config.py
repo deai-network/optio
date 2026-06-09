@@ -14,14 +14,14 @@ from optio_claudecode.seed_manifest import (
 
 
 def test_seed_config_defaults_none():
-    cfg = ClaudeCodeTaskConfig(consumer_instructions="hi")
+    cfg = ClaudeCodeTaskConfig(consumer_instructions="hi", fs_isolation=False)
     assert cfg.seed_id is None
     assert cfg.on_seed_saved is None
 
 
 def test_claudecode_config_scrub_env_default_none():
     from optio_claudecode.types import ClaudeCodeTaskConfig
-    assert ClaudeCodeTaskConfig(consumer_instructions="hi").scrub_env is None
+    assert ClaudeCodeTaskConfig(consumer_instructions="hi", fs_isolation=False).scrub_env is None
 
 
 def test_manifest_shape():

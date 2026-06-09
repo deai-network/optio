@@ -6,7 +6,7 @@ from optio_claudecode.types import ClaudeCodeTaskConfig
 
 
 def test_both_hooks_none_is_valid():
-    cfg = ClaudeCodeTaskConfig(consumer_instructions="x")
+    cfg = ClaudeCodeTaskConfig(consumer_instructions="x", fs_isolation=False)
     assert cfg.session_blob_encrypt is None
     assert cfg.session_blob_decrypt is None
 
@@ -14,6 +14,7 @@ def test_both_hooks_none_is_valid():
 def test_both_hooks_set_is_valid():
     cfg = ClaudeCodeTaskConfig(
         consumer_instructions="x",
+        fs_isolation=False,
         session_blob_encrypt=lambda b: b,
         session_blob_decrypt=lambda b: b,
     )
@@ -25,6 +26,7 @@ def test_only_encrypt_set_raises():
     with pytest.raises(ValueError) as exc:
         ClaudeCodeTaskConfig(
             consumer_instructions="x",
+            fs_isolation=False,
             session_blob_encrypt=lambda b: b,
         )
     assert "session_blob_encrypt" in str(exc.value)
@@ -35,6 +37,7 @@ def test_only_decrypt_set_raises():
     with pytest.raises(ValueError) as exc:
         ClaudeCodeTaskConfig(
             consumer_instructions="x",
+            fs_isolation=False,
             session_blob_decrypt=lambda b: b,
         )
     assert "session_blob_encrypt" in str(exc.value)
@@ -42,17 +45,17 @@ def test_only_decrypt_set_raises():
 
 
 def test_supports_resume_defaults_true():
-    cfg = ClaudeCodeTaskConfig(consumer_instructions="x")
+    cfg = ClaudeCodeTaskConfig(consumer_instructions="x", fs_isolation=False)
     assert cfg.supports_resume is True
 
 
 def test_workdir_exclude_defaults_none():
-    cfg = ClaudeCodeTaskConfig(consumer_instructions="x")
+    cfg = ClaudeCodeTaskConfig(consumer_instructions="x", fs_isolation=False)
     assert cfg.workdir_exclude is None
 
 
 def test_on_resume_refresh_defaults_none():
-    cfg = ClaudeCodeTaskConfig(consumer_instructions="x")
+    cfg = ClaudeCodeTaskConfig(consumer_instructions="x", fs_isolation=False)
     assert cfg.on_resume_refresh is None
 
 

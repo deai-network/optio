@@ -58,6 +58,7 @@ async def test_resume_refresh_tags_resume_log(
     monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "idempotent_done")
 
     base = dict(
+        fs_isolation=False,
         claude_install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         supports_resume=True,

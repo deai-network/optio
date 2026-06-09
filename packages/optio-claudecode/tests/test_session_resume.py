@@ -58,6 +58,7 @@ async def _make_ctx(mongo_db, process_id: str, *, resume: bool):
 def _cfg(shim_install_dir, claude_cache_dir, scenario: str) -> ClaudeCodeTaskConfig:
     return ClaudeCodeTaskConfig(
         consumer_instructions=f"(scenario: {scenario})",
+        fs_isolation=False,
         claude_install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         permission_mode="bypassPermissions",
@@ -139,6 +140,7 @@ async def test_workdir_blob_excludes_heavy_regenerable_home_dirs(
     ctx = await _make_ctx(mongo_db, pid, resume=False)
     cfg = ClaudeCodeTaskConfig(
         consumer_instructions="(heavy)",
+        fs_isolation=False,
         claude_install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         permission_mode="bypassPermissions",
@@ -244,6 +246,7 @@ async def test_interrupt_before_launch_captures_no_snapshot(
     ctx = await _make_ctx(mongo_db, pid, resume=False)
     cfg = ClaudeCodeTaskConfig(
         consumer_instructions="(interrupt)",
+        fs_isolation=False,
         claude_install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         permission_mode="bypassPermissions",
@@ -279,6 +282,7 @@ async def test_no_credentials_captures_no_snapshot(
     ctx = await _make_ctx(mongo_db, pid, resume=False)
     cfg = ClaudeCodeTaskConfig(
         consumer_instructions="(no creds)",
+        fs_isolation=False,
         claude_install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         permission_mode="bypassPermissions",

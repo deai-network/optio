@@ -33,6 +33,7 @@ async def test_before_execute_called_after_home_files_planted(
         name="Before hook",
         config=ClaudeCodeTaskConfig(
             consumer_instructions="Hi.",
+            fs_isolation=False,
             credentials_json={"a": 1},
             claude_install_dir=str(claude_cache_dir),
             ttyd_install_dir=str(shim_install_dir),
@@ -66,6 +67,7 @@ async def test_after_execute_called_on_success(
         name="After hook ok",
         config=ClaudeCodeTaskConfig(
             consumer_instructions="Hi.",
+            fs_isolation=False,
             claude_install_dir=str(claude_cache_dir),
             ttyd_install_dir=str(shim_install_dir),
             after_execute=after,
@@ -94,6 +96,7 @@ async def test_after_execute_called_on_error(
         name="After hook err",
         config=ClaudeCodeTaskConfig(
             consumer_instructions="Hi.",
+            fs_isolation=False,
             claude_install_dir=str(claude_cache_dir),
             ttyd_install_dir=str(shim_install_dir),
             after_execute=after,

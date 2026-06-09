@@ -67,6 +67,7 @@ async def test_capture_fires_callback_and_stores_env_only_seed(
     ctx = await _make_ctx(mongo_db, "cc_seed_cap")
     cfg = ClaudeCodeTaskConfig(
         consumer_instructions="(seed setup)",
+        fs_isolation=False,
         claude_install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         permission_mode="bypassPermissions",

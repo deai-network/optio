@@ -42,6 +42,7 @@ async def test_real_home_credentials_untouched(
         name="Home isolation",
         config=ClaudeCodeTaskConfig(
             consumer_instructions="Hi.",
+            fs_isolation=False,
             credentials_json={"injected": True},
             claude_install_dir=str(claude_cache_dir),
             ttyd_install_dir=str(shim_install_dir),

@@ -72,6 +72,7 @@ async def test_cache_hit_reuses_without_install(
         name="Cache hit",
         config=ClaudeCodeTaskConfig(
             consumer_instructions="hi",
+            fs_isolation=False,
             permission_mode="bypassPermissions",
             claude_install_dir=str(claude_cache_dir),  # cache override
             ttyd_install_dir=str(shim_install_dir),
@@ -103,6 +104,7 @@ async def test_snapshot_excludes_claude_binary(
         name="Cache snap",
         config=ClaudeCodeTaskConfig(
             consumer_instructions="hi",
+            fs_isolation=False,
             permission_mode="bypassPermissions",
             claude_install_dir=str(claude_cache_dir),
             ttyd_install_dir=str(shim_install_dir),

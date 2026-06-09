@@ -239,6 +239,7 @@ async def test_rescue_end_to_end_kills_orphan_and_snapshots(
 
     config = ClaudeCodeTaskConfig(
         consumer_instructions="(rescue e2e)",
+        fs_isolation=False,
         supports_resume=True,
         session_blob_encrypt=lambda b: b,
         session_blob_decrypt=lambda b: b,

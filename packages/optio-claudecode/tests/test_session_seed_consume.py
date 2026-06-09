@@ -55,6 +55,7 @@ async def test_second_session_consumes_seed(
     ctx1 = await _make_ctx(mongo_db, "cc_seed_src")
     await run_claudecode_session(ctx1, ClaudeCodeTaskConfig(
         consumer_instructions="(seed setup)",
+        fs_isolation=False,
         claude_install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         permission_mode="bypassPermissions",
@@ -81,6 +82,7 @@ async def test_second_session_consumes_seed(
     ctx2 = await _make_ctx(mongo_db, "cc_seed_dst")
     await run_claudecode_session(ctx2, ClaudeCodeTaskConfig(
         consumer_instructions="(seeded fresh)",
+        fs_isolation=False,
         claude_install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         permission_mode="bypassPermissions",

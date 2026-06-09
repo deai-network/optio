@@ -174,6 +174,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
             ),
             config=ClaudeCodeTaskConfig(
                 consumer_instructions=SEED_SETUP_PROMPT,
+                delivery_type="system-notices",
                 ssh=ssh,
                 # Run setup in bypassPermissions so the operator accepts the
                 # bypass-mode warning once here; the acknowledgment lands in
@@ -205,6 +206,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                 ),
                 config=ClaudeCodeTaskConfig(
                     consumer_instructions=CONSUMER_PROMPT,
+                    delivery_type="system-notices",
                     permission_mode="bypassPermissions",
                     ssh=ssh,
                     before_execute=_before_execute,
