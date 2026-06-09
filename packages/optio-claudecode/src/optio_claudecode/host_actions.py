@@ -856,7 +856,7 @@ def build_conversation_argv(
         *claude_flags,
     ]
     if permission_gate:
-        out += ["--permission-prompt-tool", "stdio"]  # V1-VERIFY
+        out += ["--permission-prompt-tool", "stdio"]
     return out
 
 
