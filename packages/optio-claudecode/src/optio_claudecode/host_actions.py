@@ -526,6 +526,7 @@ def _build_claude_shell_command(
     extra_env: dict[str, str] | None,
     claude_flags: list[str],
     local_mode: bool = False,
+    claustrum_wrap: list[str] | None = None,
 ) -> tuple[list[str], str]:
     """Return (env_assignments, shell_command).
 
@@ -564,23 +565,37 @@ def _build_claude_shell_command(
         env_assignments.append(f"{k}={v}")
 
     netns_wrap = os.environ.get("OPTIO_CLAUDECODE_NETNS", "").strip()
-    if netns_wrap and local_mode:
+    use_netns = bool(netns_wrap) and local_mode
+
+    # Innermost: the claude invocation. Under the netns seal it is wrapped in
+    # `bash -c "IS_SANDBOX=1 …"` exactly as before.
+    if use_netns:
         inner = "IS_SANDBOX=1 " + " ".join(
             shlex.quote(c) for c in [claude_path, *claude_flags]
         )
-        claude_cmd = [*shlex.split(netns_wrap), "bash", "-c", inner]
-        _LOG.info(
-            "OPTIO_CLAUDECODE_NETNS active (local mode) — claude wrapped via %r "
-            "(bash -c, IS_SANDBOX=1, flags kept)", netns_wrap,
-        )
+        claude_invocation = ["bash", "-c", inner]
     else:
-        claude_cmd = [claude_path, *claude_flags]
+        claude_invocation = [claude_path, *claude_flags]
         if netns_wrap and not local_mode:
             _LOG.info(
                 "OPTIO_CLAUDECODE_NETNS set (value=%r) but host is remote — seal "
-                "skipped (no localhost to seal over SSH; netns tools may be "
-                "absent on the remote)", netns_wrap,
+                "skipped (no localhost to seal over SSH).", netns_wrap,
             )
+
+    # claustrum goes INSIDE pasta: it confines only claude + its subprocesses.
+    if claustrum_wrap:
+        inner_cmd = [*claustrum_wrap, *claude_invocation]
+        _LOG.info("claustrum filesystem isolation active (wrap=%r)", claustrum_wrap)
+    else:
+        inner_cmd = claude_invocation
+
+    # pasta (local-only) is the OUTERMOST wrapper.
+    if use_netns:
+        claude_cmd = [*shlex.split(netns_wrap), *inner_cmd]
+        _LOG.info("OPTIO_CLAUDECODE_NETNS active (local mode) — pasta outermost")
+    else:
+        claude_cmd = inner_cmd
+
     claude_argv = " ".join(shlex.quote(c) for c in claude_cmd)
     log_path = f"{workdir_clean}/optio.log"
     bash_payload = (
@@ -604,6 +619,7 @@ def build_tmux_session_argv(
     extra_env: dict[str, str] | None,
     claude_flags: list[str],
     local_mode: bool = False,
+    claustrum_wrap: list[str] | None = None,
 ) -> list[str]:
     """Argv for the detached ``tmux new-session`` that starts claude.
 
@@ -621,6 +637,7 @@ def build_tmux_session_argv(
         extra_env=extra_env,
         claude_flags=claude_flags,
         local_mode=local_mode,
+        claustrum_wrap=claustrum_wrap,
     )
     return [
         tmux_path, "-S", socket_path, "new-session", "-d",
@@ -710,6 +727,7 @@ async def launch_ttyd_with_claude(
     ready_timeout_s: float = 30.0,
     env_remove: list[str] | None = None,
     session_name: str = "optio",
+    claustrum_wrap: list[str] | None = None,
 ) -> "tuple[ProcessHandle, int, str, str]":
     """Start claude in a detached tmux session, then ttyd attaching to it.
 
@@ -742,6 +760,7 @@ async def launch_ttyd_with_claude(
         extra_env=extra_env,
         claude_flags=claude_flags,
         local_mode=local_mode,
+        claustrum_wrap=claustrum_wrap,
     )
     session_cmd = " ".join(shlex.quote(a) for a in session_argv)
     await _launch_detached_checked(
