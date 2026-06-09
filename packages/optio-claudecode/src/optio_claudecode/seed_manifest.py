@@ -25,28 +25,37 @@ CLAUDE_SEED_MANIFEST_VERSION = 2
 
 
 async def _rekey_claude_json_projects(host: Host) -> None:
-    """Collapse home/.claude.json `projects` to a SINGLE trusted entry keyed at
-    the launch workdir, so an autonomous task is never blocked by claude's
+    """Collapse `.claude.json` `projects` to a SINGLE trusted entry keyed at the
+    launch workdir, so an autonomous task is never blocked by claude's
     folder-trust prompt ("Is this a project you trust?", which
     `--permission-mode bypassPermissions` does NOT suppress -> the session exits
     in tmux).
 
-    Works for any entry count: reuse an existing entry's value (preserving trust
-    flags / allowedTools / MCP enablement), else synthesize one, force
-    `hasTrustDialogAccepted: true`, and drop every other (stale, foreign) workdir
-    entry. Earlier this only handled a single entry; a seed that accumulated a
-    second `projects` key (a prior session's cwd) fell through to the trust
-    prompt and the launch died. Collapsing to one entry also keeps the seed
-    clean across re-captures.
+    With CLAUDE_CONFIG_DIR=<home>/.claude, claude uses `<home>/.claude/.claude.json`.
+    A seed captured before that change has the file at the old `<home>/.claude.json`
+    (home root); normalize it into `.claude/` first so old seeds keep working
+    (seeds are caller-encrypted and cannot be migrated offline — this is the
+    consume-time equivalent).
 
-    Missing / malformed .claude.json -> left as-is.
+    Reuse an existing entry's value (preserving trust flags / allowedTools / MCP
+    enablement) else synthesize one, force `hasTrustDialogAccepted: true`, and drop
+    every other (stale, foreign) workdir entry. Missing / malformed .claude.json
+    -> left as-is.
     """
     workdir = host.workdir.rstrip("/")
-    path = f"{workdir}/home/.claude.json"
+    new_path = f"{workdir}/home/.claude/.claude.json"
+    old_path = f"{workdir}/home/.claude.json"
+
+    moved_from_old = False
     try:
-        raw = await host.fetch_bytes_from_host(path)
+        raw = await host.fetch_bytes_from_host(new_path)
     except FileNotFoundError:
-        return
+        try:
+            raw = await host.fetch_bytes_from_host(old_path)
+        except FileNotFoundError:
+            return
+        moved_from_old = True  # old-layout seed: relocate into .claude/
+
     try:
         data = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
@@ -57,7 +66,6 @@ async def _rekey_claude_json_projects(host: Host) -> None:
     projects = data.get("projects")
     value: dict = {}
     if isinstance(projects, dict) and projects:
-        # Prefer an already-trusted entry's value; else any entry's.
         chosen = next(
             (v for v in projects.values()
              if isinstance(v, dict) and v.get("hasTrustDialogAccepted")),
@@ -67,9 +75,9 @@ async def _rekey_claude_json_projects(host: Host) -> None:
             value = dict(chosen)
     value["hasTrustDialogAccepted"] = True
     data["projects"] = {workdir: value}
-    await host.put_file_to_host(
-        json.dumps(data).encode("utf-8"), path,
-    )
+    await host.put_file_to_host(json.dumps(data).encode("utf-8"), new_path)
+    if moved_from_old:
+        await host.remove_file(old_path)
 
 
 CLAUDE_CRED_MANIFEST = seeds.SeedManifest(
@@ -84,7 +92,8 @@ CLAUDE_SEED_MANIFEST = seeds.SeedManifest(
     include=CLAUDE_CRED_MANIFEST.include + [
         ".claude/settings.json",
         ".claude/mcp-needs-auth-cache.json",
-        ".claude.json",
+        ".claude/.claude.json",  # new (CLAUDE_CONFIG_DIR layout)
+        ".claude.json",          # old layout — kept so pre-existing seeds still extract
     ],
     version=CLAUDE_SEED_MANIFEST_VERSION,
     consume_transform=_rekey_claude_json_projects,

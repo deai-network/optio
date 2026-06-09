@@ -232,14 +232,17 @@ def seed_signature(blob_plain: bytes) -> dict:
     """Format/value-agnostic structural signature of a seed's non-auth
     environment, for divergence comparison against the pool's reference seed:
     the sorted member paths plus the sorted key set of .claude/settings.json,
-    EXCLUDING .claude/.credentials.json (auth -- differs per seed) and
-    .claude.json (noisy: timestamps/userID differ between good seeds)."""
+    EXCLUDING .claude/.credentials.json (auth -- differs per seed) and the
+    .claude.json project-trust file (noisy: timestamps/userID differ between
+    good seeds) at either layout (.claude.json or .claude/.claude.json)."""
     members = []
     settings_keys = []
     try:
         with tarfile.open(fileobj=io.BytesIO(blob_plain), mode="r:gz") as tar:
             for m in tar.getmembers():
-                if not m.isfile() or m.name in (".claude/.credentials.json", ".claude.json"):
+                if not m.isfile() or m.name in (
+                    ".claude/.credentials.json", ".claude.json", ".claude/.claude.json",
+                ):
                     continue
                 members.append(m.name)
                 if m.name == ".claude/settings.json":

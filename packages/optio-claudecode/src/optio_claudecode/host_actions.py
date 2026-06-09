@@ -421,6 +421,11 @@ def _build_claude_shell_command(
     env_assignments: list[str] = [
         f"HOME={home_dir}",
         f"PATH={home_local_bin}:{base_path}",
+        # Claude Code resolves its config dir from CLAUDE_CONFIG_DIR (else
+        # ~/.claude via the OS passwd home, which IGNORES $HOME). Without this
+        # the host operator's global ~/.claude/CLAUDE.md, settings, etc. leak
+        # into the sandboxed task. Point it at the planted per-task dir.
+        f"CLAUDE_CONFIG_DIR={home_dir}/.claude",
     ]
     for k, v in extra.items():
         env_assignments.append(f"{k}={v}")
