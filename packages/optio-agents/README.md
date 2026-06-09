@@ -10,6 +10,7 @@ The agent-coordination layer for [optio](https://github.com/deai-network/optio) 
 - **`optio_agents.protocol.parser`** — the keyword parser (`parse_log_line`, the typed `*Event` dataclasses, deliverable-path validation).
 - **`optio_agents.protocol.prompt`** — `LOG_CHANNEL_PROMPT`, the canonical LLM-facing documentation of the keywords, co-located with the parser regexes it documents so the two cannot drift. Consumers compose it into their own agent-facing prompt.
 - **`HookContext` / `HookContextProtocol`** — the handle passed into task hooks and `on_deliverable` callbacks, wrapping a `ProcessContext` plus host primitives (`run_on_host`, `copy_file`, `read_from_host`, `download_file`).
+- **`optio_agents.conversation`** — the abstract `Conversation` Protocol (plus `PermissionRequest` / `PermissionDecision` / `ConversationClosed`): the semantic surface for talking to a live agent session — `send`, `on_event`, `on_message`, `on_permission_request`, `is_pending`, `interrupt`, `close`. The semantics are backend-agnostic, but the raw events delivered through `on_event` are intentionally backend-specific and passed through transparently. Implemented today by `optio-claudecode` (`ClaudeCodeConversation` over claude's stream-json stdio protocol).
 
 ## Dependency direction
 

@@ -128,6 +128,9 @@ async def run_log_protocol_session(
     # double-wipe regression slipped in). None for driver tasks that install
     # nothing (e.g. the browser-bridge demo).
     prepare: "Callable[[Host, HookContext], Awaitable[None]] | None" = None,
+    # Keyword-channel opt-out. True (default) keeps today's behavior for every
+    # existing caller. False runs scaffolding only — see the docstring.
+    keywords: bool = True,
 ) -> None:
     """Run ``body`` against ``host`` while the log/deliverables protocol
     cooperates with it.
@@ -159,6 +162,13 @@ async def run_log_protocol_session(
         successful completion signal observed).
       * Process cancellation → returns clean (caller decides what to
         do next).
+
+    Scaffolding-only mode (``keywords=False``): the driver runs the
+    generic session scaffolding only — workdir lifecycle + ``prepare``,
+    deliverables dir, optio.log creation, browser shims, hooks, cancel
+    watcher — but no optio.log tail, no deliverable fetch loop, no
+    DONE/ERROR semantics, and no premature-exit-without-DONE rule (the
+    body's own return governs: normal return = clean completion).
 
     What this driver does NOT do:
       * Workdir teardown / ``host.cleanup_taskdir`` — caller's
@@ -215,21 +225,24 @@ async def run_log_protocol_session(
         done_flag = asyncio.Event()
         error_flag: list[str | None] = []  # [message] or [] if not fired
 
-        fetch_task = asyncio.create_task(
-            _deliverable_fetch_loop(host, on_deliverable, deliverable_queue, ctx, hook_ctx),
-        )
-        tail_task = asyncio.create_task(
-            _tail_and_dispatch(
-                host, ctx, deliverable_queue, done_flag, error_flag,
-                protocol.parse_log_line, browser_url_rewrite,
-            ),
-        )
+        if keywords:
+            fetch_task = asyncio.create_task(
+                _deliverable_fetch_loop(host, on_deliverable, deliverable_queue, ctx, hook_ctx),
+            )
+            tail_task = asyncio.create_task(
+                _tail_and_dispatch(
+                    host, ctx, deliverable_queue, done_flag, error_flag,
+                    protocol.parse_log_line, browser_url_rewrite,
+                ),
+            )
         body_task = asyncio.create_task(body(host, hook_ctx))
         cancel_task = asyncio.create_task(_watch_cancellation(ctx))
 
+        wait_set = {body_task, cancel_task}
+        if tail_task is not None:
+            wait_set.add(tail_task)
         done, _pending = await asyncio.wait(
-            {tail_task, body_task, cancel_task},
-            return_when=asyncio.FIRST_COMPLETED,
+            wait_set, return_when=asyncio.FIRST_COMPLETED,
         )
 
         cancelled = (
@@ -242,15 +255,17 @@ async def run_log_protocol_session(
         if error_flag:
             raise _SessionFailed(error_flag[0] or "agent reported ERROR")
 
-        if body_task in done and not cancelled and not done_flag.is_set():
-            # Body completed without DONE — premature exit.
+        if body_task in done and not cancelled:
             exc = body_task.exception()
             if exc is not None:
                 raise exc
-            raise _SessionFailed("body returned before DONE was observed")
+            if keywords and not done_flag.is_set():
+                # Body completed without DONE — premature exit.
+                raise _SessionFailed("body returned before DONE was observed")
 
         # Drain remaining deliverables before returning.
-        await deliverable_queue.join()
+        if keywords:
+            await deliverable_queue.join()
 
     except BaseException as exc:
         session_error = exc

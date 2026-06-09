@@ -6,6 +6,12 @@ truth for the LLM-facing keyword-protocol documentation.
 """
 
 from optio_agents.context import HookContext, HookContextProtocol, SYSTEM_MESSAGE_PREFIX
+from optio_agents.conversation import (
+    Conversation,
+    ConversationClosed,
+    PermissionDecision,
+    PermissionRequest,
+)
 from optio_agents.protocol import (
     DELIVERABLE_QUEUE_BOUND,
     RESUME_NOTICE,
@@ -35,6 +41,10 @@ __all__ = [
     "HookContext",
     "HookContextProtocol",
     "SYSTEM_MESSAGE_PREFIX",
+    "Conversation",
+    "ConversationClosed",
+    "PermissionDecision",
+    "PermissionRequest",
     "browser_shims",
     "seeds",
     "run_log_protocol_session",

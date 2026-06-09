@@ -34,7 +34,7 @@ the same goals. So:
 def compose_agents_md(
     consumer_instructions: str,
     *,
-    documentation: str,
+    documentation: str | None,
     resume_section: str | None = None,
 ) -> str:
     """Build the AGENTS.md body for an optio-coordinated agent task.
@@ -44,11 +44,13 @@ def compose_agents_md(
         (trailing whitespace stripped).
       documentation: the keyword-protocol documentation block for the
         caller's protocol mode (e.g. ``get_protocol(browser=…).documentation``).
+        ``None`` or ``""`` omits the intro + protocol-docs block entirely
+        (for sessions that don't speak the optio.log keyword channel).
       resume_section: optional pre-rendered resume-detection section to
         insert between the protocol docs and ``BASE_PROMPT_POST``.
         ``None`` (default) omits the section.
     """
-    pre = _INTRO + documentation
+    pre = (_INTRO + documentation + "\n") if documentation else ""
     body = consumer_instructions.rstrip()
     resume_block = (resume_section + "\n") if resume_section else ""
-    return f"{pre}\n{resume_block}{BASE_PROMPT_POST}\n{body}\n"
+    return f"{pre}{resume_block}{BASE_PROMPT_POST}\n{body}\n"
