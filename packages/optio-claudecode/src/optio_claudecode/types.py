@@ -5,7 +5,7 @@ The generic ``DeliverableCallback`` / ``HookCallback`` types are owned by
 re-exports them alongside the package-specific ``ClaudeCodeTaskConfig``.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Literal
 
 from bson import ObjectId
