@@ -63,6 +63,13 @@ _TTYD_RELEASE_BASE = (
 # to the optio version cache). Isolating ttyd the same way is a follow-up.
 _DEFAULT_INSTALL_SUBDIR = ".local/bin"
 
+# claustrum: standalone Landlock filesystem-sandbox CLI, vendored by pinned tag.
+# Bumping is deliberate (a newer tag triggers a delivery notice, never auto-use).
+_CLAUSTRUM_REPO = "https://github.com/deai-network/claustrum"
+_CLAUSTRUM_PINNED_TAG = "v0.1.0"
+# uname -m -> Go GOARCH.
+_GOARCH_BY_UNAME = {"x86_64": "amd64", "aarch64": "arm64"}
+
 
 async def _resolve_install_dir(host: "Host", install_dir: str | None) -> str:
     """Return ``install_dir`` if given, else ``<host_home>/.local/bin`` (ttyd)."""
@@ -89,6 +96,132 @@ async def _resolve_cache_dir(host: "Host", override: str | None) -> str:
             f"(exit {r.exit_code}): {r.stderr.strip()[:200]}"
         )
     return path.rstrip("/")
+
+
+async def _detect_goarch(host: "Host") -> str:
+    """Map the host's uname -m to a Go GOARCH (Linux only)."""
+    r_os = await host.run_command("uname -s")
+    if r_os.exit_code != 0 or r_os.stdout.strip() != "Linux":
+        raise RuntimeError(
+            f"claustrum requires a Linux host (uname -s={r_os.stdout.strip()!r})."
+        )
+    r = await host.run_command("uname -m")
+    if r.exit_code != 0:
+        raise RuntimeError(f"uname -m failed (exit {r.exit_code}): {r.stderr.strip()[:200]}")
+    arch = r.stdout.strip()
+    goarch = _GOARCH_BY_UNAME.get(arch)
+    if goarch is None:
+        raise RuntimeError(
+            f"unsupported host arch {arch!r} for claustrum (supported: "
+            f"{sorted(_GOARCH_BY_UNAME)})."
+        )
+    return goarch
+
+
+async def _build_claustrum_on_engine(goarch: str, tag: str, dest: str) -> None:
+    """Clone claustrum at ``tag`` and cross-compile a static binary to ``dest``.
+
+    Runs ON THE ENGINE (where git + the Go toolchain live), never on an ssh
+    target. ``dest`` is an engine-local path.
+    """
+    import asyncio
+    import os
+    import tempfile
+
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="claustrum-src-") as src:
+        clone = await asyncio.create_subprocess_exec(
+            "git", "clone", "--depth", "1", "--branch", tag, _CLAUSTRUM_REPO, src,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await clone.communicate()
+        if clone.returncode != 0:
+            raise RuntimeError(f"git clone claustrum {tag} failed: {out.decode()[:400]}")
+        env = {**os.environ, "CGO_ENABLED": "0", "GOOS": "linux", "GOARCH": goarch}
+        build = await asyncio.create_subprocess_exec(
+            "go", "build", "-trimpath", "-ldflags", "-s -w", "-o", dest, ".",
+            cwd=src, env=env,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await build.communicate()
+        if build.returncode != 0:
+            raise RuntimeError(f"go build claustrum ({goarch}) failed: {out.decode()[:400]}")
+
+
+async def ensure_claustrum_installed(
+    hook_ctx: "HookContextProtocol",
+    *,
+    install_dir: str | None = None,
+) -> str:
+    """Ensure a claustrum binary (pinned tag, host arch) is on the host.
+
+    Builds on the engine (clone + cross-compile, cached by (tag, arch)), places
+    the static binary on the target host via the Host protocol, chmods +x, and
+    verifies ``--version``. Returns the claustrum path on the target host.
+    """
+    import os
+
+    host = hook_ctx._host
+    goarch = await _detect_goarch(host)
+    cache_dir = await _resolve_cache_dir(host, install_dir)
+    target_path = f"{cache_dir}/claustrum/{_CLAUSTRUM_PINNED_TAG}/{goarch}/claustrum"
+
+    # Already on the target host?
+    probe = await host.run_command(f"test -x {shlex.quote(target_path)} && {shlex.quote(target_path)} --version")
+    if probe.exit_code == 0:
+        return target_path
+
+    hook_ctx.report_progress(None, "Preparing claustrum (filesystem isolation)…")
+    # Engine-local cached build, then place onto the (possibly remote) target.
+    engine_cache = os.path.expanduser(
+        f"~/.cache/optio-claudecode/claustrum/{_CLAUSTRUM_PINNED_TAG}/{goarch}/claustrum"
+    )
+    if not os.path.exists(engine_cache):
+        await _build_claustrum_on_engine(goarch, _CLAUSTRUM_PINNED_TAG, engine_cache)
+
+    await host.put_file_to_host(engine_cache, target_path)
+    r = await host.run_command(f"chmod +x {shlex.quote(target_path)}")
+    if r.exit_code != 0:
+        raise RuntimeError(f"chmod +x claustrum failed (exit {r.exit_code}): {r.stderr.strip()[:200]}")
+    v = await host.run_command(f"{shlex.quote(target_path)} --version")
+    if v.exit_code != 0:
+        raise RuntimeError(
+            f"claustrum placed at {target_path!r} but --version failed "
+            f"(exit {v.exit_code}): {v.stderr.strip()[:200]}"
+        )
+    return target_path
+
+
+async def claustrum_newer_tag() -> str | None:
+    """Return the newest claustrum tag if it is newer than the pinned one, else None.
+
+    Engine-side egress only. Best-effort: network failure returns None (no notice).
+    """
+    import asyncio
+
+    try:
+        p = await asyncio.create_subprocess_exec(
+            "git", "ls-remote", "--tags", "--refs", _CLAUSTRUM_REPO,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await p.communicate()
+        if p.returncode != 0:
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    tags = []
+    for line in out.decode().splitlines():
+        ref = line.rsplit("/", 1)[-1].strip()
+        if ref.startswith("v"):
+            tags.append(ref)
+
+    def key(t: str) -> tuple:
+        return tuple(int(x) for x in t.lstrip("v").split(".") if x.isdigit())
+
+    if not tags:
+        return None
+    newest = max(tags, key=key)
+    return newest if key(newest) > key(_CLAUSTRUM_PINNED_TAG) else None
 
 
 async def _claude_version_ok(host: "Host", claude_path: str) -> bool:
