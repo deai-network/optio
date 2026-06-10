@@ -131,6 +131,7 @@ def compose_agents_md(
     supports_resume: bool = True,
     host_protocol: bool = True,
     omit_task_framing: bool = False,
+    fs_isolation_dirs: list[str] | None = None,
 ) -> str:
     """Render <workdir>/CLAUDE.md for an optio-claudecode task.
 
@@ -149,6 +150,18 @@ def compose_agents_md(
     ``omit_task_framing=True`` drops the ``## Task`` framing block
     (used when the conversation instructions were defaulted).
     """
+    if fs_isolation_dirs:
+        # The session is sandboxed (claustrum/Landlock); tell the agent its
+        # bounds so EACCES on a stray path isn't a mystery. Conditional on
+        # fs_isolation being enabled (caller passes None otherwise).
+        allowed = ", ".join(f"`{d}`" for d in fs_isolation_dirs)
+        consumer_instructions = (
+            consumer_instructions.rstrip()
+            + "\n\n**Filesystem access:** This session is filesystem-isolated — "
+            "you can read and write files within these directories (and their "
+            f"subdirectories): {allowed}. Files outside them are not accessible "
+            "(reads and writes will fail with a permission error)."
+        )
     if host_protocol:
         if documentation is None:
             documentation = build_log_channel_prompt("redirect")

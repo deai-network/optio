@@ -91,6 +91,18 @@ def _build_host(config: ClaudeCodeTaskConfig, process_id: str) -> Host:
     return RemoteHost(ssh_config=config.ssh, taskdir=taskdir)
 
 
+def _fs_isolation_dirs(
+    config: ClaudeCodeTaskConfig, host: Host,
+) -> list[str] | None:
+    """The agent-facing list of directories it may read/write under fs
+    isolation (its workdir + caller extras), or None when isolation is off.
+    Used to tell the agent its sandbox bounds in CLAUDE.md."""
+    if not config.fs_isolation:
+        return None
+    extras = [ad.path for ad in (config.extra_allowed_dirs or [])]
+    return [host.workdir.rstrip("/"), *extras]
+
+
 async def _build_claustrum_wrap(
     host: Host, config: ClaudeCodeTaskConfig, claustrum_path: str | None,
 ) -> list[str] | None:
@@ -852,6 +864,7 @@ async def _plant_session_content(
                 supports_resume=config.supports_resume,
                 host_protocol=config.host_protocol,
                 omit_task_framing=omit_task_framing,
+                fs_isolation_dirs=_fs_isolation_dirs(config, host),
             ),
         )
     else:
@@ -1239,6 +1252,7 @@ async def _maybe_refresh_on_resume(
         supports_resume=new_config.supports_resume,
         host_protocol=new_config.host_protocol,
         omit_task_framing=omit_task_framing,
+        fs_isolation_dirs=_fs_isolation_dirs(new_config, hook_ctx._host),
     )
     try:
         existing = await hook_ctx.read_text_from_host("CLAUDE.md", silent=True)

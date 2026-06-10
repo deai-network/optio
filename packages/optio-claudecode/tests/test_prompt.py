@@ -30,3 +30,14 @@ def test_compose_omits_resume_section_when_disabled():
     body = compose_agents_md("Whatever.", supports_resume=False)
     assert "resume.log" not in body
     assert "## Resumes" not in body
+
+
+def test_fs_isolation_note_present_only_when_dirs_given():
+    from optio_claudecode.prompt import compose_agents_md
+    with_dirs = compose_agents_md("Do it.", fs_isolation_dirs=["/wd", "/data"])
+    assert "Filesystem access" in with_dirs
+    assert "`/wd`" in with_dirs and "`/data`" in with_dirs
+    assert "permission error" in with_dirs
+    # Off by default: no note, and the instruction body is untouched.
+    without = compose_agents_md("Do it.")
+    assert "Filesystem access" not in without
