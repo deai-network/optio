@@ -28,8 +28,15 @@ def test_claustrum_wraps_claude(monkeypatch):
     assert shell.index("claustrum") < shell.index("/wd/home/.local/bin/claude")
 
 
-def test_pasta_outside_claustrum_inside(monkeypatch):
+def test_pasta_execs_bash_not_claustrum(monkeypatch):
+    # pasta's AppArmor profile (abstractions/pasta) only allows exec from
+    # /{usr/,}bin/** (Ux). Exec'ing claustrum directly — it lives in the
+    # version cache under $HOME — is denied ("Failed to start command or
+    # shell: Permission denied"). pasta must exec bash (allowed, escapes
+    # confinement via Ux), which then execs claustrum -> claude.
     wrap = ["/c/claustrum", "--", ]
     shell = _shell(wrap, True, monkeypatch, netns="pasta --config-net --")
-    # pasta is outermost, then claustrum, then bash -c claude
-    assert shell.index("pasta") < shell.index("claustrum") < shell.index("IS_SANDBOX=1")
+    assert "pasta --config-net -- bash -c" in shell
+    # pasta outermost, bash -c payload carries claustrum, then claude
+    assert (shell.index("pasta") < shell.index("IS_SANDBOX=1")
+            < shell.index("claustrum") < shell.index("/wd/home/.local/bin/claude"))
