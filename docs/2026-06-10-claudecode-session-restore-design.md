@@ -185,17 +185,30 @@ Documented fallback if live verification shows `--continue` mis-selecting the se
   blob without transcript → task fails; capture fires `on_session_saved` with a blob
   that round-trips (restore it into a second session); capture-on-cancel; `model`
   flag pass-through; directives skipped on optio resume.
-- **Live verifications** (one manual session; gate items, not design blockers):
-  1. Truncated-transcript acceptance by `--continue`/`--resume` and the exact
-     bookkeeping-repair shape (`last-prompt`/`leafUuid`).
-  2. Headless stream-json transcript format vs the verified TUI sample.
-  3. Turn-boundary uuid visibility in stream-json events (the caller-side mapping —
-     consumed by the scripter, verified here).
-  4. Workdir-slug derivation rule for `projects/` (the `/`→`-`, `.`→`-` mapping,
-     confirmed on two interactive samples) against a headless session.
-  5. Whether per-entry `cwd` fields inside the transcript also matter for
-     resumption — v1 renames the directory only; rewriting the `cwd` fields during
-     the same tar pass is the documented fallback.
+- **Live verifications — ALL CONFIRMED** (real headless sessions, claude 2.1.170,
+  isolated HOME, 2026-06-10; codeword-probe methodology — turn 1 plants a codeword,
+  turn 2 is sacrificial, the trimmed resume must know the codeword and have no
+  memory of turn 2):
+  1. ✅ `--continue` accepts a `rebase_session_blob`-truncated transcript: same
+     session id continues, turn-1 context intact, truncated turn absent from model
+     memory. Bookkeeping repair shape: the trailing `last-prompt` entry falls to the
+     prefix cut and the CLI accepts a transcript ending at an assistant entry — no
+     `leafUuid` rewrite was needed in practice (the defensive rewrite stays).
+     `--continue` **appends in place** (same file, same session id — no per-resume
+     fork in headless print mode), so a conversation lineage is a single growing
+     transcript and "newest file" selection is trivially correct.
+  2. ✅ Headless transcript format matches the TUI samples: `uuid`/`parentUuid`
+     chains on user/attachment/assistant entries; uuid-less `queue-operation` /
+     `ai-title` / `last-prompt` bookkeeping interleaved.
+  3. ✅ Turn-boundary uuid: `assistant` stream-json events carry the transcript
+     entry uuid verbatim — the boundary for `restore_until` is the uuid of the
+     **last assistant event before the turn's `result`** (the `result` event's own
+     uuid does not appear in the transcript). No extra reporting machinery needed.
+  4. ✅ Slug rule holds headless: `/tmp/sr-live-verify/work1` →
+     `-tmp-sr-live-verify-work1`.
+  5. ✅ Per-entry `cwd` fields (which still point at the old workdir after rekey) do
+     not block resumption — directory rename suffices; the cwd-field rewrite
+     fallback is not needed.
 
 ## 8. File map
 
