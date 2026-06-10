@@ -326,11 +326,11 @@ importers:
         specifier: ^5.6.0
         version: 5.6.1(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       '@quaesitor-textus/antd':
-        specifier: ^0.1.6
-        version: 0.1.6(antd@5.29.3(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)
+        specifier: ^0.4.2
+        version: 0.4.2(antd@5.29.3(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)
       '@quaesitor-textus/core':
-        specifier: ^0.1.6
-        version: 0.1.6(react@19.2.4)
+        specifier: ^0.4.2
+        version: 0.4.2(react@19.2.4)
       '@ts-rest/core':
         specifier: ^3.51.0
         version: 3.52.1(@types/node@22.19.15)(zod@3.25.76)
@@ -1357,14 +1357,14 @@ packages:
   '@pinojs/redact@0.4.0':
     resolution: {integrity: sha512-k2ENnmBugE/rzQfEcdWHcCY+/FM3VLzH9cYEsbdsoqrvzAKRhUZeRNhAZvB8OitQJ1TBed3yqWtdjzS6wJKBwg==}
 
-  '@quaesitor-textus/antd@0.1.6':
-    resolution: {integrity: sha512-Tf3s+W9WESMLOA3xGQ4E13GVa7CZxCWUaZwGWK2buMOmcKSaG31JV6VCMz7wYqlxGVb8hITKrVcQwxNLqpKDow==}
+  '@quaesitor-textus/antd@0.4.2':
+    resolution: {integrity: sha512-c8MZaK1RK69umzPF88TE/0XqAyndVLIfJdQEezSM6o6MzU8KXMbFTS30xcVlptTstPAXuWOh9R60VPiN+G2moQ==}
     peerDependencies:
       antd: '>=5'
       react: '>=18'
 
-  '@quaesitor-textus/core@0.1.6':
-    resolution: {integrity: sha512-3HQ0owNXjDj1sGh2MWkg+zMlwXdav+4J3xR9bGdoAtukKYLrX08FpbR32RFuXPIFq71uGucUB8oXyRHGcEnoIw==}
+  '@quaesitor-textus/core@0.4.2':
+    resolution: {integrity: sha512-J134kF/0bWt8RL08Vvh88nNGFuRjZK1xckcfJr4QkJxzQfy1rGsWaDMXy8ypp/MO7hC0UHfUYvBuxo/XK4Z9Qg==}
     peerDependencies:
       react: '>=18'
 
@@ -5304,13 +5304,13 @@ snapshots:
 
   '@pinojs/redact@0.4.0': {}
 
-  '@quaesitor-textus/antd@0.1.6(antd@5.29.3(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)':
+  '@quaesitor-textus/antd@0.4.2(antd@5.29.3(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)':
     dependencies:
-      '@quaesitor-textus/core': 0.1.6(react@19.2.4)
+      '@quaesitor-textus/core': 0.4.2(react@19.2.4)
       antd: 5.29.3(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       react: 19.2.4
 
-  '@quaesitor-textus/core@0.1.6(react@19.2.4)':
+  '@quaesitor-textus/core@0.4.2(react@19.2.4)':
     dependencies:
       react: 19.2.4
 
