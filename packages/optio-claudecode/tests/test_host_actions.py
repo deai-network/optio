@@ -620,3 +620,15 @@ async def test_launch_returns_handle_port_socket_session(monkeypatch):
     assert session == "optio"
     # a detached tmux new-session was started before ttyd
     assert any("new-session -d" in c or "new-session" in c for c in host.commands)
+
+
+def test_build_claude_flags_model():
+    from optio_claudecode.host_actions import build_claude_flags
+    flags = build_claude_flags(
+        permission_mode=None, allowed_tools=None, disallowed_tools=None,
+        model="claude-opus-4-8",
+    )
+    assert flags == ["--model", "claude-opus-4-8"]
+    assert build_claude_flags(
+        permission_mode=None, allowed_tools=None, disallowed_tools=None,
+    ) == []

@@ -213,6 +213,7 @@ async def run_claudecode_session(
             permission_mode=config.permission_mode,
             allowed_tools=config.allowed_tools,
             disallowed_tools=config.disallowed_tools,
+            model=config.model,
             resuming=pass_continue,
         )
         # auto_start: append the kickoff prompt ONLY on a genuine fresh launch.
@@ -325,6 +326,7 @@ async def run_claudecode_session(
             permission_mode=config.permission_mode,
             allowed_tools=config.allowed_tools,
             disallowed_tools=config.disallowed_tools,
+            model=config.model,
             resuming=pass_continue,
         )
         argv = host_actions.build_conversation_argv(
