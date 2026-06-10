@@ -26,6 +26,8 @@ Do not add `Co-Authored-By` or any other self-credit lines to git commits.
 
 Do not implement any change — including bug fixes, refactors, or "obvious" improvements — without first describing what you intend to do and getting explicit confirmation from the user.
 
+To release packages to npm / PyPI, follow **`docs/release-cookbook.md`** — the per-package / wire / all flow, dependency order, prerequisites (push `main` first, npm + PyPI auth), and how to register a new package into the release scripts.
+
 **AGENTS.md coordination**: Each package under `packages/` has its own `AGENTS.md` with
 package-specific API details. When you change a package's public API, exported symbols,
 query parameters, component props, hook signatures, or contract endpoints, you MUST update
