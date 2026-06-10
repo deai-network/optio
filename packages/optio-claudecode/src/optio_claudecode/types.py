@@ -18,13 +18,18 @@ from optio_host.types import SSHConfig
 class AllowedDir:
     """A caller-supplied extra path grant for filesystem isolation.
 
-    ``mode`` is exactly ``"ro"`` (read-only) or ``"rw"`` (read-write).
-    Grants are additive: callers may widen the allowlist but never mask
-    the security baseline.
+    ``mode`` is one of ``"ro"`` (read-only), ``"rw"`` (read-write),
+    ``"rox"`` (read+execute — tool venvs, binaries), or ``"rwx"``
+    (read-write+execute). Grants are additive: callers may widen the
+    allowlist but never mask the security baseline.
+
+    A leading ``~/`` in ``path`` is expanded against the REAL host home at
+    launch time (the claude process itself runs under an isolated $HOME, so
+    grants cannot rely on its shell expansion).
     """
 
     path: str
-    mode: Literal["ro", "rw"]
+    mode: Literal["ro", "rw", "rox", "rwx"]
 
 
 __all__ = [
@@ -53,6 +58,9 @@ _VALID_PERMISSION_MODES = {"default", "plan", "acceptEdits", "bypassPermissions"
 _HEADLESS_SAFE_PERMISSION_MODES = {"acceptEdits", "bypassPermissions", "dontAsk"}
 
 ConversationMode = Literal["iframe", "conversation"]
+
+ToolVerbosity = Literal["silent", "description-only", "verbose"]
+_VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
 
 
 @dataclass
@@ -162,6 +170,10 @@ class ClaudeCodeTaskConfig:
     # as widgetUpstream. The published Conversation object remains the
     # default gate; this is a deliberate parallel path. Conversation mode only.
     conversation_ui: bool = False
+    # Conversation-UI tool-call rendering: "verbose" = full input table,
+    # "description-only" = one summary line, "silent" = nothing. Carried to the
+    # widget via widgetData; only affects conversation_ui rendering.
+    tool_verbosity: ToolVerbosity = "description-only"
 
     # --- explicit session restore (spec: 2026-06-10 session restore) -----
     # session_restore_from: GridFS blob id of a home/.claude session tar (as
@@ -234,6 +246,11 @@ class ClaudeCodeTaskConfig:
                 "ClaudeCodeTaskConfig: conversation_ui=True requires "
                 "mode='conversation'."
             )
+        if self.tool_verbosity not in _VALID_TOOL_VERBOSITY:
+            raise ValueError(
+                f"ClaudeCodeTaskConfig.tool_verbosity={self.tool_verbosity!r} "
+                f"is not one of {sorted(_VALID_TOOL_VERBOSITY)}"
+            )
         if self.session_restore_until is not None and self.session_restore_from is None:
             raise ValueError(
                 "session_restore_until requires session_restore_from"
@@ -255,8 +272,8 @@ class ClaudeCodeTaskConfig:
                 "set fs_isolation=False to opt out."
             )
         for ad in self.extra_allowed_dirs or []:
-            if ad.mode not in ("ro", "rw"):
+            if ad.mode not in ("ro", "rw", "rox", "rwx"):
                 raise ValueError(
                     f"ClaudeCodeTaskConfig.extra_allowed_dirs: mode={ad.mode!r} "
-                    f"must be 'ro' or 'rw' (path={ad.path!r})."
+                    f"must be one of 'ro', 'rw', 'rox', 'rwx' (path={ad.path!r})."
                 )

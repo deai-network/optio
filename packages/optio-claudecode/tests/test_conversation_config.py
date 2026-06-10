@@ -73,3 +73,17 @@ def test_prompt_unchanged_for_iframe_path():
     text = compose_agents_md("instructions", workdir_exclude=None)
     assert "Log channel" in text
     assert "## Task" in text
+
+
+def test_tool_verbosity_default_is_description_only():
+    assert _cfg().tool_verbosity == "description-only"
+
+
+def test_tool_verbosity_accepts_levels():
+    for v in ("silent", "description-only", "verbose"):
+        assert _cfg(tool_verbosity=v).tool_verbosity == v
+
+
+def test_tool_verbosity_rejects_bad_value():
+    with pytest.raises(ValueError, match="tool_verbosity"):
+        _cfg(tool_verbosity="loud")
