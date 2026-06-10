@@ -10,6 +10,7 @@ export type ChatItem =
   | { kind: 'user'; text: string; seq: number }
   | { kind: 'assistant'; text: string; pending: boolean; seq: number }
   | { kind: 'activity'; text: string; seq: number }
+  | { kind: 'tool'; name: string; input: unknown; seq: number }
   | {
       kind: 'permission';
       requestId: string;
@@ -32,7 +33,6 @@ export const initialChatState: ChatState = {
   closed: false,
 };
 
-const INPUT_PREVIEW_CHARS = 120;
 const HARNESS_PREFIX = 'System: ';
 
 // message.content is either a plain string or an array of content blocks;
@@ -44,17 +44,6 @@ function extractText(content: unknown): string {
     .filter((block: any) => block?.type === 'text' && typeof block.text === 'string')
     .map((block: any) => block.text)
     .join('');
-}
-
-// One-line preview of a tool_use input for activity rows.
-function previewInput(input: unknown): string {
-  let text: string;
-  try {
-    text = JSON.stringify(input) ?? '';
-  } catch {
-    text = String(input);
-  }
-  return text.slice(0, INPUT_PREVIEW_CHARS);
 }
 
 // Upsert the in-flight assistant bubble: replace (or append to) its text,
@@ -95,17 +84,41 @@ function finalizePending(items: ChatItem[], seq: number, resultText: string | nu
   return [...items.slice(0, idx), next, ...items.slice(idx + 1)];
 }
 
+// Insert a user message before the assistant bubble it triggered. With
+// `--replay-user-messages` Claude streams the whole answer FIRST and only
+// echoes the user message afterward, so the streaming assistant bubble already
+// exists (and has an earlier seq) when the user echo arrives. Ordering by seq
+// — or appending on arrival — would therefore render the answer above the
+// question. Conversation order is what we want, so the echoed user turn slots
+// in front of the in-flight assistant bubble. (On reload there is no pending
+// bubble yet — the buffer drops partials — so it simply appends, which is also
+// correct because the buffered user event precedes the buffered result.)
+// Tool announcements are ephemeral progress indicators: only the in-flight one
+// is interesting. A new tool announcement or a permission request supersedes
+// any prior tool rows, so drop them when either arrives.
+function withoutTools(items: ChatItem[]): ChatItem[] {
+  return items.filter((i) => i.kind !== 'tool');
+}
+
+function insertUserBeforePending(items: ChatItem[], item: ChatItem): ChatItem[] {
+  const idx = items.findIndex((i) => i.kind === 'assistant' && i.pending);
+  if (idx === -1) return [...items, item];
+  return [...items.slice(0, idx), item, ...items.slice(idx)];
+}
+
 export function reduceEvent(state: ChatState, ev: any, seq: number): ChatState {
   switch (ev?.type) {
     case 'user': {
       const text = extractText(ev.message?.content);
       if (text === '') return state;
       // Harness-injected messages (resume notices, auto-start prompt) render
-      // as activity rows, not user bubbles. Either way the agent is working.
-      const item: ChatItem = text.startsWith(HARNESS_PREFIX)
-        ? { kind: 'activity', text, seq }
-        : { kind: 'user', text, seq };
-      return { ...state, items: [...state.items, item], busy: true };
+      // as activity rows, not user bubbles, and just append. Either way the
+      // agent is working.
+      if (text.startsWith(HARNESS_PREFIX)) {
+        return { ...state, items: [...state.items, { kind: 'activity', text, seq }], busy: true };
+      }
+      const items = insertUserBeforePending(state.items, { kind: 'user', text, seq });
+      return { ...state, items, busy: true };
     }
 
     case 'assistant': {
@@ -113,14 +126,15 @@ export function reduceEvent(state: ChatState, ev: any, seq: number): ChatState {
       let items = state.items;
       for (const block of blocks) {
         if (block?.type === 'text' && typeof block.text === 'string') {
-          // The assistant event carries the full text so far — replace, so
-          // accumulated stream_event deltas are never double-counted.
-          items = upsertPending(items, seq, block.text, 'replace');
+          // The agent is answering now — clear any in-flight tool announcement,
+          // then replace the pending bubble's text (the event carries the full
+          // text so far, so accumulated stream_event deltas aren't double-counted).
+          items = upsertPending(withoutTools(items), seq, block.text, 'replace');
         } else if (block?.type === 'tool_use') {
-          items = [
-            ...items,
-            { kind: 'activity', text: `running ${block.name}: ${previewInput(block.input)}`, seq },
-          ];
+          // Carry the structured input so the widget can render it as a
+          // key→value table (same treatment as the permission card). Ephemeral:
+          // supersede any prior tool announcement.
+          items = [...withoutTools(items), { kind: 'tool', name: String(block.name ?? ''), input: block.input, seq }];
         }
       }
       return items === state.items ? state : { ...state, items };
@@ -129,12 +143,14 @@ export function reduceEvent(state: ChatState, ev: any, seq: number): ChatState {
     case 'stream_event': {
       const delta = ev.event?.delta?.text;
       if (typeof delta !== 'string' || delta === '') return state;
-      return { ...state, items: upsertPending(state.items, seq, delta, 'append') };
+      // The answer is streaming — clear any in-flight tool announcement.
+      return { ...state, items: upsertPending(withoutTools(state.items), seq, delta, 'append') };
     }
 
     case 'result': {
       const resultText = typeof ev.result === 'string' ? ev.result : null;
-      return { ...state, items: finalizePending(state.items, seq, resultText), busy: false };
+      // Turn complete — drop any lingering tool announcement.
+      return { ...state, items: finalizePending(withoutTools(state.items), seq, resultText), busy: false };
     }
 
     case 'control_request': {
@@ -147,8 +163,9 @@ export function reduceEvent(state: ChatState, ev: any, seq: number): ChatState {
         answered: null,
         seq,
       };
-      // busy stays true — the agent is parked on the gate.
-      return { ...state, items: [...state.items, item] };
+      // busy stays true — the agent is parked on the gate. The permission
+      // request supersedes any in-flight tool announcement.
+      return { ...state, items: [...withoutTools(state.items), item] };
     }
 
     case 'x-optio-permission-answered': {
@@ -166,8 +183,11 @@ export function reduceEvent(state: ChatState, ev: any, seq: number): ChatState {
     }
 
     case 'x-optio-closed': {
+      // Session ended — a trailing tool announcement (e.g. the agent echoing
+      // DONE to optio.log) should not linger above the "conversation ended"
+      // divider.
       const item: ChatItem = { kind: 'closed', reason: String(ev.reason ?? ''), seq };
-      return { ...state, items: [...state.items, item], busy: false, closed: true };
+      return { ...state, items: [...withoutTools(state.items), item], busy: false, closed: true };
     }
 
     default:
