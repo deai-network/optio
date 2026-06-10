@@ -8,6 +8,7 @@ const user = (text: string) => ({ type: 'user', message: { role: 'user', content
 const assistantText = (text: string, msgId?: string) => ({ type: 'assistant', message: { role: 'assistant', id: msgId, content: [{ type: 'text', text }] } });
 const toolUse = (name: string, input: unknown) => ({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name, input }] } });
 const delta = (text: string) => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } });
+const messageStart = (msgId: string) => ({ type: 'stream_event', event: { type: 'message_start', message: { id: msgId } } });
 const result = (text: string) => ({ type: 'result', subtype: 'success', result: text });
 const controlRequest = (requestId: string, toolName: string, input: unknown) => ({
   type: 'control_request',
@@ -248,6 +249,29 @@ describe('reduceEvent', () => {
     ]);
     const kinds = s.items.map((i) => i.kind);
     expect(kinds.indexOf('user')).toBeLessThan(kinds.indexOf('assistant'));
+  });
+
+  it('does not glue the next message\'s deltas onto the previous bubble (countdown repro)', () => {
+    // Wire order per live verification: message_start announces each new
+    // assistant message BEFORE its deltas; the full assistant event (same
+    // message id) follows the deltas of each content block. Without
+    // finalizing on message_start, message N+1's deltas append onto message
+    // N's still-pending bubble: "10" became "109", "9" became "98", ...
+    const s = run([
+      user('count down from 10'),
+      messageStart('msg_1'),
+      delta('10'),
+      assistantText('10', 'msg_1'),
+      messageStart('msg_2'),
+      delta('9'),
+      assistantText('9', 'msg_2'),
+      messageStart('msg_3'),
+      delta('8'),
+      assistantText('8', 'msg_3'),
+    ]);
+    const bubbles = ofKind(s, 'assistant');
+    expect(bubbles.map((b) => b.text)).toEqual(['10', '9', '8']);
+    expect(bubbles.map((b) => b.pending)).toEqual([false, false, true]);
   });
 
   it('renders a local (optimistic) user message immediately at the end', () => {

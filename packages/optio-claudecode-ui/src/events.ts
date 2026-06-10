@@ -203,6 +203,13 @@ export function reduceEvent(state: ChatState, ev: any, seq: number): ChatState {
     }
 
     case 'stream_event': {
+      // A new assistant message announces itself before its deltas. Finalize
+      // the previous message's bubble here, or its tail would absorb the next
+      // message's deltas ("10" + "9" rendering as "109").
+      if (ev.event?.type === 'message_start') {
+        const idx = pendingIndex(state.items);
+        return idx === -1 ? state : { ...state, items: finalizeAt(state.items, idx) };
+      }
       const delta = ev.event?.delta?.text;
       if (typeof delta !== 'string' || delta === '') return state;
       // The answer is streaming — clear any in-flight tool announcement.
