@@ -198,6 +198,10 @@ export function ClaudeCodeConversationWidget(props: WidgetProps) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       void send();
+    } else if (e.key === 'Escape' && busy && !state.closed) {
+      // Same guard as the Interrupt button: only while a turn is running.
+      e.preventDefault();
+      void post('interrupt', {});
     }
   }
 
