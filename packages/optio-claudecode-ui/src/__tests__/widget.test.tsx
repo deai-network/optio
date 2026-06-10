@@ -173,4 +173,13 @@ describe('ClaudeCodeConversationWidget', () => {
     expect(screen.getByText('file_path')).toBeTruthy();
     expect(screen.getByText('/a/b.txt')).toBeTruthy();
   });
+  it('working indicator renders OUTSIDE the resize-observed content node (no reflow loop)', () => {
+    render(<ClaudeCodeConversationWidget {...makeProps()} />);
+    fire({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'go' }] } });
+    fire({ type: 'assistant', message: { role: 'assistant', id: 'm1', content: [{ type: 'text', text: 'on it' }] } });
+    expect(screen.getByText('working…')).toBeTruthy(); // visible while busy
+    // ...but NOT inside the ResizeObserver-observed content node (its animation
+    // there caused a forced-reflow-per-frame CPU loop).
+    expect(screen.getByTestId('conversation-content').textContent).not.toContain('working…');
+  });
 });

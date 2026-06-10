@@ -115,6 +115,7 @@ export function ClaudeCodeConversationWidget(props: WidgetProps) {
   const contentRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
   const programmaticRef = useRef(false);
+  const lastContentHeightRef = useRef(0);
 
   const { widgetProxyUrl } = props; // ends with '/' — trailing slash is load-bearing
 
@@ -180,7 +181,16 @@ export function ClaudeCodeConversationWidget(props: WidgetProps) {
   useEffect(() => {
     const content = contentRef.current;
     if (!content) return;
-    const ro = new ResizeObserver(() => {
+    const ro = new ResizeObserver((entries) => {
+      // Re-pin ONLY when the content actually grew. Reading height from the RO
+      // entry avoids a forced reflow, and skipping no-growth fires stops the
+      // callback from re-triggering itself — the reflow-per-frame CPU loop.
+      const h = entries[0]?.contentRect.height ?? 0;
+      if (h <= lastContentHeightRef.current) {
+        lastContentHeightRef.current = h;
+        return;
+      }
+      lastContentHeightRef.current = h;
       if (stickToBottomRef.current) pinToBottom();
     });
     ro.observe(content);
@@ -371,19 +381,23 @@ export function ClaudeCodeConversationWidget(props: WidgetProps) {
         {/* Inner wrapper is what the ResizeObserver watches — the scroll
             container's own box is fixed (flex:1), so only this content node
             reports the height growth that drives auto-scroll. */}
-        <div ref={contentRef} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div ref={contentRef} data-testid="conversation-content" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {/* Items are kept in conversation order by the reducer (it slots an
               echoed user message in front of the assistant bubble it
               triggered), so render in array order. seq is NOT a valid sort key:
               with --replay-user-messages Claude streams the answer before
               echoing the question, so the answer carries the earlier seq. */}
           {state.items.map(renderItem)}
-          {busy && !state.closed && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: token.colorTextTertiary }}>
-              <Spin size="small" /> working…
-            </div>
-          )}
         </div>
+        {/* The working indicator is a SIBLING of the observed content node, not
+            a child: its animated <Spin> inside `contentRef` re-triggered the
+            ResizeObserver every frame, forcing a reflow-per-frame (100% CPU,
+            unresponsive input) while the agent worked. */}
+        {busy && !state.closed && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: token.colorTextTertiary }}>
+            <Spin size="small" /> working…
+          </div>
+        )}
       </div>
       <div
         style={{
