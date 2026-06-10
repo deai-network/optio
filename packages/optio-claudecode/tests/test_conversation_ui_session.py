@@ -45,6 +45,7 @@ def test_conversation_ui_requires_conversation_mode():
             consumer_instructions="x",
             mode="iframe",
             conversation_ui=True,
+            fs_isolation=False,
         )
 
 
@@ -54,12 +55,13 @@ def test_conversation_ui_ok_in_conversation_mode():
         mode="conversation",
         permission_mode="bypassPermissions",
         conversation_ui=True,
+        fs_isolation=False,
     )
     assert config.conversation_ui is True
 
 
 def test_conversation_ui_defaults_false():
-    config = ClaudeCodeTaskConfig(consumer_instructions="x")
+    config = ClaudeCodeTaskConfig(consumer_instructions="x", fs_isolation=False)
     assert config.conversation_ui is False
 
 
@@ -169,6 +171,7 @@ def _ui_config(
         mode="conversation",
         conversation_ui=True,
         permission_mode="bypassPermissions",
+        fs_isolation=False,
         claude_install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
     )

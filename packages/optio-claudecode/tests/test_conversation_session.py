@@ -77,6 +77,7 @@ def _conversation_config(
         permission_mode="bypassPermissions",
         claude_install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
+        fs_isolation=False,
     )
     base.update(kw)
     return ClaudeCodeTaskConfig(**base)
@@ -285,6 +286,7 @@ def test_ui_widget_per_mode():
             consumer_instructions="x",
             mode="conversation",
             permission_mode="bypassPermissions",
+            fs_isolation=False,
         ),
     )
     assert conv_task.ui_widget is None
@@ -292,6 +294,6 @@ def test_ui_widget_per_mode():
     iframe_task = create_claudecode_task(
         process_id="cc-widget-iframe",
         name="Widget iframe",
-        config=ClaudeCodeTaskConfig(consumer_instructions="x"),
+        config=ClaudeCodeTaskConfig(consumer_instructions="x", fs_isolation=False),
     )
     assert iframe_task.ui_widget == "iframe-input"

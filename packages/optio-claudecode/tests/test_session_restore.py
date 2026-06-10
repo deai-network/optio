@@ -15,6 +15,7 @@ def _conv(**kw) -> ClaudeCodeTaskConfig:
         consumer_instructions="x",
         mode="conversation",
         permission_mode="bypassPermissions",
+        fs_isolation=False,
     )
     base.update(kw)
     return ClaudeCodeTaskConfig(**base)
@@ -46,6 +47,7 @@ def test_restore_from_requires_conversation_mode():
             consumer_instructions="x",
             mode="iframe",
             session_restore_from=ObjectId(),
+            fs_isolation=False,
         )
 
 
@@ -100,6 +102,7 @@ def _flow_config(shim_install_dir, claude_cache_dir, **kw):
         claude_install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         supports_resume=False,
+        fs_isolation=False,
     )
     base.update(kw)
     return ClaudeCodeTaskConfig(**base)

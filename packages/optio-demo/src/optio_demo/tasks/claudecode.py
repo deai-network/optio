@@ -236,6 +236,9 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     conversation_ui=True,
                     permission_gate=True,       # exercises the approve/deny UI
                     host_protocol=False,        # pure conversation gate
+                    # TODO: conversation-mode fs-isolation (claustrum wrap for the
+                    # headless launch) not wired yet; opt out until that lands.
+                    fs_isolation=False,
                     ssh=ssh,
                     seed_id=seed_id,
                     supports_resume=True,
@@ -259,6 +262,8 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     conversation_ui=True,
                     # host_protocol left at its True default — keyword channel on.
                     permission_mode="bypassPermissions",
+                    # TODO: conversation-mode fs-isolation not wired yet; opt out.
+                    fs_isolation=False,
                     ssh=ssh,
                     before_execute=_before_execute,
                     after_execute=_after_execute,

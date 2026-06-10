@@ -10,7 +10,7 @@ from optio_claudecode.types import ClaudeCodeTaskConfig
 
 
 def _cfg(**kw):
-    base = dict(consumer_instructions="do things")
+    base = dict(consumer_instructions="do things", fs_isolation=False)
     base.update(kw)
     return ClaudeCodeTaskConfig(**base)
 
