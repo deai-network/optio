@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
-import { Button, Spin } from 'antd';
+import { Button, Spin, theme } from 'antd';
+import type { GlobalToken } from 'antd';
 import type { WidgetProps } from 'optio-ui';
 import { registerWidget } from 'optio-ui';
 import type { ChatItem, ChatState } from './events.js';
@@ -41,17 +42,22 @@ function ensureFlashStyle(): void {
   document.head.appendChild(el);
 }
 
-const kvCell: React.CSSProperties = {
-  border: '1px solid #f0d98a',
-  padding: '2px 6px',
-  verticalAlign: 'top',
-  fontFamily: 'monospace',
-  fontSize: 12,
-};
+// Colors come from the antd theme (ConfigProvider algorithm), so the widget
+// follows the host app's light/dark switch instead of a hardcoded palette.
+function kvCell(token: GlobalToken): React.CSSProperties {
+  return {
+    border: `1px solid ${token.colorWarningBorder}`,
+    padding: '2px 6px',
+    verticalAlign: 'top',
+    fontFamily: 'monospace',
+    fontSize: 12,
+  };
+}
 
 // Render a tool-permission input object as a key→value table. Falls back to a
 // JSON string for non-object inputs (a bare string/array argument).
-function renderInputKV(input: unknown): React.ReactNode {
+function renderInputKV(input: unknown, token: GlobalToken): React.ReactNode {
+  const cell = kvCell(token);
   if (input && typeof input === 'object' && !Array.isArray(input)) {
     const entries = Object.entries(input as Record<string, unknown>);
     if (entries.length === 0) return null;
@@ -60,8 +66,8 @@ function renderInputKV(input: unknown): React.ReactNode {
         <tbody>
           {entries.map(([k, v]) => (
             <tr key={k}>
-              <td style={{ ...kvCell, fontWeight: 600, whiteSpace: 'nowrap', color: '#7a5b00' }}>{k}</td>
-              <td style={{ ...kvCell, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: '#555' }}>
+              <td style={{ ...cell, fontWeight: 600, whiteSpace: 'nowrap', color: token.colorWarningText }}>{k}</td>
+              <td style={{ ...cell, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: token.colorTextSecondary }}>
                 {typeof v === 'string' ? v : JSON.stringify(v)}
               </td>
             </tr>
@@ -71,13 +77,14 @@ function renderInputKV(input: unknown): React.ReactNode {
     );
   }
   return (
-    <div style={{ fontFamily: 'monospace', fontSize: 12, color: '#555', overflowWrap: 'anywhere' }}>
+    <div style={{ fontFamily: 'monospace', fontSize: 12, color: token.colorTextSecondary, overflowWrap: 'anywhere' }}>
       {JSON.stringify(input)}
     </div>
   );
 }
 
 export function ClaudeCodeConversationWidget(props: WidgetProps) {
+  const { token } = theme.useToken();
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   const localSeqRef = useRef(0);
   const [text, setText] = useState('');
@@ -222,7 +229,7 @@ export function ClaudeCodeConversationWidget(props: WidgetProps) {
     switch (item.kind) {
       case 'user':
         return (
-          <div key={item.seq} style={{ ...bubbleBase, alignSelf: 'flex-end', background: '#e6f4ff' }}>
+          <div key={item.seq} style={{ ...bubbleBase, alignSelf: 'flex-end', background: token.colorPrimaryBg }}>
             {item.text}
           </div>
         );
@@ -230,10 +237,15 @@ export function ClaudeCodeConversationWidget(props: WidgetProps) {
         return (
           <div
             key={item.seq}
-            style={{ ...bubbleBase, alignSelf: 'flex-start', background: '#fff', border: '1px solid #ddd' }}
+            style={{
+              ...bubbleBase,
+              alignSelf: 'flex-start',
+              background: token.colorBgContainer,
+              border: `1px solid ${token.colorBorderSecondary}`,
+            }}
           >
             <Markdown>{item.text}</Markdown>
-            {item.pending && <span style={{ color: '#999' }}>▍</span>}
+            {item.pending && <span style={{ color: token.colorTextTertiary }}>▍</span>}
           </div>
         );
       case 'activity':
@@ -246,9 +258,9 @@ export function ClaudeCodeConversationWidget(props: WidgetProps) {
             style={{
               ...bubbleBase,
               alignSelf: 'center',
-              background: '#f4f0fb',
-              border: '1px solid #d3adf7',
-              color: '#666',
+              background: token.purple1,
+              border: `1px solid ${token.purple3}`,
+              color: token.colorTextSecondary,
               fontSize: 12,
             }}
           >
@@ -257,11 +269,11 @@ export function ClaudeCodeConversationWidget(props: WidgetProps) {
         );
       case 'tool':
         return (
-          <div key={item.seq} style={{ color: '#888', fontSize: 12 }}>
+          <div key={item.seq} style={{ color: token.colorTextTertiary, fontSize: 12 }}>
             <div style={{ fontFamily: 'monospace' }}>
               running <strong>{item.name}</strong>:
             </div>
-            {renderInputKV(item.input)}
+            {renderInputKV(item.input, token)}
           </div>
         );
       case 'permission':
@@ -273,8 +285,8 @@ export function ClaudeCodeConversationWidget(props: WidgetProps) {
             data-testid="permission-card"
             style={{
               alignSelf: 'stretch',
-              border: '1px solid #faad14',
-              background: '#fffbe6',
+              border: `1px solid ${token.colorWarning}`,
+              background: token.colorWarningBg,
               borderRadius: 8,
               padding: 8,
               display: 'flex',
@@ -285,7 +297,7 @@ export function ClaudeCodeConversationWidget(props: WidgetProps) {
             <div>
               Permission requested: <strong>{item.toolName}</strong>
             </div>
-            {renderInputKV(item.input)}
+            {renderInputKV(item.input, token)}
             <div style={{ display: 'flex', gap: 8 }}>
               <Button
                 size="small"
@@ -310,11 +322,17 @@ export function ClaudeCodeConversationWidget(props: WidgetProps) {
         return (
           <div
             key={item.seq}
-            style={{ alignSelf: 'stretch', display: 'flex', alignItems: 'center', gap: 8, color: '#888' }}
+            style={{
+              alignSelf: 'stretch',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              color: token.colorTextTertiary,
+            }}
           >
-            <div style={{ flex: 1, borderTop: '1px solid #ddd' }} />
+            <div style={{ flex: 1, borderTop: `1px solid ${token.colorBorderSecondary}` }} />
             <span>conversation ended{item.reason ? ` (${item.reason})` : ''}</span>
-            <div style={{ flex: 1, borderTop: '1px solid #ddd' }} />
+            <div style={{ flex: 1, borderTop: `1px solid ${token.colorBorderSecondary}` }} />
           </div>
         );
     }
@@ -338,13 +356,21 @@ export function ClaudeCodeConversationWidget(props: WidgetProps) {
               echoing the question, so the answer carries the earlier seq. */}
           {state.items.map(renderItem)}
           {busy && !state.closed && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#888' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: token.colorTextTertiary }}>
               <Spin size="small" /> working…
             </div>
           )}
         </div>
       </div>
-      <div style={{ borderTop: '1px solid #ddd', padding: 8, display: 'flex', gap: 8, alignItems: 'flex-end' }}>
+      <div
+        style={{
+          borderTop: `1px solid ${token.colorBorderSecondary}`,
+          padding: 8,
+          display: 'flex',
+          gap: 8,
+          alignItems: 'flex-end',
+        }}
+      >
         <textarea
           ref={inputRef}
           className="optio-cc-flash"
@@ -363,15 +389,19 @@ export function ClaudeCodeConversationWidget(props: WidgetProps) {
             overflowY: 'auto',
             borderRadius: 6,
             padding: '6px 8px',
+            background: token.colorBgContainer,
+            color: token.colorText,
+            border: `1px solid ${token.colorBorder}`,
           }}
         />
-        <button
+        <Button
           data-testid="conversation-send"
+          type="primary"
           onClick={() => void send()}
           disabled={sending || !text || state.closed}
         >
           Send
-        </button>
+        </Button>
         <Button
           size="small"
           danger
@@ -382,7 +412,7 @@ export function ClaudeCodeConversationWidget(props: WidgetProps) {
           Interrupt
         </Button>
         {error && (
-          <span data-testid="conversation-error" style={{ color: '#b00', alignSelf: 'center' }}>
+          <span data-testid="conversation-error" style={{ color: token.colorError, alignSelf: 'center' }}>
             {error}
           </span>
         )}

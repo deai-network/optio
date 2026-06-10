@@ -1,7 +1,7 @@
 import { memo } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Typography } from 'antd';
+import { Typography, theme } from 'antd';
 import { Mermaid } from './Mermaid.js';
 
 // Markdown spacing is controlled by an injected stylesheet rather than inline
@@ -61,30 +61,55 @@ const COMPONENTS: Components = {
   // Spread the incoming `style` LAST: remark-gfm passes column alignment
   // (`:--` / `:-:` / `--:`) as a `style={{textAlign}}` prop on each cell,
   // so it must override the base left default rather than be dropped.
-  th: ({ children, style }) => (
-    <th
-      style={{
-        border: '1px solid #d9d9d9',
-        padding: '4px 8px',
-        background: '#fafafa',
-        textAlign: 'left',
-        ...style,
-      }}
-    >
-      {children}
-    </th>
-  ),
-  td: ({ children, style }) => (
-    <td style={{ border: '1px solid #d9d9d9', padding: '4px 8px', ...style }}>{children}</td>
-  ),
-  blockquote: ({ children }) => (
-    <blockquote
-      style={{ borderLeft: '3px solid #d9d9d9', paddingLeft: 10, margin: '4px 0', color: '#666' }}
-    >
-      {children}
-    </blockquote>
-  ),
-  hr: () => <hr style={{ border: 'none', borderTop: '1px solid #d9d9d9', margin: '8px 0' }} />,
+  //
+  // These renderers are component *types* (react-markdown createElement's
+  // them), so theme.useToken() inside them is a legal hook call — colors
+  // follow the host app's ConfigProvider light/dark algorithm.
+  th: ({ children, style }) => {
+    const { token } = theme.useToken();
+    return (
+      <th
+        style={{
+          border: `1px solid ${token.colorBorderSecondary}`,
+          padding: '4px 8px',
+          background: token.colorFillQuaternary,
+          textAlign: 'left',
+          ...style,
+        }}
+      >
+        {children}
+      </th>
+    );
+  },
+  td: ({ children, style }) => {
+    const { token } = theme.useToken();
+    return (
+      <td style={{ border: `1px solid ${token.colorBorderSecondary}`, padding: '4px 8px', ...style }}>
+        {children}
+      </td>
+    );
+  },
+  blockquote: ({ children }) => {
+    const { token } = theme.useToken();
+    return (
+      <blockquote
+        style={{
+          borderLeft: `3px solid ${token.colorBorderSecondary}`,
+          paddingLeft: 10,
+          margin: '4px 0',
+          color: token.colorTextSecondary,
+        }}
+      >
+        {children}
+      </blockquote>
+    );
+  },
+  hr: () => {
+    const { token } = theme.useToken();
+    return (
+      <hr style={{ border: 'none', borderTop: `1px solid ${token.colorBorderSecondary}`, margin: '8px 0' }} />
+    );
+  },
   ul: ({ children }) => <ul style={{ margin: '4px 0', paddingLeft: 20 }}>{children}</ul>,
   ol: ({ children }) => <ol style={{ margin: '4px 0', paddingLeft: 20 }}>{children}</ol>,
 };

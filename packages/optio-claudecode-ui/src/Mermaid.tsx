@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { theme } from 'antd';
 
 // Render a ```mermaid fenced block as an SVG diagram.
 //
@@ -18,6 +19,7 @@ let seq = 0;
 const svgCache = new Map<string, string>();
 
 export function Mermaid({ chart }: { chart: string }) {
+  const { token } = theme.useToken();
   const [svg, setSvg] = useState(() => svgCache.get(chart) ?? '');
   const idRef = useRef(`mmd-${seq++}`);
 
@@ -60,8 +62,8 @@ export function Mermaid({ chart }: { chart: string }) {
     return (
       <pre
         style={{
-          background: '#f6f8fa',
-          border: '1px solid #eaecef',
+          background: token.colorFillQuaternary,
+          border: `1px solid ${token.colorBorderSecondary}`,
           borderRadius: 6,
           padding: 8,
           overflowX: 'auto',
