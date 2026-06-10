@@ -218,6 +218,55 @@ async def test_launch_no_resume_support(mongo_db):
 
 
 @pytest.mark.asyncio
+async def test_launch_resume_downgraded_when_no_saved_state(mongo_db):
+    # supportsResume=True (capability) but hasSavedState=False (no durable
+    # capture): launch(resume=True) must come up FRESH — the executor receives
+    # resume=False, so the task's resume-gated setup runs as a fresh start.
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix="launchtest_nost")
+    coll = mongo_db["launchtest_nost_processes"]
+    await coll.insert_one({
+        "_id": ObjectId(),
+        "processId": "fresh1",
+        "status": {"state": "idle"},
+        "supportsResume": True,
+        "hasSavedState": False,
+    })
+    captured = {}
+    async def _spy(oid, *, resume, session_id):
+        captured["resume"] = resume
+    fw._executor.launch_process = _spy
+
+    out = await fw.launch("fresh1", resume=True, session_id=None)
+    assert out.ok is True
+    assert captured["resume"] is False
+
+
+@pytest.mark.asyncio
+async def test_launch_resume_kept_when_saved_state(mongo_db):
+    # supportsResume=True AND hasSavedState=True: a genuine resume is honored —
+    # the executor receives resume=True unchanged.
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix="launchtest_st")
+    coll = mongo_db["launchtest_st_processes"]
+    await coll.insert_one({
+        "_id": ObjectId(),
+        "processId": "saved1",
+        "status": {"state": "idle"},
+        "supportsResume": True,
+        "hasSavedState": True,
+    })
+    captured = {}
+    async def _spy(oid, *, resume, session_id):
+        captured["resume"] = resume
+    fw._executor.launch_process = _spy
+
+    out = await fw.launch("saved1", resume=True, session_id=None)
+    assert out.ok is True
+    assert captured["resume"] is True
+
+
+@pytest.mark.asyncio
 async def test_launch_blocked_outcome(mongo_db):
     fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix="launchtest4")

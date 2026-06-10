@@ -409,6 +409,15 @@ class Optio:
             return LaunchOutcome(ok=False, reason="not-launchable")
         if resume and not proc.get("supportsResume", False):
             return LaunchOutcome(ok=False, reason="no-resume-support")
+        # supportsResume is the task CAPABILITY ("this kind of task can resume");
+        # hasSavedState is the per-instance REALITY ("a durable capture exists").
+        # A fresh, never-captured process launched with resume=True must come up
+        # fresh, not pretend to resume: there is no snapshot to restore, and the
+        # task's resume-gated setup (hooks keyed on ctx.resume) would otherwise
+        # misfire as if state had been restored. Downgrade rather than reject —
+        # the caller legitimately wants to launch; it just has nothing to resume.
+        if resume and not proc.get("hasSavedState", False):
+            resume = False
 
         task = self._executor._task_registry.get(proc["processId"])
         if task is not None and self._matches_block(task.metadata):
