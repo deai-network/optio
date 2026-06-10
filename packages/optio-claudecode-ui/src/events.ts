@@ -8,7 +8,7 @@
 
 export type ChatItem =
   | { kind: 'user'; text: string; seq: number }
-  | { kind: 'assistant'; text: string; pending: boolean; seq: number }
+  | { kind: 'assistant'; text: string; pending: boolean; seq: number; msgId: string | null }
   | { kind: 'activity'; text: string; seq: number }
   | { kind: 'tool'; name: string; input: unknown; seq: number }
   | {
@@ -46,34 +46,67 @@ function extractText(content: unknown): string {
     .join('');
 }
 
+function pendingIndex(items: ChatItem[]): number {
+  return items.findIndex((item) => item.kind === 'assistant' && item.pending);
+}
+
+// The pending bubble may keep absorbing the in-flight turn only while it is
+// the conversation's tail. Ephemeral tool rows don't count: they are dropped
+// by the next text anyway. Anything else after the bubble (activity rows,
+// permission cards, user turns) means newer content has been appended — the
+// bubble is stale and must not act as an anchor anymore.
+function isTail(items: ChatItem[], idx: number): boolean {
+  return items.slice(idx + 1).every((i) => i.kind === 'tool');
+}
+
+// Finalize the bubble at idx in place (text kept), used when newer content
+// has to open a fresh bubble after it.
+function finalizeAt(items: ChatItem[], idx: number): ChatItem[] {
+  const current = items[idx] as Extract<ChatItem, { kind: 'assistant' }>;
+  if (!current.pending) return items;
+  return [...items.slice(0, idx), { ...current, pending: false }, ...items.slice(idx + 1)];
+}
+
 // Upsert the in-flight assistant bubble: replace (or append to) its text,
-// creating the bubble if absent. Returns a new items array.
+// creating the bubble if absent. Invariant kept: a pending bubble only
+// absorbs text while it is the tail AND belongs to the same assistant
+// message — otherwise it is finalized where it stands and a fresh pending
+// bubble opens at the end. (The full-text `replace` dedups accumulated
+// stream deltas WITHIN one message; across messages it would swallow
+// earlier replies.)
 function upsertPending(
   items: ChatItem[],
   seq: number,
   text: string,
   mode: 'replace' | 'append',
+  msgId?: string,
 ): ChatItem[] {
-  const idx = items.findIndex((item) => item.kind === 'assistant' && item.pending);
-  if (idx === -1) {
-    return [...items, { kind: 'assistant', text, pending: true, seq }];
+  const idx = pendingIndex(items);
+  if (idx !== -1) {
+    const current = items[idx] as Extract<ChatItem, { kind: 'assistant' }>;
+    const sameMessage =
+      mode === 'append' || current.msgId === null || msgId == null || current.msgId === msgId;
+    if (isTail(items, idx) && sameMessage) {
+      const next: ChatItem = {
+        ...current,
+        text: mode === 'append' ? current.text + text : text,
+        msgId: msgId ?? current.msgId,
+      };
+      return [...items.slice(0, idx), next, ...items.slice(idx + 1)];
+    }
+    items = finalizeAt(items, idx);
   }
-  const current = items[idx] as Extract<ChatItem, { kind: 'assistant' }>;
-  const next: ChatItem = {
-    ...current,
-    text: mode === 'append' ? current.text + text : text,
-  };
-  return [...items.slice(0, idx), next, ...items.slice(idx + 1)];
+  return [...items, { kind: 'assistant', text, pending: true, seq, msgId: msgId ?? null }];
 }
 
 // Finalize the in-flight assistant bubble (pending -> false), replacing its
 // text when the result carries one. Creates a finalized bubble if there is
 // result text but no pending bubble (e.g. a replay that skipped partials).
 function finalizePending(items: ChatItem[], seq: number, resultText: string | null): ChatItem[] {
-  const idx = items.findIndex((item) => item.kind === 'assistant' && item.pending);
+  const idx = pendingIndex(items);
   if (idx === -1) {
     if (resultText === null || resultText === '') return items;
-    return [...items, { kind: 'assistant', text: resultText, pending: false, seq }];
+    return [...items, { kind: 'assistant', text: resultText, pending: false, seq, msgId: null }];
   }
   const current = items[idx] as Extract<ChatItem, { kind: 'assistant' }>;
   const next: ChatItem = {
@@ -90,9 +123,10 @@ function finalizePending(items: ChatItem[], seq: number, resultText: string | nu
 // exists (and has an earlier seq) when the user echo arrives. Ordering by seq
 // — or appending on arrival — would therefore render the answer above the
 // question. Conversation order is what we want, so the echoed user turn slots
-// in front of the in-flight assistant bubble. (On reload there is no pending
-// bubble yet — the buffer drops partials — so it simply appends, which is also
-// correct because the buffered user event precedes the buffered result.)
+// in front of the in-flight assistant bubble — but ONLY while that bubble is
+// the conversation's tail (modulo ephemeral tool rows). A stale pending
+// bubble (e.g. replayed from a buffer captured mid-turn, never finalized)
+// must not pull later, unrelated user events above newer content.
 // Tool announcements are ephemeral progress indicators: only the in-flight one
 // is interesting. A new tool announcement or a permission request supersedes
 // any prior tool rows, so drop them when either arrives.
@@ -101,8 +135,8 @@ function withoutTools(items: ChatItem[]): ChatItem[] {
 }
 
 function insertUserBeforePending(items: ChatItem[], item: ChatItem): ChatItem[] {
-  const idx = items.findIndex((i) => i.kind === 'assistant' && i.pending);
-  if (idx === -1) return [...items, item];
+  const idx = pendingIndex(items);
+  if (idx === -1 || !isTail(items, idx)) return [...items, item];
   return [...items.slice(0, idx), item, ...items.slice(idx)];
 }
 
@@ -123,13 +157,15 @@ export function reduceEvent(state: ChatState, ev: any, seq: number): ChatState {
 
     case 'assistant': {
       const blocks = Array.isArray(ev.message?.content) ? ev.message.content : [];
+      const msgId = typeof ev.message?.id === 'string' ? ev.message.id : undefined;
       let items = state.items;
       for (const block of blocks) {
         if (block?.type === 'text' && typeof block.text === 'string') {
           // The agent is answering now — clear any in-flight tool announcement,
           // then replace the pending bubble's text (the event carries the full
-          // text so far, so accumulated stream_event deltas aren't double-counted).
-          items = upsertPending(withoutTools(items), seq, block.text, 'replace');
+          // text so far, so accumulated stream_event deltas aren't double-counted
+          // — within one message; a different message id opens a new bubble).
+          items = upsertPending(withoutTools(items), seq, block.text, 'replace', msgId);
         } else if (block?.type === 'tool_use') {
           // Carry the structured input so the widget can render it as a
           // key→value table (same treatment as the permission card). Ephemeral:

@@ -5,7 +5,7 @@ import type { ChatItem, ChatState } from '../events.js';
 // -- raw stream-json event builders (wire shapes verified in Phase I) --------
 
 const user = (text: string) => ({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } });
-const assistantText = (text: string) => ({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } });
+const assistantText = (text: string, msgId?: string) => ({ type: 'assistant', message: { role: 'assistant', id: msgId, content: [{ type: 'text', text }] } });
 const toolUse = (name: string, input: unknown) => ({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name, input }] } });
 const delta = (text: string) => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } });
 const result = (text: string) => ({ type: 'result', subtype: 'success', result: text });
@@ -183,6 +183,71 @@ describe('reduceEvent', () => {
     expect(s.items.map((i) => i.kind)).toEqual(['user', 'assistant']);
     expect((s.items[0] as Extract<ChatItem, { kind: 'user' }>).text).toBe('the question');
     expect((s.items[1] as Extract<ChatItem, { kind: 'assistant' }>).text).toBe('full answer');
+  });
+
+  it('keeps chronological order when a turn never gets a result (buffer replay)', () => {
+    // Replay of a session captured mid-turn (interrupt / close-on-DONE): no
+    // result event ever finalizes the bubble. Later assistant texts must NOT
+    // overwrite the stale pending bubble in place — items appended after it
+    // (System: activity rows) would otherwise end up ABOVE newer answers.
+    const s = run([
+      user('orange'),
+      assistantText('Failed delivery attempt.', 'msg_1'),
+      user('System: deliverable mission-report.txt: always finish with "over and out".'),
+      assistantText('Corrected delivery.', 'msg_2'),
+      user('System: deliverable mission-report.txt: accepted.'),
+      assistantText('The deliverable was accepted. Signaling completion.', 'msg_3'),
+    ]);
+    expect(s.items.map((i) => i.kind)).toEqual([
+      'user', 'assistant', 'activity', 'assistant', 'activity', 'assistant',
+    ]);
+    const bubbles = ofKind(s, 'assistant');
+    expect(bubbles.map((b) => b.text)).toEqual([
+      'Failed delivery attempt.',
+      'Corrected delivery.',
+      'The deliverable was accepted. Signaling completion.',
+    ]);
+    // Only the newest bubble may still be pending.
+    expect(bubbles.map((b) => b.pending)).toEqual([false, false, true]);
+  });
+
+  it('appends a live user echo at the end when the pending bubble is not the tail (interrupt after resume)', () => {
+    // A stale pending bubble (replayed, never finalized) must not act as an
+    // insertion anchor for unrelated later user events: the interrupt echo
+    // arrives AFTER the resume notice and belongs at the very end.
+    const s = run([
+      assistantText('The deliverable was accepted.', 'msg_3'),
+      user('System: you have been resumed'),
+      user('[Request interrupted by user]'),
+    ]);
+    expect(s.items.map((i) => i.kind)).toEqual(['assistant', 'activity', 'user']);
+    expect(ofKind(s, 'user')[0].text).toBe('[Request interrupted by user]');
+  });
+
+  it('renders distinct assistant messages as distinct bubbles', () => {
+    // One turn can contain several assistant MESSAGES (around tool use); the
+    // full-text replace dedup applies within one message, not across messages.
+    const s = run([
+      user('q'),
+      assistantText('Let me look that up.', 'msg_a'),
+      assistantText('Here is the answer.', 'msg_b'),
+      result('Here is the answer.'),
+    ]);
+    const bubbles = ofKind(s, 'assistant');
+    expect(bubbles.map((b) => b.text)).toEqual(['Let me look that up.', 'Here is the answer.']);
+    expect(bubbles.map((b) => b.pending)).toEqual([false, false]);
+  });
+
+  it('still inserts the user echo before the pending bubble when it is the tail behind a tool row', () => {
+    // Live streaming with an in-flight tool announcement after the pending
+    // bubble: tool rows are ephemeral and do not break the "tail" notion.
+    const s = run([
+      delta('working on it'),
+      toolUse('Bash', { command: 'ls' }),
+      user('the question'),
+    ]);
+    const kinds = s.items.map((i) => i.kind);
+    expect(kinds.indexOf('user')).toBeLessThan(kinds.indexOf('assistant'));
   });
 
   it('appends a user message when no assistant bubble is pending (reload path)', () => {
