@@ -79,4 +79,31 @@ describe('IframeInputWidget', () => {
     await waitFor(() => expect(screen.getByTestId('agent-input-error')).toBeTruthy());
     expect(box.value).toBe('hi');
   });
+
+  it('empty box: ArrowUp sends a {key} keystroke (TUI nav), not text', async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<IframeInputWidget {...makeProps()} />);
+    const box = screen.getByTestId('agent-input-box');
+    fireEvent.keyDown(box, { key: 'ArrowUp' });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/widget-control/db/gm/pid123');
+    expect(JSON.parse((init as any).body)).toEqual({ key: 'Up' });
+  });
+
+  it('empty box: Enter sends a bare {key:"Enter"} (not an empty {text})', async () => {
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<IframeInputWidget {...makeProps()} />);
+    const box = screen.getByTestId('agent-input-box');
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as any).body)).toEqual({ key: 'Enter' });
+  });
+
+  it('auto-focuses the input on mount', () => {
+    render(<IframeInputWidget {...makeProps()} />);
+    expect(document.activeElement).toBe(screen.getByTestId('agent-input-box'));
+  });
 });

@@ -7,15 +7,20 @@ export interface AgentInputResult {
   body: unknown;
 }
 
+/** A typed message (`{text}`) or a single navigation keystroke (`{key}`, for
+ *  driving the TUI from an empty input box). The host's /input route validates
+ *  the key against its allowlist; the API forwards it verbatim. */
+export type AgentInputPayload = { text: string } | { key: string };
+
 /**
- * Resolve the process's controlUpstream and POST {text} to its /input route.
- * One-shot, low-frequency — no caching. fetchImpl is injectable for tests.
+ * Resolve the process's controlUpstream and POST the payload to its /input
+ * route. One-shot, low-frequency — no caching. fetchImpl is injectable for tests.
  */
 export async function forwardAgentInput(
   db: Db,
   prefix: string,
   processId: string,
-  text: string,
+  payload: AgentInputPayload,
   fetchImpl: typeof fetch = fetch,
 ): Promise<AgentInputResult> {
   let oid: ObjectId;
@@ -44,7 +49,7 @@ export async function forwardAgentInput(
     const resp = await fetchImpl(url, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ text }),
+      body: JSON.stringify(payload),
     });
     let body: unknown = null;
     try { body = await resp.json(); } catch { body = null; }

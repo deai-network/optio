@@ -471,9 +471,16 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       const { database, prefix, processId } = request.params as {
         database: string; prefix: string; processId: string;
       };
-      const text = (request.body as { text?: unknown })?.text;
-      if (typeof text !== 'string' || text.length === 0) {
-        reply.code(400).send({ message: 'body.text (non-empty string) required' });
+      const body = request.body as { text?: unknown; key?: unknown };
+      let payload: { text: string } | { key: string };
+      if (typeof body?.text === 'string' && body.text.length > 0) {
+        payload = { text: body.text };
+      } else if (typeof body?.key === 'string' && body.key.length > 0) {
+        // A single navigation keystroke for an empty input box; the host's
+        // /input route validates it against its key allowlist.
+        payload = { key: body.key };
+      } else {
+        reply.code(400).send({ message: 'body.text or body.key (non-empty string) required' });
         return;
       }
       let db;
@@ -483,7 +490,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
         reply.code(404).send({ message: 'session not running' });
         return;
       }
-      const result = await forwardAgentInput(db, prefix, processId, text);
+      const result = await forwardAgentInput(db, prefix, processId, payload);
       reply.code(result.status).send(result.body);
     },
   );

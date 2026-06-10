@@ -15,6 +15,13 @@ from typing import Awaitable, Callable
 from aiohttp import web
 
 
+# Navigation keys the iframe-input widget may send (as `{key: "<name>"}`) when
+# the input box is empty, for driving claude's TUI menus. These are tmux
+# send-keys key names; only this exact set is accepted — never an arbitrary
+# string (which would let a caller inject other key sequences).
+NAV_KEYS = frozenset({"Up", "Down", "Left", "Right", "Enter", "Escape", "Tab"})
+
+
 def serialized(
     lock: asyncio.Lock, send: Callable[[str], Awaitable[None]],
 ) -> Callable[[str], Awaitable[None]]:
@@ -31,11 +38,17 @@ async def start_input_listener(
     *,
     bind_iface: str,
     on_input: Callable[[str], Awaitable[None]],
+    on_key: Callable[[str], Awaitable[None]] | None = None,
 ) -> tuple[web.AppRunner, int]:
-    """Start a one-route aiohttp app: POST /input {text} -> on_input(text).
+    """Start a one-route aiohttp app: POST /input -> inject into the TUI.
+
+    Two payload shapes:
+      * ``{"text": "..."}``  -> ``on_input(text)``  (a typed message; non-empty).
+      * ``{"key": "<name>"}`` -> ``on_key(name)``   (a single NAV_KEYS keystroke,
+        for driving TUI menus from an empty input box).
 
     Returns (runner, port). Bind on port 0 (OS-assigned); the actual port is
-    read back from the bound socket. on_input raises on injection failure;
+    read back from the bound socket. on_input/on_key raise on injection failure;
     that becomes a 502 {ok:false, reason:"send-failed"}.
     """
     async def handle(request: web.Request) -> web.Response:
@@ -43,6 +56,15 @@ async def start_input_listener(
             payload = await request.json()
         except Exception:
             return web.json_response({"ok": False, "reason": "bad-json"}, status=400)
+        key = payload.get("key")
+        if key is not None:
+            if on_key is None or not isinstance(key, str) or key not in NAV_KEYS:
+                return web.json_response({"ok": False, "reason": "bad-key"}, status=400)
+            try:
+                await on_key(key)
+            except Exception:
+                return web.json_response({"ok": False, "reason": "send-failed"}, status=502)
+            return web.json_response({"ok": True})
         text = payload.get("text")
         if not isinstance(text, str) or not text:
             return web.json_response({"ok": False, "reason": "bad-text"}, status=400)

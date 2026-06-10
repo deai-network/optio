@@ -355,9 +355,14 @@ async def run_claudecode_session(
             await host_actions.send_text_to_claude(
                 host, tmux_path, tmux_socket, tmux_session, text,
             )
+        async def _inject_key(key: str) -> None:
+            await host_actions.send_key_to_claude(
+                host, tmux_path, tmux_socket, tmux_session, key,
+            )
         input_runner, input_port = await start_input_listener(
             bind_iface=ttyd_iface,
             on_input=serialized(injection_lock, _inject_raw),
+            on_key=serialized(injection_lock, _inject_key),
         )
         await ctx.set_control_upstream(f"http://{upstream_host}:{input_port}")
         ctx.report_progress(None, "Claude Code is live")

@@ -567,27 +567,29 @@ def _build_claude_shell_command(
     netns_wrap = os.environ.get("OPTIO_CLAUDECODE_NETNS", "").strip()
     use_netns = bool(netns_wrap) and local_mode
 
-    # Innermost: the claude invocation. Under the netns seal it is wrapped in
-    # `bash -c "IS_SANDBOX=1 …"` exactly as before.
+    # Innermost: the claude invocation, optionally claustrum-confined.
+    # claustrum goes INSIDE pasta: it confines only claude + its subprocesses.
+    if claustrum_wrap:
+        _LOG.info("claustrum filesystem isolation active (wrap=%r)", claustrum_wrap)
+    confined = [*(claustrum_wrap or []), claude_path, *claude_flags]
+
+    # Under the netns seal everything is wrapped in `bash -c "IS_SANDBOX=1 …"`.
+    # The bash hop is LOAD-BEARING for claustrum: pasta's AppArmor profile
+    # (abstractions/pasta) only allows exec from /{usr/,}bin/** (Ux), so pasta
+    # exec'ing claustrum — which lives in the version cache under $HOME — is
+    # denied ("Failed to start command or shell: Permission denied"). pasta
+    # execs bash (allowed, escapes confinement via Ux), and unconfined bash
+    # then execs claustrum -> claude.
     if use_netns:
-        inner = "IS_SANDBOX=1 " + " ".join(
-            shlex.quote(c) for c in [claude_path, *claude_flags]
-        )
-        claude_invocation = ["bash", "-c", inner]
+        inner = "IS_SANDBOX=1 " + " ".join(shlex.quote(c) for c in confined)
+        inner_cmd = ["bash", "-c", inner]
     else:
-        claude_invocation = [claude_path, *claude_flags]
+        inner_cmd = confined
         if netns_wrap and not local_mode:
             _LOG.info(
                 "OPTIO_CLAUDECODE_NETNS set (value=%r) but host is remote — seal "
                 "skipped (no localhost to seal over SSH).", netns_wrap,
             )
-
-    # claustrum goes INSIDE pasta: it confines only claude + its subprocesses.
-    if claustrum_wrap:
-        inner_cmd = [*claustrum_wrap, *claude_invocation]
-        _LOG.info("claustrum filesystem isolation active (wrap=%r)", claustrum_wrap)
-    else:
-        inner_cmd = claude_invocation
 
     # pasta (local-only) is the OUTERMOST wrapper.
     if use_netns:
@@ -1114,6 +1116,28 @@ async def send_text_to_claude(
     if result.exit_code != 0:
         raise RuntimeError(
             f"send_text_to_claude: tmux injection failed "
+            f"(exit {result.exit_code}): {result.stderr!r}"
+        )
+
+
+async def send_key_to_claude(
+    host: "Host", tmux_path: str, tmux_socket: str, tmux_session: str, key: str,
+) -> None:
+    """Send a single navigation keystroke into the claude TUI (no paste/settle),
+    for driving TUI menus from the iframe-input widget when the input box is
+    empty. ``key`` must be one of ``input_listener.NAV_KEYS`` (a tmux key name);
+    a disallowed key raises rather than reaching ``send-keys``."""
+    from optio_claudecode.input_listener import NAV_KEYS
+
+    if key not in NAV_KEYS:
+        raise ValueError(f"send_key_to_claude: disallowed key {key!r}")
+    s = shlex.quote(tmux_socket)
+    sess = shlex.quote(tmux_session)
+    tp = shlex.quote(tmux_path)
+    result = await host.run_command(f"{tp} -S {s} send-keys -t {sess} {key}")
+    if result.exit_code != 0:
+        raise RuntimeError(
+            f"send_key_to_claude: tmux send-keys {key} failed "
             f"(exit {result.exit_code}): {result.stderr!r}"
         )
 

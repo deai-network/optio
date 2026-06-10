@@ -47,3 +47,40 @@ async def test_listener_400_on_empty_text():
         assert status == 400
     finally:
         await runner.cleanup()
+
+
+async def test_listener_delivers_allowlisted_key():
+    seen = []
+
+    async def on_input(text):
+        pass
+
+    async def on_key(key):
+        seen.append(key)
+
+    runner, port = await start_input_listener(
+        bind_iface="127.0.0.1", on_input=on_input, on_key=on_key,
+    )
+    try:
+        status, body = await _post(port, {"key": "Up"})
+        assert status == 200 and body["ok"] is True
+        assert seen == ["Up"]
+    finally:
+        await runner.cleanup()
+
+
+async def test_listener_400_on_disallowed_key():
+    async def on_input(text):
+        pass
+
+    async def on_key(key):
+        raise AssertionError("on_key must not be called for a disallowed key")
+
+    runner, port = await start_input_listener(
+        bind_iface="127.0.0.1", on_input=on_input, on_key=on_key,
+    )
+    try:
+        status, body = await _post(port, {"key": "rm -rf"})
+        assert status == 400 and body["reason"] == "bad-key"
+    finally:
+        await runner.cleanup()
