@@ -135,10 +135,16 @@ export function ClaudeCodeConversationWidget(props: WidgetProps) {
   }, [widgetProxyUrl]);
 
   // On mount: install the flash keyframes and focus the input so the operator
-  // can type immediately without clicking.
+  // can type immediately without clicking. The widget mounts async (it un-gates
+  // only once widgetData arrives), so on a full page-load a single focus() can
+  // land before the page settles and not stick — re-assert it on short delays.
   useEffect(() => {
     ensureFlashStyle();
     inputRef.current?.focus();
+    const timers = [100, 400, 1000].map((ms) =>
+      setTimeout(() => inputRef.current?.focus(), ms),
+    );
+    return () => timers.forEach(clearTimeout);
   }, []);
 
   // The optimistic local-user echo (dispatched on a successful send) sets
