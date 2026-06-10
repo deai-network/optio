@@ -79,6 +79,7 @@ function renderInputKV(input: unknown): React.ReactNode {
 
 export function ClaudeCodeConversationWidget(props: WidgetProps) {
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
+  const localSeqRef = useRef(0);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [sendPending, setSendPending] = useState(false);
@@ -182,6 +183,11 @@ export function ClaudeCodeConversationWidget(props: WidgetProps) {
     setError(null);
     const ok = await post('send', { text: body });
     if (ok) {
+      // Optimistic local echo: show the message now; the wire echo (which
+      // only arrives once the answer starts streaming) confirms it in place.
+      // Negative seqs keep React keys unique and clear of wire seqs.
+      localSeqRef.current -= 1;
+      dispatch({ ev: { type: 'x-optio-local-user', text: body }, seq: localSeqRef.current });
       setText('');
       setSendPending(true);
     } else {

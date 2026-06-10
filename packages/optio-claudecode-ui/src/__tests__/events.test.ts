@@ -250,6 +250,38 @@ describe('reduceEvent', () => {
     expect(kinds.indexOf('user')).toBeLessThan(kinds.indexOf('assistant'));
   });
 
+  it('renders a local (optimistic) user message immediately at the end', () => {
+    const s = run([{ type: 'x-optio-local-user', text: 'hello there' }]);
+    expect(s.items).toHaveLength(1);
+    expect(s.items[0]).toMatchObject({ kind: 'user', text: 'hello there' });
+    expect(s.busy).toBe(true);
+  });
+
+  it('confirms the local message in place when the wire echo arrives (no duplicate, no move)', () => {
+    // The echo arrives AFTER the answer started streaming; without the local
+    // match it would insert a second user bubble before the pending answer.
+    const s = run([
+      { type: 'x-optio-local-user', text: 'hello there' },
+      delta('the answ'),
+      user('hello there'),
+      result('the answer'),
+    ]);
+    expect(s.items.map((i) => i.kind)).toEqual(['user', 'assistant']);
+    expect(ofKind(s, 'user')).toHaveLength(1);
+    expect((ofKind(s, 'user')[0] as any).local).toBeUndefined();
+  });
+
+  it('confirms queued local messages FIFO by matching text', () => {
+    const s = run([
+      { type: 'x-optio-local-user', text: 'first' },
+      { type: 'x-optio-local-user', text: 'second' },
+      user('first'),
+      user('second'),
+    ]);
+    expect(ofKind(s, 'user').map((u) => u.text)).toEqual(['first', 'second']);
+    expect(ofKind(s, 'user')).toHaveLength(2);
+  });
+
   it('appends a user message when no assistant bubble is pending (reload path)', () => {
     // On reload the buffer has no partials, so the user event arrives with no
     // pending bubble and simply appends; the result then forms the answer.

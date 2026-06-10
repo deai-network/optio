@@ -7,7 +7,7 @@
 // partials arrive as {type:"stream_event", event:{...content_block_delta}}).
 
 export type ChatItem =
-  | { kind: 'user'; text: string; seq: number }
+  | { kind: 'user'; text: string; seq: number; local?: boolean }
   | { kind: 'assistant'; text: string; pending: boolean; seq: number; msgId: string | null }
   | { kind: 'activity'; text: string; seq: number }
   | { kind: 'tool'; name: string; input: unknown; seq: number }
@@ -151,8 +151,34 @@ export function reduceEvent(state: ChatState, ev: any, seq: number): ChatState {
       if (text.startsWith(HARNESS_PREFIX)) {
         return { ...state, items: [...state.items, { kind: 'activity', text, seq }], busy: true };
       }
+      // Wire echo of an optimistically-rendered local message (sent from this
+      // widget): confirm the local bubble in place instead of inserting a
+      // duplicate. FIFO by text — sends are echoed in order.
+      const localIdx = state.items.findIndex(
+        (i) => i.kind === 'user' && i.local === true && i.text === text,
+      );
+      if (localIdx !== -1) {
+        const confirmed = { ...state.items[localIdx] } as Extract<ChatItem, { kind: 'user' }>;
+        delete confirmed.local;
+        const items = [...state.items];
+        items[localIdx] = confirmed;
+        return { ...state, items, busy: true };
+      }
       const items = insertUserBeforePending(state.items, { kind: 'user', text, seq });
       return { ...state, items, busy: true };
+    }
+
+    // Synthetic, widget-emitted: render the operator's own message the moment
+    // it is accepted by the listener, instead of waiting for Claude's echo
+    // (which only arrives after the answer starts streaming).
+    case 'x-optio-local-user': {
+      const text = typeof ev.text === 'string' ? ev.text : '';
+      if (text === '') return state;
+      return {
+        ...state,
+        items: [...state.items, { kind: 'user', text, seq, local: true }],
+        busy: true,
+      };
     }
 
     case 'assistant': {
