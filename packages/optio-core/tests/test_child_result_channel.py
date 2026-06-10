@@ -4,8 +4,6 @@ Spec: docs/2026-06-10-child-result-channel-design.md
 """
 import asyncio
 
-import pytest
-
 from optio_core.exceptions import ChildProcessFailed, ResultNotPublished
 from optio_core.lifecycle import Optio
 from optio_core.models import ChildHandle, ChildOutcome, TaskInstance, TaskInstanceCore
@@ -34,9 +32,6 @@ def test_result_not_published_carries_state():
     assert e2.state is None
 
 
-import time as _time
-
-
 async def _make_optio(mongo_db, prefix: str) -> Optio:
     optio = Optio()
     await optio.init(mongo_db=mongo_db, prefix=prefix)
@@ -47,16 +42,6 @@ async def _define(optio: Optio, process_id: str, execute) -> None:
     await optio.adhoc_define(
         TaskInstance(execute=execute, process_id=process_id, name=process_id),
     )
-
-
-async def _wait_terminal(optio: Optio, process_id: str, timeout: float = 5.0) -> dict:
-    end = _time.monotonic() + timeout
-    while _time.monotonic() < end:
-        proc = await optio.get_process(process_id)
-        if proc is not None and proc["status"]["state"] in {"done", "failed", "cancelled"}:
-            return proc
-        await asyncio.sleep(0.02)
-    raise AssertionError(f"{process_id} did not reach terminal state in {timeout}s")
 
 
 async def test_child_publish_then_await(mongo_db):
