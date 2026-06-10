@@ -58,7 +58,6 @@ import asyncio
 import pathlib
 import time as _time
 
-from bson import ObjectId as _OID  # noqa: F401  (clarity in asserts)
 
 from optio_core.lifecycle import Optio
 
