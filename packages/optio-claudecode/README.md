@@ -88,3 +88,24 @@ await conv.close()
 All new config fields default to existing behavior (`mode="iframe"`,
 `host_protocol=True`, `permission_gate=False`), so existing callers run
 unchanged. See `docs/2026-06-10-claudecode-conversation-gate-design.md`.
+
+### Dashboard conversation UI
+
+With the opt-in `conversation_ui=True` (conversation mode only) the
+task additionally starts a per-task listener that streams the raw
+conversation events (replay + live) through the optio widget proxy and
+accepts send / interrupt / permission requests, so the session can be
+monitored and driven from the browser. The matching React chat widget
+ships in the `optio-claudecode-ui` package; register it in your host
+app via `registerClaudeCodeConversationWidget()`. See
+`docs/2026-06-10-claudecode-conversation-ui-design.md`.
+
+```python
+config = ClaudeCodeTaskConfig(
+    consumer_instructions="",     # defaulted conversation prompt
+    credentials_json=...,
+    mode="conversation",
+    conversation_ui=True,
+    permission_gate=True,         # approve/deny tool use in the browser
+)
+```

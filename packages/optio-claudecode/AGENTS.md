@@ -123,6 +123,70 @@ Task completion semantics in conversation mode:
 | Claude exits on its own before `close()` | **failed** ("claude exited unexpectedly (exit N)") |
 | `host_protocol=True` alongside (legal combo) | optio.log DONE/ERROR terminate exactly as today; a caller `close()` emits a harness-side DONE so the task still resolves **done** |
 
+### Conversation UI (`conversation_ui`)
+
+Full design: `docs/2026-06-10-claudecode-conversation-ui-design.md`.
+Browser widget: the `optio-claudecode-ui` package
+(`packages/optio-claudecode-ui`) — register it in the host app via
+`registerClaudeCodeConversationWidget()`.
+
+* `conversation_ui: bool = False` — strictly opt-in; requires
+  `mode="conversation"` (validated in `__post_init__`). The published
+  `Conversation` object stays the default gate; this is a deliberate
+  parallel path for dashboard monitoring/control.
+
+When `True`:
+
+* Two extra argv flags are appended to the conversation argv:
+  `--include-partial-messages` (live partial text on the stream) and
+  `--replay-user-messages` (user turns echoed back on stdout — without
+  it the stream carries only the assistant side). Gated on the flag so
+  in-process-only consumers don't pay for events nobody reads.
+* `create_claudecode_task` sets `ui_widget="claudecode-conversation"`
+  (instead of `None` in plain conversation mode).
+* After `ctx.publish_result(conversation)` the task body starts a
+  per-task `ConversationListener` (aiohttp, sibling of
+  `input_listener.py`, OS-assigned port, `OPTIO_WIDGET_TUNNEL_BIND`
+  interface logic), registers it via
+  `ctx.set_widget_upstream(url, inner_auth)` with a per-task random
+  basic-auth credential, and calls `ctx.set_widget_data({})`. The
+  listener is shut down in the session teardown bracket.
+
+Endpoints (reached through the optio-api widget proxy, which injects
+the inner basic-auth credential; GET = viewer role, POST = operator):
+
+| Endpoint | Behavior |
+|---|---|
+| `GET /events` | SSE. On connect: replay buffer contents, then live tail. Each event's SSE `id:` is its monotonic `seq`; `Last-Event-ID` honored, so reconnects resume without duplicates. |
+| `POST /send` | `{text}` → `conversation.send(text)`. 409 when closed. |
+| `POST /interrupt` | `{}` → `conversation.interrupt()`. No-op when idle. |
+| `POST /permission` | `{request_id, behavior: "allow"\|"deny", updated_input?, message?}` → resolves the pending permission future. 404 for unknown/already-answered request_id. |
+
+Replay-buffer semantics:
+
+* `collections.deque(maxlen=1000)` of raw events, stamped with a
+  monotonic `seq`. Session-persistent only — nothing goes to Mongo;
+  after the task ends the conversation view is gone.
+* Mechanical type filter, not interpretation: events of type
+  `stream_event` (the partial-message deltas) are forwarded live but
+  never buffered. Everything else — `system`, `user`, `assistant`,
+  `result`, `control_request`, `x-optio-*` — is buffered.
+* The engine channels raw stream-json events through untouched; all
+  interpretation happens client-side in `optio-claudecode-ui`. The one
+  synthetic listener event is
+  `{"type": "x-optio-permission-answered", "request_id": ..., "behavior": ...}`,
+  broadcast (and buffered) when a permission is answered so every
+  viewer sees the card resolve.
+
+**Handler-slot rule**: `conversation_ui=True` occupies the single
+`on_permission_request` slot (the listener registers the handler and
+resolves it from `POST /permission`). Consumers that want programmatic
+permission gating must not enable `conversation_ui` — or must accept
+that the UI is the gate.
+
+When `False` (default): behavior is byte-identical to plain
+conversation mode (`ui_widget=None`, no listener, no extra argv flags).
+
 ## Hooks
 
 `before_execute(hook_ctx)`, `after_execute(hook_ctx)`,

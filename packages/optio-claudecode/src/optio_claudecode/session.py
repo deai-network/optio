@@ -16,13 +16,14 @@ import asyncio
 import inspect
 import logging
 import os
+import secrets
 import shlex
 import time as _time
 from datetime import datetime, timezone
 from typing import AsyncIterator, Callable
 
 from optio_core.context import ProcessContext
-from optio_core.models import TaskInstance
+from optio_core.models import BasicAuth, TaskInstance
 
 from optio_agents.context import HookContext
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
@@ -34,6 +35,7 @@ from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
 from optio_claudecode import cred_watcher
 from optio_claudecode import host_actions
 from optio_claudecode.conversation import ClaudeCodeConversation
+from optio_claudecode.conversation_listener import ConversationListener
 from optio_claudecode.input_listener import serialized, start_input_listener
 from optio_claudecode.account import resolve_account_summary
 from optio_claudecode.oauth_redirect import rewrite_oauth_redirect
@@ -97,6 +99,7 @@ async def run_claudecode_session(
     tmux_session: str | None = None
     injection_lock = asyncio.Lock()
     input_runner = None  # aiohttp AppRunner | None
+    conv_listener: ConversationListener | None = None
     cancelled = False
     # Set by _prepare (the driver runs it after the workdir wipe, before the
     # optio.log tail); read by the body and the teardown finally.
@@ -326,6 +329,8 @@ async def run_claudecode_session(
         argv = host_actions.build_conversation_argv(
             claude_path, claude_flags=claude_flags,
             permission_gate=config.permission_gate,
+            include_partial_messages=config.conversation_ui,
+            replay_user_messages=config.conversation_ui,
         )
         env = host_actions.conversation_launch_env(
             host.workdir,
@@ -343,6 +348,23 @@ async def run_claudecode_session(
 
         ctx.publish_result(conversation)
         ctx.report_progress(None, "Claude Code conversation is live")
+
+        nonlocal conv_listener
+        if config.conversation_ui:
+            listener_password = secrets.token_urlsafe(32)
+            bind_addr = os.environ.get("OPTIO_WIDGET_TUNNEL_BIND", "127.0.0.1")
+            upstream_host = os.environ.get("OPTIO_WIDGET_TUNNEL_HOST", "127.0.0.1")
+            # conversation_ui occupies the single permission-handler slot (see design §2).
+            conv_listener = ConversationListener(
+                conversation, password=listener_password,
+            )
+            listener_port = await conv_listener.start(bind_addr)
+            await ctx.set_widget_upstream(
+                f"http://{upstream_host}:{listener_port}",
+                inner_auth=BasicAuth(username="optio", password=listener_password),
+            )
+            await ctx.set_widget_data({})
+            ctx.report_progress(None, "Conversation UI is live")
 
         # Kickoff / resume notice as first stdin messages (print mode with
         # --input-format stream-json takes no positional prompt).
@@ -484,6 +506,12 @@ async def run_claudecode_session(
                 await ctx.clear_control_upstream()
             except Exception:
                 _LOG.exception("clear control upstream failed")
+
+        if conv_listener is not None:
+            try:
+                await conv_listener.stop()
+            except Exception:
+                _LOG.exception("conversation listener cleanup failed")
 
         if cred_watch_task is not None:
             cred_watch_task.cancel()
@@ -1046,7 +1074,10 @@ def create_claudecode_task(
         process_id=process_id,
         name=name,
         description=description,
-        ui_widget=("iframe-input" if config.mode == "iframe" else None),
+        ui_widget=(
+            "iframe-input" if config.mode == "iframe"
+            else ("claudecode-conversation" if config.conversation_ui else None)
+        ),
         supports_resume=config.supports_resume,
         metadata=metadata or {},
     )

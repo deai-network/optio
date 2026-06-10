@@ -128,6 +128,11 @@ class ClaudeCodeTaskConfig:
     # questions to the Conversation's on_permission_request handler over the
     # stream-json control protocol.
     permission_gate: bool = False
+    # Opt-in dashboard conversation UI: the task starts a per-task listener
+    # (SSE event stream + send/interrupt/permission POSTs) and registers it
+    # as widgetUpstream. The published Conversation object remains the
+    # default gate; this is a deliberate parallel path. Conversation mode only.
+    conversation_ui: bool = False
 
     def __post_init__(self) -> None:
         if self.permission_mode is not None and self.permission_mode not in _VALID_PERMISSION_MODES:
@@ -180,3 +185,8 @@ class ClaudeCodeTaskConfig:
                     "non-empty allowed_tools (headless Claude cannot show "
                     "a permission dialog)."
                 )
+        if self.conversation_ui and self.mode != "conversation":
+            raise ValueError(
+                "ClaudeCodeTaskConfig: conversation_ui=True requires "
+                "mode='conversation'."
+            )

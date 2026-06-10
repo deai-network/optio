@@ -836,6 +836,8 @@ def build_claude_flags(
 
 def build_conversation_argv(
     claude_path: str, *, claude_flags: list[str], permission_gate: bool,
+    include_partial_messages: bool = False,
+    replay_user_messages: bool = False,
 ) -> list[str]:
     """Argv for a headless stream-json conversation session.
 
@@ -843,6 +845,11 @@ def build_conversation_argv(
     ``permission_gate`` is set, the stdio permission-prompt plumbing is added
     so can_use_tool questions arrive as control_request lines on stdout.
     (Flag spelling verified against the live CLI in the plan's V1 phase.)
+
+    ``include_partial_messages`` and ``replay_user_messages`` are both
+    requested by ``conversation_ui=True``: partials feed the live view;
+    user-message replay puts the operator's turns on the stream so the
+    replay buffer and UI carry both sides.
 
     The netns seal and the DONE/ERROR bash wrapper are deliberately NOT
     applied here (engine observes the exit directly; conversation mode
@@ -855,6 +862,10 @@ def build_conversation_argv(
         "--verbose",
         *claude_flags,
     ]
+    if include_partial_messages:
+        out.append("--include-partial-messages")
+    if replay_user_messages:
+        out.append("--replay-user-messages")
     if permission_gate:
         out += ["--permission-prompt-tool", "stdio"]
     return out
