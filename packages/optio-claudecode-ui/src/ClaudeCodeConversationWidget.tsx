@@ -346,7 +346,7 @@ export function ClaudeCodeConversationWidget(props: WidgetProps) {
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Message Claude…  (Enter to send, Shift+Enter for newline)"
+          placeholder="Message agent…  (Enter to send, Shift+Enter for newline)"
           rows={2}
           disabled={state.closed}
           style={{
