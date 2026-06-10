@@ -240,5 +240,33 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                 ),
             )
         )
+        tasks.append(
+            create_claudecode_task(
+                process_id=f"claudecode-conversation-task-seed-{seed_id}",
+                name=f"Claude Code conversation+task — {name}",
+                description=(
+                    "Same favourite-colour task as the iframe demo (reads "
+                    "context.txt, asks for a colour, ships a deliverable) but "
+                    "surfaced through the new conversation UI instead of the "
+                    "ttyd iframe. host_protocol stays on, so DONE/DELIVERABLE "
+                    "and the deliverable-ack channel run alongside the chat."
+                ),
+                config=ClaudeCodeTaskConfig(
+                    consumer_instructions=CONSUMER_PROMPT,
+                    mode="conversation",
+                    conversation_ui=True,
+                    # host_protocol left at its True default — keyword channel on.
+                    permission_mode="bypassPermissions",
+                    ssh=ssh,
+                    before_execute=_before_execute,
+                    after_execute=_after_execute,
+                    on_deliverable=_on_deliverable,
+                    seed_id=seed_id,
+                    supports_resume=True,
+                    # Kick the agent off unattended (reads CLAUDE.md + executes).
+                    auto_start=True,
+                ),
+            )
+        )
 
     return tasks
