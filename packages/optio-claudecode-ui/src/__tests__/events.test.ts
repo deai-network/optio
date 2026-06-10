@@ -315,3 +315,24 @@ describe('reduceEvent', () => {
     expect(s.items.map((i) => i.kind)).toEqual(['user', 'assistant']);
   });
 });
+
+describe('System-message block separation', () => {
+  it('separates multiple text blocks (coalesced System notices) with a linebreak', () => {
+    // claude can echo several harness "System:" sends as ONE user event with
+    // multiple text blocks; they must not render run-together.
+    const ev = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'System: first notice' },
+          { type: 'text', text: 'System: second notice' },
+        ],
+      },
+    };
+    const s = reduceEvent(initialChatState, ev, 1);
+    const act = s.items.find((i) => i.kind === 'activity') as Extract<ChatItem, { kind: 'activity' }>;
+    expect(act).toBeTruthy();
+    expect(act.text).toBe('System: first notice\nSystem: second notice');
+  });
+});

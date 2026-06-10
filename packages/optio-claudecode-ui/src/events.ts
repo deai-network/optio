@@ -36,14 +36,16 @@ export const initialChatState: ChatState = {
 const HARNESS_PREFIX = 'System: ';
 
 // message.content is either a plain string or an array of content blocks;
-// concatenate the text blocks.
+// join the text blocks with a newline. Separate blocks are logically distinct
+// messages (e.g. several harness "System:" notices claude coalesced into one
+// user event) and must not render run-together.
 function extractText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
   return content
     .filter((block: any) => block?.type === 'text' && typeof block.text === 'string')
     .map((block: any) => block.text)
-    .join('');
+    .join('\n');
 }
 
 function pendingIndex(items: ChatItem[]): number {
