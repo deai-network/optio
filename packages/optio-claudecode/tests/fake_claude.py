@@ -128,7 +128,10 @@ def _scenario_seed() -> None:
         (claude / "plugins" / "marketplace").mkdir(parents=True, exist_ok=True)
         (claude / "projects" / "session-x").mkdir(parents=True, exist_ok=True)
         # INCLUDE (environment)
-        (claude / ".credentials.json").write_text('{"token": "abc"}', encoding="utf-8")
+        (claude / ".credentials.json").write_text(
+            '{"claudeAiOauth": {"refreshToken": "abc", "accessToken": "abc"}}',
+            encoding="utf-8",
+        )
         (claude / "settings.json").write_text('{"theme": "dark"}', encoding="utf-8")
         (claude / "mcp-needs-auth-cache.json").write_text("{}", encoding="utf-8")
         (claude / "plugins" / "marketplace" / "p.json").write_text("{}", encoding="utf-8")

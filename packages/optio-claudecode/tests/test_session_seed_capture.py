@@ -101,3 +101,36 @@ async def test_capture_fires_callback_and_stores_env_only_seed(
     assert not any("plugins" in n for n in names), names
     assert not any("projects" in n for n in names), names
     assert not any("history.jsonl" in n for n in names), names
+
+
+async def test_capture_skipped_when_no_credentials(
+    mongo_db, task_root, shim_install_dir, claude_cache_dir, monkeypatch,
+):
+    """A login-less session (no .credentials.json in home/.claude) must NOT be
+    stored as a seed: such a seed is dead on arrival (account resolves to None)
+    and pollutes the pool. Guard mirrors save-back / snapshot capture."""
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "happy")  # plants no credentials
+
+    captured: list = []
+
+    async def _on_seed_saved(seed_id, info=None) -> None:
+        captured.append((seed_id, info))
+
+    ctx = await _make_ctx(mongo_db, "cc_seed_nocred")
+    cfg = ClaudeCodeTaskConfig(
+        consumer_instructions="(login that never completed)",
+        fs_isolation=False,
+        claude_install_dir=str(claude_cache_dir),
+        ttyd_install_dir=str(shim_install_dir),
+        permission_mode="bypassPermissions",
+        supports_resume=False,
+        # No credentials_json -> home/.claude/.credentials.json never exists.
+        on_seed_saved=_on_seed_saved,
+    )
+    await run_claudecode_session(ctx, cfg)
+
+    # Guard: no creds -> capture skipped -> callback NOT fired, no seed stored.
+    assert captured == [], f"empty seed was captured: {captured}"
+    from optio_claudecode.seed_manifest import CLAUDE_SEED_SUFFIX
+    docs = await seeds.list_seeds(mongo_db, prefix="test", suffix=CLAUDE_SEED_SUFFIX)
+    assert docs == [], f"a credential-less seed was stored: {docs}"

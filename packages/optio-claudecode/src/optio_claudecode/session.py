@@ -655,26 +655,38 @@ async def run_claudecode_session(
                 _LOG.exception("final credential save-back failed")
 
         if not resuming and config.on_seed_saved is not None:
-            _trace("finally: capture_seed START")
-            try:
-                seed_id = await _seeds.capture_seed(
-                    ctx, host,
-                    manifest=CLAUDE_SEED_MANIFEST,
-                    suffix=CLAUDE_SEED_SUFFIX,
-                    encrypt=config.session_blob_encrypt,
+            # Credentials-present guard: never store a seed whose home/.claude
+            # has no valid credentials (a login-less or aborted setup session).
+            # Without a usable refresh token the seed is dead on arrival —
+            # account resolves to None and it only pollutes the pool. Mirrors the
+            # save-back (cred_fingerprint) and snapshot credentials guards.
+            if await cred_watcher.cred_fingerprint(host) is None:
+                _LOG.warning(
+                    "seed capture skipped: no valid credentials in "
+                    "home/.claude/.credentials.json (login-less session)",
                 )
-                _trace("finally: capture_seed DONE id=%s", seed_id)
-                # 2nd arg: best-effort account summary from the seeded OAuth
-                # token (the isolated home creds are still on disk pre-cleanup).
-                # Returns None on any failure; never disturbs capture.
-                summary = await resolve_account_summary(host)
-                await _call_maybe_async(config.on_seed_saved, seed_id, summary)
-                _trace("finally: on_seed_saved fired (summary=%s)", summary)
-            except Exception:
-                _LOG.exception(
-                    "seed capture failed; callback not fired, teardown continues",
-                )
-                _trace("finally: capture_seed RAISED")
+                _trace("finally: capture_seed SKIPPED (no credentials)")
+            else:
+                _trace("finally: capture_seed START")
+                try:
+                    seed_id = await _seeds.capture_seed(
+                        ctx, host,
+                        manifest=CLAUDE_SEED_MANIFEST,
+                        suffix=CLAUDE_SEED_SUFFIX,
+                        encrypt=config.session_blob_encrypt,
+                    )
+                    _trace("finally: capture_seed DONE id=%s", seed_id)
+                    # 2nd arg: best-effort account summary from the seeded OAuth
+                    # token (the isolated home creds are still on disk pre-cleanup).
+                    # Returns None on any failure; never disturbs capture.
+                    summary = await resolve_account_summary(host)
+                    await _call_maybe_async(config.on_seed_saved, seed_id, summary)
+                    _trace("finally: on_seed_saved fired (summary=%s)", summary)
+                except Exception:
+                    _LOG.exception(
+                        "seed capture failed; callback not fired, teardown continues",
+                    )
+                    _trace("finally: capture_seed RAISED")
 
         # Explicit session capture (on_session_saved): runs BEFORE snapshot
         # capture, whose workdir-tar step defensively wipes home/.claude.
