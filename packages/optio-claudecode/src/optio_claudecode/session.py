@@ -225,6 +225,14 @@ async def run_claudecode_session(
                 until_uuid=config.session_restore_until,
             )
             await _extract_home_claude(host, plain)
+            # rebase_session_blob rekeyed the transcript DIR slug, but not the
+            # .claude.json `projects` keys — they still name the original
+            # session's workdir. Under CLAUDE_CONFIG_DIR claude reads
+            # .claude/.claude.json; an un-rekeyed projects map leaves the new
+            # workdir untrusted -> folder-trust prompt (which bypassPermissions
+            # cannot suppress) -> the session hangs. Collapse projects to the
+            # launch workdir with trust, exactly as the optio-resume path does.
+            await _rekey_claude_json_projects(host)
             pass_continue = await _has_transcript(host)
             if not pass_continue:
                 raise RuntimeError(
