@@ -5,7 +5,7 @@ import type { WidgetProps } from 'optio-ui';
 import { registerWidget } from 'optio-ui';
 import type { ChatItem, ChatState } from './events.js';
 import { initialChatState, reduceEvent } from './events.js';
-import { Markdown } from './Markdown.js';
+import { AnswerBlock } from './AnswerBlock.js';
 
 interface ChatAction {
   ev: unknown;
@@ -280,7 +280,7 @@ export function ClaudeCodeConversationWidget(props: WidgetProps) {
               border: `1px solid ${token.colorBorderSecondary}`,
             }}
           >
-            <Markdown>{item.text}</Markdown>
+            <AnswerBlock text={item.text} />
             {item.pending && <span style={{ color: token.colorTextTertiary }}>▍</span>}
           </div>
         );

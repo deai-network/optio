@@ -1,7 +1,6 @@
 export { ClaudeCodeConversationWidget, registerClaudeCodeConversationWidget } from './ClaudeCodeConversationWidget.js';
 export { reduceEvent, initialChatState } from './events.js';
 export type { ChatItem, ChatState } from './events.js';
-// Standalone rendering building blocks, reusable outside the widget
-// (markdown with embedded mermaid diagrams, streaming-safe).
-export { Markdown } from './Markdown.js';
-export { Mermaid } from './Mermaid.js';
+// The standalone answer renderer (markdown + mermaid + all rendering fixes),
+// for consumers that render answers outside the chat widget.
+export { AnswerBlock } from './AnswerBlock.js';
