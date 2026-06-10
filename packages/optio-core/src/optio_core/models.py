@@ -1,5 +1,6 @@
 """Core data models for optio."""
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable, Literal, Union, TypeAlias
 from datetime import datetime
@@ -101,6 +102,25 @@ class ChildOutcome:
     """
     state: str
     original_exception: BaseException | None = None
+
+
+class ChildHandle:
+    """Returned by ProcessContext.run_child_with_result /
+    run_child_task_with_result: the child's published result object,
+    available while the child keeps running, plus access to the child's
+    eventual outcome.
+
+    ``outcome()`` awaits the underlying child execution; it returns the
+    ChildOutcome or raises ChildProcessFailed exactly as a plain
+    ``run_child`` call would have. It may be awaited multiple times.
+    """
+
+    def __init__(self, result: Any, task: "asyncio.Task[ChildOutcome]"):
+        self.result = result
+        self._task = task
+
+    async def outcome(self) -> "ChildOutcome":
+        return await self._task
 
 
 @dataclass

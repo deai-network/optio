@@ -1,7 +1,7 @@
 """Optio — reusable async process management library."""
 
 from optio_core.models import (
-    TaskInstance, TaskInstanceCore, ChildResult, LaunchBlocked,
+    TaskInstance, TaskInstanceCore, ChildResult, ChildHandle, LaunchBlocked,
     LaunchOutcome, CancelOutcome, DismissOutcome, MongoStore,
 )
 from optio_core.exceptions import LaunchError, ResultNotPublished
@@ -29,7 +29,8 @@ group_cancel = _instance.group_cancel
 group_cancel_and_wait = _instance.group_cancel_and_wait
 
 __all__ = [
-    "TaskInstance", "TaskInstanceCore", "ChildResult", "LaunchBlocked",
+    "TaskInstance", "TaskInstanceCore", "ChildResult", "ChildHandle",
+    "LaunchBlocked",
     "LaunchOutcome", "CancelOutcome", "DismissOutcome",
     "LaunchError", "ResultNotPublished",
     "init", "run", "shutdown",

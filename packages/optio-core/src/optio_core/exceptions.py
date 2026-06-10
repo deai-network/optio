@@ -40,8 +40,10 @@ class ResultNotPublished(Exception):
     """Raised by Optio.launch_and_await_result when the process reached a
     terminal state without ever calling ctx.publish_result."""
 
-    def __init__(self, process_id: str):
+    def __init__(self, process_id: str, state: str | None = None):
         self.process_id = process_id
+        self.state = state
+        suffix = f" (terminal state: {state})" if state else ""
         super().__init__(
-            f"process '{process_id}' ended without publishing a result"
+            f"process '{process_id}' ended without publishing a result{suffix}"
         )
