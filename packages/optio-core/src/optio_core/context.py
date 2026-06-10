@@ -12,7 +12,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorGridFSBucket
 
 from optio_core.models import (
     Progress, ChildResult, ChildProgressInfo, InnerAuth, ChildOutcome,
-    TaskInstanceCore,
+    TaskInstanceCore, ChildHandle,
 )
 from optio_core.exceptions import ChildProcessFailed
 
@@ -476,6 +476,91 @@ class ProcessContext:
             survive_failure=survive_failure,
             survive_cancel=survive_cancel,
             on_child_progress=on_child_progress,
+        )
+
+    async def run_child_with_result(
+        self,
+        execute: Callable[..., Awaitable[None]],
+        process_id: str,
+        name: str,
+        params: dict[str, Any] | None = None,
+        survive_failure: bool = False,
+        survive_cancel: bool = False,
+        on_child_progress: Callable | None = None,
+        description: str | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> ChildHandle:
+        """Launch a child like ``run_child`` and wait for it to call
+        ``ctx.publish_result(obj)``; return a ChildHandle carrying that
+        object while the child keeps running.
+
+        Raises ResultNotPublished when the child ends (or refuses to spawn)
+        without publishing, ChildProcessFailed when the child fails before
+        publishing (survive_failure semantics unchanged), and
+        asyncio.TimeoutError on ``timeout`` expiry (the child keeps running;
+        the object remains obtainable via Optio.get_published_result).
+        """
+        from optio_core.exceptions import ResultNotPublished
+
+        if self._executor is None:
+            raise RuntimeError("Executor not set on context")
+        fut = self._executor.ensure_result_future(process_id)
+        child = asyncio.create_task(self.run_child(
+            execute, process_id, name, params=params,
+            survive_failure=survive_failure, survive_cancel=survive_cancel,
+            on_child_progress=on_child_progress, description=description,
+        ))
+        # If the caller never awaits .outcome(), retrieve the exception so
+        # asyncio doesn't log "exception was never retrieved". The failure
+        # already propagated through execute_child's parent notification.
+        child.add_done_callback(
+            lambda t: None if t.cancelled() else t.exception()
+        )
+        done, _pending = await asyncio.wait(
+            {fut, child}, timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if not done:
+            raise asyncio.TimeoutError(
+                f"child '{process_id}' did not publish a result "
+                f"within {timeout}s"
+            )
+        if fut.done() and not fut.cancelled() and fut.exception() is None:
+            return ChildHandle(result=fut.result(), task=child)
+        # No result is coming: the child ended (or is ending) without
+        # publishing. Await it — a failed child raises ChildProcessFailed
+        # here (richer than a bare ResultNotPublished). Note fut.exception()
+        # above also marked any future exception as retrieved.
+        outcome = await child
+        # Refused-spawn path: no process doc was created, so the executor's
+        # terminal cleanup never ran — drop the pre-registered future.
+        self._executor._result_futures.pop(process_id, None)
+        raise ResultNotPublished(process_id, state=outcome.state)
+
+    async def run_child_task_with_result(
+        self,
+        task: TaskInstanceCore,
+        *,
+        survive_failure: bool = False,
+        survive_cancel: bool = False,
+        on_child_progress: Callable | None = None,
+        timeout: float | None = None,
+    ) -> ChildHandle:
+        """Run a TaskInstance(Core) as a child and await its published
+        result. Convenience over ``run_child_with_result``, unpacking the
+        same fields as ``run_child_task``.
+        """
+        return await self.run_child_with_result(
+            execute=task.execute,
+            process_id=task.process_id,
+            name=task.name,
+            params=task.params,
+            survive_failure=survive_failure,
+            survive_cancel=survive_cancel,
+            on_child_progress=on_child_progress,
+            description=task.description,
+            timeout=timeout,
         )
 
     def parallel_group(
