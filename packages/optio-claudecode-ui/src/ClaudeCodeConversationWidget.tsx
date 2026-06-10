@@ -83,8 +83,28 @@ function renderInputKV(input: unknown, token: GlobalToken): React.ReactNode {
   );
 }
 
+// For description-only verbosity: pick a one-line summary from the tool input —
+// its `description` when present, else the first non-empty string under a
+// salient key, truncated. Empty string => show just the tool name.
+const SALIENT_KEYS = ['description', 'command', 'file_path', 'path', 'pattern', 'query', 'url', 'prompt', 'title'];
+function toolSummary(input: unknown): string {
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    const obj = input as Record<string, unknown>;
+    for (const k of SALIENT_KEYS) {
+      const v = obj[k];
+      if (typeof v === 'string' && v.trim()) {
+        const s = v.trim();
+        return s.length > 120 ? s.slice(0, 117) + '…' : s;
+      }
+    }
+  }
+  return '';
+}
+
 export function ClaudeCodeConversationWidget(props: WidgetProps) {
   const { token } = theme.useToken();
+  const toolVerbosity = ((props.process.widgetData as any)?.toolVerbosity ?? 'description-only') as
+    'silent' | 'description-only' | 'verbose';
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   const localSeqRef = useRef(0);
   const [text, setText] = useState('');
@@ -267,15 +287,18 @@ export function ClaudeCodeConversationWidget(props: WidgetProps) {
             {item.text}
           </div>
         );
-      case 'tool':
+      case 'tool': {
+        if (toolVerbosity === 'silent') return null;
+        const summary = toolVerbosity === 'description-only' ? toolSummary(item.input) : '';
         return (
-          <div key={item.seq} style={{ color: token.colorTextTertiary, fontSize: 12 }}>
+          <div key={item.seq} data-testid="tool-call" style={{ color: token.colorTextTertiary, fontSize: 12 }}>
             <div style={{ fontFamily: 'monospace' }}>
-              running <strong>{item.name}</strong>:
+              running <strong>{item.name}</strong>{summary ? `: ${summary}` : ':'}
             </div>
-            {renderInputKV(item.input, token)}
+            {toolVerbosity === 'verbose' ? renderInputKV(item.input, token) : null}
           </div>
         );
+      }
       case 'permission':
         // Once answered, hide the dialog entirely — the conversation proceeds.
         if (item.answered !== null) return null;

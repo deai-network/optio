@@ -132,4 +132,45 @@ describe('ClaudeCodeConversationWidget', () => {
     expect(url).toBe('/api/widget/db/gm/p1/permission');
     expect(JSON.parse(init.body as string)).toMatchObject({ request_id: 'req-9', behavior: 'allow' });
   });
+
+  function propsV(level: string) {
+    return makeProps({ process: { _id: 'p1', name: 'n', widgetData: { toolVerbosity: level }, status: { state: 'running' } } });
+  }
+  function fireTool(name: string, input: unknown) {
+    fire({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name, input }] } });
+  }
+
+  it('tool verbosity: silent renders nothing for a tool call', () => {
+    render(<ClaudeCodeConversationWidget {...propsV('silent')} />);
+    fireTool('bash', { command: 'ls', description: 'list files' });
+    expect(screen.queryByTestId('tool-call')).toBeNull();
+  });
+
+  it('tool verbosity: description-only shows the description, no input table', () => {
+    render(<ClaudeCodeConversationWidget {...propsV('description-only')} />);
+    fireTool('bash', { command: 'ls -la', description: 'list files' });
+    expect(screen.getByTestId('tool-call').textContent).toContain('list files');
+    expect(screen.queryByText('command')).toBeNull();
+  });
+
+  it('tool verbosity: description-only falls back to a salient field', () => {
+    render(<ClaudeCodeConversationWidget {...propsV('description-only')} />);
+    fireTool('read', { file_path: '/a/b.txt' });
+    expect(screen.getByTestId('tool-call').textContent).toContain('/a/b.txt');
+    expect(screen.queryByText('file_path')).toBeNull();
+  });
+
+  it('tool verbosity: description-only with no salient field shows just the name', () => {
+    render(<ClaudeCodeConversationWidget {...propsV('description-only')} />);
+    fireTool('mystery', { count: 3 });
+    expect(screen.getByTestId('tool-call').textContent).toContain('mystery');
+    expect(screen.queryByText('count')).toBeNull();
+  });
+
+  it('tool verbosity: verbose renders the input key-value table', () => {
+    render(<ClaudeCodeConversationWidget {...propsV('verbose')} />);
+    fireTool('read', { file_path: '/a/b.txt' });
+    expect(screen.getByText('file_path')).toBeTruthy();
+    expect(screen.getByText('/a/b.txt')).toBeTruthy();
+  });
 });
