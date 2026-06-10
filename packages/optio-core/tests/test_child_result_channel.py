@@ -128,3 +128,103 @@ async def test_run_child_task_with_result_sugar(mongo_db):
     await optio.launch_and_wait("parent-3", session_id=None)
     assert seen["result"] == "via-task"
     await optio.shutdown(grace_seconds=0.5)
+
+
+async def test_child_done_without_publish(mongo_db):
+    seen: dict = {}
+
+    async def child_exec(ctx):
+        return  # ends without publishing
+
+    async def parent_exec(ctx):
+        try:
+            await ctx.run_child_with_result(child_exec, "child-np-1", "Child")
+        except ResultNotPublished as e:
+            seen["exc"] = e
+
+    optio = await _make_optio(mongo_db, "chres4")
+    await _define(optio, "parent-4", parent_exec)
+    await optio.launch_and_wait("parent-4", session_id=None)
+    assert seen["exc"].process_id == "child-np-1"
+    assert seen["exc"].state == "done"
+    await optio.shutdown(grace_seconds=0.5)
+
+
+async def test_child_fails_before_publish(mongo_db):
+    seen: dict = {}
+
+    async def child_exec(ctx):
+        raise ValueError("boom")
+
+    async def parent_exec(ctx):
+        try:
+            await ctx.run_child_with_result(child_exec, "child-fail-1", "Child")
+        except ChildProcessFailed as e:
+            seen["exc"] = e
+
+    optio = await _make_optio(mongo_db, "chres5")
+    await _define(optio, "parent-5", parent_exec)
+    await optio.launch_and_wait("parent-5", session_id=None)
+    assert isinstance(seen["exc"].original, ValueError)
+    await optio.shutdown(grace_seconds=0.5)
+
+
+async def test_refused_spawn_when_parent_cancelled(mongo_db):
+    """Parent's cancellation flag is set before spawning: run_child refuses
+    (no process doc), and the wrapper raises ResultNotPublished promptly
+    with state='cancelled' and cleans up its pre-registered future."""
+    seen: dict = {}
+
+    async def child_exec(ctx):
+        ctx.publish_result("never")
+
+    async def parent_exec(ctx):
+        ctx._cancellation_flag.set()  # simulate cancel arriving first
+        try:
+            await asyncio.wait_for(
+                ctx.run_child_with_result(child_exec, "child-ref-1", "Child"),
+                timeout=5,
+            )
+        except ResultNotPublished as e:
+            seen["exc"] = e
+        seen["future_cleaned"] = (
+            "child-ref-1" not in ctx._executor._result_futures
+        )
+
+    optio = await _make_optio(mongo_db, "chres6")
+    await _define(optio, "parent-6", parent_exec)
+    await optio.launch_and_wait("parent-6", session_id=None)
+    assert seen["exc"].state == "cancelled"
+    assert seen["future_cleaned"] is True
+    await optio.shutdown(grace_seconds=0.5)
+
+
+async def test_timeout_keeps_child_running(mongo_db):
+    seen: dict = {}
+
+    async def child_exec(ctx):
+        await asyncio.sleep(0.5)
+        ctx.publish_result("eventually")
+        await asyncio.sleep(0.2)
+
+    async def parent_exec(ctx):
+        try:
+            await ctx.run_child_with_result(
+                child_exec, "child-to-1", "Child", timeout=0.1,
+            )
+        except asyncio.TimeoutError:
+            seen["timed_out"] = True
+        # The child keeps running; the object is retrievable once published.
+        for _ in range(100):
+            obj = ctx._executor.get_published_result("child-to-1")
+            if obj is not None:
+                seen["late"] = obj
+                break
+            await asyncio.sleep(0.02)
+
+    optio = await _make_optio(mongo_db, "chres7")
+    await _define(optio, "parent-7", parent_exec)
+    await optio.launch_and_wait("parent-7", session_id=None)
+    assert seen["timed_out"] is True
+    assert seen["late"] == "eventually"
+    await optio.shutdown(grace_seconds=0.5)
