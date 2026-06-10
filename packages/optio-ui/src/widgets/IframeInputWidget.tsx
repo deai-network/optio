@@ -28,8 +28,15 @@ export function IframeInputWidget(props: WidgetProps) {
     `/${encodeURIComponent(props.prefix)}/${props.process._id}`;
 
   // Auto-focus on mount so the operator can type / drive the TUI immediately.
+  // The sibling ttyd iframe's xterm calls .focus() once it loads — AFTER this
+  // mount effect — yanking focus off the textarea. Re-assert focus on a couple
+  // of short delays so the textarea wins that load-time race.
   useEffect(() => {
     inputRef.current?.focus();
+    const timers = [150, 500, 1000].map((ms) =>
+      setTimeout(() => inputRef.current?.focus(), ms),
+    );
+    return () => timers.forEach(clearTimeout);
   }, []);
 
   // Send a single navigation keystroke (empty-box TUI nav). Best-effort, no
