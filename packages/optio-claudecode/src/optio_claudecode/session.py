@@ -19,6 +19,7 @@ import logging
 import os
 import secrets
 import shlex
+import sys
 import time as _time
 from datetime import datetime, timezone
 from typing import AsyncIterator, Callable
@@ -583,6 +584,35 @@ async def run_claudecode_session(
                 )
                 _trace("finally: capture_seed RAISED")
 
+        # Explicit session capture (on_session_saved): runs BEFORE snapshot
+        # capture, whose workdir-tar step defensively wipes home/.claude.
+        # Same reached-live gate as snapshots; unlike snapshots there is no
+        # credentials guard — the caller owns blob semantics and lifecycle.
+        if config.on_session_saved is not None and launched_handle is not None:
+            _trace("finally: session blob capture START")
+            try:
+                _end_state = (
+                    "cancelled" if cancelled
+                    else "failed" if sys.exc_info()[0] is not None
+                    else "done"
+                )
+                _session_blob_id = await _store_session_blob(
+                    ctx, host,
+                    session_blob_encrypt=config.session_blob_encrypt,
+                )
+                await _call_maybe_async(
+                    config.on_session_saved, _session_blob_id, _end_state,
+                )
+                _trace(
+                    "finally: session blob capture DONE id=%s state=%s",
+                    _session_blob_id, _end_state,
+                )
+            except Exception:
+                _LOG.exception(
+                    "session blob capture failed; callback not fired, "
+                    "teardown continues",
+                )
+
         # Reached-live gate: only capture if claude actually came up.
         # launched_handle is assigned strictly AFTER merge_seed and a
         # successful ttyd/claude launch, so non-None ⟹ the environment was
@@ -903,6 +933,33 @@ async def _rescue_orphan_if_present(
     _LOG.warning("crash-orphan rescue: fresh snapshot captured; orphan killed")
 
 
+async def _store_session_blob(
+    ctx: ProcessContext,
+    host: Host,
+    *,
+    session_blob_encrypt: "Callable[[bytes], bytes] | None",
+):
+    """Tar home/.claude, encrypt, store as a standalone GridFS blob.
+
+    Shared by snapshot capture and the explicit on_session_saved capture.
+    Returns the GridFS file id.
+    """
+    session_bytes = await _archive_home_claude(host)
+    encrypt = session_blob_encrypt or (lambda b: b)
+    payload = encrypt(session_bytes)
+    expected_len = len(payload)
+    async with ctx.store_blob("session") as swriter:
+        await swriter.write(payload)
+        session_blob_id = swriter.file_id
+        written = getattr(swriter, "_position", None)
+        if written is not None and written != expected_len:
+            raise RuntimeError(
+                f"session blob short-write: expected {expected_len} bytes, "
+                f"GridIn._position is {written}"
+            )
+    return session_blob_id
+
+
 async def _capture_snapshot(
     ctx: ProcessContext,
     host: Host,
@@ -929,29 +986,12 @@ async def _capture_snapshot(
         )
         return
 
-    # 1. tar the sensitive subtree into bytes.
-    _trace("capture: archive_home_claude START")
-    session_bytes = await _archive_home_claude(host)
-    _trace("capture: archive_home_claude DONE bytes=%d", len(session_bytes))
-
-    # 2. encrypt (or plaintext fallthrough).
-    encrypt = session_blob_encrypt or (lambda b: b)
-    payload = encrypt(session_bytes)
-    expected_len = len(payload)
-    _trace("capture: encrypt DONE payload_bytes=%d", expected_len)
-
-    # 3. write the session blob.
-    _trace("capture: store_blob(session) START")
-    async with ctx.store_blob("session") as swriter:
-        await swriter.write(payload)
-        session_blob_id = swriter.file_id
-        written = getattr(swriter, "_position", None)
-        if written is not None and written != expected_len:
-            raise RuntimeError(
-                f"snapshot session blob short-write: expected "
-                f"{expected_len} bytes, GridIn._position is {written}"
-            )
-    _trace("capture: store_blob(session) DONE id=%s", session_blob_id)
+    # 1-3. tar the sensitive subtree, encrypt, write the session blob.
+    _trace("capture: store_session_blob START")
+    session_blob_id = await _store_session_blob(
+        ctx, host, session_blob_encrypt=session_blob_encrypt,
+    )
+    _trace("capture: store_session_blob DONE id=%s", session_blob_id)
 
     # 4. defensive wipe so the workdir tar cannot carry sensitive state.
     _trace("capture: rm -rf home/.claude START")
