@@ -11,6 +11,7 @@ from optio_host import (
 
 from optio_claudecode.session import create_claudecode_task, run_claudecode_session
 from optio_claudecode.types import (
+    AllowedDir,
     ClaudeCodeTaskConfig,
     DeliverableCallback,
     HookCallback,
@@ -33,6 +34,7 @@ _logging.getLogger("asyncssh").setLevel(_logging.WARNING)
 __all__ = [
     "create_claudecode_task",
     "run_claudecode_session",
+    "AllowedDir",
     "ClaudeCodeTaskConfig",
     "DeliverableCallback",
     "HookCallback",

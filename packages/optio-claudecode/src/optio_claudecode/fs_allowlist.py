@@ -46,12 +46,17 @@ def build_grant_flags(
     workdir: str,
     claude_cache_dir: str,
     extra_allowed_dirs: list[AllowedDir] | None,
+    host_home: str | None = None,
 ) -> list[str]:
     """Return the ordered list of claustrum grant flags for a launch.
 
     ``workdir`` (the per-task tree, incl. the isolated home) is granted rwx so
     claude tools may write and execute scripts. ``claude_cache_dir`` (where the
     real claude+node binaries live, outside the workdir) is granted read+exec.
+
+    Grants reach claustrum verbatim (no shell between), and the claude process
+    runs under an isolated $HOME — so a caller extra with a leading ``~/`` is
+    expanded against ``host_home`` (the REAL host home) here.
     """
     flags: list[str] = []
     for flag, path in _BASELINE:
@@ -59,5 +64,8 @@ def build_grant_flags(
     flags += ["--rwx", workdir.rstrip("/")]
     flags += ["--rox", claude_cache_dir.rstrip("/")]
     for ad in extra_allowed_dirs or []:
-        flags += [f"--{ad.mode}", ad.path]
+        path = ad.path
+        if host_home and (path == "~" or path.startswith("~/")):
+            path = host_home.rstrip("/") + path[1:]
+        flags += [f"--{ad.mode}", path]
     return flags

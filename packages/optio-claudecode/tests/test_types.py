@@ -118,6 +118,13 @@ def test_extra_allowed_dirs_ok():
     cfg = ClaudeCodeTaskConfig(
         consumer_instructions="x",
         delivery_type="d",
-        extra_allowed_dirs=[AllowedDir(path="/data", mode="ro"), AllowedDir(path="/scratch", mode="rw")],
+        extra_allowed_dirs=[
+            AllowedDir(path="/data", mode="ro"),
+            AllowedDir(path="/scratch", mode="rw"),
+            # exec-bearing modes: tool venvs / binaries outside the workdir
+            AllowedDir(path="~/analysis-venv", mode="rox"),
+            AllowedDir(path="/build", mode="rwx"),
+        ],
     )
     assert cfg.extra_allowed_dirs[0].path == "/data"
+    assert cfg.extra_allowed_dirs[2].mode == "rox"

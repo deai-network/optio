@@ -33,11 +33,24 @@ def test_compose_omits_resume_section_when_disabled():
 
 
 def test_fs_isolation_note_present_only_when_dirs_given():
-    from optio_claudecode.prompt import compose_agents_md
-    with_dirs = compose_agents_md("Do it.", fs_isolation_dirs=["/wd", "/data"])
+    with_dirs = compose_agents_md(
+        "Do it.", fs_isolation_dirs=[("/wd", "rwx"), ("/data", "rw")],
+    )
     assert "Filesystem access" in with_dirs
     assert "`/wd`" in with_dirs and "`/data`" in with_dirs
     assert "permission error" in with_dirs
     # Off by default: no note, and the instruction body is untouched.
     without = compose_agents_md("Do it.")
     assert "Filesystem access" not in without
+
+
+def test_fs_isolation_note_marks_read_only_grants():
+    # ro/rox grants must not be presented as writable — the agent plans
+    # file placement from this note.
+    body = compose_agents_md(
+        "Do it.",
+        fs_isolation_dirs=[("/wd", "rwx"), ("/venv", "rox"), ("/conf", "ro")],
+    )
+    assert "`/venv` (read-only)" in body
+    assert "`/conf` (read-only)" in body
+    assert "`/wd` (read-only)" not in body

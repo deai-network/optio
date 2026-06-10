@@ -131,7 +131,7 @@ def compose_agents_md(
     supports_resume: bool = True,
     host_protocol: bool = True,
     omit_task_framing: bool = False,
-    fs_isolation_dirs: list[str] | None = None,
+    fs_isolation_dirs: list[tuple[str, str]] | None = None,
 ) -> str:
     """Render <workdir>/CLAUDE.md for an optio-claudecode task.
 
@@ -153,12 +153,17 @@ def compose_agents_md(
     if fs_isolation_dirs:
         # The session is sandboxed (claustrum/Landlock); tell the agent its
         # bounds so EACCES on a stray path isn't a mystery. Conditional on
-        # fs_isolation being enabled (caller passes None otherwise).
-        allowed = ", ".join(f"`{d}`" for d in fs_isolation_dirs)
+        # fs_isolation being enabled (caller passes None otherwise). Entries
+        # are (path, mode) with claustrum modes; ro/rox grants are flagged
+        # read-only so the agent doesn't plan to write there.
+        allowed = ", ".join(
+            f"`{d}` (read-only)" if m in ("ro", "rox") else f"`{d}`"
+            for d, m in fs_isolation_dirs
+        )
         consumer_instructions = (
             consumer_instructions.rstrip()
             + "\n\n**Filesystem access:** This session is filesystem-isolated — "
-            "you can read and write files within these directories (and their "
+            "you can access files within these directories (and their "
             f"subdirectories): {allowed}. Files outside them are not accessible "
             "(reads and writes will fail with a permission error)."
         )
