@@ -228,3 +228,34 @@ async def test_timeout_keeps_child_running(mongo_db):
     assert seen["timed_out"] is True
     assert seen["late"] == "eventually"
     await optio.shutdown(grace_seconds=0.5)
+
+
+async def test_parallel_children_distinct_pids(mongo_db):
+    """Two concurrent result-bearing children with distinct process_ids:
+    both results delivered, no registry collision."""
+    release = asyncio.Event()
+    seen: dict = {}
+
+    def make_child(tag):
+        async def child_exec(ctx):
+            ctx.publish_result(tag)
+            await release.wait()
+        return child_exec
+
+    async def parent_exec(ctx):
+        h1, h2 = await asyncio.gather(
+            ctx.run_child_with_result(make_child("a"), "child-par-a", "A"),
+            ctx.run_child_with_result(make_child("b"), "child-par-b", "B"),
+        )
+        seen["results"] = {h1.result, h2.result}
+        release.set()
+        o1 = await h1.outcome()
+        o2 = await h2.outcome()
+        seen["states"] = {o1.state, o2.state}
+
+    optio = await _make_optio(mongo_db, "chres8")
+    await _define(optio, "parent-8", parent_exec)
+    await optio.launch_and_wait("parent-8", session_id=None)
+    assert seen["results"] == {"a", "b"}
+    assert seen["states"] == {"done"}
+    await optio.shutdown(grace_seconds=0.5)
