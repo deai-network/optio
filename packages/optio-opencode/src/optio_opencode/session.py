@@ -97,7 +97,11 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
     """Execute function body for one optio-opencode task instance."""
     # --- per-task filesystem layout ---------------------------------------
     host: Host = _build_host(config, ctx.process_id)
-    protocol = get_protocol(browser="suppress")
+    protocol = get_protocol(
+        browser="suppress",
+        client_messages=config.use_client_messages,
+        caller_messages=config.on_caller_message is not None,
+    )
 
     instructions = config.consumer_instructions
     omit_task_framing = False
@@ -502,6 +506,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             body=_opencode_body,
             prepare=_prepare,
             on_deliverable=config.on_deliverable,
+            on_caller_message=config.on_caller_message,
             after_execute=config.after_execute,
             protocol=protocol,
             agent_sender=_agent_sender,

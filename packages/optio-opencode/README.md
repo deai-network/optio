@@ -50,6 +50,18 @@ task = create_opencode_task(config)
 
 Set `ssh=None` for local subprocess mode.
 
+## Messages
+
+- `use_client_messages` (bool, default `False`) — enable the `CLIENT_MESSAGE:`
+  log keyword: the agent can push `{keyword, data}` messages to the browser
+  session that launched the task (surfaced via optio-ui's `onClientMessage`).
+- `on_caller_message` (async callback, default `None`) — enable the
+  `CALLER_MESSAGE:` log keyword: the agent can push `{keyword, data}` messages
+  to your application. Signature `(hook_ctx, keyword, data) -> str | None`;
+  a non-None return is sent back to the agent as feedback. Keywords that are
+  not enabled are absent from both the parser and the agent-facing protocol
+  documentation.
+
 ## License
 
 Apache-2.0.

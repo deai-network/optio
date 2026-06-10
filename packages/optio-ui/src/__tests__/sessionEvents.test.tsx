@@ -61,14 +61,14 @@ describe('sessionId lifecycle', () => {
 describe('dispatch by type', () => {
   it('routes attention and domain events to the right callbacks, deduped by requestId', () => {
     const onAttention = vi.fn();
-    const onDomainMessage = vi.fn();
-    startSessionEvents('', 'optio', undefined, { onAttention, onDomainMessage });
+    const onClientMessage = vi.fn();
+    startSessionEvents('', 'optio', undefined, { onAttention, onClientMessage });
     const es = FakeES.instances.at(-1)!;
     es.emit({
       type: 'session-events', processId: 'pid-1',
       events: [
         { requestId: 'a1', type: 'attention', reason: 'help' },
-        { requestId: 'd1', type: 'domain', keyword: 'k', data: { n: 1 } },
+        { requestId: 'd1', type: 'client', keyword: 'k', data: { n: 1 } },
       ],
     });
     // Re-delivery of the same events (next poll tick) must not re-fire.
@@ -78,7 +78,7 @@ describe('dispatch by type', () => {
     });
     expect(onAttention).toHaveBeenCalledTimes(1);
     expect(onAttention).toHaveBeenCalledWith('pid-1', 'help');
-    expect(onDomainMessage).toHaveBeenCalledTimes(1);
-    expect(onDomainMessage).toHaveBeenCalledWith('pid-1', 'k', { n: 1 });
+    expect(onClientMessage).toHaveBeenCalledTimes(1);
+    expect(onClientMessage).toHaveBeenCalledWith('pid-1', 'k', { n: 1 });
   });
 });

@@ -3,16 +3,18 @@
 This module lives next to ``parser.py`` so the prose that teaches an agent
 how to speak the protocol cannot drift from the regexes that enforce it.
 
-``build_log_channel_prompt(browser)`` assembles the mode-specific block:
-the ``BROWSER:`` keyword is documented only for ``redirect``; a trailing
-"no browser here" paragraph is appended only for ``suppress``. All other
-keywords (``STATUS:`` / ``DELIVERABLE:`` / ``DONE`` / ``ERROR`` /
-``ATTENTION:`` / ``DOMAIN_MESSAGE:``) are documented in every mode.
+``build_log_channel_prompt(features)`` assembles the feature-specific block:
+the ``BROWSER:`` keyword is documented only for ``browser="redirect"``; a
+trailing "no browser here" paragraph is appended only for
+``browser="suppress"``; ``CLIENT_MESSAGE:`` / ``CALLER_MESSAGE:`` are
+documented only when the corresponding ``ProtocolFeatures`` flag is set.
+The core keywords (``STATUS:`` / ``DELIVERABLE:`` / ``DONE`` / ``ERROR`` /
+``ATTENTION:``) are documented in every mode.
 """
 
 from __future__ import annotations
 
-from optio_agents.browser_shims import BrowserMode
+from optio_agents.protocol.features import ProtocolFeatures
 
 # The push notification a backend sends a resumed agent over the channel.
 # Shared so the doc prose and both backends agree on one string.
@@ -39,12 +41,21 @@ _BROWSER_BULLET = """- `BROWSER:` — ask the operator's browser to open a URL, 
   human to visit a page (e.g. an auth/login URL).
 """
 
-_TAIL_BULLETS = """- `ATTENTION:` — request human attention with a short reason, e.g.
+_ATTENTION_BULLET = """- `ATTENTION:` — request human attention with a short reason, e.g.
   `ATTENTION: waiting for your approval`.
-- `DOMAIN_MESSAGE:` — push an application-specific message: a keyword
-  token followed by single-line JSON, e.g.
-  `DOMAIN_MESSAGE: build-finished {"artifact":"app.zip"}`. The JSON must
-  be valid and on one line; malformed JSON is dropped.
+"""
+
+_CLIENT_MESSAGE_BULLET = """- `CLIENT_MESSAGE:` — push a message to the user interface of the
+  application that launched you: a keyword token followed by single-line
+  JSON, e.g. `CLIENT_MESSAGE: build-finished {"artifact":"app.zip"}`.
+  The JSON must be valid and on one line; malformed JSON is dropped.
+"""
+
+_CALLER_MESSAGE_BULLET = """- `CALLER_MESSAGE:` — send a message to the controlling application:
+  a keyword token followed by single-line JSON, e.g.
+  `CALLER_MESSAGE: tests-passed {"suite":"unit"}`. The JSON must be valid
+  and on one line; malformed JSON is dropped. The application may answer
+  with a `System:` message on your input channel.
 """
 
 _SUPPRESS_NOTE = """
@@ -94,8 +105,21 @@ accepted. Handle each reply by its content:
 """
 
 
-def build_log_channel_prompt(browser: BrowserMode = "ignore") -> str:
-    """Build the keyword-protocol documentation block for ``browser`` mode."""
-    browser_bullet = _BROWSER_BULLET if browser == "redirect" else ""
-    suppress_note = _SUPPRESS_NOTE if browser == "suppress" else ""
-    return _HEADER + browser_bullet + _TAIL_BULLETS + suppress_note + _RULES + _FEEDBACK
+def build_log_channel_prompt(
+    features: ProtocolFeatures = ProtocolFeatures(),
+) -> str:
+    """Build the keyword-protocol documentation block for ``features``."""
+    browser_bullet = _BROWSER_BULLET if features.browser == "redirect" else ""
+    client_bullet = _CLIENT_MESSAGE_BULLET if features.client_messages else ""
+    caller_bullet = _CALLER_MESSAGE_BULLET if features.caller_messages else ""
+    suppress_note = _SUPPRESS_NOTE if features.browser == "suppress" else ""
+    return (
+        _HEADER
+        + browser_bullet
+        + _ATTENTION_BULLET
+        + client_bullet
+        + caller_bullet
+        + suppress_note
+        + _RULES
+        + _FEEDBACK
+    )

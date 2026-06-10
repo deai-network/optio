@@ -9,7 +9,7 @@ Four tasks exercising the three new capabilities end-to-end:
     shim → ``BROWSER:`` marker → parser → ``ctx.request_browser_open`` with no
     claude/opencode involved.
   - ``need-attention-demo``: ``ctx.need_attention`` (session-scoped).
-  - ``domain-message-demo``: ``ctx.domain_message`` (session-scoped).
+  - ``client-message-demo``: ``ctx.client_message`` (session-scoped).
 """
 
 from __future__ import annotations
@@ -75,13 +75,13 @@ async def _need_attention_demo(ctx) -> None:
     ctx.report_progress(100, f"Attention requested (requestId={rid})")
 
 
-async def _domain_message_demo(ctx) -> None:
-    ctx.report_progress(0, "Sending a domain message")
-    rid = await ctx.domain_message(
+async def _client_message_demo(ctx) -> None:
+    ctx.report_progress(0, "Sending a client message")
+    rid = await ctx.client_message(
         "demo-event",
         {"severity": "info", "detail": "hello from the demo task"},
     )
-    ctx.report_progress(100, f"Domain message sent (requestId={rid})")
+    ctx.report_progress(100, f"Client message sent (requestId={rid})")
 
 
 def get_tasks() -> list[TaskInstance]:
@@ -117,12 +117,12 @@ def get_tasks() -> list[TaskInstance]:
             ),
         ),
         TaskInstance(
-            execute=_domain_message_demo,
-            process_id="domain-message-demo",
-            name="Send a domain message",
+            execute=_client_message_demo,
+            process_id="client-message-demo",
+            name="Send a client message",
             description=(
-                "Calls ctx.domain_message(keyword, data). Session-scoped; the "
-                "dashboard surfaces it via onDomainMessage (console/toast)."
+                "Calls ctx.client_message(keyword, data). Session-scoped; the "
+                "dashboard surfaces it via onClientMessage (console/toast)."
             ),
         ),
     ]

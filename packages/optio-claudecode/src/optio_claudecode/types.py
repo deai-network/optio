@@ -10,7 +10,11 @@ from typing import Any, Awaitable, Callable, Literal
 
 from bson import ObjectId
 
-from optio_agents.protocol.session import DeliverableCallback, HookCallback
+from optio_agents.protocol.session import (
+    CallerMessageCallback,
+    DeliverableCallback,
+    HookCallback,
+)
 from optio_host.types import SSHConfig
 
 
@@ -33,6 +37,7 @@ class AllowedDir:
 
 
 __all__ = [
+    "CallerMessageCallback",
     "DeliverableCallback",
     "HookCallback",
     "SSHConfig",
@@ -129,6 +134,14 @@ class ClaudeCodeTaskConfig:
     before_execute: HookCallback | None = None
     after_execute: HookCallback | None = None
     on_deliverable: DeliverableCallback | None = None
+    # Enable the CLIENT_MESSAGE keyword: agent-pushed messages routed to the
+    # originating browser session's frontend (stored as sessionEvents,
+    # surfaced via optio-ui's onClientMessage). Off by default.
+    use_client_messages: bool = False
+    # Enable the CALLER_MESSAGE keyword: agent-pushed messages routed to this
+    # callback in the embedding application. A non-None return value is sent
+    # back to the agent as feedback. Off (None) by default.
+    on_caller_message: CallerMessageCallback | None = None
 
     # --- resume surface (mirrors OpencodeTaskConfig) --------------------
     supports_resume: bool = True

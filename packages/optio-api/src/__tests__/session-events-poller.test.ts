@@ -65,7 +65,7 @@ describe('createSessionEventsPoller', () => {
     });
     poller.start();
     await new Promise((r) => setTimeout(r, 1100));
-    await coll.updateOne({ _id: id }, { $push: { sessionEvents: { requestId: 'r2', type: 'domain', keyword: 'k', data: 1 } } });
+    await coll.updateOne({ _id: id }, { $push: { sessionEvents: { requestId: 'r2', type: 'client', keyword: 'k', data: 1 } } });
     await new Promise((r) => setTimeout(r, 1100));
     poller.stop();
     const msgs = events.filter((e) => e.type === 'session-events');

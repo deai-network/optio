@@ -7,6 +7,7 @@ import pytest
 
 from optio_host.host import LocalHost
 from optio_agents.browser_shims import prepare_browser_shims
+from optio_agents.protocol.features import ProtocolFeatures
 from optio_agents.protocol.parser import BrowserEvent, parse_log_line
 
 
@@ -57,7 +58,7 @@ async def test_redirect_captures_browser_marker_end_to_end(tmp_path):
     log = open(os.path.join(host.workdir, "optio.log")).read()
     lines = [ln for ln in log.splitlines() if ln.startswith("BROWSER:")]
     assert len(lines) == 1
-    ev = parse_log_line(lines[0])
+    ev = parse_log_line(lines[0], features=ProtocolFeatures(browser="redirect"))
     assert isinstance(ev, BrowserEvent)
     # Shim quotes the URL for transport; the parser strips them to the bare URL.
     assert ev.url == 'https://example.com/login'

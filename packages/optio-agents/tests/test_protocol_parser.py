@@ -1,10 +1,12 @@
 import pytest
 
+from optio_agents.protocol.features import ProtocolFeatures
 from optio_agents.protocol.parser import (
     AttentionEvent,
     BrowserEvent,
+    CallerMessageEvent,
+    ClientMessageEvent,
     DeliverableEvent,
-    DomainMessageEvent,
     DoneEvent,
     ErrorEvent,
     StatusEvent,
@@ -180,17 +182,23 @@ def test_relativize_outside_workdir_rejected(tmp_workdir):
         relativize_deliverable_path("/etc/passwd", tmp_workdir)
 
 
-# ---- BROWSER / ATTENTION / DOMAIN_MESSAGE ----
+# ---- BROWSER / ATTENTION / CLIENT_MESSAGE / CALLER_MESSAGE ----
 
 def test_browser_event():
-    ev = parse_log_line('BROWSER: "https://example.com/login"')
+    ev = parse_log_line(
+        'BROWSER: "https://example.com/login"',
+        features=ProtocolFeatures(browser="redirect"),
+    )
     assert isinstance(ev, BrowserEvent)
     # The shim's delimiter quotes are stripped — the consumer opens the bare URL.
     assert ev.url == 'https://example.com/login'
 
 
 def test_browser_event_unquoted():
-    ev = parse_log_line("BROWSER: https://example.com")
+    ev = parse_log_line(
+        "BROWSER: https://example.com",
+        features=ProtocolFeatures(browser="redirect"),
+    )
     assert isinstance(ev, BrowserEvent)
     assert ev.url == "https://example.com"
 
@@ -201,36 +209,64 @@ def test_attention_event():
     assert ev.reason == "please approve"
 
 
-def test_domain_message_event():
-    ev = parse_log_line('DOMAIN_MESSAGE: build-done {"artifact": "app.zip"}')
-    assert isinstance(ev, DomainMessageEvent)
+_MSGS_ON = ProtocolFeatures(client_messages=True, caller_messages=True)
+
+
+def test_client_message_event():
+    ev = parse_log_line(
+        'CLIENT_MESSAGE: build-done {"artifact": "app.zip"}', features=_MSGS_ON,
+    )
+    assert isinstance(ev, ClientMessageEvent)
     assert ev.keyword == "build-done"
     assert ev.data == {"artifact": "app.zip"}
 
 
-def test_domain_message_malformed_json_drops_to_unknown():
-    ev = parse_log_line("DOMAIN_MESSAGE: k {not valid json}")
+def test_caller_message_event():
+    ev = parse_log_line(
+        'CALLER_MESSAGE: tests-passed {"suite": "unit"}', features=_MSGS_ON,
+    )
+    assert isinstance(ev, CallerMessageEvent)
+    assert ev.keyword == "tests-passed"
+    assert ev.data == {"suite": "unit"}
+
+
+def test_message_keywords_disabled_by_default():
+    for line in ('CLIENT_MESSAGE: k {"n": 1}', 'CALLER_MESSAGE: k {"n": 1}'):
+        ev = parse_log_line(line)
+        assert isinstance(ev, UnknownLine)
+        assert ev.text == line
+
+
+def test_message_malformed_json_drops_to_unknown():
+    for line in ("CLIENT_MESSAGE: k {not json}", "CALLER_MESSAGE: k {not json}"):
+        ev = parse_log_line(line, features=_MSGS_ON)
+        assert isinstance(ev, UnknownLine)
+
+
+def test_domain_message_keyword_is_gone():
+    # Removal regression pin: the old keyword is inert even with messages on.
+    ev = parse_log_line('DOMAIN_MESSAGE: k {"n": 1}', features=_MSGS_ON)
     assert isinstance(ev, UnknownLine)
 
 
-# ---- recognize_browser toggle ----
+# ---- feature toggles ----
 
-def test_browser_recognized_by_default():
+def test_browser_not_recognized_by_default():
+    # Conservative default: ProtocolFeatures() has browser="ignore".
     ev = parse_log_line("BROWSER: https://example.com")
-    assert isinstance(ev, BrowserEvent)
-
-
-def test_browser_recognized_when_enabled():
-    ev = parse_log_line("BROWSER: https://example.com", recognize_browser=True)
-    assert isinstance(ev, BrowserEvent)
-
-
-def test_browser_falls_through_to_unknown_when_disabled():
-    ev = parse_log_line("BROWSER: https://example.com", recognize_browser=False)
     assert isinstance(ev, UnknownLine)
     assert ev.text == "BROWSER: https://example.com"
 
 
-def test_attention_still_recognized_when_browser_disabled():
-    ev = parse_log_line("ATTENTION: look", recognize_browser=False)
-    assert isinstance(ev, AttentionEvent)
+def test_browser_recognized_under_redirect():
+    ev = parse_log_line(
+        "BROWSER: https://example.com",
+        features=ProtocolFeatures(browser="redirect"),
+    )
+    assert isinstance(ev, BrowserEvent)
+
+
+def test_attention_recognized_in_every_mode():
+    for features in (ProtocolFeatures(), ProtocolFeatures(browser="redirect")):
+        ev = parse_log_line("ATTENTION: ping", features=features)
+        assert isinstance(ev, AttentionEvent)

@@ -38,16 +38,16 @@ async def test_append_browser_open_request(mongo_db):
 
 
 @pytest.mark.asyncio
-async def test_append_session_event_attention_and_domain(mongo_db):
+async def test_append_session_event_attention_and_client(mongo_db):
     async def noop(ctx):
         pass
     proc = await upsert_process(mongo_db, "test", TaskInstance(execute=noop, process_id="s1", name="S1"))
     r1 = await append_session_event(mongo_db, "test", proc["_id"], {"type": "attention", "reason": "help"})
-    r2 = await append_session_event(mongo_db, "test", proc["_id"], {"type": "domain", "keyword": "k", "data": {"n": 1}})
+    r2 = await append_session_event(mongo_db, "test", proc["_id"], {"type": "client", "keyword": "k", "data": {"n": 1}})
     doc = await mongo_db["test_processes"].find_one({"_id": proc["_id"]})
     assert doc["sessionEvents"] == [
         {"requestId": r1, "type": "attention", "reason": "help"},
-        {"requestId": r2, "type": "domain", "keyword": "k", "data": {"n": 1}},
+        {"requestId": r2, "type": "client", "keyword": "k", "data": {"n": 1}},
     ]
 
 
@@ -63,17 +63,17 @@ async def test_ctx_request_browser_open(mongo_db):
 
 
 @pytest.mark.asyncio
-async def test_ctx_need_attention_and_domain_message(mongo_db):
+async def test_ctx_need_attention_and_client_message(mongo_db):
     async def noop(ctx):
         pass
     proc = await upsert_process(mongo_db, "test", TaskInstance(execute=noop, process_id="c2", name="C2"))
     ctx = _ctx(mongo_db, proc)
     ra = await ctx.need_attention("look here")
-    rd = await ctx.domain_message("alert", {"level": "high"})
+    rd = await ctx.client_message("alert", {"level": "high"})
     doc = await mongo_db["test_processes"].find_one({"_id": proc["_id"]})
     assert doc["sessionEvents"] == [
         {"requestId": ra, "type": "attention", "reason": "look here"},
-        {"requestId": rd, "type": "domain", "keyword": "alert", "data": {"level": "high"}},
+        {"requestId": rd, "type": "client", "keyword": "alert", "data": {"level": "high"}},
     ]
 
 

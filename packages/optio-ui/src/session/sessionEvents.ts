@@ -14,11 +14,11 @@ const SESSION_STORAGE_KEY = 'optioSessionId';
 
 type SessionEvent =
   | { requestId: string; type: 'attention'; reason: string }
-  | { requestId: string; type: 'domain'; keyword: string; data: unknown };
+  | { requestId: string; type: 'client'; keyword: string; data: unknown };
 
 export interface SessionEventCallbacks {
   onAttention?: (processId: string, reason: string) => void;
-  onDomainMessage?: (processId: string, keyword: string, data: unknown) => void;
+  onClientMessage?: (processId: string, keyword: string, data: unknown) => void;
 }
 
 let _sessionId: string | null = null;
@@ -84,8 +84,8 @@ function connect() {
         _seen.add(ev.requestId);
         if (ev.type === 'attention') {
           _callbacks.onAttention?.(processId, ev.reason);
-        } else if (ev.type === 'domain') {
-          _callbacks.onDomainMessage?.(processId, ev.keyword, ev.data);
+        } else if (ev.type === 'client') {
+          _callbacks.onClientMessage?.(processId, ev.keyword, ev.data);
         }
       }
     } catch { /* ignore malformed */ }
@@ -108,7 +108,7 @@ export function startSessionEvents(
   // Activate only when there's a handler AND the instance is known. A missing
   // prefix means the upstream resolver hasn't decided yet — wait (deactivate),
   // do not guess a default.
-  const active = Boolean((callbacks.onAttention || callbacks.onDomainMessage) && prefix);
+  const active = Boolean((callbacks.onAttention || callbacks.onClientMessage) && prefix);
   const unchanged =
     _eventSource && _baseUrl === baseUrl && _prefix === prefix && _database === database;
   _baseUrl = baseUrl;
@@ -132,7 +132,7 @@ export function resetSession(): void {
     sessionStorage.setItem(SESSION_STORAGE_KEY, _sessionId);
   } catch { /* ignore */ }
   _seen.clear();
-  if (_callbacks.onAttention || _callbacks.onDomainMessage) connect();
+  if (_callbacks.onAttention || _callbacks.onClientMessage) connect();
   else closeStream();
 }
 

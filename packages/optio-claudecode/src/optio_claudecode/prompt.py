@@ -12,7 +12,7 @@ from optio_agents.prompt import (
     compose_agents_md as _compose_agents_md_host,
     downloadables_block,
 )
-from optio_agents.protocol import build_log_channel_prompt
+from optio_agents.protocol import ProtocolFeatures, build_log_channel_prompt
 
 
 __all__ = [
@@ -175,7 +175,7 @@ def compose_agents_md(
         )
     if host_protocol:
         if documentation is None:
-            documentation = build_log_channel_prompt("redirect")
+            documentation = build_log_channel_prompt(ProtocolFeatures(browser="redirect"))
     else:
         documentation = None
     resume_section = _render_resume_section(workdir_exclude) if supports_resume else None

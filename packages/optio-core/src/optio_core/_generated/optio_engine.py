@@ -6,14 +6,56 @@ from clamator_protocol import ClamatorClient, Contract, MethodEntry
 
 from typing import Any, Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, RootModel
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, RootModel, constr
+
+
+class LaunchFilter(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    and_: list[Any] = Field(..., alias="AND", min_length=1)
+
+
+class LaunchFilter1(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    or_: list[Any] = Field(..., alias="OR", min_length=1)
+
+
+class LaunchFilter2(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    not_: Any = Field(..., alias="NOT")
+
+
+class LaunchFilter3(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    eq: str | float | bool | None = None
+    ne: str | float | bool | None = None
+    in_: list[str | float | bool | None] | None = Field(None, alias="in")
+    nin: list[str | float | bool | None] | None = None
+    exists: bool | None = None
+    gt: str | float | bool | None = None
+    gte: str | float | bool | None = None
+    lt: str | float | bool | None = None
+    lte: str | float | bool | None = None
 
 
 class BlockLaunchesParams(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    launch_filter: dict[str, Any] = Field(..., alias="launchFilter")
+    launch_filter: (
+        LaunchFilter
+        | LaunchFilter1
+        | LaunchFilter2
+        | dict[constr(pattern=r"^[^.$]+(\.[^.$]+)*$"), LaunchFilter3]
+        | dict[constr(pattern=r"^[^.$]+(\.[^.$]+)*$"), str | float | bool | None]
+    ) = Field(..., alias="launchFilter")
     reason: str | None = None
 
 
@@ -109,7 +151,7 @@ class SessionEvents1(BaseModel):
         extra="forbid",
     )
     request_id: str = Field(..., alias="requestId")
-    type: Literal["domain"]
+    type: Literal["client"]
     keyword: str
     data: Any | None = None
 
@@ -240,11 +282,33 @@ class DismissResult(RootModel[DismissResult1 | DismissResult2]):
     root: DismissResult1 | DismissResult2
 
 
+class MetadataFilter(LaunchFilter):
+    pass
+
+
+class MetadataFilter1(LaunchFilter1):
+    pass
+
+
+class MetadataFilter2(LaunchFilter2):
+    pass
+
+
+class MetadataFilter3(LaunchFilter3):
+    pass
+
+
 class GroupCancelParams(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    metadata_filter: dict[str, Any] = Field(..., alias="metadataFilter")
+    metadata_filter: (
+        MetadataFilter
+        | MetadataFilter1
+        | MetadataFilter2
+        | dict[constr(pattern=r"^[^.$]+(\.[^.$]+)*$"), MetadataFilter3]
+        | dict[constr(pattern=r"^[^.$]+(\.[^.$]+)*$"), str | float | bool | None]
+    ) = Field(..., alias="metadataFilter")
     block_new_launches: bool | None = Field(None, alias="blockNewLaunches")
     persist: bool | None = None
     reason: str | None = None
@@ -271,8 +335,37 @@ class GroupCancelResult(RootModel[GroupCancelResult1 | GroupCancelResult2]):
     root: GroupCancelResult1 | GroupCancelResult2
 
 
-class GroupCancelAndWaitParams(GroupCancelParams):
+class MetadataFilter4(LaunchFilter):
     pass
+
+
+class MetadataFilter5(LaunchFilter1):
+    pass
+
+
+class MetadataFilter6(LaunchFilter2):
+    pass
+
+
+class MetadataFilter7(LaunchFilter3):
+    pass
+
+
+class GroupCancelAndWaitParams(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    metadata_filter: (
+        MetadataFilter4
+        | MetadataFilter5
+        | MetadataFilter6
+        | dict[constr(pattern=r"^[^.$]+(\.[^.$]+)*$"), MetadataFilter7]
+        | dict[constr(pattern=r"^[^.$]+(\.[^.$]+)*$"), str | float | bool | None]
+    ) = Field(..., alias="metadataFilter")
+    block_new_launches: bool | None = Field(None, alias="blockNewLaunches")
+    persist: bool | None = None
+    reason: str | None = None
+    purge_records: bool | None = Field(None, alias="purgeRecords")
 
 
 class GroupCancelAndWaitResult1(GroupCancelResult1):
@@ -367,19 +460,64 @@ class LaunchResult(RootModel[LaunchResult1 | LaunchResult2]):
     root: LaunchResult1 | LaunchResult2
 
 
+class MetadataFilter8(LaunchFilter):
+    pass
+
+
+class MetadataFilter9(LaunchFilter1):
+    pass
+
+
+class MetadataFilter10(LaunchFilter2):
+    pass
+
+
+class MetadataFilter11(LaunchFilter3):
+    pass
+
+
 class ResyncParams(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
     clean: bool | None = None
-    metadata_filter: dict[str, Any] | None = Field(None, alias="metadataFilter")
+    metadata_filter: (
+        MetadataFilter8
+        | MetadataFilter9
+        | MetadataFilter10
+        | dict[constr(pattern=r"^[^.$]+(\.[^.$]+)*$"), MetadataFilter11]
+        | dict[constr(pattern=r"^[^.$]+(\.[^.$]+)*$"), str | float | bool | None]
+        | None
+    ) = Field(None, alias="metadataFilter")
+
+
+class LaunchFilter4(LaunchFilter):
+    pass
+
+
+class LaunchFilter5(LaunchFilter1):
+    pass
+
+
+class LaunchFilter6(LaunchFilter2):
+    pass
+
+
+class LaunchFilter7(LaunchFilter3):
+    pass
 
 
 class UnblockLaunchesParams(BaseModel):
     model_config = ConfigDict(
         extra="forbid",
     )
-    launch_filter: dict[str, Any] = Field(..., alias="launchFilter")
+    launch_filter: (
+        LaunchFilter4
+        | LaunchFilter5
+        | LaunchFilter6
+        | dict[constr(pattern=r"^[^.$]+(\.[^.$]+)*$"), LaunchFilter7]
+        | dict[constr(pattern=r"^[^.$]+(\.[^.$]+)*$"), str | float | bool | None]
+    ) = Field(..., alias="launchFilter")
 
 
 class UnblockLaunchesResult(BaseModel):

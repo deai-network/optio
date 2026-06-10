@@ -1,5 +1,7 @@
 # Protocol Variation API — `get_protocol(browser=…)` in optio-agents
 
+> **Note (2026-06-11):** `DOMAIN_MESSAGE:` has been split into the opt-in `CLIENT_MESSAGE:` / `CALLER_MESSAGE:` keywords — see `docs/2026-06-11-optio-message-split-design.md`. `get_protocol` now also takes `client_messages` / `caller_messages`, and `Protocol.browser` became `Protocol.features` (a `ProtocolFeatures` value object).
+
 This spec was written against the following baseline:
 
 **Base revision:** `aa697b32ab6a1f5fd9f230529b87c7c12b46305d` on branch `main` (as of 2026-05-29T22:17:17Z)

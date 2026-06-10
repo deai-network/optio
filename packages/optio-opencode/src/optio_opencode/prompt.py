@@ -8,7 +8,7 @@ addressed. The consumer's own task description is then appended verbatim.
 
 
 from optio_agents.prompt import downloadables_block
-from optio_agents.protocol import build_log_channel_prompt
+from optio_agents.protocol import ProtocolFeatures, build_log_channel_prompt
 
 
 _OPENCODE_INTRO = """# Coordination protocol with the host (optio-opencode)
@@ -163,7 +163,7 @@ def compose_agents_md(
         )
     if host_protocol:
         if documentation is None:
-            documentation = build_log_channel_prompt("suppress")
+            documentation = build_log_channel_prompt(ProtocolFeatures(browser="suppress"))
         base_prompt_pre = _OPENCODE_INTRO + documentation
     else:
         # Conversation mode without the optio.log channel: no keyword docs,

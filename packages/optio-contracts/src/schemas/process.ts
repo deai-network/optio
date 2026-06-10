@@ -35,7 +35,7 @@ export const BrowserOpenRequestSchema = z.object({
 
 export const SessionEventSchema = z.discriminatedUnion('type', [
   z.object({ requestId: z.string(), type: z.literal('attention'), reason: z.string() }),
-  z.object({ requestId: z.string(), type: z.literal('domain'), keyword: z.string(), data: z.unknown() }),
+  z.object({ requestId: z.string(), type: z.literal('client'), keyword: z.string(), data: z.unknown() }),
 ]);
 
 export const ProcessSchema = z.object({

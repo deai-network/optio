@@ -70,11 +70,11 @@ function AppContent() {
     setSelectedProcessId(processId);
     notification.info({ message: 'A task needs your attention', description: reason });
   };
-  // Domain messages: surface to the console (apps can do richer handling).
-  const onDomainMessage = (processId: string, keyword: string, data: unknown) => {
+  // Client messages: surface to the console (apps can do richer handling).
+  const onClientMessage = (processId: string, keyword: string, data: unknown) => {
     // eslint-disable-next-line no-console
-    console.log('[optio domain_message]', { processId, keyword, data });
-    notification.info({ message: `Domain message: ${keyword}`, description: JSON.stringify(data) });
+    console.log('[optio client_message]', { processId, keyword, data });
+    notification.info({ message: `Client message: ${keyword}`, description: JSON.stringify(data) });
   };
 
   if (isLoading) return null;
@@ -141,7 +141,7 @@ function AppContent() {
       database={selected.database}
       live={selected.live}
       onAttention={onAttention}
-      onDomainMessage={onDomainMessage}
+      onClientMessage={onClientMessage}
     >
       <Layout style={{ height: '100vh' }}>
         <Header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px' }}>

@@ -9,7 +9,11 @@ is owned by ``optio-host``. This module re-exports them so existing
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal
 
-from optio_agents.protocol.session import DeliverableCallback, HookCallback
+from optio_agents.protocol.session import (
+    CallerMessageCallback,
+    DeliverableCallback,
+    HookCallback,
+)
 from optio_host.types import SSHConfig
 
 
@@ -28,6 +32,7 @@ _VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
 
 
 __all__ = [
+    "CallerMessageCallback",
     "DeliverableCallback",
     "HookCallback",
     "SSHConfig",
@@ -52,6 +57,14 @@ class OpencodeTaskConfig:
     opencode_config: dict[str, Any] = field(default_factory=dict)
     ssh: SSHConfig | None = None
     on_deliverable: DeliverableCallback | None = None
+    # Enable the CLIENT_MESSAGE keyword: agent-pushed messages routed to the
+    # originating browser session's frontend (stored as sessionEvents,
+    # surfaced via optio-ui's onClientMessage). Off by default.
+    use_client_messages: bool = False
+    # Enable the CALLER_MESSAGE keyword: agent-pushed messages routed to this
+    # callback in the embedding application. A non-None return value is sent
+    # back to the agent as feedback. Off (None) by default.
+    on_caller_message: CallerMessageCallback | None = None
     install_if_missing: bool = True
     # Override for the optio-owned opencode binary **cache** directory (where
     # the opencode binary is installed/cached on the worker). ``None``

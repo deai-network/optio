@@ -516,7 +516,7 @@ async def append_session_event(
 
     `event` is one of:
       {"type": "attention", "reason": <str>}
-      {"type": "domain", "keyword": <str>, "data": <json>}
+      {"type": "client", "keyword": <str>, "data": <json>}
     A fresh requestId is minted and merged into the stored record.
     """
     request_id = uuid4().hex

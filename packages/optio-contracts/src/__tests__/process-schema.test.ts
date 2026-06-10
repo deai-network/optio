@@ -56,7 +56,7 @@ describe('ProcessSchema widget fields', () => {
       ...baseProcess(),
       sessionEvents: [
         { requestId: 'r1', type: 'attention', reason: 'help' },
-        { requestId: 'r2', type: 'domain', keyword: 'k', data: { n: 1 } },
+        { requestId: 'r2', type: 'client', keyword: 'k', data: { n: 1 } },
       ],
     });
     expect(parsed.sessionEvents).toHaveLength(2);

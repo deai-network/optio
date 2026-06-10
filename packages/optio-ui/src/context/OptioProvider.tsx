@@ -20,7 +20,7 @@ interface OptioProviderProps {
   live?: boolean;
   baseUrl?: string;
   onAttention?: (processId: string, reason: string) => void;
-  onDomainMessage?: (processId: string, keyword: string, data: unknown) => void;
+  onClientMessage?: (processId: string, keyword: string, data: unknown) => void;
   children: ReactNode;
 }
 
@@ -44,16 +44,16 @@ function OptioProviderInner({ explicitPrefix, explicitDatabase, explicitLive, ba
   );
 }
 
-export function OptioProvider({ prefix, database, live, baseUrl = '', onAttention, onDomainMessage, children }: OptioProviderProps) {
+export function OptioProvider({ prefix, database, live, baseUrl = '', onAttention, onClientMessage, children }: OptioProviderProps) {
   const client = useMemo(() => createOptioClient(baseUrl), [baseUrl]);
 
   // Mount the always-on session-events manager once. Re-runs when the
   // callbacks or baseUrl change; startSessionEvents updates callbacks in
   // place and only (re)connects on baseUrl change.
   useEffect(() => {
-    const callbacks: SessionEventCallbacks = { onAttention, onDomainMessage };
+    const callbacks: SessionEventCallbacks = { onAttention, onClientMessage };
     startSessionEvents(baseUrl, prefix, database, callbacks);
-  }, [baseUrl, prefix, database, onAttention, onDomainMessage]);
+  }, [baseUrl, prefix, database, onAttention, onClientMessage]);
 
   return (
     <OptioContext.Provider value={{ prefix: prefix ?? 'optio', database, live: live ?? false, baseUrl, client, resetSession }}>

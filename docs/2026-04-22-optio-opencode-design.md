@@ -361,6 +361,8 @@ This is a ~10-line change to an existing optio-ui component plus a component tes
 
 ## 6. Log-Tail & Deliverable Fetch Mechanics
 
+> **Note (2026-06-11):** `DOMAIN_MESSAGE:` has been split into the opt-in `CLIENT_MESSAGE:` / `CALLER_MESSAGE:` keywords — see `docs/2026-06-11-optio-message-split-design.md`.
+
 **Tailing — remote.** `tail -F -n 0 <workdir>/optio.log` executed over the single asyncssh connection as a secondary exec channel. `-F` (capital) survives log-rotation / file recreation; `-n 0` starts at EOF so we don't re-process bytes from a truncated earlier run. Lines are read from the process's stdout stream (`await process.stdout.readline()` in a loop).
 
 **Tailing — local.** `aiofiles` open + read-at-offset poll loop with a small sleep (default 100 ms). Same line-parsing logic.

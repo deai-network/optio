@@ -16,9 +16,9 @@ describe('SessionEventSchema discriminated union', () => {
   });
 
   it('accepts a domain event with arbitrary data', () => {
-    const parsed = SessionEventSchema.parse({ requestId: 'r2', type: 'domain', keyword: 'k', data: { a: [1] } });
-    expect(parsed.type).toBe('domain');
-    if (parsed.type === 'domain') expect(parsed.data).toEqual({ a: [1] });
+    const parsed = SessionEventSchema.parse({ requestId: 'r2', type: 'client', keyword: 'k', data: { a: [1] } });
+    expect(parsed.type).toBe('client');
+    if (parsed.type === 'client') expect(parsed.data).toEqual({ a: [1] });
   });
 
   it('rejects an unknown type', () => {

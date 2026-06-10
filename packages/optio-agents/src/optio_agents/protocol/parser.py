@@ -13,6 +13,8 @@ import re
 from dataclasses import dataclass
 from typing import Union
 
+from optio_agents.protocol.features import ProtocolFeatures
+
 
 @dataclass(frozen=True)
 class StatusEvent:
@@ -46,7 +48,13 @@ class AttentionEvent:
 
 
 @dataclass(frozen=True)
-class DomainMessageEvent:
+class ClientMessageEvent:
+    keyword: str
+    data: object
+
+
+@dataclass(frozen=True)
+class CallerMessageEvent:
     keyword: str
     data: object
 
@@ -58,7 +66,8 @@ class UnknownLine:
 
 LogEvent = Union[
     StatusEvent, DeliverableEvent, DoneEvent, ErrorEvent,
-    BrowserEvent, AttentionEvent, DomainMessageEvent, UnknownLine,
+    BrowserEvent, AttentionEvent, ClientMessageEvent, CallerMessageEvent,
+    UnknownLine,
 ]
 
 
@@ -68,16 +77,34 @@ _RE_DONE = re.compile(r"^DONE(?::\s*(.*))?\s*$")
 _RE_ERROR = re.compile(r"^ERROR(?::\s*(.*))?\s*$")
 _RE_BROWSER = re.compile(r"^BROWSER:\s*(.+?)\s*$")
 _RE_ATTENTION = re.compile(r"^ATTENTION:\s*(.+?)\s*$")
-_RE_DOMAIN_MESSAGE = re.compile(r"^DOMAIN_MESSAGE:\s*(\S+)\s+(.*)$")
+_RE_CLIENT_MESSAGE = re.compile(r"^CLIENT_MESSAGE:\s*(\S+)\s+(.*)$")
+_RE_CALLER_MESSAGE = re.compile(r"^CALLER_MESSAGE:\s*(\S+)\s+(.*)$")
 
 
-def parse_log_line(line: str, *, recognize_browser: bool = True) -> LogEvent:
+def _message_event(stripped: str, m: "re.Match[str]", cls) -> LogEvent:
+    """Build a Client/CallerMessageEvent from a matched message line.
+
+    Malformed JSON drops the line (not dispatched), surfaced as UnknownLine
+    so the tail loop logs the raw line for diagnosis.
+    """
+    keyword, payload = m.group(1), m.group(2)
+    try:
+        data = json.loads(payload)
+    except (ValueError, json.JSONDecodeError):
+        return UnknownLine(text=stripped)
+    return cls(keyword=keyword, data=data)
+
+
+def parse_log_line(
+    line: str, *, features: ProtocolFeatures = ProtocolFeatures(),
+) -> LogEvent:
     """Classify one line from optio.log into a LogEvent.
 
-    ``recognize_browser`` (default True) controls whether a ``BROWSER:``
-    line yields a ``BrowserEvent``. When False (the ``ignore`` / ``suppress``
-    protocol modes), a ``BROWSER:`` line falls through to ``UnknownLine`` —
-    an agent cannot trigger a browser-open it has no shim for.
+    ``features`` controls the optional keywords. ``BROWSER:`` is recognized
+    only for ``features.browser == "redirect"``; ``CLIENT_MESSAGE:`` /
+    ``CALLER_MESSAGE:`` only when the corresponding flag is set. A disabled
+    keyword's line falls through to ``UnknownLine`` — an agent cannot
+    trigger a facility nobody enabled.
     """
     stripped = line.rstrip("\r\n").rstrip()
     m = _RE_STATUS.match(stripped)
@@ -104,7 +131,7 @@ def parse_log_line(line: str, *, recognize_browser: bool = True) -> LogEvent:
         msg = m.group(1) if m.group(1) else None
         return ErrorEvent(message=msg)
 
-    if recognize_browser:
+    if features.browser == "redirect":
         m = _RE_BROWSER.match(stripped)
         if m:
             # The browser shim emits `BROWSER: "<url>"` (printf '"%s"') — the
@@ -116,16 +143,15 @@ def parse_log_line(line: str, *, recognize_browser: bool = True) -> LogEvent:
     if m:
         return AttentionEvent(reason=m.group(1))
 
-    m = _RE_DOMAIN_MESSAGE.match(stripped)
-    if m:
-        keyword, payload = m.group(1), m.group(2)
-        try:
-            data = json.loads(payload)
-        except (ValueError, json.JSONDecodeError):
-            # Malformed JSON: drop (not dispatched). Surfaced as UnknownLine
-            # so the tail loop logs the raw line for diagnosis.
-            return UnknownLine(text=stripped)
-        return DomainMessageEvent(keyword=keyword, data=data)
+    if features.client_messages:
+        m = _RE_CLIENT_MESSAGE.match(stripped)
+        if m:
+            return _message_event(stripped, m, ClientMessageEvent)
+
+    if features.caller_messages:
+        m = _RE_CALLER_MESSAGE.match(stripped)
+        if m:
+            return _message_event(stripped, m, CallerMessageEvent)
 
     return UnknownLine(text=stripped)
 

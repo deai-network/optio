@@ -28,8 +28,9 @@ from optio_host.host import Host
 from optio_agents.protocol.parser import (
     AttentionEvent,
     BrowserEvent,
+    CallerMessageEvent,
+    ClientMessageEvent,
     DeliverableEvent,
-    DomainMessageEvent,
     DoneEvent,
     ErrorEvent,
     LogEvent,
@@ -49,6 +50,7 @@ _LOG = logging.getLogger(__name__)
 
 
 DELIVERABLE_QUEUE_BOUND = 64
+CALLER_MESSAGE_QUEUE_BOUND = 64
 
 
 # Public type aliases. ``HookContext`` is forward-quoted in these aliases
@@ -68,6 +70,20 @@ returning.
 ``<workdir>/deliverables/`` (e.g. ``"summary.md"`` or
 ``"sub/summary.md"``). It matches the value emitted in the
 auto-generated ``"Deliverable: <path>"`` progress message.
+"""
+
+
+CallerMessageCallback = Callable[["HookContext", str, object], Awaitable["str | None"]]
+"""Consumer callback invoked per CALLER_MESSAGE log line.
+
+Arguments: ``(hook_ctx, keyword, data)`` — ``keyword`` is the agent's
+message-type token, ``data`` the decoded single-line JSON payload.
+
+May return a non-empty string to send back to the running agent (the
+caller-message loop routes it through ``hook_ctx.send_to_agent``); return
+``None`` or ``""`` to send nothing. A hook may also call
+``hook_ctx.send_to_agent(...)`` directly instead of / in addition to
+returning.
 """
 
 
@@ -110,6 +126,10 @@ async def run_log_protocol_session(
     *,
     body: Callable[[Host, HookContext], Awaitable[None]],
     on_deliverable: DeliverableCallback | None = None,
+    # Server-side message channel. Enables nothing by itself: the protocol
+    # must also be built with get_protocol(caller_messages=True); the two are
+    # cross-checked at session start (ValueError on mismatch).
+    on_caller_message: CallerMessageCallback | None = None,
     before_execute: HookCallback | None = None,
     after_execute: HookCallback | None = None,
     protocol: "Protocol | None" = None,
@@ -178,6 +198,16 @@ async def run_log_protocol_session(
     """
     if protocol is None:
         protocol = get_protocol()
+    if protocol.features.caller_messages and on_caller_message is None:
+        raise ValueError(
+            "protocol enables CALLER_MESSAGE but no on_caller_message "
+            "callback was provided"
+        )
+    if on_caller_message is not None and not protocol.features.caller_messages:
+        raise ValueError(
+            "on_caller_message callback provided but the protocol does not "
+            "enable it; build with get_protocol(caller_messages=True)"
+        )
     hook_ctx = HookContext(ctx, host)
     hook_ctx._agent_sender = agent_sender
 
@@ -212,6 +242,7 @@ async def run_log_protocol_session(
     tail_task: asyncio.Task | None = None
     body_task: asyncio.Task | None = None
     cancel_task: asyncio.Task | None = None
+    caller_task: asyncio.Task | None = None
 
     try:
         # before_execute runs inside the try so a failure here still
@@ -222,6 +253,9 @@ async def run_log_protocol_session(
         deliverable_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue(
             maxsize=DELIVERABLE_QUEUE_BOUND,
         )
+        caller_queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue(
+            maxsize=CALLER_MESSAGE_QUEUE_BOUND,
+        )
         done_flag = asyncio.Event()
         error_flag: list[str | None] = []  # [message] or [] if not fired
 
@@ -229,10 +263,13 @@ async def run_log_protocol_session(
             fetch_task = asyncio.create_task(
                 _deliverable_fetch_loop(host, on_deliverable, deliverable_queue, ctx, hook_ctx),
             )
+            caller_task = asyncio.create_task(
+                _caller_message_loop(on_caller_message, caller_queue, ctx, hook_ctx),
+            )
             tail_task = asyncio.create_task(
                 _tail_and_dispatch(
-                    host, ctx, deliverable_queue, done_flag, error_flag,
-                    protocol.parse_log_line, browser_url_rewrite,
+                    host, ctx, deliverable_queue, caller_queue, done_flag,
+                    error_flag, protocol.parse_log_line, browser_url_rewrite,
                 ),
             )
         body_task = asyncio.create_task(body(host, hook_ctx))
@@ -263,9 +300,10 @@ async def run_log_protocol_session(
                 # Body completed without DONE — premature exit.
                 raise _SessionFailed("body returned before DONE was observed")
 
-        # Drain remaining deliverables before returning.
+        # Drain remaining deliverables + caller messages before returning.
         if keywords:
             await deliverable_queue.join()
+            await caller_queue.join()
 
     except BaseException as exc:
         session_error = exc
@@ -273,7 +311,7 @@ async def run_log_protocol_session(
 
     finally:
         active_tasks = [
-            t for t in (tail_task, body_task, cancel_task, fetch_task)
+            t for t in (tail_task, body_task, cancel_task, fetch_task, caller_task)
             if t is not None
         ]
         for t in active_tasks:
@@ -301,6 +339,7 @@ async def _tail_and_dispatch(
     host: Host,
     ctx: "ProcessContext",
     deliverable_queue: asyncio.Queue[tuple[str, str]],
+    caller_queue: asyncio.Queue[tuple[str, object]],
     done_flag: asyncio.Event,
     error_flag: list,
     parse_line: "Callable[[str], LogEvent]",
@@ -339,8 +378,14 @@ async def _tail_and_dispatch(
             await ctx.request_browser_open(url)
         elif isinstance(ev, AttentionEvent):
             await ctx.need_attention(ev.reason)
-        elif isinstance(ev, DomainMessageEvent):
-            await ctx.domain_message(ev.keyword, ev.data)
+        elif isinstance(ev, ClientMessageEvent):
+            await ctx.client_message(ev.keyword, ev.data)
+        elif isinstance(ev, CallerMessageEvent):
+            item = (ev.keyword, ev.data)
+            try:
+                caller_queue.put_nowait(item)
+            except asyncio.QueueFull:
+                await caller_queue.put(item)
         elif isinstance(ev, DoneEvent):
             if ev.summary:
                 ctx.report_progress(None, ev.summary)
@@ -417,6 +462,42 @@ async def _deliverable_fetch_loop(
                     else:
                         reply = "accepted. thanks for the good work."
             await hook_ctx.send_to_agent(f"deliverable {name}: {reply}")
+        finally:
+            queue.task_done()
+
+
+async def _caller_message_loop(
+    callback: CallerMessageCallback | None,
+    queue: asyncio.Queue[tuple[str, object]],
+    ctx: "ProcessContext",
+    hook_ctx: HookContext,
+) -> None:
+    """Drain the caller-message queue: invoke the consumer callback, push
+    any returned feedback to the live agent.
+
+    A raising callback is logged and the session continues — one bad
+    handler call must not kill the task. ``callback`` can only be None
+    here if the start-time consistency guard was bypassed; treated as
+    drop-with-log, defensively.
+    """
+    while True:
+        keyword, data = await queue.get()
+        try:
+            if callback is None:
+                ctx.report_progress(
+                    None,
+                    f"CALLER_MESSAGE {keyword!r} dropped: no on_caller_message",
+                )
+                continue
+            try:
+                feedback = await callback(hook_ctx, keyword, data)
+            except Exception as exc:  # noqa: BLE001
+                ctx.report_progress(
+                    None, f"on_caller_message callback raised: {exc!r}",
+                )
+                continue
+            if isinstance(feedback, str) and feedback.strip():
+                await hook_ctx.send_to_agent(feedback.strip())
         finally:
             queue.task_done()
 

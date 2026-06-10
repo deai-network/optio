@@ -141,7 +141,11 @@ async def run_claudecode_session(
 ) -> None:
     """Execute function body for one optio-claudecode task instance."""
     host: Host = _build_host(config, ctx.process_id)
-    protocol = get_protocol(browser="redirect")
+    protocol = get_protocol(
+        browser="redirect",
+        client_messages=config.use_client_messages,
+        caller_messages=config.on_caller_message is not None,
+    )
     launched_handle: ProcessHandle | None = None
     tmux_path: str | None = None
     tmux_socket: str | None = None
@@ -659,6 +663,7 @@ async def run_claudecode_session(
             body=body,
             prepare=_prepare,
             on_deliverable=config.on_deliverable,
+            on_caller_message=config.on_caller_message,
             after_execute=config.after_execute,
             protocol=protocol,
             browser_url_rewrite=rewrite_oauth_redirect,

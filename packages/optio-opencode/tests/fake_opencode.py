@@ -193,6 +193,16 @@ SCENARIOS = {
         ("sleep", 0.3),
         ("exit", 1),
     ],
+    "caller_message": [
+        ("log", 'CALLER_MESSAGE: ping {"n": 1}'),
+        ("sleep", 0.1),
+        ("log", "DONE"),
+    ],
+    "client_message": [
+        ("log", 'CLIENT_MESSAGE: notify {"msg": "hi"}'),
+        ("sleep", 0.05),
+        ("log", "DONE"),
+    ],
 }
 
 # Conversation-surface state: events queued by scenarios for the /global/event

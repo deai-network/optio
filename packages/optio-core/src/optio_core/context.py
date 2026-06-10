@@ -303,14 +303,14 @@ class ProcessContext:
             {"type": "attention", "reason": reason},
         )
 
-    async def domain_message(self, keyword: str, data) -> str:
+    async def client_message(self, keyword: str, data) -> str:
         """Push an application-defined message to the launching browser
         session's frontend. Session-scoped. `data` must be JSON-serializable;
         optio does not interpret it. Returns the requestId."""
         from optio_core.store import append_session_event
         return await append_session_event(
             self._db, self._prefix, self._process_oid,
-            {"type": "domain", "keyword": keyword, "data": data},
+            {"type": "client", "keyword": keyword, "data": data},
         )
 
     async def mark_has_saved_state(self) -> None:

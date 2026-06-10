@@ -315,6 +315,43 @@ async def test_widget_upstream_and_data_are_set(ctx_and_captures, _supply_scenar
     assert decoded.startswith("/") and "optio-opencode" in decoded
 
 
+async def test_caller_message_reaches_callback(ctx_and_captures, _supply_scenario):
+    ctx, _cap, _ = ctx_and_captures
+    _supply_scenario["name"] = "caller_message"
+
+    received: list[tuple[str, object]] = []
+    async def on_caller(hook_ctx, keyword, data):
+        received.append((keyword, data))
+        return "pong"
+
+    cfg = OpencodeTaskConfig(
+        consumer_instructions="(scenario: caller_message)",
+        on_caller_message=on_caller,
+    )
+    await run_opencode_session(ctx, cfg)
+
+    assert received == [("ping", {"n": 1})]
+
+
+async def test_client_message_stored_as_session_event(
+    ctx_and_captures, _supply_scenario, mongo_db,
+):
+    ctx, _cap, _ = ctx_and_captures
+    _supply_scenario["name"] = "client_message"
+
+    cfg = OpencodeTaskConfig(
+        consumer_instructions="(scenario: client_message)",
+        use_client_messages=True,
+    )
+    await run_opencode_session(ctx, cfg)
+
+    doc = await mongo_db["test_processes"].find_one({"processId": "p"})
+    events = [e for e in doc.get("sessionEvents", []) if e["type"] == "client"]
+    assert len(events) == 1
+    assert events[0]["keyword"] == "notify"
+    assert events[0]["data"] == {"msg": "hi"}
+
+
 # ---- resume log -----------------------------------------------------------
 
 
