@@ -82,7 +82,6 @@ export function ClaudeCodeConversationWidget(props: WidgetProps) {
   const localSeqRef = useRef(0);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
-  const [sendPending, setSendPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -114,12 +113,10 @@ export function ClaudeCodeConversationWidget(props: WidgetProps) {
     inputRef.current?.focus();
   }, []);
 
-  // Optimistic busy bridges the gap between POST /send and the echoed user
-  // event; the reducer's busy is authoritative once any echo arrives.
-  useEffect(() => {
-    if (state.busy || state.closed) setSendPending(false);
-  }, [state.busy, state.closed]);
-  const busy = state.busy || sendPending;
+  // The optimistic local-user echo (dispatched on a successful send) sets
+  // state.busy immediately, so busy is purely reducer-driven — no separate
+  // send flag that a busy-change effect could fail to clear on a mid-turn send.
+  const busy = state.busy;
 
   // Auto-grow the input with its content (up to the maxHeight cap, after which
   // it scrolls): reset to auto to shrink on deletion, then fit to scrollHeight.
@@ -189,7 +186,6 @@ export function ClaudeCodeConversationWidget(props: WidgetProps) {
       localSeqRef.current -= 1;
       dispatch({ ev: { type: 'x-optio-local-user', text: body }, seq: localSeqRef.current });
       setText('');
-      setSendPending(true);
     } else {
       setError('Send failed — retry.');
     }

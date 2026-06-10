@@ -92,6 +92,28 @@ describe('ClaudeCodeConversationWidget', () => {
     expect(JSON.parse(init.body as string)).toEqual({ text: 'hello' });
   });
 
+  it('clears the working indicator after a mid-turn send completes', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<ClaudeCodeConversationWidget {...makeProps()} />);
+
+    // Turn already in progress (agent working) when the operator sends.
+    fire({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'count to 10' }] } });
+    fire({ type: 'assistant', message: { role: 'assistant', id: 'm1', content: [{ type: 'text', text: '1 2 3' }] } });
+    expect(screen.getByText('working…')).toBeTruthy();
+
+    const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: 'actually stop at 5' } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('conversation-send'));
+    });
+
+    // The turn ends. The indicator must disappear — it must not stay stuck on
+    // a send flag that the busy-change effect never cleared.
+    fire({ type: 'result', subtype: 'success', result: 'ok' });
+    await waitFor(() => expect(screen.queryByText('working…')).toBeNull());
+  });
+
   it('permission card Approve POSTs the request_id to the proxy permission endpoint', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
