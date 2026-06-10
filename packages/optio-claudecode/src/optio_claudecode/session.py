@@ -52,6 +52,7 @@ from optio_claudecode.snapshots import (
     load_latest_snapshot,
     prune_snapshots,
 )
+from optio_claudecode.transcript import rebase_session_blob
 from optio_claudecode.types import ClaudeCodeTaskConfig
 
 
@@ -155,6 +156,11 @@ async def run_claudecode_session(
 
         resuming = snapshot is not None
         if resuming:
+            if config.session_restore_from is not None:
+                _LOG.info(
+                    "optio resume in progress; session_restore_from is skipped "
+                    "(restore directives apply to fresh runs only)",
+                )
             if config.on_seed_saved is not None:
                 _LOG.warning(
                     "resume: on_seed_saved ignored (no full capture on resume); "
@@ -187,6 +193,23 @@ async def run_claudecode_session(
                 _LOG.warning(
                     "resume: restored snapshot has no transcript; launching "
                     "without --continue (D3 safety)",
+                )
+        elif config.session_restore_from is not None:
+            # Explicit session restore (fresh runs only): fetch, decrypt,
+            # rekey to this workdir (and truncate when requested), plant.
+            payload = await _read_blob_bytes(ctx, config.session_restore_from)
+            decrypt = config.session_blob_decrypt or (lambda b: b)
+            plain = decrypt(payload)
+            plain = rebase_session_blob(
+                plain,
+                new_workdir=host.workdir,
+                until_uuid=config.session_restore_until,
+            )
+            await _extract_home_claude(host, plain)
+            pass_continue = await _has_transcript(host)
+            if not pass_continue:
+                raise RuntimeError(
+                    "session_restore_from: restored blob contains no transcript"
                 )
 
     async def _claudecode_body(host: Host, hook_ctx: HookContext) -> None:
