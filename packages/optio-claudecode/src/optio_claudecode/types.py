@@ -8,6 +8,8 @@ re-exports them alongside the package-specific ``ClaudeCodeTaskConfig``.
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Literal
 
+from bson import ObjectId
+
 from optio_agents.protocol.session import DeliverableCallback, HookCallback
 from optio_host.types import SSHConfig
 
@@ -134,6 +136,21 @@ class ClaudeCodeTaskConfig:
     # default gate; this is a deliberate parallel path. Conversation mode only.
     conversation_ui: bool = False
 
+    # --- explicit session restore (spec: 2026-06-10 session restore) -----
+    # session_restore_from: GridFS blob id of a home/.claude session tar (as
+    # produced by on_session_saved); planted before launch on FRESH runs
+    # only (optio-level resume ignores it). Conversation mode only.
+    session_restore_from: "ObjectId | None" = None
+    # session_restore_until: transcript entry uuid — keep history up to and
+    # including this entry, drop the rest. Requires session_restore_from.
+    session_restore_until: str | None = None
+    # on_session_saved: (new_blob_id, end_state) fired at teardown after the
+    # session blob is stored under a standalone GridFS ref. Presence opts
+    # in to capture; runs on all end states (done/failed/cancelled).
+    on_session_saved: "Callable[[ObjectId, str], Awaitable[None] | None] | None" = None
+    # model: passed through as `--model <value>`. Not validated.
+    model: str | None = None
+
     def __post_init__(self) -> None:
         if self.permission_mode is not None and self.permission_mode not in _VALID_PERMISSION_MODES:
             raise ValueError(
@@ -189,4 +206,17 @@ class ClaudeCodeTaskConfig:
             raise ValueError(
                 "ClaudeCodeTaskConfig: conversation_ui=True requires "
                 "mode='conversation'."
+            )
+        if self.session_restore_until is not None and self.session_restore_from is None:
+            raise ValueError(
+                "session_restore_until requires session_restore_from"
+            )
+        if self.session_restore_from is not None and self.mode != "conversation":
+            raise ValueError(
+                "session_restore_from requires mode='conversation'"
+            )
+        if self.session_restore_from is not None and self.auto_start:
+            raise ValueError(
+                "session_restore_from is incompatible with auto_start "
+                "(a restored conversation is continued by the caller)"
             )
