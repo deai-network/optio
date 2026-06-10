@@ -93,14 +93,15 @@ def _build_host(config: ClaudeCodeTaskConfig, process_id: str) -> Host:
 
 def _fs_isolation_dirs(
     config: ClaudeCodeTaskConfig, host: Host,
-) -> list[str] | None:
-    """The agent-facing list of directories it may read/write under fs
+) -> list[tuple[str, str]] | None:
+    """The agent-facing (path, mode) list of directories it may touch under fs
     isolation (its workdir + caller extras), or None when isolation is off.
-    Used to tell the agent its sandbox bounds in CLAUDE.md."""
+    Used to tell the agent its sandbox bounds in CLAUDE.md. Paths stay
+    verbatim (incl. ``~/``): the agent's own $HOME view is what it needs."""
     if not config.fs_isolation:
         return None
-    extras = [ad.path for ad in (config.extra_allowed_dirs or [])]
-    return [host.workdir.rstrip("/"), *extras]
+    extras = [(ad.path, ad.mode) for ad in (config.extra_allowed_dirs or [])]
+    return [(host.workdir.rstrip("/"), "rwx"), *extras]
 
 
 async def _build_claustrum_wrap(
@@ -112,10 +113,16 @@ async def _build_claustrum_wrap(
         return None
     from . import fs_allowlist
     cache_dir = await host_actions._resolve_cache_dir(host, config.claude_install_dir)
+    # `~/` caller extras expand against the REAL host home (the claude process
+    # runs under an isolated $HOME, and grants reach claustrum verbatim).
+    host_home = (
+        await host.resolve_host_home() if config.extra_allowed_dirs else None
+    )
     grants = fs_allowlist.build_grant_flags(
         workdir=host.workdir,
         claude_cache_dir=cache_dir,
         extra_allowed_dirs=config.extra_allowed_dirs,
+        host_home=host_home,
     )
     return [claustrum_path, "--best-effort", "--abi-min", "1", *grants, "--"]
 
@@ -481,7 +488,7 @@ async def run_claudecode_session(
                 f"http://{upstream_host}:{listener_port}",
                 inner_auth=BasicAuth(username="optio", password=listener_password),
             )
-            await ctx.set_widget_data({})
+            await ctx.set_widget_data({"toolVerbosity": config.tool_verbosity})
             ctx.report_progress(None, "Conversation UI is live")
 
         # Kickoff / resume notice as first stdin messages (print mode with

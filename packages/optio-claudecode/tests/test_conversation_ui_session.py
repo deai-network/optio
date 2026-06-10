@@ -10,7 +10,7 @@ Three layers (Phase II spec, docs/2026-06-10-claudecode-conversation-ui-design.m
   3. Session integration (same bootstrap as ``test_conversation_session.py``
      — real engine, claude shim): a ``conversation_ui=True`` task registers
      a reachable ConversationListener as widgetUpstream (per-task basic-auth
-     inner credential, ``widgetData == {}``,
+     inner credential, ``widgetData == {"toolVerbosity": ...}``,
      ``uiWidget == "claudecode-conversation"``), the SSE replay carries the
      fake's ``system/init`` event, and the listener port is closed once the
      task reaches its terminal state.
@@ -210,7 +210,7 @@ async def test_conversation_ui_session_lifecycle(
         assert inner is not None
         assert inner["username"] == "optio"
         assert inner["password"]
-        assert proc["widgetData"] == {}
+        assert proc["widgetData"] == {"toolVerbosity": "description-only"}
         assert proc["uiWidget"] == "claudecode-conversation"
 
         # Hit the listener directly, authenticating with the inner credential
