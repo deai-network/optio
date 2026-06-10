@@ -297,3 +297,52 @@ def test_ui_widget_per_mode():
         config=ClaudeCodeTaskConfig(consumer_instructions="x", fs_isolation=False),
     )
     assert iframe_task.ui_widget == "iframe-input"
+
+
+@pytest.mark.asyncio
+async def test_conversation_launch_is_claustrum_wrapped(
+    shim_install_dir, claude_cache_dir, task_root, mongo_db, monkeypatch,
+):
+    """fs_isolation=True must wrap the headless conversation launch with
+    claustrum (mirrors the iframe path)."""
+    from optio_claudecode import host_actions
+    from optio_host.host import LocalHost
+
+    async def _fake_install(hook_ctx, *, install_dir=None):
+        return "/fake/bin/claustrum"
+    monkeypatch.setattr(host_actions, "ensure_claustrum_installed", _fake_install)
+    async def _no_newer():
+        return None
+    monkeypatch.setattr(host_actions, "claustrum_newer_tag", _no_newer)
+
+    captured: dict = {}
+    orig = LocalHost.launch_subprocess
+    async def _capture(self, cmd, **kw):
+        captured["cmd"] = cmd
+        raise RuntimeError("captured-launch")
+    monkeypatch.setattr(LocalHost, "launch_subprocess", _capture)
+
+    optio = await _make_optio(mongo_db, "ccconvfs")
+    try:
+        task = create_claudecode_task(
+            process_id="cc-conv-fs",
+            name="Conversation fs-isolation",
+            config=_conversation_config(
+                shim_install_dir, claude_cache_dir,
+                fs_isolation=True, delivery_type="t",
+            ),
+        )
+        await optio.adhoc_define(task)
+        try:
+            await optio.launch_and_await_result("cc-conv-fs", session_id=None, timeout=60)
+        except Exception:
+            pass
+        await _wait_terminal(optio, "cc-conv-fs")
+
+        cmd = captured.get("cmd", "")
+        assert "/fake/bin/claustrum --best-effort --abi-min 1 " in cmd, cmd
+        assert cmd.index("/fake/bin/claustrum") < cmd.index("--input-format")
+        assert " -- " in cmd
+    finally:
+        monkeypatch.setattr(LocalHost, "launch_subprocess", orig)
+        await optio.shutdown(grace_seconds=1.0)

@@ -91,6 +91,23 @@ def _build_host(config: ClaudeCodeTaskConfig, process_id: str) -> Host:
     return RemoteHost(ssh_config=config.ssh, taskdir=taskdir)
 
 
+async def _build_claustrum_wrap(
+    host: Host, config: ClaudeCodeTaskConfig, claustrum_path: str | None,
+) -> list[str] | None:
+    """claustrum argv prefix for an fs-isolated launch, or None when fs_isolation
+    is off. Shared by the iframe and conversation launch paths."""
+    if not config.fs_isolation:
+        return None
+    from . import fs_allowlist
+    cache_dir = await host_actions._resolve_cache_dir(host, config.claude_install_dir)
+    grants = fs_allowlist.build_grant_flags(
+        workdir=host.workdir,
+        claude_cache_dir=cache_dir,
+        extra_allowed_dirs=config.extra_allowed_dirs,
+    )
+    return [claustrum_path, "--best-effort", "--abi-min", "1", *grants, "--"]
+
+
 async def run_claudecode_session(
     ctx: ProcessContext, config: ClaudeCodeTaskConfig,
 ) -> None:
@@ -311,18 +328,7 @@ async def run_claudecode_session(
             **(hook_ctx.browser_launch_env or {}),
         }
         ctx.report_progress(None, "Launching Claude Code…")
-        claustrum_wrap = None
-        if config.fs_isolation:
-            from . import fs_allowlist
-            cache_dir = await host_actions._resolve_cache_dir(host, config.claude_install_dir)
-            grants = fs_allowlist.build_grant_flags(
-                workdir=host.workdir,
-                claude_cache_dir=cache_dir,
-                extra_allowed_dirs=config.extra_allowed_dirs,
-            )
-            claustrum_wrap = [
-                claustrum_path, "--best-effort", "--abi-min", "1", *grants, "--",
-            ]
+        claustrum_wrap = await _build_claustrum_wrap(host, config, claustrum_path)
         handle, ttyd_port, tmux_socket, tmux_session = await host_actions.launch_ttyd_with_claude(
             host,
             ttyd_path=ttyd_path,
@@ -422,6 +428,11 @@ async def run_claudecode_session(
             {**(config.env or {}), **focus_env, **(hook_ctx.browser_launch_env or {})},
         )
         ctx.report_progress(None, "Launching Claude Code (conversation)…")
+        # Same claustrum fs-isolation wrap as the iframe path; claustrum execve's
+        # claude, so the bidirectional stream-json pipes pass through unchanged.
+        wrap = await _build_claustrum_wrap(host, config, claustrum_path)
+        if wrap:
+            argv = [*wrap, *argv]
         cmd = " ".join(shlex.quote(a) for a in argv)
         handle = await host.launch_subprocess(
             cmd, env=env, cwd=host.workdir,
