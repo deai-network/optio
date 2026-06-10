@@ -89,8 +89,9 @@ In `_prepare` (`session.py`), immediately after the existing resume-restore bloc
   1. Fetch blob bytes from GridFS (`ctx.load_blob`); missing blob → task fails.
   2. Decrypt engine-side (`session_blob_decrypt` or identity); failure → loud
      (existing semantics).
-  3. If `session_restore_until`: `truncate_session_blob(plain, uuid)` (§4);
-     `ValueError` → task fails at prepare.
+  3. Transform via `rebase_session_blob(plain, new_workdir=..., until_uuid=...)` (§4):
+     always rekeys the transcript directory to the new workdir's slug; truncates when
+     `session_restore_until` is set. `ValueError` → task fails at prepare.
   4. Plant via the existing `_extract_home_claude(host, plain)`.
   5. `_has_transcript(host)` must return True; otherwise the task fails
      ("restored session blob contains no transcript"). On success the launch uses the
@@ -120,10 +121,12 @@ on one task; the scripter's children use `supports_resume=False` + this callback
 Storage/callback failure: logged, teardown continues (matching today's
 snapshot-failure behavior); the callback is not fired for a blob that failed to store.
 
-## 4. Truncation (`optio_claudecode/transcript.py`, new module)
+## 4. Blob transform (`optio_claudecode/transcript.py`, new module)
 
 ```python
-def truncate_session_blob(plain_tar: bytes, until_uuid: str) -> bytes
+def rebase_session_blob(
+    plain_tar: bytes, *, new_workdir: str, until_uuid: str | None = None,
+) -> bytes
 ```
 
 Pure function, no host or Mongo dependency:
@@ -131,14 +134,21 @@ Pure function, no host or Mongo dependency:
 1. Untar in memory; locate the **newest** `*.jsonl` under `home/.claude/projects/**`
    (mtime; tar extraction preserves mtimes, so `--continue`'s newest-session
    selection matches).
-2. Positional prefix cut: keep every line up to and including the line whose JSON
-   carries `"uuid" == until_uuid`; drop the rest. Uuid absent → `ValueError` with a
-   clear message.
-3. Bookkeeping repair: trailing uuid-less pointer entries (`last-prompt`/`leafUuid`)
-   must not reference dropped entries — exact repair (drop the entry vs rewrite
-   `leafUuid` to the boundary uuid) is settled by live verification (§7) and
-   implemented behind this function's stable signature.
-4. Retar (other files in the blob pass through unchanged).
+2. **Projects-dir rekey** (always): Claude Code stores transcripts under
+   `home/.claude/projects/<workdir-slug>/`, the slug derived from the session cwd
+   (`/` and `.` → `-`; confirmed against two real samples). A restored blob carries
+   the **old** workdir's slug while the new session runs in a fresh workdir, so
+   without the rekey `--continue` finds nothing. Rename the transcript's parent dir
+   to `slugify(new_workdir)` during the tar rewrite. (The analogous `.claude.json`
+   projects rekey already exists in the seed machinery and is handled by the
+   existing fresh-start seed merge.)
+3. Truncation (when `until_uuid` set): positional prefix cut — keep every line up to
+   and including the line whose JSON carries `"uuid" == until_uuid`; drop the rest.
+   Uuid absent → `ValueError` with a clear message.
+4. Bookkeeping repair: kept pointer entries (`last-prompt`/`leafUuid`) must not
+   reference dropped entries — v1 rewrites a dangling `leafUuid` to the boundary
+   uuid; the exact required shape is confirmed by live verification (§7).
+5. Retar (other files in the blob pass through unchanged).
 
 ## 5. Flag building (`host_actions.py`)
 
@@ -164,10 +174,12 @@ Documented fallback if live verification shows `--continue` mis-selecting the se
 
 - **Config validation matrix** (`test_types.py` or equivalent): the three new
   `ValueError` combinations + valid forms.
-- **Truncation unit tests** (no host, fixture transcripts in real format): boundary
+- **Blob-transform unit tests** (no host, fixture transcripts in real format):
+  projects-dir rekey to the new workdir slug (incl. slugify rule); boundary
   mid-file; boundary at last conversational entry; uuid absent; bookkeeping tail
-  after boundary; sidechain entries interleaved; newest-of-several transcripts
-  selected; non-transcript blob files pass through.
+  after boundary; dangling `leafUuid` rewritten; sidechain entries interleaved;
+  newest-of-several transcripts selected; non-transcript blob files pass through;
+  rekey-only call (`until_uuid=None`) leaves content untouched.
 - **Session-flow tests** (existing fake-claude / stream-json shim harness): planted
   blob → argv carries the resumption flag and no kickoff message is sent; planted
   blob without transcript → task fails; capture fires `on_session_saved` with a blob
@@ -179,13 +191,18 @@ Documented fallback if live verification shows `--continue` mis-selecting the se
   2. Headless stream-json transcript format vs the verified TUI sample.
   3. Turn-boundary uuid visibility in stream-json events (the caller-side mapping —
      consumed by the scripter, verified here).
+  4. Workdir-slug derivation rule for `projects/` (the `/`→`-`, `.`→`-` mapping,
+     confirmed on two interactive samples) against a headless session.
+  5. Whether per-entry `cwd` fields inside the transcript also matter for
+     resumption — v1 renames the directory only; rewriting the `cwd` fields during
+     the same tar pass is the documented fallback.
 
 ## 8. File map
 
 | File | Change |
 |---|---|
 | `optio-claudecode/src/optio_claudecode/types.py` | four new config fields + validation |
-| `optio-claudecode/src/optio_claudecode/transcript.py` | new: `truncate_session_blob` |
+| `optio-claudecode/src/optio_claudecode/transcript.py` | new: `rebase_session_blob` (rekey + truncate) |
 | `optio-claudecode/src/optio_claudecode/session.py` | restore slot in `_prepare`; capture-to-ref at teardown; silent-kickoff branch |
 | `optio-claudecode/src/optio_claudecode/host_actions.py` | `--model` in `build_claude_flags` |
 | `optio-claudecode/tests/...` | validation matrix, truncation units, session-flow tests |
