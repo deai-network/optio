@@ -186,12 +186,17 @@ class ClaudeCodeConversation:
             )
         inner: dict = {"behavior": decision.behavior}
         if decision.behavior == "allow":
+            # Always echo updatedInput (the original input when the operator
+            # didn't edit it): Claude Code's can_use_tool allow schema expects
+            # it, and it's the hook for future edit-then-approve.
             inner["updatedInput"] = (
                 decision.updated_input
                 if decision.updated_input is not None else request.input
             )
-        elif decision.message:
-            inner["message"] = decision.message
+        else:
+            # Deny requires a human-readable message in the schema; default one
+            # so a bare deny (no reason supplied) still validates.
+            inner["message"] = decision.message or "Denied by the operator."
         await self._write_json({
             "type": "control_response",
             "response": {
