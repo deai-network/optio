@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 import os
 import secrets
@@ -354,9 +355,14 @@ async def run_claudecode_session(
             listener_password = secrets.token_urlsafe(32)
             bind_addr = os.environ.get("OPTIO_WIDGET_TUNNEL_BIND", "127.0.0.1")
             upstream_host = os.environ.get("OPTIO_WIDGET_TUNNEL_HOST", "127.0.0.1")
+            # On resume, re-prime the replay buffer from the snapshot-persisted
+            # file so a viewer sees the prior conversation history, not just new
+            # messages (Claude's own transcript is continued separately).
+            initial_events = await _load_conversation_buffer(host) if resuming else None
             # conversation_ui occupies the single permission-handler slot (see design §2).
             conv_listener = ConversationListener(
                 conversation, password=listener_password,
+                initial_events=initial_events,
             )
             listener_port = await conv_listener.start(bind_addr)
             await ctx.set_widget_upstream(
@@ -367,10 +373,13 @@ async def run_claudecode_session(
             ctx.report_progress(None, "Conversation UI is live")
 
         # Kickoff / resume notice as first stdin messages (print mode with
-        # --input-format stream-json takes no positional prompt).
+        # --input-format stream-json takes no positional prompt). The resume
+        # notice uses the System: convention, which is only taught to the agent
+        # in the host-protocol prompt block — so suppress it when host_protocol
+        # is off (the agent still detects resumes via resume.log).
         if config.auto_start and not resuming:
             await conversation.send(host_actions.AUTO_START_PROMPT)
-        elif resuming and pass_continue:
+        elif resuming and pass_continue and config.host_protocol:
             await conversation.send(f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}")
 
         if resolved_seed_id is not None:
@@ -508,6 +517,15 @@ async def run_claudecode_session(
                 _LOG.exception("clear control upstream failed")
 
         if conv_listener is not None:
+            # Persist the replay buffer into the workdir BEFORE stop() so it
+            # lands in the resume snapshot; the next launch re-primes from it.
+            if config.supports_resume:
+                try:
+                    await host.write_text(
+                        _CONV_BUFFER_FILE, json.dumps(conv_listener.export_buffer()),
+                    )
+                except Exception:
+                    _LOG.exception("conversation buffer persist failed")
             try:
                 await conv_listener.stop()
             except Exception:
@@ -600,6 +618,41 @@ async def run_claudecode_session(
 
 
 # --- helpers ---------------------------------------------------------------
+
+
+# Workdir-relative file the conversation listener's replay buffer is persisted
+# to at teardown (captured in the resume snapshot, re-primed on resume).
+_CONV_BUFFER_FILE = ".optio-conversation-buffer.json"
+
+
+async def _load_conversation_buffer(host: Host) -> "list[tuple[int, dict]] | None":
+    """Read the persisted conversation replay buffer from the restored workdir.
+
+    Returns a list of ``(seq, event)`` or None when absent/unreadable (a fresh
+    start, or a malformed file — never fatal, the buffer just starts empty).
+    """
+    path = f"{host.workdir.rstrip('/')}/{_CONV_BUFFER_FILE}"
+    try:
+        raw = await host.fetch_bytes_from_host(path)
+    except FileNotFoundError:
+        return None
+    except Exception:  # noqa: BLE001
+        _LOG.exception("conversation buffer read failed; starting empty")
+        return None
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        _LOG.warning("conversation buffer file is not valid JSON; starting empty")
+        return None
+    out: list[tuple[int, dict]] = []
+    for entry in data if isinstance(data, list) else []:
+        if isinstance(entry, list) and len(entry) == 2 and isinstance(entry[1], dict):
+            # Defensive: drop any terminal close marker a pre-fix buffer may
+            # carry, so it never replays the prior run's close on resume.
+            if entry[1].get("type") == "x-optio-closed":
+                continue
+            out.append((entry[0], entry[1]))
+    return out or None
 
 
 async def _plant_session_content(

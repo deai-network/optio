@@ -31,19 +31,50 @@ _LOG = logging.getLogger(__name__)
 BUFFER_MAXLEN = 1000
 UNBUFFERED_TYPES = {"stream_event"}
 PING_INTERVAL_S = 15.0
+# Bound aiohttp's graceful-shutdown wait. The /events SSE handler is a
+# long-lived loop; without this, runner.cleanup() would block on it for the
+# 60s default, stalling the session's cooperative-cancel teardown past its
+# grace period (→ forced "failed", snapshot never captured, not resumable).
+SHUTDOWN_TIMEOUT_S = 2.0
+# Sentinel pushed into each subscriber queue on stop() so the SSE handler
+# loop returns immediately instead of parking until the next ping timeout.
+_STOP = object()
 
 
 class ConversationListener:
-    def __init__(self, conversation, *, password: str) -> None:
+    def __init__(
+        self, conversation, *, password: str,
+        initial_events: "list[tuple[int, dict]] | None" = None,
+    ) -> None:
         self._conversation = conversation
         self._password = password
-        self._seq = 0
         self._buffer: deque[tuple[int, dict]] = deque(maxlen=BUFFER_MAXLEN)
+        # Re-prime the replay buffer from a previous run (resume) so a viewer
+        # attaching after a resume still sees the prior conversation history.
+        # seq continues monotonically from the highest restored value.
+        self._seq = 0
+        if initial_events:
+            for seq, event in initial_events:
+                self._buffer.append((seq, event))
+            self._seq = max(seq for seq, _ in initial_events)
         self._subscribers: set[asyncio.Queue] = set()
         self._pending_permissions: dict[str, asyncio.Future] = {}
         self._runner: web.AppRunner | None = None
         self._unsubscribe = conversation.on_event(self._on_event)
         conversation.on_permission_request(self._on_permission_request)
+
+    def export_buffer(self) -> "list[list]":
+        """Serializable snapshot of the replay buffer ([[seq, event], …]) for
+        persistence across a resume.
+
+        Excludes the terminal ``x-optio-closed`` marker: it records the END of
+        this run, not conversation content. Persisting it would replay on resume
+        and make the UI treat the live resumed session as already closed
+        (disabling the input)."""
+        return [
+            [seq, event] for seq, event in self._buffer
+            if event.get("type") != "x-optio-closed"
+        ]
 
     # -- event intake --------------------------------------------------------
 
@@ -121,12 +152,15 @@ class ConversationListener:
                     sent_through = seq
             while True:
                 try:
-                    seq, event = await asyncio.wait_for(
+                    item = await asyncio.wait_for(
                         queue.get(), timeout=PING_INTERVAL_S,
                     )
                 except asyncio.TimeoutError:
                     await resp.write(b": ping\n\n")
                     continue
+                if item is _STOP:
+                    break  # stop() asked us to close so teardown can proceed
+                seq, event = item
                 if seq > sent_through:
                     await send_item(seq, event)
                     sent_through = seq
@@ -190,7 +224,7 @@ class ConversationListener:
         app.router.add_post("/send", self._handle_send)
         app.router.add_post("/interrupt", self._handle_interrupt)
         app.router.add_post("/permission", self._handle_permission)
-        self._runner = web.AppRunner(app)
+        self._runner = web.AppRunner(app, shutdown_timeout=SHUTDOWN_TIMEOUT_S)
         await self._runner.setup()
         site = web.TCPSite(self._runner, bind_iface, 0)
         await site.start()
@@ -199,12 +233,20 @@ class ConversationListener:
         return server.sockets[0].getsockname()[1]
 
     async def stop(self) -> None:
-        self._unsubscribe()
+        # Idempotent: teardown paths may call stop() more than once. Make the
+        # unsubscribe one-shot so a second call can't double-remove the handler.
+        unsubscribe = self._unsubscribe
+        self._unsubscribe = lambda: None
+        unsubscribe()
         for fut in self._pending_permissions.values():
             if not fut.done():
                 fut.set_result(PermissionDecision(
                     behavior="deny", message="optio harness: session ending",
                 ))
+        # Wake every open /events handler so it returns now, instead of
+        # letting runner.cleanup() wait for the long-lived SSE loops.
+        for queue in list(self._subscribers):
+            queue.put_nowait(_STOP)
         if self._runner is not None:
             await self._runner.cleanup()
             self._runner = None

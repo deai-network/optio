@@ -150,3 +150,52 @@ async def test_auth_rejected(listener):
         assert r.status == 401
         r = await s.post(f"{url}/send", json={"text": "x"})
         assert r.status == 401
+
+
+async def test_stop_returns_promptly_with_open_sse(listener):
+    # An open /events SSE handler is a long-lived loop. stop() must wake it so
+    # runner.cleanup() does not block on aiohttp's graceful-shutdown wait —
+    # otherwise the session's cooperative-cancel teardown overruns its grace
+    # period and the resume snapshot is never captured.
+    conv, lst, url = listener
+    async with aiohttp.ClientSession() as s:
+        async with s.get(f"{url}/events", headers=_auth("pw")) as resp:
+            conv.fire({"type": "system", "subtype": "init"})
+            await _read_events(resp, 1)  # handler is now in its live loop
+            # Must return well under aiohttp's 60s default graceful wait.
+            await asyncio.wait_for(lst.stop(), timeout=5)
+
+
+async def test_buffer_export_reprime_continues_seq():
+    # Resume persistence: a listener's buffer can be exported and used to
+    # re-prime a fresh listener, so a viewer after resume sees prior history;
+    # new events continue the seq monotonically above the restored max.
+    conv = FakeConversation()
+    lst = ConversationListener(conv, password="pw")
+    conv.fire({"type": "user", "n": 1})
+    conv.fire({"type": "result", "n": 2})
+    exported = lst.export_buffer()
+    assert [e["n"] for _, e in [(x[0], x[1]) for x in exported]] == [1, 2]
+
+    conv2 = FakeConversation()
+    lst2 = ConversationListener(
+        conv2, password="pw", initial_events=[(x[0], x[1]) for x in exported],
+    )
+    assert [e["n"] for _, e in lst2._buffer] == [1, 2]
+    conv2.fire({"type": "user", "n": 3})
+    assert lst2._buffer[-1][0] > exported[-1][0]
+
+
+async def test_export_buffer_excludes_terminal_closed():
+    # The terminal x-optio-closed marks THIS run's end, not conversation
+    # content; persisting + replaying it on resume would make the UI treat the
+    # live resumed session as already closed. export_buffer must drop it.
+    conv = FakeConversation()
+    lst = ConversationListener(conv, password="pw")
+    conv.fire({"type": "user", "n": 1})
+    conv.fire({"type": "result", "n": 2})
+    conv.fire({"type": "x-optio-closed", "reason": "process ended"})
+    exported = lst.export_buffer()
+    types = [e.get("type") for _, e in [(x[0], x[1]) for x in exported]]
+    assert "x-optio-closed" not in types
+    assert types == ["user", "result"]
