@@ -29,6 +29,18 @@ OPENCODE_SEED_MANIFEST = seeds.SeedManifest(
 )
 
 
+# Credential-only manifest for in-session save-back (the write-back analog
+# of the full OPENCODE_SEED_MANIFEST; mirrors claudecode's
+# CLAUDE_CRED_MANIFEST). Only auth.json is re-captured — the seed's
+# opencode.json / plugins are never touched by save-back.
+OPENCODE_CRED_MANIFEST = seeds.SeedManifest(
+    home_subdir="home",
+    include=[".local/share/opencode/auth.json"],
+    version=OPENCODE_SEED_MANIFEST_VERSION,
+    consume_transform=None,
+)
+
+
 async def delete_seed(store, seed_id: str):
     """Delete an opencode seed doc; returns its GridFS blobId (or None).
 
