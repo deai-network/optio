@@ -18,7 +18,7 @@ Verified against opencode source at `/home/csillag/deai/opencode` (`packages/ope
 
 | Operation | Wire |
 |---|---|
-| Live events | `GET /event?directory=<urlencoded>` — SSE; each frame `data:` is `{"id", "type", "properties"}`; first event `server.connected`; heartbeat `server.heartbeat` every 10s |
+| Live events | `GET /global/event` — SSE; each frame `data:` is `{"directory"?, "project"?, "payload": {"id", "type", "properties"}}` (clients filter by `directory` and unwrap `payload`; `server.connected`/`server.heartbeat` frames are payload-only); first event `server.connected`; heartbeat every 10s. **Recorded reality (Task 8, server 1.14.45):** the per-instance `GET /event?directory=…` endpoint this table originally pinned ends its stream immediately after `server.connected` and is unusable for live events |
 | Send prompt | `POST /session/{sid}/prompt_async?directory=…` body `{"parts":[{"type":"text","text":…}]}` → 204 |
 | Interrupt | `POST /session/{sid}/abort?directory=…` body `{}` → boolean |
 | List pending permissions | `GET /permission?directory=…` → array of PermissionV1.Request `{id, sessionID, permission, patterns, metadata, always, tool?}` |
@@ -29,10 +29,11 @@ Verified against opencode source at `/home/csillag/deai/opencode` (`packages/ope
 Event types relevant to a conversation (all carry `sessionID` in `properties` or nested objects):
 
 - `message.updated` — `properties.info` is the v1 message info (`{id, sessionID, role: "user"|"assistant", time: {created, completed?}, …}`)
-- `message.part.updated` — `properties.part` is a full part state: text part `{id, messageID, sessionID, type:"text", text}`, tool part `{id, messageID, sessionID, type:"tool", callID, tool, state:{status:"pending"|"running"|"completed"|"error", input?, …}}`
-- `message.part.delta` — streaming text: `properties` `{sessionID, messageID, partID, delta}` (appended to the part's text)
+- `message.part.updated` — `properties` is `{part, sessionID, time}` (recorded reality, Task 8); `properties.part` is a full part state: text part `{id, messageID, sessionID, type:"text", text}`, tool part `{id, messageID, sessionID, type:"tool", callID, tool, state:{status:"pending"|"running"|"completed"|"error", input?, …}}`; also arrives for `reasoning`, `step-start`, `step-finish` parts (consumers ignore unknown part types)
+- `message.part.delta` — streaming text: `properties` `{sessionID, messageID, partID, field, delta}` — recorded reality (Task 8) includes a `field` discriminator (`"text"`); deltas stream the `text` field of `reasoning` parts as well as `text` parts, so consumers must route by `partID` and apply only `field == "text"`
 - `session.status` — `properties` `{sessionID, status: {type:"busy"} | {type:"idle", …}}` (deprecated twin: `session.idle`)
 - `permission.asked` — `properties` = PermissionV1.Request fields; `permission.replied` — `properties` `{sessionID, requestID, reply}`
+- Interleaved noise (recorded reality, Task 8 — consumers must ignore): `sync` (payload has `syncEvent`, no `properties`), `session.updated`, `session.diff`, `server.heartbeat`
 
 Mapping decisions (from the spec): `PermissionDecision.behavior "allow"` → reply `"once"`; `"deny"` → reply `"reject"` (with `message`). `updated_input` has no opencode equivalent — ignored (documented). Task 8 captures real fixtures and re-verifies all of the above empirically before the UI adapter is built.
 

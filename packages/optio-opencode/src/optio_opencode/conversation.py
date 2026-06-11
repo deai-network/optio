@@ -6,11 +6,18 @@ pre-creates a session, constructs this object with the same
 ``(worker_port, password, session_id)`` it already produces, publishes it via
 ``ctx.publish_result``, and runs ``run_reader()`` until teardown.
 
-Event payloads are transparent: every SSE frame is fanned out to ``on_event``
-subscribers as a dict, unmodified (``{"id", "type", "properties"}``).
-Synthetic events use the ``x-optio-`` type prefix. Permission requests are
-event-driven (``permission.asked``) with a list-endpoint sweep on every SSE
-(re)connect, so requests that fired during a stream gap are never lost.
+Live events come from ``GET /global/event`` — the per-instance
+``/event?directory=…`` endpoint closes immediately after ``server.connected``
+on the shipped server (verified empirically against 1.14.45, Task 8 fixtures).
+Each ``/global/event`` frame wraps the event as
+``{"directory"?, "project"?, "payload": {"id", "type", "properties"}}``
+(``server.connected``/``server.heartbeat`` carry no ``directory``); the driver
+drops frames for other directories and fans the unwrapped payload out to
+``on_event`` subscribers as a dict, unmodified (``{"id", "type",
+"properties"}``). Synthetic events use the ``x-optio-`` type prefix.
+Permission requests are event-driven (``permission.asked``) with a
+list-endpoint sweep on every SSE (re)connect, so requests that fired during a
+stream gap are never lost.
 
 See docs/2026-06-11-opencode-conversation-mode-design.md.
 """
@@ -20,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 
 import aiohttp
 
@@ -46,6 +54,9 @@ class OpencodeConversation:
         self._auth = aiohttp.BasicAuth("opencode", password)
         self._session_id = session_id
         self._directory = directory
+        # The server resolves instance directories (symlinks etc.) before
+        # stamping them onto /global/event frames; compare against realpath too.
+        self._directory_real = os.path.realpath(directory)
         self._pending = False
         self._closed = asyncio.Event()
         self._close_reason: str | None = None
@@ -66,8 +77,8 @@ class OpencodeConversation:
     # -- wiring ------------------------------------------------------------
 
     async def run_reader(self) -> None:
-        """Connect to /event and dispatch frames until cancelled (by the
-        session body at teardown) or closed. Reconnects with backoff."""
+        """Connect to /global/event and dispatch frames until cancelled (by
+        the session body at teardown) or closed. Reconnects with backoff."""
         self._dispatcher_task = asyncio.create_task(self._dispatch_loop())
         self._http = aiohttp.ClientSession(auth=self._auth)
         attempt = 0
@@ -93,8 +104,11 @@ class OpencodeConversation:
 
     async def _consume_sse(self) -> None:
         timeout = aiohttp.ClientTimeout(total=None, sock_connect=10)
+        # /global/event, not /event?directory=…: the per-instance endpoint
+        # ends its stream right after server.connected (observed on 1.14.45),
+        # so we take the global firehose and filter by directory ourselves.
         async with self._http.get(
-            self._url("/event"), params=self._params(), timeout=timeout,
+            self._url("/global/event"), timeout=timeout,
         ) as resp:
             resp.raise_for_status()
             # A (re)connect can postdate permission.asked events we never saw.
@@ -116,9 +130,23 @@ class OpencodeConversation:
                             {"type": "x-optio-unparseable", "line": payload},
                         )
                         continue
-                    self._route(obj)
+                    self._route_frame(obj)
 
     # -- event routing -------------------------------------------------------
+
+    def _route_frame(self, obj: dict) -> None:
+        """Unwrap one /global/event frame: drop other directories' events,
+        route the inner ``{"id", "type", "properties"}`` payload. Bare
+        (unwrapped) frames are routed as-is for fake/forward compatibility."""
+        frame_dir = obj.get("directory")
+        if (
+            frame_dir is not None
+            and frame_dir != self._directory
+            and os.path.realpath(frame_dir) != self._directory_real
+        ):
+            return
+        payload = obj.get("payload")
+        self._route(payload if isinstance(payload, dict) else obj)
 
     def _for_this_session(self, props: dict) -> bool:
         sid = (
@@ -191,7 +219,7 @@ class OpencodeConversation:
     async def _sweep_permissions(self) -> None:
         """Fetch pending permission requests and feed unanswered ones for our
         session to the gate. Gap-safety: covers asks fired while the SSE
-        stream was down (opencode's /event has no server-side replay)."""
+        stream was down (opencode's /global/event has no server-side replay)."""
         try:
             async with self._http.get(
                 self._url("/permission"), params=self._params(),

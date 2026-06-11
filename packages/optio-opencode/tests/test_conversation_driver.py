@@ -25,7 +25,7 @@ class FakeServer:
         self.events: asyncio.Queue = asyncio.Queue()
         self.pending_permissions: list[dict] = []
         self.app = web.Application()
-        self.app.router.add_get("/event", self._event)
+        self.app.router.add_get("/global/event", self._event)
         self.app.router.add_post("/session/{sid}/prompt_async", self._prompt)
         self.app.router.add_post("/session/{sid}/abort", self._abort)
         self.app.router.add_get("/permission", self._perm_list)
@@ -46,13 +46,19 @@ class FakeServer:
     async def stop(self):
         await self.runner.cleanup()
 
-    def emit(self, type_: str, properties: dict):
-        self.events.put_nowait({"id": f"evt_{type_}", "type": type_, "properties": properties})
+    def emit(self, type_: str, properties: dict, directory: str = "/work"):
+        # /global/event frame shape (Task 8 fixtures): instance events are
+        # wrapped {"directory", "project", "payload": {id, type, properties}}.
+        self.events.put_nowait({
+            "directory": directory,
+            "project": "global",
+            "payload": {"id": f"evt_{type_}", "type": type_, "properties": properties},
+        })
 
     async def _event(self, request):
         resp = web.StreamResponse(headers={"content-type": "text/event-stream"})
         await resp.prepare(request)
-        await resp.write(b'data: {"id":"evt_0","type":"server.connected","properties":{}}\n\n')
+        await resp.write(b'data: {"payload":{"id":"evt_0","type":"server.connected","properties":{}}}\n\n')
         try:
             while True:
                 ev = await self.events.get()
@@ -121,6 +127,17 @@ async def test_on_event_is_raw_passthrough(conv, server):
     assert any(e.get("type") == "message.part.delta" for e in seen)
     raw = next(e for e in seen if e.get("type") == "message.part.delta")
     assert raw["properties"]["delta"] == "He"  # unmodified native payload
+
+
+async def test_other_directory_frames_are_dropped(conv, server):
+    seen: list[dict] = []
+    conv.on_event(seen.append)
+    server.emit("message.part.delta",
+                {"sessionID": SID, "messageID": "m1", "partID": "p1",
+                 "field": "text", "delta": "not ours"},
+                directory="/elsewhere")
+    await asyncio.sleep(0.05)
+    assert not any(e.get("type") == "message.part.delta" for e in seen)
 
 
 async def test_on_message_fires_on_completed_assistant_message(conv, server):

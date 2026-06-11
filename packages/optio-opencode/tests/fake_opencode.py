@@ -195,8 +195,8 @@ SCENARIOS = {
     ],
 }
 
-# Conversation-surface state: events queued by scenarios for the /event SSE
-# stream, and pending permission requests served by GET /permission.
+# Conversation-surface state: events queued by scenarios for the /global/event
+# SSE stream, and pending permission requests served by GET /permission.
 CONV_EVENTS: list[dict] = []
 PENDING_PERMISSIONS: list[dict] = []
 
@@ -306,22 +306,30 @@ async def main() -> int:
             method = req_parts[0] if req_parts else ""
             path = req_parts[1].split("?", 1)[0] if len(req_parts) > 1 else ""
 
-            if method == "GET" and path == "/event":
-                # SSE stream: connection headers, server.connected, then poll
-                # CONV_EVENTS (per-connection index) until the socket closes
-                # (a failed send raises and falls through to conn.close()).
+            if method == "GET" and path == "/global/event":
+                # SSE stream mirroring the real server's /global/event:
+                # connection headers, a payload-only server.connected frame,
+                # then poll CONV_EVENTS (per-connection index), wrapping each
+                # event as {"directory", "project", "payload": {...}} — the
+                # shape recorded in Task 8's fixtures — until the socket
+                # closes (a failed send raises, falling through to close()).
                 await loop.sock_sendall(
                     conn,
                     b"HTTP/1.1 200 OK\r\n"
                     b"Content-Type: text/event-stream\r\n"
                     b"Cache-Control: no-cache\r\n"
                     b"Connection: close\r\n\r\n"
-                    b'data: {"id":"evt_0","type":"server.connected","properties":{}}\n\n',
+                    b'data: {"payload":{"id":"evt_0","type":"server.connected","properties":{}}}\n\n',
                 )
                 sent = 0
                 while True:
                     while sent < len(CONV_EVENTS):
-                        frame = f"data: {json.dumps(CONV_EVENTS[sent])}\n\n"
+                        wrapped = {
+                            "directory": os.getcwd(),
+                            "project": "global",
+                            "payload": CONV_EVENTS[sent],
+                        }
+                        frame = f"data: {json.dumps(wrapped)}\n\n"
                         await loop.sock_sendall(conn, frame.encode())
                         sent += 1
                     await asyncio.sleep(0.05)
