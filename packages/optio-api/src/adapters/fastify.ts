@@ -248,6 +248,25 @@ function registerWidgetProxy(app: FastifyInstance, opts: WidgetProxyInternalOpti
     },
 
     replyOptions: {
+      // Disable the upstream request timeout for widget proxying.
+      // @fastify/reply-from defaults to a 10s upstream timeout
+      // (lib/request.js:325-326). An embedded agent's interactive OAuth login
+      // (e.g. opencode's device-code flow) holds the proxied /oauth/callback
+      // POST open server-side — polling the provider, sending zero bytes — for
+      // as long as the human takes to authorize, far past 10s. reply-from would
+      // abort that and surface a 504 in the iframe. `0` disables the timeout,
+      // and survives reply-from's `opts.timeout ?? default` (a falsy
+      // http.requestOptions.timeout gets clobbered back to 10000 instead).
+      //
+      // Blanket (all widget upstreams), not scoped to the callback path:
+      // http-proxy's replyOpts is static, so per-path scoping would need a
+      // separate route. Safe because no hop in the Optio/Excavator stack
+      // imposes its own idle timeout (Caddy streams an in-flight response with
+      // no deadline; the host Fastify sets no requestTimeout). If a deployment
+      // ever sits behind an ingress/LB with a sub-request idle timeout, move the
+      // OAuth flow to client-side short-polling rather than lean on this
+      // held-open connection.
+      timeout: 0,
       getUpstream: (req: any) => {
         const widget = (req.raw as any).__optioWidget;
         return widget?.upstream.url ?? 'http://127.0.0.1/';
