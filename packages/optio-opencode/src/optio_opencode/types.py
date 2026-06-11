@@ -13,7 +13,21 @@ from optio_agents.protocol.session import DeliverableCallback, HookCallback
 from optio_host.types import SSHConfig
 
 
-__all__ = ["DeliverableCallback", "HookCallback", "SSHConfig", "OpencodeTaskConfig"]
+# Async resolver used as the callable form of ``seed_id``: receives the
+# process_id, returns the seed to consume. The consuming app's resolver
+# typically acquires a pooled seed lease inside (holder = process_id);
+# the session then renews that lease for the lifetime of the run and
+# releases it at teardown. Mirrors optio-claudecode.
+SeedProvider = Callable[[str], Awaitable[str]]
+
+
+__all__ = [
+    "DeliverableCallback",
+    "HookCallback",
+    "SSHConfig",
+    "SeedProvider",
+    "OpencodeTaskConfig",
+]
 
 
 @dataclass
@@ -54,7 +68,7 @@ class OpencodeTaskConfig:
     on_resume_refresh: Callable[["OpencodeTaskConfig"], "OpencodeTaskConfig"] | None = None
 
     # --- seed surface (mirrors optio-claudecode) ---
-    seed_id: str | None = None
+    seed_id: "str | SeedProvider | None" = None
     # Fired on teardown of a fresh session after a successful capture, with
     # two args: (seed_id, info). ``info`` is a human-readable summary of the
     # captured configuration — for opencode the resolved "providerID/modelID"

@@ -108,3 +108,13 @@ def test_opencode_task_config_on_resume_refresh_accepts_callable():
 
     cfg = OpencodeTaskConfig(consumer_instructions="x", on_resume_refresh=_refresh)
     assert cfg.on_resume_refresh is _refresh
+
+
+async def test_seed_id_accepts_callable_provider():
+    from optio_opencode.types import OpencodeTaskConfig, SeedProvider  # noqa: F401
+
+    async def provider(process_id: str) -> str:
+        return "abc123"
+
+    cfg = OpencodeTaskConfig(consumer_instructions="x", seed_id=provider)
+    assert callable(cfg.seed_id)
