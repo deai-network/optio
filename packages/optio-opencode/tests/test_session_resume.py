@@ -239,3 +239,96 @@ async def test_resume_appends_second_line_to_resume_log(mongo_db, task_root):
     # Timestamps (the leading token of each line) are monotonic.
     timestamps = [line.split()[0] for line in lines]
     assert timestamps[0] <= timestamps[1], f"timestamps not monotonic: {timestamps!r}"
+
+
+# --- conversation-mode resume ------------------------------------------------
+# Capture wiring mirrors tests/test_conversation_session.py (copied, per the
+# repo's no-cross-test-import style), grafted onto this file's _make_ctx so
+# the process-doc / snapshot / resume choreography stays canonical.
+
+
+def _wire_conversation_captures(ctx) -> list:
+    """Record set_widget_data payloads and publish_result objects on a ctx.
+
+    The real publish_result requires an attached executor (absent in tests),
+    so its wrapper only records. Returns the widget_data capture list.
+    """
+    widget_data: list = []
+    orig_data = ctx.set_widget_data
+
+    async def _data(payload):
+        widget_data.append(payload)
+        return await orig_data(payload)
+    ctx.set_widget_data = _data  # type: ignore[method-assign]
+
+    ctx.published_results = []
+
+    def _publish(obj):
+        ctx.published_results.append(obj)
+    ctx.publish_result = _publish  # type: ignore[method-assign]
+
+    return widget_data
+
+
+async def _launch_conversation(ctx, cfg):
+    """Run the session as a task; wait until publish_result was called."""
+    sess = asyncio.create_task(run_opencode_session(ctx, cfg))
+    for _ in range(200):
+        if ctx.published_results:           # captured by _wire_conversation_captures
+            return sess, ctx.published_results[0]
+        await asyncio.sleep(0.05)
+    sess.cancel()
+    raise AssertionError("conversation was never published")
+
+
+async def test_conversation_mode_resume_reattaches_session(
+    mongo_db, task_root, _supply_scenario, monkeypatch,
+):
+    """Resume of a conversation task: same opencode session id is reused
+    (preserved_session_id path) and the caller gets a working Conversation."""
+    from optio_opencode import session as session_mod
+
+    _supply_scenario["name"] = "conversation"
+
+    # Count session creation (the only code path that issues POST /session)
+    # to prove the resume run takes the preserved-session-id branch instead
+    # of creating a fresh opencode session.
+    create_calls: list[str] = []
+    orig_create = session_mod._create_opencode_session
+
+    async def _counting_create(port, password, directory):
+        create_calls.append(directory)
+        return await orig_create(port, password, directory)
+    monkeypatch.setattr(session_mod, "_create_opencode_session", _counting_create)
+    cfg = OpencodeTaskConfig(
+        consumer_instructions="", mode="conversation", host_protocol=False,
+        conversation_ui=True, supports_resume=True,
+        before_execute=_plant_auth_json,
+    )
+
+    # First run: launch, then cancel (snapshot capture on teardown).
+    ctx, _ = await _make_ctx(mongo_db, "oc_conv_resume", resume=False)
+    widget_data = _wire_conversation_captures(ctx)
+    sess, conv = await _launch_conversation(ctx, cfg)
+    first_widget_data = widget_data[-1]
+    assert len(create_calls) == 1           # fresh run pre-created a session
+    ctx.cancellation_flag.set()             # simulate user cancel
+    # The protocol driver swallows cancellation cleanly and returns; the
+    # session's finally captures the snapshot with endState "cancelled".
+    await asyncio.wait_for(sess, timeout=30)
+    assert conv.closed
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id="oc_conv_resume")
+    assert snap is not None
+    assert snap["endState"] == "cancelled"
+
+    # Resume run: same session id reattached, gateway functional.
+    ctx2, _ = await _make_ctx(mongo_db, "oc_conv_resume", resume=True)
+    widget_data2 = _wire_conversation_captures(ctx2)
+    sess2, conv2 = await _launch_conversation(ctx2, cfg)
+    assert widget_data2[-1]["sessionID"] == first_widget_data["sessionID"]
+    assert len(create_calls) == 1           # POST /session NOT repeated on resume
+    assert not conv2.closed
+    await conv2.send("we're back")          # gateway functional after resume
+    await conv2.close()
+    await asyncio.wait_for(sess2, timeout=30)
+    assert conv2.closed
