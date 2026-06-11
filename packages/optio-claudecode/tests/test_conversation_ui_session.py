@@ -10,8 +10,8 @@ Three layers (Phase II spec, docs/2026-06-10-claudecode-conversation-ui-design.m
   3. Session integration (same bootstrap as ``test_conversation_session.py``
      — real engine, claude shim): a ``conversation_ui=True`` task registers
      a reachable ConversationListener as widgetUpstream (per-task basic-auth
-     inner credential, ``widgetData == {"toolVerbosity": ...}``,
-     ``uiWidget == "claudecode-conversation"``), the SSE replay carries the
+     inner credential, ``widgetData == {"protocol": ..., "toolVerbosity": ...}``,
+     ``uiWidget == "conversation"``), the SSE replay carries the
      fake's ``system/init`` event, and the listener port is closed once the
      task reaches its terminal state.
 """
@@ -230,7 +230,7 @@ async def test_conversation_ui_session_lifecycle(
             name="Conversation UI",
             config=_ui_config(shim_install_dir, claude_cache_dir),
         )
-        assert task.ui_widget == "claudecode-conversation"
+        assert task.ui_widget == "conversation"
         await optio.adhoc_define(task)
         conv = await optio.launch_and_await_result(
             "cc-conv-ui", session_id=None, timeout=60,
@@ -244,8 +244,11 @@ async def test_conversation_ui_session_lifecycle(
         assert inner is not None
         assert inner["username"] == "optio"
         assert inner["password"]
-        assert proc["widgetData"] == {"toolVerbosity": "description-only"}
-        assert proc["uiWidget"] == "claudecode-conversation"
+        assert proc["widgetData"] == {
+            "protocol": "claudecode",
+            "toolVerbosity": "description-only",
+        }
+        assert proc["uiWidget"] == "conversation"
 
         # Hit the listener directly, authenticating with the inner credential
         # the widget proxy would inject; the replay buffer must already carry

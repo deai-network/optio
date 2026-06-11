@@ -11,11 +11,11 @@ import {
   useInstances,
   useOptioLive,
 } from 'optio-ui';
-import { registerClaudeCodeConversationWidget } from 'optio-claudecode-ui';
+import { registerConversationWidget } from 'optio-conversation-ui';
 import { LoginForm } from './LoginForm.js';
 import { useSession, signOut } from './auth-client.js';
 
-registerClaudeCodeConversationWidget();
+registerConversationWidget();
 
 const { Header, Sider, Content } = Layout;
 const { Title } = Typography;

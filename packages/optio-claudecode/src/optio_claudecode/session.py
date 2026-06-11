@@ -497,7 +497,7 @@ async def run_claudecode_session(
                 f"http://{upstream_host}:{listener_port}",
                 inner_auth=BasicAuth(username="optio", password=listener_password),
             )
-            await ctx.set_widget_data({"toolVerbosity": config.tool_verbosity})
+            await ctx.set_widget_data({"protocol": "claudecode", "toolVerbosity": config.tool_verbosity})
             ctx.report_progress(None, "Conversation UI is live")
 
         # Kickoff / resume notice as first stdin messages (print mode with
@@ -1310,7 +1310,7 @@ def create_claudecode_task(
         description=description,
         ui_widget=(
             "iframe-input" if config.mode == "iframe"
-            else ("claudecode-conversation" if config.conversation_ui else None)
+            else ("conversation" if config.conversation_ui else None)
         ),
         supports_resume=config.supports_resume,
         metadata=metadata or {},

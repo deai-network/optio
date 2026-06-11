@@ -235,5 +235,26 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                 ),
             )
         )
+        tasks.append(
+            create_opencode_task(
+                process_id=f"opencode-conversation-seed-{seed_id}",
+                name=f"opencode conversation — {name}",
+                description=(
+                    "Conversation-mode opencode session from a captured seed: "
+                    "drive it from the dashboard's conversation widget (send, "
+                    "interrupt, approve/deny permissions). Caller-driven; no "
+                    "keyword channel."
+                ),
+                config=OpencodeTaskConfig(
+                    consumer_instructions="",   # defaulted conversation prompt
+                    mode="conversation",
+                    conversation_ui=True,
+                    host_protocol=False,
+                    ssh=ssh,
+                    seed_id=seed_id,
+                    supports_resume=True,
+                ),
+            )
+        )
 
     return tasks

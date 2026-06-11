@@ -291,12 +291,12 @@ importers:
       optio-api:
         specifier: workspace:*
         version: link:../optio-api
-      optio-claudecode-ui:
-        specifier: workspace:*
-        version: link:../optio-claudecode-ui
       optio-contracts:
         specifier: workspace:*
         version: link:../optio-contracts
+      optio-conversation-ui:
+        specifier: workspace:*
+        version: link:../optio-conversation-ui
       optio-ui:
         specifier: workspace:*
         version: link:../optio-ui
