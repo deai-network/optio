@@ -148,13 +148,43 @@ SCENARIOS = {
         ("log", "STATUS: waiting to be cancelled"),
         ("sleep", 3600),
     ],
+    "conversation": [
+        ("sleep", 0.1),
+        ("conv_event", {"type": "message.part.delta",
+                        "properties": {"sessionID": "fake-session-id",
+                                       "messageID": "m1", "partID": "p1",
+                                       "delta": "Hello"}}),
+        ("conv_event", {"type": "message.part.updated",
+                        "properties": {"part": {"id": "p1", "messageID": "m1",
+                                                "sessionID": "fake-session-id",
+                                                "type": "text", "text": "Hello from fake"}}}),
+        ("conv_event", {"type": "message.updated",
+                        "properties": {"info": {"id": "m1",
+                                                "sessionID": "fake-session-id",
+                                                "role": "assistant",
+                                                "time": {"created": 1, "completed": 2}}}}),
+        ("conv_event", {"type": "session.status",
+                        "properties": {"sessionID": "fake-session-id",
+                                       "status": {"type": "idle"}}}),
+        ("sleep", 3600),  # hold the server open; tests terminate the process
+    ],
 }
+
+# Conversation-surface state: events queued by scenarios for the /event SSE
+# stream, and pending permission requests served by GET /permission.
+CONV_EVENTS: list[dict] = []
+PENDING_PERMISSIONS: list[dict] = []
 
 
 def append_log(line: str) -> None:
     with open("optio.log", "a", encoding="utf-8") as fh:
         fh.write(line + "\n")
         fh.flush()
+
+
+def _journal(kind: str, payload: dict) -> None:
+    with open("conv_journal.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps({"kind": kind, **payload}) + "\n")
 
 
 async def run_scenario(name: str) -> int:
@@ -177,6 +207,10 @@ async def run_scenario(name: str) -> int:
                 fh.write(step[2])
         elif op == "exit":
             return step[1]
+        elif op == "conv_event":
+            CONV_EVENTS.append(step[1])
+        elif op == "permission_pending":
+            PENDING_PERMISSIONS.append(step[1])
     # Scenario finished; hold open until killed.
     while True:
         await asyncio.sleep(3600)
@@ -230,19 +264,74 @@ async def main() -> int:
                         clen = 0
                     break
             remaining = max(0, clen - len(body_so_far))
+            request_body = body_so_far
             while remaining > 0:
                 chunk = await asyncio.wait_for(loop.sock_recv(conn, min(remaining, 4096)), timeout=5.0)
                 if not chunk:
                     break
+                request_body += chunk
                 remaining -= len(chunk)
+            try:
+                parsed_body = json.loads(request_body) if request_body else {}
+            except ValueError:
+                parsed_body = {}
 
             first_line = header_bytes.split(b"\r\n", 1)[0] if header_bytes else b""
+            req_parts = first_line.decode("latin-1").split(" ")
+            method = req_parts[0] if req_parts else ""
+            path = req_parts[1].split("?", 1)[0] if len(req_parts) > 1 else ""
+
+            if method == "GET" and path == "/event":
+                # SSE stream: connection headers, server.connected, then poll
+                # CONV_EVENTS (per-connection index) until the socket closes
+                # (a failed send raises and falls through to conn.close()).
+                await loop.sock_sendall(
+                    conn,
+                    b"HTTP/1.1 200 OK\r\n"
+                    b"Content-Type: text/event-stream\r\n"
+                    b"Cache-Control: no-cache\r\n"
+                    b"Connection: close\r\n\r\n"
+                    b'data: {"id":"evt_0","type":"server.connected","properties":{}}\n\n',
+                )
+                sent = 0
+                while True:
+                    while sent < len(CONV_EVENTS):
+                        frame = f"data: {json.dumps(CONV_EVENTS[sent])}\n\n"
+                        await loop.sock_sendall(conn, frame.encode())
+                        sent += 1
+                    await asyncio.sleep(0.05)
+
             is_session_post = (
                 first_line.startswith(b"POST /session ")
                 or first_line.startswith(b"POST /session?")
             )
             if is_session_post:
                 body = b'{"id": "fake-session-id"}'
+                ctype = b"application/json"
+            elif method == "POST" and path.startswith("/session/") and path.endswith("/prompt_async"):
+                _journal("prompt_async", {"sid": path.split("/")[2], "body": parsed_body})
+                body = b"ok"
+                ctype = b"text/plain"
+            elif method == "POST" and path.startswith("/session/") and path.endswith("/abort"):
+                _journal("abort", {"sid": path.split("/")[2]})
+                body = b"true"
+                ctype = b"application/json"
+            elif method == "GET" and path == "/permission":
+                body = json.dumps(PENDING_PERMISSIONS).encode()
+                ctype = b"application/json"
+            elif method == "POST" and path.startswith("/permission/") and path.endswith("/reply"):
+                rid = path.split("/")[2]
+                _journal("perm_reply", {"rid": rid, "body": parsed_body})
+                PENDING_PERMISSIONS[:] = [
+                    p for p in PENDING_PERMISSIONS if p.get("id") != rid
+                ]
+                CONV_EVENTS.append({
+                    "type": "permission.replied",
+                    "properties": {"sessionID": "fake-session-id",
+                                   "requestID": rid,
+                                   "reply": parsed_body.get("reply")},
+                })
+                body = b"true"
                 ctype = b"application/json"
             else:
                 body = b"ok"

@@ -229,3 +229,50 @@ async def test_finish_emits_x_optio_closed_and_send_raises(conv, server):
     assert {"type": "x-optio-closed", "reason": "test over"} in seen
     with pytest.raises(ConversationClosed):
         await conv.send("more")
+
+
+# --- fake_opencode.py subprocess parity --------------------------------
+
+import os
+import subprocess
+import sys
+
+FAKE = os.path.join(os.path.dirname(__file__), "fake_opencode.py")
+
+
+@pytest_asyncio.fixture
+async def fake_proc(tmp_path):
+    proc = subprocess.Popen(
+        [sys.executable, FAKE, "--port", "0", "--scenario", "conversation"],
+        stdout=subprocess.PIPE, cwd=tmp_path, text=True,
+    )
+    line = proc.stdout.readline()  # "Listening on http://127.0.0.1:<port>/"
+    port = int(line.rsplit(":", 1)[1].strip().rstrip("/"))
+    yield port, tmp_path
+    proc.terminate()
+    proc.wait(timeout=5)
+
+
+async def test_driver_against_fake_opencode_subprocess(fake_proc):
+    port, workdir = fake_proc
+    c = OpencodeConversation(
+        port=port, password="pw", session_id="fake-session-id", directory=str(workdir),
+    )
+    seen: list[dict] = []
+    c.on_event(seen.append)
+    reader = asyncio.create_task(c.run_reader())
+    await asyncio.sleep(0.3)  # scenario emits its scripted events
+    await c.send("hi there")
+    await c.interrupt()
+    await asyncio.sleep(0.2)
+    reader.cancel()
+    try:
+        await reader
+    except asyncio.CancelledError:
+        pass
+    # Scenario's scripted event arrived over SSE:
+    assert any(e.get("type") == "message.part.delta" for e in seen)
+    # The fake journaled our POSTs:
+    journal = (workdir / "conv_journal.jsonl").read_text().splitlines()
+    kinds = [json.loads(l)["kind"] for l in journal]
+    assert "prompt_async" in kinds and "abort" in kinds
