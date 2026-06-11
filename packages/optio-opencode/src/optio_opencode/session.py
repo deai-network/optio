@@ -367,6 +367,23 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                 },
             })
             ctx.report_progress(None, "opencode is live")
+        elif config.conversation_ui:
+            # Conversation widget: the opencode server itself is the upstream
+            # (same proxy + inner-auth model as iframe mode); the widget talks
+            # opencode's native API through the proxy.
+            await ctx.set_widget_upstream(
+                f"http://{upstream_host}:{worker_port}",
+                inner_auth=BasicAuth(username="opencode", password=password),
+            )
+            await ctx.set_widget_data({
+                "protocol": "opencode",
+                "sessionID": session_id,
+                # opencode routes resolve their project instance from the
+                # request's location context; the widget sends this as the
+                # ?directory= query param on every call.
+                "directory": host.workdir,
+                "toolVerbosity": config.tool_verbosity,
+            })
 
         if resolved_seed_id is not None:
             cred_watch_task = asyncio.create_task(cred_watcher.run_credential_watcher(
