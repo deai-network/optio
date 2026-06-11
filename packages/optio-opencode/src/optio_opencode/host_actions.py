@@ -145,14 +145,20 @@ async def _smart_install_check(
 
 
 async def _install_opencode_from_zip(
-    hook_ctx, url: str, *, install_dir: str | None = None,
+    host: "Host",
+    download: "Callable[[str, str], Awaitable[None]]",
+    url: str,
+    *,
+    install_dir: str | None = None,
 ) -> str:
     """Download the opencode release archive from ``url`` and install it.
 
     Uniform for LocalHost and RemoteHost:
       1. mktemp -d on the host.
-      2. ``hook_ctx.download_file(url, <tmpdir>/opencode.zip)`` (spawns the
-         child download task — emits its own progress on the child ctx).
+      2. ``download(url, <tmpdir>/opencode.zip)`` (engine callers pass
+         ``hook_ctx.download_file``, which spawns the child download task —
+         emits its own progress on the child ctx; engine-less callers pass
+         ``curl_downloader(host)``).
       3. unzip on the host (archive layout: ``bin/opencode`` + sidecars).
       4. mkdir -p ``install_dir``; move binary there; chmod +x.
       5. Remove the tempdir.
@@ -162,7 +168,6 @@ async def _install_opencode_from_zip(
 
     Returns the absolute install path on the host.
     """
-    host = hook_ctx._host
     resolved_install_dir = await _resolve_install_dir(host, install_dir)
     r = await host.run_command("mktemp -d -t optio-opencode-XXXXXX")
     if r.exit_code != 0:
@@ -172,7 +177,7 @@ async def _install_opencode_from_zip(
     tmpdir = r.stdout.strip()
     zip_path = f"{tmpdir}/opencode.zip"
     try:
-        await hook_ctx.download_file(url, zip_path)
+        await download(url, zip_path)
 
         r = await host.run_command(
             f"unzip -o -q {shlex.quote(zip_path)} -d {shlex.quote(tmpdir)}"
@@ -211,20 +216,23 @@ async def _install_opencode_from_zip(
 
 
 async def ensure_opencode_installed(
-    hook_ctx,
-    install_if_missing: bool = True,
+    host: "Host",
     *,
+    download: "Callable[[str, str], Awaitable[None]]",
+    report_progress: "Callable | None" = None,
+    install_if_missing: bool = True,
     install_dir: str | None = None,
 ) -> str:
-    """Ensure opencode is available on the host behind ``hook_ctx``.
+    """Ensure opencode is available on ``host``.
 
     Uniform local + remote: runs the upstream smart-install.sh in
     ``--check`` mode via ``host.run_command``. If the host already has the
     latest opencode, returns the absolute path that ``command -v opencode``
-    resolves to. Otherwise — when ``install_if_missing`` is True — downloads
-    the release zip (as an optio child task, so progress shows up in the
-    UI), unpacks it, and installs the binary at
-    ``<install_dir>/opencode``.
+    resolves to. Otherwise — when ``install_if_missing`` is True — fetches
+    the release zip via ``download`` (engine callers pass
+    ``hook_ctx.download_file``, so progress shows up in the UI as an optio
+    child task; engine-less callers pass ``curl_downloader(host)``),
+    unpacks it, and installs the binary at ``<install_dir>/opencode``.
 
     ``install_dir`` is the absolute path of the directory that holds (or
     will hold) the ``opencode`` binary on the host. When None (default),
@@ -235,17 +243,23 @@ async def ensure_opencode_installed(
     smart-install's PATH lookup, and for the post-"ok" ``command -v``
     resolution, so all three stay in agreement.
 
+    INVARIANT: install-dir resolution (_resolve_install_dir) runs against the
+    host's REAL environment, never under _isolation_env. If the per-task
+    isolation env leaked in, XDG_CACHE_HOME would point inside the (possibly
+    throwaway) workdir: the binary would re-download per run and be deleted
+    at teardown. The shared worker cache must stay outside every workdir.
+
     Returns the absolute path of the opencode binary on the host.
 
     Raises RuntimeError when the check is unparseable, when an install is
     needed but ``install_if_missing`` is False, or when any sub-step fails.
     """
-    host = hook_ctx._host
     resolved_install_dir = await _resolve_install_dir(host, install_dir)
     # Mark the parent task indeterminate-active before any host I/O so the
     # dashboard shows it working rather than stuck at 0% while the install
     # check (and any subsequent download child task) runs.
-    hook_ctx.report_progress(None, "Checking opencode installation…")
+    if report_progress is not None:
+        report_progress(None, "Checking opencode installation…")
     kind, url = await _smart_install_check(host, install_dir=resolved_install_dir)
     if kind == "ok":
         # Resolve the on-PATH path. Login shell so ``$HOME``-relative
@@ -271,10 +285,64 @@ async def ensure_opencode_installed(
             "install_if_missing=False was requested."
         )
     assert url is not None  # _smart_install_check guarantees
-    hook_ctx.report_progress(None, "Installing opencode…")
+    if report_progress is not None:
+        report_progress(None, "Installing opencode…")
     return await _install_opencode_from_zip(
-        hook_ctx, url, install_dir=resolved_install_dir,
+        host, download, url, install_dir=resolved_install_dir,
     )
+
+
+def curl_downloader(host: "Host") -> "Callable[[str, str], Awaitable[None]]":
+    """Context-free downloader for engine-less callers (verify): fetch a URL
+    to a host path via curl on the host itself, vs the engine's child-task
+    download_file."""
+    async def download(url: str, dest: str) -> None:
+        r = await host.run_command(
+            f"curl -fsSL {shlex.quote(url)} -o {shlex.quote(dest)}"
+        )
+        if r.exit_code != 0:
+            raise RuntimeError(
+                f"curl download failed (exit {r.exit_code}): {r.stderr.strip()[:200]}"
+            )
+    return download
+
+
+def build_host(ssh, taskdir: str) -> "Host":
+    """ssh_config + taskdir -> LocalHost/RemoteHost. Lifted from
+    session._build_host so engine-less callers (verify) share it."""
+    import os as _os
+    from optio_host.host import LocalHost, RemoteHost
+
+    if ssh is None:
+        _os.makedirs(taskdir, exist_ok=True)
+        host = LocalHost(taskdir=taskdir)
+        _os.makedirs(host.workdir, exist_ok=True)
+        return host
+    return RemoteHost(ssh_config=ssh, taskdir=taskdir)
+
+
+async def run_opencode_probe(
+    host: "Host",
+    *,
+    opencode_executable: str,
+    model: str,
+    prompt: str,
+    wrap: "list[str] | None" = None,
+    timeout_s: float = 180.0,
+) -> "tuple[str, int]":
+    """Headless one-shot `opencode run` under the per-task isolation env.
+    Returns (stdout, exit_code). `wrap` is an argv prefix seam (future
+    claustrum fs-isolation). Plain output — the caller's verdict is a
+    challenge-answer match on stdout; exit code is diagnostics only."""
+    import asyncio as _asyncio
+
+    argv = [*(wrap or []), opencode_executable, "run", "--model", model, prompt]
+    cmd = " ".join(shlex.quote(a) for a in argv)
+    result = await _asyncio.wait_for(
+        host.run_command(f"bash -lc {shlex.quote(cmd)}", env=_isolation_env(host)),
+        timeout=timeout_s,
+    )
+    return (result.stdout or "", result.exit_code)
 
 
 async def opencode_version(

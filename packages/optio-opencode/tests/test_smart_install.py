@@ -202,7 +202,7 @@ async def test_install_opencode_from_zip_happy_path(zip_server, tmp_path):
         parent = _ExecutingFakeCtx(process_id="opencode.task")
         hook_ctx = HookContext(parent, host)
 
-        path = await _install_opencode_from_zip(hook_ctx, url)
+        path = await _install_opencode_from_zip(host, hook_ctx.download_file, url)
 
         assert path == str(fake_home / ".cache" / "optio-opencode" / "bin" / "opencode")
         # Installed and executable.
@@ -252,7 +252,7 @@ async def test_install_opencode_from_zip_cleans_up_tempdir(zip_server, tmp_path)
 
         host.run_command = spy  # type: ignore[method-assign]
 
-        await _install_opencode_from_zip(hook_ctx, url)
+        await _install_opencode_from_zip(host, hook_ctx.download_file, url)
 
         assert tmpdirs, "no mktemp -d call observed"
         for td in tmpdirs:
@@ -297,7 +297,10 @@ async def test_ensure_opencode_installed_returns_existing_path_when_ok(monkeypat
     parent = _ExecutingFakeCtx()
     hook_ctx = HookContext(parent, host)
 
-    path = await host_actions.ensure_opencode_installed(hook_ctx, install_dir="/opt/bin")
+    path = await host_actions.ensure_opencode_installed(
+        host, download=hook_ctx.download_file, report_progress=None,
+        install_dir="/opt/bin",
+    )
     assert path == "/usr/local/bin/opencode"
 
 
@@ -323,7 +326,8 @@ async def test_ensure_opencode_installed_raises_when_install_disabled(monkeypatc
 
     with pytest.raises(RuntimeError, match="install_if_missing"):
         await host_actions.ensure_opencode_installed(
-            hook_ctx, install_if_missing=False, install_dir="/opt/bin",
+            host, download=hook_ctx.download_file, report_progress=None,
+            install_if_missing=False, install_dir="/opt/bin",
         )
 
 
@@ -357,7 +361,9 @@ async def test_ensure_opencode_installed_installs_when_download_required(
         parent = _ExecutingFakeCtx()
         hook_ctx = HookContext(parent, host)
 
-        path = await host_actions.ensure_opencode_installed(hook_ctx)
+        path = await host_actions.ensure_opencode_installed(
+            host, download=hook_ctx.download_file, report_progress=None,
+        )
         assert path == str(fake_home / ".cache" / "optio-opencode" / "bin" / "opencode")
         st = os.stat(path)
         assert st.st_mode & 0o111
@@ -428,7 +434,8 @@ async def test_ensure_opencode_installed_respects_custom_install_dir(
     hook_ctx = HookContext(parent, host)
 
     path = await host_actions.ensure_opencode_installed(
-        hook_ctx, install_dir=str(custom_dir),
+        host, download=hook_ctx.download_file, report_progress=None,
+        install_dir=str(custom_dir),
     )
 
     assert path == str(custom_dir / "opencode")
@@ -486,7 +493,9 @@ async def test_ensure_opencode_installed_default_install_dir_is_cache(
     parent = _ExecutingFakeCtx()
     hook_ctx = HookContext(parent, host)
 
-    path = await host_actions.ensure_opencode_installed(hook_ctx)
+    path = await host_actions.ensure_opencode_installed(
+        host, download=hook_ctx.download_file, report_progress=None,
+    )
     assert path == f"{expected_default}/opencode"
     assert observed == [expected_default]  # resolved cache flows into smart-install
     assert observed == [expected_default]

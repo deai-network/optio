@@ -84,7 +84,7 @@ def _supply_scenario(monkeypatch):
         )
     monkeypatch.setattr(host_actions, "launch_opencode", _launch)
 
-    async def _ensure(hook_ctx, install_if_missing=True, *, install_dir=None):
+    async def _ensure(host, **kwargs):
         return "opencode"
     monkeypatch.setattr(host_actions, "ensure_opencode_installed", _ensure)
 

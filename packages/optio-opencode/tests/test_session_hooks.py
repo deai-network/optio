@@ -111,7 +111,7 @@ def _patch_host_actions(monkeypatch, host):
     """
     from optio_opencode import host_actions
 
-    async def _ensure(_hook_ctx, install_if_missing=True, *, install_dir=None):
+    async def _ensure(_host, **kwargs):
         host.timeline.append("install_binary")
         return "opencode"
 

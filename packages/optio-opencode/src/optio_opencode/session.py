@@ -32,7 +32,7 @@ from optio_core.models import BasicAuth, TaskInstance
 
 from optio_agents import HookContext
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
-from optio_host.host import Host, LocalHost, ProcessHandle, RemoteHost
+from optio_host.host import Host, LocalHost, ProcessHandle
 from optio_host.paths import task_dir
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_agents import seeds as _seeds
@@ -63,17 +63,12 @@ def _build_host(config: OpencodeTaskConfig, process_id: str) -> Host:
 
     Extracted so tests can monkeypatch ``optio_opencode.session._build_host``
     to inject a fake host without launching real subprocesses or SSH.
+    Delegates to host_actions.build_host (shared with verify).
     """
     taskdir = task_dir(
         ssh=config.ssh, process_id=process_id, consumer_name="optio-opencode",
     )
-    if config.ssh is None:
-        os.makedirs(taskdir, exist_ok=True)
-        host: Host = LocalHost(taskdir=taskdir)
-        os.makedirs(host.workdir, exist_ok=True)
-        return host
-    else:
-        return RemoteHost(ssh_config=config.ssh, taskdir=taskdir)
+    return host_actions.build_host(config.ssh, taskdir)
 
 
 async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) -> None:
@@ -114,7 +109,9 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         """
         nonlocal opencode_exec, resuming, preserved_session_id
         opencode_exec = await host_actions.ensure_opencode_installed(
-            hook_ctx,
+            hook_ctx._host,
+            download=hook_ctx.download_file,
+            report_progress=hook_ctx.report_progress,
             install_if_missing=config.install_if_missing,
             install_dir=config.opencode_install_dir,
         )
