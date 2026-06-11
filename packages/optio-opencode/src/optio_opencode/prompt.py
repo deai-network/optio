@@ -18,6 +18,14 @@ throughout the session.
 """
 
 
+DEFAULT_CONVERSATION_INSTRUCTIONS = "Let's have a conversation with the user."
+
+_SYSTEM_PREFIX_EXPLAINER = """
+(Messages prefixed `System:` on your input channel originate from the
+harness coordinating this session, not from the human user.)
+"""
+
+
 BASE_PROMPT_POST = """## Task
 
 Here comes the description of your actual task to complete. Throughout
@@ -122,6 +130,8 @@ def compose_agents_md(
     workdir_exclude: list[str] | None,
     documentation: str | None = None,
     supports_resume: bool = True,
+    host_protocol: bool = True,
+    omit_task_framing: bool = False,
 ) -> str:
     """Build the full AGENTS.md body.
 
@@ -136,13 +146,34 @@ def compose_agents_md(
         unit tests / standalone callers) to opencode's ``suppress`` docs.
       supports_resume: when False, the resume-detection section is omitted
         from the prompt. Default True.
+
+    ``host_protocol=False`` omits the keyword-protocol documentation
+    block entirely (conversation mode without the optio.log channel);
+    the resume section then gains a self-contained ``System:`` explainer
+    that the protocol docs would otherwise provide.
+
+    ``omit_task_framing=True`` drops the ``## Task`` framing block
+    (used when the conversation instructions were defaulted).
     """
-    if documentation is None:
-        documentation = build_log_channel_prompt("suppress")
-    base_prompt_pre = _OPENCODE_INTRO + documentation
-    body = consumer_instructions.rstrip()
+    if host_protocol:
+        if documentation is None:
+            documentation = build_log_channel_prompt("suppress")
+        base_prompt_pre = _OPENCODE_INTRO + documentation
+    else:
+        # Conversation mode without the optio.log channel: no keyword docs,
+        # and the intro that frames them is dropped too.
+        base_prompt_pre = ""
     if supports_resume:
-        resume_block = _render_resume_section(workdir_exclude) + "\n"
+        resume_block = _render_resume_section(workdir_exclude)
+        if not host_protocol:
+            # The protocol docs normally explain the `System:` convention;
+            # without them the resume section carries its own explainer.
+            resume_block = resume_block + _SYSTEM_PREFIX_EXPLAINER
+        resume_block = resume_block + "\n"
     else:
         resume_block = ""
-    return f"{base_prompt_pre}\n{resume_block}{BASE_PROMPT_POST}\n{body}\n"
+    body = consumer_instructions.rstrip()
+    pre = f"{base_prompt_pre}\n" if base_prompt_pre else ""
+    if omit_task_framing:
+        return f"{pre}{resume_block}{body}\n"
+    return f"{pre}{resume_block}{BASE_PROMPT_POST}\n{body}\n"

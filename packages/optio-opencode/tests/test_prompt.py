@@ -108,3 +108,41 @@ def test_opencode_docs_omit_browser_keyword():
 def test_opencode_docs_include_suppress_note():
     out = _compose()
     assert "impossible to launch a browser" in out
+
+
+# --- conversation-mode composition -------------------------------------
+
+from optio_opencode.prompt import DEFAULT_CONVERSATION_INSTRUCTIONS
+
+
+def test_host_protocol_off_omits_keyword_docs():
+    out = compose_agents_md(
+        "talk to me", workdir_exclude=None, host_protocol=False,
+    )
+    assert "optio.log" not in out
+    assert "DELIVERABLE" not in out
+    assert "talk to me" in out
+
+
+def test_host_protocol_off_resume_gains_system_explainer():
+    out = compose_agents_md(
+        "x", workdir_exclude=None, host_protocol=False, supports_resume=True,
+    )
+    assert "System:" in out          # the explainer
+    assert "## Resumes" in out       # resume section retained
+
+
+def test_omit_task_framing_drops_task_header():
+    out = compose_agents_md(
+        DEFAULT_CONVERSATION_INSTRUCTIONS,
+        workdir_exclude=None, host_protocol=False, supports_resume=False,
+        omit_task_framing=True,
+    )
+    assert "## Task" not in out
+    assert out.rstrip().endswith(DEFAULT_CONVERSATION_INSTRUCTIONS)
+
+
+def test_default_composition_unchanged():
+    out = compose_agents_md("body", workdir_exclude=None)
+    assert "## Task" in out
+    assert "optio.log" in out
