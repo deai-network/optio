@@ -1,0 +1,658 @@
+[
+  {
+    "payload": {
+      "id": "evt_eb8332cdf001js1bEfKv6Ez3UW",
+      "type": "server.connected",
+      "properties": {}
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb83351a1001zRAhC73mM2nGin",
+      "type": "message.updated",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "info": {
+          "id": "msg_eb83351a0001wNMKKhE3dkKCWC",
+          "role": "user",
+          "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+          "time": {
+            "created": 1781206831520
+          },
+          "agent": "build",
+          "model": {
+            "providerID": "requesty",
+            "modelID": "fireworks/kimi-k2.6"
+          }
+        }
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb83351a2001kp0BXVDt8jzkMT",
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "part": {
+          "type": "text",
+          "text": "Run `echo hi` in the shell, then tell me what it printed.",
+          "messageID": "msg_eb83351a0001wNMKKhE3dkKCWC",
+          "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+          "id": "prt_eb83351a0002Djmea2IAr2iDnW"
+        },
+        "time": 1781206831522
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb83351a5001976WvNexXBAVgO",
+      "type": "session.status",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "status": {
+          "type": "busy"
+        }
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb83351a7001aiVjV93gW3vYml",
+      "type": "message.updated",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "info": {
+          "id": "msg_eb83351a6001LZxTOI2iYyxTwR",
+          "parentID": "msg_eb83351a0001wNMKKhE3dkKCWC",
+          "role": "assistant",
+          "mode": "build",
+          "agent": "build",
+          "path": {
+            "cwd": "/tmp/oc-fixture",
+            "root": "/"
+          },
+          "cost": 0,
+          "tokens": {
+            "input": 0,
+            "output": 0,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "modelID": "fireworks/kimi-k2.6",
+          "providerID": "requesty",
+          "time": {
+            "created": 1781206831526
+          },
+          "sessionID": "ses_147cced94ffeT8zxghKNSST0hI"
+        }
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb833579b002p3lNX1g8Mr5QgJ",
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "part": {
+          "id": "prt_eb833579b001zsO7ovcIpDeaDy",
+          "messageID": "msg_eb83351a6001LZxTOI2iYyxTwR",
+          "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+          "type": "step-start"
+        },
+        "time": 1781206833051
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb833579c002ZiAhyitMZTIXeQ",
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "part": {
+          "id": "prt_eb833579c001wbs3lz75BsNOpj",
+          "messageID": "msg_eb83351a6001LZxTOI2iYyxTwR",
+          "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+          "type": "reasoning",
+          "text": "",
+          "time": {
+            "start": 1781206833052
+          }
+        },
+        "time": 1781206833052
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb833579c003FY7yORDEtfGNA2",
+      "type": "message.part.delta",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "messageID": "msg_eb83351a6001LZxTOI2iYyxTwR",
+        "partID": "prt_eb833579c001wbs3lz75BsNOpj",
+        "field": "text",
+        "delta": "The"
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb83357b1001QZuPnMFuGcZ8ZJ",
+      "type": "message.part.delta",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "messageID": "msg_eb83351a6001LZxTOI2iYyxTwR",
+        "partID": "prt_eb833579c001wbs3lz75BsNOpj",
+        "field": "text",
+        "delta": " user"
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb8335900001k2iFBZpXgS8Ebl",
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "part": {
+          "id": "prt_eb833579c001wbs3lz75BsNOpj",
+          "messageID": "msg_eb83351a6001LZxTOI2iYyxTwR",
+          "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+          "type": "reasoning",
+          "text": "The user wants me to run `echo hi` in the shell and report what it printed. This is a straightforward task that requires using the bash tool.",
+          "time": {
+            "start": 1781206833052,
+            "end": 1781206833407
+          }
+        },
+        "time": 1781206833407
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb8335901001qhC0CvEs6Ii3OH",
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "part": {
+          "id": "prt_eb8335900002wI3mdzkSyB0zjP",
+          "messageID": "msg_eb83351a6001LZxTOI2iYyxTwR",
+          "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+          "type": "tool",
+          "tool": "bash",
+          "callID": "functions.bash:0",
+          "state": {
+            "status": "pending",
+            "input": {},
+            "raw": ""
+          }
+        },
+        "time": 1781206833408
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb833599c001Tmlcz3I2F72dmY",
+      "type": "permission.asked",
+      "properties": {
+        "id": "per_eb833599b0010kzx4Imy52SAbW",
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "permission": "bash",
+        "patterns": [
+          "echo hi"
+        ],
+        "metadata": {},
+        "always": [
+          "echo *"
+        ],
+        "tool": {
+          "messageID": "msg_eb83351a6001LZxTOI2iYyxTwR",
+          "callID": "functions.bash:0"
+        }
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb833599d001DiziiX3Mk2HDtw",
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "part": {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "functions.bash:0",
+          "state": {
+            "status": "running",
+            "input": {
+              "command": "echo hi",
+              "description": "Run echo hi in shell"
+            },
+            "raw": "",
+            "time": {
+              "start": 1781206833565
+            }
+          },
+          "id": "prt_eb8335900002wI3mdzkSyB0zjP",
+          "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+          "messageID": "msg_eb83351a6001LZxTOI2iYyxTwR"
+        },
+        "time": 1781206833565
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb833ad86001H9Et1deZ7Bl8E4",
+      "type": "permission.replied",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "requestID": "per_eb833599b0010kzx4Imy52SAbW",
+        "reply": "once"
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb833ad8a001pZFpNstqlKnNx2",
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "part": {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "functions.bash:0",
+          "state": {
+            "metadata": {
+              "output": "hi\n",
+              "description": "Run echo hi in shell"
+            },
+            "status": "running",
+            "input": {
+              "command": "echo hi",
+              "description": "Run echo hi in shell"
+            },
+            "time": {
+              "start": 1781206855050
+            }
+          },
+          "id": "prt_eb8335900002wI3mdzkSyB0zjP",
+          "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+          "messageID": "msg_eb83351a6001LZxTOI2iYyxTwR"
+        },
+        "time": 1781206855050
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb833ad8c00108R2uSoFwBt18u",
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "part": {
+          "type": "tool",
+          "tool": "bash",
+          "callID": "functions.bash:0",
+          "state": {
+            "status": "completed",
+            "input": {
+              "command": "echo hi",
+              "description": "Run echo hi in shell"
+            },
+            "output": "hi\n",
+            "metadata": {
+              "output": "hi\n",
+              "exit": 0,
+              "description": "Run echo hi in shell",
+              "truncated": false
+            },
+            "title": "Run echo hi in shell",
+            "time": {
+              "start": 1781206855050,
+              "end": 1781206855052
+            }
+          },
+          "id": "prt_eb8335900002wI3mdzkSyB0zjP",
+          "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+          "messageID": "msg_eb83351a6001LZxTOI2iYyxTwR"
+        },
+        "time": 1781206855052
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb833ad8e001bd1jQjfxi5vDVr",
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "part": {
+          "id": "prt_eb833ad8d0017Pz1laeT3liy8z",
+          "reason": "tool-calls",
+          "messageID": "msg_eb83351a6001LZxTOI2iYyxTwR",
+          "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+          "type": "step-finish",
+          "tokens": {
+            "total": 15637,
+            "input": 15562,
+            "output": 60,
+            "reasoning": 0,
+            "cache": {
+              "write": 0,
+              "read": 15
+            }
+          },
+          "cost": 0
+        },
+        "time": 1781206855054
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb833ad8e0025FdQg8zZ2OUu8n",
+      "type": "message.updated",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "info": {
+          "id": "msg_eb83351a6001LZxTOI2iYyxTwR",
+          "parentID": "msg_eb83351a0001wNMKKhE3dkKCWC",
+          "role": "assistant",
+          "mode": "build",
+          "agent": "build",
+          "path": {
+            "cwd": "/tmp/oc-fixture",
+            "root": "/"
+          },
+          "cost": 0,
+          "tokens": {
+            "total": 15637,
+            "input": 15562,
+            "output": 60,
+            "reasoning": 0,
+            "cache": {
+              "write": 0,
+              "read": 15
+            }
+          },
+          "modelID": "fireworks/kimi-k2.6",
+          "providerID": "requesty",
+          "time": {
+            "created": 1781206831526,
+            "completed": 1781206855055
+          },
+          "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+          "finish": "tool-calls"
+        }
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb833ad91002IYQbVzLyVyMISj",
+      "type": "message.updated",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "info": {
+          "id": "msg_eb833ad91001sccFsbccUVvlNF",
+          "parentID": "msg_eb83351a0001wNMKKhE3dkKCWC",
+          "role": "assistant",
+          "mode": "build",
+          "agent": "build",
+          "path": {
+            "cwd": "/tmp/oc-fixture",
+            "root": "/"
+          },
+          "cost": 0,
+          "tokens": {
+            "input": 0,
+            "output": 0,
+            "reasoning": 0,
+            "cache": {
+              "read": 0,
+              "write": 0
+            }
+          },
+          "modelID": "fireworks/kimi-k2.6",
+          "providerID": "requesty",
+          "time": {
+            "created": 1781206855057
+          },
+          "sessionID": "ses_147cced94ffeT8zxghKNSST0hI"
+        }
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb833afaf003SXWGW8mM3WKg7z",
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "part": {
+          "id": "prt_eb833afaf002FqWNHfaudErtGL",
+          "messageID": "msg_eb833ad91001sccFsbccUVvlNF",
+          "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+          "type": "text",
+          "text": "",
+          "time": {
+            "start": 1781206855599
+          }
+        },
+        "time": 1781206855599
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb833afb00016SE8suwYNa321E",
+      "type": "message.part.delta",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "messageID": "msg_eb833ad91001sccFsbccUVvlNF",
+        "partID": "prt_eb833afaf002FqWNHfaudErtGL",
+        "field": "text",
+        "delta": "It"
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb833afc1001zh30oVkya3nOfl",
+      "type": "message.part.delta",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "messageID": "msg_eb833ad91001sccFsbccUVvlNF",
+        "partID": "prt_eb833afaf002FqWNHfaudErtGL",
+        "field": "text",
+        "delta": " printed"
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb833afc1002Gk9ulKzEPDzdrK",
+      "type": "message.part.delta",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "messageID": "msg_eb833ad91001sccFsbccUVvlNF",
+        "partID": "prt_eb833afaf002FqWNHfaudErtGL",
+        "field": "text",
+        "delta": " `"
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb833afc1003QUkSnHGU9qOXwN",
+      "type": "message.part.delta",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "messageID": "msg_eb833ad91001sccFsbccUVvlNF",
+        "partID": "prt_eb833afaf002FqWNHfaudErtGL",
+        "field": "text",
+        "delta": "hi"
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb833afc1004Nb5QPhwHGeLil9",
+      "type": "message.part.delta",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "messageID": "msg_eb833ad91001sccFsbccUVvlNF",
+        "partID": "prt_eb833afaf002FqWNHfaudErtGL",
+        "field": "text",
+        "delta": "`."
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb833afd5001wu2ASVGtf80DFt",
+      "type": "message.part.updated",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "part": {
+          "id": "prt_eb833afaf002FqWNHfaudErtGL",
+          "messageID": "msg_eb833ad91001sccFsbccUVvlNF",
+          "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+          "type": "text",
+          "text": "It printed `hi`.",
+          "time": {
+            "start": 1781206855599,
+            "end": 1781206855637
+          }
+        },
+        "time": 1781206855637
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb833afd7001DTJSVgUUQGOFke",
+      "type": "message.updated",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "info": {
+          "id": "msg_eb833ad91001sccFsbccUVvlNF",
+          "parentID": "msg_eb83351a0001wNMKKhE3dkKCWC",
+          "role": "assistant",
+          "mode": "build",
+          "agent": "build",
+          "path": {
+            "cwd": "/tmp/oc-fixture",
+            "root": "/"
+          },
+          "cost": 0,
+          "tokens": {
+            "total": 15677,
+            "input": 77,
+            "output": 24,
+            "reasoning": 0,
+            "cache": {
+              "write": 0,
+              "read": 15576
+            }
+          },
+          "modelID": "fireworks/kimi-k2.6",
+          "providerID": "requesty",
+          "time": {
+            "created": 1781206855057,
+            "completed": 1781206855640
+          },
+          "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+          "finish": "stop"
+        }
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb833afd90013D1b2Yo5GEtB3b",
+      "type": "session.status",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "status": {
+          "type": "idle"
+        }
+      }
+    }
+  },
+  {
+    "directory": "/tmp/oc-fixture",
+    "project": "global",
+    "payload": {
+      "id": "evt_eb833afd9002bEZ1eDRTBhFVCE",
+      "type": "session.idle",
+      "properties": {
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI"
+      }
+    }
+  }
+]

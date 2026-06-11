@@ -1,0 +1,205 @@
+[
+  {
+    "info": {
+      "id": "msg_eb83351a0001wNMKKhE3dkKCWC",
+      "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+      "role": "user",
+      "time": {
+        "created": 1781206831520
+      },
+      "summary": {
+        "diffs": []
+      },
+      "agent": "build",
+      "model": {
+        "providerID": "requesty",
+        "modelID": "fireworks/kimi-k2.6"
+      }
+    },
+    "parts": [
+      {
+        "id": "prt_eb83351a0002Djmea2IAr2iDnW",
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "messageID": "msg_eb83351a0001wNMKKhE3dkKCWC",
+        "type": "text",
+        "text": "Run `echo hi` in the shell, then tell me what it printed."
+      }
+    ]
+  },
+  {
+    "info": {
+      "id": "msg_eb83351a6001LZxTOI2iYyxTwR",
+      "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+      "role": "assistant",
+      "time": {
+        "created": 1781206831526,
+        "completed": 1781206855055
+      },
+      "parentID": "msg_eb83351a0001wNMKKhE3dkKCWC",
+      "modelID": "fireworks/kimi-k2.6",
+      "providerID": "requesty",
+      "mode": "build",
+      "agent": "build",
+      "path": {
+        "cwd": "/tmp/oc-fixture",
+        "root": "/"
+      },
+      "cost": 0,
+      "tokens": {
+        "total": 15637,
+        "input": 15562,
+        "output": 60,
+        "reasoning": 0,
+        "cache": {
+          "read": 15,
+          "write": 0
+        }
+      },
+      "finish": "tool-calls"
+    },
+    "parts": [
+      {
+        "id": "prt_eb833579b001zsO7ovcIpDeaDy",
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "messageID": "msg_eb83351a6001LZxTOI2iYyxTwR",
+        "type": "step-start"
+      },
+      {
+        "id": "prt_eb833579c001wbs3lz75BsNOpj",
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "messageID": "msg_eb83351a6001LZxTOI2iYyxTwR",
+        "type": "reasoning",
+        "text": "The user wants me to run `echo hi` in the shell and report what it printed. This is a straightforward task that requires using the bash tool.",
+        "time": {
+          "start": 1781206833052,
+          "end": 1781206833407
+        }
+      },
+      {
+        "id": "prt_eb8335900002wI3mdzkSyB0zjP",
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "messageID": "msg_eb83351a6001LZxTOI2iYyxTwR",
+        "type": "tool",
+        "callID": "functions.bash:0",
+        "tool": "bash",
+        "state": {
+          "status": "completed",
+          "input": {
+            "command": "echo hi",
+            "description": "Run echo hi in shell"
+          },
+          "output": "hi\n",
+          "title": "Run echo hi in shell",
+          "metadata": {
+            "output": "hi\n",
+            "exit": 0,
+            "description": "Run echo hi in shell",
+            "truncated": false
+          },
+          "time": {
+            "start": 1781206855050,
+            "end": 1781206855052
+          }
+        }
+      },
+      {
+        "id": "prt_eb833ad8d0017Pz1laeT3liy8z",
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "messageID": "msg_eb83351a6001LZxTOI2iYyxTwR",
+        "type": "step-finish",
+        "reason": "tool-calls",
+        "cost": 0,
+        "tokens": {
+          "total": 15637,
+          "input": 15562,
+          "output": 60,
+          "reasoning": 0,
+          "cache": {
+            "read": 15,
+            "write": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "info": {
+      "id": "msg_eb833ad91001sccFsbccUVvlNF",
+      "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+      "role": "assistant",
+      "time": {
+        "created": 1781206855057,
+        "completed": 1781206855640
+      },
+      "parentID": "msg_eb83351a0001wNMKKhE3dkKCWC",
+      "modelID": "fireworks/kimi-k2.6",
+      "providerID": "requesty",
+      "mode": "build",
+      "agent": "build",
+      "path": {
+        "cwd": "/tmp/oc-fixture",
+        "root": "/"
+      },
+      "cost": 0,
+      "tokens": {
+        "total": 15677,
+        "input": 77,
+        "output": 24,
+        "reasoning": 0,
+        "cache": {
+          "read": 15576,
+          "write": 0
+        }
+      },
+      "finish": "stop"
+    },
+    "parts": [
+      {
+        "id": "prt_eb833af0f001lnscF8hQtsP43I",
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "messageID": "msg_eb833ad91001sccFsbccUVvlNF",
+        "type": "step-start"
+      },
+      {
+        "id": "prt_eb833af10001k7E6vz2G3XeXTc",
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "messageID": "msg_eb833ad91001sccFsbccUVvlNF",
+        "type": "reasoning",
+        "text": "The command `echo hi` printed `hi`. I should tell the user that.",
+        "time": {
+          "start": 1781206855440,
+          "end": 1781206855599
+        }
+      },
+      {
+        "id": "prt_eb833afaf002FqWNHfaudErtGL",
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "messageID": "msg_eb833ad91001sccFsbccUVvlNF",
+        "type": "text",
+        "text": "It printed `hi`.",
+        "time": {
+          "start": 1781206855599,
+          "end": 1781206855637
+        }
+      },
+      {
+        "id": "prt_eb833afd60017sTPCu8CTULAvb",
+        "sessionID": "ses_147cced94ffeT8zxghKNSST0hI",
+        "messageID": "msg_eb833ad91001sccFsbccUVvlNF",
+        "type": "step-finish",
+        "reason": "stop",
+        "cost": 0,
+        "tokens": {
+          "total": 15677,
+          "input": 77,
+          "output": 24,
+          "reasoning": 0,
+          "cache": {
+            "read": 15576,
+            "write": 0
+          }
+        }
+      }
+    ]
+  }
+]
