@@ -315,12 +315,37 @@ async def merge_seed(
     Raises KeyError if `seed_id` is unknown (no silent fallback). Decrypt
     failure propagates (tampering / key rotation).
     """
-    doc = await load_seed(ctx._db, prefix=ctx._prefix, suffix=suffix, seed_id=seed_id)
+    await plant_seed(
+        ctx._db, host, prefix=ctx._prefix, seed_id=seed_id,
+        manifest=manifest, suffix=suffix, decrypt=decrypt,
+    )
+
+
+async def plant_seed(
+    db: "AsyncIOMotorDatabase",
+    host: "Host",
+    *,
+    prefix: str,
+    seed_id: str,
+    manifest: SeedManifest,
+    suffix: str,
+    decrypt: "Callable[[bytes], bytes] | None",
+) -> None:
+    """Host-free-engine variant of merge_seed: same load -> decrypt ->
+    extract -> consume_transform, but db-first (no ProcessContext). Reads
+    the blob from GridFS directly — the same bucket ctx.store_blob writes
+    (cf. overwrite_seed_member). Raises KeyError if `seed_id` is unknown.
+    """
+    import io
+    from motor.motor_asyncio import AsyncIOMotorGridFSBucket
+
+    doc = await load_seed(db, prefix=prefix, suffix=suffix, seed_id=seed_id)
     if doc is None:
         raise KeyError(f"unknown seed_id: {seed_id!r}")
-    payload = await _read_blob_bytes(ctx, doc["blobId"])
+    buf = io.BytesIO()
+    await AsyncIOMotorGridFSBucket(db).download_to_stream(doc["blobId"], buf)
     dec = decrypt or (lambda b: b)
-    plain = dec(payload)
+    plain = dec(buf.getvalue())
     await _extract_seed(
         host, home_subdir=manifest.home_subdir, plain=plain, include=manifest.include,
     )
