@@ -37,7 +37,8 @@ from optio_host.paths import task_dir
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_agents import seeds as _seeds
 from optio_opencode import cred_watcher, host_actions
-from optio_opencode.prompt import compose_agents_md
+from optio_opencode.conversation import OpencodeConversation
+from optio_opencode.prompt import DEFAULT_CONVERSATION_INSTRUCTIONS, compose_agents_md
 from optio_opencode.seed_manifest import (
     OPENCODE_CRED_MANIFEST,
     OPENCODE_SEED_MANIFEST,
@@ -80,6 +81,12 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
     # --- per-task filesystem layout ---------------------------------------
     host: Host = _build_host(config, ctx.process_id)
     protocol = get_protocol(browser="suppress")
+
+    instructions = config.consumer_instructions
+    omit_task_framing = False
+    if config.mode == "conversation" and not instructions:
+        instructions = DEFAULT_CONVERSATION_INSTRUCTIONS
+        omit_task_framing = True
     taskdir = task_dir(
         ssh=config.ssh, process_id=ctx.process_id, consumer_name="optio-opencode",
     )
@@ -88,6 +95,8 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
     password = secrets.token_urlsafe(32)
     cancelled = False
     launched_handle: ProcessHandle | None = None
+    conversation: OpencodeConversation | None = None
+    reader_task: "asyncio.Task | None" = None
     opencode_exec: str = "opencode"
     session_id: str | None = None
     preserved_session_id: str | None = None
@@ -180,7 +189,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         terminate the subprocess and capture the snapshot.
         """
         nonlocal launched_handle, opencode_exec, session_id, preserved_session_id
-        nonlocal worker_port
+        nonlocal worker_port, conversation, reader_task
         nonlocal cred_baseline, cred_watch_task, resolved_seed_id, lease_holder
 
         if callable(config.seed_id):
@@ -202,14 +211,22 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             await host.write_text(
                 "AGENTS.md",
                 compose_agents_md(
-                    config.consumer_instructions,
-                    documentation=protocol.documentation,
+                    instructions,
+                    documentation=protocol.documentation if config.host_protocol else None,
                     workdir_exclude=config.workdir_exclude,
                     supports_resume=config.supports_resume,
+                    host_protocol=config.host_protocol,
+                    omit_task_framing=omit_task_framing,
                 ),
             )
+            opencode_cfg = dict(config.opencode_config)
+            if config.mode == "conversation":
+                # Questions (multi-choice asks) have no conversation-mode
+                # answering path yet — disable the tool so a session can
+                # never block on one. See design doc "Non-goals".
+                opencode_cfg["tools"] = {**opencode_cfg.get("tools", {}), "question": False}
             await host.write_text(
-                "opencode.json", json.dumps(config.opencode_config, indent=2),
+                "opencode.json", json.dumps(opencode_cfg, indent=2),
             )
             if resolved_seed_id is not None:
                 # Seeded fresh: overlay the stored environment into
@@ -318,37 +335,38 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                 worker_port, password, host.workdir,
             )
 
-        await ctx.set_widget_upstream(
-            f"http://{upstream_host}:{worker_port}",
-            inner_auth=BasicAuth(username="opencode", password=password),
-        )
-        # Point the iframe directly at the pre-created session so viewers
-        # skip both the project picker and the "new session" default.
-        # opencode's SPA expects the :dir router param to be a URL-safe
-        # base64 encoding of the directory path (see
-        # packages/app/src/utils/base64.ts in opencode) — NOT percent-
-        # encoding.  The {widgetProxyUrl} token is resolved by the iframe
-        # widget at mount time.
-        _workdir_b64 = (
-            base64.urlsafe_b64encode(host.workdir.encode("utf-8"))
-            .decode("ascii").rstrip("=")
-        )
-        await ctx.set_widget_data({
-            "iframeSrc": f"{{widgetProxyUrl}}{_workdir_b64}/session/{session_id}",
-            "localStorageOverrides": {
-                "opencode.settings.dat:defaultServerUrl": "{widgetProxyUrl}",
-                # Start with the review/diff panel collapsed. opencode defaults
-                # it OPEN (layout store `review.panelOpened ?? true`), eating
-                # the right half of the iframe with a panel that is useless in
-                # this embedded context. The persist layer deep-merges this
-                # partial blob into the layout defaults, so only panelOpened is
-                # forced false; the operator can still toggle it open per
-                # session. (UI-state key — if opencode renames the `layout`
-                # store it silently reverts to default-open.)
-                "opencode.global.dat:layout": '{"review": {"panelOpened": false}}',
-            },
-        })
-        ctx.report_progress(None, "opencode is live")
+        if config.mode != "conversation":
+            await ctx.set_widget_upstream(
+                f"http://{upstream_host}:{worker_port}",
+                inner_auth=BasicAuth(username="opencode", password=password),
+            )
+            # Point the iframe directly at the pre-created session so viewers
+            # skip both the project picker and the "new session" default.
+            # opencode's SPA expects the :dir router param to be a URL-safe
+            # base64 encoding of the directory path (see
+            # packages/app/src/utils/base64.ts in opencode) — NOT percent-
+            # encoding.  The {widgetProxyUrl} token is resolved by the iframe
+            # widget at mount time.
+            _workdir_b64 = (
+                base64.urlsafe_b64encode(host.workdir.encode("utf-8"))
+                .decode("ascii").rstrip("=")
+            )
+            await ctx.set_widget_data({
+                "iframeSrc": f"{{widgetProxyUrl}}{_workdir_b64}/session/{session_id}",
+                "localStorageOverrides": {
+                    "opencode.settings.dat:defaultServerUrl": "{widgetProxyUrl}",
+                    # Start with the review/diff panel collapsed. opencode defaults
+                    # it OPEN (layout store `review.panelOpened ?? true`), eating
+                    # the right half of the iframe with a panel that is useless in
+                    # this embedded context. The persist layer deep-merges this
+                    # partial blob into the layout defaults, so only panelOpened is
+                    # forced false; the operator can still toggle it open per
+                    # session. (UI-state key — if opencode renames the `layout`
+                    # store it silently reverts to default-open.)
+                    "opencode.global.dat:layout": '{"review": {"panelOpened": false}}',
+                },
+            })
+            ctx.report_progress(None, "opencode is live")
 
         if resolved_seed_id is not None:
             cred_watch_task = asyncio.create_task(cred_watcher.run_credential_watcher(
@@ -376,17 +394,59 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                 f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}",
             )
 
-        # --- await opencode subprocess exit -----------------------------
-        # The protocol driver runs this body alongside the tail dispatcher
-        # and a cancel watcher.  When the user cancels, the driver cancels
-        # this body's task; when the agent emits DONE/ERROR, the driver
-        # returns / raises and again cancels this body.  In either case the
-        # await below is interrupted via CancelledError before proc exits.
-        # If, however, opencode exits on its own without emitting DONE
-        # first, the body returns normally and the driver detects this as
-        # "premature body exit" and raises _SessionFailed.
+        if config.mode != "conversation":
+            # --- await opencode subprocess exit (iframe mode, unchanged) ---
+            # The protocol driver runs this body alongside the tail dispatcher
+            # and a cancel watcher.  When the user cancels, the driver cancels
+            # this body's task; when the agent emits DONE/ERROR, the driver
+            # returns / raises and again cancels this body.  In either case the
+            # await below is interrupted via CancelledError before proc exits.
+            # If, however, opencode exits on its own without emitting DONE
+            # first, the body returns normally and the driver detects this as
+            # "premature body exit" and raises _SessionFailed.
+            proc = launched_handle.pid_like
+            await proc.wait()  # type: ignore[union-attr]
+            return
+
+        # --- conversation mode: publish the gateway, then wait on
+        # close-requested vs. process exit (mirrors optio-claudecode).
+        conversation = OpencodeConversation(
+            port=worker_port, password=password,
+            session_id=session_id, directory=host.workdir,
+        )
+        reader_task = asyncio.create_task(conversation.run_reader())
+        ctx.publish_result(conversation)
+        ctx.report_progress(None, "opencode conversation is live")
+
         proc = launched_handle.pid_like
-        await proc.wait()  # type: ignore[union-attr]
+        wait_task = asyncio.create_task(proc.wait())  # type: ignore[union-attr]
+        close_task = asyncio.create_task(conversation.close_requested.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {wait_task, close_task}, return_when=asyncio.FIRST_COMPLETED,
+            )
+            if close_task in done and wait_task not in done:
+                # Caller asked to close: cooperative shutdown, clean end.
+                wait_task.cancel()
+                if config.host_protocol:
+                    # The keyword driver treats a body return without DONE as
+                    # a premature exit. A caller-requested close IS the clean
+                    # end, so emit the DONE ourselves and park until the
+                    # driver observes it and cancels us (claudecode parity).
+                    log_path = f"{host.workdir}/optio.log"
+                    await host.run_command(f"echo DONE >> {shlex.quote(log_path)}")
+                    await asyncio.Event().wait()  # cancelled by the driver
+                return
+            # Server exited on its own.
+            close_task.cancel()
+            if not conversation.close_requested.is_set() and ctx.should_continue():
+                raise RuntimeError("opencode exited unexpectedly")
+        finally:
+            reader_task.cancel()
+            try:
+                await reader_task
+            except asyncio.CancelledError:
+                pass
 
     # --- run the protocol session -----------------------------------------
     # host.connect() already happened up-front (before install + resume).
@@ -413,6 +473,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             after_execute=config.after_execute,
             protocol=protocol,
             agent_sender=_agent_sender,
+            keywords=config.host_protocol,
         )
     except _SessionFailed as fail:
         session_error = fail
@@ -992,7 +1053,10 @@ def create_opencode_task(
         process_id=process_id,
         name=name,
         description=description,
-        ui_widget="iframe",
+        ui_widget=(
+            "iframe" if config.mode == "iframe"
+            else ("conversation" if config.conversation_ui else None)
+        ),
         supports_resume=config.supports_resume,
         metadata=metadata or {},
     )

@@ -168,6 +168,31 @@ SCENARIOS = {
                                        "status": {"type": "idle"}}}),
         ("sleep", 3600),  # hold the server open; tests terminate the process
     ],
+    "conversation_then_done": [
+        ("sleep", 0.1),
+        ("conv_event", {"type": "message.part.delta",
+                        "properties": {"sessionID": "fake-session-id",
+                                       "messageID": "m1", "partID": "p1",
+                                       "delta": "Hello"}}),
+        ("conv_event", {"type": "message.part.updated",
+                        "properties": {"part": {"id": "p1", "messageID": "m1",
+                                                "sessionID": "fake-session-id",
+                                                "type": "text", "text": "Hello from fake"}}}),
+        ("conv_event", {"type": "message.updated",
+                        "properties": {"info": {"id": "m1",
+                                                "sessionID": "fake-session-id",
+                                                "role": "assistant",
+                                                "time": {"created": 1, "completed": 2}}}}),
+        ("conv_event", {"type": "session.status",
+                        "properties": {"sessionID": "fake-session-id",
+                                       "status": {"type": "idle"}}}),
+        ("sleep", 0.5),
+        ("log", "DONE: chat over"),
+    ],
+    "conversation_early_exit": [
+        ("sleep", 0.3),
+        ("exit", 1),
+    ],
 }
 
 # Conversation-surface state: events queued by scenarios for the /event SSE
