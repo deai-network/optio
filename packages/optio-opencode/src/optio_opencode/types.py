@@ -7,7 +7,7 @@ is owned by ``optio-host``. This module re-exports them so existing
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
 
 from optio_agents.protocol.session import DeliverableCallback, HookCallback
 from optio_host.types import SSHConfig
@@ -21,11 +21,19 @@ from optio_host.types import SSHConfig
 SeedProvider = Callable[[str], Awaitable[str]]
 
 
+# Conversation-mode vocabulary (mirrors optio-claudecode).
+ConversationMode = Literal["iframe", "conversation"]
+ToolVerbosity = Literal["silent", "description-only", "verbose"]
+_VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
+
+
 __all__ = [
     "DeliverableCallback",
     "HookCallback",
     "SSHConfig",
     "SeedProvider",
+    "ConversationMode",
+    "ToolVerbosity",
     "OpencodeTaskConfig",
 ]
 
@@ -83,6 +91,21 @@ class OpencodeTaskConfig:
     # ["*_API_KEY", "*_TOKEN"].
     scrub_env: list[str] | None = None
 
+    # --- conversation mode (mirrors optio-claudecode) ---
+    # "iframe": today's behavior — embedded opencode web SPA, keyword-channel
+    # completion. "conversation": generic gateway — the caller receives a live
+    # Conversation (optio_agents.conversation) via ctx.publish_result().
+    mode: ConversationMode = "iframe"
+    # Keep the optio.log keyword channel running. May only be disabled in
+    # conversation mode, where close() is the alternative completion signal.
+    host_protocol: bool = True
+    # Register the conversation widget (ui_widget="conversation"). Requires
+    # mode="conversation". The opencode server itself is the widget upstream.
+    conversation_ui: bool = False
+    # Rendering hint forwarded to the widget via widgetData; only affects
+    # conversation_ui rendering.
+    tool_verbosity: ToolVerbosity = "description-only"
+
     def __post_init__(self) -> None:
         e = self.session_blob_encrypt is not None
         d = self.session_blob_decrypt is not None
@@ -91,4 +114,25 @@ class OpencodeTaskConfig:
                 "OpencodeTaskConfig: session_blob_encrypt and "
                 "session_blob_decrypt must be set together (both callables) "
                 "or both left as None; one without the other is a config error."
+            )
+        if self.mode not in ("iframe", "conversation"):
+            raise ValueError(
+                f"OpencodeTaskConfig.mode={self.mode!r} is not one of "
+                "['iframe', 'conversation']"
+            )
+        if self.mode == "iframe" and not self.host_protocol:
+            raise ValueError(
+                "OpencodeTaskConfig: host_protocol=False requires "
+                "mode='conversation' (in iframe mode the optio.log keyword "
+                "channel is the only completion signal)."
+            )
+        if self.conversation_ui and self.mode != "conversation":
+            raise ValueError(
+                "OpencodeTaskConfig: conversation_ui=True requires "
+                "mode='conversation'."
+            )
+        if self.tool_verbosity not in _VALID_TOOL_VERBOSITY:
+            raise ValueError(
+                f"OpencodeTaskConfig.tool_verbosity={self.tool_verbosity!r} "
+                f"is not one of {sorted(_VALID_TOOL_VERBOSITY)}"
             )

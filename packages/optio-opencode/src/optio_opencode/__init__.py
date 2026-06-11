@@ -10,10 +10,12 @@ from optio_host import (
 )
 from optio_opencode.session import create_opencode_task, run_opencode_session
 from optio_opencode.types import (
+    ConversationMode,
     DeliverableCallback,
     HookCallback,
     OpencodeTaskConfig,
     SeedProvider,
+    ToolVerbosity,
 )
 from optio_opencode.seed_manifest import (
     OPENCODE_CRED_MANIFEST,
@@ -51,5 +53,7 @@ __all__ = [
     "purge_seed",
     "OPENCODE_CRED_MANIFEST",
     "SeedProvider",
+    "ConversationMode",
+    "ToolVerbosity",
     "verify_and_refresh_seed",
 ]
