@@ -36,9 +36,13 @@ from optio_host.host import Host, LocalHost, ProcessHandle
 from optio_host.paths import task_dir
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_agents import seeds as _seeds
-from optio_opencode import host_actions
+from optio_opencode import cred_watcher, host_actions
 from optio_opencode.prompt import compose_agents_md
-from optio_opencode.seed_manifest import OPENCODE_SEED_MANIFEST, OPENCODE_SEED_SUFFIX
+from optio_opencode.seed_manifest import (
+    OPENCODE_CRED_MANIFEST,
+    OPENCODE_SEED_MANIFEST,
+    OPENCODE_SEED_SUFFIX,
+)
 from optio_agents import get_protocol
 from optio_opencode.snapshots import (
     insert_snapshot,
@@ -94,6 +98,11 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
     # Set by _prepare (the driver runs it after the workdir wipe, before the
     # optio.log tail); read by the body and the teardown finally.
     resuming = False
+
+    cred_baseline: str | None = None
+    cred_watch_task: "asyncio.Task | None" = None
+    resolved_seed_id: str | None = None
+    lease_holder: str | None = None
 
     await host.connect()
 
@@ -172,6 +181,15 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         """
         nonlocal launched_handle, opencode_exec, session_id, preserved_session_id
         nonlocal worker_port
+        nonlocal cred_baseline, cred_watch_task, resolved_seed_id, lease_holder
+
+        if callable(config.seed_id):
+            # The provider acquires a pooled seed lease inside (holder =
+            # process_id); the watcher renews it, teardown releases it.
+            resolved_seed_id = await config.seed_id(ctx.process_id)
+            lease_holder = ctx.process_id
+        else:
+            resolved_seed_id = config.seed_id
 
         refreshed_files: list[str] = []
         if not resuming:
@@ -193,18 +211,19 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             await host.write_text(
                 "opencode.json", json.dumps(config.opencode_config, indent=2),
             )
-            if config.seed_id is not None:
+            if resolved_seed_id is not None:
                 # Seeded fresh: overlay the stored environment into
                 # <workdir>/home, where the launch's XDG_DATA_HOME /
                 # XDG_CONFIG_HOME point, so the seeded auth.json / opencode.json
                 # are used. Begins a NEW session — no resume.
                 await _seeds.merge_seed(
                     ctx, host,
-                    seed_id=config.seed_id,
+                    seed_id=resolved_seed_id,
                     manifest=OPENCODE_SEED_MANIFEST,
                     suffix=OPENCODE_SEED_SUFFIX,
                     decrypt=config.session_blob_decrypt,
                 )
+            cred_baseline = await cred_watcher.cred_fingerprint(host)
             # Note: do NOT call ctx.clear_has_saved_state() here. The spec
             # described it as "belt-and-braces", but in practice it makes
             # `hasSavedState` track the live session rather than the durable
@@ -217,6 +236,18 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             # fallback) handles the rare case where the flag is true but
             # no snapshot exists.
         else:
+            # The seed is the source of truth for credentials; the snapshot
+            # may carry a now-rotated/dead token. Overlay the seed's CURRENT
+            # auth.json over the restored workdir (mirrors claudecode).
+            if resolved_seed_id is not None:
+                await _seeds.merge_seed(
+                    ctx, host,
+                    seed_id=resolved_seed_id,
+                    manifest=OPENCODE_CRED_MANIFEST,
+                    suffix=OPENCODE_SEED_SUFFIX,
+                    decrypt=config.session_blob_decrypt,
+                )
+            cred_baseline = await cred_watcher.cred_fingerprint(host)
             # Resume: when on_resume_refresh is wired, recompute AGENTS.md
             # from the refreshed config and overwrite the workdir copy if
             # the rendered text differs from the snapshot-restored file.
@@ -319,6 +350,16 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         })
         ctx.report_progress(None, "opencode is live")
 
+        if resolved_seed_id is not None:
+            cred_watch_task = asyncio.create_task(cred_watcher.run_credential_watcher(
+                ctx, host,
+                seed_id=resolved_seed_id,
+                baseline=cred_baseline,
+                encrypt=config.session_blob_encrypt,
+                decrypt=config.session_blob_decrypt,
+                lease_holder=lease_holder,
+            ))
+
         # auto_start: on a fresh launch, POST the kickoff prompt to the
         # pre-created session so opencode starts the task unattended.
         # Suppressed on resume (the restored session already carries its
@@ -414,22 +455,64 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             except Exception:  # noqa: BLE001
                 _LOG.exception("terminate_subprocess failed")
 
+        if cred_watch_task is not None:
+            cred_watch_task.cancel()
+            try:
+                await cred_watch_task
+            except asyncio.CancelledError:
+                pass
+
+        # Final backstop save-back — LOAD-BEARING, not defensive: opencode's
+        # own auth write-back is best-effort (auth.set().catch(() => {})) and
+        # the provider has already consumed the old refresh token; a rotation
+        # in the last poll window is saved ONLY here. Runs after the
+        # subprocess terminated so the on-disk auth.json is final.
+        if resolved_seed_id is not None:
+            try:
+                cred_baseline = await cred_watcher.save_back_if_changed(
+                    ctx, host,
+                    seed_id=resolved_seed_id,
+                    baseline=cred_baseline,
+                    encrypt=config.session_blob_encrypt,
+                    decrypt=config.session_blob_decrypt,
+                )
+            except Exception:  # noqa: BLE001
+                _LOG.exception("final credential save-back failed")
+
+        # Release AFTER the final save-back (deliberate divergence from
+        # claudecode, which releases first): a new acquirer must never merge
+        # the pre-save-back blob.
+        if lease_holder is not None and resolved_seed_id is not None:
+            try:
+                await _seeds.release(
+                    ctx._db, prefix=ctx._prefix, suffix=OPENCODE_SEED_SUFFIX,
+                    seed_id=resolved_seed_id, holder=lease_holder,
+                )
+            except Exception:  # noqa: BLE001
+                _LOG.exception("lease release failed (TTL will reclaim)")
+
         if not resuming and config.on_seed_saved is not None:
             try:
                 if seed_model is not None:
                     # Write the model default into the seed's opencode.json
                     # before capture so it travels in the seed.
                     await _write_seed_model_config(host, seed_model)
-                seed_id_out = await _seeds.capture_seed(
-                    ctx, host,
-                    manifest=OPENCODE_SEED_MANIFEST,
-                    suffix=OPENCODE_SEED_SUFFIX,
-                    encrypt=config.session_blob_encrypt,
-                )
-                # 2nd arg: the resolved "providerID/modelID" (or None).
-                await _call_maybe_async(
-                    config.on_seed_saved, seed_id_out, seed_model,
-                )
+                if not await cred_watcher.capture_gate_ok(host):
+                    _LOG.warning(
+                        "seed capture skipped: auth.json invalid/absent or no "
+                        "model in opencode.json (unusable seed)",
+                    )
+                else:
+                    seed_id_out = await _seeds.capture_seed(
+                        ctx, host,
+                        manifest=OPENCODE_SEED_MANIFEST,
+                        suffix=OPENCODE_SEED_SUFFIX,
+                        encrypt=config.session_blob_encrypt,
+                    )
+                    # 2nd arg: the resolved "providerID/modelID" (or None).
+                    await _call_maybe_async(
+                        config.on_seed_saved, seed_id_out, seed_model,
+                    )
             except Exception:  # noqa: BLE001
                 _LOG.exception("opencode seed capture failed; callback not fired")
 

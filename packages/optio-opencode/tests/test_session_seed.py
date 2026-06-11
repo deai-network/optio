@@ -138,6 +138,10 @@ async def _plant_env(hook_ctx) -> None:
     XDG_DATA_HOME / XDG_CONFIG_HOME point inside it. Mirrors fake_claude's
     ``_scenario_seed`` planting, done from the test side because
     fake_opencode has no seed scenario and is out of this task's file scope.
+
+    The planted ``opencode.json`` carries a ``model`` so the capture gate
+    (valid auth.json AND a model default) passes — a model-less seed is
+    unusable and capture skips it by design.
     """
     home = f"{hook_ctx._host.workdir.rstrip('/')}/home"
     script = "; ".join([
@@ -145,7 +149,7 @@ async def _plant_env(hook_ctx) -> None:
         f"mkdir -p '{home}/.local/share/opencode'",
         f"mkdir -p '{home}/.config/opencode/plugins'",
         f"printf '%s' '{{\"token\": \"abc\"}}' > '{home}/.local/share/opencode/auth.json'",
-        f"printf '%s' '{{\"theme\": \"dark\"}}' > '{home}/.config/opencode/opencode.json'",
+        f"printf '%s' '{{\"theme\": \"dark\", \"model\": \"planted/model-0\"}}' > '{home}/.config/opencode/opencode.json'",
         f"printf '%s' '{{}}' > '{home}/.config/opencode/plugins/p.json'",
         # EXCLUDE (session / message store) — must NOT travel in the seed
         f"mkdir -p '{home}/.local/share/opencode/storage'",
@@ -202,8 +206,8 @@ async def test_capture_synthesises_model_into_opencode_json(
     live opencode session and merged into the seed's ``opencode.json``
     ``model`` field — so an unattended seeded session runs that model instead
     of opencode's first-provider fallback. ``_plant_env`` writes
-    ``opencode.json`` with ``{"theme": "dark"}``; the synthesis must add
-    ``model`` while preserving ``theme``."""
+    ``opencode.json`` with ``{"theme": "dark", "model": "planted/model-0"}``;
+    the synthesis must overwrite ``model`` while preserving ``theme``."""
     import json
     import optio_opencode.session as session_mod
 
