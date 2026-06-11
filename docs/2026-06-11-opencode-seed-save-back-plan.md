@@ -1422,3 +1422,37 @@ git add packages/optio-opencode/src/optio_opencode/__init__.py
 git commit -m "feat(optio-opencode): export seed save-back public surface"
 ```
 
+
+---
+
+## Implementation addendum (2026-06-11)
+
+Executed via Workflow multi-agent orchestration (13 agents, 4 waves + committers + final verify) on branch `feature/opencode-seed-save-back`. **All 9 tasks completed; both suites green; working tree clean.**
+
+### Commits (oldest first)
+
+| Commit | Task | Subject |
+|---|---|---|
+| `aea867d` | 2 | feat(optio-opencode): credential-only seed manifest for save-back |
+| `8e521e7` | 4 | feat(optio-opencode): callable SeedProvider form for seed_id |
+| `dc22667` | 1 | feat(optio-agents): host-free seeds.plant_seed; merge_seed delegates |
+| `f289069` | 5 | refactor(optio-opencode): engine-decoupled install + shared host builder + probe runner |
+| `1bf949b` | 3 | feat(optio-opencode): credential watcher with validity gates and lease renewal |
+| `f71fb98` | 7 | feat(optio-opencode): verify_and_refresh_seed (challenge-answer probe + write-back) |
+| `83935ed` | 6 | feat(optio-opencode): seed save-back wiring — watcher, lease, capture gate |
+| `f88d41f` | 8 | test(optio-opencode): session-level seed save-back integration |
+| `30fdd41` | 9 | feat(optio-opencode): export seed save-back public surface |
+
+### Test results
+
+- **optio-agents:** 140 passed (includes 2 new `plant_seed` tests; merge_seed delegation broke nothing).
+- **optio-opencode:** 191 passed, 3 skipped — all 3 are pre-existing intentional skips (executable-substitution rework pending), unrelated to this branch. Remote-host tests passed without needing the sshd container.
+- New coverage: 7 watcher tests (gates, save-back rotation, lease-loss cancellation), 6 verify tests (alive+write-back, dead-on-auth-error, prompt-echo trap, exit-code-no-verdict, model-less seed, unknown seed), 1 session-level integration test.
+
+### Deviations from plan (all anticipated by it)
+
+- **Task 6:** `test_session_seed._plant_env` planted no model in `opencode.json`, tripping the new capture gate — fixed the test per the plan's instruction (model `"planted/model-0"`, distinct from the synthesis test's model so the overwrite assertion still proves its point).
+- **Task 8:** the fake-opencode scenario exits well under the 10s watcher interval, so the test proves the **teardown backstop** path (the load-bearing one) rather than the polling path — exactly as the plan specified; interval not shrunk.
+- Agents used the repo-root `.venv` python (bare `python` not on PATH); no plan command changes needed beyond that.
+
+No unanticipated deviations. Branch not merged — integration is a separate decision.
