@@ -150,7 +150,13 @@ async def verify_and_refresh_seed(
 ) -> dict:
     """Verify a seed host-free; refresh + save back if needed; stamp raw usage +
     account as metadata. Returns {alive, usage, account}. Never raises for a
-    dead/limited seed -- a dead lineage is alive=False."""
+    dead/limited seed -- a dead lineage is alive=False.
+
+    Call only on a FREE seed, or one whose lease the caller holds: a refresh
+    rotates the single-use refresh token, so verifying a seed in use by a live
+    session leaves that session's next refresh stranded (and its save-back
+    would clobber this one). The caller owns the lease discipline; this
+    function does not acquire or check leases."""
     from motor.motor_asyncio import AsyncIOMotorGridFSBucket
 
     doc = await seeds.load_seed(db, prefix=prefix, suffix=suffix, seed_id=seed_id)
