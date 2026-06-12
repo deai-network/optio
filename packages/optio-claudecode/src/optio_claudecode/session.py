@@ -181,11 +181,14 @@ async def run_claudecode_session(
             install_if_missing=config.install_if_missing,
             install_dir=config.claude_install_dir,
         )
-        ttyd_path = await host_actions.ensure_ttyd_installed(
-            hook_ctx,
-            install_if_missing=config.install_ttyd_if_missing,
-            install_dir=config.ttyd_install_dir,
-        )
+        # ttyd serves the TUI in iframe mode only; conversation mode is headless
+        # (no tmux/ttyd), so skip the install check/download entirely there.
+        if config.mode == "iframe":
+            ttyd_path = await host_actions.ensure_ttyd_installed(
+                hook_ctx,
+                install_if_missing=config.install_ttyd_if_missing,
+                install_dir=config.ttyd_install_dir,
+            )
 
         claustrum_path = None
         claustrum_newer = None
