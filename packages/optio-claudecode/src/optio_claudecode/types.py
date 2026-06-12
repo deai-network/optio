@@ -165,6 +165,10 @@ class ClaudeCodeTaskConfig:
     # questions to the Conversation's on_permission_request handler over the
     # stream-json control protocol.
     permission_gate: bool = False
+    # Conversation mode only: pass --include-partial-messages so stream_event
+    # text deltas reach on_event subscribers while a turn runs. Also implied
+    # by conversation_ui (its live view is fed by partials).
+    include_partial_messages: bool = False
     # Opt-in dashboard conversation UI: the task starts a per-task listener
     # (SSE event stream + send/interrupt/permission POSTs) and registers it
     # as widgetUpstream. The published Conversation object remains the

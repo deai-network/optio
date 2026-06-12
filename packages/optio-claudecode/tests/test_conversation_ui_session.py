@@ -86,6 +86,40 @@ def test_argv_defaults_omit_ui_flags():
     assert "--replay-user-messages" not in argv
 
 
+def test_include_partial_messages_standalone_knob():
+    from optio_claudecode import session as session_mod
+
+    on = ClaudeCodeTaskConfig(
+        consumer_instructions="x", mode="conversation",
+        permission_mode="bypassPermissions",
+        include_partial_messages=True, fs_isolation=False,
+    )
+    off = ClaudeCodeTaskConfig(
+        consumer_instructions="x", mode="conversation",
+        permission_mode="bypassPermissions", fs_isolation=False,
+    )
+    ui = ClaudeCodeTaskConfig(
+        consumer_instructions="x", mode="conversation",
+        permission_mode="bypassPermissions", conversation_ui=True,
+        fs_isolation=False,
+    )
+    assert off.include_partial_messages is False  # default stays off
+    assert session_mod._partials_enabled(on) is True
+    assert session_mod._partials_enabled(off) is False
+    # conversation_ui still implies partials (behavior unchanged).
+    assert session_mod._partials_enabled(ui) is True
+
+
+def test_partials_knob_flag_reaches_argv():
+    argv = host_actions.build_conversation_argv(
+        "/opt/claude", claude_flags=[], permission_gate=False,
+        include_partial_messages=True,
+    )
+    assert "--include-partial-messages" in argv
+    # The knob does not drag user-message replay along.
+    assert "--replay-user-messages" not in argv
+
+
 # --- 3. session integration ------------------------------------------------
 
 

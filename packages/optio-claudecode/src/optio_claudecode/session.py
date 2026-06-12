@@ -127,6 +127,12 @@ async def _build_claustrum_wrap(
     return [claustrum_path, "--best-effort", "--abi-min", "1", *grants, "--"]
 
 
+def _partials_enabled(config: ClaudeCodeTaskConfig) -> bool:
+    """--include-partial-messages: standalone knob, or implied by
+    conversation_ui (its live view is fed by partials)."""
+    return config.include_partial_messages or config.conversation_ui
+
+
 async def run_claudecode_session(
     ctx: ProcessContext, config: ClaudeCodeTaskConfig,
 ) -> None:
@@ -447,7 +453,7 @@ async def run_claudecode_session(
         argv = host_actions.build_conversation_argv(
             claude_path, claude_flags=claude_flags,
             permission_gate=config.permission_gate,
-            include_partial_messages=config.conversation_ui,
+            include_partial_messages=_partials_enabled(config),
             replay_user_messages=config.conversation_ui,
         )
         env = host_actions.conversation_launch_env(
