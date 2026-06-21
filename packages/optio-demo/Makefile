@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help install clean run run-dashboard check-venv
+.PHONY: help install clean run run-dashboard check-venv deps-up deps-down
 
 ROOT       := $(CURDIR)/../..
 VENV       := $(ROOT)/.venv
@@ -21,8 +21,13 @@ check-venv:
 	  exit 1; \
 	fi
 
-install: check-venv  ## Install demo: docker compose + editable install of the full local optio stack
+deps-up:  ## Start the demo's Docker dependencies (Mongo + Redis)
 	docker compose up -d
+
+deps-down:  ## Stop the demo's Docker dependencies (keeps data volumes)
+	docker compose down
+
+install: check-venv deps-up  ## Install demo: docker compose + editable install of the full local optio stack
 	$(PIP) install -e ../optio-core[redis]
 	$(PIP) install -e ../optio-host
 	$(PIP) install -e ../optio-agents
