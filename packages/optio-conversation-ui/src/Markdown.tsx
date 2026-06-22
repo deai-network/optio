@@ -1,8 +1,14 @@
 import { memo } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 import { Typography, theme } from 'antd';
 import { Mermaid } from './Mermaid.js';
+// KaTeX renders to bare HTML that needs its stylesheet (and the fonts it
+// references) to lay out; the consuming app's bundler serves both. Imported
+// here so any consumer of this package gets math styling without extra wiring.
+import 'katex/dist/katex.min.css';
 
 // Markdown spacing is controlled by an injected stylesheet rather than inline
 // styles: react-markdown wraps loose list items in <p>, and an inline
@@ -41,11 +47,42 @@ const COMPONENTS: Components = {
   code: ({ className, children }) => {
     // remark fenced blocks carry `language-<lang>` on the <code>.
     // ```mermaid renders as a diagram; everything else stays inline code.
+    const text = String(children);
     const lang = /language-(\w+)/.exec(className ?? '')?.[1];
     if (lang === 'mermaid') {
-      return <Mermaid chart={String(children).replace(/\n$/, '')} />;
+      return <Mermaid chart={text.replace(/\n$/, '')} />;
+    }
+    // Block code (a fenced block carries a language, or spans multiple lines)
+    // is owned by the <pre> container below, which paints one background for
+    // the whole block. Render it as a plain <code> so it does NOT reuse antd's
+    // inline-code Typography span — that span's background tiled per wrapped
+    // line instead of covering the block.
+    if (lang != null || text.includes('\n')) {
+      return <code>{children}</code>;
     }
     return <Typography.Text code>{children}</Typography.Text>;
+  },
+  // Block container for fenced code: one themed background for the whole block.
+  // (Mermaid fences render as diagrams, not code, so they are not boxed.)
+  pre: ({ children }) => {
+    const { token } = theme.useToken();
+    const child = (Array.isArray(children) ? children[0] : children) as { type?: unknown };
+    if (child?.type === Mermaid) return <>{children}</>;
+    return (
+      <pre
+        style={{
+          background: token.colorFillQuaternary,
+          border: `1px solid ${token.colorBorderSecondary}`,
+          borderRadius: token.borderRadius,
+          padding: '8px 12px',
+          margin: '4px 0',
+          overflow: 'auto',
+          fontSize: '0.85em',
+        }}
+      >
+        {children}
+      </pre>
+    );
   },
   strong: ({ children }) => <Typography.Text strong>{children}</Typography.Text>,
   a: ({ href, children }) => (
@@ -114,7 +151,8 @@ const COMPONENTS: Components = {
   ol: ({ children }) => <ol style={{ margin: '4px 0', paddingLeft: 20 }}>{children}</ol>,
 };
 
-const REMARK_PLUGINS = [remarkGfm];
+const REMARK_PLUGINS = [remarkGfm, remarkMath];
+const REHYPE_PLUGINS = [rehypeKatex];
 
 // Markdown renderer for assistant bubbles. Matches the Excavator frontend's
 // setup (react-markdown + remark-gfm, no rehype-raw → embedded HTML is ignored,
@@ -128,7 +166,11 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
   ensureMarkdownStyle();
   return (
     <div className="optio-cc-md">
-      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={COMPONENTS}>
+      <ReactMarkdown
+        remarkPlugins={REMARK_PLUGINS}
+        rehypePlugins={REHYPE_PLUGINS}
+        components={COMPONENTS}
+      >
         {children}
       </ReactMarkdown>
     </div>

@@ -9,7 +9,9 @@
     "directory": "packages/optio-claudecode-ui"
   },
   "homepage": "https://github.com/deai-network/optio/tree/main/packages/optio-claudecode-ui#readme",
-  "bugs": { "url": "https://github.com/deai-network/optio/issues" },
+  "bugs": {
+    "url": "https://github.com/deai-network/optio/issues"
+  },
   "author": "Kristof Csillag <kristof.csillag@deai-labs.com>",
   "type": "module",
   "main": "src/index.ts",
@@ -29,19 +31,23 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "katex": "^0.16.47",
     "mermaid": "^11.4.0",
     "optio-ui": "workspace:*",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
+    "rehype-katex": "^7.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0"
   },
   "peerDependencies": {
+    "antd": ">=5",
     "react": ">=18",
-    "react-dom": ">=18",
-    "antd": ">=5"
+    "react-dom": ">=18"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
+    "@types/katex": "^0.16.8",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "antd": "^5.29.3",
