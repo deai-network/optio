@@ -1,4 +1,5 @@
 import type { ChatItem, ChatState } from '../chat.js';
+import { explainApiError } from '../apiError.js';
 
 /** Reducer over opencode's native /global/event SSE frames.
  *  Each frame is `{directory?, project?, payload: {id, type, properties}}`
@@ -169,6 +170,15 @@ function reduce(
       items: st.items.map((i) =>
         i.kind === 'permission' && i.requestId === rid ? { ...i, answered } : i),
     };
+  }
+
+  if (t === 'session.error') {
+    // opencode surfaces a turn error; show it as a distinct, explained error
+    // item. The error payload shape varies — probe the common locations.
+    const err = p.error ?? {};
+    const raw = String(err.message ?? err.data?.message ?? p.message ?? JSON.stringify(err) ?? '');
+    const status = typeof err.status === 'number' ? err.status : null;
+    return { ...st, busy: false, items: [...st.items, { kind: 'error', text: explainApiError(raw, status), seq }] };
   }
 
   // server.connected, server.heartbeat, sync, session.updated, session.diff…

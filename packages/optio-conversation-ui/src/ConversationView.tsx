@@ -379,6 +379,24 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             </div>
           </div>
         );
+      case 'error':
+        return (
+          <div
+            key={item.seq}
+            data-testid="conversation-error-item"
+            style={{
+              alignSelf: 'stretch',
+              background: token.colorErrorBg,
+              border: `1px solid ${token.colorErrorBorder}`,
+              color: token.colorErrorText,
+              borderRadius: 8,
+              padding: '8px 12px',
+              whiteSpace: 'pre-wrap',
+            }}
+          >
+            {item.text}
+          </div>
+        );
       case 'closed':
         return (
           <div

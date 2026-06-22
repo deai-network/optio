@@ -7,6 +7,7 @@
 // partials arrive as {type:"stream_event", event:{...content_block_delta}}).
 
 import type { ChatItem, ChatState } from '../chat.js';
+import { explainApiError } from '../apiError.js';
 export { initialChatState } from '../chat.js';
 
 const HARNESS_PREFIX = 'System: ';
@@ -196,6 +197,16 @@ export function reduceEvent(state: ChatState, ev: any, seq: number): ChatState {
 
     case 'result': {
       const resultText = typeof ev.result === 'string' ? ev.result : null;
+      // An API/model error arrives as a result with is_error — surface it as a
+      // distinct, explained error item instead of a plain agent bubble.
+      if (ev.is_error) {
+        const msg = explainApiError(resultText ?? '', ev.api_error_status);
+        return {
+          ...state,
+          items: [...withoutTools(state.items), { kind: 'error', text: msg, seq }],
+          busy: false,
+        };
+      }
       // Turn complete — drop any lingering tool announcement.
       return { ...state, items: finalizePending(withoutTools(state.items), seq, resultText), busy: false };
     }

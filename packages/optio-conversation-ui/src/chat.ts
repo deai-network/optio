@@ -15,6 +15,7 @@ export type ChatItem =
       answered: 'allow' | 'deny' | null;
       seq: number;
     }
+  | { kind: 'error'; text: string; seq: number }
   | { kind: 'closed'; reason: string; seq: number };
 
 export interface ChatState {
