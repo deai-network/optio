@@ -6,9 +6,9 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/deai-network/optio.git",
-    "directory": "packages/optio-claudecode-ui"
+    "directory": "packages/optio-conversation-ui"
   },
-  "homepage": "https://github.com/deai-network/optio/tree/main/packages/optio-claudecode-ui#readme",
+  "homepage": "https://github.com/deai-network/optio/tree/main/packages/optio-conversation-ui#readme",
   "bugs": {
     "url": "https://github.com/deai-network/optio/issues"
   },

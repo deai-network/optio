@@ -17,7 +17,7 @@ export default defineConfig({
   resolve: {
     // optio-ui added: it holds the module-level widget registry; a duplicate
     // instance means widgets registered by sibling packages (e.g.
-    // optio-claudecode-ui) land in a different Map than ProcessWidget reads.
+    // optio-conversation-ui) land in a different Map than ProcessWidget reads.
     dedupe: ['react', 'react-dom', '@tanstack/react-query', '@ts-rest/react-query', 'optio-ui'],
   },
   root: path.resolve(__dirname, 'src/app'),

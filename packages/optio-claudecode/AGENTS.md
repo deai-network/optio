@@ -126,9 +126,10 @@ Task completion semantics in conversation mode:
 ### Conversation UI (`conversation_ui`)
 
 Full design: `docs/2026-06-10-claudecode-conversation-ui-design.md`.
-Browser widget: the `optio-claudecode-ui` package
-(`packages/optio-claudecode-ui`) — register it in the host app via
-`registerClaudeCodeConversationWidget()`.
+Browser widget: the engine-neutral `optio-conversation-ui` package
+(`packages/optio-conversation-ui`) — register it in the host app via
+`registerConversationWidget()` (serves both claudecode and opencode;
+each task self-declares its engine via `widgetData.protocol`).
 
 * `conversation_ui: bool = False` — strictly opt-in; requires
   `mode="conversation"` (validated in `__post_init__`). The published
@@ -172,7 +173,7 @@ Replay-buffer semantics:
   never buffered. Everything else — `system`, `user`, `assistant`,
   `result`, `control_request`, `x-optio-*` — is buffered.
 * The engine channels raw stream-json events through untouched; all
-  interpretation happens client-side in `optio-claudecode-ui`. The one
+  interpretation happens client-side in `optio-conversation-ui`. The one
   synthetic listener event is
   `{"type": "x-optio-permission-answered", "request_id": ..., "behavior": ...}`,
   broadcast (and buffered) when a permission is answered so every

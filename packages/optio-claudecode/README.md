@@ -96,8 +96,10 @@ task additionally starts a per-task listener that streams the raw
 conversation events (replay + live) through the optio widget proxy and
 accepts send / interrupt / permission requests, so the session can be
 monitored and driven from the browser. The matching React chat widget
-ships in the `optio-claudecode-ui` package; register it in your host
-app via `registerClaudeCodeConversationWidget()`. See
+ships in the engine-neutral `optio-conversation-ui` package; register it
+in your host app via `registerConversationWidget()` (one registration
+serves both claudecode and opencode — each task self-declares its engine
+via `widgetData.protocol`). See
 `docs/2026-06-10-claudecode-conversation-ui-design.md`.
 
 ```python

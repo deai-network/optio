@@ -65,7 +65,7 @@ a manual bump).
    - **Python:** `wire` (core) → `optio-host` → `optio-agents` →
      `optio-opencode` → `optio-claudecode` → `optio-demo`
    - **TS:** `wire` (contracts) → `optio-ui` → `optio-api` →
-     `optio-claudecode-ui` → `optio-dashboard`
+     `optio-conversation-ui` → `optio-dashboard`
      (`filtrum-core`, `filtrum-mongo` are independent)
 
    Skip unchanged packages. Use `BUMP=patch` by default; `BUMP=minor` for a
@@ -106,7 +106,7 @@ dependents' pins — those dependents must be re-released. TS packages use
 3. **First publish:** `make release-<pkg> BUMP=none` (publishes the version set
    in the manifest, e.g. `0.1.0`).
 
-Example: `optio-claudecode-ui` was added between `optio-api` and
+Example: `optio-conversation-ui` was added between `optio-api` and
 `optio-dashboard` (depends on `optio-ui`; consumed by `optio-dashboard`).
 
 ## When a release fails mid-way

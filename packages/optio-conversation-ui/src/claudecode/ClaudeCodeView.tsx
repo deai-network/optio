@@ -34,7 +34,7 @@ export function ClaudeCodeView(props: WidgetProps) {
   const { widgetProxyUrl } = props; // ends with '/' — trailing slash is load-bearing
 
   useEffect(() => {
-    console.info('[optio-claudecode-ui] conversation widget activated:', `${widgetProxyUrl}events`);
+    console.info('[optio-conversation-ui] claudecode conversation widget activated:', `${widgetProxyUrl}events`);
     const es = new EventSource(`${widgetProxyUrl}events`);
     es.onmessage = (ev: MessageEvent) => {
       let parsed: unknown;
