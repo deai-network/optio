@@ -1344,6 +1344,7 @@ async def _maybe_refresh_on_resume(
         host_protocol=new_config.host_protocol,
         omit_task_framing=omit_task_framing,
         fs_isolation_dirs=_fs_isolation_dirs(new_config, hook_ctx._host),
+        file_download=new_config.file_download,
     )
     try:
         existing = await hook_ctx.read_text_from_host("CLAUDE.md", silent=True)

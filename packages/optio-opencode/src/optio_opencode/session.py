@@ -831,6 +831,10 @@ async def _maybe_refresh_on_resume(
         new_config.consumer_instructions,
         workdir_exclude=new_config.workdir_exclude,
         supports_resume=new_config.supports_resume,
+        # Reflect the refreshed config so a resume keeps the downloadables block
+        # (with the right wording — host_protocol drives comparative vs standalone).
+        host_protocol=new_config.host_protocol,
+        file_download=new_config.file_download,
     )
     try:
         existing = await hook_ctx.read_text_from_host("AGENTS.md", silent=True)
