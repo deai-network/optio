@@ -17,6 +17,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import secrets
 import shlex
 import sys
@@ -496,9 +497,18 @@ async def run_claudecode_session(
             # messages (Claude's own transcript is continued separately).
             initial_events = await _load_conversation_buffer(host) if resuming else None
             # conversation_ui occupies the single permission-handler slot (see design §2).
+            uploads_dir = f"{host.workdir}/uploads"
+
+            async def _write_upload(name: str, data: bytes) -> str:
+                safe = re.sub(r"[^A-Za-z0-9._-]", "_", (name.split("/")[-1] or "file"))[:200] or "file"
+                await host.put_file_to_host(data, f"{uploads_dir}/{safe}")
+                return f"uploads/{safe}"
+
             conv_listener = ConversationListener(
                 conversation, password=listener_password,
                 initial_events=initial_events,
+                upload_writer=_write_upload,
+                max_upload_bytes=config.max_upload_bytes,
             )
             listener_port = await conv_listener.start(bind_addr)
             await ctx.set_widget_upstream(
@@ -512,6 +522,8 @@ async def run_claudecode_session(
                 "showModelSelector": config.show_model_selector,
                 "models": model_list["models"],
                 "currentModel": current_model,
+                "showFileUpload": config.show_file_upload,
+                "maxUploadBytes": config.max_upload_bytes,
             })
             ctx.report_progress(None, "Conversation UI is live")
 

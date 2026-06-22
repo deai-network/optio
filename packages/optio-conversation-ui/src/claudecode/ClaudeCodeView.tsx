@@ -5,6 +5,7 @@ import type { WidgetProps } from 'optio-ui';
 import type { ChatItem, ChatState } from '../chat.js';
 import { initialChatState, reduceEvent } from './events.js';
 import { AnswerBlock } from '../AnswerBlock.js';
+import { type Attachment, toAttachment, withinCap } from '../attachments.js';
 
 interface ChatAction {
   ev: unknown;
@@ -114,6 +115,10 @@ export function ClaudeCodeView(props: WidgetProps) {
   );
   const showModelSelector = Boolean((props.process.widgetData as any)?.showModelSelector);
   const models: { id: string; label: string }[] = (props.process.widgetData as any)?.models ?? [];
+  const showFileUpload = Boolean((props.process.widgetData as any)?.showFileUpload);
+  const maxUploadBytes = Number((props.process.widgetData as any)?.maxUploadBytes ?? 10_000_000);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -220,12 +225,43 @@ export function ClaudeCodeView(props: WidgetProps) {
     }
   }
 
+  // Claude Code uploads attachments into the session workdir via the listener's
+  // multipart POST /upload (not the JSON `post` helper). Returns the stored
+  // relpaths, or null on any failure so send() can surface a retry.
+  async function uploadFiles(atts: Attachment[]): Promise<string[] | null> {
+    const fd = new FormData();
+    for (const a of atts) fd.append('file', a.file, a.filename);
+    try {
+      const resp = await fetch(`${widgetProxyUrl}upload`, { method: 'POST', body: fd });
+      if (!resp.ok) return null;
+      const j = await resp.json();
+      return (j.files ?? []).map((f: any) => String(f.path));
+    } catch {
+      return null;
+    }
+  }
+
   async function send() {
     const body = text;
     if (!body || sending || state.closed) return;
     setSending(true);
     setError(null);
-    const ok = await post('send', { text: body });
+    // When files are attached, upload them first, then bundle one `System:`
+    // notice line per stored file into the prompt so the agent can Read them
+    // from the workdir. The optimistic echo still shows the operator's text
+    // (`body`), not the System: preamble.
+    let prompt = body;
+    if (attachments.length > 0) {
+      const paths = await uploadFiles(attachments);
+      if (!paths) {
+        setError('Upload failed — retry.');
+        setSending(false);
+        return;
+      }
+      const notice = paths.map((p) => `System: upload received, stored in ${p}`).join('\n');
+      prompt = `${notice}\n\n${body}`;
+    }
+    const ok = await post('send', { text: prompt });
     if (ok) {
       // Optimistic local echo: show the message now; the wire echo (which
       // only arrives once the answer starts streaming) confirms it in place.
@@ -233,6 +269,7 @@ export function ClaudeCodeView(props: WidgetProps) {
       localSeqRef.current -= 1;
       dispatch({ ev: { type: 'x-optio-local-user', text: body }, seq: localSeqRef.current });
       setText('');
+      setAttachments([]);
     } else {
       setError('Send failed — retry.');
     }
@@ -409,6 +446,26 @@ export function ClaudeCodeView(props: WidgetProps) {
           </div>
         )}
       </div>
+      {attachments.length > 0 && (
+        <div data-testid="attach-chips" style={{ display: 'flex', flexWrap: 'wrap', gap: 4, padding: '4px 8px' }}>
+          {attachments.map((a, i) => (
+            <span
+              key={i}
+              style={{
+                fontSize: 12,
+                padding: '2px 6px',
+                border: `1px solid ${token.colorBorderSecondary}`,
+                borderRadius: 4,
+              }}
+            >
+              {a.filename}
+              <a style={{ marginLeft: 6 }} onClick={() => setAttachments(attachments.filter((_, j) => j !== i))}>
+                ×
+              </a>
+            </span>
+          ))}
+        </div>
+      )}
       <div
         style={{
           borderTop: `1px solid ${token.colorBorderSecondary}`,
@@ -418,6 +475,35 @@ export function ClaudeCodeView(props: WidgetProps) {
           alignItems: 'flex-end',
         }}
       >
+        {showFileUpload && (
+          <>
+            <input
+              data-testid="file-input"
+              type="file"
+              multiple
+              style={{ display: 'none' }}
+              ref={fileInputRef}
+              onChange={(e) => {
+                const picked = Array.from(e.target.files ?? []).map(toAttachment);
+                const next = [...attachments, ...picked];
+                if (!withinCap(next, maxUploadBytes)) {
+                  setError('File too large.');
+                  return;
+                }
+                setAttachments(next);
+                e.target.value = '';
+              }}
+            />
+            <Button
+              size="small"
+              data-testid="attach-button"
+              disabled={state.closed}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              📎
+            </Button>
+          </>
+        )}
         {showModelSelector && (
           <Select
             data-testid="model-select"

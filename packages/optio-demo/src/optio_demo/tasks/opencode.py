@@ -250,6 +250,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     mode="conversation",
                     conversation_ui=True,
                     show_model_selector=True,
+                    show_file_upload=True,
                     host_protocol=False,
                     ssh=ssh,
                     seed_id=seed_id,

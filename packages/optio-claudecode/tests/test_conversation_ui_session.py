@@ -255,6 +255,8 @@ async def test_conversation_ui_session_lifecycle(
                 {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5"},
             ],
             "currentModel": None,
+            "showFileUpload": False,
+            "maxUploadBytes": 10_000_000,
         }
         assert proc["uiWidget"] == "conversation"
 

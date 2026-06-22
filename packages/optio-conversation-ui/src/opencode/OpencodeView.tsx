@@ -11,6 +11,7 @@ import {
   type OpencodeModel, type ModelGroup,
 } from './events.js';
 import { AnswerBlock } from '../AnswerBlock.js';
+import { type Attachment, toAttachment, readAsDataUrl, withinCap } from '../attachments.js';
 
 // Conversation view for opencode tasks: speaks opencode's native HTTP+SSE API
 // through the widget proxy (exactly like iframe mode does), reduces the wire
@@ -135,6 +136,8 @@ function OpencodeChat(
   const { sessionID, directory, widgetProxyUrl, showModelSelector, defaultModel } = props; // widgetProxyUrl ends with '/' — trailing slash is load-bearing
   const toolVerbosity = ((props.process.widgetData as any)?.toolVerbosity ?? 'description-only') as
     'silent' | 'description-only' | 'verbose';
+  const showFileUpload = Boolean((props.process.widgetData as any)?.showFileUpload);
+  const maxUploadBytes = Number((props.process.widgetData as any)?.maxUploadBytes ?? 10_000_000);
   // opencode routes resolve their project instance from the request's
   // location context — every session-scoped call carries ?directory=.
   const q = `?directory=${encodeURIComponent(directory)}`;
@@ -156,7 +159,9 @@ function OpencodeChat(
   const [error, setError] = useState<string | null>(null);
   const [groups, setGroups] = useState<ModelGroup[]>([]);
   const [currentModel, setCurrentModel] = useState<OpencodeModel | null>(null);
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -310,9 +315,12 @@ function OpencodeChat(
     if (!body || sending || closed) return;
     setSending(true);
     setError(null);
-    const promptBody: { parts: { type: 'text'; text: string }[]; model?: OpencodeModel } = {
-      parts: [{ type: 'text', text: body }],
-    };
+    const fileParts = await Promise.all(
+      attachments.map(async (a) => ({
+        type: 'file' as const, mime: a.mime, filename: a.filename, url: await readAsDataUrl(a.file),
+      })),
+    );
+    const promptBody: any = { parts: [...fileParts, { type: 'text', text: body }] };
     if (currentModel) promptBody.model = currentModel;
     const ok = await post(`session/${sessionID}/prompt_async${q}`, promptBody);
     if (ok) {
@@ -321,6 +329,7 @@ function OpencodeChat(
       // React keys unique and clear of wire seqs.
       dispatch({ ev: { type: 'x-optio-local-user', properties: { text: body } }, seq: localSeqRef.current-- });
       setText('');
+      setAttachments([]);
     } else {
       setError('Send failed — retry.');
     }
@@ -511,6 +520,16 @@ function OpencodeChat(
           </div>
         )}
       </div>
+      {attachments.length > 0 && (
+        <div data-testid="attach-chips" style={{ display: 'flex', flexWrap: 'wrap', gap: 4, padding: '4px 8px' }}>
+          {attachments.map((a, i) => (
+            <span key={i} style={{ fontSize: 12, padding: '2px 6px', border: `1px solid ${token.colorBorderSecondary}`, borderRadius: 4 }}>
+              {a.filename}
+              <a style={{ marginLeft: 6 }} onClick={() => setAttachments(attachments.filter((_, j) => j !== i))}>×</a>
+            </span>
+          ))}
+        </div>
+      )}
       <div
         style={{
           borderTop: `1px solid ${token.colorBorderSecondary}`,
@@ -520,6 +539,26 @@ function OpencodeChat(
           alignItems: 'flex-end',
         }}
       >
+        {showFileUpload && (
+          <>
+            <input
+              data-testid="file-input"
+              type="file"
+              multiple
+              style={{ display: 'none' }}
+              ref={fileInputRef}
+              onChange={(e) => {
+                const picked = Array.from(e.target.files ?? []).map(toAttachment);
+                const next = [...attachments, ...picked];
+                if (!withinCap(next, maxUploadBytes)) { setError('File too large.'); return; }
+                setAttachments(next);
+                e.target.value = '';
+              }}
+            />
+            <Button size="small" data-testid="attach-button" disabled={closed}
+              onClick={() => fileInputRef.current?.click()}>📎</Button>
+          </>
+        )}
         {showModelSelector && (
           <Select
             data-testid="model-select"

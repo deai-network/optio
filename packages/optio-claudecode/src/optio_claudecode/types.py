@@ -182,6 +182,13 @@ class ClaudeCodeTaskConfig:
     # mode="conversation" and conversation_ui=True. The default model is
     # config.model (no separate field).
     show_model_selector: bool = False
+    # Show the file-upload control in the conversation widget. Requires
+    # mode="conversation" and conversation_ui=True. Uploaded files are written
+    # under <workdir>/uploads on the host; carried to the widget via widgetData.
+    show_file_upload: bool = False
+    # Upper bound (bytes) on a single uploaded file; the listener rejects
+    # anything larger with HTTP 413. Mirrored to the widget via widgetData.
+    max_upload_bytes: int = 10_000_000
 
     # --- explicit session restore (spec: 2026-06-10 session restore) -----
     # session_restore_from: GridFS blob id of a home/.claude session tar (as
@@ -257,6 +264,11 @@ class ClaudeCodeTaskConfig:
         if self.show_model_selector and not (self.mode == "conversation" and self.conversation_ui):
             raise ValueError(
                 "ClaudeCodeTaskConfig: show_model_selector=True requires "
+                "mode='conversation' and conversation_ui=True."
+            )
+        if self.show_file_upload and not (self.mode == "conversation" and self.conversation_ui):
+            raise ValueError(
+                "ClaudeCodeTaskConfig: show_file_upload=True requires "
                 "mode='conversation' and conversation_ui=True."
             )
         if self.tool_verbosity not in _VALID_TOOL_VERBOSITY:

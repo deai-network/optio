@@ -114,6 +114,11 @@ class OpencodeTaskConfig:
     # Show the model picker in the conversation widget. Requires
     # conversation_ui=True.
     show_model_selector: bool = False
+    # Show the file-attach control in the conversation widget. Requires
+    # conversation_ui=True. Files ride inline as data-URL `file` parts.
+    show_file_upload: bool = False
+    # Per-file size cap enforced client-side before the data URL is built.
+    max_upload_bytes: int = 10_000_000
 
     def __post_init__(self) -> None:
         e = self.session_blob_encrypt is not None
@@ -144,6 +149,10 @@ class OpencodeTaskConfig:
             raise ValueError(
                 "OpencodeTaskConfig: show_model_selector=True requires "
                 "conversation_ui=True."
+            )
+        if self.show_file_upload and not self.conversation_ui:
+            raise ValueError(
+                "OpencodeTaskConfig: show_file_upload=True requires conversation_ui=True."
             )
         if self.default_model is not None and not self.conversation_ui:
             raise ValueError(
