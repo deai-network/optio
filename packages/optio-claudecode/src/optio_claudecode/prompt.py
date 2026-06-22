@@ -10,6 +10,7 @@ needs this because all sensitive agent-continuity state lives there.
 from optio_agents.prompt import (
     BASE_PROMPT_POST,
     compose_agents_md as _compose_agents_md_host,
+    downloadables_block,
 )
 from optio_agents.protocol import build_log_channel_prompt
 
@@ -132,6 +133,7 @@ def compose_agents_md(
     host_protocol: bool = True,
     omit_task_framing: bool = False,
     fs_isolation_dirs: list[tuple[str, str]] | None = None,
+    file_download: bool = False,
 ) -> str:
     """Render <workdir>/CLAUDE.md for an optio-claudecode task.
 
@@ -150,6 +152,10 @@ def compose_agents_md(
     ``omit_task_framing=True`` drops the ``## Task`` framing block
     (used when the conversation instructions were defaulted).
     """
+    if file_download:
+        consumer_instructions = (
+            consumer_instructions.rstrip() + downloadables_block(comparative=host_protocol)
+        )
     if fs_isolation_dirs:
         # The session is sandboxed (claustrum/Landlock); tell the agent its
         # bounds so EACCES on a stray path isn't a mystery. Conditional on

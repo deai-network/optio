@@ -257,6 +257,8 @@ async def test_conversation_ui_session_lifecycle(
             "currentModel": None,
             "showFileUpload": False,
             "maxUploadBytes": 10_000_000,
+            "fileDownload": False,
+            "maxDownloadBytes": 10_000_000,
         }
         assert proc["uiWidget"] == "conversation"
 

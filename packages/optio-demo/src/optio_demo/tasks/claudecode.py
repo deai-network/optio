@@ -236,6 +236,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     conversation_ui=True,
                     show_model_selector=True,
                     show_file_upload=True,
+                    file_download=True,
                     permission_gate=True,       # exercises the approve/deny UI
                     host_protocol=False,        # pure conversation gate
                     # Conversation-mode launch is now claustrum-wrapped too.
@@ -263,6 +264,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     conversation_ui=True,
                     show_model_selector=True,
                     show_file_upload=True,
+                    file_download=True,
                     # host_protocol left at its True default — keyword channel on.
                     permission_mode="bypassPermissions",
                     # Conversation-mode launch is now claustrum-wrapped too.

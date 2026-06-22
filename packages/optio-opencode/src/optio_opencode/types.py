@@ -119,6 +119,11 @@ class OpencodeTaskConfig:
     show_file_upload: bool = False
     # Per-file size cap enforced client-side before the data URL is built.
     max_upload_bytes: int = 10_000_000
+    # Let the agent hand produced files to the user as one-click downloads
+    # (optio-file: sentinel links). Requires conversation_ui=True. Adds the
+    # downloadables instruction to AGENTS.md and the widget download handler.
+    file_download: bool = False
+    max_download_bytes: int = 10_000_000
 
     def __post_init__(self) -> None:
         e = self.session_blob_encrypt is not None
@@ -153,6 +158,10 @@ class OpencodeTaskConfig:
         if self.show_file_upload and not self.conversation_ui:
             raise ValueError(
                 "OpencodeTaskConfig: show_file_upload=True requires conversation_ui=True."
+            )
+        if self.file_download and not self.conversation_ui:
+            raise ValueError(
+                "OpencodeTaskConfig: file_download=True requires conversation_ui=True."
             )
         if self.default_model is not None and not self.conversation_ui:
             raise ValueError(

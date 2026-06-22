@@ -12,6 +12,7 @@ import {
 } from './events.js';
 import { AnswerBlock } from '../AnswerBlock.js';
 import { type Attachment, toAttachment, readAsDataUrl, withinCap } from '../attachments.js';
+import { FileDownloadContext, blobDownload } from '../FileDownloadContext.js';
 
 // Conversation view for opencode tasks: speaks opencode's native HTTP+SSE API
 // through the widget proxy (exactly like iframe mode does), reduces the wire
@@ -138,6 +139,7 @@ function OpencodeChat(
     'silent' | 'description-only' | 'verbose';
   const showFileUpload = Boolean((props.process.widgetData as any)?.showFileUpload);
   const maxUploadBytes = Number((props.process.widgetData as any)?.maxUploadBytes ?? 10_000_000);
+  const fileDownload = Boolean((props.process.widgetData as any)?.fileDownload);
   // opencode routes resolve their project instance from the request's
   // location context — every session-scoped call carries ?directory=.
   const q = `?directory=${encodeURIComponent(directory)}`;
@@ -343,6 +345,19 @@ function OpencodeChat(
     void post(`session/${sessionID}/abort${q}`, {});
   }
 
+  async function onFileDownload(relpath: string, filename: string) {
+    try {
+      const r = await fetch(`${widgetProxyUrl}file/content?path=${encodeURIComponent(relpath)}${q.slice(1) ? '&' + q.slice(1) : ''}`);
+      if (!r.ok) { setError('Download failed.'); return; }
+      const fc = await r.json();                       // FileContent {type, content}
+      const mime = 'application/octet-stream';
+      const bytes = fc.type === 'binary'
+        ? Uint8Array.from(atob(fc.content), (c) => c.charCodeAt(0))
+        : new TextEncoder().encode(fc.content ?? '');
+      blobDownload(bytes, mime, filename);
+    } catch { setError('Download failed.'); }
+  }
+
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -479,6 +494,7 @@ function OpencodeChat(
   }
 
   return (
+    <FileDownloadContext.Provider value={fileDownload ? onFileDownload : null}>
     <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%' }}>
       <div
         ref={scrollRef}
@@ -627,5 +643,6 @@ function OpencodeChat(
         )}
       </div>
     </div>
+    </FileDownloadContext.Provider>
   );
 }

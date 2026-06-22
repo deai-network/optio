@@ -63,6 +63,8 @@ def test_widget_data_carries_model_fields():
         "defaultModel": "opencode/big-pickle",
         "showFileUpload": False,
         "maxUploadBytes": 10_000_000,
+        "fileDownload": False,
+        "maxDownloadBytes": 10_000_000,
     }
 
 

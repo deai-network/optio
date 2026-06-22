@@ -6,6 +6,7 @@ import type { ChatItem, ChatState } from '../chat.js';
 import { initialChatState, reduceEvent } from './events.js';
 import { AnswerBlock } from '../AnswerBlock.js';
 import { type Attachment, toAttachment, withinCap } from '../attachments.js';
+import { FileDownloadContext, blobDownload } from '../FileDownloadContext.js';
 
 interface ChatAction {
   ev: unknown;
@@ -118,6 +119,7 @@ export function ClaudeCodeView(props: WidgetProps) {
     (props.process.widgetData as any)?.models ?? [];
   const showFileUpload = Boolean((props.process.widgetData as any)?.showFileUpload);
   const maxUploadBytes = Number((props.process.widgetData as any)?.maxUploadBytes ?? 10_000_000);
+  const fileDownload = Boolean((props.process.widgetData as any)?.fileDownload);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -256,6 +258,16 @@ export function ClaudeCodeView(props: WidgetProps) {
     } catch {
       return null;
     }
+  }
+
+  async function onFileDownload(relpath: string, filename: string) {
+    try {
+      const r = await fetch(`${widgetProxyUrl}download?path=${encodeURIComponent(relpath)}`);
+      if (!r.ok) { setError('Download failed.'); return; }
+      const mime = r.headers.get('content-type') || 'application/octet-stream';
+      const bytes = new Uint8Array(await r.arrayBuffer());
+      blobDownload(bytes, mime, filename);
+    } catch { setError('Download failed.'); }
   }
 
   async function send() {
@@ -436,6 +448,7 @@ export function ClaudeCodeView(props: WidgetProps) {
   }
 
   return (
+    <FileDownloadContext.Provider value={fileDownload ? onFileDownload : null}>
     <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%' }}>
       <div
         ref={scrollRef}
@@ -583,5 +596,6 @@ export function ClaudeCodeView(props: WidgetProps) {
         )}
       </div>
     </div>
+    </FileDownloadContext.Provider>
   );
 }

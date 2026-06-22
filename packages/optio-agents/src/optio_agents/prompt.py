@@ -54,3 +54,28 @@ def compose_agents_md(
     body = consumer_instructions.rstrip()
     resume_block = (resume_section + "\n") if resume_section else ""
     return f"{pre}{resume_block}{BASE_PROMPT_POST}\n{body}\n"
+
+
+def downloadables_block(comparative: bool) -> str:
+    """Instruction paragraph teaching the agent to offer a file to the human as
+    a one-click download via a sentinel markdown link. Two wordings:
+    comparative (when the deliverable keyword protocol is active) vs standalone.
+    """
+    sentinel = "`[name](optio-file:relpath)`"
+    if comparative:
+        return (
+            "\n\n## Downloadable files\n"
+            "Deliverables (the DELIVERABLE keyword) are shipped to the host harness "
+            "for automatic processing. **Downloadable files are different**: they go "
+            "directly to the human user. Produce one only **deliberately**, when the "
+            "user interactively asks you for a file. To offer a file for download, "
+            "write it into the working directory and present it as a markdown link "
+            f"with the optio-file scheme: {sentinel} — where `relpath` is the file's "
+            "path relative to the working directory."
+        )
+    return (
+        "\n\n## Downloadable files\n"
+        "When the user asks you for a file, write it into the working directory and "
+        f"present it to them as a one-click download: a markdown link {sentinel}, "
+        "where `relpath` is the file's path relative to the working directory."
+    )

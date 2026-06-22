@@ -189,6 +189,14 @@ class ClaudeCodeTaskConfig:
     # Upper bound (bytes) on a single uploaded file; the listener rejects
     # anything larger with HTTP 413. Mirrored to the widget via widgetData.
     max_upload_bytes: int = 10_000_000
+    # Offer download links for files Claude marks as deliverables in the
+    # conversation widget. Requires mode="conversation" and conversation_ui=True.
+    # The listener serves GET /download for paths confined under <workdir>;
+    # carried to the widget via widgetData.
+    file_download: bool = False
+    # Upper bound (bytes) on a single downloaded file; the listener rejects
+    # anything larger with HTTP 413. Mirrored to the widget via widgetData.
+    max_download_bytes: int = 10_000_000
 
     # --- explicit session restore (spec: 2026-06-10 session restore) -----
     # session_restore_from: GridFS blob id of a home/.claude session tar (as
@@ -269,6 +277,11 @@ class ClaudeCodeTaskConfig:
         if self.show_file_upload and not (self.mode == "conversation" and self.conversation_ui):
             raise ValueError(
                 "ClaudeCodeTaskConfig: show_file_upload=True requires "
+                "mode='conversation' and conversation_ui=True."
+            )
+        if self.file_download and not (self.mode == "conversation" and self.conversation_ui):
+            raise ValueError(
+                "ClaudeCodeTaskConfig: file_download=True requires "
                 "mode='conversation' and conversation_ui=True."
             )
         if self.tool_verbosity not in _VALID_TOOL_VERBOSITY:

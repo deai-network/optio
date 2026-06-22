@@ -1,5 +1,6 @@
-import { memo } from 'react';
-import ReactMarkdown, { type Components } from 'react-markdown';
+import { memo, useContext } from 'react';
+import ReactMarkdown, { type Components, defaultUrlTransform } from 'react-markdown';
+import { FileDownloadContext } from './FileDownloadContext.js';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
@@ -85,11 +86,31 @@ const COMPONENTS: Components = {
     );
   },
   strong: ({ children }) => <Typography.Text strong>{children}</Typography.Text>,
-  a: ({ href, children }) => (
-    <Typography.Link href={href} target="_blank" rel="noreferrer">
-      {children}
-    </Typography.Link>
-  ),
+  a: ({ href, children }) => {
+    const onDownload = useContext(FileDownloadContext);
+    const SENTINEL = 'optio-file:';
+    if (typeof href === 'string' && href.startsWith(SENTINEL)) {
+      const relpath = href.slice(SENTINEL.length);
+      const filename = relpath.split('/').pop() || relpath;
+      if (onDownload) {
+        return (
+          <Typography.Link
+            onClick={() => onDownload(relpath, filename)}
+            style={{ cursor: 'pointer' }}
+          >
+            ⬇ {children}
+          </Typography.Link>
+        );
+      }
+      // No handler (e.g. scripter reuse): plain text, no navigation.
+      return <Typography.Text>{children}</Typography.Text>;
+    }
+    return (
+      <Typography.Link href={href} target="_blank" rel="noreferrer">
+        {children}
+      </Typography.Link>
+    );
+  },
   // GFM tables render as bare <table> with no browser border styling;
   // give them collapsed borders + cell padding so they read as tables.
   table: ({ children }) => (
@@ -154,6 +175,14 @@ const COMPONENTS: Components = {
 const REMARK_PLUGINS = [remarkGfm, remarkMath];
 const REHYPE_PLUGINS = [rehypeKatex];
 
+// react-markdown's defaultUrlTransform sanitizes URLs and drops unknown
+// schemes (it would rewrite our `optio-file:` sentinel href to ''), so the `a`
+// renderer would never see the scheme. Pass `optio-file:` links through
+// untouched and defer to the default sanitizer for everything else.
+function urlTransform(url: string): string {
+  return url.startsWith('optio-file:') ? url : defaultUrlTransform(url);
+}
+
 // Markdown renderer for assistant bubbles. Matches the Excavator frontend's
 // setup (react-markdown + remark-gfm, no rehype-raw → embedded HTML is ignored,
 // so model output cannot inject markup) and maps block elements onto Ant Design
@@ -169,6 +198,7 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
       <ReactMarkdown
         remarkPlugins={REMARK_PLUGINS}
         rehypePlugins={REHYPE_PLUGINS}
+        urlTransform={urlTransform}
         components={COMPONENTS}
       >
         {children}

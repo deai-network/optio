@@ -7,6 +7,7 @@ addressed. The consumer's own task description is then appended verbatim.
 """
 
 
+from optio_agents.prompt import downloadables_block
 from optio_agents.protocol import build_log_channel_prompt
 
 
@@ -132,6 +133,7 @@ def compose_agents_md(
     supports_resume: bool = True,
     host_protocol: bool = True,
     omit_task_framing: bool = False,
+    file_download: bool = False,
 ) -> str:
     """Build the full AGENTS.md body.
 
@@ -155,6 +157,10 @@ def compose_agents_md(
     ``omit_task_framing=True`` drops the ``## Task`` framing block
     (used when the conversation instructions were defaulted).
     """
+    if file_download:
+        consumer_instructions = (
+            consumer_instructions.rstrip() + downloadables_block(comparative=host_protocol)
+        )
     if host_protocol:
         if documentation is None:
             documentation = build_log_channel_prompt("suppress")

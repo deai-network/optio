@@ -16,6 +16,7 @@ import asyncio
 import inspect
 import json
 import logging
+import mimetypes
 import os
 import re
 import secrets
@@ -504,11 +505,24 @@ async def run_claudecode_session(
                 await host.put_file_to_host(data, f"{uploads_dir}/{safe}")
                 return f"uploads/{safe}"
 
+            async def _read_download(relpath: str) -> tuple[bytes, str]:
+                workdir = host.workdir.rstrip("/")
+                real = os.path.realpath(os.path.join(workdir, relpath))
+                if real != workdir and not real.startswith(workdir + os.sep):
+                    raise ValueError("forbidden")           # outside the workdir
+                data = await host.fetch_bytes_from_host(real)
+                if len(data) > config.max_download_bytes:
+                    raise ValueError("too-large")
+                mime = mimetypes.guess_type(real)[0] or "application/octet-stream"
+                return data, mime
+
             conv_listener = ConversationListener(
                 conversation, password=listener_password,
                 initial_events=initial_events,
                 upload_writer=_write_upload,
                 max_upload_bytes=config.max_upload_bytes,
+                download_reader=_read_download,
+                max_download_bytes=config.max_download_bytes,
             )
             listener_port = await conv_listener.start(bind_addr)
             await ctx.set_widget_upstream(
@@ -524,6 +538,8 @@ async def run_claudecode_session(
                 "currentModel": current_model,
                 "showFileUpload": config.show_file_upload,
                 "maxUploadBytes": config.max_upload_bytes,
+                "fileDownload": config.file_download,
+                "maxDownloadBytes": config.max_download_bytes,
             })
             ctx.report_progress(None, "Conversation UI is live")
 
@@ -939,6 +955,7 @@ async def _plant_session_content(
                 host_protocol=config.host_protocol,
                 omit_task_framing=omit_task_framing,
                 fs_isolation_dirs=_fs_isolation_dirs(config, host),
+                file_download=config.file_download,
             ),
         )
     else:

@@ -88,6 +88,8 @@ def conversation_widget_data(config: "OpencodeTaskConfig", *, session_id: str, d
         "defaultModel": config.default_model,
         "showFileUpload": config.show_file_upload,
         "maxUploadBytes": config.max_upload_bytes,
+        "fileDownload": config.file_download,
+        "maxDownloadBytes": config.max_download_bytes,
     }
 
 
@@ -232,6 +234,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                     supports_resume=config.supports_resume,
                     host_protocol=config.host_protocol,
                     omit_task_framing=omit_task_framing,
+                    file_download=config.file_download,
                 ),
             )
             opencode_cfg = dict(config.opencode_config)
