@@ -15,7 +15,9 @@ import { registerConversationWidget } from 'optio-conversation-ui';
 import { LoginForm } from './LoginForm.js';
 import { useSession, signOut } from './auth-client.js';
 
-registerConversationWidget();
+// The dashboard has no ConfigProvider of its own, so let the conversation
+// widget own its light/dark toggle (☀/🌙 in the conversation header).
+registerConversationWidget({ ownTheme: true });
 
 const { Header, Sider, Content } = Layout;
 const { Title } = Typography;
