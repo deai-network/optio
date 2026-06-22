@@ -81,7 +81,9 @@ def test_minimal_config_resume_defaults():
     assert cfg.workdir_exclude is None
     assert cfg.session_blob_encrypt is None
     assert cfg.session_blob_decrypt is None
-    assert cfg.on_resume_refresh is None
+    # Default is identity-refresh (recompose on resume), not None.
+    assert cfg.on_resume_refresh is not None
+    assert cfg.on_resume_refresh(cfg) is cfg
 
 
 import pytest

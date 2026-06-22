@@ -63,6 +63,13 @@ ToolVerbosity = Literal["silent", "description-only", "verbose"]
 _VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
 
 
+def _identity_resume_refresh(config: "ClaudeCodeTaskConfig") -> "ClaudeCodeTaskConfig":
+    """Default ``on_resume_refresh``: recompose CLAUDE.md from the unchanged
+    config on resume, so a resumed session picks up instruction/template
+    changes instead of freezing at first launch (no config mutation)."""
+    return config
+
+
 @dataclass
 class ClaudeCodeTaskConfig:
     """Configuration for one optio-claudecode task instance.
@@ -132,12 +139,14 @@ class ClaudeCodeTaskConfig:
     # config error (asymmetric usage is always a mistake).
     session_blob_encrypt: Callable[[bytes], bytes] | None = None
     session_blob_decrypt: Callable[[bytes], bytes] | None = None
-    # Optional hook fired on resume only (never on fresh start). Receives
-    # the original config; returns a (possibly mutated) config. The harness
-    # re-renders CLAUDE.md from the returned config and writes it back only
-    # when it differs from the file on disk, tagging the next resume.log
-    # line with `REFRESHED:CLAUDE.md`. None (default) → no refresh.
-    on_resume_refresh: "Callable[[ClaudeCodeTaskConfig], ClaudeCodeTaskConfig] | None" = None
+    # Hook fired on resume only (never on fresh start). Receives the original
+    # config; returns a (possibly mutated) config. The harness re-renders
+    # CLAUDE.md from the returned config and writes it back only when it
+    # differs from the file on disk, tagging the next resume.log line with
+    # `REFRESHED:CLAUDE.md` so the agent re-reads. Default = identity (recompose
+    # from the same config, so instruction/template changes reach a resumed
+    # session instead of freezing at first launch). Pass None to disable.
+    on_resume_refresh: "Callable[[ClaudeCodeTaskConfig], ClaudeCodeTaskConfig] | None" = _identity_resume_refresh
 
     # --- seed surface (start fresh from a stored environment) -----------
     # Consumed (default/fallback): merge this seed's environment into a

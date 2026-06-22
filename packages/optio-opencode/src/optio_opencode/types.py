@@ -38,6 +38,13 @@ __all__ = [
 ]
 
 
+def _identity_resume_refresh(config: "OpencodeTaskConfig") -> "OpencodeTaskConfig":
+    """Default ``on_resume_refresh``: recompose AGENTS.md from the unchanged
+    config on resume, so a resumed session picks up instruction/template
+    changes instead of freezing at first launch (no config mutation)."""
+    return config
+
+
 @dataclass
 class OpencodeTaskConfig:
     """Configuration for one optio-opencode task instance."""
@@ -66,14 +73,15 @@ class OpencodeTaskConfig:
     # raises a config error: asymmetric usage is always a mistake.
     session_blob_encrypt: Callable[[bytes], bytes] | None = None
     session_blob_decrypt: Callable[[bytes], bytes] | None = None
-    # Optional hook fired on resume only (never on fresh start). Receives
-    # the original task config; returns a (possibly mutated/replaced) config.
-    # The harness re-renders AGENTS.md from the returned config and writes
-    # it back to the workdir only when it differs from the file on disk.
-    # When written, the harness tags the new line in resume.log with
-    # `REFRESHED:AGENTS.md` so the agent knows to re-read. None (default)
-    # → no refresh; the resumed session keeps its original AGENTS.md.
-    on_resume_refresh: Callable[["OpencodeTaskConfig"], "OpencodeTaskConfig"] | None = None
+    # Hook fired on resume only (never on fresh start). Receives the original
+    # task config; returns a (possibly mutated/replaced) config. The harness
+    # re-renders AGENTS.md from the returned config and writes it back only
+    # when it differs from the file on disk, tagging the next resume.log line
+    # with `REFRESHED:AGENTS.md` so the agent re-reads. Default = identity
+    # (recompose from the same config, so instruction/template changes reach a
+    # resumed session instead of freezing at first launch). Pass None to
+    # disable refresh and keep the original AGENTS.md.
+    on_resume_refresh: Callable[["OpencodeTaskConfig"], "OpencodeTaskConfig"] | None = _identity_resume_refresh
 
     # --- seed surface (mirrors optio-claudecode) ---
     seed_id: "str | SeedProvider | None" = None

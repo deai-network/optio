@@ -439,7 +439,8 @@ async def test_maybe_refresh_on_resume_no_hook(tmp_workdir):
 
     host = LocalHost(taskdir=tmp_workdir)
     await host.setup_workdir()
-    config = OpencodeTaskConfig(consumer_instructions="x")
+    # Explicit None opts out of refresh (the default is now identity-refresh).
+    config = OpencodeTaskConfig(consumer_instructions="x", on_resume_refresh=None)
 
     refreshed = await _maybe_refresh_on_resume(host, None, config)
 
@@ -457,10 +458,8 @@ async def test_maybe_refresh_on_resume_unchanged_content_skips_write(tmp_workdir
 
     host = LocalHost(taskdir=tmp_workdir)
     await host.setup_workdir()
-    config = OpencodeTaskConfig(
-        consumer_instructions="task X",
-        on_resume_refresh=lambda c: c,
-    )
+    # Default on_resume_refresh is identity — recompose from the same config.
+    config = OpencodeTaskConfig(consumer_instructions="task X")
     expected = compose_agents_md(
         config.consumer_instructions,
         workdir_exclude=config.workdir_exclude,

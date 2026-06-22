@@ -97,9 +97,12 @@ def test_opencode_task_config_supports_resume_can_be_disabled():
     assert cfg.supports_resume is False
 
 
-def test_opencode_task_config_on_resume_refresh_default_none():
+def test_opencode_task_config_on_resume_refresh_default_identity():
     cfg = OpencodeTaskConfig(consumer_instructions="x")
-    assert cfg.on_resume_refresh is None
+    # Default is identity-refresh (recompose AGENTS.md from the same config),
+    # not None — a resumed session no longer freezes its instructions.
+    assert cfg.on_resume_refresh is not None
+    assert cfg.on_resume_refresh(cfg) is cfg
 
 
 def test_opencode_task_config_on_resume_refresh_accepts_callable():

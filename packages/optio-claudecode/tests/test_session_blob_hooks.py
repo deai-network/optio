@@ -54,9 +54,12 @@ def test_workdir_exclude_defaults_none():
     assert cfg.workdir_exclude is None
 
 
-def test_on_resume_refresh_defaults_none():
+def test_on_resume_refresh_defaults_identity():
     cfg = ClaudeCodeTaskConfig(consumer_instructions="x", fs_isolation=False)
-    assert cfg.on_resume_refresh is None
+    # Default is identity-refresh (recompose CLAUDE.md from the same config),
+    # not None — a resumed session no longer freezes its instructions.
+    assert cfg.on_resume_refresh is not None
+    assert cfg.on_resume_refresh(cfg) is cfg
 
 
 """Roundtrip a fake session tar through _capture_snapshot with a
