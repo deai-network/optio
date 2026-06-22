@@ -357,6 +357,80 @@ def test_payload_appends_error_when_claude_exits_nonzero(tmp_path):
     assert "DONE" not in log
 
 
+def test_payload_debug_surfaces_pane_tail_ansi_stripped(tmp_path, monkeypatch):
+    """OPTIO_CLAUDECODE_DEBUG: on nonzero exit the wrapper tails the tmux pane
+    mirror (written by pipe-pane, OUTSIDE the workdir) into optio.log with ANSI
+    escapes stripped, so the real error survives the workdir teardown."""
+    import subprocess
+
+    debug_root = tmp_path / "dbg"
+    monkeypatch.setenv("OPTIO_CLAUDECODE_DEBUG", "1")
+    monkeypatch.setenv("OPTIO_CLAUDECODE_DEBUG_DIR", str(debug_root))
+
+    workdir = tmp_path / "wd"
+    (workdir / "home").mkdir(parents=True)
+    (workdir / "optio.log").write_text("")
+
+    # Simulate the live pane mirror pipe-pane would have produced, with ANSI.
+    task_dir = debug_root / workdir.parent.name
+    task_dir.mkdir(parents=True)
+    (task_dir / "claude-pane.log").write_text(
+        "\x1b[31mDo you trust the files in this folder?\x1b[0m\n"
+        "\x1b]0;title\x07Permission denied opening config\n"
+    )
+
+    fake = tmp_path / "claude"
+    fake.write_text("#!/bin/sh\nexit 7\n")
+    fake.chmod(0o755)
+
+    argv = host_actions.build_tmux_session_argv(
+        tmux_path="/usr/bin/tmux",
+        claude_path=str(fake),
+        workdir=str(workdir),
+        socket_path=str(workdir / "tmux.sock"),
+        session_name="optio",
+        extra_env=None,
+        claude_flags=[],
+    )
+    subprocess.run(["bash", "-c", argv[-1]], check=True)
+
+    log = (workdir / "optio.log").read_text()
+    assert "ERROR: claude exited 7" in log
+    assert "Do you trust the files in this folder?" in log   # CSI stripped
+    assert "Permission denied opening config" in log         # OSC stripped
+    assert "\x1b" not in log                                  # no raw escapes
+
+
+def test_payload_debug_clean_exit_no_tail(tmp_path, monkeypatch):
+    """Debug capture on a clean exit: DONE only, no error tail."""
+    import subprocess
+
+    monkeypatch.setenv("OPTIO_CLAUDECODE_DEBUG", "1")
+    monkeypatch.setenv("OPTIO_CLAUDECODE_DEBUG_DIR", str(tmp_path / "dbg"))
+
+    workdir = tmp_path / "wd"
+    (workdir / "home").mkdir(parents=True)
+    (workdir / "optio.log").write_text("")
+    fake = tmp_path / "claude"
+    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.chmod(0o755)
+
+    argv = host_actions.build_tmux_session_argv(
+        tmux_path="/usr/bin/tmux",
+        claude_path=str(fake),
+        workdir=str(workdir),
+        socket_path=str(workdir / "tmux.sock"),
+        session_name="optio",
+        extra_env=None,
+        claude_flags=[],
+    )
+    subprocess.run(["bash", "-c", argv[-1]], check=True)
+
+    log = (workdir / "optio.log").read_text()
+    assert "DONE" in log
+    assert "ERROR" not in log
+
+
 async def test_ensure_ttyd_installed_unsupported_os_raises():
     host = _FakeHost([
         RunResult(stdout="", stderr="not found", exit_code=1),
