@@ -26,7 +26,7 @@ classifiers = [
     "Framework :: AsyncIO",
 ]
 dependencies = [
-    "optio-core>=0.2,<0.3",
+    "optio-core>=0.3,<0.4",
     # 0.1.1 introduces the bind_addr kwarg on Host.establish_tunnel —
     # required for OPTIO_WIDGET_TUNNEL_BIND to work.
     "optio-host>=0.2,<0.3",
