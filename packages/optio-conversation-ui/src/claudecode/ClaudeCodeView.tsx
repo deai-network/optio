@@ -114,7 +114,8 @@ export function ClaudeCodeView(props: WidgetProps) {
     (props.process.widgetData as any)?.currentModel ?? undefined,
   );
   const showModelSelector = Boolean((props.process.widgetData as any)?.showModelSelector);
-  const models: { id: string; label: string }[] = (props.process.widgetData as any)?.models ?? [];
+  const models: { id: string; label: string; disabled?: boolean }[] =
+    (props.process.widgetData as any)?.models ?? [];
   const showFileUpload = Boolean((props.process.widgetData as any)?.showFileUpload);
   const maxUploadBytes = Number((props.process.widgetData as any)?.maxUploadBytes ?? 10_000_000);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -139,6 +140,22 @@ export function ClaudeCodeView(props: WidgetProps) {
         return;
       }
       dispatch({ ev: parsed, seq: Number(ev.lastEventId) });
+      // The picker shows empty when the task was launched with no --model
+      // (config.model is None). Claude Code still runs on its built-in default;
+      // surface the real model from the stream so the picker reflects what's
+      // actually in use. The model arrives at top level on the `system`/`init`
+      // event (fires immediately at launch, before any turn) and on each
+      // assistant message's `message.model`. Only fill when unset — a user pick
+      // wins.
+      const rawModel = (parsed as any)?.model ?? (parsed as any)?.message?.model;
+      if (typeof rawModel === 'string' && rawModel) {
+        // The stream reports the runtime/variant id (e.g. claude-opus-4-8[1m]
+        // for the 1M-context variant), but /v1/models — and our picker options
+        // — use the bare catalog id (claude-opus-4-8). Strip the [..] variant
+        // suffix so the value matches an option and the label resolves.
+        const streamModel = rawModel.replace(/\[[^\]]*\]$/, '');
+        setCurrentModel((prev) => prev ?? streamModel);
+      }
     };
     return () => es.close();
   }, [widgetProxyUrl]);
@@ -475,6 +492,44 @@ export function ClaudeCodeView(props: WidgetProps) {
           alignItems: 'flex-end',
         }}
       >
+        {showModelSelector && (
+          <Select
+            data-testid="model-select"
+            size="small"
+            style={{ minWidth: 180, alignSelf: 'center' }}
+            placeholder="Model"
+            disabled={busy || state.closed}
+            value={currentModel}
+            onChange={(v: string) => {
+              setCurrentModel(v);                       // optimistic
+              void post('model', { model: v });         // engine relaunches
+            }}
+            options={models.map((m) => ({ label: m.label, value: m.id, disabled: m.disabled }))}
+          />
+        )}
+        <textarea
+          ref={inputRef}
+          className="optio-cc-flash"
+          data-testid="conversation-input-box"
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder="Message agent…  (Enter to send, Shift+Enter for newline)"
+          rows={2}
+          disabled={state.closed}
+          style={{
+            flex: 1,
+            resize: 'none',
+            fontFamily: 'inherit',
+            maxHeight: 200,
+            overflowY: 'auto',
+            borderRadius: 6,
+            padding: '6px 8px',
+            background: token.colorBgContainer,
+            color: token.colorText,
+            border: `1px solid ${token.colorBorder}`,
+          }}
+        />
         {showFileUpload && (
           <>
             <input
@@ -504,44 +559,6 @@ export function ClaudeCodeView(props: WidgetProps) {
             </Button>
           </>
         )}
-        {showModelSelector && (
-          <Select
-            data-testid="model-select"
-            size="small"
-            style={{ minWidth: 180, alignSelf: 'center' }}
-            placeholder="Model"
-            disabled={busy || state.closed}
-            value={currentModel}
-            onChange={(v: string) => {
-              setCurrentModel(v);                       // optimistic
-              void post('model', { model: v });         // engine relaunches
-            }}
-            options={models.map((m) => ({ label: m.label, value: m.id }))}
-          />
-        )}
-        <textarea
-          ref={inputRef}
-          className="optio-cc-flash"
-          data-testid="conversation-input-box"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder="Message agent…  (Enter to send, Shift+Enter for newline)"
-          rows={2}
-          disabled={state.closed}
-          style={{
-            flex: 1,
-            resize: 'none',
-            fontFamily: 'inherit',
-            maxHeight: 200,
-            overflowY: 'auto',
-            borderRadius: 6,
-            padding: '6px 8px',
-            background: token.colorBgContainer,
-            color: token.colorText,
-            border: `1px solid ${token.colorBorder}`,
-          }}
-        />
         <Button
           data-testid="conversation-send"
           type="primary"

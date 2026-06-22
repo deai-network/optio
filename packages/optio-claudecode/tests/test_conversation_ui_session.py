@@ -250,9 +250,9 @@ async def test_conversation_ui_session_lifecycle(
             "toolVerbosity": "description-only",
             "showModelSelector": False,
             "models": [
-                {"id": "claude-opus-4-8", "label": "Claude Opus 4.8"},
-                {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6"},
-                {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5"},
+                {"id": "claude-opus-4-8", "label": "Claude Opus 4.8", "disabled": False},
+                {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6", "disabled": False},
+                {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5", "disabled": False},
             ],
             "currentModel": None,
             "showFileUpload": False,

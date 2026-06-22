@@ -60,6 +60,11 @@ class ClaudeCodeConversation:
         self._next_request_id = 0
         self._control_acks: dict[str, asyncio.Future] = {}
         self._dispatcher_task: asyncio.Task | None = None
+        # Set while the session body is killing the current claude process to
+        # relaunch it on a new model. A process EOF during a restart must NOT
+        # close the conversation (no x-optio-closed, _closed stays clear) — the
+        # task and the widget stay live across the swap. attach() clears it.
+        self._restarting = False
 
     # -- wiring ------------------------------------------------------------
 
@@ -72,6 +77,9 @@ class ClaudeCodeConversation:
                 "launch the subprocess with stdin=True"
             )
         self._handle = handle
+        # The new live process is attached; a future real EOF should close
+        # normally again.
+        self._restarting = False
 
     async def run_reader(self) -> None:
         """Drain stdout until EOF; dispatch events. Owned by the session
@@ -231,6 +239,12 @@ class ClaudeCodeConversation:
         self.requested_model = model
         self.model_change_requested.set()
 
+    def begin_restart(self) -> None:
+        """Mark that the current process is about to be killed for a model
+        swap, so its EOF does not close the conversation. Cleared by attach()
+        when the relaunched process is wired in."""
+        self._restarting = True
+
     def on_event(self, handler):
         self._event_handlers.append(handler)
         return lambda: self._event_handlers.remove(handler)
@@ -294,14 +308,19 @@ class ClaudeCodeConversation:
     async def _finish(self, reason: str) -> None:
         if self._closed.is_set():
             return
-        self._closed.set()
-        self._close_reason = reason
-        # Fail any in-flight interrupt acks.
-        for fut in self._control_acks.values():
-            if not fut.done():
-                fut.set_exception(ConversationClosed(reason))
-        self._control_acks.clear()
-        self._event_queue.put_nowait({"type": "x-optio-closed", "reason": reason})
+        # During an intentional model-swap restart the process EOF is not a
+        # close: keep the conversation open (no _closed, no x-optio-closed) and
+        # only tear down this process's dispatcher below. attach() re-arms the
+        # normal close path for the relaunched process.
+        if not self._restarting:
+            self._closed.set()
+            self._close_reason = reason
+            # Fail any in-flight interrupt acks.
+            for fut in self._control_acks.values():
+                if not fut.done():
+                    fut.set_exception(ConversationClosed(reason))
+            self._control_acks.clear()
+            self._event_queue.put_nowait({"type": "x-optio-closed", "reason": reason})
         # Stop the dispatcher, then drain whatever it left in the queue so
         # subscribers are guaranteed to see the final x-optio-closed event.
         if self._dispatcher_task is not None:

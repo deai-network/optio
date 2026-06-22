@@ -539,26 +539,6 @@ function OpencodeChat(
           alignItems: 'flex-end',
         }}
       >
-        {showFileUpload && (
-          <>
-            <input
-              data-testid="file-input"
-              type="file"
-              multiple
-              style={{ display: 'none' }}
-              ref={fileInputRef}
-              onChange={(e) => {
-                const picked = Array.from(e.target.files ?? []).map(toAttachment);
-                const next = [...attachments, ...picked];
-                if (!withinCap(next, maxUploadBytes)) { setError('File too large.'); return; }
-                setAttachments(next);
-                e.target.value = '';
-              }}
-            />
-            <Button size="small" data-testid="attach-button" disabled={closed}
-              onClick={() => fileInputRef.current?.click()}>📎</Button>
-          </>
-        )}
         {showModelSelector && (
           <Select
             data-testid="model-select"
@@ -603,6 +583,26 @@ function OpencodeChat(
             border: `1px solid ${token.colorBorder}`,
           }}
         />
+        {showFileUpload && (
+          <>
+            <input
+              data-testid="file-input"
+              type="file"
+              multiple
+              style={{ display: 'none' }}
+              ref={fileInputRef}
+              onChange={(e) => {
+                const picked = Array.from(e.target.files ?? []).map(toAttachment);
+                const next = [...attachments, ...picked];
+                if (!withinCap(next, maxUploadBytes)) { setError('File too large.'); return; }
+                setAttachments(next);
+                e.target.value = '';
+              }}
+            />
+            <Button size="small" data-testid="attach-button" disabled={closed}
+              onClick={() => fileInputRef.current?.click()}>📎</Button>
+          </>
+        )}
         <Button
           data-testid="conversation-send"
           type="primary"

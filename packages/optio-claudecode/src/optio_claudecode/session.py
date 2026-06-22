@@ -568,7 +568,13 @@ async def run_claudecode_session(
                     new_model = conversation.requested_model or current_model
                     conversation.model_change_requested.clear()
                     ctx.report_progress(None, f"Switching model to {new_model}…")
-                    await host.terminate_subprocess(handle)
+                    # Tell the conversation this process EOF is a restart, not a
+                    # close — keeps the widget live (no x-optio-closed / grayed
+                    # input) and the conversation object open across the swap.
+                    conversation.begin_restart()
+                    # Graceful kill (not aggressive) so claude flushes its
+                    # transcript before --continue resumes it on the new model.
+                    await host.terminate_subprocess(handle, aggressive=False)
                     reader_task.cancel()
                     try:
                         await reader_task
