@@ -30,7 +30,7 @@ dependencies = [
     # 0.1.1 introduces the bind_addr kwarg on Host.establish_tunnel —
     # required for OPTIO_WIDGET_TUNNEL_BIND to work.
     "optio-host>=0.2,<0.3",
-    "optio-agents>=0.2,<0.3",
+    "optio-agents>=0.3,<0.4",
     "asyncssh>=2.14",
     "aiohttp>=3.9",
 ]
