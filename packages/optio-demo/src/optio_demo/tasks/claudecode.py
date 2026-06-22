@@ -176,12 +176,12 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                 consumer_instructions=SEED_SETUP_PROMPT,
                 delivery_type="system-notices",
                 ssh=ssh,
-                # Run setup in bypassPermissions so the operator accepts the
-                # bypass-mode warning once here; the acknowledgment lands in
-                # ~/.claude.json and is captured into the seed, so every
-                # seed-launched demo task (also bypassPermissions) starts
-                # pre-acked instead of warning on each launch.
-                permission_mode="bypassPermissions",
+                # Setup only does the interactive login (the one thing the iframe
+                # is for) — it needs no bypassPermissions. The headless
+                # conversation tasks pass --permission-mode bypassPermissions at
+                # launch, which requires NO prior acknowledgment (verified on a
+                # fresh config), so the seed doesn't need to capture the
+                # bypass-mode warning. Dropping it removes that extra setup step.
                 # Interactive login; no resume for a one-time setup session.
                 supports_resume=False,
                 on_seed_saved=_make_on_seed_saved(db, prefix, fw),
