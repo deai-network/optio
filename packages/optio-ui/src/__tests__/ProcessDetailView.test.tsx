@@ -230,6 +230,32 @@ describe('ProcessDetailView', () => {
     expect(screen.getByText('State changed to running')).toBeTruthy();
   });
 
+  it('hides the log panel and renders only the widget when showLogs is false', () => {
+    registerWidget('my-widget', () => <div data-testid="my-widget">widget body</div>);
+    mockProcessStream.mockReturnValue({
+      tree: {
+        _id: 'abc', name: 'P', status: { state: 'running' },
+        progress: { percent: null }, cancellable: true,
+        depth: 0, order: 0, parentId: null,
+        uiWidget: 'my-widget',
+        widgetData: {},
+        children: [],
+      },
+      logs: [
+        { timestamp: '2026-04-22T10:00:00Z', level: 'event', message: 'State changed to running' },
+      ],
+      connected: true,
+    });
+    const { container } = render(<ProcessDetailView processId="abc" showLogs={false} />);
+    // Widget still renders...
+    expect(screen.getByTestId('my-widget')).toBeTruthy();
+    // ...but the log strip is gone: the layout has only the widget wrapper, and
+    // the log entry is not in the DOM.
+    const layout = container.querySelector('[data-testid="optio-widget-layout"]');
+    expect(layout!.children.length).toBe(1);
+    expect(screen.queryByText('State changed to running')).toBeNull();
+  });
+
   it('renders the LaunchControls play icon for a launchable process by default', () => {
     // 'done' is in LAUNCHABLE_STATES (idle/done/failed/cancelled), so
     // LaunchControls produces a play button when onLaunch is provided.

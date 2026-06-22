@@ -19,9 +19,20 @@ export interface ProcessDetailViewProps {
    * here would silently re-execute with stale form input.
    */
   readOnly?: boolean;
+  /**
+   * When false, hide the log panel(s) and render only the widget at full
+   * height. For end-user-facing embeds that want just the conversation
+   * widget without the admin log strip — the loading / not-found / error
+   * readiness states are still rendered. Defaults to true (logs shown).
+   */
+  showLogs?: boolean;
 }
 
-export function ProcessDetailView({ processId, readOnly = false }: ProcessDetailViewProps) {
+export function ProcessDetailView({
+  processId,
+  readOnly = false,
+  showLogs = true,
+}: ProcessDetailViewProps) {
   const { tree, logs, connected, processNotFound, error } =
     useProcessStream(processId ?? undefined);
   const { launch, cancel } = useProcessActions();
@@ -67,9 +78,11 @@ export function ProcessDetailView({ processId, readOnly = false }: ProcessDetail
         data-testid="optio-widget-layout"
         style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}
       >
-        <div style={{ flex: '0 0 20%', minHeight: 0, overflow: 'hidden' }}>
-          <ProcessLogPanel logs={logs} tree={tree} fillParent />
-        </div>
+        {showLogs && (
+          <div style={{ flex: '0 0 20%', minHeight: 0, overflow: 'hidden' }}>
+            <ProcessLogPanel logs={logs} tree={tree} fillParent />
+          </div>
+        )}
         <div style={{ flex: '1 1 auto', minHeight: 0 }}>
           {widget}
         </div>
@@ -85,7 +98,7 @@ export function ProcessDetailView({ processId, readOnly = false }: ProcessDetail
         onLaunch={readOnly ? undefined : (id, opts) => launch(id, opts)}
         onCancel={readOnly ? undefined : (id) => cancel(id)}
       />
-      <ProcessLogPanel logs={logs} tree={tree} />
+      {showLogs && <ProcessLogPanel logs={logs} tree={tree} />}
     </div>
   );
 }
