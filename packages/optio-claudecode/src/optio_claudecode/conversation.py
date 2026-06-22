@@ -47,6 +47,10 @@ class ClaudeCodeConversation:
         self._close_reason: str | None = None
         # Cooperative-shutdown request towards the owning task body.
         self.close_requested = asyncio.Event()
+        # Model-change request towards the owning task body. When set, the
+        # conversation body kills and relaunches claude with requested_model.
+        self.model_change_requested: asyncio.Event = asyncio.Event()
+        self.requested_model: str | None = None
         self._write_lock = asyncio.Lock()
         self._event_queue: asyncio.Queue[dict] = asyncio.Queue()
         self._event_handlers: list = []
@@ -218,6 +222,14 @@ class ClaudeCodeConversation:
             self._pending -= 1
             await self._finish("stdin write failed")
             raise
+
+    def request_model_change(self, model: str) -> None:
+        """Request a model swap. The conversation body observes
+        model_change_requested and relaunches claude with this model."""
+        if self._closed.is_set():
+            raise ConversationClosed(self._close_reason or "conversation closed")
+        self.requested_model = model
+        self.model_change_requested.set()
 
     def on_event(self, handler):
         self._event_handlers.append(handler)

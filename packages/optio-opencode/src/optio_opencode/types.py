@@ -105,6 +105,15 @@ class OpencodeTaskConfig:
     # Rendering hint forwarded to the widget via widgetData; only affects
     # conversation_ui rendering.
     tool_verbosity: ToolVerbosity = "description-only"
+    # Default model for a fresh conversation session, "providerID/modelID".
+    # Forwarded to the widget, which applies it once at the start of a non-
+    # resumed session (history empty) and only if present in the live model
+    # list. Effective regardless of show_model_selector. Requires
+    # conversation_ui=True.
+    default_model: str | None = None
+    # Show the model picker in the conversation widget. Requires
+    # conversation_ui=True.
+    show_model_selector: bool = False
 
     def __post_init__(self) -> None:
         e = self.session_blob_encrypt is not None
@@ -130,6 +139,15 @@ class OpencodeTaskConfig:
             raise ValueError(
                 "OpencodeTaskConfig: conversation_ui=True requires "
                 "mode='conversation'."
+            )
+        if self.show_model_selector and not self.conversation_ui:
+            raise ValueError(
+                "OpencodeTaskConfig: show_model_selector=True requires "
+                "conversation_ui=True."
+            )
+        if self.default_model is not None and not self.conversation_ui:
+            raise ValueError(
+                "OpencodeTaskConfig: default_model requires conversation_ui=True."
             )
         if self.tool_verbosity not in _VALID_TOOL_VERBOSITY:
             raise ValueError(

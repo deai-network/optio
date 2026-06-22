@@ -249,6 +249,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     consumer_instructions="",   # defaulted conversation prompt
                     mode="conversation",
                     conversation_ui=True,
+                    show_model_selector=True,
                     host_protocol=False,
                     ssh=ssh,
                     seed_id=seed_id,

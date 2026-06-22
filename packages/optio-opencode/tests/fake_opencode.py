@@ -349,6 +349,29 @@ async def main() -> int:
                 _journal("abort", {"sid": path.split("/")[2]})
                 body = b"true"
                 ctype = b"application/json"
+            elif method == "GET" and path == "/config/providers":
+                providers = {
+                    "providers": [
+                        {
+                            "id": "opencode",
+                            "name": "OpenCode Zen",
+                            "models": {
+                                "deepseek-v4-flash": {"id": "deepseek-v4-flash", "providerID": "opencode", "name": "DeepSeek V4 Flash"},
+                                "big-pickle": {"id": "big-pickle", "providerID": "opencode", "name": "Big Pickle"},
+                            },
+                        },
+                        {
+                            "id": "xai",
+                            "name": "xAI",
+                            "models": {
+                                "grok-5": {"id": "grok-5", "providerID": "xai", "name": "Grok 5"},
+                            },
+                        },
+                    ],
+                    "default": {"opencode": "big-pickle", "xai": "grok-5"},
+                }
+                body = json.dumps(providers).encode()
+                ctype = b"application/json"
             elif method == "GET" and path == "/permission":
                 body = json.dumps(PENDING_PERMISSIONS).encode()
                 ctype = b"application/json"

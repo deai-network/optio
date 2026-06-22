@@ -195,3 +195,51 @@ export function historyToChatItems(history: any[], sessionID: string): ChatItem[
   }
   return items;
 }
+
+/** A concrete opencode model selection, as accepted by prompt_async's `model`. */
+export type OpencodeModel = { providerID: string; modelID: string };
+
+/** Provider-grouped option model for the picker. */
+export interface ModelGroup {
+  providerName: string;
+  models: { providerID: string; modelID: string; label: string }[];
+}
+
+/** Parse GET /config/providers into grouped options + a fallback default.
+ *  Response shape (opencode 1.17.3-csillag.2):
+ *    { providers: [{ id, name, models: { <modelId>: { id, providerID, name } } }],
+ *      default: { <providerID>: <modelId> } }
+ *  The default field maps each provider to its default model; we take the
+ *  first provider's default as the widget-level fallback. */
+export function parseProviders(json: any): { groups: ModelGroup[]; defaultModel: OpencodeModel | null } {
+  const providers = Array.isArray(json?.providers) ? json.providers : [];
+  const groups: ModelGroup[] = providers.map((p: any) => ({
+    providerName: String(p?.name ?? p?.id ?? ''),
+    models: Object.values(p?.models ?? {}).map((m: any) => ({
+      providerID: String(m?.providerID ?? p?.id ?? ''),
+      modelID: String(m?.id ?? ''),
+      label: String(m?.name ?? m?.id ?? ''),
+    })),
+  }));
+  let defaultModel: OpencodeModel | null = null;
+  const first = providers[0];
+  const def = json?.default;
+  if (first && def && typeof def === 'object' && typeof def[first.id] === 'string') {
+    defaultModel = { providerID: String(first.id), modelID: String(def[first.id]) };
+  }
+  return { groups, defaultModel };
+}
+
+/** The model of the last assistant message in GET /session/:id/message history,
+ *  or null. Assistant `info` carries providerID/modelID (the datum the engine's
+ *  _resolve_session_model_sync reads). */
+export function lastModelFromHistory(history: any[]): OpencodeModel | null {
+  let model: OpencodeModel | null = null;
+  for (const entry of history ?? []) {
+    const info = entry?.info ?? {};
+    if (info.role === 'assistant' && info.providerID && info.modelID) {
+      model = { providerID: String(info.providerID), modelID: String(info.modelID) };
+    }
+  }
+  return model;
+}

@@ -76,6 +76,19 @@ def _build_host(config: OpencodeTaskConfig, process_id: str) -> Host:
     return host_actions.build_host(config.ssh, taskdir)
 
 
+def conversation_widget_data(config: "OpencodeTaskConfig", *, session_id: str, directory: str) -> dict:
+    """The widgetData published for a conversation_ui task. Pure so it can be
+    unit-tested without a live session."""
+    return {
+        "protocol": "opencode",
+        "sessionID": session_id,
+        "directory": directory,
+        "toolVerbosity": config.tool_verbosity,
+        "showModelSelector": config.show_model_selector,
+        "defaultModel": config.default_model,
+    }
+
+
 async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) -> None:
     """Execute function body for one optio-opencode task instance."""
     # --- per-task filesystem layout ---------------------------------------
@@ -375,15 +388,12 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                 f"http://{upstream_host}:{worker_port}",
                 inner_auth=BasicAuth(username="opencode", password=password),
             )
-            await ctx.set_widget_data({
-                "protocol": "opencode",
-                "sessionID": session_id,
-                # opencode routes resolve their project instance from the
-                # request's location context; the widget sends this as the
-                # ?directory= query param on every call.
-                "directory": host.workdir,
-                "toolVerbosity": config.tool_verbosity,
-            })
+            # opencode routes resolve their project instance from the request's
+            # location context; the widget sends `directory` as the ?directory=
+            # query param on every call.
+            await ctx.set_widget_data(
+                conversation_widget_data(config, session_id=session_id, directory=host.workdir)
+            )
 
         if resolved_seed_id is not None:
             cred_watch_task = asyncio.create_task(cred_watcher.run_credential_watcher(

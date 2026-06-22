@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
-import { Button, Spin, theme } from 'antd';
+import { Button, Select, Spin, theme } from 'antd';
 import type { GlobalToken } from 'antd';
 import type { WidgetProps } from 'optio-ui';
 import type { ChatItem, ChatState } from '../chat.js';
@@ -109,6 +109,11 @@ export function ClaudeCodeView(props: WidgetProps) {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [currentModel, setCurrentModel] = useState<string | undefined>(
+    (props.process.widgetData as any)?.currentModel ?? undefined,
+  );
+  const showModelSelector = Boolean((props.process.widgetData as any)?.showModelSelector);
+  const models: { id: string; label: string }[] = (props.process.widgetData as any)?.models ?? [];
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -413,6 +418,21 @@ export function ClaudeCodeView(props: WidgetProps) {
           alignItems: 'flex-end',
         }}
       >
+        {showModelSelector && (
+          <Select
+            data-testid="model-select"
+            size="small"
+            style={{ minWidth: 180, alignSelf: 'center' }}
+            placeholder="Model"
+            disabled={busy || state.closed}
+            value={currentModel}
+            onChange={(v: string) => {
+              setCurrentModel(v);                       // optimistic
+              void post('model', { model: v });         // engine relaunches
+            }}
+            options={models.map((m) => ({ label: m.label, value: m.id }))}
+          />
+        )}
         <textarea
           ref={inputRef}
           className="optio-cc-flash"

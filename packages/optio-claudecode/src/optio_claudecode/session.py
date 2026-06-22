@@ -36,6 +36,7 @@ from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
 
 from optio_claudecode import cred_watcher
 from optio_claudecode import host_actions
+from optio_claudecode import models as cc_models
 from optio_claudecode.conversation import ClaudeCodeConversation
 from optio_claudecode.conversation_listener import ConversationListener
 from optio_claudecode.input_listener import serialized, start_input_listener
@@ -443,37 +444,44 @@ async def run_claudecode_session(
         )
         cred_baseline = cred_baseline_out
 
-        claude_flags = host_actions.build_claude_flags(
-            permission_mode=config.permission_mode,
-            allowed_tools=config.allowed_tools,
-            disallowed_tools=config.disallowed_tools,
-            model=config.model,
-            resuming=pass_continue,
-        )
-        argv = host_actions.build_conversation_argv(
-            claude_path, claude_flags=claude_flags,
-            permission_gate=config.permission_gate,
-            include_partial_messages=_partials_enabled(config),
-            replay_user_messages=config.conversation_ui,
-        )
+        current_model = config.model
+
+        async def _spawn(model: str | None, *, do_continue: bool):
+            claude_flags = host_actions.build_claude_flags(
+                permission_mode=config.permission_mode,
+                allowed_tools=config.allowed_tools,
+                disallowed_tools=config.disallowed_tools,
+                model=model,
+                resuming=do_continue,
+            )
+            argv = host_actions.build_conversation_argv(
+                claude_path, claude_flags=claude_flags,
+                permission_gate=config.permission_gate,
+                include_partial_messages=_partials_enabled(config),
+                replay_user_messages=config.conversation_ui,
+            )
+            # Same claustrum fs-isolation wrap as the iframe path; claustrum
+            # execve's claude, so the bidirectional stream-json pipes pass
+            # through unchanged.
+            wrap = await _build_claustrum_wrap(host, config, claustrum_path)
+            if wrap:
+                argv = [*wrap, *argv]
+            cmd = " ".join(shlex.quote(a) for a in argv)
+            handle = await host.launch_subprocess(
+                cmd, env=env, cwd=host.workdir,
+                env_remove=config.scrub_env, stdin=True,
+            )
+            conversation.attach(handle)
+            reader = asyncio.create_task(conversation.run_reader())
+            return handle, reader
+
         env = host_actions.conversation_launch_env(
             host.workdir,
             {**(config.env or {}), **focus_env, **(hook_ctx.browser_launch_env or {})},
         )
         ctx.report_progress(None, "Launching Claude Code (conversation)…")
-        # Same claustrum fs-isolation wrap as the iframe path; claustrum execve's
-        # claude, so the bidirectional stream-json pipes pass through unchanged.
-        wrap = await _build_claustrum_wrap(host, config, claustrum_path)
-        if wrap:
-            argv = [*wrap, *argv]
-        cmd = " ".join(shlex.quote(a) for a in argv)
-        handle = await host.launch_subprocess(
-            cmd, env=env, cwd=host.workdir,
-            env_remove=config.scrub_env, stdin=True,
-        )
+        handle, reader_task = await _spawn(current_model, do_continue=pass_continue)
         launched_handle = handle
-        conversation.attach(handle)
-        reader_task = asyncio.create_task(conversation.run_reader())
 
         ctx.publish_result(conversation)
         ctx.report_progress(None, "Claude Code conversation is live")
@@ -497,7 +505,14 @@ async def run_claudecode_session(
                 f"http://{upstream_host}:{listener_port}",
                 inner_auth=BasicAuth(username="optio", password=listener_password),
             )
-            await ctx.set_widget_data({"protocol": "claudecode", "toolVerbosity": config.tool_verbosity})
+            model_list = await cc_models.fetch_available_models(host, home_dir=f"{host.workdir}/home")
+            await ctx.set_widget_data({
+                "protocol": "claudecode",
+                "toolVerbosity": config.tool_verbosity,
+                "showModelSelector": config.show_model_selector,
+                "models": model_list["models"],
+                "currentModel": current_model,
+            })
             ctx.report_progress(None, "Conversation UI is live")
 
         # Kickoff / resume notice as first stdin messages (print mode with
@@ -521,38 +536,63 @@ async def run_claudecode_session(
             ))
 
         try:
-            # proc_wait handles both pid_like variants (asyncio subprocess on
-            # LocalHost, asyncssh process on RemoteHost) and yields the exit code.
-            wait_task = asyncio.create_task(proc_wait(handle))
-            close_task = asyncio.create_task(conversation.close_requested.wait())
-            done, _ = await asyncio.wait(
-                {wait_task, close_task}, return_when=asyncio.FIRST_COMPLETED,
-            )
-            if close_task in done and wait_task not in done:
-                # Caller asked to close: cooperative shutdown, clean end.
-                wait_task.cancel()
-                if config.host_protocol:
-                    # The keyword driver treats a body return without DONE as
-                    # a premature exit. A caller-requested close IS the clean
-                    # end of the session, so emit the DONE ourselves (same
-                    # harness-side convention as the tmux wrapper's exit echo)
-                    # and park until the driver observes it and cancels us.
-                    log_path = f"{host.workdir}/optio.log"
-                    await host.run_command(
-                        f"echo DONE >> {shlex.quote(log_path)}"
-                    )
-                    await asyncio.Event().wait()  # cancelled by the driver
-                return
-            # Subprocess exited on its own.
-            close_task.cancel()
-            try:
-                rc = wait_task.result()
-            except Exception:
-                rc = None
-            if not conversation.close_requested.is_set() and ctx.should_continue():
-                raise RuntimeError(
-                    f"claude exited unexpectedly (exit {rc})"
+            while True:
+                # proc_wait handles both pid_like variants (asyncio subprocess
+                # on LocalHost, asyncssh process on RemoteHost) and yields the
+                # exit code.
+                wait_task = asyncio.create_task(proc_wait(handle))
+                close_task = asyncio.create_task(conversation.close_requested.wait())
+                model_task = asyncio.create_task(conversation.model_change_requested.wait())
+                done, _ = await asyncio.wait(
+                    {wait_task, close_task, model_task},
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
+                for t in (wait_task, close_task, model_task):
+                    if t not in done:
+                        t.cancel()
+
+                if model_task in done and close_task not in done and wait_task not in done:
+                    # --- model swap: relaunch in place, keep the task alive ---
+                    new_model = conversation.requested_model or current_model
+                    conversation.model_change_requested.clear()
+                    ctx.report_progress(None, f"Switching model to {new_model}…")
+                    await host.terminate_subprocess(handle)
+                    reader_task.cancel()
+                    try:
+                        await reader_task
+                    except asyncio.CancelledError:
+                        pass
+                    current_model = new_model
+                    handle, reader_task = await _spawn(current_model, do_continue=True)
+                    launched_handle = handle
+                    ctx.report_progress(None, f"Claude Code resumed on {new_model}")
+                    continue
+
+                if close_task in done and wait_task not in done:
+                    # Caller asked to close: cooperative shutdown, clean end.
+                    if config.host_protocol:
+                        # The keyword driver treats a body return without DONE as
+                        # a premature exit. A caller-requested close IS the clean
+                        # end of the session, so emit the DONE ourselves (same
+                        # harness-side convention as the tmux wrapper's exit echo)
+                        # and park until the driver observes it and cancels us.
+                        log_path = f"{host.workdir}/optio.log"
+                        await host.run_command(
+                            f"echo DONE >> {shlex.quote(log_path)}"
+                        )
+                        await asyncio.Event().wait()  # cancelled by the driver
+                    break
+
+                # Subprocess exited on its own.
+                try:
+                    rc = wait_task.result()
+                except Exception:
+                    rc = None
+                if not conversation.close_requested.is_set() and ctx.should_continue():
+                    raise RuntimeError(
+                        f"claude exited unexpectedly (exit {rc})"
+                    )
+                break
         finally:
             if cred_watch_task is not None:
                 cred_watch_task.cancel()

@@ -178,6 +178,10 @@ class ClaudeCodeTaskConfig:
     # "description-only" = one summary line, "silent" = nothing. Carried to the
     # widget via widgetData; only affects conversation_ui rendering.
     tool_verbosity: ToolVerbosity = "description-only"
+    # Show the model picker in the conversation widget. Requires
+    # mode="conversation" and conversation_ui=True. The default model is
+    # config.model (no separate field).
+    show_model_selector: bool = False
 
     # --- explicit session restore (spec: 2026-06-10 session restore) -----
     # session_restore_from: GridFS blob id of a home/.claude session tar (as
@@ -249,6 +253,11 @@ class ClaudeCodeTaskConfig:
             raise ValueError(
                 "ClaudeCodeTaskConfig: conversation_ui=True requires "
                 "mode='conversation'."
+            )
+        if self.show_model_selector and not (self.mode == "conversation" and self.conversation_ui):
+            raise ValueError(
+                "ClaudeCodeTaskConfig: show_model_selector=True requires "
+                "mode='conversation' and conversation_ui=True."
             )
         if self.tool_verbosity not in _VALID_TOOL_VERBOSITY:
             raise ValueError(

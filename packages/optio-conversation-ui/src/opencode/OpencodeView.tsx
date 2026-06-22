@@ -1,11 +1,15 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
-import { Button, Spin, theme } from 'antd';
+import { Button, Select, Spin, theme } from 'antd';
 import type { GlobalToken } from 'antd';
 import { isTerminalState } from 'optio-ui';
 import type { WidgetProps } from 'optio-ui';
 import type { ChatItem, ChatState } from '../chat.js';
 import { initialChatState } from '../chat.js';
-import { historyToChatItems, reduceOpencodeEvent } from './events.js';
+import {
+  historyToChatItems, reduceOpencodeEvent,
+  parseProviders, lastModelFromHistory,
+  type OpencodeModel, type ModelGroup,
+} from './events.js';
 import { AnswerBlock } from '../AnswerBlock.js';
 
 // Conversation view for opencode tasks: speaks opencode's native HTTP+SSE API
@@ -17,6 +21,8 @@ interface OpencodeWidgetData {
   sessionID?: string;
   directory?: string;
   toolVerbosity?: 'silent' | 'description-only' | 'verbose';
+  showModelSelector?: boolean;
+  defaultModel?: string; // "providerID/modelID"
 }
 
 type ChatAction = { kind: 'bootstrap'; items: ChatItem[] } | { ev: unknown; seq: number };
@@ -111,12 +117,22 @@ export function OpencodeView(props: WidgetProps) {
   if (!widgetData?.sessionID) {
     return <div data-testid="optio-widget-loading">Loading…</div>;
   }
-  return <OpencodeChat {...props} sessionID={widgetData.sessionID} directory={widgetData.directory ?? ''} />;
+  return (
+    <OpencodeChat
+      {...props}
+      sessionID={widgetData.sessionID}
+      directory={widgetData.directory ?? ''}
+      showModelSelector={widgetData.showModelSelector ?? false}
+      defaultModel={widgetData.defaultModel}
+    />
+  );
 }
 
-function OpencodeChat(props: WidgetProps & { sessionID: string; directory: string }) {
+function OpencodeChat(
+  props: WidgetProps & { sessionID: string; directory: string; showModelSelector: boolean; defaultModel?: string },
+) {
   const { token } = theme.useToken();
-  const { sessionID, directory, widgetProxyUrl } = props; // widgetProxyUrl ends with '/' — trailing slash is load-bearing
+  const { sessionID, directory, widgetProxyUrl, showModelSelector, defaultModel } = props; // widgetProxyUrl ends with '/' — trailing slash is load-bearing
   const toolVerbosity = ((props.process.widgetData as any)?.toolVerbosity ?? 'description-only') as
     'silent' | 'description-only' | 'verbose';
   // opencode routes resolve their project instance from the request's
@@ -138,6 +154,8 @@ function OpencodeChat(props: WidgetProps & { sessionID: string; directory: strin
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [groups, setGroups] = useState<ModelGroup[]>([]);
+  const [currentModel, setCurrentModel] = useState<OpencodeModel | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -177,6 +195,40 @@ function OpencodeChat(props: WidgetProps & { sessionID: string; directory: strin
       }
     })();
     return () => es.close();
+  }, [widgetProxyUrl, sessionID]);
+
+  // Discover models and resolve the initial sticky model once. Runs alongside
+  // the bootstrap; its failure never blocks the chat (groups stays empty,
+  // currentModel may stay null → sends omit `model`, opencode uses its default).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      let parsed: { groups: ModelGroup[]; defaultModel: OpencodeModel | null } = { groups: [], defaultModel: null };
+      let history: any[] = [];
+      try {
+        const r = await fetch(`${widgetProxyUrl}config/providers${q}`);
+        if (r.ok) parsed = parseProviders(await r.json());
+      } catch { /* non-fatal */ }
+      try {
+        const r = await fetch(`${widgetProxyUrl}session/${sessionID}/message${q}`);
+        if (r.ok) history = await r.json();
+      } catch { /* non-fatal */ }
+      if (cancelled) return;
+      setGroups(parsed.groups);
+      const inList = (m: OpencodeModel) =>
+        parsed.groups.some((g) => g.models.some((x) => x.providerID === m.providerID && x.modelID === m.modelID));
+      // (1) history-last → (2) validated defaultModel → (3) providers default → (4) null
+      const fromHistory = lastModelFromHistory(history);
+      let resolved: OpencodeModel | null = fromHistory;
+      if (!resolved && defaultModel) {
+        const [providerID, modelID] = defaultModel.split('/');
+        const cand = { providerID, modelID };
+        if (providerID && modelID && inList(cand)) resolved = cand;
+      }
+      if (!resolved) resolved = parsed.defaultModel;
+      setCurrentModel(resolved);
+    })();
+    return () => { cancelled = true; };
   }, [widgetProxyUrl, sessionID]);
 
   // On mount: install the flash keyframes and focus the input so the operator
@@ -258,7 +310,11 @@ function OpencodeChat(props: WidgetProps & { sessionID: string; directory: strin
     if (!body || sending || closed) return;
     setSending(true);
     setError(null);
-    const ok = await post(`session/${sessionID}/prompt_async${q}`, { parts: [{ type: 'text', text: body }] });
+    const promptBody: { parts: { type: 'text'; text: string }[]; model?: OpencodeModel } = {
+      parts: [{ type: 'text', text: body }],
+    };
+    if (currentModel) promptBody.model = currentModel;
+    const ok = await post(`session/${sessionID}/prompt_async${q}`, promptBody);
     if (ok) {
       // Optimistic local echo: show the message now; the wire echo
       // (message.updated role=user) confirms it in place. Negative seqs keep
@@ -464,6 +520,27 @@ function OpencodeChat(props: WidgetProps & { sessionID: string; directory: strin
           alignItems: 'flex-end',
         }}
       >
+        {showModelSelector && (
+          <Select
+            data-testid="model-select"
+            size="small"
+            style={{ minWidth: 180, alignSelf: 'center' }}
+            placeholder="Model"
+            disabled={busy || closed}
+            value={currentModel ? `${currentModel.providerID}/${currentModel.modelID}` : undefined}
+            onChange={(v: string) => {
+              const [providerID, modelID] = v.split('/');
+              setCurrentModel({ providerID, modelID });
+            }}
+            options={groups.map((g) => ({
+              label: g.providerName,
+              options: g.models.map((m) => ({
+                label: m.label,
+                value: `${m.providerID}/${m.modelID}`,
+              })),
+            }))}
+          />
+        )}
         <textarea
           ref={inputRef}
           className="optio-cc-flash"

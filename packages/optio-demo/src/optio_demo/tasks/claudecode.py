@@ -234,6 +234,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     consumer_instructions="",   # defaulted conversation prompt
                     mode="conversation",
                     conversation_ui=True,
+                    show_model_selector=True,
                     permission_gate=True,       # exercises the approve/deny UI
                     host_protocol=False,        # pure conversation gate
                     # Conversation-mode launch is now claustrum-wrapped too.
@@ -259,6 +260,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     consumer_instructions=CONSUMER_PROMPT,
                     mode="conversation",
                     conversation_ui=True,
+                    show_model_selector=True,
                     # host_protocol left at its True default — keyword channel on.
                     permission_mode="bypassPermissions",
                     # Conversation-mode launch is now claustrum-wrapped too.
