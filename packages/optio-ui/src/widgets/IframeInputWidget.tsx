@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { Input, Button, theme } from 'antd';
+import type { TextAreaRef } from 'antd/es/input/TextArea';
 import type { WidgetProps } from './registry.js';
 import { registerWidget } from './registry.js';
 import { IframeWidget } from './IframeWidget.js';
@@ -21,7 +23,8 @@ export function IframeInputWidget(props: WidgetProps) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const inputRef = useRef<TextAreaRef>(null);
+  const { token } = theme.useToken();
 
   const controlUrl =
     `${props.apiBaseUrl}/api/widget-control/${encodeURIComponent(props.database ?? '')}` +
@@ -102,8 +105,12 @@ export function IframeInputWidget(props: WidgetProps) {
       <div style={{ flex: 1, minHeight: 0 }}>
         <IframeWidget {...props} />
       </div>
-      <div style={{ borderTop: '1px solid #ddd', padding: 8, display: 'flex', gap: 8, alignItems: 'flex-end' }}>
-        <textarea
+      <div style={{
+        borderTop: `1px solid ${token.colorBorderSecondary}`,
+        background: token.colorBgContainer,
+        padding: 8, display: 'flex', gap: 8, alignItems: 'flex-end',
+      }}>
+        <Input.TextArea
           ref={inputRef}
           data-testid="agent-input-box"
           value={text}
@@ -111,13 +118,18 @@ export function IframeInputWidget(props: WidgetProps) {
           onKeyDown={onKeyDown}
           placeholder="Message Claude…  (Enter to send, Shift+Enter for newline; empty box: arrows/Enter/Esc drive the TUI)"
           rows={2}
-          style={{ flex: 1, resize: 'vertical', fontFamily: 'inherit' }}
+          style={{ flex: 1, resize: 'vertical' }}
         />
-        <button data-testid="agent-input-send" onClick={() => void submit()} disabled={busy || !text}>
+        <Button
+          data-testid="agent-input-send"
+          type="primary"
+          onClick={() => void submit()}
+          disabled={busy || !text}
+        >
           Send
-        </button>
+        </Button>
         {error && (
-          <span data-testid="agent-input-error" style={{ color: '#b00', alignSelf: 'center' }}>
+          <span data-testid="agent-input-error" style={{ color: token.colorError, alignSelf: 'center' }}>
             {error}
           </span>
         )}
