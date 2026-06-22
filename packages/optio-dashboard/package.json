@@ -1,6 +1,6 @@
 {
   "name": "optio-dashboard",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "license": "Apache-2.0",
   "description": "Standalone optio dashboard app — install and run for a ready-to-use process management UI.",
   "repository": {
