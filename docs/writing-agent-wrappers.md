@@ -1,0 +1,417 @@
+# Writing an optio Coding-Agent Wrapper
+
+This is the porting guide for running a new coding agent as an optio task. optio
+already wraps two agents — **Claude Code** (`optio-claudecode`) and **opencode**
+(`optio-opencode`) — and this guide is how you add more (codex, cursor, grok, …)
+quickly and consistently.
+
+**How to read this guide.** For each thing a wrapper must provide, the guide gives
+the *goal* (what capability, and why), the *interface to implement* (the method,
+callback, or type you satisfy), and a *pointer* to where the two existing wrappers
+already do it. It deliberately does **not** copy implementation code. The two
+reference wrappers are the living source of truth — read them as you build. Detail
+lives in code so this guide does not rot.
+
+**Parity is the target; staged is how you get there.** A finished wrapper supports
+the whole capability surface in [Appendix A](#appendix-a--parity-checklist). A new
+wrapper starts behind and reaches parity through the staged path in
+[Part 3](#part-3--the-staged-build-path). Shipping a partial wrapper is fine — but
+name what is still missing so it is a tracked gap, not a silent one.
+
+---
+
+## Part 0 — Orientation
+
+### What a wrapper is
+
+A wrapper is a **`TaskInstance` factory that bundles mode-adapters.** It exposes a
+`create_<agent>_task(...)` function returning an optio-core `TaskInstance`, plus a
+config dataclass. Internally it runs the agent as a managed subprocess (local or
+over SSH) and binds it to one or more optio *surfaces* (an embedded UI, a live
+conversation object, the dashboard chat widget).
+
+The heavy lifting is already generic. The shared driver owns the workdir lifecycle,
+the coordination-log loop, the hook context, and the seed/resume machinery. Your
+wrapper supplies only the backend-specific pieces: how to install the agent, how to
+launch and monitor it, how to talk to it, and how to compose its prompt.
+
+### A wrapper is a bundle of mode-adapters
+
+The central mental model: each **mode** binds one **agent capability** to one
+**optio embedding surface**. The config `mode` field selects at task-creation time.
+Both existing wrappers already ship more than one mode.
+
+| Agent capability | optio surface | claudecode | opencode |
+|---|---|---|---|
+| headless / programmatic API | **conversation mode** → drives the dashboard chat UI | stdio stream-json | HTTP + SSE |
+| ships its own web server | **iframe** (embed the SPA) | — (TUI has no web UI) | `opencode web` SPA |
+| TUI only | **iframe via ttyd** (embed the terminal) | tmux + ttyd | — |
+
+Conversation mode is preferred — it is the richest integration and gets the native
+dashboard chat UI for free. Where the agent's headless surface is limited (the
+canonical case: **login/auth that cannot run headless**), fall back to an
+interactive surface for that operation and/or pre-provision identity with a
+**seed**. See [Part 1](#part-1--profile-your-target-agent) and
+[Part 4](#the-headless-login-problem).
+
+### Package landscape
+
+| Package | Role | Dependency |
+|---|---|---|
+| `optio-core` | engine, scheduler, `TaskInstance`, `ProcessContext` (`ctx`), `publish_result` / `launch_and_await_result` | base |
+| `optio-host` | transport: `Host` protocol with `LocalHost` / `RemoteHost` (SSH) | → optio-core |
+| `optio-agents` | **the wrapper contracts**: the log-protocol driver, the `Conversation` protocol, `HookContext`, the prompt SSOT, the seed/lease engine | → optio-host, optio-core |
+| `optio-conversation-ui` | engine-neutral React chat widget; renders any wrapper that provides a reducer + adapter | frontend |
+| **`optio-<agent>`** | **your wrapper** | → optio-core, optio-host, optio-agents |
+
+Reference wrappers: `packages/optio-claudecode`, `packages/optio-opencode`.
+Every part below points into them.
+
+---
+
+## Part 1 — Profile your target agent
+
+Before writing anything, answer these about the target agent. The answers drive
+every later decision.
+
+1. **Headless / programmatic API?** Does it expose a way to drive a session
+   non-interactively — a stream protocol over stdio, or an HTTP/SSE server? This
+   determines whether you get **conversation mode** (the preferred surface).
+2. **Own web server?** Does it ship a browsable web UI? If yes, you can embed it
+   directly in an **iframe** (the opencode pattern).
+3. **TUI-only?** If the only rich UI is a terminal UI, embed it via **ttyd** in an
+   iframe (the claudecode pattern).
+4. **Headless login?** Can the agent authenticate without an interactive browser?
+   If not, you need one of the login strategies in [Part 4](#the-headless-login-problem).
+5. **Resume?** Can a terminated session be relaunched and pick up its
+   conversation/state? This determines how much of Stage 2 applies.
+6. **Rotating credentials?** Does it use single-use refresh tokens (so a stored
+   token dies after first use)? If yes, you need credential save-back (Stage 4).
+7. **Model selection?** Can the model be chosen at launch, switched mid-session, or
+   only via restart? This shapes the model-switching adapter (Stage 7).
+
+### Decision: mode selection
+
+- Pick the **primary mode**: conversation if the agent has any headless API;
+  otherwise iframe-web if it has a server; otherwise iframe-ttyd.
+- Pick **fallback mode(s)** for capability gaps in the primary. The usual gap is
+  interactive login — solved by seeds or an interactive surface. A wrapper may ship
+  several modes simultaneously and let the caller choose per task.
+
+Reference: the `mode` field and its validation in
+`optio-claudecode/…/types.py` (`ClaudeCodeTaskConfig`) and
+`optio-opencode/…/types.py` (`OpencodeTaskConfig`).
+
+---
+
+## Part 2 — Interfaces to implement
+
+For each interface: the goal, the interface to implement, a reference pointer, and
+the key engine divergence (so you can see which parts are contract and which are
+mechanism you choose).
+
+### A. Task / log-protocol driver
+
+**Goal.** Run the agent as a managed task with progress reporting, deliverable
+handling, cancellation, and clean teardown — without hand-sequencing any of it.
+
+**Interface to implement.** Call `run_log_protocol_session(host, ctx, …)` and
+supply the backend-specific callbacks:
+- `body(host, hook_ctx)` — launch the agent subprocess and stay alive while it runs.
+- `prepare(host, hook_ctx)` — install the runtime and restore resume state (runs
+  after the workdir wipe, before the log tail).
+- `_agent_sender(text)` — push one message into the live session (engine→agent).
+
+The driver owns everything else: `host.setup_workdir()`, the `optio.log`
+tail/parse/dispatch loop, deliverable and caller-message queues, browser shims, the
+`HookContext`, and the before/after-execute hooks. It enforces completion semantics
+(agent `DONE` → clean return; `ERROR` or premature body exit → failure;
+cancellation → clean return).
+
+**The `optio.log` keyword channel.** The agent coordinates with optio by appending
+keyword lines the driver parses: `STATUS:` (→ progress), `DELIVERABLE:` (→ fetch),
+`DONE` / `ERROR` (→ completion), `BROWSER:` (→ open), `ATTENTION:` (→ need
+attention), `CLIENT_MESSAGE:` / `CALLER_MESSAGE:` (opt-in side channels). Optional
+keywords are feature-gated — an agent cannot trigger a facility nobody enabled.
+
+**Reference.**
+- Contract: `optio-agents/…/protocol/session.py` (`run_log_protocol_session`),
+  `…/protocol/parser.py` (`parse_log_line`, the `LogEvent` union),
+  `…/protocol/features.py` (`ProtocolFeatures`),
+  `…/protocol/protocol.py` (`get_protocol`).
+- Implementations: `optio-claudecode/…/session.py` and
+  `optio-opencode/…/session.py` — each builds `protocol = get_protocol(...)`,
+  defines `body`/`_prepare`/`_agent_sender`, and calls the driver.
+
+**Divergence.** claudecode's `body` runs the agent in a detached tmux session (or
+headless stdio in conversation mode); opencode's `body` launches `opencode web` and
+tunnels to it. Both reduce to "launch, monitor, surface DONE/ERROR."
+
+### B. `Conversation` protocol
+
+**Goal.** Give a caller a live, backend-agnostic handle to one conversation:
+send turns, observe events, gate permissions, interrupt, close.
+
+**Interface to implement.** The `runtime_checkable` Protocol in
+`optio-agents/…/conversation.py`:
+`send`, `on_event`, `on_message`, `on_permission_request`, `is_pending`,
+`interrupt`, `close`, and the `closed` property. Two-tier event model: `on_event`
+fans out every raw backend event **unmodified** (live only, no replay);
+`on_message` delivers one final answer per completed turn. Permission gating uses
+`PermissionRequest` → `PermissionDecision` (allow/deny, optional modified input,
+optional deny reason). `send`/`interrupt` raise `ConversationClosed` after the
+session ends.
+
+**Reference.**
+- Contract: `optio-agents/…/conversation.py`.
+- Implementations: `optio-claudecode/…/conversation.py` (`ClaudeCodeConversation`,
+  over stdio NDJSON) and `optio-opencode/…/conversation.py` (`OpencodeConversation`,
+  over HTTP + SSE).
+
+**Divergence.** The transport is entirely your choice — stdio stream-json vs
+HTTP/SSE — as long as the Protocol methods behave as specified. Synthetic events
+(the ones optio injects, not the backend) use an `x-optio-` type prefix so
+reducers can tell them apart.
+
+### C. Conversation UI
+
+**Goal.** Render the agent's conversation in the dashboard chat widget, engine-agnostically.
+
+**Interface to implement.** In `optio-conversation-ui`, add three things:
+1. A **pure reducer** `(state, rawEvent, seq) → ChatState` mapping the agent's
+   native wire events onto the normalized `ChatItem` union (`user`, `assistant`,
+   `activity`, `tool`, `permission`, `error`, `closed`). This is where *all*
+   engine-specific knowledge lives; it is DOM-free and unit-tested.
+2. A thin **transport-adapter view** that opens the agent's event stream, feeds the
+   reducer, and wires the `ConversationViewProps` callbacks (`onSend`,
+   `onInterrupt`, `onPermission`, `onFileDownload`, optional `modelSelector`) to the
+   agent's endpoints. It then hands all rendering to the shared `ConversationView`.
+3. A `widgetData.protocol` discriminator so `ConversationWidget` dispatches to your
+   view.
+
+Everything else — markdown/mermaid/katex, streaming caret, copy button,
+auto-scroll, theme, permission cards — is provided by the shared renderer once your
+reducer emits `ChatItem`s.
+
+**Reference.**
+- Contract: `optio-conversation-ui/src/chat.ts` (`ChatItem`, `ChatState`),
+  `…/src/ConversationView.tsx` (`ConversationViewProps`),
+  `…/src/ConversationWidget.tsx` (dispatch).
+- Implementations: `…/src/claudecode/` (`events.ts` reducer, `ClaudeCodeView.tsx`)
+  and `…/src/opencode/` (`events.ts` reducer, `OpencodeView.tsx`).
+
+**Divergence.** claudecode's view is a client of a per-task optio-side listener;
+opencode's view is a direct client of the spawned opencode server. Model selection,
+file transfer, and permission-verb mapping differ per engine but all funnel through
+the same `ConversationViewProps`.
+
+### D. Prompt composition
+
+**Goal.** Produce the agent's memory file (`CLAUDE.md`, `AGENTS.md`, or the
+target's equivalent) that teaches it the coordination protocol and the task.
+
+**Interface to implement.** Compose the file from: the shared keyword-protocol docs
+(`build_log_channel_prompt(features)` — the single source of truth), a
+resume-awareness section, the task framing, and the consumer's verbatim
+instructions. Honor `host_protocol=False` (omit keyword docs, add the `System:`
+message explainer instead). Explain the `resume.log` protocol so the agent detects
+relaunches.
+
+**Reference.** `optio-agents/…/protocol/prompt.py` (`build_log_channel_prompt`,
+`RESUME_NOTICE`); wrappers' `prompt.py` (`compose_agents_md`) in both packages.
+
+---
+
+## Part 3 — The staged build path
+
+Dependency-ordered. Each stage: the goal, the interface/config it touches, a
+reference pointer, and "done when." Ship Stage 0, then climb toward parity.
+
+### Stage 0 — MVP
+**Goal.** The agent runs as a task in one mode, reports completion, on the local
+host. **Touches.** The driver call (Part 2A), a minimal `body`/`prepare`, one mode,
+prompt composition (Part 2D). **Reference.** The `create_<agent>_task` +
+`run_<agent>_session` skeleton in either wrapper's `session.py`. **Done when.** A
+demo task launches, does work, emits `DONE`, and tears down cleanly locally.
+
+### Stage 1 — Remote / SSH
+**Goal.** The same task runs on a remote host, indistinguishable from optio's side.
+**Touches.** An `ssh` config field selecting `RemoteHost` vs `LocalHost`; use only
+generic `Host` primitives. **Reference.** `build_host` in either `host_actions.py`.
+**Done when.** The demo runs identically over SSH; no `isinstance` branches except
+the local-vs-remote bind decision.
+
+### Stage 2 — Resume / snapshots
+**Goal.** A terminated task relaunches and picks up conversation, workdir, and
+state. **Touches.** `supports_resume`; snapshot capture/restore (workdir tar +
+session-state blob, with retention); `workdir_exclude`; optional at-rest encryption;
+`on_resume_refresh`; `resume.log`. **Reference.** `snapshots.py` +
+`_capture_snapshot`/`_prepare` in either wrapper; the resume section in `prompt.py`.
+**Done when.** Relaunch by process id restores the session; decrypt failure fails
+loud (never silent fresh-start).
+
+### Stage 3 — Seeds
+**Goal.** Start a *fresh* session that is already logged-in/configured — the axis
+resume can't give, and the answer to headless login. **Touches.** A per-agent seed
+manifest adopting the generic `optio_agents.seeds` engine; `seed_id` / `on_seed_saved`;
+seed CRUD wrappers. **Reference.** `seed_manifest.py` in either wrapper;
+`optio-agents/…/seeds.py`. **Done when.** A seed captured from a logged-in session
+launches a new task already authenticated.
+
+### Stage 4 — Leases + credential save-back + verify
+**Goal.** Share N seeds safely across concurrent sessions, and keep rotating tokens
+alive. **Touches.** The pool/lease layer (`acquire`/`renew_lease`/`release`); a
+credential watcher that saves rotated tokens back into the seed; a host-free
+`verify_and_refresh_seed`. **Reference.** `cred_watcher.py` + the lease wiring in
+either wrapper; `verify.py`/`oauth.py`; `optio-agents/…/seeds.py` lease functions.
+**Done when.** Two concurrent sessions on one owner's seed pool don't strand each
+other; a rotated token is persisted back; a stale seed can be verified/refreshed
+offline.
+
+### Stage 5 — Binary cache + HOME/XDG isolation
+**Goal.** Install the agent binary into an optio-owned, evictable cache (never
+snapshotted, never polluting the host `~`); give each task its own agent identity.
+**Touches.** A cache dir resolved against the worker's real env; per-task
+`HOME`/`XDG_*` under the workdir; install-if-missing gating. **Reference.**
+`_resolve_install_dir` / `_isolation_env` / `ensure_<agent>_installed` in either
+`host_actions.py`. **Done when.** Concurrent tasks/users have isolated identities;
+the binary is shared and re-downloadable; snapshots exclude it.
+
+### Stage 6 — Conversation mode + conversation-ui
+**Goal.** The headless live `Conversation` (Part 2B) plus the dashboard chat widget
+(Part 2C). **Touches.** `mode="conversation"`, `host_protocol` toggle,
+`conversation_ui`; `publish_result` of the `Conversation`; the reducer + view.
+**Reference.** `conversation.py` + the conversation branch of `session.py` in either
+wrapper; `optio-conversation-ui/src/<engine>/`. **Done when.** A caller drives a
+live conversation programmatically, and the same task renders in the dashboard chat
+UI.
+
+### Stage 7 — Frontend parity
+**Goal.** Permission gating, model switching, file upload/download, tool verbosity
+in the conversation UI. **Touches.** `permission_gate`; model config
+(`show_model_selector`, default model); `show_file_upload`/`max_upload_bytes`,
+`file_download`/`max_download_bytes` (the `optio-file:` sentinel); `tool_verbosity`.
+**Reference.** The listener/endpoints in either wrapper (claudecode's
+`conversation_listener.py`; opencode's server client) and the per-engine view in
+`optio-conversation-ui`. **Done when.** Each feature works in the widget for your
+engine; model switch may be restart-based (claudecode) or inline (opencode) — both
+valid.
+
+### Stage 8 — Filesystem isolation
+**Goal.** Sandbox the agent (and its tool subprocesses) to an explicit allowlist,
+where the launch model allows. **Touches.** A Landlock sandbox wrap
+(claustrum) with a grant-flag builder; `fs_isolation` / `extra_allowed_dirs` /
+`delivery_type`; fail-closed. **Reference.** `fs_allowlist.py` +
+`_build_claustrum_wrap` in `optio-claudecode` (currently the only implementation —
+follow its pattern). **Done when.** The agent can only touch the workdir + explicit
+grants; default-on, fail-closed, local and remote.
+
+---
+
+## Part 4 — Cross-cutting concerns
+
+### Host abstraction discipline
+Do all host I/O through the generic `optio_host.Host` primitives (`run_command`,
+`launch_subprocess`, `write_text`, `establish_tunnel`, `archive_workdir`/
+`restore_workdir`, `fetch_bytes_from_host`/`put_file_to_host`, …). Keep
+`host_actions.py` a free-function layer over these. The **only** sanctioned
+`isinstance` is the Local-vs-Remote bind-address decision. This is what makes
+remote-over-SSH nearly free.
+
+### The headless-login problem
+When the agent can't authenticate headless, use one or more of:
+1. **Seeds** (Stage 3) — pre-provision a logged-in identity so headless never logs
+   in.
+2. **Interactive fallback mode** — let a human log in once in an iframe/ttyd/web
+   surface, then capture that as a seed.
+3. **OAuth-redirect rewrite** — rewrite a loopback `/callback` redirect so the login
+   flow completes on a hosted redirect, enabling login even remote/headless.
+   Reference: `optio-claudecode/…/oauth_redirect.py`, wired as `browser_url_rewrite`.
+
+### Browser handling
+The agent's "open a browser" action is intercepted by shims with three modes:
+`ignore`, `suppress`, or `redirect` (surface the URL to the operator via `BROWSER:`).
+Chosen via `get_protocol(browser=…)`. claudecode uses `redirect` (to surface login
+URLs); opencode uses `suppress`.
+
+### Isolation & security posture
+Default to fail-closed. Keep auth passwords off the argv (pass via file/env).
+Provide multi-container tunnel-bind knobs where deployments split the worker and the
+dashboard. Prefer conversation-mode + claustrum for the tightest posture.
+
+### Testing pattern
+Both wrappers ship a **fake agent** (a shim binary that speaks the agent's protocol
+without the real backend) plus a **docker-sshd** harness for remote-mode integration
+tests. Copy this pattern: it lets the full session pipeline be tested deterministically,
+local and remote, without network or credentials. Reference: `tests/` in either
+wrapper (`fake_claude.py`/`claude-shim.sh`, `fake_opencode.py`/`opencode-shim.sh`).
+
+---
+
+## Appendix A — Parity checklist
+
+A finished wrapper covers this surface. `req` = expected for any wrapper;
+`opt` = depends on the agent / deployment. Pointer column: read the reference impl.
+
+| # | Capability | Req/Opt | Reference (both wrappers unless noted) |
+|---|---|---|---|
+| 1 | iframe mode (embed agent web UI or ttyd TUI) | opt | `session.py` iframe branch; claudecode ttyd, opencode SPA |
+| 2 | conversation mode (live `Conversation`) | req | `conversation.py`, `session.py` conversation branch |
+| 3 | conversation-ui widget | req | `optio-conversation-ui/src/<engine>/` |
+| 4 | `optio.log` keyword protocol | req | driver + `prompt.py` |
+| 5 | local + remote(SSH) | req | `host_actions.build_host` |
+| 6 | readiness detection + monitoring + teardown | req | `session.py` |
+| 7 | resume / snapshots | opt | `snapshots.py`, `_capture_snapshot` |
+| 8 | at-rest encryption of session blob | opt | `session_blob_encrypt`/`decrypt` |
+| 9 | crash-orphan rescue | opt | claudecode `_rescue_orphan_if_present` |
+| 10 | auto-resume-on-restart | opt | optio-core; `auto_resume` |
+| 11 | seeds (logged-in fresh start) | req* | `seed_manifest.py`, `optio-agents/seeds.py` |
+| 12 | pool / leases | opt | `optio-agents/seeds.py` lease fns |
+| 13 | credential save-back (rotating tokens) | opt | `cred_watcher.py` |
+| 14 | verify / refresh seed (host-free) | opt | `verify.py` / `oauth.py` |
+| 15 | binary cache (evictable, unsnapshotted) | req | `_resolve_install_dir` |
+| 16 | HOME/XDG per-task isolation | req | `_isolation_env` / launch env |
+| 17 | hooks (before/after execute, on_deliverable, …) | req | config fields; `HookContext` |
+| 18 | prompt composition from SSOT | req | `prompt.py`, `optio-agents/protocol/prompt.py` |
+| 19 | permission gating | opt | `conversation.py`, `permission_gate` |
+| 20 | model switching | opt | claudecode restart / opencode inline |
+| 21 | file upload | opt | listener/server upload path |
+| 22 | file download (`optio-file:`) | opt | listener/server download path |
+| 23 | tool verbosity | opt | `tool_verbosity` → widgetData |
+| 24 | session restore / rebase (scripted) | opt | claudecode `transcript.py` |
+| 25 | filesystem isolation (Landlock) | opt | claudecode `fs_allowlist.py` |
+| 26 | browser handling (ignore/suppress/redirect) | req | `get_protocol(browser=…)` |
+| 27 | headless-login strategy | req* | seeds / interactive fallback / redirect rewrite |
+
+`*` req when the agent needs auth (all real agents do).
+
+## Appendix B — Interface reference (contract symbol → file)
+
+| Symbol | File |
+|---|---|
+| `run_log_protocol_session` | `optio-agents/…/protocol/session.py` |
+| `parse_log_line`, `LogEvent` union | `optio-agents/…/protocol/parser.py` |
+| `ProtocolFeatures` | `optio-agents/…/protocol/features.py` |
+| `get_protocol`, `Protocol` | `optio-agents/…/protocol/protocol.py` |
+| `build_log_channel_prompt`, `RESUME_NOTICE` | `optio-agents/…/protocol/prompt.py` |
+| `Conversation`, `PermissionRequest`, `PermissionDecision`, `ConversationClosed` | `optio-agents/…/conversation.py` |
+| `HookContext`, `HookContextProtocol` | `optio-agents/…/context.py` |
+| seed/lease engine (`capture_seed`, `plant_seed`, `merge_seed`, `refresh_seed`, `acquire`, `renew_lease`, `release`, `SeedManifest`) | `optio-agents/…/seeds.py` |
+| `ChatItem`, `ChatState` | `optio-conversation-ui/src/chat.ts` |
+| `ConversationViewProps` | `optio-conversation-ui/src/ConversationView.tsx` |
+| protocol dispatch | `optio-conversation-ui/src/ConversationWidget.tsx` |
+
+## Appendix C — Engine divergence table
+
+Same capability, different mechanism — the range of valid implementations.
+
+| Capability | claudecode | opencode |
+|---|---|---|
+| conversation transport | stream-json over stdio | HTTP + SSE (client of the spawned server) |
+| embedded UI | tmux + ttyd (TUI) | `opencode web` SPA |
+| conversation-ui data source | per-task optio-side listener | direct client of the opencode server |
+| model switch | restart with `--continue` + new `--model` | inline, per prompt |
+| seed consume transform | rekey `.claude.json` projects to workdir | no cwd rekey |
+| resume identity | `--continue` (agent self-resolves) | export/import session db |
+| filesystem isolation | claustrum / Landlock | not yet |
+| browser mode | redirect (surface login URL) | suppress |
