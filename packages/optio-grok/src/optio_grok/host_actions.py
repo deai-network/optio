@@ -140,22 +140,48 @@ def build_host(ssh, taskdir: str) -> "Host":
     return RemoteHost(ssh_config=ssh, taskdir=taskdir)
 
 
+def _isolation_env(workdir: str) -> dict[str, str]:
+    """Single source of truth for a task's HOME/XDG/GROK agent identity.
+
+    Every grok launch (tmux iframe via ``_build_grok_shell_command``) and every
+    headless probe (via ``_grok_isolation_env``) derive their environment from
+    this map so isolation is identical across launch paths. Six explicit keys,
+    all rooted at ``<workdir>/home``:
+
+    - ``HOME`` / ``GROK_HOME`` — grok's own state lands in the per-task home.
+    - ``XDG_CONFIG_HOME`` / ``XDG_DATA_HOME`` / ``XDG_CACHE_HOME`` — pin the XDG
+      base dirs into the task home so no XDG-respecting tool (or grok's own
+      config lookup) reaches the operator's ``~/.config`` / ``~/.cache``.
+    - ``CLAUDE_CONFIG_DIR`` — neutralizes grok's claude-compat layer: without it
+      the operator's global ``~/.claude`` (CLAUDE.md, settings, hooks) leaks
+      into the sandboxed task.
+
+    PATH is intentionally NOT included: it is layered by the caller (launch adds
+    ``<home>/.local/bin`` ahead of the worker PATH; the probe carries the worker
+    PATH so bash/interpreters resolve)."""
+    home = f"{workdir.rstrip('/')}/home"
+    return {
+        "HOME": home,
+        "GROK_HOME": f"{home}/.grok",
+        "XDG_CONFIG_HOME": f"{home}/.config",
+        "XDG_DATA_HOME": f"{home}/.local/share",
+        "XDG_CACHE_HOME": f"{home}/.cache",
+        "CLAUDE_CONFIG_DIR": f"{home}/.claude",
+    }
+
+
 def _grok_isolation_env(host: "Host") -> dict[str, str]:
-    """Per-task HOME/GROK_HOME isolation env for a headless probe, derived from
-    ``host.workdir`` — mirrors the launch env (``_build_grok_shell_command``) so
-    the probe reads the seed's planted ``home/.grok/auth.json``.
+    """Per-task isolation env for a headless probe, derived from ``host.workdir``
+    via :func:`_isolation_env` (the single source of truth) — so the probe reads
+    the seed's planted ``home/.grok/auth.json`` under the same HOME/XDG identity
+    as the launch.
 
     ``run_command`` replaces (not merges) the child env, so PATH is carried
     explicitly (the worker's PATH plus the per-task ``.local/bin``) or a missing
     interpreter/bash would break the probe."""
-    home = f"{host.workdir.rstrip('/')}/home"
+    iso = _isolation_env(host.workdir)
     base_path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
-    return {
-        "HOME": home,
-        "PATH": f"{home}/.local/bin:{base_path}",
-        "GROK_HOME": f"{home}/.grok",
-        "CLAUDE_CONFIG_DIR": f"{home}/.claude",
-    }
+    return {**iso, "PATH": f"{iso['HOME']}/.local/bin:{base_path}"}
 
 
 async def run_grok_probe(
@@ -320,19 +346,22 @@ def _build_grok_shell_command(
     sandboxed task. Point it at the empty per-task dir.
     """
     workdir_clean = workdir.rstrip("/")
-    home_dir = f"{workdir_clean}/home"
+    iso = _isolation_env(workdir_clean)
+    home_dir = iso["HOME"]
     home_local_bin = f"{home_dir}/.local/bin"
 
     extra = dict(extra_env or {})
     base_path = extra.pop("PATH", None) or os.environ.get(
         "PATH", "/usr/local/bin:/usr/bin:/bin",
     )
-    env_assignments: list[str] = [
-        f"HOME={home_dir}",
-        f"PATH={home_local_bin}:{base_path}",
-        f"GROK_HOME={home_dir}/.grok",
-        f"CLAUDE_CONFIG_DIR={home_dir}/.claude",
-    ]
+    # HOME + PATH first (PATH prepends the per-task .local/bin), then the rest of
+    # the isolation identity (GROK_HOME, XDG_*, CLAUDE_CONFIG_DIR) from the SSOT.
+    env_map = {
+        "HOME": home_dir,
+        "PATH": f"{home_local_bin}:{base_path}",
+        **{k: v for k, v in iso.items() if k != "HOME"},
+    }
+    env_assignments: list[str] = [f"{k}={v}" for k, v in env_map.items()]
     for k, v in extra.items():
         env_assignments.append(f"{k}={v}")
 
