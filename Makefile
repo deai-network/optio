@@ -136,7 +136,7 @@ run-dashboard-dev:  ## Start the dashboard Vite dev server (requires run-dashboa
 # See docs/2026-05-18-release-infrastructure-design.md for design.
 
 RELEASABLE_TS      := filtrum-core filtrum-mongo optio-ui optio-api optio-conversation-ui optio-dashboard
-RELEASABLE_PY      := optio-host optio-agents optio-opencode optio-claudecode optio-grok optio-demo
+RELEASABLE_PY      := optio-host optio-agents optio-opencode optio-claudecode optio-grok optio-codex optio-demo
 RELEASE_INDIVIDUAL := $(RELEASABLE_TS) $(RELEASABLE_PY)
 WIRE_LOCKED        := optio-contracts optio-core
 
