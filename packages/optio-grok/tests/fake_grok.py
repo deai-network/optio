@@ -11,13 +11,14 @@ the stream-json conversation mode is a later stage).
 """
 
 import argparse
+import json
 import os
 import sys
 import time
 from pathlib import Path
 
 
-SCENARIOS = ("happy", "deliverable", "error")
+SCENARIOS = ("happy", "deliverable", "error", "resume")
 
 
 def _log(line: str) -> None:
@@ -56,6 +57,41 @@ def _scenario_error() -> None:
     time.sleep(30.0)
 
 
+def _grok_home() -> Path:
+    """The per-task GROK_HOME (``<workdir>/home/.grok``) set by the launcher.
+
+    This lives INSIDE the workdir, so anything written here is captured by the
+    workdir snapshot and restored on resume — exactly like real grok's session
+    store (``<GROK_HOME>/sessions``).
+    """
+    gh = os.environ.get("GROK_HOME") or str(Path.cwd() / "home" / ".grok")
+    return Path(gh)
+
+
+def _scenario_resume() -> None:
+    """Model grok's cwd-keyed session persistence for the resume test.
+
+    Records every launch's grok flags to ``<GROK_HOME>/fake_grok_argv.jsonl``
+    (append-only, one JSON array per launch) and drops a one-time seed marker.
+    After a workdir restore the seed run's line survives, so the file carries
+    one line per launch — proving the restore happened and revealing whether
+    ``-c`` (continue) was passed on the resumed launch.
+    """
+    gh = _grok_home()
+    gh.mkdir(parents=True, exist_ok=True)
+    with (gh / "fake_grok_argv.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(sys.argv[1:]) + "\n")
+        fh.flush()
+    marker = gh / "seed_marker.txt"
+    if not marker.exists():
+        marker.write_text("SEEDED\n", encoding="utf-8")
+    time.sleep(0.05)
+    _log("STATUS: 10% resume-scenario alive")
+    time.sleep(0.05)
+    _log("DONE: resume scenario completed")
+    time.sleep(30.0)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", action="store_true")
@@ -73,6 +109,7 @@ def main() -> int:
         "happy": _scenario_happy,
         "deliverable": _scenario_deliverable,
         "error": _scenario_error,
+        "resume": _scenario_resume,
     }[scenario]()
     return 0
 

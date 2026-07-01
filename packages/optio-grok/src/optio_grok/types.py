@@ -77,8 +77,14 @@ class GrokTaskConfig:
     after_execute: HookCallback | None = None
     on_deliverable: DeliverableCallback | None = None
 
-    # Stage 0 has no resume machinery; the surface is present but off.
-    supports_resume: bool = False
+    # Resume machinery (Stage 2). ON by default: grok persists its session
+    # under <GROK_HOME>/sessions inside the workdir, so restoring the workdir
+    # tar + passing --continue rehydrates the conversation.
+    supports_resume: bool = True
+    # fnmatch patterns of workdir paths to omit from the resume snapshot tar.
+    # None → the framework defaults (see optio_host.archive). Keep home/.grok
+    # OUT of this list: it carries the grok session state that --continue needs.
+    workdir_exclude: list[str] | None = None
 
     # Stage 0 is iframe/ttyd only.
     mode: Literal["iframe"] = "iframe"
