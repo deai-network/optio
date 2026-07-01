@@ -15,7 +15,6 @@ import asyncio
 import inspect
 import logging
 import os
-import shlex
 from typing import AsyncIterator
 
 from optio_core.context import ProcessContext
@@ -27,7 +26,7 @@ from optio_agents.protocol.session import _SessionFailed, run_log_protocol_sessi
 from optio_host.host import Host, LocalHost, ProcessHandle, RemoteHost
 from optio_host.paths import task_dir
 
-from optio_grok import host_actions
+from optio_grok import cred_watcher, host_actions
 from optio_grok.prompt import compose_agents_md
 from optio_grok.seed_manifest import GROK_SEED_MANIFEST, GROK_SEED_SUFFIX
 from optio_grok.snapshots import (
@@ -48,20 +47,6 @@ async def _call_maybe_async(fn, *args) -> None:
     result = fn(*args)
     if inspect.isawaitable(result):
         await result
-
-
-async def _grok_auth_present(host: Host) -> bool:
-    """True if the isolated home carries a logged-in grok identity.
-
-    Guards seed capture: never store a seed whose ``home/.grok/auth.json`` is
-    absent (a login-less / aborted setup session). The path mirrors the seed
-    manifest so the two never drift (``home_subdir`` + the auth include entry).
-    """
-    workdir = host.workdir.rstrip("/")
-    auth_rel = GROK_SEED_MANIFEST.include[0]  # ".grok/auth.json"
-    auth_abs = f"{workdir}/{GROK_SEED_MANIFEST.home_subdir}/{auth_rel}"
-    probe = await host.run_command(f"test -e {shlex.quote(auth_abs)}")
-    return probe.exit_code == 0
 
 
 def _build_host(config: GrokTaskConfig, process_id: str) -> Host:
@@ -100,6 +85,13 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
     # (str seed_id → itself; SeedProvider callable → awaited). Stays None on
     # resume and when no seed_id is configured.
     resolved_seed_id: str | None = None
+    # Stage 4 lease + credential save-back. ``lease_holder`` is the task's
+    # process_id when the seed came from a lease-holding SeedProvider (renewed
+    # by the watcher, released at teardown). ``cred_baseline`` is the
+    # post-merge auth.json fingerprint the watcher/backstop diff against.
+    lease_holder: str | None = None
+    cred_baseline: str | None = None
+    cred_watch_task: "asyncio.Task | None" = None
 
     await host.connect()
 
@@ -114,6 +106,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
         so it is not wiped by it.
         """
         nonlocal grok_path, ttyd_path, resuming, pass_continue, resolved_seed_id
+        nonlocal lease_holder, cred_baseline
         grok_path = await host_actions.ensure_grok_installed(
             hook_ctx,
             install_if_missing=config.install_if_missing,
@@ -155,7 +148,11 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             # already-authed. No --continue: this begins a NEW session. Grok
             # auth/config are cwd-independent, so no rekey is needed.
             if callable(config.seed_id):
+                # A SeedProvider leases a seed from the pool (holder =
+                # process_id); the watcher renews the lease, teardown releases
+                # it. A plain string carries no lease.
                 resolved_seed_id = await config.seed_id(ctx.process_id)
+                lease_holder = ctx.process_id
             else:
                 resolved_seed_id = config.seed_id
             await _seeds.merge_seed(
@@ -165,6 +162,9 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                 suffix=GROK_SEED_SUFFIX,
                 decrypt=None,
             )
+            # Baseline the merged auth.json so the in-session watcher and the
+            # teardown backstop only save back a genuinely rotated token.
+            cred_baseline = await cred_watcher.cred_fingerprint(host)
 
         await host.write_text(
             "AGENTS.md",
@@ -182,6 +182,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
 
     async def _grok_body(host: Host, hook_ctx: HookContext) -> None:
         nonlocal launched_handle, tmux_path, tmux_socket, tmux_session
+        nonlocal cred_watch_task
 
         # Network binding (same env handling as claudecode/opencode for
         # multi-container deploys).
@@ -229,6 +230,21 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             "iframeSrc": "{widgetProxyUrl}/",
         })
         ctx.report_progress(None, "Grok Build is live")
+
+        # Start the in-session credential watcher for a seeded session: it
+        # saves back the rotated auth.json, and (when the seed is leased)
+        # renews the lease and aborts the session on lease loss.
+        if resolved_seed_id is not None:
+            cred_watch_task = asyncio.create_task(
+                cred_watcher.run_credential_watcher(
+                    ctx, host,
+                    seed_id=resolved_seed_id,
+                    baseline=cred_baseline,
+                    encrypt=None,
+                    decrypt=None,
+                    lease_holder=lease_holder,
+                )
+            )
 
         # Await the grok process inside tmux (NOT the ttyd connection). ttyd
         # stays up serving viewers; the task is alive while the tmux session
@@ -281,6 +297,42 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             except Exception:
                 _LOG.exception("teardown_session_tree failed")
 
+        # Stop the credential watcher before the final save-back so the two
+        # never race on the same seed blob.
+        if cred_watch_task is not None:
+            cred_watch_task.cancel()
+            try:
+                await cred_watch_task
+            except asyncio.CancelledError:
+                pass
+
+        # Final backstop save-back — LOAD-BEARING, not defensive: grok's own
+        # auth write-back is best-effort and the xAI provider has already
+        # consumed the old refresh token; a rotation in the last poll window is
+        # persisted ONLY here. Runs after grok terminated so auth.json is final.
+        if resolved_seed_id is not None:
+            try:
+                cred_baseline = await cred_watcher.save_back_if_changed(
+                    ctx, host,
+                    seed_id=resolved_seed_id,
+                    baseline=cred_baseline,
+                    encrypt=None,
+                    decrypt=None,
+                )
+            except Exception:
+                _LOG.exception("final credential save-back failed")
+
+        # Release the lease AFTER the final save-back (opencode's deliberate
+        # ordering): a new acquirer must never merge the pre-save-back blob.
+        if lease_holder is not None and resolved_seed_id is not None:
+            try:
+                await _seeds.release(
+                    ctx._db, prefix=ctx._prefix, suffix=GROK_SEED_SUFFIX,
+                    seed_id=resolved_seed_id, holder=lease_holder,
+                )
+            except Exception:
+                _LOG.exception("lease release failed (TTL will reclaim)")
+
         # Seed capture (fresh only): store this session's grok identity as a
         # reusable seed so a later fresh task can start already-authed. Same
         # reached-live gate as snapshots (launched_handle assigned strictly
@@ -292,10 +344,10 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             and launched_handle is not None
         ):
             try:
-                if not await _grok_auth_present(host):
+                if not await cred_watcher.capture_gate_ok(host):
                     _LOG.warning(
-                        "seed capture skipped: no home/.grok/auth.json "
-                        "(login-less session)",
+                        "seed capture skipped: home/.grok/auth.json absent or "
+                        "invalid (login-less session)",
                     )
                 else:
                     seed_id = await _seeds.capture_seed(

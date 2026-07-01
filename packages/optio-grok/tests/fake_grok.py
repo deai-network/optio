@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 
-SCENARIOS = ("happy", "deliverable", "error", "resume", "seed")
+SCENARIOS = ("happy", "deliverable", "error", "resume", "seed", "seed_rotate")
 
 
 def _log(line: str) -> None:
@@ -136,15 +136,77 @@ def _scenario_seed() -> None:
     time.sleep(30.0)
 
 
+def _rotate_auth(gh: Path, new_refresh: str) -> None:
+    """Rotate the refresh_token in every account of ``<GROK_HOME>/auth.json``,
+    modelling xAI's single-use refresh-token rotation that real grok performs
+    on each token use (what the credential watcher must save back)."""
+    auth = gh / "auth.json"
+    try:
+        data = json.loads(auth.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        data = {}
+    for key, val in list(data.items()):
+        if isinstance(val, dict):
+            val["refresh_token"] = new_refresh
+    auth.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _scenario_seed_rotate() -> None:
+    """CONSUME role that rotates the refresh token mid-session.
+
+    The seed engine planted ``home/.grok/auth.json`` before launch; this run
+    rotates its refresh_token (as real grok would on a token refresh), so the
+    session's teardown save-back must write the rotated auth.json back into the
+    seed. Used by the Stage-4 lease/save-back session test."""
+    gh = _grok_home()
+    gh.mkdir(parents=True, exist_ok=True)
+    _rotate_auth(gh, "ROTATED-INSESSION")
+    time.sleep(0.05)
+    _log("STATUS: 10% rotate scenario alive")
+    time.sleep(0.05)
+    _log("DONE: rotate scenario completed")
+    time.sleep(30.0)
+
+
+def _scenario_probe(prompt: str) -> int:
+    """One-shot headless probe (``grok -p "<prompt>"``) for verify_and_refresh.
+
+    Mode via ``FAKE_GROK_PROBE`` (default ``alive``):
+      * ``alive`` — rotate the refresh token (as a live grok would) and print
+        the challenge answer to stdout; exit 0.
+      * ``dead``  — print an auth error and exit 1 (no answer token).
+      * ``echo``  — echo the prompt back verbatim and exit 1 (proves a prompt-
+        echoing error path does not false-positive: the answer token is absent
+        from the prompt).
+    """
+    mode = os.environ.get("FAKE_GROK_PROBE", "alive").strip()
+    if mode == "dead":
+        print("Error: Unauthorized (invalid_grant)", flush=True)
+        return 1
+    if mode == "echo":
+        print(f"cannot process request: {prompt}", flush=True)
+        return 1
+    gh = _grok_home()
+    gh.mkdir(parents=True, exist_ok=True)
+    _rotate_auth(gh, "ROTATED-BY-PROBE")
+    print("The capital of France is Paris.", flush=True)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", action="store_true")
+    parser.add_argument("-p", "--print", dest="print_mode", action="store_true")
     parser.add_argument("--permission-mode", default=None)
     parser.add_argument("--model", default=None)
     args, _unknown = parser.parse_known_args()
     if args.version:
         print("grok 0.2.77 (fake)")
         return 0
+    if args.print_mode:
+        # Headless probe: the prompt is the remaining positional argument.
+        prompt = _unknown[0] if _unknown else ""
+        return _scenario_probe(prompt)
     scenario = os.environ.get("FAKE_GROK_SCENARIO", "happy").strip()
     if scenario not in SCENARIOS:
         print(f"unknown FAKE_GROK_SCENARIO={scenario!r}", file=sys.stderr)
@@ -155,6 +217,7 @@ def main() -> int:
         "error": _scenario_error,
         "resume": _scenario_resume,
         "seed": _scenario_seed,
+        "seed_rotate": _scenario_seed_rotate,
     }[scenario]()
     return 0
 
