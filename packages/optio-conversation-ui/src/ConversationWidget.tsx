@@ -3,6 +3,7 @@ import { ConfigProvider, theme as antdTheme } from 'antd';
 import { registerWidget, type WidgetProps } from 'optio-ui';
 import { ClaudeCodeView } from './claudecode/ClaudeCodeView.js';
 import { OpencodeView } from './opencode/OpencodeView.js';
+import { GrokView } from './grok/GrokView.js';
 
 const THEME_KEY = 'optio-conversation:theme';
 
@@ -22,6 +23,7 @@ export function ConversationWidget({ ownTheme, ...props }: ConversationWidgetPro
   const dispatchedView = (extra: { themeMode?: 'light' | 'dark'; onToggleTheme?: () => void }) => {
     const viewProps = { ...props, ...extra } as WidgetProps;
     if (protocol === 'opencode') return <OpencodeView {...viewProps} />;
+    if (protocol === 'grok') return <GrokView {...viewProps} />;
     return <ClaudeCodeView {...viewProps} />;
   };
 
