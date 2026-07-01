@@ -21,6 +21,8 @@ __all__ = [
     "SSHConfig",
     "GrokTaskConfig",
     "PermissionMode",
+    "ConversationMode",
+    "ToolVerbosity",
     "SeedProvider",
     "SeedUnavailableError",
 ]
@@ -43,6 +45,16 @@ PermissionMode = Literal[
 _VALID_PERMISSION_MODES = {
     "default", "acceptEdits", "auto", "dontAsk", "bypassPermissions", "plan"
 }
+
+# "iframe" = ttyd TUI in the browser (Stages 0-5). "conversation" = a headless
+# ``grok agent … stdio`` (ACP) session; the task publishes a live
+# GrokConversation via ctx.publish_result (Stage 6).
+ConversationMode = Literal["iframe", "conversation"]
+
+# Verbosity of tool-call rendering in the conversation widget (conversation_ui
+# only). Mirrors optio-claudecode; consumed by the dashboard reducer.
+ToolVerbosity = Literal["silent", "description-only", "verbose"]
+_VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
 
 
 @dataclass
@@ -114,11 +126,26 @@ class GrokTaskConfig:
     # OUT of this list: it carries the grok session state that --continue needs.
     workdir_exclude: list[str] | None = None
 
-    # Stage 0 is iframe/ttyd only.
-    mode: Literal["iframe"] = "iframe"
+    # "iframe" = ttyd TUI (Stages 0-5). "conversation" = headless ACP
+    # (grok agent stdio); the task publishes a live GrokConversation (Stage 6).
+    mode: ConversationMode = "iframe"
     # Opt-out for the optio.log keyword channel (STATUS/DELIVERABLE/DONE/…).
-    # iframe mode requires True (it is the only completion signal there).
+    # iframe mode requires True (it is the only completion signal there);
+    # conversation mode may set it False (the Conversation drives completion).
     host_protocol: bool = True
+
+    # --- conversation surface (Stage 6) ---------------------------------
+    # Conversation mode only: route grok's ACP session/request_permission to
+    # the published conversation's on_permission_request handler (the caller
+    # registers one). When False, grok launches with --always-approve so tools
+    # run without prompting.
+    permission_gate: bool = False
+    # Opt-in dashboard conversation UI: the task starts a per-task listener and
+    # publishes a live chat widget (wired in Group 6b). Conversation mode only.
+    conversation_ui: bool = False
+    # How much tool-call detail the conversation widget renders; only affects
+    # conversation_ui rendering.
+    tool_verbosity: ToolVerbosity = "description-only"
 
     def __post_init__(self) -> None:
         if (
@@ -128,6 +155,32 @@ class GrokTaskConfig:
             raise ValueError(
                 f"GrokTaskConfig.permission_mode={self.permission_mode!r} "
                 f"is not one of {sorted(_VALID_PERMISSION_MODES)}"
+            )
+        if self.mode not in ("iframe", "conversation"):
+            raise ValueError(
+                f"GrokTaskConfig.mode={self.mode!r} is not one of "
+                "['iframe', 'conversation']"
+            )
+        if self.mode == "iframe" and not self.host_protocol:
+            raise ValueError(
+                "GrokTaskConfig: host_protocol=False requires "
+                "mode='conversation' (in iframe mode the optio.log keyword "
+                "channel is the only completion signal)."
+            )
+        if self.permission_gate and self.mode != "conversation":
+            raise ValueError(
+                "GrokTaskConfig: permission_gate=True requires "
+                "mode='conversation'."
+            )
+        if self.conversation_ui and self.mode != "conversation":
+            raise ValueError(
+                "GrokTaskConfig: conversation_ui=True requires "
+                "mode='conversation'."
+            )
+        if self.tool_verbosity not in _VALID_TOOL_VERBOSITY:
+            raise ValueError(
+                f"GrokTaskConfig.tool_verbosity={self.tool_verbosity!r} "
+                f"is not one of {sorted(_VALID_TOOL_VERBOSITY)}"
             )
         for field_name in ("grok_install_dir", "ttyd_install_dir"):
             val = getattr(self, field_name)

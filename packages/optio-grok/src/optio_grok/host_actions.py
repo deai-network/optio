@@ -542,6 +542,32 @@ def build_auto_start_args(
     return [prompt] if (auto_start and not resuming) else []
 
 
+def build_conversation_argv(
+    grok_path: str,
+    *,
+    model: str | None = None,
+    no_leader: bool = True,
+    always_approve: bool = False,
+) -> list[str]:
+    """Argv for a headless ACP conversation: ``grok agent [opts] stdio``.
+
+    All options belong to ``grok agent`` and MUST precede the ``stdio``
+    subcommand (verified against the real CLI ``grok agent --help``):
+    ``--model``, ``--no-leader`` (start a fresh agent, never share the leader
+    socket), ``--always-approve`` (auto-approve every tool — used when no
+    permission gate is wired). No tmux/ttyd: the subprocess IS the agent.
+    """
+    argv = [grok_path, "agent"]
+    if model:
+        argv += ["--model", model]
+    if always_approve:
+        argv += ["--always-approve"]
+    if no_leader:
+        argv += ["--no-leader"]
+    argv += ["stdio"]
+    return argv
+
+
 # --- tmux / ttyd machinery (adapted verbatim from optio-claudecode) ---------
 
 
