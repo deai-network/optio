@@ -9,6 +9,14 @@ from optio_host import (
     SSHConfig,
 )
 
+from optio_grok.seed_manifest import (
+    GROK_CRED_MANIFEST,
+    GROK_SEED_MANIFEST,
+    GROK_SEED_SUFFIX,
+    delete_seed,
+    list_seeds,
+    purge_seed,
+)
 from optio_grok.session import create_grok_task, run_grok_session
 from optio_grok.types import (
     DeliverableCallback,
@@ -35,4 +43,10 @@ __all__ = [
     "HookContextProtocol",
     "HostCommandError",
     "RunResult",
+    "GROK_SEED_MANIFEST",
+    "GROK_CRED_MANIFEST",
+    "GROK_SEED_SUFFIX",
+    "delete_seed",
+    "list_seeds",
+    "purge_seed",
 ]
