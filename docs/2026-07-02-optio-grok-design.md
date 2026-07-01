@@ -116,8 +116,10 @@ mirrors `optio-claudecode` (adapt, don't copy blindly):
 | 7 Frontend parity | permissions, model switch, file up/down, verbosity | claude-style permission modes; `--model` restart or stdio control |
 | 8 fs-isolation | Landlock sandbox | claustrum (native `--sandbox` as alt) |
 
-Demo: a grok seed-setup task + a seed-pinned demo task in `optio-demo`, mirroring
-the claudecode/opencode demos.
+Demo (per the guide's Part 5): a grok **seed-setup** task + **two seed-pinned** run
+tasks — one iframe, one conversation — in `optio-demo`, mirroring the
+claudecode/opencode demo trio. The iframe demo lands with Stage 0/3; the
+conversation demo with Stage 6.
 
 ## 5. Non-goals (v1)
 
