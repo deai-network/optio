@@ -348,6 +348,45 @@ wrapper (`fake_claude.py`/`claude-shim.sh`, `fake_opencode.py`/`opencode-shim.sh
 
 ---
 
+## Part 5 — Wiring: packaging, registration, and demo tasks
+
+A wrapper isn't done until it is installable and demonstrated end-to-end. This part
+is required for every wrapper.
+
+### Packaging & registration
+- **Package.** `packages/optio-<agent>/` with its own `pyproject.toml` (setuptools,
+  `src/` layout), depending on `optio-core` / `optio-host` / `optio-agents`. Mirror
+  either reference wrapper's `pyproject.toml`.
+- **Editable install + release lists.** Add the package to the demo's install list
+  and the repo's release list so it is built and shipped. **Reference.** the
+  `LOCAL_PKGS` / `install -e` lines in `packages/optio-demo/Makefile`, the
+  `RELEASABLE_PY` list in the root `Makefile`, and the demo's `pyproject.toml`
+  `dependencies`.
+
+### Demo tasks (`optio-demo`)
+**Goal.** Every wrapper ships demo tasks so it is exercised in the real dashboard,
+not just in unit tests — and so the seed lifecycle is demonstrable. Both reference
+wrappers ship the same set: one **seed-setup task** (log in / configure once, stop
+to capture a reusable seed) and **two seed-pinned run tasks** — one **iframe** and
+one **conversation** — that auto-appear after a seed exists and run unattended
+against the captured identity. Keep this trio.
+
+**Interface to implement.** Expose `async def get_tasks(services) -> list[TaskInstance]`
+in `optio_demo/tasks/<agent>.py` (services gives `db`, `prefix`, and the framework
+handle), then aggregate it in `optio_demo/tasks/__init__.py`'s
+`get_task_definitions`. Build each task with your `create_<agent>_task(...)` factory.
+
+**Reference.** `packages/optio-demo/src/optio_demo/tasks/claudecode.py` and
+`…/opencode.py` (the seed-setup + seed-pinned task pair, and the
+`_make_on_seed_saved` capture wiring); aggregation in `…/tasks/__init__.py`.
+
+**Parity note.** The two seed-pinned demos exercise both surfaces from the same
+captured identity: the iframe/ttyd demo ships at Stage 0, the conversation demo once
+Stage 6 lands. Both reference wrappers ship this iframe + conversation pair — mirror
+it.
+
+---
+
 ## Appendix A — Parity checklist
 
 A finished wrapper covers this surface. `req` = expected for any wrapper;
@@ -382,6 +421,8 @@ A finished wrapper covers this surface. `req` = expected for any wrapper;
 | 25 | filesystem isolation (Landlock) | opt | claudecode `fs_allowlist.py` |
 | 26 | browser handling (ignore/suppress/redirect) | req | `get_protocol(browser=…)` |
 | 27 | headless-login strategy | req* | seeds / interactive fallback / redirect rewrite |
+| 28 | packaging + editable/release registration | req | `optio-demo/Makefile`, root `Makefile` `RELEASABLE_PY` |
+| 29 | demo tasks: seed-setup + two seed-pinned (iframe & conversation) | req | `optio-demo/…/tasks/{claudecode,opencode}.py` |
 
 `*` req when the agent needs auth (all real agents do).
 
