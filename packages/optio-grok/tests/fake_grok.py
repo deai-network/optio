@@ -195,7 +195,118 @@ def _scenario_probe(prompt: str) -> int:
     return 3 if mode == "alive_badexit" else 0
 
 
+def _acp_send(obj: dict) -> None:
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+def _acp_notify_update(session_id: str, update: dict) -> None:
+    _acp_send({
+        "jsonrpc": "2.0", "method": "session/update",
+        "params": {"sessionId": session_id, "update": update},
+    })
+
+
+def _run_acp_stdio() -> int:
+    """Fake ``grok agent … stdio`` — a minimal ACP (JSON-RPC 2.0) responder.
+
+    Implements the wire pinned by the Stage-6 live probe:
+      * ``initialize`` / ``session/new`` handshake.
+      * ``session/prompt`` → an ``agent_message_chunk`` notification then the
+        turn-end response ``{stopReason:"end_turn"}``. Replies are numbered
+        ``reply-N`` per prompt (so an auto-start kickoff shifts the caller's
+        first message to ``reply-2``, mirroring fake_claude).
+      * Permission scenario: a prompt whose text contains ``TOOL`` emits a
+        ``tool_call`` update + a ``session/request_permission`` request, blocks
+        for the client's answer, then reports ``tool-ran`` (an allow option was
+        selected) or ``tool-denied`` (rejected/cancelled).
+      * ``session/cancel`` notification is accepted (no ack).
+
+    ``FAKE_GROK_EXIT_AFTER=N`` makes the process exit non-zero after N prompt
+    turns, modelling an unexpected crash for the session-failure test.
+    """
+    session_id = "fake-grok-session"
+    exit_after = int(os.environ.get("FAKE_GROK_EXIT_AFTER", "0") or "0")
+    turn = 0
+    next_perm_id = 1000
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            return 0
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        method = msg.get("method")
+        mid = msg.get("id")
+        if method == "initialize":
+            _acp_send({"jsonrpc": "2.0", "id": mid, "result": {
+                "protocolVersion": 1, "agentCapabilities": {}, "authMethods": []}})
+        elif method == "session/new":
+            _acp_send({"jsonrpc": "2.0", "id": mid, "result": {
+                "sessionId": session_id, "models": []}})
+        elif method == "session/prompt":
+            turn += 1
+            prompt = (msg.get("params") or {}).get("prompt") or []
+            text = " ".join(p.get("text", "") for p in prompt)
+            if "TOOL" in text:
+                next_perm_id += 1
+                _acp_notify_update(session_id, {
+                    "sessionUpdate": "tool_call", "toolCallId": "tc",
+                    "title": "Shell", "rawInput": {"command": "echo hi"}})
+                _acp_send({"jsonrpc": "2.0", "id": next_perm_id,
+                           "method": "session/request_permission",
+                           "params": {"sessionId": session_id, "toolCall": {
+                               "toolCallId": "tc", "kind": "execute",
+                               "title": "Execute `echo hi`",
+                               "rawInput": {"command": "echo hi"}},
+                               "options": [
+                                   {"optionId": "allow-once", "name": "Yes", "kind": "allow_once"},
+                                   {"optionId": "reject-once", "name": "No", "kind": "reject_once"}]}})
+                # Block for the client's permission answer (next stdin line).
+                answer_line = sys.stdin.readline()
+                outcome = {}
+                if answer_line.strip():
+                    try:
+                        outcome = (json.loads(answer_line).get("result") or {}).get("outcome") or {}
+                    except ValueError:
+                        outcome = {}
+                allowed = (
+                    outcome.get("outcome") == "selected"
+                    and "allow" in (outcome.get("optionId") or "")
+                )
+                reply = "tool-ran" if allowed else "tool-denied"
+                _acp_notify_update(session_id, {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": reply}})
+                _acp_send({"jsonrpc": "2.0", "id": mid,
+                           "result": {"stopReason": "end_turn"}})
+            else:
+                _acp_notify_update(session_id, {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": f"reply-{turn}"}})
+                _acp_send({"jsonrpc": "2.0", "id": mid,
+                           "result": {"stopReason": "end_turn"}})
+            if exit_after and turn >= exit_after:
+                return 7
+        elif method == "session/cancel":
+            # Notification: a real grok would abort the in-flight turn. The
+            # fake's turns are instantaneous, so nothing to abort.
+            continue
+        # Any other message (agent notifications the client shouldn't send,
+        # unadvertised-capability errors, …) is ignored.
+
+
 def main() -> int:
+    # ACP conversation mode: `grok agent [flags] stdio`. Detected before
+    # argparse so the agent/stdio positionals don't trip the option parser.
+    argv = sys.argv[1:]
+    if "agent" in argv and "stdio" in argv:
+        return _run_acp_stdio()
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", action="store_true")
     parser.add_argument("-p", "--print", dest="print_mode", action="store_true")
