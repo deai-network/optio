@@ -1,0 +1,19 @@
+services:
+  sshd:
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - USER_NAME=optiotest
+      - PUBLIC_KEY_FILE=/keys/id_ed25519.pub
+      - SUDO_ACCESS=false
+      - PASSWORD_ACCESS=false
+    volumes:
+      - ./ssh-keys:/keys:ro
+      - ./fake_grok.py:/usr/local/bin/fake_grok.py:ro
+      - ./grok-shim.sh:/usr/local/bin/grok:ro
+      - ./ttyd-shim.sh:/usr/local/bin/ttyd:ro
+    ports:
+      - "127.0.0.1:22223:2222"
