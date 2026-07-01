@@ -18,6 +18,7 @@ from optio_grok.seed_manifest import (
     purge_seed,
 )
 from optio_grok.session import create_grok_task, run_grok_session
+from optio_grok.verify import verify_and_refresh_seed
 from optio_grok.types import (
     DeliverableCallback,
     GrokTaskConfig,
@@ -51,6 +52,7 @@ __all__ = [
     "delete_seed",
     "list_seeds",
     "purge_seed",
+    "verify_and_refresh_seed",
     "SeedProvider",
     "SeedUnavailableError",
 ]

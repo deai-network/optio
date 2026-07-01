@@ -66,23 +66,19 @@ async def _resolve_install_dir(host: "Host", install_dir: str | None) -> str:
 # --- grok resolution (Stage 0: no binary cache/download; that is Stage 5) ---
 
 
-async def ensure_grok_installed(
-    hook_ctx: "HookContextProtocol",
+async def resolve_grok(
+    host: "Host",
     *,
-    install_if_missing: bool = True,
     install_dir: str | None = None,
+    install_if_missing: bool = True,
 ) -> str:
-    """Resolve the ``grok`` binary on the host and return its absolute path.
+    """Host-based ``grok`` binary resolution (no HookContext).
 
-    Stage 0: no binary cache or auto-download (that is Stage 5). ``grok`` is
-    resolved from ``<install_dir>/grok`` when ``install_dir`` is given,
-    otherwise via ``command -v grok`` in a login shell (so worker-profile
-    PATH additions apply, e.g. ``~/.grok/bin``). Raises when the binary is
-    absent.
-    """
-    host = hook_ctx._host
-    hook_ctx.report_progress(None, "Locating grok…")
-
+    Resolved from ``<install_dir>/grok`` when ``install_dir`` is given,
+    otherwise via ``command -v grok`` in a login shell (so worker-profile PATH
+    additions apply, e.g. ``~/.grok/bin``). Raises when the binary is absent.
+    Shared by ``ensure_grok_installed`` (engine path) and ``verify`` (engine-
+    free path)."""
     if install_dir is not None:
         candidate = f"{install_dir.rstrip('/')}/grok"
         probe = await host.run_command(
@@ -109,6 +105,84 @@ async def ensure_grok_installed(
         "has no auto-install (the binary cache is a later stage) — install "
         "grok manually (e.g. ~/.grok/bin/grok) or pass grok_install_dir."
     )
+
+
+async def ensure_grok_installed(
+    hook_ctx: "HookContextProtocol",
+    *,
+    install_if_missing: bool = True,
+    install_dir: str | None = None,
+) -> str:
+    """Resolve the ``grok`` binary on the host and return its absolute path.
+
+    Stage 0: no binary cache or auto-download (that is Stage 5). Thin engine-
+    side wrapper over :func:`resolve_grok` that also reports progress.
+    """
+    hook_ctx.report_progress(None, "Locating grok…")
+    return await resolve_grok(
+        hook_ctx._host,
+        install_dir=install_dir,
+        install_if_missing=install_if_missing,
+    )
+
+
+def build_host(ssh, taskdir: str) -> "Host":
+    """ssh_config + taskdir -> LocalHost/RemoteHost. Lifted from
+    session._build_host so engine-free callers (verify) share it (mirrors
+    opencode's host_actions.build_host)."""
+    from optio_host.host import LocalHost, RemoteHost
+
+    if ssh is None:
+        os.makedirs(taskdir, exist_ok=True)
+        host: "Host" = LocalHost(taskdir=taskdir)
+        os.makedirs(host.workdir, exist_ok=True)
+        return host
+    return RemoteHost(ssh_config=ssh, taskdir=taskdir)
+
+
+def _grok_isolation_env(host: "Host") -> dict[str, str]:
+    """Per-task HOME/GROK_HOME isolation env for a headless probe, derived from
+    ``host.workdir`` — mirrors the launch env (``_build_grok_shell_command``) so
+    the probe reads the seed's planted ``home/.grok/auth.json``.
+
+    ``run_command`` replaces (not merges) the child env, so PATH is carried
+    explicitly (the worker's PATH plus the per-task ``.local/bin``) or a missing
+    interpreter/bash would break the probe."""
+    home = f"{host.workdir.rstrip('/')}/home"
+    base_path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+    return {
+        "HOME": home,
+        "PATH": f"{home}/.local/bin:{base_path}",
+        "GROK_HOME": f"{home}/.grok",
+        "CLAUDE_CONFIG_DIR": f"{home}/.claude",
+    }
+
+
+async def run_grok_probe(
+    host: "Host",
+    *,
+    grok_executable: str,
+    prompt: str,
+    wrap: "list[str] | None" = None,
+    timeout_s: float = 180.0,
+) -> "tuple[str, int]":
+    """Headless one-shot ``grok -p "<prompt>"`` under the per-task isolation
+    env. Returns (stdout, exit_code). ``wrap`` is an argv prefix seam (future
+    claustrum fs-isolation). The caller's verdict is a challenge-answer match
+    on stdout; the exit code is diagnostics only."""
+    argv = [*(wrap or []), grok_executable, "-p", prompt]
+    cmd = " ".join(shlex.quote(a) for a in argv)
+    # Layer the per-task HOME/GROK_HOME overrides on top of the ambient env,
+    # mirroring the session launch's ``env HOME=… GROK_HOME=… bash -c …`` (which
+    # inherits, not ``env -i``). run_command replaces the child env, so the
+    # merge is explicit here. The caller runs this on a host whose environment
+    # carries no provider API keys (see verify_and_refresh_seed).
+    env = {**os.environ, **_grok_isolation_env(host)}
+    result = await asyncio.wait_for(
+        host.run_command(f"bash -lc {shlex.quote(cmd)}", env=env),
+        timeout=timeout_s,
+    )
+    return (result.stdout or "", result.exit_code)
 
 
 # --- ttyd install (copied verbatim from optio-claudecode) -------------------

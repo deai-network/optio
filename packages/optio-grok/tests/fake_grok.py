@@ -190,7 +190,9 @@ def _scenario_probe(prompt: str) -> int:
     gh.mkdir(parents=True, exist_ok=True)
     _rotate_auth(gh, "ROTATED-BY-PROBE")
     print("The capital of France is Paris.", flush=True)
-    return 0
+    # ``alive_badexit`` proves the verdict is stdout-only: the answer is
+    # present but the process exits non-zero, and the seed must still be alive.
+    return 3 if mode == "alive_badexit" else 0
 
 
 def main() -> int:

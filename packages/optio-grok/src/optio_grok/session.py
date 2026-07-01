@@ -23,7 +23,7 @@ from optio_core.models import TaskInstance
 from optio_agents import HookContext, get_protocol
 from optio_agents import seeds as _seeds
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
-from optio_host.host import Host, LocalHost, ProcessHandle, RemoteHost
+from optio_host.host import Host, LocalHost, ProcessHandle
 from optio_host.paths import task_dir
 
 from optio_grok import cred_watcher, host_actions
@@ -53,17 +53,12 @@ def _build_host(config: GrokTaskConfig, process_id: str) -> Host:
     """Construct the appropriate Host for the given config.
 
     Extracted so tests can monkeypatch ``session._build_host`` to inject a
-    fake host (mirrors the claudecode/opencode pattern).
-    """
+    fake host (mirrors the claudecode/opencode pattern). Delegates to
+    host_actions.build_host (shared with verify)."""
     taskdir = task_dir(
         ssh=config.ssh, process_id=process_id, consumer_name="optio-grok",
     )
-    if config.ssh is None:
-        os.makedirs(taskdir, exist_ok=True)
-        host: Host = LocalHost(taskdir=taskdir)
-        os.makedirs(host.workdir, exist_ok=True)
-        return host
-    return RemoteHost(ssh_config=config.ssh, taskdir=taskdir)
+    return host_actions.build_host(config.ssh, taskdir)
 
 
 async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
