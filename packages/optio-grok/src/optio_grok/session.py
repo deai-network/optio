@@ -12,20 +12,24 @@ in-session input-listener branches; those arrive in later stages.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
+import shlex
 from typing import AsyncIterator
 
 from optio_core.context import ProcessContext
 from optio_core.models import TaskInstance
 
 from optio_agents import HookContext, get_protocol
+from optio_agents import seeds as _seeds
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_host.host import Host, LocalHost, ProcessHandle, RemoteHost
 from optio_host.paths import task_dir
 
 from optio_grok import host_actions
 from optio_grok.prompt import compose_agents_md
+from optio_grok.seed_manifest import GROK_SEED_MANIFEST, GROK_SEED_SUFFIX
 from optio_grok.snapshots import (
     insert_snapshot,
     load_latest_snapshot,
@@ -37,6 +41,27 @@ from optio_grok.types import GrokTaskConfig
 _LOG = logging.getLogger(__name__)
 
 READY_TIMEOUT_S = 30.0
+
+
+async def _call_maybe_async(fn, *args) -> None:
+    """Invoke a callback that may be sync or async."""
+    result = fn(*args)
+    if inspect.isawaitable(result):
+        await result
+
+
+async def _grok_auth_present(host: Host) -> bool:
+    """True if the isolated home carries a logged-in grok identity.
+
+    Guards seed capture: never store a seed whose ``home/.grok/auth.json`` is
+    absent (a login-less / aborted setup session). The path mirrors the seed
+    manifest so the two never drift (``home_subdir`` + the auth include entry).
+    """
+    workdir = host.workdir.rstrip("/")
+    auth_rel = GROK_SEED_MANIFEST.include[0]  # ".grok/auth.json"
+    auth_abs = f"{workdir}/{GROK_SEED_MANIFEST.home_subdir}/{auth_rel}"
+    probe = await host.run_command(f"test -e {shlex.quote(auth_abs)}")
+    return probe.exit_code == 0
 
 
 def _build_host(config: GrokTaskConfig, process_id: str) -> Host:
@@ -71,6 +96,10 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
     # auto-start suppression). Set by _prepare, read by the body + teardown.
     resuming = False
     pass_continue = False
+    # Resolved seed id for a fresh, seeded launch (Stage 3). Set by _prepare
+    # (str seed_id → itself; SeedProvider callable → awaited). Stays None on
+    # resume and when no seed_id is configured.
+    resolved_seed_id: str | None = None
 
     await host.connect()
 
@@ -84,7 +113,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
         its stale DONE/ERROR, and AGENTS.md is (re)planted AFTER the restore
         so it is not wiped by it.
         """
-        nonlocal grok_path, ttyd_path, resuming, pass_continue
+        nonlocal grok_path, ttyd_path, resuming, pass_continue, resolved_seed_id
         grok_path = await host_actions.ensure_grok_installed(
             hook_ctx,
             install_if_missing=config.install_if_missing,
@@ -117,6 +146,25 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             # restored workdir at the same absolute path (deterministic taskdir),
             # so the cwd-keyed session lookup matches.
             pass_continue = True
+
+        if not resuming and config.seed_id is not None:
+            # Seeded FRESH start: resolve the seed id (str → itself; a
+            # SeedProvider callable → awaited, may raise SeedUnavailableError)
+            # and overlay the stored grok identity (auth.json + config.toml)
+            # into the fresh workdir BEFORE AGENTS.md, so grok launches
+            # already-authed. No --continue: this begins a NEW session. Grok
+            # auth/config are cwd-independent, so no rekey is needed.
+            if callable(config.seed_id):
+                resolved_seed_id = await config.seed_id(ctx.process_id)
+            else:
+                resolved_seed_id = config.seed_id
+            await _seeds.merge_seed(
+                ctx, host,
+                seed_id=resolved_seed_id,
+                manifest=GROK_SEED_MANIFEST,
+                suffix=GROK_SEED_SUFFIX,
+                decrypt=None,
+            )
 
         await host.write_text(
             "AGENTS.md",
@@ -232,6 +280,37 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                 )
             except Exception:
                 _LOG.exception("teardown_session_tree failed")
+
+        # Seed capture (fresh only): store this session's grok identity as a
+        # reusable seed so a later fresh task can start already-authed. Same
+        # reached-live gate as snapshots (launched_handle assigned strictly
+        # after a successful launch). Guarded on auth.json present — never
+        # seed a login-less identity. Ignored on resume.
+        if (
+            not resuming
+            and config.on_seed_saved is not None
+            and launched_handle is not None
+        ):
+            try:
+                if not await _grok_auth_present(host):
+                    _LOG.warning(
+                        "seed capture skipped: no home/.grok/auth.json "
+                        "(login-less session)",
+                    )
+                else:
+                    seed_id = await _seeds.capture_seed(
+                        ctx, host,
+                        manifest=GROK_SEED_MANIFEST,
+                        suffix=GROK_SEED_SUFFIX,
+                        encrypt=None,
+                    )
+                    # 2nd arg (account summary) is resolved in a later stage;
+                    # None in Stage 3.
+                    await _call_maybe_async(config.on_seed_saved, seed_id, None)
+            except Exception:
+                _LOG.exception(
+                    "seed capture failed; callback not fired, teardown continues",
+                )
 
         # Reached-live gate: only capture if grok actually came up
         # (launched_handle is assigned strictly after a successful ttyd/grok

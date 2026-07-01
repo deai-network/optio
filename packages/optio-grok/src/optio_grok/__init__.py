@@ -23,6 +23,8 @@ from optio_grok.types import (
     GrokTaskConfig,
     HookCallback,
     PermissionMode,
+    SeedProvider,
+    SeedUnavailableError,
 )
 
 
@@ -49,4 +51,6 @@ __all__ = [
     "delete_seed",
     "list_seeds",
     "purge_seed",
+    "SeedProvider",
+    "SeedUnavailableError",
 ]

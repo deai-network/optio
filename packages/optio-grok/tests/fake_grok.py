@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 
-SCENARIOS = ("happy", "deliverable", "error", "resume")
+SCENARIOS = ("happy", "deliverable", "error", "resume", "seed")
 
 
 def _log(line: str) -> None:
@@ -92,6 +92,50 @@ def _scenario_resume() -> None:
     time.sleep(30.0)
 
 
+def _scenario_seed() -> None:
+    """Model grok's logged-in identity for the Stage-3 seed tests.
+
+    Two roles, distinguished by whether ``auth.json`` is already present at
+    launch:
+
+    * CONSUME (seed already merged in): the seed engine planted
+      ``home/.grok/auth.json`` before launch. Record that fact via a
+      deliverable so the test can assert the seed reached the workdir before
+      grok started.
+    * CAPTURE (fresh login): no auth yet, so write a fake logged-in identity
+      (auth.json + config.toml) under GROK_HOME. Teardown capture then stores
+      it as a reusable seed.
+    """
+    gh = _grok_home()
+    gh.mkdir(parents=True, exist_ok=True)
+    auth = gh / "auth.json"
+    if auth.exists():
+        workdir = Path.cwd()
+        (workdir / "deliverables").mkdir(exist_ok=True)
+        (workdir / "deliverables" / "seed_present.txt").write_text(
+            "SEED_PRESENT\n", encoding="utf-8",
+        )
+        time.sleep(0.05)
+        _log("DELIVERABLE: ./deliverables/seed_present.txt")
+    else:
+        auth.write_text(
+            json.dumps({
+                "https://auth.x.ai::00000000-0000-0000-0000-000000000000": {
+                    "key": "fake-key",
+                    "refresh_token": "fake-refresh",
+                    "expires_at": 9999999999,
+                },
+            }),
+            encoding="utf-8",
+        )
+        (gh / "config.toml").write_text('model = "grok-fake"\n', encoding="utf-8")
+    time.sleep(0.05)
+    _log("STATUS: 10% seed scenario alive")
+    time.sleep(0.05)
+    _log("DONE: seed scenario completed")
+    time.sleep(30.0)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", action="store_true")
@@ -110,6 +154,7 @@ def main() -> int:
         "deliverable": _scenario_deliverable,
         "error": _scenario_error,
         "resume": _scenario_resume,
+        "seed": _scenario_seed,
     }[scenario]()
     return 0
 
