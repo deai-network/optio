@@ -15,11 +15,12 @@ import asyncio
 import inspect
 import logging
 import os
+import secrets
 import shlex
 from typing import AsyncIterator
 
 from optio_core.context import ProcessContext
-from optio_core.models import TaskInstance
+from optio_core.models import BasicAuth, TaskInstance
 
 from optio_agents import HookContext, get_protocol
 from optio_agents import seeds as _seeds
@@ -29,6 +30,7 @@ from optio_host.paths import task_dir
 
 from optio_grok import cred_watcher, host_actions
 from optio_grok.conversation import GrokConversation
+from optio_grok.conversation_listener import ConversationListener
 from optio_grok.prompt import compose_agents_md
 from optio_grok.seed_manifest import GROK_SEED_MANIFEST, GROK_SEED_SUFFIX
 from optio_grok.snapshots import (
@@ -260,9 +262,12 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
         conversation = GrokConversation(
             cwd=host.workdir, permission_gate=config.permission_gate,
         )
+    # Per-task conversation listener (conversation_ui only). Started in the
+    # body after publish_result, torn down in the finally block.
+    conv_listener: ConversationListener | None = None
 
     async def _conversation_body(host: Host, hook_ctx: HookContext) -> None:
-        nonlocal launched_handle, cred_watch_task
+        nonlocal launched_handle, cred_watch_task, conv_listener
 
         # Launch `grok agent [--model M] [--always-approve] --no-leader stdio`
         # directly (no tmux/ttyd). --always-approve is used only when no
@@ -301,6 +306,30 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
 
         ctx.publish_result(conversation)
         ctx.report_progress(None, "Grok conversation is live")
+
+        # Opt-in dashboard chat widget: start a per-task SSE listener over the
+        # published conversation and publish it as the "conversation" widget via
+        # the widget proxy (which injects the basic-auth credential).
+        if config.conversation_ui:
+            listener_password = secrets.token_urlsafe(32)
+            bind_addr = os.environ.get("OPTIO_WIDGET_TUNNEL_BIND", "127.0.0.1")
+            upstream_host = os.environ.get("OPTIO_WIDGET_TUNNEL_HOST", "127.0.0.1")
+            conv_listener = ConversationListener(
+                conversation, password=listener_password,
+            )
+            # The listener is an in-process aiohttp app (not a remote-host
+            # process like ttyd), so it binds directly to the widget-tunnel
+            # interface and its port is reachable without a host tunnel.
+            listener_port = await conv_listener.start(bind_addr)
+            await ctx.set_widget_upstream(
+                f"http://{upstream_host}:{listener_port}",
+                inner_auth=BasicAuth(username="optio", password=listener_password),
+            )
+            await ctx.set_widget_data({
+                "protocol": "grok",
+                "toolVerbosity": config.tool_verbosity,
+            })
+            ctx.report_progress(None, "Conversation UI is live")
 
         # Kickoff prompt as the first turn (headless: no positional prompt path).
         if config.auto_start and not resuming:
@@ -371,6 +400,13 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
     finally:
         if not ctx.should_continue():
             cancelled = True
+        # Stop the conversation listener first so its long-lived SSE loops are
+        # woken (bounded shutdown) before the subprocess teardown below.
+        if conv_listener is not None:
+            try:
+                await conv_listener.stop()
+            except Exception:
+                _LOG.exception("conversation listener cleanup failed")
         # Conversation mode has no tmux/ttyd tree — terminate the grok agent
         # subprocess directly. Its EOF drives the conversation to closed.
         if config.mode == "conversation" and launched_handle is not None:
