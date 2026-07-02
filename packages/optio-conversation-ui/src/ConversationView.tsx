@@ -18,6 +18,10 @@ export interface ConversationViewProps {
   closed: boolean;
   busy: boolean;
   toolVerbosity: 'silent' | 'description-only' | 'verbose';
+  // Reasoning/thinking traces (e.g. grok's agent_thought_chunk). 'hidden' → not
+  // rendered; 'visible' → shown in a distinct reasoning style. Task-level, set
+  // by the engine via widgetData — the view never decides visibility itself.
+  thinkingVerbosity: 'hidden' | 'visible';
   showFileUpload: boolean;
   maxUploadBytes: number;
   fileDownload: boolean;
@@ -135,6 +139,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     closed,
     busy,
     toolVerbosity,
+    thinkingVerbosity,
     showFileUpload,
     maxUploadBytes,
     fileDownload,
@@ -324,6 +329,34 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             {item.text}
           </div>
         );
+      case 'thinking': {
+        // Reasoning trace — task-gated (thinkingVerbosity) and styled close to a
+        // reply (left-aligned like the assistant), but secondary: dimmed, italic,
+        // with a subtle left rule and a small "Reasoning" caption. Deliberately
+        // NOT the centered lavender System-message style.
+        if (thinkingVerbosity === 'hidden') return null;
+        return (
+          <div
+            key={item.seq}
+            data-testid="thinking"
+            style={{
+              alignSelf: 'flex-start',
+              maxWidth: '80%',
+              padding: '2px 10px',
+              borderLeft: `2px solid ${token.colorBorder}`,
+              color: token.colorTextTertiary,
+              fontStyle: 'italic',
+              whiteSpace: 'pre-wrap',
+              overflowWrap: 'anywhere',
+            }}
+          >
+            <div style={{ fontSize: 11, fontStyle: 'normal', opacity: 0.7, marginBottom: 2 }}>
+              Reasoning
+            </div>
+            {item.text}
+          </div>
+        );
+      }
       case 'tool': {
         if (toolVerbosity === 'silent') return null;
         const summary = toolVerbosity === 'description-only' ? toolSummary(item.input) : '';

@@ -53,6 +53,8 @@ function OpencodeChat(
   const { sessionID, directory, widgetProxyUrl, showModelSelector, defaultModel } = props; // widgetProxyUrl ends with '/' — trailing slash is load-bearing
   const toolVerbosity = ((props.process.widgetData as any)?.toolVerbosity ?? 'description-only') as
     'silent' | 'description-only' | 'verbose';
+  const thinkingVerbosity = ((props.process.widgetData as any)?.thinkingVerbosity ?? 'hidden') as
+    'hidden' | 'visible';
   const showFileUpload = Boolean((props.process.widgetData as any)?.showFileUpload);
   const maxUploadBytes = Number((props.process.widgetData as any)?.maxUploadBytes ?? 10_000_000);
   const fileDownload = Boolean((props.process.widgetData as any)?.fileDownload);
@@ -210,6 +212,7 @@ function OpencodeChat(
       closed={closed}
       busy={busy}
       toolVerbosity={toolVerbosity}
+      thinkingVerbosity={thinkingVerbosity}
       showFileUpload={showFileUpload}
       maxUploadBytes={maxUploadBytes}
       fileDownload={fileDownload}

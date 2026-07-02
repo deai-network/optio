@@ -455,6 +455,27 @@ Run this checklist against the **real** binary before calling any surface comple
 - [ ] **remote (SSH)** — at least one surface end-to-end (path / tty / callback
       assumptions that hold locally routinely break remote).
 
+**Layer 3 — the real wire against the real reducer (catches tokenization/render
+bugs).** A real-binary E2E that merely "completes a turn" still hides UI bugs if you
+only assert it finished. The conversation reducer is a pure function, so the
+highest-value cheap test is: **capture the real agent's conversation stream once** —
+a fixture of its actual protocol events for a real turn, *including the messy parts*
+(interleaved reasoning, tool calls, provider-specific control frames) — and **replay
+that captured wire through the real reducer**, asserting the resulting `ChatState` is
+what a human should see: one coalesced answer bubble, reasoning in its own rows,
+`busy` cleared at turn-end. Fakes emit idealized events; only the real wire exposes
+the reducer's real failure modes — e.g. a reasoning model that interleaves
+thought-deltas with answer-deltas, which fragmented the answer into one bubble *per
+token* until the reducer coalesced by turn id instead of tail position. Pair it with
+a **full inbound-chain check** — real agent → the `Conversation` client → the
+listener → SSE → the reducer/widget — which catches wiring bugs the reducer test
+can't: wrong-view routing (a task rendered by the wrong engine's reducer), dropped or
+duplicated events, or a self-response flood swamping the stream and evicting real
+events from the replay buffer. Capture-and-replay is a permanent regression fixture;
+the full-chain check can be an opt-in real-binary test. **Every one of these was a
+real bug in a wrapper that had a green fake suite** — conversation-mode that wouldn't
+launch, one-bubble-per-token, and a task silently routed to the wrong reducer.
+
 Keep as many of these as feasible as **opt-in, skip-if-no-real-binary** tests (see
 `test_sandbox_enforce.py` / `test_conversation_sandbox_enforce.py` in optio-grok) so
 the guard is reproducible, not a one-off manual check that rots.
@@ -576,3 +597,67 @@ Same capability, different mechanism — the range of valid implementations.
 | resume identity | `--continue` (agent self-resolves) | export/import session db |
 | filesystem isolation | claustrum / Landlock | not yet |
 | browser mode | redirect (surface login URL) | suppress |
+
+## Appendix D — Task configuration surface
+
+Every wrapper's `TaskConfig` (a dataclass in its `types.py`) is what a caller sets
+per task. Accept and handle at least the parameters below — they are the
+engine-neutral contract; the reference `types.py` in either wrapper is the
+canonical field list, and new wrappers should mirror the field names for
+cross-engine consistency. **Validate them in `__post_init__`** (reject
+out-of-range enums, and cross-field constraints — e.g. `conversation_ui` requires
+`mode="conversation"`).
+
+**Surface & task shape**
+| Parameter | Meaning / gotcha |
+|---|---|
+| `consumer_instructions` | The task/prompt text composed into the agent's instructions file (`AGENTS.md`/`CLAUDE.md`). Empty = pure chat. |
+| `mode` | `iframe` (ttyd TUI / web SPA) vs `conversation` (headless live `Conversation`). |
+| `conversation_ui` | Publish the dashboard chat widget. Requires `mode="conversation"`. |
+| `host_protocol` | Run the `optio.log` keyword protocol (`DONE`/`DELIVERABLE`/`BROWSER`/`ATTENTION`) alongside the surface. Off for a pure chat. |
+| `auto_start` | Kick off the first turn unattended. **Default `False`** — a conversation/chat task must NOT auto-fire, or the agent runs a kickoff prompt and blocks the operator's first message (parity: claudecode/opencode default `False`). |
+
+**Identity, resume, transport**
+| Parameter | Meaning |
+|---|---|
+| `seed_id` | Replant a logged-in identity (str, or a lease-acquiring `SeedProvider`). |
+| `supports_resume` | Allow relaunch to pick up the prior session (snapshots). |
+| `ssh` | Remote host config; `None` = local. |
+
+**Conversation-ui rendering** (only meaningful with `conversation_ui=True`)
+| Parameter | Meaning |
+|---|---|
+| `tool_verbosity` | `silent` / `description-only` / `verbose` — tool-call detail. |
+| `thinking_verbosity` | `hidden` / `visible` — reasoning/thinking traces (e.g. a reasoning model's thought stream). **Default `hidden`** (thinking is noisy); rendered as a distinct reasoning row, never the System style. Visibility is a *task* option — the UI never decides. |
+| `show_model_selector` / `default_model` | Model picker in the widget + its initial value. |
+| `show_file_upload` / `max_upload_bytes` | Operator → workdir file upload. |
+| `file_download` / `max_download_bytes` | Agent → operator download (the `optio-file:` sentinel). |
+
+**Permissions**
+| Parameter | Meaning |
+|---|---|
+| `permission_gate` | Surface tool-approval to the operator (the conversation gate). |
+| `permission_mode` | The agent's own permission mode (e.g. `bypassPermissions`, `acceptEdits`). |
+
+**Model / effort**
+| Parameter | Meaning |
+|---|---|
+| `model`, `effort` / `reasoning_effort` | Passed to the agent CLI. |
+
+**Isolation & provisioning**
+| Parameter | Meaning |
+|---|---|
+| `fs_isolation` | Kernel-enforced sandbox. **Default on**, fail-closed. |
+| `extra_allowed_dirs` | `AllowedDir(path, "ro"\|"rw")` grants beyond the workdir. |
+| `scrub_env` | Env vars to strip from the launch. |
+| install-dir overrides / `install_if_missing` | Binary-cache location + auto-install toggle (Stage 5). |
+
+**Hooks** — `before_execute` / `after_execute`, `on_deliverable`, `on_seed_saved`,
+and the readiness/teardown callbacks; see `HookContext` and the config fields in
+either reference `types.py`.
+
+New rendering options (like `thinking_verbosity`) are a four-touch change: the
+config field (+ validation), forward it in `set_widget_data(...)` as
+`widgetData.<camelCase>`, a `ConversationViewProps` field the shared view reads,
+and each engine view passing it through. Ship the config field to **all** engines
+for parity even if only one currently emits the underlying events.

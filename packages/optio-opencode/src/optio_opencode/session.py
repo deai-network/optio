@@ -84,6 +84,7 @@ def conversation_widget_data(config: "OpencodeTaskConfig", *, session_id: str, d
         "sessionID": session_id,
         "directory": directory,
         "toolVerbosity": config.tool_verbosity,
+        "thinkingVerbosity": config.thinking_verbosity,
         "showModelSelector": config.show_model_selector,
         "defaultModel": config.default_model,
         "showFileUpload": config.show_file_upload,

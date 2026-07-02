@@ -537,6 +537,7 @@ async def run_claudecode_session(
             await ctx.set_widget_data({
                 "protocol": "claudecode",
                 "toolVerbosity": config.tool_verbosity,
+                "thinkingVerbosity": config.thinking_verbosity,
                 "showModelSelector": config.show_model_selector,
                 "models": model_list["models"],
                 "currentModel": current_model,

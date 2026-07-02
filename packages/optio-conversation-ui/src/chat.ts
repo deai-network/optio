@@ -6,6 +6,7 @@ export type ChatItem =
   | { kind: 'user'; text: string; seq: number; local?: boolean }
   | { kind: 'assistant'; text: string; pending: boolean; seq: number; msgId: string | null }
   | { kind: 'activity'; text: string; seq: number }
+  | { kind: 'thinking'; text: string; seq: number }
   | { kind: 'tool'; name: string; input: unknown; seq: number }
   | {
       kind: 'permission';

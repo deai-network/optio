@@ -248,6 +248,7 @@ async def test_conversation_ui_session_lifecycle(
         assert proc["widgetData"] == {
             "protocol": "claudecode",
             "toolVerbosity": "description-only",
+            "thinkingVerbosity": "hidden",
             "showModelSelector": False,
             "models": [
                 {"id": "claude-opus-4-8", "label": "Claude Opus 4.8", "disabled": False},

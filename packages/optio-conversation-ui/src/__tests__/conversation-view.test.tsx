@@ -35,6 +35,7 @@ const ALL_KINDS: ChatItem[] = [
   { kind: 'user', text: 'hello from user', seq: 1 },
   { kind: 'assistant', text: 'hello from assistant', pending: false, seq: 2, msgId: 'm1' },
   { kind: 'activity', text: 'System: did a thing', seq: 3 },
+  { kind: 'thinking', text: 'let me reason about this', seq: 7 },
   { kind: 'tool', name: 'Bash', input: { command: 'ls' }, seq: 4 },
   {
     kind: 'permission',
@@ -55,6 +56,7 @@ function makeProps(over: Partial<ConversationViewProps> = {}): ConversationViewP
     closed: false,
     busy: false,
     toolVerbosity: 'verbose',
+    thinkingVerbosity: 'visible',
     showFileUpload: false,
     maxUploadBytes: 10_000_000,
     fileDownload: false,
@@ -90,6 +92,21 @@ describe('ConversationView item rendering', () => {
     expect(screen.getByTestId('permission-deny')).toBeTruthy();
     // closed divider item.
     expect(screen.getByText(/conversation ended/)).toBeTruthy();
+  });
+
+  it('thinking rows are gated by thinkingVerbosity and styled distinctly from System', () => {
+    const state = makeState([{ kind: 'thinking', text: 'my reasoning trace', seq: 1 }]);
+    // hidden → not rendered
+    const hidden = renderView(makeProps({ state, thinkingVerbosity: 'hidden' }));
+    expect(screen.queryByText('my reasoning trace')).toBeNull();
+    expect(screen.queryByTestId('thinking')).toBeNull();
+    hidden.unmount();
+    // visible → rendered, in its own 'thinking' element (a "Reasoning" caption),
+    // NOT the centered lavender 'activity'/System bubble.
+    renderView(makeProps({ state, thinkingVerbosity: 'visible' }));
+    expect(screen.getByTestId('thinking')).toBeTruthy();
+    expect(screen.getByText('my reasoning trace')).toBeTruthy();
+    expect(screen.getByText('Reasoning')).toBeTruthy();
   });
 
   it('gives the user bubble a right-tail radius and the assistant bubble a left-tail radius', () => {

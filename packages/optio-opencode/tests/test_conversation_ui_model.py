@@ -59,6 +59,7 @@ def test_widget_data_carries_model_fields():
         "sessionID": "s1",
         "directory": "/wd",
         "toolVerbosity": "verbose",
+        "thinkingVerbosity": "hidden",
         "showModelSelector": True,
         "defaultModel": "opencode/big-pickle",
         "showFileUpload": False,

@@ -67,6 +67,12 @@ ConversationMode = Literal["iframe", "conversation"]
 ToolVerbosity = Literal["silent", "description-only", "verbose"]
 _VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
 
+# Visibility of reasoning/thinking traces in the conversation widget. Task-level,
+# mirrors ToolVerbosity; the UI never decides. (Claude reasoning is not yet wired
+# to a distinct thinking row, but the option ships for cross-engine parity.)
+ThinkingVerbosity = Literal["hidden", "visible"]
+_VALID_THINKING_VERBOSITY = {"hidden", "visible"}
+
 
 def _identity_resume_refresh(config: "ClaudeCodeTaskConfig") -> "ClaudeCodeTaskConfig":
     """Default ``on_resume_refresh``: recompose CLAUDE.md from the unchanged
@@ -200,6 +206,9 @@ class ClaudeCodeTaskConfig:
     # "description-only" = one summary line, "silent" = nothing. Carried to the
     # widget via widgetData; only affects conversation_ui rendering.
     tool_verbosity: ToolVerbosity = "description-only"
+    # Whether the conversation widget shows the agent's reasoning/thinking traces.
+    # Default hidden — thinking is noisy; opt in per task.
+    thinking_verbosity: ThinkingVerbosity = "hidden"
     # Show the model picker in the conversation widget. Requires
     # mode="conversation" and conversation_ui=True. The default model is
     # config.model (no separate field).
@@ -310,6 +319,11 @@ class ClaudeCodeTaskConfig:
             raise ValueError(
                 f"ClaudeCodeTaskConfig.tool_verbosity={self.tool_verbosity!r} "
                 f"is not one of {sorted(_VALID_TOOL_VERBOSITY)}"
+            )
+        if self.thinking_verbosity not in _VALID_THINKING_VERBOSITY:
+            raise ValueError(
+                f"ClaudeCodeTaskConfig.thinking_verbosity={self.thinking_verbosity!r} "
+                f"is not one of {sorted(_VALID_THINKING_VERBOSITY)}"
             )
         if self.session_restore_until is not None and self.session_restore_from is None:
             raise ValueError(

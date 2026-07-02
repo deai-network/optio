@@ -19,6 +19,8 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
 export function ClaudeCodeView(props: WidgetProps) {
   const toolVerbosity = ((props.process.widgetData as any)?.toolVerbosity ?? 'description-only') as
     'silent' | 'description-only' | 'verbose';
+  const thinkingVerbosity = ((props.process.widgetData as any)?.thinkingVerbosity ?? 'hidden') as
+    'hidden' | 'visible';
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   const localSeqRef = useRef(0);
   const [currentModel, setCurrentModel] = useState<string | undefined>(
@@ -116,6 +118,7 @@ export function ClaudeCodeView(props: WidgetProps) {
       closed={state.closed}
       busy={busy}
       toolVerbosity={toolVerbosity}
+      thinkingVerbosity={thinkingVerbosity}
       showFileUpload={showFileUpload}
       maxUploadBytes={maxUploadBytes}
       fileDownload={fileDownload}
