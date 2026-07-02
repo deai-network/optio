@@ -49,6 +49,12 @@ def _landlock_available() -> bool:
 
 
 def _skip_reason() -> "str | None":
+    # Opt-in only: this exercises the REAL grok binary with a live ~180s
+    # billable API call. Never runs in the default suite (would be slow and
+    # cost tokens even on a fully-provisioned dev host). Set
+    # OPTIO_GROK_SANDBOX_ENFORCE_TEST=1 to run it.
+    if os.environ.get("OPTIO_GROK_SANDBOX_ENFORCE_TEST") != "1":
+        return "set OPTIO_GROK_SANDBOX_ENFORCE_TEST=1 to run the real-grok enforcement test"
     if platform.system() != "Linux":
         return "sandbox enforcement test requires Linux/Landlock"
     if not _landlock_available():
