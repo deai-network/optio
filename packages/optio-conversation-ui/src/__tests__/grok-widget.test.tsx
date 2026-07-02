@@ -114,6 +114,36 @@ describe('GrokView (Stage 7 parity)', () => {
     expect(screen.getByText('summarize this')).toBeTruthy();
   });
 
+  it('an optio-file: link fetches /download and triggers a blob save', async () => {
+    const bytes = new Uint8Array([1, 2, 3]);
+    const fetchMock = vi.fn(async () => new Response(bytes, { status: 200, headers: { 'content-type': 'text/markdown' } }));
+    vi.stubGlobal('fetch', fetchMock as any);
+    const createObjectURL = vi.fn(() => 'blob:x');
+    const revokeObjectURL = vi.fn();
+    (globalThis.URL as any).createObjectURL = createObjectURL;
+    (globalThis.URL as any).revokeObjectURL = revokeObjectURL;
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+
+    render(<ConversationWidget {...makeProps({ protocol: 'grok', fileDownload: true })} />);
+    // grok answer carrying an optio-file: sentinel markdown link.
+    fire({
+      jsonrpc: '2.0',
+      method: 'session/update',
+      params: { sessionId: 's1', update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Here: [report](optio-file:out/r.md)' } } },
+    });
+    fire({ jsonrpc: '2.0', id: 1, result: { stopReason: 'end_turn' } });
+
+    const link = await screen.findByText(/report/);
+    await act(async () => {
+      fireEvent.click(link);
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const dlCall = (fetchMock.mock.calls as any[]).find((c) => String(c[0]).includes('/download'));
+    expect(dlCall).toBeTruthy();
+    expect(String(dlCall[0])).toContain('path=out%2Fr.md');
+    expect(clickSpy).toHaveBeenCalled();
+  });
+
   it('verbose tool verbosity renders the ACP rawInput as a key-value table', () => {
     render(<ConversationWidget {...makeProps({ protocol: 'grok', toolVerbosity: 'verbose' })} />);
     fire(toolCall('Shell', { command: 'ls -la', cwd: '/w' }));

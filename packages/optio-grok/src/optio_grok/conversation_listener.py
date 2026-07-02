@@ -54,11 +54,15 @@ class ConversationListener:
         self, conversation, *, password: str,
         upload_writer: "Callable[[str, bytes], Awaitable[str]] | None" = None,
         max_upload_bytes: int = 10_000_000,
+        download_reader: "Callable[[str], Awaitable[tuple[bytes, str]]] | None" = None,
+        max_download_bytes: int = 10_000_000,
     ) -> None:
         self._conversation = conversation
         self._password = password
         self._upload_writer = upload_writer
         self._max_upload_bytes = max_upload_bytes
+        self._download_reader = download_reader
+        self._max_download_bytes = max_download_bytes
         self._buffer: deque[tuple[int, dict]] = deque(maxlen=BUFFER_MAXLEN)
         self._seq = 0
         self._subscribers: set[asyncio.Queue] = set()
@@ -216,6 +220,31 @@ class ConversationListener:
             stored.append({"filename": filename, "path": path})
         return web.json_response({"ok": True, "files": stored})
 
+    async def _handle_download(self, request: web.Request) -> web.Response:
+        if not self._authorized(request):
+            return web.json_response({"ok": False}, status=401)
+        if self._download_reader is None:
+            return web.json_response({"ok": False, "reason": "no-reader"}, status=409)
+        path = request.query.get("path")
+        if not path:
+            return web.json_response({"ok": False, "reason": "bad-path"}, status=400)
+        try:
+            data, mime = await self._download_reader(path)
+        except FileNotFoundError:
+            return web.json_response({"ok": False, "reason": "not-found"}, status=404)
+        except ValueError as e:
+            reason = str(e)
+            status = 413 if reason == "too-large" else 403
+            return web.json_response({"ok": False, "reason": reason}, status=status)
+        base = path.split("/")[-1] or "file"
+        return web.Response(
+            body=data,
+            headers={
+                "Content-Type": mime,
+                "Content-Disposition": f'attachment; filename="{base}"',
+            },
+        )
+
     async def _handle_model(self, request: web.Request) -> web.Response:
         if not self._authorized(request):
             return web.json_response({"ok": False}, status=401)
@@ -262,6 +291,7 @@ class ConversationListener:
         app.router.add_post("/interrupt", self._handle_interrupt)
         app.router.add_post("/model", self._handle_model)
         app.router.add_post("/upload", self._handle_upload)
+        app.router.add_get("/download", self._handle_download)
         app.router.add_post("/permission", self._handle_permission)
         self._runner = web.AppRunner(app, shutdown_timeout=SHUTDOWN_TIMEOUT_S)
         await self._runner.setup()

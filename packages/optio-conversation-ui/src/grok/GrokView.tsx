@@ -4,6 +4,7 @@ import type { WidgetProps } from 'optio-ui';
 import type { ChatState } from '../chat.js';
 import { initialChatState, reduceGrokEvent } from './events.js';
 import { type Attachment } from '../attachments.js';
+import { blobDownload } from '../FileDownloadContext.js';
 import { ConversationView } from '../ConversationView.js';
 
 // Conversation view for grok tasks: speaks Grok's ACP (JSON-RPC 2.0) stream
@@ -34,6 +35,7 @@ export function GrokView(props: WidgetProps) {
   const models: { id: string; label: string; disabled?: boolean }[] = wd.models ?? [];
   const showFileUpload = Boolean(wd.showFileUpload);
   const maxUploadBytes = Number(wd.maxUploadBytes ?? 10_000_000);
+  const fileDownload = Boolean(wd.fileDownload);
 
   const { widgetProxyUrl } = props; // ends with '/' — trailing slash is load-bearing
 
@@ -85,6 +87,18 @@ export function GrokView(props: WidgetProps) {
     }
   }
 
+  async function onFileDownload(relpath: string, filename: string) {
+    try {
+      const r = await fetch(`${widgetProxyUrl}download?path=${encodeURIComponent(relpath)}`);
+      if (!r.ok) return;
+      const mime = r.headers.get('content-type') || 'application/octet-stream';
+      const bytes = new Uint8Array(await r.arrayBuffer());
+      blobDownload(bytes, mime, filename);
+    } catch {
+      /* ignore — surfaced to the operator as a non-download */
+    }
+  }
+
   return (
     <ConversationView
       state={state}
@@ -93,7 +107,7 @@ export function GrokView(props: WidgetProps) {
       toolVerbosity={toolVerbosity}
       showFileUpload={showFileUpload}
       maxUploadBytes={maxUploadBytes}
-      fileDownload={false}
+      fileDownload={fileDownload}
       onSend={async (body, attachments) => {
         // With attachments, upload first, then bundle one System: notice per
         // stored file into the prompt so grok reads them from the workdir with
@@ -122,7 +136,7 @@ export function GrokView(props: WidgetProps) {
             : { request_id: requestId, behavior };
         void post('permission', body);
       }}
-      onFileDownload={() => {}}
+      onFileDownload={onFileDownload}
       modelSelector={
         showModelSelector ? (
           <Select
