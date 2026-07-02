@@ -40,6 +40,14 @@ _CODEX_CACHE_DIR_SHELL_DEFAULT = (
     "${OPTIO_CODEX_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/optio-codex/bin}"
 )
 
+# Pinned codex release for auto-download. This is the version the design
+# doc's live probes ran against (2026-07-02); bump deliberately, re-probing
+# the wire facts (exec JSONL vocabulary, app-server surface) on upgrade.
+_CODEX_VERSION = "0.142.5"
+_CODEX_RELEASE_BASE = (
+    f"https://github.com/openai/codex/releases/download/rust-v{_CODEX_VERSION}"
+)
+
 
 async def _expand_user_path(host: "Host", path: str) -> str:
     """Expand a leading ``~``/``~/`` against the HOST's home directory.
@@ -141,8 +149,8 @@ async def ensure_codex_installed(
     - **cache miss** — seed the cache from the resolved host ``codex``
       (login-shell ``command -v codex`` via :func:`resolve_codex`), copying
       it into ``<cache>/codex`` (``cp -L`` deref + chmod + re-verify).
-    - **no host codex** — raise (Task 8 wires the real GitHub-release
-      download here).
+    - **no host codex** — download the pinned GitHub-release tarball
+      (:func:`_download_codex_into_cache`) and install it into the cache.
 
     Whatever fills the cache, the RETURNED path is always the per-task
     ``<workdir>/home/.local/bin/codex`` symlink (via
@@ -173,13 +181,11 @@ async def ensure_codex_installed(
     # Cache miss — seed the optio-owned cache from the resolved host codex.
     try:
         source = await resolve_codex(host, install_dir=None, install_if_missing=False)
-    except RuntimeError as exc:
-        raise RuntimeError(
-            f"no codex binary available to seed the optio cache "
-            f"(cache_dir={cache_dir!r}); a host codex must be on the worker "
-            f"PATH. (The GitHub-release auto-download lands with the next "
-            f"task of this plan.)"
-        ) from exc
+    except RuntimeError:
+        # No host codex to seed from — REAL auto-download of the pinned
+        # release (install_if_missing is genuinely honored from Stage 5 on).
+        await _download_codex_into_cache(hook_ctx, cache_dir=cache_dir, cached=cached)
+        return await _provision_task_home(host, shared_codex_path=cached)
 
     hook_ctx.report_progress(None, "Seeding codex cache…")
     await _install_into_cache_from_host(host, source=source, cached=cached,
@@ -222,6 +228,108 @@ async def _install_into_cache_from_host(
             f"executable on the host. Check the seed source {source!r}."
         )
     _LOG.info("ensure_codex_installed: cache MISS -> seeded from %s", source)
+
+
+async def _detect_codex_asset_name(host: "Host") -> str:
+    """Return the upstream release-asset filename for the host's arch/OS.
+
+    Codex publishes single-binary tar.gz assets per target triple; the
+    static musl builds are the portable Linux choice. Raises RuntimeError
+    on unsupported (OS, arch) combinations (darwin support = pre-install
+    codex on the worker or seed the cache manually).
+    """
+    r_os = await host.run_command("uname -s")
+    os_name = (r_os.stdout or "").strip()
+    if r_os.exit_code != 0 or os_name != "Linux":
+        raise RuntimeError(
+            f"unsupported host OS {os_name!r} for codex auto-download "
+            f"(Linux musl builds only; on macOS pre-install codex or "
+            f"pre-populate the cache)."
+        )
+    r_arch = await host.run_command("uname -m")
+    arch = (r_arch.stdout or "").strip()
+    if r_arch.exit_code != 0 or arch not in {"x86_64", "aarch64"}:
+        raise RuntimeError(
+            f"unsupported host arch {arch!r} for codex auto-download. "
+            f"See https://github.com/openai/codex/releases for available "
+            f"assets."
+        )
+    return f"codex-{arch}-unknown-linux-musl.tar.gz"
+
+
+async def _download_codex_into_cache(
+    hook_ctx: "HookContextProtocol", *, cache_dir: str, cached: str,
+) -> None:
+    """Download the pinned codex release tarball and install its single
+    binary member as ``<cache>/codex``.
+
+    The tarball carries exactly one file (the static binary, named by
+    triple); extraction goes through a private scratch dir inside the cache
+    so a concurrent task never sees a half-written ``codex``, and a tarball
+    with any other shape is refused rather than guessed at. Everything runs
+    through Host primitives + ``hook_ctx.download_file`` (byte-progress in
+    the dashboard), so it is remote-correct.
+    """
+    host = hook_ctx._host
+    asset = await _detect_codex_asset_name(host)
+    url = f"{_CODEX_RELEASE_BASE}/{asset}"
+
+    mk = await host.run_command(f"mkdir -p {shlex.quote(cache_dir)}")
+    if mk.exit_code != 0:
+        raise RuntimeError(
+            f"mkdir -p {cache_dir!r} failed (exit {mk.exit_code}): "
+            f"{(mk.stderr or '').strip()[:200]}"
+        )
+
+    tarball = f"{cache_dir}/.codex-download.tar.gz"
+    scratch = f"{cache_dir}/.codex-extract"
+    hook_ctx.report_progress(None, f"Downloading codex {_CODEX_VERSION} ({asset})…")
+    try:
+        await hook_ctx.download_file(url, tarball)
+
+        r = await host.run_command(
+            f"rm -rf {shlex.quote(scratch)} && mkdir -p {shlex.quote(scratch)} "
+            f"&& tar -xzf {shlex.quote(tarball)} -C {shlex.quote(scratch)}"
+        )
+        if r.exit_code != 0:
+            raise RuntimeError(
+                f"extracting codex release {asset!r} failed "
+                f"(exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
+            )
+        listing = await host.run_command(
+            f"find {shlex.quote(scratch)} -mindepth 1"
+        )
+        entries = [l for l in (listing.stdout or "").splitlines() if l.strip()]
+        if len(entries) != 1:
+            raise RuntimeError(
+                f"codex release {asset!r} must contain exactly one file; "
+                f"found {len(entries)} entries: {entries[:5]!r}. Refusing to "
+                f"guess which member is the binary."
+            )
+        mv = await host.run_command(
+            f"mv {shlex.quote(entries[0])} {shlex.quote(cached)} "
+            f"&& chmod +x {shlex.quote(cached)}"
+        )
+        if mv.exit_code != 0:
+            raise RuntimeError(
+                f"installing codex into cache failed (exit {mv.exit_code}): "
+                f"{(mv.stderr or '').strip()[:200]}"
+            )
+        verify = await host.run_command(
+            f"[ -x {shlex.quote(cached)} ] && echo OK || true"
+        )
+        if "OK" not in (verify.stdout or ""):
+            raise RuntimeError(
+                f"codex download completed but {cached!r} is still not "
+                f"executable on the host."
+            )
+        _LOG.info(
+            "ensure_codex_installed: cache MISS -> downloaded %s", url,
+        )
+    finally:
+        await host.run_command(
+            f"rm -rf {shlex.quote(tarball)} {shlex.quote(scratch)}"
+        )
 
 
 def build_host(ssh, taskdir: str) -> "Host":

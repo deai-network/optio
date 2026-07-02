@@ -124,9 +124,37 @@ async def test_default_cache_dir_from_env(tmp_path, monkeypatch):
     assert os.path.realpath(result) == os.path.realpath(str(cache / "codex"))
 
 
+def _fake_release_tarball(member_name: str = "codex-x86_64-unknown-linux-musl") -> bytes:
+    """A codex release tar.gz: a single static-binary member."""
+    import io
+    import tarfile
+
+    body = b"#!/bin/bash\necho downloaded-codex\n"
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w:gz") as tar:
+        info = tarfile.TarInfo(name=member_name)
+        info.size = len(body)
+        info.mode = 0o644          # releases ship without +x; install chmods
+        tar.addfile(info, io.BytesIO(body))
+    return out.getvalue()
+
+
+class _DownloadingHookCtx(_FakeHookCtx):
+    """Fake hook_ctx whose download_file writes a prepared release tarball."""
+
+    def __init__(self, host, payload: bytes) -> None:
+        super().__init__(host)
+        self.payload = payload
+        self.urls: list[str] = []
+
+    async def download_file(self, url: str, dest: str) -> None:
+        self.urls.append(url)
+        with open(dest, "wb") as fh:
+            fh.write(self.payload)
+
+
 @pytest.mark.asyncio
-async def test_cache_miss_no_host_codex_raises(tmp_path, monkeypatch):
-    # Task 8 replaces this expectation with the real release download.
+async def test_cache_miss_no_host_codex_downloads_release(tmp_path, monkeypatch):
     cache = tmp_path / "cache"
     cache.mkdir()
 
@@ -134,7 +162,88 @@ async def test_cache_miss_no_host_codex_raises(tmp_path, monkeypatch):
         raise RuntimeError("codex not found on the worker")
 
     monkeypatch.setattr(host_actions, "resolve_codex", _resolve)
-    ctx = await _local_ctx(tmp_path)
+    host = LocalHost(taskdir=str(tmp_path / "task"))
+    await host.setup_workdir()
+    ctx = _DownloadingHookCtx(host, _fake_release_tarball())
 
-    with pytest.raises(RuntimeError, match="no codex binary"):
+    result = await host_actions.ensure_codex_installed(ctx, install_dir=str(cache))
+
+    # The pinned release URL for this machine's arch was requested…
+    assert len(ctx.urls) == 1
+    url = ctx.urls[0]
+    assert host_actions._CODEX_VERSION in url
+    assert url.startswith(
+        "https://github.com/openai/codex/releases/download/rust-v"
+    )
+    assert url.endswith("-unknown-linux-musl.tar.gz")
+    # …the single tarball member landed as <cache>/codex, executable…
+    assert (cache / "codex").is_file()
+    assert os.access(cache / "codex", os.X_OK)
+    assert (cache / "codex").read_bytes().startswith(b"#!/bin/bash")
+    # …behind the per-task launch symlink, and no temp litter remains.
+    assert result == _per_task_path(ctx)
+    assert os.path.realpath(result) == os.path.realpath(str(cache / "codex"))
+    leftovers = [p.name for p in cache.iterdir() if p.name != "codex"]
+    assert leftovers == [], leftovers
+
+
+class _UnameResult:
+    def __init__(self, stdout: str, exit_code: int) -> None:
+        self.stdout = stdout
+        self.stderr = ""
+        self.exit_code = exit_code
+
+
+class _UnameHost:
+    """Fake Host answering only the two uname probes."""
+
+    def __init__(self, os_name: str, arch: str) -> None:
+        self._answers = {"uname -s": os_name, "uname -m": arch}
+
+    async def run_command(self, cmd, **kwargs):
+        if cmd in self._answers:
+            return _UnameResult(self._answers[cmd], 0)
+        return _UnameResult("", 1)
+
+
+@pytest.mark.asyncio
+async def test_detect_codex_asset_name_arch_map():
+    assert await host_actions._detect_codex_asset_name(
+        _UnameHost("Linux", "x86_64")
+    ) == "codex-x86_64-unknown-linux-musl.tar.gz"
+    assert await host_actions._detect_codex_asset_name(
+        _UnameHost("Linux", "aarch64")
+    ) == "codex-aarch64-unknown-linux-musl.tar.gz"
+    with pytest.raises(RuntimeError, match="arch"):
+        await host_actions._detect_codex_asset_name(_UnameHost("Linux", "armv7l"))
+    with pytest.raises(RuntimeError, match="OS"):
+        await host_actions._detect_codex_asset_name(_UnameHost("Darwin", "x86_64"))
+
+
+@pytest.mark.asyncio
+async def test_download_multi_member_tarball_rejected(tmp_path, monkeypatch):
+    """A tarball that does not contain exactly one file is refused — never
+    guess which member is the binary."""
+    import io
+    import tarfile
+
+    async def _resolve(host, *, install_dir=None, install_if_missing=True):  # noqa: ANN001
+        raise RuntimeError("codex not found on the worker")
+
+    monkeypatch.setattr(host_actions, "resolve_codex", _resolve)
+
+    out = io.BytesIO()
+    with tarfile.open(fileobj=out, mode="w:gz") as tar:
+        for name in ("codex-x86_64-unknown-linux-musl", "README.md"):
+            info = tarfile.TarInfo(name=name)
+            info.size = 1
+            tar.addfile(info, io.BytesIO(b"x"))
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    host = LocalHost(taskdir=str(tmp_path / "task"))
+    await host.setup_workdir()
+    ctx = _DownloadingHookCtx(host, out.getvalue())
+
+    with pytest.raises(RuntimeError, match="exactly one"):
         await host_actions.ensure_codex_installed(ctx, install_dir=str(cache))
