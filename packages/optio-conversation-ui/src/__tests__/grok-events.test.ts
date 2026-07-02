@@ -82,6 +82,36 @@ describe('grok ACP event reducer', () => {
     expect(tools[0].kind === 'tool' && (tools[0].input as any).command).toBe('echo hi');
   });
 
+  it('tool items carry the full rawInput dict for verbose KV rendering (Stage 7)', () => {
+    // The shared ConversationView renders every key of `item.input` as a
+    // key→value table at verbose verbosity, so the reducer must preserve the
+    // WHOLE rawInput object (not a summary), and tool_call_update must merge a
+    // resent rawInput while keeping the prior one when it is omitted.
+    const s = play([
+      { jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's1', update: {
+        sessionUpdate: 'tool_call', toolCallId: 'tc1', title: 'Shell',
+        rawInput: { command: 'grep -r x .', cwd: '/w', timeout: 30 } } } },
+    ]);
+    const t = s.items.find((i) => i.kind === 'tool');
+    expect(t && t.kind === 'tool' && t.input).toEqual({ command: 'grep -r x .', cwd: '/w', timeout: 30 });
+
+    // update WITHOUT rawInput → prior full input preserved.
+    const s2 = play([
+      { jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's1', update: {
+        sessionUpdate: 'tool_call_update', toolCallId: 'tc1', status: 'completed' } } },
+    ], s);
+    const t2 = s2.items.find((i) => i.kind === 'tool');
+    expect(t2 && t2.kind === 'tool' && t2.input).toEqual({ command: 'grep -r x .', cwd: '/w', timeout: 30 });
+
+    // update WITH a resent rawInput → merged (replaced).
+    const s3 = play([
+      { jsonrpc: '2.0', method: 'session/update', params: { sessionId: 's1', update: {
+        sessionUpdate: 'tool_call_update', toolCallId: 'tc1', rawInput: { command: 'grep -r y .' } } } },
+    ], s);
+    const t3 = s3.items.find((i) => i.kind === 'tool');
+    expect(t3 && t3.kind === 'tool' && (t3.input as any).command).toBe('grep -r y .');
+  });
+
   it('session/request_permission creates a card; x-optio-permission-answered flips it', () => {
     const ask = {
       jsonrpc: '2.0', id: 99, method: 'session/request_permission',
