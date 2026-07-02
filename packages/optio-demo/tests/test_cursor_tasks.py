@@ -59,7 +59,7 @@ def test_get_tasks_is_async_services_factory():
     assert "supports_resume=True" in src
 
 
-def test_seed_setup_always_and_pinned_iframe_when_seed_present():
+def test_seed_setup_always_and_both_pinned_when_seed_present():
     async def _run():
         client = AsyncIOMotorClient(
             os.environ.get("MONGO_URL", "mongodb://localhost:27017"),
@@ -77,7 +77,7 @@ def test_seed_setup_always_and_pinned_iframe_when_seed_present():
                 for pid in ids
             )
 
-            # --- a real cursor seed exists: the iframe pinned task appears --
+            # --- a real cursor seed exists: both pinned tasks appear --------
             res = await db[f"{PREFIX}{CURSOR_SEED_SUFFIX}"].insert_one(
                 {"blobId": "fake-blob", "manifestVersion": 1},
             )
@@ -86,7 +86,9 @@ def test_seed_setup_always_and_pinned_iframe_when_seed_present():
             defs = await get_task_definitions(_services(db))
             ids = {t.process_id for t in defs}
             assert "cursor-seed-setup" in ids
+            # The trio: setup + both seed-pinned tasks (iframe + conversation).
             assert f"cursor-demo-seed-{seed_id}" in ids
+            assert f"cursor-conversation-seed-{seed_id}" in ids
         finally:
             await client.drop_database(db_name)
             client.close()
