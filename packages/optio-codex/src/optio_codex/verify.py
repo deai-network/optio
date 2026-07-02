@@ -67,8 +67,11 @@ async def verify_and_refresh_seed(
     save-back would clobber this one). The caller owns the lease discipline;
     this function does not acquire or check leases.
 
-    Run on a host whose environment carries no OPENAI_API_KEY — an inherited
-    key could mask a dead seed.
+    The probe scrubs OPENAI_API_KEY from its environment
+    (``host_actions._PROBE_SCRUB_ENV_KEYS``), so an ambient provider key on
+    the verifying host cannot authenticate the probe via codex's API-key
+    fallback and mask a dead ChatGPT-mode seed — authentication goes only
+    through the seed under test.
     """
     doc = await seeds.load_seed(db, prefix=prefix, suffix=suffix, seed_id=seed_id)
     if doc is None:

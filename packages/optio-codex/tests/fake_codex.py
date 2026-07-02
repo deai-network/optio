@@ -276,9 +276,24 @@ def _scenario_probe(prompt: str) -> int:
         prompt-echoing error path does not false-positive: the answer token
         is absent from the prompt).
       * ``alive_badexit`` — answer present but exit 3 (stdout-only verdict).
+      * ``env_apikey`` — models codex's API-key auth FALLBACK: alive iff an
+        ambient ``OPENAI_API_KEY`` is present in the probe env (ignores the
+        seed's auth.json entirely), else a dead auth error. verify must
+        scrub OPENAI_API_KEY from the probe env, so a dead ChatGPT-mode seed
+        stays dead even when the verifying host carries an ambient key.
     """
     mode = os.environ.get("FAKE_CODEX_PROBE", "alive").strip()
     if mode == "dead":
+        print(json.dumps({"type": "error",
+                          "message": "401 Unauthorized (invalid_grant)"}),
+              flush=True)
+        return 1
+    if mode == "env_apikey":
+        if os.environ.get("OPENAI_API_KEY"):
+            print(json.dumps({"type": "item.completed", "item": {
+                "type": "agent_message",
+                "text": "The capital of France is Paris."}}), flush=True)
+            return 0
         print(json.dumps({"type": "error",
                           "message": "401 Unauthorized (invalid_grant)"}),
               flush=True)

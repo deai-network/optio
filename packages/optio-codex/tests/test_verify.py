@@ -135,6 +135,30 @@ async def test_exit_code_carries_no_verdict(
     assert alive is True
 
 
+async def test_ambient_openai_api_key_does_not_mask_dead_seed(
+    mongo_db, task_root, shim_install_dir, tmp_path, monkeypatch,
+):
+    """An ambient OPENAI_API_KEY on the verifying host must NOT authenticate
+    the probe: the probe env is scrubbed of provider keys, so a seed whose
+    only live auth path would be codex's API-key fallback is correctly marked
+    dead (finding: false-alive masking via inherited OPENAI_API_KEY)."""
+    monkeypatch.setenv("FAKE_CODEX_PROBE", "env_apikey")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-ambient-should-be-scrubbed")
+    seed_id = await _make_seed(mongo_db, tmp_path)
+
+    alive = await verify_and_refresh_seed(
+        mongo_db, prefix="test", seed_id=seed_id,
+        install_dir=str(shim_install_dir),
+    )
+    assert alive is False
+
+    doc = await seeds.load_seed(
+        mongo_db, prefix="test", suffix=CODEX_SEED_SUFFIX, seed_id=seed_id,
+    )
+    assert doc["status"] == "dead"
+    assert doc["metadata"]["verify"]["alive"] is False
+
+
 async def test_unknown_seed(mongo_db, task_root, shim_install_dir):
     alive = await verify_and_refresh_seed(
         mongo_db, prefix="test", seed_id=str(ObjectId()),

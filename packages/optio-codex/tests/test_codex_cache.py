@@ -16,6 +16,7 @@ that lives outside the task workdir and never the operator's ``~/.codex``:
 
 from __future__ import annotations
 
+import asyncio
 import os
 import pathlib
 
@@ -183,6 +184,80 @@ async def test_cache_miss_no_host_codex_downloads_release(tmp_path, monkeypatch)
     # …behind the per-task launch symlink, and no temp litter remains.
     assert result == _per_task_path(ctx)
     assert os.path.realpath(result) == os.path.realpath(str(cache / "codex"))
+    leftovers = [p.name for p in cache.iterdir() if p.name != "codex"]
+    assert leftovers == [], leftovers
+
+
+class _RecordingDownloadCtx(_DownloadingHookCtx):
+    """Records every ``dest`` path passed to download_file."""
+
+    def __init__(self, host, payload: bytes) -> None:
+        super().__init__(host, payload)
+        self.dests: list[str] = []
+
+    async def download_file(self, url: str, dest: str) -> None:
+        self.dests.append(dest)
+        await super().download_file(url, dest)
+
+
+@pytest.mark.asyncio
+async def test_download_uses_unique_tarball_path_per_invocation(
+    tmp_path, monkeypatch,
+):
+    """Each cold-cache download writes to a PER-INVOCATION tarball path in the
+    SAME cache dir, not a single fixed one — so concurrent fleet spin-up
+    tasks never interleave writes into / cross-delete the same in-flight
+    tarball. Drives ``_download_codex_into_cache`` directly (twice into one
+    cache) so both invocations genuinely fill; ``ensure_codex_installed``
+    would short-circuit the second on a cache hit."""
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    cached = str(cache / "codex")
+    payload = _fake_release_tarball()
+
+    host = LocalHost(taskdir=str(tmp_path / "task"))
+    await host.setup_workdir()
+    ctx = _RecordingDownloadCtx(host, payload)
+
+    await host_actions._download_codex_into_cache(
+        ctx, cache_dir=str(cache), cached=cached,
+    )
+    await host_actions._download_codex_into_cache(
+        ctx, cache_dir=str(cache), cached=cached,
+    )
+    assert len(ctx.dests) == 2
+    assert ctx.dests[0] != ctx.dests[1], ctx.dests
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cold_cache_downloads_do_not_corrupt(
+    tmp_path, monkeypatch,
+):
+    """N tasks hitting an empty cache simultaneously each download + extract
+    through private per-invocation scratch/tarball paths; none wipes the
+    other's tree or deletes its in-flight files, ``<cache>/codex`` ends up a
+    complete executable binary, and no temp litter is left behind."""
+    async def _resolve(host, *, install_dir=None, install_if_missing=True):  # noqa: ANN001
+        raise RuntimeError("codex not found on the worker")
+
+    monkeypatch.setattr(host_actions, "resolve_codex", _resolve)
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    payload = _fake_release_tarball()
+
+    async def _one(i: int) -> str:
+        host = LocalHost(taskdir=str(tmp_path / f"task{i}"))
+        await host.setup_workdir()
+        ctx = _DownloadingHookCtx(host, payload)
+        return await host_actions.ensure_codex_installed(ctx, install_dir=str(cache))
+
+    results = await asyncio.gather(*[_one(i) for i in range(4)])
+
+    assert all(r.endswith("/home/.local/bin/codex") for r in results)
+    assert (cache / "codex").is_file()
+    assert os.access(cache / "codex", os.X_OK)
+    assert (cache / "codex").read_bytes().startswith(b"#!/bin/bash")
     leftovers = [p.name for p in cache.iterdir() if p.name != "codex"]
     assert leftovers == [], leftovers
 

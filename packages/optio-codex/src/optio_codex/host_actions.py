@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shlex
+import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -29,6 +30,16 @@ _TTYD_RELEASE_BASE = (
     f"https://github.com/tsl0922/ttyd/releases/download/{_TTYD_VERSION}"
 )
 _DEFAULT_INSTALL_SUBDIR = ".local/bin"
+
+# Provider credential env vars scrubbed from the headless verify probe env.
+# Codex authenticates either via the seed's planted ChatGPT-mode auth.json
+# OR, as a fallback, an ambient ``OPENAI_API_KEY`` (API-key auth mode). The
+# probe MUST authenticate only through the seed under test — an inherited key
+# would authenticate the probe even when the seed's refresh token is dead,
+# printing the challenge answer and marking a dead seed alive (false-alive).
+# So these keys are removed from the probe env by construction rather than
+# left to caller discipline.
+_PROBE_SCRUB_ENV_KEYS = ("OPENAI_API_KEY",)
 
 # The optio-owned codex binary cache lives on the WORKER, outside every task
 # workdir and never the operator's ``~/.codex``. Default:
@@ -264,11 +275,19 @@ async def _download_codex_into_cache(
     binary member as ``<cache>/codex``.
 
     The tarball carries exactly one file (the static binary, named by
-    triple); extraction goes through a private scratch dir inside the cache
-    so a concurrent task never sees a half-written ``codex``, and a tarball
-    with any other shape is refused rather than guessed at. Everything runs
-    through Host primitives + ``hook_ctx.download_file`` (byte-progress in
-    the dashboard), so it is remote-correct.
+    triple); a tarball with any other shape is refused rather than guessed
+    at. Everything runs through Host primitives + ``hook_ctx.download_file``
+    (byte-progress in the dashboard), so it is remote-correct.
+
+    Concurrency-safe cache fill (the normal cold-cache fleet spin-up races N
+    tasks through here at once): the download tarball and the extraction
+    scratch dir carry a PER-INVOCATION token (pid + uuid), so two tasks never
+    write, extract into, or ``rm -rf`` the same private paths — the earlier
+    fixed shared paths let a concurrent task truncate the tarball, wipe a
+    freshly-extracted tree, or delete another's in-flight files. The final
+    install is an atomic rename of an already-``chmod +x``'d binary onto
+    ``cached``, so a concurrent task never observes a half-installed or
+    non-executable ``<cache>/codex`` (last writer wins with identical bytes).
     """
     host = hook_ctx._host
     asset = await _detect_codex_asset_name(host)
@@ -281,8 +300,9 @@ async def _download_codex_into_cache(
             f"{(mk.stderr or '').strip()[:200]}"
         )
 
-    tarball = f"{cache_dir}/.codex-download.tar.gz"
-    scratch = f"{cache_dir}/.codex-extract"
+    token = f"{os.getpid()}-{uuid.uuid4().hex}"
+    tarball = f"{cache_dir}/.codex-download.{token}.tar.gz"
+    scratch = f"{cache_dir}/.codex-extract.{token}"
     hook_ctx.report_progress(None, f"Downloading codex {_CODEX_VERSION} ({asset})…")
     try:
         await hook_ctx.download_file(url, tarball)
@@ -306,9 +326,14 @@ async def _download_codex_into_cache(
                 f"found {len(entries)} entries: {entries[:5]!r}. Refusing to "
                 f"guess which member is the binary."
             )
+        # Install atomically: chmod the extracted binary in its private
+        # scratch, THEN rename onto ``cached``. rename(2) within the cache
+        # dir is atomic, so ``<cache>/codex`` flips from absent/old to a
+        # complete, already-executable binary in one step — no truncated or
+        # non-executable window for a concurrent task's [ -x cached ] check.
         mv = await host.run_command(
-            f"mv {shlex.quote(entries[0])} {shlex.quote(cached)} "
-            f"&& chmod +x {shlex.quote(cached)}"
+            f"chmod +x {shlex.quote(entries[0])} "
+            f"&& mv -f {shlex.quote(entries[0])} {shlex.quote(cached)}"
         )
         if mv.exit_code != 0:
             raise RuntimeError(
@@ -392,10 +417,13 @@ async def run_codex_probe(
     cmd = f"cd {shlex.quote(host.workdir.rstrip('/'))} && {inner}"
     # Layer the per-task HOME/CODEX_HOME overrides on top of the ambient
     # env, mirroring the session launch (which inherits, not ``env -i``).
-    # run_command replaces the child env, so the merge is explicit here. The
-    # caller runs this on a host whose environment carries no provider API
-    # keys (see verify_and_refresh_seed).
+    # run_command replaces the child env, so the merge is explicit here.
+    # Provider API keys are scrubbed (see _PROBE_SCRUB_ENV_KEYS) so an
+    # ambient OPENAI_API_KEY cannot mask a dead ChatGPT-mode seed by
+    # authenticating the probe via codex's API-key fallback.
     env = {**os.environ, **_codex_isolation_env(host)}
+    for _k in _PROBE_SCRUB_ENV_KEYS:
+        env.pop(_k, None)
     result = await asyncio.wait_for(
         host.run_command(f"bash -lc {shlex.quote(cmd)}", env=env),
         timeout=timeout_s,
