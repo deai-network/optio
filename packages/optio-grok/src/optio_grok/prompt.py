@@ -166,7 +166,7 @@ def compose_agents_md(
             consumer_instructions.rstrip() + downloadables_block(comparative=host_protocol)
         )
     if host_protocol:
-        documentation = build_log_channel_prompt(ProtocolFeatures(browser="suppress"))
+        documentation = build_log_channel_prompt(ProtocolFeatures(browser="redirect"))
         base_prompt_pre = _GROK_INTRO + documentation
     else:
         base_prompt_pre = ""

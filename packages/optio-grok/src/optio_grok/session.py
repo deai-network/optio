@@ -72,7 +72,15 @@ def _build_host(config: GrokTaskConfig, process_id: str) -> Host:
 async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
     """Execute function body for one optio-grok task instance."""
     host: Host = _build_host(config, ctx.process_id)
-    protocol = get_protocol(browser="suppress")
+    # ``redirect``: plant capture-variant browser shims (fake xdg-open/gio/open on
+    # PATH + BROWSER env) so Grok Build's first-launch loopback OAuth login — which
+    # shells out via the Rust ``webbrowser`` crate ($BROWSER first, then xdg-open)
+    # — is intercepted. The shim writes ``BROWSER: <url>`` to optio.log; the tail
+    # parser turns it into a browser-open request surfaced to the operator (who
+    # completes the 127.0.0.1 loopback in their own browser — works in local mode;
+    # remote uses seeds/device-auth per the design). ``suppress`` (the old value)
+    # silently no-op'd the launch, so login just vanished with no feedback.
+    protocol = get_protocol(browser="redirect")
     launched_handle: ProcessHandle | None = None
     tmux_path: str | None = None
     tmux_socket: str | None = None
