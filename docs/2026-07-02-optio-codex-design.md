@@ -126,6 +126,62 @@ analysis required (grok lesson: built-ins failing open → custom profile); prob
 config.toml projects entry (codex writes trust entries otherwise — also a test-pollution trap:
 per-task CODEX_HOME already contains it).
 
+### Stage-8 probe verdict (2026-07-02, codex-cli 0.142.5)
+
+**Verdict: FAIL-CLOSED** when no sandbox mechanism (bubblewrap or Landlock) is
+available. codex never runs the model's shell command unconfined as a result
+of a sandbox-setup failure — it errors/panics and the command does not run.
+The only unconfined path is the explicit opt-out flag
+`--dangerously-bypass-approvals-and-sandbox`, which optio-codex never emits.
+Evidence:
+
+- `codex sandbox -c sandbox_mode=workspace-write -- touch $HOME/probe`
+  (mechanism available; this host has unprivileged userns enabled —
+  `/proc/sys/kernel/unprivileged_userns_clone=1`, `max_user_namespaces=160248`,
+  bundled bwrap runs rc=0): rc=1, "Read-only file system" (Hungarian locale:
+  "Írásvédett fájlrendszer"), outside file **absent**; inside-workspace
+  `touch ./inside.txt` rc=0. `codex doctor`: `✓ sandbox  restricted fs +
+  restricted network · approval OnRequest` / `filesystem sandbox  restricted` /
+  `linux helper  …codex-linux-sandbox`.
+- Same under **no mechanism**, bundled bwrap **present** but non-runnable —
+  docker `--security-opt no-new-privileges` (blocks unprivileged userns → bwrap
+  cannot create a namespace) + a seccomp profile returning ENOSYS for
+  `landlock_create_ruleset`/`landlock_add_rule`/`landlock_restrict_self`,
+  the full codex release tree bind-mounted so `codex-resources/bwrap` sits
+  next to the executable: rc=1, "bwrap: Creating new namespace failed:
+  Permission denied", outside file **absent** (command never executed).
+- Same under **no mechanism**, bundled bwrap **absent** (bare musl binary
+  only, landlock ENOSYS): **panic** rc=101, "bubblewrap is unavailable: no
+  system bwrap was found on PATH and no bundled codex-resources/bwrap binary
+  was found next to the Codex executable", outside file **absent**.
+- Read-only `CODEX_HOME` (helper-bin materialization blocked): rc=1, WARNING
+  "Refusing to create helper binaries under temporary dir …" — yet codex
+  **still enforced** (bwrap needs no materialized helper): outside write
+  denied "Read-only file system", file **absent**. Helper-failure branch is
+  fail-closed too — it does not disagree with the no-mechanism branch.
+- Binary strings: the fail-closed panic string above; Landlock/Seccomp
+  machinery present (`SandboxLandlock`, `SeccompInstall`, `CreateRuleset`,
+  `RestrictSelf`); "execute commands without sandboxing. EXTREMELY DANGEROUS"
+  is reachable **only** via `--dangerously-bypass-approvals-and-sandbox`, not
+  as a silent failure fallback.
+
+**Backend caveat (does not change the verdict):** the `codex sandbox`
+*subcommand* launcher is bubblewrap-based (see `linux-sandbox/src/launcher.rs`
+panic), distinct from the doctor-reported agent-tool helper
+(`codex-linux-sandbox` = Landlock+seccomp). On hosts with userns enabled
+`codex sandbox` uses bwrap; where userns is blocked it would fall to Landlock.
+Fail-closed holds even when bwrap is entirely absent AND landlock is ENOSYS,
+so the verdict is robust regardless of which backend a given host selects.
+
+**Pinned `codex sandbox` invocation** (used by the Task-6 enforcement test):
+`codex sandbox -c sandbox_mode=<read-only|workspace-write|danger-full-access>
+-- <cmd…>`. The `codex sandbox` **subcommand has no `-s/--sandbox` flag** —
+mode is set only via `-c sandbox_mode=…`; `-c` overrides ARE accepted (parsed
+as TOML). (The launch surfaces `codex`/`codex exec` DO take `-s/--sandbox
+<mode>` — that flag is for the agent launch, not the `sandbox` subcommand.)
+Consequence: **Task 5A (launch-time enforcement guard) is NOT required** —
+codex fails closed; Task 5B (evidence-only) applies.
+
 ## exec-surface facts (verify probes, degraded mode, fake agent)
 
 Events: `thread.started{thread_id}`, `turn.started`, `turn.completed{usage}`, `turn.failed`,
