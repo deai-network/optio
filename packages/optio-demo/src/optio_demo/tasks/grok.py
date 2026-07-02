@@ -245,7 +245,6 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     mode="conversation",
                     conversation_ui=True,
                     tool_verbosity="description-only",
-                    thinking_verbosity="visible",   # showcase reasoning rendering
 
                     show_model_selector=True,
                     show_file_upload=True,
