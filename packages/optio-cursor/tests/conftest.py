@@ -31,8 +31,33 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from optio_core.context import ProcessContext
 
+from optio_cursor import host_actions
+
 
 TESTS_DIR = pathlib.Path(__file__).parent
+
+
+@pytest.fixture(autouse=True)
+def fake_claustrum(monkeypatch):
+    """Default-on fs_isolation without a real Landlock build (Stage 8).
+
+    ``CursorTaskConfig.fs_isolation`` defaults True, so every session-flow test
+    provisions claustrum. Stub ``ensure_claustrum_installed`` to return the
+    package's ``claustrum-shim.sh`` (which execs its wrapped command, enforcing
+    nothing) instead of cross-compiling the real binary on the engine. This is
+    what makes the fast suite EXERCISE the default-on wiring end-to-end (grok's
+    Stage-8 pattern: fake accepts + ignores). Real kernel enforcement is the
+    env-gated test_sandbox_enforce.py (Task 3). Autouse + harmless for the
+    unit tests that never call it; a test needing fail-closed behaviour
+    re-monkeypatches this to raise (last setattr wins)."""
+    shim = str(TESTS_DIR / "claustrum-shim.sh")
+    (TESTS_DIR / "claustrum-shim.sh").chmod(0o755)
+
+    async def _fake_install(hook_ctx, *, install_dir=None):
+        return shim
+
+    monkeypatch.setattr(host_actions, "ensure_claustrum_installed", _fake_install)
+    return shim
 
 
 @pytest.fixture

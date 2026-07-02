@@ -73,6 +73,18 @@ _CURSOR_CACHE_DIR_SHELL_DEFAULT = (
 _CURSOR_INSTALL_URL = "https://cursor.com/install"
 
 
+# claustrum: standalone Landlock filesystem-sandbox CLI, vendored by pinned tag
+# (Stage 8). Bumping is deliberate. Cursor uses claustrum — not its own native
+# sandbox — because the native one wraps individual shell-exec commands only,
+# leaving cursor-agent's in-process Write/Edit tools unconfined; claustrum
+# Landlock-confines the WHOLE process tree. See fs_allowlist.py for the probe
+# decision. Ported from optio-claudecode's host_actions.
+_CLAUSTRUM_REPO = "https://github.com/deai-network/claustrum"
+_CLAUSTRUM_PINNED_TAG = "v0.1.1"
+# uname -m -> Go GOARCH.
+_GOARCH_BY_UNAME = {"x86_64": "amd64", "aarch64": "arm64"}
+
+
 async def _resolve_install_dir(host: "Host", install_dir: str | None) -> str:
     """Return ``install_dir`` if given, else ``<host_home>/.local/bin`` (ttyd)."""
     if install_dir is not None:
@@ -102,6 +114,107 @@ async def _resolve_cursor_cache_dir(host: "Host", override: str | None) -> str:
             f"(exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
         )
     return path.rstrip("/")
+
+
+# --- claustrum provisioning (Stage 8, ported from optio-claudecode) ---------
+
+
+async def _detect_goarch(host: "Host") -> str:
+    """Map the host's uname -m to a Go GOARCH (Linux only)."""
+    r_os = await host.run_command("uname -s")
+    if r_os.exit_code != 0 or r_os.stdout.strip() != "Linux":
+        raise RuntimeError(
+            f"claustrum requires a Linux host (uname -s={r_os.stdout.strip()!r})."
+        )
+    r = await host.run_command("uname -m")
+    if r.exit_code != 0:
+        raise RuntimeError(
+            f"uname -m failed (exit {r.exit_code}): {r.stderr.strip()[:200]}"
+        )
+    arch = r.stdout.strip()
+    goarch = _GOARCH_BY_UNAME.get(arch)
+    if goarch is None:
+        raise RuntimeError(
+            f"unsupported host arch {arch!r} for claustrum (supported: "
+            f"{sorted(_GOARCH_BY_UNAME)})."
+        )
+    return goarch
+
+
+async def _build_claustrum_on_engine(goarch: str, tag: str, dest: str) -> None:
+    """Clone claustrum at ``tag`` and cross-compile a static binary to ``dest``.
+
+    Runs ON THE ENGINE (where git + the Go toolchain live), never on an ssh
+    target. ``dest`` is an engine-local path.
+    """
+    import tempfile
+
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="claustrum-src-") as src:
+        clone = await asyncio.create_subprocess_exec(
+            "git", "clone", "--depth", "1", "--branch", tag, _CLAUSTRUM_REPO, src,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await clone.communicate()
+        if clone.returncode != 0:
+            raise RuntimeError(f"git clone claustrum {tag} failed: {out.decode()[:400]}")
+        env = {**os.environ, "CGO_ENABLED": "0", "GOOS": "linux", "GOARCH": goarch}
+        build = await asyncio.create_subprocess_exec(
+            "go", "build", "-trimpath", "-ldflags", "-s -w", "-o", dest, ".",
+            cwd=src, env=env,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await build.communicate()
+        if build.returncode != 0:
+            raise RuntimeError(f"go build claustrum ({goarch}) failed: {out.decode()[:400]}")
+
+
+async def ensure_claustrum_installed(
+    hook_ctx: "HookContextProtocol",
+    *,
+    install_dir: str | None = None,
+) -> str:
+    """Ensure a claustrum binary (pinned tag, host arch) is on the host.
+
+    Builds on the engine (clone + cross-compile, cached by (tag, arch)), places
+    the static binary on the (possibly remote) target host via the Host
+    protocol, chmods +x, and verifies ``--version``. Returns the claustrum path
+    on the target host. Raises on any failure — the caller keeps fs isolation
+    fail-closed (never launches unconfined when this raises).
+    """
+    host = hook_ctx._host
+    goarch = await _detect_goarch(host)
+    cache_dir = await _resolve_cursor_cache_dir(host, install_dir)
+    target_path = f"{cache_dir}/claustrum/{_CLAUSTRUM_PINNED_TAG}/{goarch}/claustrum"
+
+    # Already on the target host?
+    probe = await host.run_command(
+        f"test -x {shlex.quote(target_path)} && {shlex.quote(target_path)} --version"
+    )
+    if probe.exit_code == 0:
+        return target_path
+
+    hook_ctx.report_progress(None, "Preparing claustrum (filesystem isolation)…")
+    # Engine-local cached build, then place onto the (possibly remote) target.
+    engine_cache = os.path.expanduser(
+        f"~/.cache/optio-cursor/claustrum/{_CLAUSTRUM_PINNED_TAG}/{goarch}/claustrum"
+    )
+    if not os.path.exists(engine_cache):
+        await _build_claustrum_on_engine(goarch, _CLAUSTRUM_PINNED_TAG, engine_cache)
+
+    await host.put_file_to_host(engine_cache, target_path)
+    r = await host.run_command(f"chmod +x {shlex.quote(target_path)}")
+    if r.exit_code != 0:
+        raise RuntimeError(
+            f"chmod +x claustrum failed (exit {r.exit_code}): {r.stderr.strip()[:200]}"
+        )
+    v = await host.run_command(f"{shlex.quote(target_path)} --version")
+    if v.exit_code != 0:
+        raise RuntimeError(
+            f"claustrum placed at {target_path!r} but --version failed "
+            f"(exit {v.exit_code}): {v.stderr.strip()[:200]}"
+        )
+    return target_path
 
 
 # --- cursor-agent resolution + optio-owned binary cache (Stage 5) -----------
@@ -540,6 +653,7 @@ def _build_cursor_shell_command(
     extra_env: dict[str, str] | None,
     cursor_flags: list[str],
     local_mode: bool = False,
+    claustrum_wrap: list[str] | None = None,
 ) -> tuple[list[str], str]:
     """Return (env_assignments, shell_command).
 
@@ -550,6 +664,13 @@ def _build_cursor_shell_command(
     under HOME-isolation and appends DONE/ERROR to optio.log when it exits.
     Consumed by build_tmux_session_argv (cursor runs inside the detached tmux
     session, not as a direct ttyd child).
+
+    ``claustrum_wrap`` (Stage 8) is the argv prefix that Landlock-confines the
+    WHOLE cursor process tree; when set it is prepended to the cursor
+    invocation (``claustrum … -- cursor-agent …``), so claustrum execs
+    cursor-agent inside the ruleset. None launches unconfined (fs_isolation
+    off). Cursor has no netns/pasta seal (it prints its auth URL rather than
+    running an OAuth loopback), so the claustrum wrap is the outermost layer.
     """
     workdir_clean = workdir.rstrip("/")
     iso = _isolation_env(workdir_clean)
@@ -571,7 +692,13 @@ def _build_cursor_shell_command(
     for k, v in extra.items():
         env_assignments.append(f"{k}={v}")
 
-    cursor_argv = " ".join(shlex.quote(c) for c in [cursor_path, *cursor_flags])
+    # claustrum (Stage 8) is the OUTERMOST wrapper: it confines cursor-agent
+    # and every tool/subprocess it spawns. When absent the invocation is
+    # cursor-agent alone (fs_isolation off).
+    if claustrum_wrap:
+        _LOG.info("claustrum filesystem isolation active (wrap=%r)", claustrum_wrap)
+    confined = [*(claustrum_wrap or []), cursor_path, *cursor_flags]
+    cursor_argv = " ".join(shlex.quote(c) for c in confined)
     log_path = f"{workdir_clean}/optio.log"
 
     bash_payload = (
@@ -588,6 +715,20 @@ def _build_cursor_shell_command(
 # --- flags + config-planted permissions --------------------------------------
 
 
+def _effective_sandbox(sandbox: str | None, fs_isolation: bool) -> str | None:
+    """Resolve cursor-agent's own ``--sandbox`` value.
+
+    An explicit caller ``sandbox`` always wins. Otherwise, when
+    ``fs_isolation`` is on, the value defaults to ``"disabled"``: the whole
+    process tree is already Landlock-confined by claustrum, so cursor's own
+    per-shell-command native sandbox must NOT nest a helper inside the outer
+    ruleset (see fs_allowlist.py). With neither set, the flag is omitted and
+    cursor's default applies."""
+    if sandbox is not None:
+        return sandbox
+    return "disabled" if fs_isolation else None
+
+
 def build_cursor_flags(
     *,
     force: bool,
@@ -595,6 +736,7 @@ def build_cursor_flags(
     sandbox: str | None,
     model: str | None,
     resuming: bool = False,
+    fs_isolation: bool = False,
 ) -> list[str]:
     """Translate CursorTaskConfig knobs to an argv list.
 
@@ -602,7 +744,8 @@ def build_cursor_flags(
     exist); permission rules are config-planted via :func:`build_cli_config`.
     ``--continue`` is appended when ``resuming`` (a restored snapshot means
     cursor persisted a chat for this cwd; ``--continue`` resumes the most
-    recent one). Validation of ``sandbox`` lives in
+    recent one). ``fs_isolation`` couples to the native ``--sandbox`` toggle
+    (see :func:`_effective_sandbox`). Validation of ``sandbox`` lives in
     ``CursorTaskConfig.__post_init__``.
     """
     out: list[str] = []
@@ -610,8 +753,9 @@ def build_cursor_flags(
         out += ["--force"]
     if auto_review:
         out += ["--auto-review"]
-    if sandbox is not None:
-        out += ["--sandbox", sandbox]
+    effective_sandbox = _effective_sandbox(sandbox, fs_isolation)
+    if effective_sandbox is not None:
+        out += ["--sandbox", effective_sandbox]
     if model:
         out += ["--model", model]
     if resuming:
@@ -667,11 +811,15 @@ def build_conversation_argv(
     *,
     model: str | None = None,
     force: bool = False,
+    sandbox: str | None = None,
+    fs_isolation: bool = False,
 ) -> list[str]:
     """Argv for a headless ACP conversation: ``cursor-agent [opts] acp``.
 
     Options are TOP-LEVEL cursor-agent flags (``cursor-agent [OPTIONS]
-    [COMMAND]``), so they precede the ``acp`` subcommand: ``--model``, and
+    [COMMAND]``), so they precede the ``acp`` subcommand: ``--model``,
+    ``--sandbox`` (native toggle — ``disabled`` under claustrum fs-isolation,
+    same coupling as the iframe path; see :func:`_effective_sandbox`), and
     ``--force`` (skip interactive confirmations — cursor's auto-approve
     analogue of grok's ``--always-approve``; used when no permission gate is
     wired, so cursor never blocks on a prompt nobody answers). Acceptance of
@@ -684,6 +832,9 @@ def build_conversation_argv(
     argv = [cursor_path]
     if model:
         argv += ["--model", model]
+    effective_sandbox = _effective_sandbox(sandbox, fs_isolation)
+    if effective_sandbox is not None:
+        argv += ["--sandbox", effective_sandbox]
     if force:
         argv += ["--force"]
     argv += ["acp"]
@@ -703,6 +854,7 @@ def build_tmux_session_argv(
     extra_env: dict[str, str] | None,
     cursor_flags: list[str],
     local_mode: bool = False,
+    claustrum_wrap: list[str] | None = None,
 ) -> list[str]:
     """Argv for the detached ``tmux new-session`` that starts cursor-agent.
 
@@ -710,6 +862,9 @@ def build_tmux_session_argv(
     wrapper is a single trailing shell-string element. The private socket
     (``-S socket_path``) isolates this task's tmux server. ``-x/-y`` give the
     detached pane a sane initial size before any viewer attaches.
+
+    ``claustrum_wrap`` (Stage 8) threads the fs-isolation prefix through to
+    :func:`_build_cursor_shell_command`.
     """
     _, shell_command = _build_cursor_shell_command(
         cursor_path=cursor_path,
@@ -717,6 +872,7 @@ def build_tmux_session_argv(
         extra_env=extra_env,
         cursor_flags=cursor_flags,
         local_mode=local_mode,
+        claustrum_wrap=claustrum_wrap,
     )
     return [
         tmux_path, "-S", socket_path, "new-session", "-d",
@@ -825,12 +981,16 @@ async def launch_ttyd_with_cursor(
     ready_timeout_s: float = 30.0,
     env_remove: list[str] | None = None,
     session_name: str = "optio",
+    claustrum_wrap: list[str] | None = None,
 ) -> "tuple[ProcessHandle, int, str, str]":
     """Start cursor-agent in a detached tmux session, then ttyd attaching to it.
 
     Returns ``(ttyd_handle, port, socket_path, session_name)``. cursor runs in
     the tmux session independent of ttyd; the caller awaits tmux-session
     liveness for completion and tears down BOTH the tmux session and ttyd.
+
+    ``claustrum_wrap`` (Stage 8) Landlock-confines cursor-agent + its whole
+    subprocess tree inside the tmux pane (None launches unconfined).
     """
     tmux_path = await _require_tmux(host)
     socket_path = _tmux_socket_path(host)
@@ -851,6 +1011,7 @@ async def launch_ttyd_with_cursor(
         extra_env=extra_env,
         cursor_flags=cursor_flags,
         local_mode=local_mode,
+        claustrum_wrap=claustrum_wrap,
     )
     session_cmd = " ".join(shlex.quote(a) for a in session_argv)
     await _launch_detached_checked(

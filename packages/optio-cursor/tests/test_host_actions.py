@@ -2,6 +2,8 @@ from optio_cursor.host_actions import (
     _build_cursor_shell_command,
     _isolation_env,
     build_cli_config,
+    build_conversation_argv,
+    build_cursor_flags,
 )
 
 
@@ -50,3 +52,67 @@ def test_cli_config_rules():
     cfg = build_cli_config(allowed_tools=["Shell(ls)"], disallowed_tools=None)
     assert cfg["permissions"]["allow"] == ["Shell(ls)"]
     assert build_cli_config(allowed_tools=None, disallowed_tools=None) is None
+
+
+# --- Stage 8: fail-closed fs isolation (claustrum) ---------------------------
+
+
+def _flags(**kw):
+    base = dict(force=False, auto_review=False, sandbox=None, model=None)
+    base.update(kw)
+    return build_cursor_flags(**base)
+
+
+def test_fs_isolation_disables_native_cursor_sandbox():
+    """Under claustrum fs-isolation the WHOLE process tree is Landlock-confined,
+    so cursor's own per-shell-command native sandbox must be turned OFF
+    (``--sandbox disabled``) to avoid nesting a helper inside the outer ruleset
+    (see fs_allowlist.py). Mirrors grok's fs_isolation→--sandbox coupling
+    (grok ADDS its native profile; cursor DISABLES the native one)."""
+    flags = _flags(fs_isolation=True)
+    assert "--sandbox" in flags
+    i = flags.index("--sandbox")
+    assert flags[i + 1] == "disabled"
+
+
+def test_no_fs_isolation_omits_sandbox_flag():
+    assert "--sandbox" not in _flags(fs_isolation=False)
+
+
+def test_explicit_sandbox_overrides_fs_isolation_default():
+    """A caller who explicitly sets ``sandbox`` keeps control even under
+    fs_isolation (the disabled default only fills an UNSET sandbox)."""
+    flags = _flags(sandbox="enabled", fs_isolation=True)
+    i = flags.index("--sandbox")
+    assert flags[i + 1] == "enabled"
+
+
+def test_conversation_argv_disables_native_sandbox_under_fs_isolation():
+    """--sandbox is a TOP-LEVEL cursor-agent flag, so it must precede the
+    ``acp`` subcommand (mirrors grok's build_conversation_argv fs_isolation)."""
+    argv = build_conversation_argv("/x/cursor-agent", fs_isolation=True)
+    assert "--sandbox" in argv and "disabled" in argv
+    assert argv.index("--sandbox") < argv.index("acp")
+    assert "--sandbox" not in build_conversation_argv(
+        "/x/cursor-agent", fs_isolation=False,
+    )
+
+
+def test_shell_command_claustrum_wraps_cursor():
+    wrap = ["/c/claustrum", "--best-effort", "--abi-min", "1", "--rwx", "/w/task", "--"]
+    _env, cmd = _build_cursor_shell_command(
+        cursor_path="/x/cursor-agent", workdir="/w/task", extra_env=None,
+        cursor_flags=["--sandbox", "disabled"], claustrum_wrap=wrap,
+    )
+    assert "/c/claustrum --best-effort --abi-min 1 --rwx /w/task --" in cmd
+    # cursor runs after the claustrum separator.
+    assert cmd.index("claustrum") < cmd.index("/x/cursor-agent")
+
+
+def test_shell_command_no_wrap_unchanged():
+    _env, cmd = _build_cursor_shell_command(
+        cursor_path="/x/cursor-agent", workdir="/w/task", extra_env=None,
+        cursor_flags=[], claustrum_wrap=None,
+    )
+    assert "claustrum" not in cmd
+    assert "/x/cursor-agent" in cmd

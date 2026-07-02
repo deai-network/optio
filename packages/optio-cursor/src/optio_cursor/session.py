@@ -70,6 +70,35 @@ def _build_host(config: CursorTaskConfig, process_id: str) -> Host:
     return host_actions.build_host(config.ssh, taskdir)
 
 
+async def _build_claustrum_wrap(
+    host: Host, config: CursorTaskConfig, claustrum_path: str | None,
+) -> list[str] | None:
+    """claustrum argv prefix for an fs-isolated launch, or None when
+    fs_isolation is off. Shared by the iframe and conversation launch paths so
+    both confine cursor-agent + its whole subprocess tree identically.
+
+    ``~/`` caller extras expand against the REAL host home (cursor-agent runs
+    under an isolated $HOME, and grants reach claustrum verbatim — no shell
+    between). Ported from optio-claudecode's ``_build_claustrum_wrap``.
+    """
+    if not config.fs_isolation:
+        return None
+    from . import fs_allowlist
+    cache_dir = await host_actions._resolve_cursor_cache_dir(
+        host, config.cursor_install_dir,
+    )
+    host_home = (
+        await host.resolve_host_home() if config.extra_allowed_dirs else None
+    )
+    grants = fs_allowlist.build_grant_flags(
+        workdir=host.workdir,
+        cursor_cache_dir=cache_dir,
+        extra_allowed_dirs=config.extra_allowed_dirs,
+        host_home=host_home,
+    )
+    return [claustrum_path, "--best-effort", "--abi-min", "1", *grants, "--"]
+
+
 async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> None:
     """Execute function body for one optio-cursor task instance."""
     host: Host = _build_host(config, ctx.process_id)
@@ -98,6 +127,10 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
     lease_holder: str | None = None
     cred_baseline: str | None = None
     cred_watch_task: "asyncio.Task | None" = None
+    # Path to the claustrum Landlock binary on the (possibly remote) host, set
+    # by _prepare when fs_isolation is on; read by both bodies to wrap the
+    # cursor-agent launch. Stays None when fs_isolation is off.
+    claustrum_path: str | None = None
 
     await host.connect()
 
@@ -113,7 +146,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
         AFTER the restore so they are not wiped by it.
         """
         nonlocal cursor_path, ttyd_path, resuming, pass_continue, resolved_seed_id
-        nonlocal lease_holder, cred_baseline
+        nonlocal lease_holder, cred_baseline, claustrum_path
         cursor_path = await host_actions.ensure_cursor_installed(
             hook_ctx,
             install_if_missing=config.install_if_missing,
@@ -125,6 +158,15 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                 hook_ctx,
                 install_if_missing=config.install_ttyd_if_missing,
                 install_dir=config.ttyd_install_dir,
+            )
+
+        # Filesystem isolation (Stage 8): provision the claustrum Landlock
+        # binary BEFORE launch. Any failure raises here — fail-closed: the task
+        # never proceeds to an unconfined launch. Skipped when fs_isolation is
+        # off. Placed onto the same optio-cursor cache tree as cursor-agent.
+        if config.fs_isolation:
+            claustrum_path = await host_actions.ensure_claustrum_installed(
+                hook_ctx, install_dir=config.cursor_install_dir,
             )
 
         resume_requested = bool(getattr(ctx, "resume", False))
@@ -223,6 +265,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             sandbox=config.sandbox,
             model=config.model,
             resuming=pass_continue,
+            fs_isolation=config.fs_isolation,
         )
         cursor_flags = [
             *cursor_flags,
@@ -238,6 +281,9 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             # api_key rides the launch env, never argv (process listings).
             launch_env["CURSOR_API_KEY"] = config.api_key
         ctx.report_progress(None, "Launching Cursor…")
+        # Fs-isolation wrap: confine cursor-agent + its whole tool/subprocess
+        # tree inside the tmux pane (None when fs_isolation is off).
+        claustrum_wrap = await _build_claustrum_wrap(host, config, claustrum_path)
         handle, ttyd_port, tmux_socket, tmux_session = await host_actions.launch_ttyd_with_cursor(
             host,
             ttyd_path=ttyd_path,
@@ -247,6 +293,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             cursor_flags=cursor_flags,
             ready_timeout_s=READY_TIMEOUT_S,
             env_remove=config.scrub_env,
+            claustrum_wrap=claustrum_wrap,
         )
         launched_handle = handle
         tmux_path = await host_actions._require_tmux(host)
@@ -304,7 +351,15 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             cursor_path,
             model=config.model,
             force=not config.permission_gate,
+            sandbox=config.sandbox,
+            fs_isolation=config.fs_isolation,
         )
+        # Same claustrum fs-isolation wrap as the iframe path; claustrum
+        # execve's cursor-agent, so the bidirectional ACP stdio pipes pass
+        # through unchanged (None when fs_isolation is off).
+        wrap = await _build_claustrum_wrap(host, config, claustrum_path)
+        if wrap:
+            argv = [*wrap, *argv]
         cmd = " ".join(shlex.quote(a) for a in argv)
         # Same per-task HOME/XDG isolation as the iframe launch. PATH is
         # inherited by launch_subprocess (os.environ.copy) so interpreters
