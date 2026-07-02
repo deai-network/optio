@@ -143,7 +143,7 @@ conversation demo with Stage 6.
 ## 7. Implementation reconciliation (as shipped)
 
 Deviations from the design above, decided during the staged build (all verified,
-tests green — grok wrapper 108 passed/1 skipped, conversation-ui 110 TS passed):
+tests green — grok wrapper 109 passed/2 skipped, conversation-ui 110 TS passed):
 
 - **Filesystem isolation: grok NATIVE `--sandbox`, not claustrum** (reverses §2
   Decision 7 / the §5 non-goal). Grok ships its own Landlock sandbox. optio-grok
@@ -152,6 +152,18 @@ tests green — grok wrapper 108 passed/1 skipped, conversation-ui 110 TS passed
   Landlock-only, no bubblewrap) and launches `--sandbox optio`. Custom profiles
   fail-CLOSED (built-ins fail-open), giving the required guarantee with zero
   claustrum cross-compile/install machinery. See Stage 8 plan.
+- **Conversation mode needs a controlling-tty wrapper for the sandbox (post-ship
+  fix).** Grok's fail-closed Landlock applier opens `/dev/tty` and refuses to
+  start without a controlling terminal. Iframe mode gets one from tmux, but
+  conversation mode launches `grok agent stdio` over PIPES with
+  `start_new_session=True` (to keep the ACP JSON-RPC stream byte-clean — a pty
+  would corrupt framing), so `--sandbox optio` failed closed and grok exited
+  immediately. Fix: `build_conversation_argv` wraps the command (when
+  `fs_isolation`) in a tiny `python3` helper that acquires a controlling pty via
+  `TIOCSCTTY` WITHOUT routing stdio through it, then `execvp`s grok with the
+  JSON-RPC pipes on fd 0/1/2. A command wrapper (not a `preexec_fn`) so it's
+  portable to RemoteHost. Verified by a non-billable opt-in real-grok test
+  (`test_conversation_sandbox_enforce.py`).
 - **Model switching: INLINE, not restart.** Grok's ACP supports
   `session/set_model {sessionId, modelId}` mid-session (verified by live probe),
   so `GrokConversation.request_model_change` switches in place — no `--continue`

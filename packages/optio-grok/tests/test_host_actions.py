@@ -66,14 +66,25 @@ def test_build_grok_flags_sandbox_off():
 
 def test_build_conversation_argv_sandbox_on():
     """--sandbox is a top-level grok flag, so it must precede the `agent`
-    subcommand in the conversation launch argv."""
+    subcommand; and under fs-isolation the command is wrapped in the
+    controlling-tty helper (grok's fail-closed sandbox needs /dev/tty, which the
+    piped ACP launch lacks)."""
     argv = build_conversation_argv("/x/grok", fs_isolation=True)
     assert "--sandbox" in argv and "optio" in argv
     i = argv.index("--sandbox")
     assert argv[i + 1] == "optio"
     assert argv.index("--sandbox") < argv.index("agent")
     assert argv.index("optio") < argv.index("agent")
+    # Controlling-tty wrapper: python3 -c <helper> precedes grok.
+    assert argv[0] == "python3" and argv[1] == "-c"
+    assert "TIOCSCTTY" in argv[2]
+    assert argv[3] == "/x/grok"
+    assert argv.index("/x/grok") < argv.index("--sandbox")
 
 
 def test_build_conversation_argv_sandbox_off():
-    assert "--sandbox" not in build_conversation_argv("/x/grok", fs_isolation=False)
+    argv = build_conversation_argv("/x/grok", fs_isolation=False)
+    assert "--sandbox" not in argv
+    # No sandbox → no controlling-tty wrap; grok is invoked directly.
+    assert argv[0] == "/x/grok"
+    assert "TIOCSCTTY" not in " ".join(argv)

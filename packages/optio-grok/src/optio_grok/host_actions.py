@@ -643,6 +643,39 @@ def build_auto_start_args(
     return [prompt] if (auto_start and not resuming) else []
 
 
+# Controlling-tty wrapper for the conversation launch under fs-isolation.
+#
+# Grok's CUSTOM (fail-closed) Landlock profile applier opens ``/dev/tty`` and
+# refuses to start without a controlling terminal. But conversation mode launches
+# grok over PIPES with ``start_new_session=True`` (so the ACP JSON-RPC stream on
+# stdin/stdout stays byte-clean — a pty would corrupt the framing), which leaves
+# grok session-detached with no ``/dev/tty`` → the sandbox fails closed → grok
+# exits immediately ("could not apply the 'optio' sandbox profile; refusing to
+# start").
+#
+# This helper is exec'd AS the launched process. It acquires a controlling pty
+# WITHOUT routing stdio through it: open a pty purely to ``TIOCSCTTY`` it, then
+# ``execvp`` grok with fd 0/1/2 (the JSON-RPC pipes) untouched. ``setsid`` is
+# best-effort — under ``start_new_session`` the process is already a session
+# leader (raises, caught); over SSH it may not be (succeeds). The pty fds are
+# left inheritable/open so the controlling terminal stays valid for grok's
+# ``/dev/tty`` open. A command wrapper (not a ``preexec_fn``) is the portable
+# seam: it works identically for LocalHost and RemoteHost (a preexec_fn can't run
+# on the remote host). Requires ``python3`` on the worker (already an optio-worker
+# dependency; the same interpreter that runs the engine).
+_CTTY_WRAP_PYTHON = "python3"
+_CTTY_WRAP_HELPER = (
+    "import os,sys,fcntl,termios,pty\n"
+    "try:\n os.setsid()\n"
+    "except OSError:\n pass\n"
+    "m,s=pty.openpty()\n"
+    "os.set_inheritable(m,True)\n"
+    "os.set_inheritable(s,True)\n"
+    "fcntl.ioctl(s,termios.TIOCSCTTY,0)\n"
+    "os.execvp(sys.argv[1],sys.argv[1:])\n"
+)
+
+
 def build_conversation_argv(
     grok_path: str,
     *,
@@ -661,6 +694,12 @@ def build_conversation_argv(
     fresh agent, never share the leader socket), ``--always-approve``
     (auto-approve every tool — used when no permission gate is wired). No
     tmux/ttyd: the subprocess IS the agent.
+
+    When ``fs_isolation`` is set, the whole command is wrapped in the
+    controlling-tty helper (:data:`_CTTY_WRAP_HELPER`) — grok's fail-closed
+    sandbox needs a ``/dev/tty`` that the piped, session-detached conversation
+    launch otherwise lacks. The wrap is gated on ``fs_isolation`` so it appears
+    exactly when ``--sandbox`` does.
     """
     argv = [grok_path]
     if fs_isolation:
@@ -673,6 +712,8 @@ def build_conversation_argv(
     if no_leader:
         argv += ["--no-leader"]
     argv += ["stdio"]
+    if fs_isolation:
+        argv = [_CTTY_WRAP_PYTHON, "-c", _CTTY_WRAP_HELPER, *argv]
     return argv
 
 
