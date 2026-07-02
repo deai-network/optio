@@ -1,0 +1,6 @@
+FROM linuxserver/openssh-server:latest
+# optio-codex runs codex inside a detached tmux session fronted by ttyd, so
+# the "remote" needs bash (the launch wrappers use `bash -lc`/`bash -c`),
+# tmux, and python3 (the fake-codex shim). ttyd is provided by the mounted
+# shim.
+RUN apk add --no-cache python3 tmux bash
