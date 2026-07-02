@@ -5,19 +5,26 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import mimetypes
 import os
+import re
+import secrets
+import shlex
 from typing import AsyncIterator
 
 from optio_core.context import ProcessContext
-from optio_core.models import TaskInstance
+from optio_core.models import BasicAuth, TaskInstance
 
 from optio_agents import HookContext, get_protocol
 from optio_agents import seeds as _seeds
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
-from optio_host.host import Host, LocalHost, ProcessHandle
+from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
 from optio_host.paths import task_dir
 
 from optio_codex import cred_watcher, host_actions
+from optio_codex import models as codex_models
+from optio_codex.conversation import CodexConversation
+from optio_codex.conversation_listener import ConversationListener
 from optio_codex.prompt import compose_agents_md
 from optio_codex.seed_manifest import CODEX_SEED_MANIFEST, CODEX_SEED_SUFFIX
 from optio_codex.snapshots import (
@@ -76,6 +83,12 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
     lease_holder: str | None = None
     cred_baseline: str | None = None
     cred_watch_task: "asyncio.Task | None" = None
+    # Conversation mode (Stage 6). The CodexConversation is constructed inside
+    # _conversation_body (it needs resume_thread_id, resolved by _prepare) and
+    # published via ctx.publish_result; the per-task SSE listener (conversation_ui
+    # only) is started after publish and torn down first in the finally block.
+    conversation: CodexConversation | None = None
+    conv_listener: ConversationListener | None = None
 
     await host.connect()
 
@@ -130,11 +143,13 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             install_if_missing=config.install_if_missing,
             install_dir=config.codex_install_dir,
         )
-        ttyd_path = await host_actions.ensure_ttyd_installed(
-            hook_ctx,
-            install_if_missing=config.install_ttyd_if_missing,
-            install_dir=config.ttyd_install_dir,
-        )
+        # Conversation mode is headless (codex app-server stdio) — no ttyd.
+        if config.mode != "conversation":
+            ttyd_path = await host_actions.ensure_ttyd_installed(
+                hook_ctx,
+                install_if_missing=config.install_ttyd_if_missing,
+                install_dir=config.ttyd_install_dir,
+            )
         if not resuming and config.seed_id is not None:
             # Seeded FRESH start: resolve the seed id (str → itself; a
             # SeedProvider callable → awaited, may raise
@@ -248,15 +263,176 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
         ):
             await asyncio.sleep(1.0)
 
+    async def _conversation_body(host: Host, hook_ctx: HookContext) -> None:
+        nonlocal launched_handle, conversation, conv_listener
+
+        # Launch `codex app-server` directly (no tmux/ttyd). Model, sandbox and
+        # approval policy travel in thread/start params — no CLI flags.
+        # merge_stderr=False keeps codex diagnostics off the JSONL stdout.
+        conversation = CodexConversation(
+            cwd=host.workdir,
+            permission_gate=config.permission_gate,
+            model=config.model,
+            sandbox=config.sandbox,
+            # Plan B: on resume, continue the stored thread (thread/resume)
+            # instead of starting a fresh one. resume_session_id is the codex
+            # thread id recorded in the restored snapshot.
+            resume_thread_id=resume_session_id if resuming else None,
+        )
+        argv = [codex_path, "app-server"]
+        cmd = " ".join(shlex.quote(a) for a in argv)
+        env = {
+            **host_actions._isolation_env(host.workdir),
+            **(config.env or {}),
+            **(hook_ctx.browser_launch_env or {}),
+        }
+        ctx.report_progress(None, "Launching Codex (conversation)…")
+        handle = await host.launch_subprocess(
+            cmd, env=env, cwd=host.workdir,
+            env_remove=config.scrub_env, stdin=True, merge_stderr=False,
+        )
+        launched_handle = handle
+        conversation.attach(handle)
+        reader_task = asyncio.create_task(conversation.run_reader())
+        try:
+            await conversation.bootstrap()
+        except Exception:
+            reader_task.cancel()
+            raise
+
+        ctx.publish_result(conversation)
+        ctx.report_progress(None, "Codex conversation is live")
+
+        # Opt-in dashboard chat widget: per-task SSE listener over the
+        # published conversation, reached via the widget proxy (which injects
+        # the basic-auth credential).
+        if config.conversation_ui:
+            listener_password = secrets.token_urlsafe(32)
+            bind_addr = os.environ.get("OPTIO_WIDGET_TUNNEL_BIND", "127.0.0.1")
+            upstream_host = os.environ.get("OPTIO_WIDGET_TUNNEL_HOST", "127.0.0.1")
+            # File upload: bytes land under <workdir>/uploads with a sanitized
+            # name; the view injects a System: path reference so codex reads
+            # them with its own tools.
+            uploads_dir = f"{host.workdir}/uploads"
+
+            async def _write_upload(name: str, data: bytes) -> str:
+                safe = re.sub(
+                    r"[^A-Za-z0-9._-]", "_", (name.split("/")[-1] or "file"),
+                )[:200] or "file"
+                await host.put_file_to_host(data, f"{uploads_dir}/{safe}")
+                return f"uploads/{safe}"
+
+            # File download: serve workdir-confined bytes for the optio-file:
+            # sentinel links codex emits. realpath guards against ../ escapes.
+            async def _read_download(relpath: str) -> tuple[bytes, str]:
+                workdir = host.workdir.rstrip("/")
+                real = os.path.realpath(os.path.join(workdir, relpath))
+                if real != workdir and not real.startswith(workdir + os.sep):
+                    raise ValueError("forbidden")       # outside the workdir
+                data = await host.fetch_bytes_from_host(real)
+                if len(data) > config.max_download_bytes:
+                    raise ValueError("too-large")
+                mime = mimetypes.guess_type(real)[0] or "application/octet-stream"
+                return data, mime
+
+            conv_listener = ConversationListener(
+                conversation, password=listener_password,
+                upload_writer=_write_upload,
+                max_upload_bytes=config.max_upload_bytes,
+                download_reader=_read_download,
+                max_download_bytes=config.max_download_bytes,
+            )
+            # In-process aiohttp app: binds directly on the widget-tunnel
+            # interface, no host tunnel needed.
+            listener_port = await conv_listener.start(bind_addr)
+            await ctx.set_widget_upstream(
+                f"http://{upstream_host}:{listener_port}",
+                inner_auth=BasicAuth(username="optio", password=listener_password),
+            )
+            # Model picker options come from the model/list captured at
+            # bootstrap (authed, exact ids), else the static fallback.
+            model_list = codex_models.parse_model_list(conversation.model_list)
+            current_model = (
+                config.default_model
+                or conversation.current_model_id
+                or model_list.get("default")
+            )
+            await ctx.set_widget_data({
+                "protocol": "codex",
+                "toolVerbosity": config.tool_verbosity,
+                "showModelSelector": config.show_model_selector,
+                "models": model_list["models"],
+                "currentModel": current_model,
+                "showFileUpload": config.show_file_upload,
+                "maxUploadBytes": config.max_upload_bytes,
+                "fileDownload": config.file_download,
+                "maxDownloadBytes": config.max_download_bytes,
+            })
+            ctx.report_progress(None, "Conversation UI is live")
+
+        # Kickoff prompt as the first turn (headless: no positional prompt
+        # path). Suppressed on resume — re-kicking would duplicate the task.
+        if config.auto_start and not resuming:
+            await conversation.send(host_actions.AUTO_START_PROMPT)
+
+        try:
+            while True:
+                wait_task = asyncio.create_task(proc_wait(handle))
+                close_task = asyncio.create_task(
+                    conversation.close_requested.wait())
+                done, _ = await asyncio.wait(
+                    {wait_task, close_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for t in (wait_task, close_task):
+                    if t not in done:
+                        t.cancel()
+
+                if close_task in done and wait_task not in done:
+                    # Caller asked to close: cooperative clean end.
+                    if config.host_protocol:
+                        # The keyword driver treats a body return without DONE
+                        # as a premature exit; a caller-requested close IS the
+                        # clean end, so emit DONE ourselves and park until the
+                        # driver observes it and cancels this body.
+                        log_path = f"{host.workdir}/optio.log"
+                        await host.run_command(
+                            f"echo DONE >> {shlex.quote(log_path)}"
+                        )
+                        await asyncio.Event().wait()  # cancelled by the driver
+                    break
+
+                # Subprocess exited on its own.
+                try:
+                    rc = wait_task.result()
+                except Exception:
+                    rc = None
+                if (
+                    not conversation.close_requested.is_set()
+                    and ctx.should_continue()
+                ):
+                    raise RuntimeError(f"codex exited unexpectedly (exit {rc})")
+                break
+        finally:
+            reader_task.cancel()
+            try:
+                await reader_task
+            except asyncio.CancelledError:
+                pass
+
     async def _agent_sender(message: str) -> None:
+        if config.mode == "conversation":
+            await conversation.send(message)
+            return
         await host_actions.send_text_to_codex(
             host, tmux_path, tmux_socket, tmux_session, message,
         )
 
+    body = _conversation_body if config.mode == "conversation" else _codex_body
     try:
         await run_log_protocol_session(
             host, ctx,
-            body=_codex_body,
+            body=body,
             prepare=_prepare,
             on_deliverable=config.on_deliverable,
             after_execute=config.after_execute,
@@ -269,6 +445,21 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
     finally:
         if not ctx.should_continue():
             cancelled = True
+        # Stop the conversation listener first so its long-lived SSE loops are
+        # woken (bounded shutdown) before the subprocess teardown below.
+        if conv_listener is not None:
+            try:
+                await conv_listener.stop()
+            except Exception:
+                _LOG.exception("conversation listener cleanup failed")
+        # Conversation mode has no tmux/ttyd tree — terminate the app-server
+        # subprocess directly. Its EOF drives the conversation to closed.
+        if config.mode == "conversation" and launched_handle is not None:
+            try:
+                await host.terminate_subprocess(
+                    launched_handle, aggressive=cancelled)
+            except Exception:
+                _LOG.exception("terminate codex conversation subprocess failed")
         if (
             tmux_path is not None
             and tmux_socket is not None
@@ -368,10 +559,14 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                     ctx, host,
                     end_state="cancelled" if cancelled else "done",
                     workdir_exclude=config.workdir_exclude,
-                    # Iframe mode: scan the newest rollout filename. Plan D's
-                    # conversation body passes its thread/started id through
-                    # this same parameter instead.
-                    session_id=await host_actions.read_latest_session_id(host),
+                    # Iframe mode: scan the newest rollout filename. The
+                    # conversation body records the live thread id captured at
+                    # thread/start (thread/resume's resume source) instead.
+                    session_id=(
+                        conversation.thread_id
+                        if config.mode == "conversation" and conversation is not None
+                        else await host_actions.read_latest_session_id(host)
+                    ),
                 )
             except Exception:
                 _LOG.exception(
@@ -450,12 +645,22 @@ def create_codex_task(
     async def _execute(ctx: ProcessContext) -> None:
         await run_codex_session(ctx, config)
 
+    # iframe → the ttyd TUI widget. Conversation mode carries the live chat
+    # widget only when conversation_ui is on; otherwise no widget (the
+    # published Conversation is driven programmatically).
+    if config.conversation_ui:
+        ui_widget: str | None = "conversation"
+    elif config.mode == "conversation":
+        ui_widget = None
+    else:
+        ui_widget = "iframe"
+
     return TaskInstance(
         execute=_execute,
         process_id=process_id,
         name=name,
         description=description,
-        ui_widget="iframe",
+        ui_widget=ui_widget,
         supports_resume=config.supports_resume,
         metadata=metadata or {},
     )

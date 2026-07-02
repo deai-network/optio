@@ -315,8 +315,164 @@ def _scenario_probe(prompt: str) -> int:
     return 3 if mode == "alive_badexit" else 0
 
 
+def _as_send(obj: dict) -> None:
+    # The real wire omits the "jsonrpc" field (probed against 0.142.5).
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+def _notify(method: str, params: dict) -> None:
+    _as_send({"method": method, "params": params})
+
+
+def _run_app_server() -> int:
+    """Fake ``codex app-server`` — a minimal JSONL JSON-RPC responder.
+
+    Implements the wire pinned by the Stage-6 probe/schemas:
+      * ``initialize``/``initialized`` + ``account/read`` + ``model/list`` +
+        ``thread/start``/``thread/resume`` handshake.
+      * ``turn/start`` → ACK, ``turn/started``, an agentMessage item with two
+        ``item/agentMessage/delta`` halves + ``item/completed``, then
+        ``turn/completed``. Replies are numbered ``reply-N`` per turn (so an
+        auto-start kickoff shifts the caller's first message to ``reply-2``).
+      * Permission scenario: a turn whose text contains ``TOOL`` emits a
+        commandExecution ``item/started`` + an
+        ``item/commandExecution/requestApproval`` REQUEST, blocks for the
+        client's answer, then reports ``tool-ran`` (decision accept*) or
+        ``tool-denied`` (decline/cancel).
+      * ``turn/interrupt`` → {} ACK + ``turn/completed`` status interrupted.
+
+    ``FAKE_CODEX_EXIT_AFTER=N`` makes the process exit non-zero (7) after N
+    turns, modelling an unexpected crash for the session-failure test.
+    """
+    thread_id = "fake-codex-thread"
+    exit_after = int(os.environ.get("FAKE_CODEX_EXIT_AFTER", "0") or "0")
+    turn = 0
+    next_req_id = 1000
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            return 0
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except ValueError:
+            continue
+        method = msg.get("method")
+        mid = msg.get("id")
+        if method == "initialize":
+            _as_send({"id": mid, "result": {
+                "userAgent": "codex/0.142.5-fake",
+                "codexHome": os.environ.get("CODEX_HOME", ""),
+                "platformFamily": "fake", "platformOs": "fake"}})
+        elif method == "initialized":
+            continue
+        elif method == "account/read":
+            _as_send({"id": mid, "result": {
+                "account": {"type": "apikey"}, "requiresOpenaiAuth": False}})
+        elif method == "model/list":
+            _as_send({"id": mid, "result": {"data": [
+                {"id": "gpt-5.5", "displayName": "GPT-5.5", "description": "",
+                 "hidden": False, "isDefault": True, "model": "gpt-5.5",
+                 "defaultReasoningEffort": "medium",
+                 "supportedReasoningEfforts": []},
+                {"id": "gpt-5.4-mini", "displayName": "GPT-5.4 Mini",
+                 "description": "", "hidden": False, "isDefault": False,
+                 "model": "gpt-5.4-mini", "defaultReasoningEffort": "medium",
+                 "supportedReasoningEfforts": []},
+            ], "nextCursor": None}})
+        elif method in ("thread/start", "thread/resume"):
+            params = msg.get("params") or {}
+            if method == "thread/resume" and params.get("threadId"):
+                thread_id = params["threadId"]
+            _as_send({"id": mid, "result": {
+                "thread": {"id": thread_id},
+                "model": params.get("model") or "gpt-5.5"}})
+            _notify("thread/started", {"thread": {"id": thread_id}})
+        elif method == "turn/start":
+            turn += 1
+            turn_id = f"turn-{turn}"
+            params = msg.get("params") or {}
+            text = " ".join(
+                p.get("text", "") for p in (params.get("input") or [])
+                if isinstance(p, dict)
+            )
+            _as_send({"id": mid, "result": {"turn": {
+                "id": turn_id, "status": "inProgress", "items": []}}})
+            _notify("turn/started", {"threadId": thread_id, "turn": {
+                "id": turn_id, "status": "inProgress", "items": []}})
+            if "TOOL" in text:
+                item = {"type": "commandExecution", "id": f"item-{turn}-tool",
+                        "command": "echo hi", "cwd": "/w",
+                        "status": "inProgress"}
+                _notify("item/started", {"threadId": thread_id,
+                                         "turnId": turn_id, "item": item,
+                                         "startedAtMs": 0})
+                next_req_id += 1
+                _as_send({"id": next_req_id,
+                          "method": "item/commandExecution/requestApproval",
+                          "params": {"threadId": thread_id, "turnId": turn_id,
+                                     "itemId": item["id"], "command": "echo hi",
+                                     "cwd": "/w", "reason": None,
+                                     "startedAtMs": 0}})
+                # Block for the client's approval answer (next stdin line).
+                answer_line = sys.stdin.readline()
+                decision = None
+                if answer_line.strip():
+                    try:
+                        decision = (json.loads(answer_line).get("result")
+                                    or {}).get("decision")
+                    except ValueError:
+                        decision = None
+                allowed = decision in ("accept", "acceptForSession")
+                _notify("item/completed", {
+                    "threadId": thread_id, "turnId": turn_id,
+                    "item": dict(item, status="completed" if allowed else "declined"),
+                    "completedAtMs": 0})
+                reply = "tool-ran" if allowed else "tool-denied"
+            else:
+                reply = f"reply-{turn}"
+            msg_item_id = f"item-{turn}-msg"
+            _notify("item/started", {"threadId": thread_id, "turnId": turn_id,
+                                     "item": {"type": "agentMessage",
+                                              "id": msg_item_id, "text": ""},
+                                     "startedAtMs": 0})
+            half = max(1, len(reply) // 2)
+            for piece in (reply[:half], reply[half:]):
+                if piece:
+                    _notify("item/agentMessage/delta", {
+                        "threadId": thread_id, "turnId": turn_id,
+                        "itemId": msg_item_id, "delta": piece})
+            _notify("item/completed", {"threadId": thread_id,
+                                       "turnId": turn_id,
+                                       "item": {"type": "agentMessage",
+                                                "id": msg_item_id,
+                                                "text": reply},
+                                       "completedAtMs": 0})
+            _notify("turn/completed", {"threadId": thread_id, "turn": {
+                "id": turn_id, "status": "completed", "items": []}})
+            if exit_after and turn >= exit_after:
+                return 7
+        elif method == "turn/interrupt":
+            _as_send({"id": mid, "result": {}})
+            _notify("turn/completed", {"threadId": thread_id, "turn": {
+                "id": (msg.get("params") or {}).get("turnId") or "turn-0",
+                "status": "interrupted", "items": []}})
+        elif mid is not None:
+            _as_send({"id": mid, "error": {
+                "code": -32601,
+                "message": f"fake codex: unknown method {method}"}})
+
+
 def main() -> int:
     import argparse
+
+    # app-server conversation mode: `codex app-server`. Detected before
+    # argparse so the positional doesn't trip the option parser.
+    if "app-server" in sys.argv[1:]:
+        return _run_app_server()
 
     # Headless probe mode: `codex exec --json [-s MODE] [--skip-git-repo-check]
     # [-C DIR] '<prompt>'`. Detected before argparse; the prompt is the last
