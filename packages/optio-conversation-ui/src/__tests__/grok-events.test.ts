@@ -55,6 +55,22 @@ describe('grok ACP event reducer', () => {
     expect(b && b.kind === 'assistant' && b.text).toBe('ANSWER');
   });
 
+  it('thought chunks INTERLEAVED with answer chunks stay ONE answer bubble', () => {
+    // grok reasoning models alternate thinking and answering within a turn. The
+    // answer must coalesce into a single bubble; interleaved thought (activity)
+    // rows must not split it into a bubble-per-token (the reported bug).
+    const s = play([
+      chunk('Hi'), thought('reconsider'), chunk(' there'), thought('actually'), chunk('!'),
+      turnEnd(1),
+    ]);
+    const bubbles = s.items.filter((i) => i.kind === 'assistant');
+    expect(bubbles).toHaveLength(1);
+    expect((bubbles[0] as any).text).toBe('Hi there!');
+    expect((bubbles[0] as any).pending).toBe(false);
+    // reasoning is still surfaced (as muted activity), just not folded into the answer
+    expect(s.items.some((i) => i.kind === 'activity')).toBe(true);
+  });
+
   it('tool_call renders a tool row named by its title with its rawInput', () => {
     const s = play([{
       jsonrpc: '2.0', method: 'session/update',

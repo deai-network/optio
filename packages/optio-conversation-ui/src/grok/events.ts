@@ -29,19 +29,21 @@ function pendingIndex(items: ChatItem[]): number {
   return items.findIndex((i) => i.kind === 'assistant' && i.pending);
 }
 
-// The pending bubble may keep absorbing the in-flight turn only while it is the
-// tail (ephemeral tool rows don't count — they are dropped by the next text).
-function isTail(items: ChatItem[], idx: number): boolean {
-  return items.slice(idx + 1).every((i) => i.kind === 'tool');
-}
-
 const dropTools = (items: ChatItem[]) => items.filter((i) => i.kind !== 'tool');
 
-// Append a text delta to the in-flight assistant bubble, creating it (with the
-// current turn's synthetic msgId) if absent or no longer the tail.
+// Append a text delta to THIS turn's assistant bubble, matched by the turn's
+// synthetic msgId — NOT by tail position. grok's reasoning models interleave
+// agent_thought_chunk (rendered as muted activity rows) WITH agent_message_chunk;
+// a tail-position check would let each interleaved thought split the answer into
+// a new bubble per run (the "tokens rendered separately" bug). Keying on msgId
+// keeps the whole turn's answer in one bubble regardless of interleaving. A new
+// turn (turn-end → turn++) yields a new msgId, so the next answer opens a fresh
+// bubble; the prior turn's bubble is finalized (pending=false) and never matches.
 function appendPending(items: ChatItem[], seq: number, text: string, msgId: string): ChatItem[] {
-  const idx = pendingIndex(items);
-  if (idx !== -1 && isTail(items, idx)) {
+  const idx = items.findIndex(
+    (i) => i.kind === 'assistant' && i.pending && i.msgId === msgId,
+  );
+  if (idx !== -1) {
     const cur = items[idx] as Extract<ChatItem, { kind: 'assistant' }>;
     const next: ChatItem = { ...cur, text: cur.text + text };
     return [...items.slice(0, idx), next, ...items.slice(idx + 1)];
