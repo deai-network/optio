@@ -154,7 +154,12 @@ claudecode/opencode/grok demo trio. Registration: `optio-demo` install list +
    Rotation behavior still to pin at Stage 4.
 2. Chat/session store location under `$HOME` for snapshots (Stage 2).
 3. ACP `session/update` wire shape vs grok's — decides reducer reuse vs new
-   (Stage 6).
+   (Stage 6). **GAP (Stage 6 Task 0):** live prompt-cycle probe skipped —
+   host `cursor-agent status` = "Not logged in". Only the unauthenticated
+   `initialize` result + binary method list are cursor-verified; all payload
+   shapes coded `[grok-pinned, cursor runtime-unverified]` (see the pinned
+   block in `optio-cursor/src/optio_cursor/conversation.py`). Runtime
+   confirmation deferred to the demo stage.
 4. `session/set_model` live behavior (Stage 7).
 5. Native sandbox enforcement semantics: fail-open vs fail-closed, allowlist
    configurability (Stage 8).
