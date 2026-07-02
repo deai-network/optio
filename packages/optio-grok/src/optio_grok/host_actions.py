@@ -483,6 +483,12 @@ def _build_grok_shell_command(
 # --- flags -----------------------------------------------------------------
 
 
+# Name of the fail-closed custom sandbox profile optio plants + launches under
+# (Stage 8). A CUSTOM profile fails-CLOSED (grok refuses to start if it can't
+# apply it); built-in profiles fail-OPEN, so they are unusable for optio.
+SANDBOX_PROFILE_NAME = "optio"
+
+
 def build_grok_flags(
     *,
     permission_mode: str | None,
@@ -493,6 +499,7 @@ def build_grok_flags(
     reasoning_effort: str | None,
     no_leader: bool,
     resuming: bool = False,
+    fs_isolation: bool = False,
 ) -> list[str]:
     """Translate GrokTaskConfig knobs to an argv list.
 
@@ -500,8 +507,10 @@ def build_grok_flags(
     repeated once per allowed-tools rule (grok's spelling); disallowed tools
     are comma-joined. ``--no-leader`` is emitted when ``no_leader`` so tasks
     never share a grok backend. ``-c`` (continue) is appended when
-    ``resuming`` (always False in Stage 0). Validation of ``permission_mode``
-    lives in ``GrokTaskConfig.__post_init__``.
+    ``resuming`` (always False in Stage 0). ``--sandbox optio`` is appended
+    when ``fs_isolation`` so grok launches under the fail-closed custom
+    Landlock profile (Stage 8). Validation of ``permission_mode`` lives in
+    ``GrokTaskConfig.__post_init__``.
     """
     out: list[str] = []
     if permission_mode is not None:
@@ -519,6 +528,8 @@ def build_grok_flags(
         out += ["--reasoning-effort", reasoning_effort]
     if no_leader:
         out += ["--no-leader"]
+    if fs_isolation:
+        out += ["--sandbox", SANDBOX_PROFILE_NAME]
     if resuming:
         out += ["-c"]
     return out
@@ -548,16 +559,23 @@ def build_conversation_argv(
     model: str | None = None,
     no_leader: bool = True,
     always_approve: bool = False,
+    fs_isolation: bool = False,
 ) -> list[str]:
     """Argv for a headless ACP conversation: ``grok agent [opts] stdio``.
 
-    All options belong to ``grok agent`` and MUST precede the ``stdio``
-    subcommand (verified against the real CLI ``grok agent --help``):
-    ``--model``, ``--no-leader`` (start a fresh agent, never share the leader
-    socket), ``--always-approve`` (auto-approve every tool — used when no
-    permission gate is wired). No tmux/ttyd: the subprocess IS the agent.
+    ``--sandbox`` is a TOP-LEVEL grok flag (``grok [OPTIONS] [COMMAND]``), so
+    it precedes the ``agent`` subcommand when ``fs_isolation`` is set (Stage 8
+    fail-closed custom Landlock profile). The remaining options belong to
+    ``grok agent`` and MUST precede the ``stdio`` subcommand (verified against
+    the real CLI ``grok agent --help``): ``--model``, ``--no-leader`` (start a
+    fresh agent, never share the leader socket), ``--always-approve``
+    (auto-approve every tool — used when no permission gate is wired). No
+    tmux/ttyd: the subprocess IS the agent.
     """
-    argv = [grok_path, "agent"]
+    argv = [grok_path]
+    if fs_isolation:
+        argv += ["--sandbox", SANDBOX_PROFILE_NAME]
+    argv += ["agent"]
     if model:
         argv += ["--model", model]
     if always_approve:

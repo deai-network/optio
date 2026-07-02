@@ -21,6 +21,33 @@ from pathlib import Path
 SCENARIOS = ("happy", "deliverable", "error", "resume", "seed", "seed_rotate")
 
 
+def _record_launch() -> None:
+    """Durably record this launch's argv + planted sandbox profile (Stage 8).
+
+    When ``FAKE_GROK_RECORD`` names a path, append one JSON object per launch:
+    ``{"argv": [...], "sandbox_toml": <content|null>}``. The workdir is wiped
+    on teardown, so this record (outside the workdir) is how the wiring test
+    asserts that ``--sandbox optio`` was passed AND that
+    ``$GROK_HOME/sandbox.toml`` was planted before launch. The fake ACCEPTS
+    and otherwise IGNORES ``--sandbox`` — it enforces nothing.
+    """
+    dest = os.environ.get("FAKE_GROK_RECORD")
+    if not dest:
+        return
+    gh = os.environ.get("GROK_HOME") or str(Path.cwd() / "home" / ".grok")
+    sandbox_path = Path(gh) / "sandbox.toml"
+    try:
+        sandbox_toml = sandbox_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        sandbox_toml = None
+    with open(dest, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({
+            "argv": sys.argv[1:],
+            "sandbox_toml": sandbox_toml,
+        }) + "\n")
+        fh.flush()
+
+
 def _log(line: str) -> None:
     log = Path.cwd() / "optio.log"
     with log.open("a", encoding="utf-8") as fh:
@@ -305,6 +332,7 @@ def main() -> int:
     # argparse so the agent/stdio positionals don't trip the option parser.
     argv = sys.argv[1:]
     if "agent" in argv and "stdio" in argv:
+        _record_launch()
         return _run_acp_stdio()
 
     parser = argparse.ArgumentParser()
@@ -320,6 +348,8 @@ def main() -> int:
         # Headless probe: the prompt is the remaining positional argument.
         prompt = _unknown[0] if _unknown else ""
         return _scenario_probe(prompt)
+    # Iframe/scenario launch: record argv + planted sandbox profile (Stage 8).
+    _record_launch()
     scenario = os.environ.get("FAKE_GROK_SCENARIO", "happy").strip()
     if scenario not in SCENARIOS:
         print(f"unknown FAKE_GROK_SCENARIO={scenario!r}", file=sys.stderr)

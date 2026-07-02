@@ -33,6 +33,7 @@ from optio_host.paths import task_dir
 from optio_grok import cred_watcher, host_actions
 from optio_grok import models as grok_models
 from optio_grok.conversation import GrokConversation
+from optio_grok.fs_allowlist import build_sandbox_toml
 from optio_grok.conversation_listener import ConversationListener
 from optio_grok.prompt import compose_agents_md
 from optio_grok.seed_manifest import GROK_SEED_MANIFEST, GROK_SEED_SUFFIX
@@ -170,6 +171,24 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             # teardown backstop only save back a genuinely rotated token.
             cred_baseline = await cred_watcher.cred_fingerprint(host)
 
+        if config.fs_isolation:
+            # Plant the fail-closed custom sandbox profile under the per-task
+            # GROK_HOME (<workdir>/home/.grok/sandbox.toml, a "global" custom
+            # profile for this GROK_HOME). grok launches with --sandbox optio;
+            # a custom profile refuses to start if the kernel can't apply it
+            # (fail-closed). ``~/`` grants expand against the REAL host home
+            # (grok itself runs under an isolated $HOME). Planted AFTER any
+            # restore so a stale profile from the snapshot is overwritten.
+            host_home = await host.resolve_host_home()
+            await host.write_text(
+                "home/.grok/sandbox.toml",
+                build_sandbox_toml(
+                    workdir=host.workdir,
+                    extra_allowed_dirs=config.extra_allowed_dirs,
+                    host_home=host_home,
+                ),
+            )
+
         await host.write_text(
             "AGENTS.md",
             compose_agents_md(
@@ -204,6 +223,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             reasoning_effort=config.reasoning_effort,
             no_leader=config.no_leader,
             resuming=pass_continue,
+            fs_isolation=config.fs_isolation,
         )
         grok_flags = [
             *grok_flags,
@@ -283,6 +303,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             model=config.model,
             no_leader=config.no_leader,
             always_approve=not config.permission_gate,
+            fs_isolation=config.fs_isolation,
         )
         cmd = " ".join(shlex.quote(a) for a in argv)
         # Same per-task HOME/GROK_HOME/XDG isolation as the iframe launch. PATH
