@@ -52,6 +52,10 @@ _LOG = logging.getLogger(__name__)
 DELIVERABLE_QUEUE_BOUND = 64
 CALLER_MESSAGE_QUEUE_BOUND = 64
 
+# How long a cleanly-exited body waits for the optio.log tail to deliver an
+# already-written DONE/ERROR line before the exit is declared premature.
+_BODY_EXIT_TAIL_GRACE_SECONDS = 2.0
+
 
 # Public type aliases. ``HookContext`` is forward-quoted in these aliases
 # so consumers don't need to import HookContext to type-check.
@@ -297,8 +301,21 @@ async def run_log_protocol_session(
             if exc is not None:
                 raise exc
             if keywords and not done_flag.is_set():
-                # Body completed without DONE — premature exit.
-                raise _SessionFailed("body returned before DONE was observed")
+                # The body finishing can win the FIRST_COMPLETED wait against
+                # the tail subprocess delivering log lines the agent already
+                # wrote (tail -F startup latency), so give the tail a grace
+                # window before declaring a premature exit.
+                try:
+                    await asyncio.wait_for(
+                        done_flag.wait(), timeout=_BODY_EXIT_TAIL_GRACE_SECONDS
+                    )
+                except asyncio.TimeoutError:
+                    pass
+                if error_flag:
+                    raise _SessionFailed(error_flag[0] or "agent reported ERROR")
+                if not done_flag.is_set():
+                    # Body completed without DONE — premature exit.
+                    raise _SessionFailed("body returned before DONE was observed")
 
         # Drain remaining deliverables + caller messages before returning.
         if keywords:
