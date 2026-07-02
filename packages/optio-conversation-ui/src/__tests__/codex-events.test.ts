@@ -76,6 +76,28 @@ describe('codex app-server event reducer', () => {
     expect(b && b.kind === 'assistant' && b.text).toBe('ANSWER');
   });
 
+  it('reasoning INTERLEAVED between agentMessage items stays ONE answer bubble', () => {
+    // GPT-5 splits a turn across several agentMessage items with reasoning
+    // summaries in between (preamble → reasoning → final). The answer must
+    // coalesce into a single bubble keyed on the turn's msgId; an interleaved
+    // reasoning (activity) row must not split it into a second bubble (the
+    // reported regression). A second bubble would also strand a permanent
+    // pending:true indicator, since turn/completed only finalizes the first.
+    const s = play([
+      delta('Hi', 'i-1'),
+      reasoning('reconsider'),
+      delta(' there', 'i-2'),
+      turnCompleted(),
+    ]);
+    const bubbles = s.items.filter((i) => i.kind === 'assistant');
+    expect(bubbles).toHaveLength(1);
+    expect((bubbles[0] as any).text).toBe('Hi there');
+    expect((bubbles[0] as any).pending).toBe(false);
+    expect(s.busy).toBe(false);
+    // reasoning is still surfaced as a muted activity row, not folded in
+    expect(s.items.some((i) => i.kind === 'activity')).toBe(true);
+  });
+
   it('item/started commandExecution renders a tool row named by the command', () => {
     const s = play([itemStarted(cmdItem)]);
     const t = s.items.find((i) => i.kind === 'tool');
