@@ -60,6 +60,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             "AGENTS.md",
             compose_agents_md(
                 config.consumer_instructions,
+                documentation=protocol.documentation if config.host_protocol else None,
                 host_protocol=config.host_protocol,
             ),
         )
