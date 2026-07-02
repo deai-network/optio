@@ -150,13 +150,17 @@ def _isolation_env(workdir: str) -> dict[str, str]:
 
     Every cursor launch (tmux iframe via ``_build_cursor_shell_command``)
     derives its environment from this map so isolation is identical across
-    launch paths. Four explicit keys, all rooted at ``<workdir>/home``:
+    launch paths. Five explicit keys, the path-valued ones all rooted at
+    ``<workdir>/home``:
 
     - ``HOME`` — cursor derives ``~/.cursor`` and ``~/.cache`` from ``$HOME``
       (verified), so the per-task home captures all of its state.
     - ``XDG_CONFIG_HOME`` / ``XDG_DATA_HOME`` / ``XDG_CACHE_HOME`` — pin the
       XDG base dirs into the task home so no XDG-respecting tool reaches the
       operator's ``~/.config`` / ``~/.cache``.
+    - ``NO_OPEN_BROWSER=1`` — cursor's login flow PRINTs its auth URL instead
+      of spawning a host browser; the printed URL is surfaced to the operator
+      via the ``BROWSER:`` protocol keyword (browser="redirect").
 
     No claude-compat neutralization is needed (cursor does not ingest claude
     config) and cursor has no dedicated home env var beyond ``$HOME``.
@@ -169,6 +173,7 @@ def _isolation_env(workdir: str) -> dict[str, str]:
         "XDG_CONFIG_HOME": f"{home}/.config",
         "XDG_DATA_HOME": f"{home}/.local/share",
         "XDG_CACHE_HOME": f"{home}/.cache",
+        "NO_OPEN_BROWSER": "1",
     }
 
 
@@ -326,16 +331,13 @@ def _build_cursor_shell_command(
 ) -> tuple[list[str], str]:
     """Return (env_assignments, shell_command).
 
-    ``env_assignments`` is the list of ``KEY=VALUE`` strings (HOME, PATH,
-    XDG_*, NO_OPEN_BROWSER, extras). ``shell_command`` is the full
+    ``env_assignments`` is the list of ``KEY=VALUE`` strings (the full
+    :func:`_isolation_env` identity — HOME, XDG_*, NO_OPEN_BROWSER — plus
+    PATH and extras). ``shell_command`` is the full
     ``env <assignments> bash -c <payload>`` string that runs cursor-agent
     under HOME-isolation and appends DONE/ERROR to optio.log when it exits.
     Consumed by build_tmux_session_argv (cursor runs inside the detached tmux
     session, not as a direct ttyd child).
-
-    ``NO_OPEN_BROWSER=1`` makes cursor's login flow PRINT its auth URL
-    instead of spawning a host browser; the printed URL is surfaced to the
-    operator via the ``BROWSER:`` protocol keyword (browser="redirect").
     """
     workdir_clean = workdir.rstrip("/")
     iso = _isolation_env(workdir_clean)
@@ -347,12 +349,11 @@ def _build_cursor_shell_command(
         "PATH", "/usr/local/bin:/usr/bin:/bin",
     )
     # HOME + PATH first (PATH prepends the per-task .local/bin), then the rest
-    # of the isolation identity (XDG_*) from the SSOT, then NO_OPEN_BROWSER.
+    # of the isolation identity (XDG_* + NO_OPEN_BROWSER) from the SSOT.
     env_map = {
         "HOME": home_dir,
         "PATH": f"{home_local_bin}:{base_path}",
         **{k: v for k, v in iso.items() if k != "HOME"},
-        "NO_OPEN_BROWSER": "1",
     }
     env_assignments: list[str] = [f"{k}={v}" for k, v in env_map.items()]
     for k, v in extra.items():
