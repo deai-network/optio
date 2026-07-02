@@ -186,6 +186,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                 host_protocol=config.host_protocol,
                 workdir_exclude=config.workdir_exclude,
                 supports_resume=config.supports_resume,
+                file_download=config.file_download,
             ),
         )
         if config.supports_resume:

@@ -9,6 +9,7 @@ from what the snapshot actually keeps.
 """
 
 from optio_agents.prompt import compose_agents_md as _compose_agents_md_host
+from optio_agents.prompt import downloadables_block
 from optio_agents.protocol import ProtocolFeatures, build_log_channel_prompt
 
 from optio_codex.snapshots import effective_workdir_exclude
@@ -126,6 +127,7 @@ def compose_agents_md(
     host_protocol: bool = True,
     workdir_exclude: list[str] | None = None,
     supports_resume: bool = True,
+    file_download: bool = False,
 ) -> str:
     """Build the full AGENTS.md body.
 
@@ -146,7 +148,17 @@ def compose_agents_md(
     ``workdir_exclude``) survives across resumes. ``workdir_exclude`` is
     this task's snapshot exclude list (None → the codex defaults), used to
     keep the section's claims in sync with what is actually preserved.
+
+    ``file_download=True`` appends the downloadables instruction block so
+    codex offers files to the human via the ``optio-file:`` sentinel link
+    (conversation_ui file-download feature); the wording is comparative when
+    the keyword protocol is active (``host_protocol``).
     """
+    if file_download:
+        consumer_instructions = (
+            consumer_instructions.rstrip()
+            + downloadables_block(comparative=host_protocol)
+        )
     if host_protocol:
         if documentation is None:
             documentation = build_log_channel_prompt(
