@@ -662,6 +662,34 @@ def build_auto_start_args(
     return [prompt] if (auto_start and not resuming) else []
 
 
+def build_conversation_argv(
+    cursor_path: str,
+    *,
+    model: str | None = None,
+    force: bool = False,
+) -> list[str]:
+    """Argv for a headless ACP conversation: ``cursor-agent [opts] acp``.
+
+    Options are TOP-LEVEL cursor-agent flags (``cursor-agent [OPTIONS]
+    [COMMAND]``), so they precede the ``acp`` subcommand: ``--model``, and
+    ``--force`` (skip interactive confirmations — cursor's auto-approve
+    analogue of grok's ``--always-approve``; used when no permission gate is
+    wired, so cursor never blocks on a prompt nobody answers). Acceptance of
+    ``--force`` by the acp subcommand is runtime-unverified (host not logged
+    in — see the wire-facts block in conversation.py); the fallback seam is
+    answering session/request_permission allow-all client-side. No tmux/ttyd:
+    the subprocess IS the agent. Adapted from optio-grok's
+    build_conversation_argv.
+    """
+    argv = [cursor_path]
+    if model:
+        argv += ["--model", model]
+    if force:
+        argv += ["--force"]
+    argv += ["acp"]
+    return argv
+
+
 # --- tmux / ttyd machinery (adapted verbatim from optio-grok) ----------------
 
 

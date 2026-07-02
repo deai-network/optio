@@ -4,10 +4,10 @@ Orchestrates a Host (local or remote) through resolve cursor-agent → install
 ttyd → plant AGENTS.md (+ cli-config.json) → launch ttyd(cursor-agent) inside
 tmux → optio.log protocol session → teardown.
 
-Adapted from optio-grok's iframe path. Stage 0 drops the seed,
-conversation, credential-watcher, and fs-isolation branches; Stage 2 adds
-the resume/snapshot branch, Stage 3 the seed branch, Stage 4 the pooled
-lease + credential save-back. The rest arrive in later stages.
+Adapted from optio-grok's iframe path. Stage 2 adds the resume/snapshot
+branch, Stage 3 the seed branch, Stage 4 the pooled lease + credential
+save-back, Stage 6 the conversation branch (headless ``cursor-agent acp``
+publishing a live CursorConversation). fs-isolation arrives in a later stage.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import inspect
 import json
 import logging
 import os
+import shlex
 from typing import AsyncIterator
 
 from optio_core.context import ProcessContext
@@ -25,10 +26,11 @@ from optio_core.models import TaskInstance
 from optio_agents import HookContext, get_protocol
 from optio_agents import seeds as _seeds
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
-from optio_host.host import Host, LocalHost, ProcessHandle
+from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
 from optio_host.paths import task_dir
 
 from optio_cursor import cred_watcher, host_actions
+from optio_cursor.conversation import CursorConversation
 from optio_cursor.prompt import compose_agents_md
 from optio_cursor.seed_manifest import CURSOR_SEED_MANIFEST, CURSOR_SEED_SUFFIX
 from optio_cursor.snapshots import (
@@ -112,11 +114,13 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             install_if_missing=config.install_if_missing,
             install_dir=config.cursor_install_dir,
         )
-        ttyd_path = await host_actions.ensure_ttyd_installed(
-            hook_ctx,
-            install_if_missing=config.install_ttyd_if_missing,
-            install_dir=config.ttyd_install_dir,
-        )
+        # Conversation mode is headless (cursor-agent acp) — no ttyd needed.
+        if config.mode != "conversation":
+            ttyd_path = await host_actions.ensure_ttyd_installed(
+                hook_ctx,
+                install_if_missing=config.install_ttyd_if_missing,
+                install_dir=config.ttyd_install_dir,
+            )
 
         resume_requested = bool(getattr(ctx, "resume", False))
         snapshot = None
@@ -273,15 +277,128 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
         ):
             await asyncio.sleep(1.0)
 
+    conversation: CursorConversation | None = None
+    if config.mode == "conversation":
+        conversation = CursorConversation(
+            cwd=host.workdir, permission_gate=config.permission_gate,
+        )
+
+    async def _conversation_body(host: Host, hook_ctx: HookContext) -> None:
+        nonlocal launched_handle, cred_watch_task
+
+        # Launch `cursor-agent [--model M] [--force] acp` directly (no
+        # tmux/ttyd). --force is used only when no permission gate is wired,
+        # so cursor never blocks on a prompt nobody answers; with the gate on,
+        # cursor surfaces session/request_permission and the published
+        # conversation's handler answers it.
+        argv = host_actions.build_conversation_argv(
+            cursor_path,
+            model=config.model,
+            force=not config.permission_gate,
+        )
+        cmd = " ".join(shlex.quote(a) for a in argv)
+        # Same per-task HOME/XDG isolation as the iframe launch. PATH is
+        # inherited by launch_subprocess (os.environ.copy) so interpreters
+        # resolve. merge_stderr=False keeps cursor's diagnostics off the
+        # JSON-RPC stdout stream.
+        env = {
+            **host_actions._isolation_env(host.workdir),
+            **(config.env or {}),
+            **(hook_ctx.browser_launch_env or {}),
+        }
+        if config.api_key:
+            # api_key rides the launch env, never argv (process listings).
+            env["CURSOR_API_KEY"] = config.api_key
+        ctx.report_progress(None, "Launching Cursor (conversation)…")
+        handle = await host.launch_subprocess(
+            cmd, env=env, cwd=host.workdir,
+            env_remove=config.scrub_env, stdin=True, merge_stderr=False,
+        )
+        launched_handle = handle
+        conversation.attach(handle)
+        reader_task = asyncio.create_task(conversation.run_reader())
+        try:
+            await conversation.bootstrap()
+        except Exception:
+            reader_task.cancel()
+            raise
+
+        ctx.publish_result(conversation)
+        ctx.report_progress(None, "Cursor conversation is live")
+
+        # Start the in-session credential watcher for a seeded session: it
+        # saves back the rotated auth.json, and (when the seed is leased)
+        # renews the lease and aborts the session on lease loss.
+        if resolved_seed_id is not None:
+            cred_watch_task = asyncio.create_task(
+                cred_watcher.run_credential_watcher(
+                    ctx, host,
+                    seed_id=resolved_seed_id,
+                    baseline=cred_baseline,
+                    encrypt=None,
+                    decrypt=None,
+                    lease_holder=lease_holder,
+                )
+            )
+
+        # Kickoff prompt as the first turn (headless: no positional prompt
+        # path).
+        if config.auto_start and not resuming:
+            await conversation.send(host_actions.AUTO_START_PROMPT)
+
+        try:
+            while True:
+                wait_task = asyncio.create_task(proc_wait(handle))
+                close_task = asyncio.create_task(conversation.close_requested.wait())
+                done, _ = await asyncio.wait(
+                    {wait_task, close_task}, return_when=asyncio.FIRST_COMPLETED,
+                )
+                for t in (wait_task, close_task):
+                    if t not in done:
+                        t.cancel()
+
+                if close_task in done and wait_task not in done:
+                    # Caller asked to close: cooperative clean end.
+                    if config.host_protocol:
+                        # The keyword driver treats a body return without DONE
+                        # as a premature exit; a caller-requested close IS the
+                        # clean end, so emit DONE ourselves and park until the
+                        # driver observes it and cancels this body.
+                        log_path = f"{host.workdir}/optio.log"
+                        await host.run_command(
+                            f"echo DONE >> {shlex.quote(log_path)}"
+                        )
+                        await asyncio.Event().wait()  # cancelled by the driver
+                    break
+
+                # Subprocess exited on its own.
+                try:
+                    rc = wait_task.result()
+                except Exception:
+                    rc = None
+                if not conversation.close_requested.is_set() and ctx.should_continue():
+                    raise RuntimeError(f"cursor exited unexpectedly (exit {rc})")
+                break
+        finally:
+            reader_task.cancel()
+            try:
+                await reader_task
+            except asyncio.CancelledError:
+                pass
+
     async def _agent_sender(message: str) -> None:
+        if config.mode == "conversation":
+            await conversation.send(message)
+            return
         await host_actions.send_text_to_cursor(
             host, tmux_path, tmux_socket, tmux_session, message,
         )
 
+    body = _conversation_body if config.mode == "conversation" else _cursor_body
     try:
         await run_log_protocol_session(
             host, ctx,
-            body=_cursor_body,
+            body=body,
             prepare=_prepare,
             on_deliverable=config.on_deliverable,
             after_execute=config.after_execute,
@@ -294,6 +411,13 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
     finally:
         if not ctx.should_continue():
             cancelled = True
+        # Conversation mode has no tmux/ttyd tree — terminate the cursor-agent
+        # subprocess directly. Its EOF drives the conversation to closed.
+        if config.mode == "conversation" and launched_handle is not None:
+            try:
+                await host.terminate_subprocess(launched_handle, aggressive=cancelled)
+            except Exception:
+                _LOG.exception("terminate cursor conversation subprocess failed")
         if (
             launched_handle is not None
             and tmux_path is not None
@@ -472,12 +596,22 @@ def create_cursor_task(
     async def _execute(ctx: ProcessContext) -> None:
         await run_cursor_session(ctx, config)
 
+    # iframe → the ttyd TUI widget. Conversation mode carries the live chat
+    # widget only when conversation_ui is on (Group 6b); otherwise no widget
+    # (the published Conversation is driven programmatically).
+    if config.conversation_ui:
+        ui_widget: str | None = "conversation"
+    elif config.mode == "conversation":
+        ui_widget = None
+    else:
+        ui_widget = "iframe"
+
     return TaskInstance(
         execute=_execute,
         process_id=process_id,
         name=name,
         description=description,
-        ui_widget="iframe",
+        ui_widget=ui_widget,
         supports_resume=config.supports_resume,
         metadata=metadata or {},
     )

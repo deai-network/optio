@@ -22,6 +22,7 @@ __all__ = [
     "CursorTaskConfig",
     "SandboxMode",
     "ConversationMode",
+    "ToolVerbosity",
     "SeedProvider",
     "SeedUnavailableError",
 ]
@@ -43,9 +44,15 @@ class SeedUnavailableError(Exception):
 SandboxMode = Literal["enabled", "disabled"]
 _VALID_SANDBOX_MODES = {"enabled", "disabled"}
 
-# "iframe" = ttyd TUI in the browser (Stage 0). Later stages add
-# "conversation" (headless ACP); keep the Literal single-valued until then.
-ConversationMode = Literal["iframe"]
+# "iframe" = ttyd TUI in the browser (Stages 0-5). "conversation" = a headless
+# ``cursor-agent acp`` (ACP) session; the task publishes a live
+# CursorConversation via ctx.publish_result (Stage 6).
+ConversationMode = Literal["iframe", "conversation"]
+
+# Verbosity of tool-call rendering in the conversation widget (conversation_ui
+# only). Mirrors optio-grok/claudecode; consumed by the dashboard reducer.
+ToolVerbosity = Literal["silent", "description-only", "verbose"]
+_VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
 
 
 @dataclass
@@ -121,11 +128,27 @@ class CursorTaskConfig:
     # OUT of this list: it carries the cursor chat state --continue needs.
     workdir_exclude: list[str] | None = None
 
-    # "iframe" = ttyd TUI (Stage 0). Later stages add "conversation".
+    # "iframe" = ttyd TUI (Stages 0-5). "conversation" = headless ACP
+    # (cursor-agent acp); the task publishes a live CursorConversation
+    # (Stage 6).
     mode: ConversationMode = "iframe"
     # Opt-out for the optio.log keyword channel (STATUS/DELIVERABLE/DONE/…).
-    # iframe mode requires True (it is the only completion signal there).
+    # iframe mode requires True (it is the only completion signal there);
+    # conversation mode may set it False (the Conversation drives completion).
     host_protocol: bool = True
+
+    # --- conversation surface (Stage 6) ---------------------------------
+    # Conversation mode only: route cursor's ACP session/request_permission to
+    # the published conversation's on_permission_request handler (the caller
+    # registers one). When False, cursor launches with --force so tools run
+    # without prompting.
+    permission_gate: bool = False
+    # Opt-in dashboard conversation UI: the task starts a per-task listener and
+    # publishes a live chat widget (wired in Group 6b). Conversation mode only.
+    conversation_ui: bool = False
+    # How much tool-call detail the conversation widget renders; only affects
+    # conversation_ui rendering.
+    tool_verbosity: ToolVerbosity = "description-only"
 
     def __post_init__(self) -> None:
         if self.sandbox is not None and self.sandbox not in _VALID_SANDBOX_MODES:
@@ -133,15 +156,31 @@ class CursorTaskConfig:
                 f"CursorTaskConfig.sandbox={self.sandbox!r} "
                 f"is not one of {sorted(_VALID_SANDBOX_MODES)}"
             )
-        if self.mode != "iframe":
+        if self.mode not in ("iframe", "conversation"):
             raise ValueError(
-                f"CursorTaskConfig.mode={self.mode!r} is not one of ['iframe']"
+                f"CursorTaskConfig.mode={self.mode!r} is not one of "
+                "['iframe', 'conversation']"
             )
         if self.mode == "iframe" and not self.host_protocol:
             raise ValueError(
-                "CursorTaskConfig: host_protocol=False requires a "
-                "non-iframe mode (in iframe mode the optio.log keyword "
+                "CursorTaskConfig: host_protocol=False requires "
+                "mode='conversation' (in iframe mode the optio.log keyword "
                 "channel is the only completion signal)."
+            )
+        if self.permission_gate and self.mode != "conversation":
+            raise ValueError(
+                "CursorTaskConfig: permission_gate=True requires "
+                "mode='conversation'."
+            )
+        if self.conversation_ui and self.mode != "conversation":
+            raise ValueError(
+                "CursorTaskConfig: conversation_ui=True requires "
+                "mode='conversation'."
+            )
+        if self.tool_verbosity not in _VALID_TOOL_VERBOSITY:
+            raise ValueError(
+                f"CursorTaskConfig.tool_verbosity={self.tool_verbosity!r} "
+                f"is not one of {sorted(_VALID_TOOL_VERBOSITY)}"
             )
         for field_name in ("cursor_install_dir", "ttyd_install_dir"):
             val = getattr(self, field_name)
