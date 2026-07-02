@@ -169,6 +169,13 @@ class CursorTaskConfig:
     # Upper bound (bytes) on a single uploaded file; the listener rejects
     # anything larger with HTTP 413. Mirrored to the widget via widgetData.
     max_upload_bytes: int = 10_000_000
+    # Offer download links for files cursor marks with the optio-file: sentinel.
+    # The listener serves GET /download for paths confined under <workdir>.
+    # Requires mode="conversation" and conversation_ui=True.
+    file_download: bool = False
+    # Upper bound (bytes) on a single downloaded file; the listener rejects
+    # anything larger with HTTP 413. Mirrored to the widget via widgetData.
+    max_download_bytes: int = 10_000_000
 
     def __post_init__(self) -> None:
         if self.sandbox is not None and self.sandbox not in _VALID_SANDBOX_MODES:
@@ -218,6 +225,11 @@ class CursorTaskConfig:
         if self.show_file_upload and not conv_ui:
             raise ValueError(
                 "CursorTaskConfig: show_file_upload=True requires "
+                "mode='conversation' and conversation_ui=True."
+            )
+        if self.file_download and not conv_ui:
+            raise ValueError(
+                "CursorTaskConfig: file_download=True requires "
                 "mode='conversation' and conversation_ui=True."
             )
         for field_name in ("cursor_install_dir", "ttyd_install_dir"):

@@ -13,6 +13,7 @@ login prints a URL when ``NO_OPEN_BROWSER=1``; the agent surfaces it via
 adds the resume-awareness section, gated on ``supports_resume``.
 """
 
+from optio_agents.prompt import downloadables_block
 from optio_agents.protocol import ProtocolFeatures, build_log_channel_prompt
 
 
@@ -143,6 +144,7 @@ def compose_agents_md(
     host_protocol: bool = True,
     workdir_exclude: list[str] | None = None,
     supports_resume: bool = True,
+    file_download: bool = False,
 ) -> str:
     """Build the full AGENTS.md body.
 
@@ -158,7 +160,14 @@ def compose_agents_md(
       supports_resume: when True (default), the resume-awareness section is
         included so the agent knows to watch ``resume.log`` and that
         ``home/.cursor`` survives across resumes.
+      file_download: when True, append the downloadables instruction block so
+        cursor offers files to the human via the ``optio-file:`` sentinel link
+        (conversation_ui file-download feature).
     """
+    if file_download:
+        consumer_instructions = (
+            consumer_instructions.rstrip() + downloadables_block(comparative=host_protocol)
+        )
     if host_protocol:
         documentation = build_log_channel_prompt(ProtocolFeatures(browser="redirect"))
         base_prompt_pre = _CURSOR_INTRO + documentation
