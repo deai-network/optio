@@ -30,9 +30,28 @@ _TTYD_RELEASE_BASE = (
 _DEFAULT_INSTALL_SUBDIR = ".local/bin"
 
 
+async def _expand_user_path(host: "Host", path: str) -> str:
+    """Expand a leading ``~``/``~/`` against the HOST's home directory.
+
+    Downstream consumers shlex-quote every path, which defeats shell tilde
+    expansion — so a documented-valid ``~/bin`` override must be expanded
+    here, against the worker's home (never the engine's). ``~user`` forms
+    are rejected: resolving another user's home host-side is not supported.
+    """
+    if path == "~" or path.startswith("~/"):
+        home = (await host.resolve_host_home()).rstrip("/")
+        return home if path == "~" else f"{home}/{path[2:]}"
+    if path.startswith("~"):
+        raise ValueError(
+            f"install dir {path!r}: '~user' paths are not supported; use an "
+            f"absolute path or plain '~/'."
+        )
+    return path
+
+
 async def _resolve_install_dir(host: "Host", install_dir: str | None) -> str:
     if install_dir is not None:
-        return install_dir
+        return await _expand_user_path(host, install_dir)
     host_home = await host.resolve_host_home()
     return f"{host_home}/{_DEFAULT_INSTALL_SUBDIR}"
 
@@ -45,6 +64,7 @@ async def resolve_codex(
 ) -> str:
     """Resolve the ``codex`` binary on the host."""
     if install_dir is not None:
+        install_dir = await _expand_user_path(host, install_dir)
         candidate = f"{install_dir.rstrip('/')}/codex"
         probe = await host.run_command(
             f"[ -x {shlex.quote(candidate)} ] && echo OK || true"

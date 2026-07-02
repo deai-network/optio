@@ -103,6 +103,35 @@ def test_pgrep_pattern_scoped_to_per_task_path_only():
     assert "[c]odex" in pattern
 
 
+class _HomeHost(_RecordingHost):
+    async def resolve_host_home(self):
+        return "/home/worker"
+
+
+@pytest.mark.asyncio
+async def test_expand_user_path_tilde_forms():
+    from optio_codex.host_actions import _expand_user_path
+
+    host = _HomeHost()
+    assert await _expand_user_path(host, "~/bin") == "/home/worker/bin"
+    assert await _expand_user_path(host, "~") == "/home/worker"
+    assert await _expand_user_path(host, "/abs/path") == "/abs/path"
+    with pytest.raises(ValueError):
+        await _expand_user_path(host, "~otheruser/bin")
+
+
+@pytest.mark.asyncio
+async def test_resolve_codex_expands_tilde_install_dir():
+    from optio_codex.host_actions import resolve_codex
+
+    host = _HomeHost(stdout="OK")
+    path = await resolve_codex(host, install_dir="~/tools")
+    assert path == "/home/worker/tools/codex"
+    # The probe command must carry the EXPANDED path, not a quoted literal '~'.
+    assert any("/home/worker/tools/codex" in c for c in host.commands)
+    assert not any("'~" in c for c in host.commands)
+
+
 @pytest.mark.asyncio
 async def test_kill_codex_processes_spares_other_tasks(tmp_path):
     """Launch two real processes from two per-task paths; killing task A's
