@@ -9,6 +9,14 @@ from optio_host import (
     SSHConfig,
 )
 
+from optio_codex.seed_manifest import (
+    CODEX_CRED_MANIFEST,
+    CODEX_SEED_MANIFEST,
+    CODEX_SEED_SUFFIX,
+    delete_seed,
+    list_seeds,
+    purge_seed,
+)
 from optio_codex.session import create_codex_task, run_codex_session
 from optio_codex.types import (
     ApprovalPolicy,
@@ -37,4 +45,10 @@ __all__ = [
     "HookContextProtocol",
     "HostCommandError",
     "RunResult",
+    "CODEX_SEED_MANIFEST",
+    "CODEX_CRED_MANIFEST",
+    "CODEX_SEED_SUFFIX",
+    "delete_seed",
+    "list_seeds",
+    "purge_seed",
 ]
