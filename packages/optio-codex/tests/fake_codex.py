@@ -1,11 +1,19 @@
 """Stand-in for the `codex` CLI during integration tests."""
 
+import datetime
+import json
 import os
+import sys
 import time
+import uuid
 from pathlib import Path
 
 
-SCENARIOS = ("happy", "deliverable", "error", "exit_zero", "exit_nonzero", "long")
+SCENARIOS = (
+    "happy", "deliverable", "error",
+    "exit_zero", "exit_nonzero", "long",
+    "resume",
+)
 
 
 def _log(line: str) -> None:
@@ -64,6 +72,89 @@ def _scenario_long() -> None:
     time.sleep(600.0)
 
 
+def _codex_home() -> Path:
+    """The per-task CODEX_HOME (``<workdir>/home/.codex``) set by the launcher.
+
+    Lives INSIDE the workdir, so anything written here is captured by the
+    workdir snapshot and restored on resume — exactly like real codex's
+    rollout store (``$CODEX_HOME/sessions``).
+    """
+    ch = os.environ.get("CODEX_HOME") or str(Path.cwd() / "home" / ".codex")
+    return Path(ch)
+
+
+def _rollouts(ch: Path) -> "list[Path]":
+    sessions = ch / "sessions"
+    if not sessions.is_dir():
+        return []
+    return sorted(sessions.rglob("rollout-*.jsonl"))
+
+
+def _write_rollout(ch: Path) -> Path:
+    """Create a plausible codex rollout JSONL for a NEW session.
+
+    Real codex: ``$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl``
+    (UUIDv7; any UUID satisfies the wrapper's filename scan)."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    day_dir = (
+        ch / "sessions" / now.strftime("%Y") / now.strftime("%m")
+        / now.strftime("%d")
+    )
+    day_dir.mkdir(parents=True, exist_ok=True)
+    session_id = str(uuid.uuid4())
+    ts = now.strftime("%Y-%m-%dT%H-%M-%S")
+    path = day_dir / f"rollout-{ts}-{session_id}.jsonl"
+    path.write_text(
+        json.dumps({
+            "type": "session_meta",
+            "payload": {"id": session_id, "cwd": str(Path.cwd())},
+        }) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _scenario_resume() -> None:
+    """Model codex's session-id-keyed rollout persistence for the resume test.
+
+    Every launch appends its argv to ``$CODEX_HOME/fake_codex_argv.jsonl``
+    (append-only; after a workdir restore the first run's line survives, so
+    the file carries one line per launch — proving the restore worked and
+    revealing whether the resumed launch led with ``resume <id>``).
+
+    Fresh launch (argv does not start with ``resume``): writes a NEW
+    rollout. Resumed launch: appends a turn to the newest EXISTING rollout —
+    real ``codex resume <id>`` continues the same session, same id. Also
+    plants exclusion-proof junk (packages/ blob, sqlite index) that the
+    snapshot MUST drop.
+    """
+    ch = _codex_home()
+    ch.mkdir(parents=True, exist_ok=True)
+    with (ch / "fake_codex_argv.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(sys.argv[1:]) + "\n")
+        fh.flush()
+    if sys.argv[1:2] == ["resume"]:
+        existing = _rollouts(ch)
+        if existing:
+            with existing[-1].open("a", encoding="utf-8") as fh:
+                fh.write(
+                    json.dumps({"type": "turn_context", "resumed": True}) + "\n"
+                )
+        else:
+            _write_rollout(ch)
+    else:
+        _write_rollout(ch)
+    # Junk the default workdir_exclude must drop (asserted by the test).
+    (ch / "packages").mkdir(exist_ok=True)
+    (ch / "packages" / "blob.bin").write_bytes(b"\x00" * 1024)
+    (ch / "state.sqlite3").write_bytes(b"sqlite-junk")
+    time.sleep(0.05)
+    _log("STATUS: 10% resume-scenario alive")
+    time.sleep(0.05)
+    _log("DONE: resume scenario completed")
+    time.sleep(30.0)
+
+
 def main() -> int:
     import argparse
 
@@ -77,7 +168,7 @@ def main() -> int:
 
     scenario = os.environ.get("FAKE_CODEX_SCENARIO", "happy").strip()
     if scenario not in SCENARIOS:
-        print(f"unknown FAKE_CODEX_SCENARIO={scenario!r}", file=__import__("sys").stderr)
+        print(f"unknown FAKE_CODEX_SCENARIO={scenario!r}", file=sys.stderr)
         return 2
     {
         "happy": _scenario_happy,
@@ -86,6 +177,7 @@ def main() -> int:
         "exit_zero": _scenario_exit_zero,
         "exit_nonzero": _scenario_exit_nonzero,
         "long": _scenario_long,
+        "resume": _scenario_resume,
     }[scenario]()
     return 0
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from typing import AsyncIterator
 
 from optio_core.context import ProcessContext
 from optio_core.models import TaskInstance
@@ -16,6 +17,12 @@ from optio_host.paths import task_dir
 
 from optio_codex import host_actions
 from optio_codex.prompt import compose_agents_md
+from optio_codex.snapshots import (
+    effective_workdir_exclude,
+    insert_snapshot,
+    load_latest_snapshot,
+    prune_snapshots,
+)
 from optio_codex.types import CodexTaskConfig
 
 
@@ -41,11 +48,61 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
     codex_path: str | None = None
     ttyd_path: str | None = None
     cancelled = False
+    # Whether a snapshot was restored this run (suppresses the auto-start
+    # positional). Set by _prepare, read by the body.
+    resuming = False
+    # The session/rollout id recorded in the restored snapshot; drives the
+    # `codex resume <id>` relaunch. None ⇒ fresh codex session even when the
+    # workdir was restored (the snapshot predates any rollout).
+    resume_session_id: str | None = None
 
     await host.connect()
 
     async def _prepare(host: Host, hook_ctx: HookContext) -> None:
-        nonlocal codex_path, ttyd_path
+        """Restore a resume snapshot, provision codex + ttyd, plant AGENTS.md.
+
+        Handed to run_log_protocol_session, which runs it AFTER
+        host.setup_workdir() has wiped the workdir and BEFORE it subscribes
+        the optio.log tail. That ordering is why the restore belongs here:
+        the restored optio.log is rotated away below before the tail can
+        replay its stale DONE/ERROR, and AGENTS.md is planted AFTER the
+        restore so the restore cannot wipe it.
+
+        Restore runs BEFORE ensure_codex_installed — a deliberate divergence
+        from the grok template (which ensures first): codex's launch path is
+        the per-task symlink INSIDE the workdir
+        (<workdir>/home/.local/bin/codex), and restore_workdir empties the
+        workdir before extracting. Provisioning after the restore re-creates
+        the home tree and re-points the symlink (mkdir -p / ln -sfn are
+        idempotent), so the launch path can never dangle.
+        """
+        nonlocal codex_path, ttyd_path, resuming, resume_session_id
+
+        resume_requested = bool(getattr(ctx, "resume", False))
+        snapshot = None
+        if resume_requested:
+            snapshot = await load_latest_snapshot(
+                ctx._db, ctx._prefix, ctx.process_id,
+            )
+        resuming = snapshot is not None
+        if resuming:
+            # Restore the workdir tar (carries home/.codex — sessions/,
+            # auth, config). A present snapshot that fails to restore is
+            # fatal — the call is intentionally outside any except so it
+            # surfaces to the caller (no silent fresh-start).
+            await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
+            await host_actions._rotate_optio_log(host)
+            resume_session_id = snapshot.get("sessionId")
+            if resume_session_id is None:
+                _LOG.warning(
+                    "resume: snapshot for %s carries no sessionId (codex never "
+                    "persisted a rollout in that run); the workdir is restored "
+                    "but codex starts a FRESH session — explicit-id resume "
+                    "only, never `resume --last` (it silently mints a new "
+                    "session on a miss).",
+                    ctx.process_id,
+                )
+
         codex_path = await host_actions.ensure_codex_installed(
             hook_ctx,
             install_if_missing=config.install_if_missing,
@@ -81,14 +138,19 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
         upstream_host = os.environ.get("OPTIO_WIDGET_TUNNEL_HOST", "127.0.0.1")
         ttyd_iface = bind_addr if isinstance(host, LocalHost) else "127.0.0.1"
 
-        codex_flags = host_actions.build_codex_flags(
-            model=config.model,
-            ask_for_approval=config.ask_for_approval,
-            sandbox=config.sandbox,
-        )
         codex_flags = [
-            *codex_flags,
-            *host_actions.build_auto_start_args(auto_start=config.auto_start),
+            # `codex resume <id>` is a SUBCOMMAND — it must precede the flags.
+            *host_actions.build_resume_args(resume_session_id),
+            *host_actions.build_codex_flags(
+                model=config.model,
+                ask_for_approval=config.ask_for_approval,
+                sandbox=config.sandbox,
+            ),
+            # Positional kickoff prompt: fresh launches only (suppressed when
+            # a snapshot was restored — re-kicking would duplicate the task).
+            *host_actions.build_auto_start_args(
+                auto_start=config.auto_start, resuming=resuming,
+            ),
         ]
         launch_env = {
             **(config.env or {}),
@@ -160,6 +222,26 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             except Exception:
                 _LOG.exception("teardown_session_tree failed")
 
+        # Reached-live gate: only capture if codex actually came up
+        # (launched_handle is assigned strictly after a successful ttyd/codex
+        # launch). An interrupt before launch leaves it None — skip capture
+        # so any prior good snapshot survives and hasSavedState is untouched.
+        if config.supports_resume and launched_handle is not None:
+            try:
+                await _capture_snapshot(
+                    ctx, host,
+                    end_state="cancelled" if cancelled else "done",
+                    workdir_exclude=config.workdir_exclude,
+                    # Iframe mode: scan the newest rollout filename. Plan D's
+                    # conversation body passes its thread/started id through
+                    # this same parameter instead.
+                    session_id=await host_actions.read_latest_session_id(host),
+                )
+            except Exception:
+                _LOG.exception(
+                    "snapshot capture failed; proceeding with workdir wipe",
+                )
+
         try:
             await host.cleanup_taskdir(aggressive=cancelled)
         except Exception:
@@ -168,6 +250,56 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             await host.disconnect()
         except Exception:
             _LOG.exception("host.disconnect failed")
+
+
+async def _stream_blob(ctx: ProcessContext, blob_id) -> "AsyncIterator[bytes]":
+    async with ctx.load_blob(blob_id) as reader:
+        while True:
+            chunk = await reader.read(1 << 20)
+            if not chunk:
+                break
+            yield chunk
+
+
+async def _capture_snapshot(
+    ctx: ProcessContext,
+    host: Host,
+    *,
+    end_state: str,
+    workdir_exclude: list[str] | None,
+    session_id: str | None,
+) -> None:
+    """Capture a single-blob resume snapshot of the (now static) workdir.
+
+    Codex's rollout store lives under ``home/.codex/sessions`` INSIDE the
+    workdir, so one workdir tar carries everything ``codex resume <id>``
+    needs; ``session_id`` records WHICH session to resume. Streams the tar
+    into GridFS honoring the effective exclude list, records the snapshot
+    row, prunes to the retention limit (deleting stale blobs), and surfaces
+    the Resume affordance.
+    """
+    exclude = effective_workdir_exclude(workdir_exclude)
+    async with ctx.store_blob("workdir") as wwriter:
+        async for chunk in host.archive_workdir(exclude):
+            await wwriter.write(chunk)
+        workdir_blob_id = wwriter.file_id
+
+    await insert_snapshot(
+        ctx._db, ctx._prefix,
+        process_id=ctx.process_id,
+        end_state=end_state,
+        workdir_blob_id=workdir_blob_id,
+        session_id=session_id,
+    )
+
+    stale = await prune_snapshots(ctx._db, ctx._prefix, ctx.process_id)
+    for blob_id in stale:
+        try:
+            await ctx.delete_blob(blob_id)
+        except Exception:
+            _LOG.exception("delete_blob(workdir) failed")
+
+    await ctx.mark_has_saved_state()
 
 
 def create_codex_task(
