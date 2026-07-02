@@ -184,6 +184,41 @@ async def _provision_task_home(host: "Host", *, shared_codex_path: str) -> str:
     return per_task_codex
 
 
+async def ensure_workdir_trusted(host: "Host") -> None:
+    """Ensure ``home/.codex/config.toml`` pre-trusts this task's workdir.
+
+    Codex gates operation on per-directory trust recorded as
+    ``[projects."<dir>"] trust_level = "trusted"`` in config.toml. A seeded
+    fresh workdir was never trusted by the operator, so the session's
+    ``_prepare`` calls this right after ``merge_seed`` (the design doc's
+    "post-merge edit" decision — the entry is cwd-dependent, so it cannot
+    live in the cwd-independent seed blob or a manifest transform).
+
+    Deliberately minimal and idempotent: append the entry only when the
+    exact ``[projects."<workdir>"]`` header is absent; never rewrite or
+    reorder the rest of the file (codex itself rewrites config.toml at
+    runtime — optio must not fight it). Also safe when the seed carried no
+    config.toml at all (the file is created).
+    """
+    workdir = host.workdir.rstrip("/")
+    config_rel = "home/.codex/config.toml"
+    config_abs = f"{workdir}/{config_rel}"
+    header = f'[projects."{workdir}"]'
+    try:
+        current = (await host.fetch_bytes_from_host(config_abs)).decode("utf-8")
+    except FileNotFoundError:
+        current = ""
+    if header in current:
+        return
+    entry = f'{header}\ntrust_level = "trusted"\n'
+    if current and not current.endswith("\n"):
+        current += "\n"
+    # host.write_text is workdir-relative and creates parent dirs itself
+    # (LocalHost/RemoteHost both os.makedirs / mkdir -p the parent), so no
+    # explicit mkdir is needed; keep the whole-file write (small file).
+    await host.write_text(config_rel, current + entry)
+
+
 def _build_codex_shell_command(
     *,
     codex_path: str,
