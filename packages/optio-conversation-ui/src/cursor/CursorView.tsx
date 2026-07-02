@@ -2,15 +2,16 @@ import { useEffect, useReducer, useRef } from 'react';
 import type { WidgetProps } from 'optio-ui';
 import type { ChatState } from '../chat.js';
 import { initialChatState, reduceCursorEvent } from './events.js';
+import { type Attachment } from '../attachments.js';
 import { ConversationView } from '../ConversationView.js';
 
 // Conversation view for cursor tasks: speaks ACP (JSON-RPC 2.0) through the
 // per-task conversation listener (SSE from `{widgetProxyUrl}events`), reduces
 // the raw ACP objects into the shared ChatState, and hands all rendering +
 // local UI to the shared ConversationView. A thin transport adapter over the
-// same shared ACP reducer GrokView uses — cursor's listener exposes only
-// send/interrupt/permission for now; Stage 7 brings model switching and file
-// up/down to parity.
+// same shared ACP reducer GrokView uses — only the wire (cursor's ACP over the
+// listener) differs. Stage 7 brings file upload to parity (System: reference —
+// headless cursor has no inline ingest); file download follows.
 
 interface ChatAction {
   ev: unknown;
@@ -27,6 +28,8 @@ export function CursorView(props: WidgetProps) {
     'silent' | 'description-only' | 'verbose';
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   const localSeqRef = useRef(0);
+  const showFileUpload = Boolean(wd.showFileUpload);
+  const maxUploadBytes = Number(wd.maxUploadBytes ?? 10_000_000);
 
   const { widgetProxyUrl } = props; // ends with '/' — trailing slash is load-bearing
 
@@ -62,17 +65,44 @@ export function CursorView(props: WidgetProps) {
     }
   }
 
+  // Cursor has no headless inline ingest, so uploads land in the session
+  // workdir via the listener's multipart POST /upload; the next prompt then
+  // references them by path. Returns the stored relpaths, or null on failure.
+  async function uploadFiles(atts: Attachment[]): Promise<string[] | null> {
+    const fd = new FormData();
+    for (const a of atts) fd.append('file', a.file, a.filename);
+    try {
+      const resp = await fetch(`${widgetProxyUrl}upload`, { method: 'POST', body: fd });
+      if (!resp.ok) return null;
+      const j = await resp.json();
+      return (j.files ?? []).map((f: any) => String(f.path));
+    } catch {
+      return null;
+    }
+  }
+
   return (
     <ConversationView
       state={state}
       closed={state.closed}
       busy={busy}
       toolVerbosity={toolVerbosity}
-      showFileUpload={false}
-      maxUploadBytes={0}
+      showFileUpload={showFileUpload}
+      maxUploadBytes={maxUploadBytes}
       fileDownload={false}
-      onSend={async (body) => {
-        const ok = await post('send', { text: body });
+      onSend={async (body, attachments) => {
+        // With attachments, upload first, then bundle one System: notice per
+        // stored file into the prompt so cursor reads them from the workdir
+        // with its own tools. The optimistic echo still shows the operator's
+        // text.
+        let prompt = body;
+        if (attachments.length > 0) {
+          const paths = await uploadFiles(attachments);
+          if (!paths) return false;
+          const notice = paths.map((p) => `System: upload received, stored in ${p}`).join('\n');
+          prompt = `${notice}\n\n${body}`;
+        }
+        const ok = await post('send', { text: prompt });
         if (ok) {
           // Optimistic local echo: show the message now (cursor emits no user
           // echo of its own). Negative seqs keep React keys clear of wire seqs.

@@ -161,6 +161,14 @@ class CursorTaskConfig:
     # runtime-unverified, see models.py) — no process restart. Requires
     # mode="conversation" and conversation_ui=True.
     show_model_selector: bool = False
+    # Show the file-upload control. Uploaded bytes are written under
+    # <workdir>/uploads and referenced to cursor via a System: path line so it
+    # reads them with its own tools (headless cursor has no inline ingest).
+    # Requires mode="conversation" and conversation_ui=True.
+    show_file_upload: bool = False
+    # Upper bound (bytes) on a single uploaded file; the listener rejects
+    # anything larger with HTTP 413. Mirrored to the widget via widgetData.
+    max_upload_bytes: int = 10_000_000
 
     def __post_init__(self) -> None:
         if self.sandbox is not None and self.sandbox not in _VALID_SANDBOX_MODES:
@@ -205,6 +213,11 @@ class CursorTaskConfig:
         if self.show_model_selector and not conv_ui:
             raise ValueError(
                 "CursorTaskConfig: show_model_selector=True requires "
+                "mode='conversation' and conversation_ui=True."
+            )
+        if self.show_file_upload and not conv_ui:
+            raise ValueError(
+                "CursorTaskConfig: show_file_upload=True requires "
                 "mode='conversation' and conversation_ui=True."
             )
         for field_name in ("cursor_install_dir", "ttyd_install_dir"):

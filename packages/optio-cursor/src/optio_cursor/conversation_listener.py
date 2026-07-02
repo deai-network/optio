@@ -9,6 +9,8 @@ optio-api widget proxy (which injects the basic-auth credential):
   POST /interrupt  — {}                     -> conversation.interrupt
   POST /model      — {model}                -> conversation.request_model_change
                      (INLINE session/set_model — no process restart; Stage 7)
+  POST /upload     — multipart {file} parts -> upload_writer; returns
+                     {ok, files:[{filename, path}]} (Stage 7)
   POST /permission — {request_id, behavior, updated_input?, message?}
                      resolves the pending session/request_permission future.
 
@@ -27,6 +29,7 @@ import base64
 import json
 import logging
 from collections import deque
+from typing import Awaitable, Callable
 
 from aiohttp import web
 
@@ -45,9 +48,15 @@ _STOP = object()
 
 
 class ConversationListener:
-    def __init__(self, conversation, *, password: str) -> None:
+    def __init__(
+        self, conversation, *, password: str,
+        upload_writer: "Callable[[str, bytes], Awaitable[str]] | None" = None,
+        max_upload_bytes: int = 10_000_000,
+    ) -> None:
         self._conversation = conversation
         self._password = password
+        self._upload_writer = upload_writer
+        self._max_upload_bytes = max_upload_bytes
         self._buffer: deque[tuple[int, dict]] = deque(maxlen=BUFFER_MAXLEN)
         self._seq = 0
         self._subscribers: set[asyncio.Queue] = set()
@@ -176,6 +185,35 @@ class ConversationListener:
             return web.json_response({"ok": False, "reason": "closed"}, status=409)
         return web.json_response({"ok": True})
 
+    async def _handle_upload(self, request: web.Request) -> web.Response:
+        if not self._authorized(request):
+            return web.json_response({"ok": False}, status=401)
+        if self._upload_writer is None:
+            return web.json_response({"ok": False, "reason": "no-writer"}, status=409)
+        stored: list[dict] = []
+        try:
+            reader = await request.multipart()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"ok": False, "reason": "bad-multipart"}, status=400)
+        while True:
+            part = await reader.next()
+            if part is None:
+                break
+            if part.name != "file":
+                continue
+            filename = part.filename or "file"
+            buf = bytearray()
+            while True:
+                chunk = await part.read_chunk()
+                if not chunk:
+                    break
+                buf.extend(chunk)
+                if len(buf) > self._max_upload_bytes:
+                    return web.json_response({"ok": False, "reason": "too-large"}, status=413)
+            path = await self._upload_writer(filename, bytes(buf))
+            stored.append({"filename": filename, "path": path})
+        return web.json_response({"ok": True, "files": stored})
+
     async def _handle_model(self, request: web.Request) -> web.Response:
         if not self._authorized(request):
             return web.json_response({"ok": False}, status=401)
@@ -221,6 +259,7 @@ class ConversationListener:
         app.router.add_post("/send", self._handle_send)
         app.router.add_post("/interrupt", self._handle_interrupt)
         app.router.add_post("/model", self._handle_model)
+        app.router.add_post("/upload", self._handle_upload)
         app.router.add_post("/permission", self._handle_permission)
         self._runner = web.AppRunner(app, shutdown_timeout=SHUTDOWN_TIMEOUT_S)
         await self._runner.setup()

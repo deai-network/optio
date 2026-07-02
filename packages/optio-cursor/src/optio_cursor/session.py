@@ -17,6 +17,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import secrets
 import shlex
 from typing import AsyncIterator
@@ -339,8 +340,20 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             listener_password = secrets.token_urlsafe(32)
             bind_addr = os.environ.get("OPTIO_WIDGET_TUNNEL_BIND", "127.0.0.1")
             upstream_host = os.environ.get("OPTIO_WIDGET_TUNNEL_HOST", "127.0.0.1")
+            # File upload: bytes land under <workdir>/uploads with a sanitized
+            # name; the view injects a System: path reference so cursor reads
+            # them with its own tools (headless cursor has no inline ingest).
+            uploads_dir = f"{host.workdir}/uploads"
+
+            async def _write_upload(name: str, data: bytes) -> str:
+                safe = re.sub(r"[^A-Za-z0-9._-]", "_", (name.split("/")[-1] or "file"))[:200] or "file"
+                await host.put_file_to_host(data, f"{uploads_dir}/{safe}")
+                return f"uploads/{safe}"
+
             conv_listener = ConversationListener(
                 conversation, password=listener_password,
+                upload_writer=_write_upload,
+                max_upload_bytes=config.max_upload_bytes,
             )
             # The listener is an in-process aiohttp app (not a remote-host
             # process like ttyd), so it binds directly to the widget-tunnel
@@ -365,6 +378,8 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                 "showModelSelector": config.show_model_selector,
                 "models": model_list["models"],
                 "currentModel": current_model,
+                "showFileUpload": config.show_file_upload,
+                "maxUploadBytes": config.max_upload_bytes,
             })
             ctx.report_progress(None, "Conversation UI is live")
 
