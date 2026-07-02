@@ -35,9 +35,9 @@ _VALID_SANDBOX_MODES = {"read-only", "workspace-write", "danger-full-access"}
 class CodexTaskConfig:
     """Configuration for one optio-codex task instance (Stage 0).
 
-    Stage 0 covers iframe/ttyd mode on the local host. Remote SSH,
-    resume, seeds, conversation mode, and filesystem isolation arrive in
-    later stages.
+    Stages 0-2 cover iframe/ttyd mode on local and SSH-remote hosts with
+    resume/snapshots. Seeds, conversation mode, and filesystem isolation
+    arrive in later stages.
     """
 
     consumer_instructions: str
@@ -66,6 +66,17 @@ class CodexTaskConfig:
 
     mode: IframeMode = "iframe"
     host_protocol: bool = True
+
+    # Resume/snapshots (Stage 2). When True (default) the session captures a
+    # workdir snapshot — plus the codex sessionId — at teardown, and a later
+    # run with ctx.resume=True restores it and relaunches via
+    # `codex resume <id>`.
+    supports_resume: bool = True
+    # Snapshot exclude list. None (default) resolves to
+    # optio_codex.snapshots.CODEX_WORKDIR_EXCLUDE_DEFAULT (framework defaults
+    # + CODEX_HOME junk: packages/, *.sqlite*, cache/, tmp/, …). MUST NOT be
+    # set to exclude home/.codex/sessions — that is the resume source.
+    workdir_exclude: list[str] | None = None
 
     def __post_init__(self) -> None:
         if self.mode not in _VALID_MODES:

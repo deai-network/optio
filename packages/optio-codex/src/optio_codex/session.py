@@ -184,6 +184,6 @@ def create_codex_task(
         name=name,
         description=description,
         ui_widget="iframe",
-        supports_resume=False,
+        supports_resume=config.supports_resume,
         metadata=metadata or {},
     )
