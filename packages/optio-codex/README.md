@@ -41,7 +41,10 @@ primary, Landlock+seccomp fallback on Linux), covering all shell/tool
 commands the agent runs. optio-codex does **not** vendor claustrum for
 this; it renders one resolved sandbox posture (`fs_allowlist.py` SSOT)
 onto every launch surface: the interactive TUI argv, the `codex exec`
-probe flags, and the app-server `thread/start.sandboxPolicy`.
+probe flags, and the `codex app-server` command line (`-c
+sandbox_workspace_write.*` overrides; the sandbox *mode* is selected
+out-of-band via `thread/start`'s `sandbox` enum — the 0.142.5 app-server
+schema has no `thread/start.sandboxPolicy` object).
 
 `fs_isolation=True` (the default) selects codex `workspace-write`: writes
 are confined to the task workdir, `/tmp`, and any `rw` grants; **reads are

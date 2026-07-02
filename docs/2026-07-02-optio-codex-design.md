@@ -269,9 +269,15 @@ by the `optio-conversation-ui` TS suite. Final Appendix-A parity: **28/29 green*
   **no planted profile file and no launch-time enforcement guard** (Plan E Task 5B, not 5A).
   One resolved `SandboxSettings` (`fs_allowlist.resolve_sandbox_settings`) renders to every
   launch surface via two renderers — `build_sandbox_cli_args` (iframe TUI argv + `codex exec`
-  probe flags: `--sandbox <mode>` + `-c sandbox_workspace_write.*`) and `build_sandbox_policy`
-  (app-server `thread/start.sandboxPolicy`); `host_actions.build_codex_flags` stays the single
-  argv-composition seam.
+  probe flags: `--sandbox <mode>` + `-c sandbox_workspace_write.*`) and
+  `build_sandbox_config_overrides` (the `-c sandbox_workspace_write.*` overrides ONLY, on the
+  `codex app-server` argv). There is **no** `thread/start.sandboxPolicy` object in the 0.142.5
+  app-server schema (the `sandboxPolicy` object exists only on `turn/start` — see the
+  `fs_allowlist`/`conversation` module docstrings): the app-server selects its sandbox *mode*
+  out-of-band via `thread/start`'s kebab-case `sandbox` enum (`conversation.py`
+  `params["sandbox"]`), while writable-roots/network reach the process through the
+  `build_sandbox_config_overrides` `-c` flags on the launch command line (`session.py`).
+  `host_actions.build_codex_flags` stays the single argv-composition seam.
 - **`sandbox: SandboxMode | None` reconciliation (no duplicate knobs).** The Stage-0 `sandbox`
   field became `None`-defaulted and derives from `fs_isolation`: `workspace-write` when
   isolation is on, `danger-full-access` when off; an explicit value wins but is
