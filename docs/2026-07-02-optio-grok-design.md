@@ -139,3 +139,31 @@ conversation demo with Stage 6.
   save-back.
 - No operator config leaks into a task (verified: `grok inspect` inside a task sees
   only workdir + planted config, never `~/.claude` or the host `~/.grok`).
+
+## 7. Implementation reconciliation (as shipped)
+
+Deviations from the design above, decided during the staged build (all verified,
+tests green — grok wrapper 107 passed/1 skipped, conversation-ui 110 TS passed):
+
+- **Filesystem isolation: grok NATIVE `--sandbox`, not claustrum** (reverses §2
+  Decision 7 / the §5 non-goal). Grok ships its own Landlock sandbox. optio-grok
+  plants a **custom** `[profiles.optio]` in `<workdir>/home/.grok/sandbox.toml`
+  (`extends="strict"`, `read_write=[workdir,/tmp,/var/tmp,+extras]`, no `deny` →
+  Landlock-only, no bubblewrap) and launches `--sandbox optio`. Custom profiles
+  fail-CLOSED (built-ins fail-open), giving the required guarantee with zero
+  claustrum cross-compile/install machinery. See Stage 8 plan.
+- **Model switching: INLINE, not restart.** Grok's ACP supports
+  `session/set_model {sessionId, modelId}` mid-session (verified by live probe),
+  so `GrokConversation.request_model_change` switches in place — no `--continue`
+  relaunch (opencode-style, not claudecode-style).
+- **Seed manifest layout.** The engine roots at `host.workdir + "/" + home_subdir`,
+  so the manifest uses `home_subdir="home"` with `.grok/`-prefixed includes
+  (`[".grok/auth.json", ".grok/config.toml"]`), not `home_subdir=".grok"` — the
+  latter would have missed `GROK_HOME` entirely.
+- **Conversation transport = ACP (JSON-RPC 2.0 over stdio)**, `grok agent stdio` —
+  a third transport pattern (claudecode=claude stream-json, opencode=HTTP+SSE).
+  `session/prompt` response = turn-end; `session/request_permission` = the
+  permission gate; `session/cancel` = interrupt; capability non-advertisement is
+  the permission seam.
+- **Non-gated conversation uses `--always-approve`** (grok has no headless-safe
+  permission-mode analogue to claudecode's).
