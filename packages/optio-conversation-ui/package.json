@@ -2,7 +2,7 @@
   "name": "optio-conversation-ui",
   "version": "0.1.0",
   "license": "Apache-2.0",
-  "description": "Engine-neutral conversation widget for optio tasks (claudecode + opencode protocols)",
+  "description": "Engine-neutral conversation widget for optio tasks (claudecode + opencode + codex protocols)",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/deai-network/optio.git",

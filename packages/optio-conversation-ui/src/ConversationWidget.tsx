@@ -4,6 +4,7 @@ import { registerWidget, type WidgetProps } from 'optio-ui';
 import { ClaudeCodeView } from './claudecode/ClaudeCodeView.js';
 import { OpencodeView } from './opencode/OpencodeView.js';
 import { GrokView } from './grok/GrokView.js';
+import { CodexView } from './codex/CodexView.js';
 
 const THEME_KEY = 'optio-conversation:theme';
 
@@ -24,6 +25,7 @@ export function ConversationWidget({ ownTheme, ...props }: ConversationWidgetPro
     const viewProps = { ...props, ...extra } as WidgetProps;
     if (protocol === 'opencode') return <OpencodeView {...viewProps} />;
     if (protocol === 'grok') return <GrokView {...viewProps} />;
+    if (protocol === 'codex') return <CodexView {...viewProps} />;
     return <ClaudeCodeView {...viewProps} />;
   };
 
