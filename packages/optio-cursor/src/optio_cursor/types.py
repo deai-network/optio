@@ -25,7 +25,33 @@ __all__ = [
     "ToolVerbosity",
     "SeedProvider",
     "SeedUnavailableError",
+    "AllowedDir",
 ]
+
+
+@dataclass
+class AllowedDir:
+    """A caller-supplied extra path grant for filesystem isolation.
+
+    ``mode`` is one of ``"ro"`` (read-only), ``"rw"`` (read-write),
+    ``"rox"`` (read+execute — tool venvs, binaries), or ``"rwx"``
+    (read-write+execute). Grants are additive: callers may widen the
+    allowlist but never mask the security baseline.
+
+    A leading ``~/`` in ``path`` is expanded against the REAL host home at
+    launch time (the cursor-agent process itself runs under an isolated
+    $HOME, so grants cannot rely on its shell expansion).
+    """
+
+    path: str
+    mode: Literal["ro", "rw", "rox", "rwx"]
+
+    def __post_init__(self) -> None:
+        if self.mode not in ("ro", "rw", "rox", "rwx"):
+            raise ValueError(
+                f"AllowedDir.mode={self.mode!r} must be one of 'ro', 'rw', "
+                f"'rox', 'rwx' (path={self.path!r})."
+            )
 
 
 # A seed provider resolves a usable seed_id at launch time (e.g. leasing one
@@ -86,6 +112,23 @@ class CursorTaskConfig:
     model: str | None = None
     # Injected as ``CURSOR_API_KEY`` in the launch env, never argv.
     api_key: str | None = None
+
+    # --- filesystem isolation (Stage 8, claustrum) ----------------------
+    # When True (default), cursor-agent runs confined to an explicit
+    # filesystem allowlist (task workdir + temp dirs + explicit grants),
+    # kernel-enforced via the claustrum Landlock sandbox wrapping the WHOLE
+    # cursor-agent process tree. Fail-closed: if claustrum cannot be
+    # provisioned or the kernel lacks Landlock, the task refuses to launch
+    # rather than run unconfined. Set False to opt a single task out.
+    #
+    # (Cursor's own ``--sandbox enabled`` is NOT used for this: it is a
+    # per-shell-command wrapper only, so the agent's in-process Write/Edit
+    # tools escape it. See the Stage-8 design doc Decision 6.)
+    fs_isolation: bool = True
+    # Additional path grants beyond the workdir + temp dirs (never masks the
+    # baseline). ``~/`` expands against the real host home at launch. Ignored
+    # when fs_isolation=False.
+    extra_allowed_dirs: list["AllowedDir"] | None = None
 
     ssh: SSHConfig | None = None
 
@@ -238,4 +281,10 @@ class CursorTaskConfig:
                 raise ValueError(
                     f"CursorTaskConfig.{field_name}={val!r} must be an "
                     f"absolute path (start with '/' or '~')."
+                )
+        for ad in self.extra_allowed_dirs or []:
+            if ad.mode not in ("ro", "rw", "rox", "rwx"):
+                raise ValueError(
+                    f"CursorTaskConfig.extra_allowed_dirs: mode={ad.mode!r} "
+                    f"must be one of 'ro', 'rw', 'rox', 'rwx' (path={ad.path!r})."
                 )
