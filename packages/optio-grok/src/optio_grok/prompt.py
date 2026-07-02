@@ -14,6 +14,16 @@ from optio_agents.prompt import downloadables_block
 from optio_agents.protocol import ProtocolFeatures, build_log_channel_prompt
 
 
+# Always-present identity line. Grok Build infers its environment from ambient
+# clues and, running headlessly here, has guessed it is inside Cursor (both are
+# xAI-owned) — so state its identity explicitly, regardless of host_protocol.
+_GROK_IDENTITY = """You are running inside **Grok Build** (xAI's agentic coding CLI), \
+driven headlessly by the optio harness — not Cursor or any other IDE. If asked \
+about your environment or identity, you are Grok Build.
+
+"""
+
+
 _GROK_INTRO = """# Coordination protocol with the host (optio-grok)
 
 You are running inside a coordination harness. Follow these conventions
@@ -181,4 +191,5 @@ def compose_agents_md(
         resume_block = ""
     body = consumer_instructions.rstrip()
     pre = f"{base_prompt_pre}\n" if base_prompt_pre else ""
-    return f"{pre}{resume_block}{BASE_PROMPT_POST}\n{body}\n"
+    # _GROK_IDENTITY is always first so grok never mis-identifies its environment.
+    return f"{_GROK_IDENTITY}{pre}{resume_block}{BASE_PROMPT_POST}\n{body}\n"
