@@ -148,7 +148,10 @@ claudecode/opencode/grok demo trio. Registration: `optio-demo` install list +
 
 ## 7. Open probe-points (resolved during staged build, then reconciled here)
 
-1. Cred-file path + rotation behavior after a live `cursor-agent login` (Stage 3/4).
+1. ~~Cred-file path~~ **RESOLVED** (empirical, planted-file + logout probe):
+   `${XDG_CONFIG_HOME:-~/.config}/cursor/auth.json`, JSON with
+   `accessToken`/`refreshToken`; `status` reads it, `logout` deletes it.
+   Rotation behavior still to pin at Stage 4.
 2. Chat/session store location under `$HOME` for snapshots (Stage 2).
 3. ACP `session/update` wire shape vs grok's — decides reducer reuse vs new
    (Stage 6).
