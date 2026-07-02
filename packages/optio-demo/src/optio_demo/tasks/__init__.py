@@ -13,6 +13,7 @@ from optio_demo.tasks.client_directed import get_tasks as client_directed_tasks
 from optio_demo.tasks.claudecode import get_tasks as claudecode_tasks
 from optio_demo.tasks.grok import get_tasks as grok_tasks
 from optio_demo.tasks.codex import get_tasks as codex_tasks
+from optio_demo.tasks.cursor import get_tasks as cursor_tasks
 
 
 async def get_task_definitions(
@@ -31,4 +32,5 @@ async def get_task_definitions(
         *await claudecode_tasks(services),
         *await grok_tasks(services),
         *await codex_tasks(services),
+        *await cursor_tasks(services),
     ]
