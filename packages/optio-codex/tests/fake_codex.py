@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 
-SCENARIOS = ("happy", "deliverable", "error")
+SCENARIOS = ("happy", "deliverable", "error", "exit_zero", "exit_nonzero", "long")
 
 
 def _log(line: str) -> None:
@@ -44,6 +44,26 @@ def _scenario_error() -> None:
     time.sleep(30.0)
 
 
+def _scenario_exit_zero() -> None:
+    # Exits 0 WITHOUT writing DONE itself: the wrapper's shell payload must
+    # append DONE (the exit-status channel, host_actions rc-branch).
+    time.sleep(0.05)
+    _log("STATUS: 50% about to exit cleanly")
+
+
+def _scenario_exit_nonzero() -> None:
+    # Exits 3 — the shell payload must append 'ERROR: codex exited 3'.
+    time.sleep(0.05)
+    _log("STATUS: 50% about to crash")
+    raise SystemExit(3)
+
+
+def _scenario_long() -> None:
+    # Never finishes — for the cancellation test.
+    _log("STATUS: 10% running until cancelled")
+    time.sleep(600.0)
+
+
 def main() -> int:
     import argparse
 
@@ -63,6 +83,9 @@ def main() -> int:
         "happy": _scenario_happy,
         "deliverable": _scenario_deliverable,
         "error": _scenario_error,
+        "exit_zero": _scenario_exit_zero,
+        "exit_nonzero": _scenario_exit_nonzero,
+        "long": _scenario_long,
     }[scenario]()
     return 0
 
