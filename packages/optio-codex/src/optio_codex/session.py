@@ -64,6 +64,9 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             ),
         )
         if config.before_execute is not None:
+            # End-of-prepare placement matches claudecode (its
+            # _plant_session_content ends with before_execute, inside its
+            # _prepare); opencode fires it inside the body instead.
             await config.before_execute(hook_ctx)
 
     async def _codex_body(host: Host, hook_ctx: HookContext) -> None:

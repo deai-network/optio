@@ -77,12 +77,20 @@ async def ensure_codex_installed(
     install_if_missing: bool = True,
     install_dir: str | None = None,
 ) -> str:
-    """Return the absolute path of the ``codex`` binary for this task."""
+    """Return the per-task launch path of the ``codex`` binary.
+
+    Resolves the shared codex binary on the host (raising when absent —
+    Stage 0 has no auto-install), provisions the per-task isolation home
+    tree, and returns ``<workdir>/home/.local/bin/codex`` — a per-task
+    symlink to the shared binary, so teardown's anchored pkill is scoped
+    to this task only.
+    """
     host = hook_ctx._host
     hook_ctx.report_progress(None, "Locating codex…")
-    return await resolve_codex(
+    shared = await resolve_codex(
         host, install_dir=install_dir, install_if_missing=install_if_missing,
     )
+    return await _provision_task_home(host, shared_codex_path=shared)
 
 
 def build_host(ssh, taskdir: str) -> "Host":
@@ -106,6 +114,51 @@ def _isolation_env(workdir: str) -> dict[str, str]:
         "XDG_DATA_HOME": f"{home}/.local/share",
         "XDG_CACHE_HOME": f"{home}/.cache",
     }
+
+
+async def _provision_task_home(host: "Host", *, shared_codex_path: str) -> str:
+    """Create the per-task isolation home tree and the per-task codex path.
+
+    C1: codex must never launch into a nonexistent $HOME/$CODEX_HOME — the
+    claudecode reference guarantees the tree via its install step
+    (optio-claudecode host_actions.py:328-337); codex has no install step at
+    Stage 0, so the tree is created explicitly here.
+
+    C2: teardown pkills an anchored pattern on the codex path. That is only
+    safe when the path is unique per task (see claudecode's
+    _claude_pgrep_pattern docstring). The shared binary is therefore
+    symlinked to <workdir>/home/.local/bin/codex and launched via that
+    per-task path; the anchored pkill then reaches only this task's process.
+
+    Returns the per-task launch path.
+    """
+    workdir = host.workdir.rstrip("/")
+    home = f"{workdir}/home"
+    bin_dir = f"{home}/.local/bin"
+    per_task_codex = f"{bin_dir}/codex"
+    dirs = [
+        f"{home}/.codex",
+        bin_dir,
+        f"{home}/.config",
+        f"{home}/.local/share",
+        f"{home}/.cache",
+    ]
+    quoted = " ".join(shlex.quote(d) for d in dirs)
+    r = await host.run_command(f"mkdir -p {quoted}")
+    if r.exit_code != 0:
+        raise RuntimeError(
+            f"per-task home provisioning (mkdir -p) failed "
+            f"(exit {r.exit_code}): {r.stderr.strip()[:200]}"
+        )
+    r = await host.run_command(
+        f"ln -sfn {shlex.quote(shared_codex_path)} {shlex.quote(per_task_codex)}"
+    )
+    if r.exit_code != 0:
+        raise RuntimeError(
+            f"per-task codex symlink failed (exit {r.exit_code}): "
+            f"{r.stderr.strip()[:200]}"
+        )
+    return per_task_codex
 
 
 def _build_codex_shell_command(

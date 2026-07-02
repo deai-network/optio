@@ -25,11 +25,14 @@ async def test_local_happy_path_done_in_optio_log(
     observed: dict[str, object] = {}
 
     async def after_execute(hook_ctx):
-        log_path = pathlib.Path(hook_ctx._host.workdir) / "optio.log"
+        workdir = pathlib.Path(hook_ctx._host.workdir)
+        log_path = workdir / "optio.log"
         observed["optio_log"] = log_path.read_text(encoding="utf-8")
-        observed["agents_md"] = (
-            pathlib.Path(hook_ctx._host.workdir) / "AGENTS.md"
-        ).read_text(encoding="utf-8")
+        observed["agents_md"] = (workdir / "AGENTS.md").read_text(encoding="utf-8")
+        observed["home_codex_isdir"] = (workdir / "home" / ".codex").is_dir()  # C1
+        observed["per_task_codex"] = (
+            workdir / "home" / ".local" / "bin" / "codex"
+        ).exists()  # C2
 
     task = create_codex_task(
         process_id="codex-local-happy",
@@ -49,6 +52,8 @@ async def test_local_happy_path_done_in_optio_log(
     assert "Hello from the test." in observed["agents_md"]
     assert "STATUS:" in observed["agents_md"]
     assert "DONE" in observed["optio_log"]
+    assert observed["home_codex_isdir"] is True
+    assert observed["per_task_codex"] is True
     assert captures.widget_upstream
     assert captures.widget_data
 
