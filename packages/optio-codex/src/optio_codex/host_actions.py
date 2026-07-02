@@ -416,7 +416,8 @@ async def launch_ttyd_with_codex(
     ready_timeout_s: float = 30.0,
     env_remove: list[str] | None = None,
     session_name: str = "optio",
-) -> "tuple[ProcessHandle, int, str, str]":
+) -> "tuple[ProcessHandle, str, int, str, str]":
+    """Returns ``(ttyd_handle, tmux_path, port, socket_path, session_name)``."""
     tmux_path = await _require_tmux(host)
     socket_path = _tmux_socket_path(host)
 
@@ -466,7 +467,7 @@ async def launch_ttyd_with_codex(
         await host.terminate_subprocess(handle, aggressive=True)
         await _kill_tmux_session(host, tmux_path, socket_path, session_name)
         raise
-    return handle, port, socket_path, session_name
+    return handle, tmux_path, port, socket_path, session_name
 
 
 async def _kill_tmux_session(
@@ -479,6 +480,27 @@ async def _kill_tmux_session(
         )
     except Exception:  # noqa: BLE001
         _LOG.exception("tmux kill-session failed (socket=%s)", socket_path)
+
+
+def _socket_pkill_pattern(socket_path: str) -> str:
+    """Anchored pkill -f pattern matching the orphan ttyd carrying
+    ``socket_path`` in its cmdline (``ttyd … -- tmux -S <socket> attach``).
+    ``[t]tyd`` keeps pkill's own argv from self-matching; the verbatim
+    socket path scopes the match to this task's private socket."""
+    if not socket_path:
+        return socket_path
+    return f"[t]tyd.*{socket_path}"
+
+
+async def _kill_ttyd_by_socket(host: "Host", socket_path: str) -> None:
+    """Reap a detached orphan ttyd that has no tracked launch handle.
+
+    Normal teardown kills ttyd via ``terminate_subprocess(handle)``; a crash
+    orphan's ttyd is re-parented to init with no handle, so it is reaped
+    host-side by an anchored ``pkill -f`` on its private socket path.
+    Best-effort: pkill exits non-zero when nothing matches."""
+    pattern = _socket_pkill_pattern(socket_path)
+    await host.run_command(f"pkill -KILL -f {shlex.quote(pattern)} || true")
 
 
 def _codex_pgrep_pattern(codex_path: str) -> str:
@@ -529,6 +551,11 @@ async def teardown_session_tree(
             await host.terminate_subprocess(ttyd_handle, aggressive=aggressive)
         except Exception:
             _LOG.exception("terminate_subprocess (ttyd) failed")
+    else:
+        try:
+            await _kill_ttyd_by_socket(host, tmux_socket)
+        except Exception:
+            _LOG.exception("orphan ttyd reap failed (socket=%s)", tmux_socket)
 
     try:
         await _kill_tmux_session(host, tmux_path, tmux_socket, tmux_session)

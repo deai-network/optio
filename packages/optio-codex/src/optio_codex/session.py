@@ -90,7 +90,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             **(hook_ctx.browser_launch_env or {}),
         }
         ctx.report_progress(None, "Launching Codex…")
-        handle, ttyd_port, tmux_socket, tmux_session = await host_actions.launch_ttyd_with_codex(
+        handle, tmux_path_local, ttyd_port, tmux_socket, tmux_session = await host_actions.launch_ttyd_with_codex(
             host,
             ttyd_path=ttyd_path,
             codex_path=codex_path,
@@ -101,7 +101,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             env_remove=config.scrub_env,
         )
         launched_handle = handle
-        tmux_path = await host_actions._require_tmux(host)
+        tmux_path = tmux_path_local
 
         worker_port = await host.establish_tunnel(ttyd_port, bind_addr=bind_addr)
         await ctx.set_widget_upstream(f"http://{upstream_host}:{worker_port}")
@@ -137,8 +137,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
         if not ctx.should_continue():
             cancelled = True
         if (
-            launched_handle is not None
-            and tmux_path is not None
+            tmux_path is not None
             and tmux_socket is not None
             and tmux_session is not None
             and codex_path
