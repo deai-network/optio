@@ -121,6 +121,10 @@ async def test_resume_restores_workdir_and_passes_continue(
     # Fresh launch: no --continue. Resumed launch: -c present.
     assert "-c" not in launches[0], launches[0]
     assert "-c" in launches[1], launches[1]
+    # PUSH resume awareness: only the resumed launch carries the System: notice
+    # positional so the resumed session gets a "you have been resumed" turn.
+    assert not any("you have been resumed" in str(a) for a in launches[0]), launches[0]
+    assert any("you have been resumed" in str(a) for a in launches[1]), launches[1]
 
 
 async def test_resume_with_no_prior_snapshot_falls_back_to_fresh(

@@ -82,6 +82,16 @@ def test_build_conversation_argv_sandbox_on():
     assert argv.index("/x/grok") < argv.index("--sandbox")
 
 
+def test_build_resume_notice_args():
+    from optio_grok.host_actions import build_resume_notice_args
+    # Fresh launch → no notice.
+    assert build_resume_notice_args(resuming=False) == []
+    # Resume → a single System:-prefixed "you have been resumed" positional.
+    notice = build_resume_notice_args(resuming=True)
+    assert len(notice) == 1
+    assert "you have been resumed" in notice[0]
+
+
 def test_build_conversation_argv_sandbox_off():
     argv = build_conversation_argv("/x/grok", fs_isolation=False)
     assert "--sandbox" not in argv

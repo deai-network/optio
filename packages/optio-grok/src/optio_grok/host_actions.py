@@ -19,6 +19,7 @@ import shlex
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
 from optio_host.host import proc_wait
 
 if TYPE_CHECKING:
@@ -641,6 +642,22 @@ def build_auto_start_args(
     resuming the existing conversation.
     """
     return [prompt] if (auto_start and not resuming) else []
+
+
+def build_resume_notice_args(*, resuming: bool) -> list[str]:
+    """Trailing positional that notifies a resumed grok TUI session.
+
+    Returns ``[f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}"]`` on resume (grok
+    continues with ``-c``, so a trailing positional is processed as a new turn in
+    the continued session — mirrors claudecode's ``claude --continue '<text>'``).
+    Empty on a fresh launch. This is the PUSH half of resume awareness — it makes
+    the agent notice the resume promptly; ``resume.log`` remains the pull-based
+    source of truth. Unlike claudecode, grok always teaches the ``System:``
+    convention (``_SYSTEM_PREFIX_EXPLAINER`` even when ``host_protocol`` is off),
+    so no host_protocol gate is needed. Mutually exclusive with
+    :func:`build_auto_start_args` (auto_start only fires on a FRESH launch).
+    """
+    return [f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}"] if resuming else []
 
 
 # Controlling-tty wrapper for the conversation launch under fs-isolation.
