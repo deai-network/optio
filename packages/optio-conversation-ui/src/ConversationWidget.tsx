@@ -5,6 +5,7 @@ import { ClaudeCodeView } from './claudecode/ClaudeCodeView.js';
 import { OpencodeView } from './opencode/OpencodeView.js';
 import { GrokView } from './grok/GrokView.js';
 import { CodexView } from './codex/CodexView.js';
+import { CursorView } from './cursor/CursorView.js';
 
 const THEME_KEY = 'optio-conversation:theme';
 
@@ -26,6 +27,7 @@ export function ConversationWidget({ ownTheme, ...props }: ConversationWidgetPro
     if (protocol === 'opencode') return <OpencodeView {...viewProps} />;
     if (protocol === 'grok') return <GrokView {...viewProps} />;
     if (protocol === 'codex') return <CodexView {...viewProps} />;
+    if (protocol === 'cursor') return <CursorView {...viewProps} />;
     return <ClaudeCodeView {...viewProps} />;
   };
 
