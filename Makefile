@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help install check-tooling install-demo run-demo run-demo-dashboard build build-dashboard run-dashboard-api run-dashboard-dev codegen test test-interop lint lint-no-direct-writes clean clean-codegen clean-deep
 
-PY_PACKAGES := optio-core optio-host optio-agents optio-opencode optio-codex
+PY_PACKAGES := optio-core optio-host optio-agents optio-opencode optio-codex optio-cursor
 
 # Python toolchain — repo-local venv. Override PYTHON to pick a specific interpreter.
 PYTHON ?= python3
@@ -136,7 +136,7 @@ run-dashboard-dev:  ## Start the dashboard Vite dev server (requires run-dashboa
 # See docs/2026-05-18-release-infrastructure-design.md for design.
 
 RELEASABLE_TS      := filtrum-core filtrum-mongo optio-ui optio-api optio-conversation-ui optio-dashboard
-RELEASABLE_PY      := optio-host optio-agents optio-opencode optio-claudecode optio-grok optio-codex optio-demo
+RELEASABLE_PY      := optio-host optio-agents optio-opencode optio-claudecode optio-grok optio-codex optio-cursor optio-demo
 RELEASE_INDIVIDUAL := $(RELEASABLE_TS) $(RELEASABLE_PY)
 WIRE_LOCKED        := optio-contracts optio-core
 

@@ -10,7 +10,7 @@ WATCHFILES := $(VENV)/bin/watchfiles
 # All locally-developed optio packages the demo depends on (transitively).
 # `clean` purges their installed metadata; `install` reinstalls them editable
 # in dependency order so a stale install can never pin an old optio-core.
-LOCAL_PKGS := optio-core optio-host optio-agents optio-opencode optio-claudecode optio-grok optio-codex optio-demo
+LOCAL_PKGS := optio-core optio-host optio-agents optio-opencode optio-claudecode optio-grok optio-codex optio-cursor optio-demo
 
 help:  ## Show this help
 	@awk 'BEGIN { FS = ":.*##" } /^[a-zA-Z_-]+:.*##/ { printf "  \033[1m%-15s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -35,6 +35,7 @@ install: check-venv deps-up  ## Install demo: docker compose + editable install 
 	$(PIP) install -e ../optio-claudecode
 	$(PIP) install -e ../optio-grok
 	$(PIP) install -e ../optio-codex
+	$(PIP) install -e ../optio-cursor
 	$(PIP) install -e .
 
 clean: check-venv  ## Uninstall all editable optio packages (purge stale install metadata; run `make clean install`)
@@ -53,7 +54,8 @@ run: check-venv  ## Run optio_demo with auto-restart on Python source change (wa
 	  ../optio-opencode/src \
 	  ../optio-claudecode/src \
 	  ../optio-grok/src \
-	  ../optio-codex/src
+	  ../optio-codex/src \
+	  ../optio-cursor/src
 
 run-dashboard:  ## Run the optio-dashboard against the demo Mongo + Redis
 	MONGODB_URL=mongodb://localhost:27017/optio-demo REDIS_URL=redis://localhost:6379 npx optio-dashboard

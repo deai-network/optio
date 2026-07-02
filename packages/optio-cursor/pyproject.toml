@@ -3,9 +3,9 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "optio-demo"
-version = "0.1.6"
-description = "Demo application exercising all optio-core features"
+name = "optio-cursor"
+version = "0.1.0"
+description = "Run Cursor CLI (cursor-agent) as an optio task; local subprocess or remote via SSH; ttyd-served TUI iframe."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
@@ -20,18 +20,23 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Operating System :: POSIX :: Linux",
     "Operating System :: MacOS",
-    "Topic :: Software Development",
-    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Code Generators",
+    "Framework :: AsyncIO",
 ]
 dependencies = [
-    "optio-core[redis]>=0.3,<0.4",
-    "marimo>=0.9",
-    "optio-opencode>=0.2,<0.3",
-    "optio-claudecode>=0.3,<0.4",
-    "optio-grok>=0.1,<0.2",
-    "optio-codex>=0.1,<0.2",
-    "optio-cursor>=0.1,<0.2",
-    "watchfiles>=1.0",
+    "optio-core>=0.3,<0.4",
+    "optio-host>=0.2,<0.3",
+    "optio-agents>=0.3,<0.4",
+    "asyncssh>=2.14",
+    "aiohttp>=3.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
 ]
 
 [project.urls]
@@ -41,3 +46,7 @@ Issues = "https://github.com/deai-network/optio/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
