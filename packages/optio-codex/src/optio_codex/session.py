@@ -25,6 +25,11 @@ from optio_codex import cred_watcher, host_actions
 from optio_codex import models as codex_models
 from optio_codex.conversation import CodexConversation
 from optio_codex.conversation_listener import ConversationListener
+from optio_codex.fs_allowlist import (
+    SandboxSettings,
+    build_sandbox_cli_args,
+    resolve_sandbox_settings,
+)
 from optio_codex.prompt import compose_agents_md
 from optio_codex.seed_manifest import CODEX_SEED_MANIFEST, CODEX_SEED_SUFFIX
 from optio_codex.snapshots import (
@@ -64,6 +69,11 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
     tmux_session: str | None = None
     codex_path: str | None = None
     ttyd_path: str | None = None
+    # Stage 8: the task's resolved native-sandbox posture (mode + writable
+    # roots + network), computed ONCE in _prepare from config + the real host
+    # home, then rendered into every launch surface (iframe argv here,
+    # app-server sandboxPolicy in the conversation body).
+    sandbox_settings: SandboxSettings | None = None
     cancelled = False
     # Whether a snapshot was restored this run (suppresses the auto-start
     # positional). Set by _prepare, read by the body.
@@ -112,6 +122,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
         """
         nonlocal codex_path, ttyd_path, resuming, resume_session_id
         nonlocal resolved_seed_id, lease_holder, cred_baseline
+        nonlocal sandbox_settings
 
         resume_requested = bool(getattr(ctx, "resume", False))
         snapshot = None
@@ -143,6 +154,12 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             install_if_missing=config.install_if_missing,
             install_dir=config.codex_install_dir,
         )
+        # Stage 8: resolve the native-sandbox posture ONCE. ``~/`` grants
+        # expand against the REAL host home (codex runs under an isolated
+        # $HOME), so the settings need it up front; every launch surface
+        # renders from this single object.
+        host_home = await host.resolve_host_home()
+        sandbox_settings = resolve_sandbox_settings(config, host_home=host_home)
         # Conversation mode is headless (codex app-server stdio) — no ttyd.
         if config.mode != "conversation":
             ttyd_path = await host_actions.ensure_ttyd_installed(
@@ -211,7 +228,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             *host_actions.build_codex_flags(
                 model=config.model,
                 ask_for_approval=config.ask_for_approval,
-                sandbox=config.effective_sandbox_mode,
+                sandbox_args=build_sandbox_cli_args(sandbox_settings),
             ),
             # Positional kickoff prompt: fresh launches only (suppressed when
             # a snapshot was restored — re-kicking would duplicate the task).

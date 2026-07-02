@@ -558,13 +558,15 @@ def build_codex_flags(
     *,
     model: str | None,
     ask_for_approval: str = "never",
-    sandbox: str = "workspace-write",
+    sandbox_args: list[str],
 ) -> list[str]:
-    """Translate CodexTaskConfig knobs to an interactive ``codex`` argv list."""
-    out: list[str] = [
-        "--ask-for-approval", ask_for_approval,
-        "--sandbox", sandbox,
-    ]
+    """Translate CodexTaskConfig knobs to an interactive ``codex`` argv list.
+
+    ``sandbox_args`` come pre-rendered from
+    ``fs_allowlist.build_sandbox_cli_args`` — the settings SSOT; this
+    function stays the single argv-composition seam.
+    """
+    out: list[str] = ["--ask-for-approval", ask_for_approval, *sandbox_args]
     if model:
         out += ["--model", model]
     return out

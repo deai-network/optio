@@ -76,7 +76,9 @@ def test_build_shell_command_survives_shell_significant_paths(tmp_path):
 def test_env_isolation_and_done_error():
     from optio_codex.host_actions import build_codex_flags
 
-    flags = build_codex_flags(model="gpt-test")
+    flags = build_codex_flags(
+        model="gpt-test", sandbox_args=["--sandbox", "workspace-write"],
+    )
     env, cmd = _build_codex_shell_command(
         codex_path="/x/codex", workdir="/w/task", extra_env=None,
         codex_flags=flags,
@@ -326,3 +328,17 @@ async def test_append_resume_log_entry_formats(tmp_path):
     assert len(lines) == 2
     assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", lines[0])
     assert lines[1].endswith(" REFRESHED:AGENTS.md,notes.md")
+
+
+def test_build_codex_flags_embeds_sandbox_args():
+    from optio_codex.host_actions import build_codex_flags
+
+    flags = build_codex_flags(
+        model="gpt-5.5",
+        ask_for_approval="never",
+        sandbox_args=["--sandbox", "workspace-write",
+                      "-c", 'sandbox_workspace_write.writable_roots=["/s"]'],
+    )
+    assert flags.index("--sandbox") < flags.index("--model")
+    assert flags[flags.index("--sandbox") + 1] == "workspace-write"
+    assert 'sandbox_workspace_write.writable_roots=["/s"]' in flags
