@@ -82,6 +82,17 @@ def test_build_conversation_argv_sandbox_on():
     assert argv.index("/x/grok") < argv.index("--sandbox")
 
 
+def test_teardown_aggressive_grace_for_seeded_sessions():
+    """A seeded session must tear grok down gracefully even on cancel so it can
+    flush a rotated (single-use) auth.json before save-back — an aggressive kill
+    would strand the rotation and kill the seed. Non-seeded keeps the fast kill."""
+    from optio_grok.session import _teardown_aggressive
+    assert _teardown_aggressive(cancelled=True, seeded=True) is False    # grace
+    assert _teardown_aggressive(cancelled=True, seeded=False) is True    # fast kill
+    assert _teardown_aggressive(cancelled=False, seeded=True) is False
+    assert _teardown_aggressive(cancelled=False, seeded=False) is False
+
+
 def test_build_resume_notice_args():
     from optio_grok.host_actions import build_resume_notice_args
     # Fresh launch → no notice.
