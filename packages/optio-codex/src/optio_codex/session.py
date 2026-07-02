@@ -73,7 +73,11 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
         upstream_host = os.environ.get("OPTIO_WIDGET_TUNNEL_HOST", "127.0.0.1")
         ttyd_iface = bind_addr if isinstance(host, LocalHost) else "127.0.0.1"
 
-        codex_flags = host_actions.build_codex_flags(model=config.model)
+        codex_flags = host_actions.build_codex_flags(
+            model=config.model,
+            ask_for_approval=config.ask_for_approval,
+            sandbox=config.sandbox,
+        )
         codex_flags = [
             *codex_flags,
             *host_actions.build_auto_start_args(auto_start=config.auto_start),

@@ -16,11 +16,19 @@ __all__ = [
     "SSHConfig",
     "CodexTaskConfig",
     "IframeMode",
+    "ApprovalPolicy",
+    "SandboxMode",
 ]
 
 
 IframeMode = Literal["iframe"]
 _VALID_MODES = {"iframe"}
+
+ApprovalPolicy = Literal["untrusted", "on-failure", "on-request", "never"]
+_VALID_APPROVAL_POLICIES = {"untrusted", "on-failure", "on-request", "never"}
+
+SandboxMode = Literal["read-only", "workspace-write", "danger-full-access"]
+_VALID_SANDBOX_MODES = {"read-only", "workspace-write", "danger-full-access"}
 
 
 @dataclass
@@ -38,6 +46,10 @@ class CodexTaskConfig:
     scrub_env: list[str] | None = None
 
     model: str | None = None
+    # Interactive iframe defaults: unattended launch in ttyd (mirrors claudecode
+    # bypassPermissions for embedded sessions nobody is watching).
+    ask_for_approval: ApprovalPolicy = "never"
+    sandbox: SandboxMode = "workspace-write"
 
     ssh: SSHConfig | None = None
 
@@ -67,6 +79,16 @@ class CodexTaskConfig:
                 "mode='conversation' (not implemented in Stage 0; iframe "
                 "mode's only completion signal is the optio.log keyword "
                 "channel)."
+            )
+        if self.ask_for_approval not in _VALID_APPROVAL_POLICIES:
+            raise ValueError(
+                f"CodexTaskConfig.ask_for_approval={self.ask_for_approval!r} "
+                f"is not one of {sorted(_VALID_APPROVAL_POLICIES)}"
+            )
+        if self.sandbox not in _VALID_SANDBOX_MODES:
+            raise ValueError(
+                f"CodexTaskConfig.sandbox={self.sandbox!r} "
+                f"is not one of {sorted(_VALID_SANDBOX_MODES)}"
             )
         for field_name in ("codex_install_dir", "ttyd_install_dir"):
             val = getattr(self, field_name)

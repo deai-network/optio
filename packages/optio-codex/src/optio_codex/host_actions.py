@@ -147,8 +147,17 @@ def _build_codex_shell_command(
     return env_assignments, shell_command
 
 
-def build_codex_flags(*, model: str | None) -> list[str]:
-    out: list[str] = []
+def build_codex_flags(
+    *,
+    model: str | None,
+    ask_for_approval: str = "never",
+    sandbox: str = "workspace-write",
+) -> list[str]:
+    """Translate CodexTaskConfig knobs to an interactive ``codex`` argv list."""
+    out: list[str] = [
+        "--ask-for-approval", ask_for_approval,
+        "--sandbox", sandbox,
+    ]
     if model:
         out += ["--model", model]
     return out
