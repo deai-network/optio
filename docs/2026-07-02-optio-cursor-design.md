@@ -68,12 +68,33 @@ operations the headless surface can't do (notably first-time login). API-key aut
    surfaces through the `BROWSER:` keyword; (b) `CURSOR_API_KEY` planted via seed
    for operators with API keys. No OAuth-loopback rewrite unless the login URL
    proves to need it (probe at Stage 3).
-6. **Filesystem isolation: probe cursor's native `--sandbox` first** (grok
-   precedent: native Landlock sandbox replaced claustrum and custom profiles were
-   fail-closed). If cursor's sandbox proves fail-open or not
-   allowlist-configurable (config only exposes `mode` + `networkAccess` so far),
-   fall back to claustrum via grok/claudecode's `fs_allowlist.py` pattern. Decide
-   at Stage 8 with a live enforcement probe.
+6. **Filesystem isolation = claustrum (Landlock), NOT cursor's native
+   `--sandbox`.** RESOLVED at Stage 8 by a binary/schema probe (host not logged
+   in; strings + `cursorsandbox --help` + `index.js` bundle analysis). Cursor's
+   native sandbox is a *per-shell-command* wrapper (`cursorsandbox`, self-described
+   "Sandboxing helper for Everysphere shell-exec"): the shell tool spawns each
+   command via `cursorsandbox --policy <json> -- <cmd>`, and that path IS
+   allowlist-configurable (`additionalReadwritePaths` / `additionalReadonlyPaths`
+   / `cwd` on a `workspace_readwrite` base) AND fail-closed (`te()` in `index.js`
+   throws `Sandbox policy '…' is not supported on this system` when the helper's
+   `--preflight-only` probe fails — exit 2 = unsupported kernel — rather than
+   running the command unconfined). So it passes both criteria *for shell
+   subprocesses*. But there is **no whole-process confinement**: the Node agent
+   itself is never Landlock-confined (no `restrict_self`/`prctl`/`seccomp` in the
+   agent bundle — those live only inside the `cursorsandbox` helper, applied to
+   the wrapped command), so the agent's OWN in-process file tools (Write/Edit via
+   the native `file_service` module) write through unconfined Node `fs` and
+   escape the allowlist. This is the material difference from grok: grok's native
+   sandbox qualified precisely because it Landlock-confines the ENTIRE grok
+   process at startup (agent writes included); cursor has no equivalent. Since the
+   Stage-8 goal is to confine *the cursor agent AND every tool/subprocess,
+   kernel-enforced*, the native shell-only sandbox is insufficient. We therefore
+   port claudecode's claustrum: wrap the whole `cursor-agent` launch argv in the
+   claustrum Landlock CLI (whole-process, all descendants), fail-closed, and run
+   cursor-agent with `--sandbox disabled` so its own per-command helper doesn't
+   nest under the outer Landlock. `fs_allowlist.py` + `_build_claustrum_wrap`
+   port claudecode's Stage-8 pattern (baseline grants + workdir rwx + cursor
+   cache rox + caller extras).
 7. **Model switching: inline via ACP `session/set_model`** (method present in the
    binary; verify live at Stage 7). Fallback: restart-based relaunch with
    `--resume <chatId> --model <m>` (both `--resume` and `create-chat` exist).
@@ -106,7 +127,8 @@ mirrors `optio-grok` (adapt, don't copy blindly):
 - `snapshots.py` — Mongo `{prefix}_cursor_session_snapshots` (chat state + workdir
   tar; cursor session-store location pinned at Stage 2).
 - `models.py` — model catalogue via `cursor-agent models` / ACP.
-- `fs_allowlist.py` — only if Stage 8 lands on claustrum (Decision 6).
+- `fs_allowlist.py` — claustrum grant-flag builder (Stage 8 landed on claustrum;
+  Decision 6). Ports claudecode's `build_grant_flags` + `_build_claustrum_wrap`.
 - UI: `optio-conversation-ui/src/cursor/` reducer + view, gated by
   `widgetData.protocol = "cursor"`; start from the grok ACP reducer.
 
@@ -122,7 +144,7 @@ mirrors `optio-grok` (adapt, don't copy blindly):
 | 5 Cache + HOME isolation | evictable binary cache; per-task identity | installer-root relocation; leak-free verified |
 | 6 Conversation + UI | live `Conversation` + chat widget | `cursor-agent acp`; `src/cursor/` reducer+view (share grok ACP plumbing) |
 | 7 Frontend parity | permissions, model switch, file up/down, verbosity | `session/request_permission`; `session/set_model` (probe); upload/download endpoints |
-| 8 fs-isolation | sandbox | native `--sandbox` probe → else claustrum |
+| 8 fs-isolation | sandbox | native `--sandbox` is shell-exec-only → **claustrum** whole-process Landlock wrap (Decision 6) |
 
 Demo (per the guide's Part 5): a cursor **seed-setup** task + **two seed-pinned**
 run tasks — one iframe, one conversation — in `optio-demo`, mirroring the
@@ -161,7 +183,23 @@ claudecode/opencode/grok demo trio. Registration: `optio-demo` install list +
    block in `optio-cursor/src/optio_cursor/conversation.py`). Runtime
    confirmation deferred to the demo stage.
 4. `session/set_model` live behavior (Stage 7).
-5. Native sandbox enforcement semantics: fail-open vs fail-closed, allowlist
-   configurability (Stage 8).
+5. ~~Native sandbox enforcement semantics~~ **RESOLVED** (Stage 8 binary/schema
+   probe; live half skipped — host not logged in). `cursorsandbox` is a
+   per-shell-command helper with a unified JSON policy file: `PolicyFile` =
+   `{version, logFormat, policy}`; `policy` is an internally-tagged
+   `SandboxPolicy` enum (`workspace_readwrite` | `workspace_readonly` |
+   `insecure_none`) carrying `cwd`, `additionalReadwritePaths`,
+   `additionalReadonlyPaths`, `networkAccess`, `disableTmpWrite`, `blockGitWrites`,
+   `ignoreMapping`, plus a `networkPolicy` (`allow`/`deny`/`default`) and a
+   `networkPolicyStrict` flag. **(a) Allowlist-configurable: YES** (the
+   `additional*Paths` arrays). **(b) Network toggle: YES** (`--network` flag /
+   `sandbox.networkAccess` ∈ `user_config_only|user_config_with_defaults|allow_all`,
+   `networkAllowlist`, `networkPolicyStrict`). **(c) Fail-closed: YES for
+   shell-exec** — `te()` throws when the helper's `--preflight-only` probe returns
+   unsupported (exit 2); it never silently runs a requested policy unconfined.
+   **BUT: shell-exec ONLY.** The Node agent process is not self-Landlocked, so the
+   agent's own Write/Edit file tools bypass the sandbox. → **DECISION: port
+   claustrum** (whole-process Landlock wrap of the cursor-agent launch), not
+   native. See Decision 6.
 6. Whether ACP works with `CURSOR_API_KEY` alone (no `cursor_login` state) —
    affects the API-key seed variant (Stage 3).
