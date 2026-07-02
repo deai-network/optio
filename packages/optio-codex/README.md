@@ -14,7 +14,8 @@ Requires Python 3.11+. Pulls `optio-core`, `optio-host`, `optio-agents`,
 
 ## What it does
 
-optio-codex adapts the `optio-claudecode` / `optio-grok` iframe machinery:
+optio-codex adapts the `optio-claudecode` iframe machinery (see also
+`optio-opencode` for shared log-protocol driver patterns):
 it launches `codex` inside a detached tmux session, serves the TUI over
 `ttyd`, and coordinates with the host harness through the `optio.log`
 keyword channel (STATUS / DELIVERABLE / DONE / ERROR). The agent reads its
