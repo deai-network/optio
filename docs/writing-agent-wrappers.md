@@ -214,8 +214,21 @@ target's equivalent) that teaches it the coordination protocol and the task.
 (`build_log_channel_prompt(features)` — the single source of truth), a
 resume-awareness section, the task framing, and the consumer's verbatim
 instructions. Honor `host_protocol=False` (omit keyword docs, add the `System:`
-message explainer instead). Explain the `resume.log` protocol so the agent detects
-relaunches.
+message explainer instead).
+
+**Resume awareness has two halves — ship BOTH.** Shipping only one is a silent
+parity gap.
+1. **Pull** — document the `resume.log` protocol in the memory file so the agent
+   can detect a relaunch itself (each session start appends a line; the agent
+   re-reads on a new turn).
+2. **Push** — on *every* resume, send the agent a `System: you have been resumed`
+   message (`RESUME_NOTICE`, prefixed with `SYSTEM_MESSAGE_PREFIX`) as its first
+   turn, so it notices immediately instead of waiting to re-check `resume.log`.
+   The push is per-launch-mode: a trailing positional after the agent's
+   continue/resume flag for a **TUI/iframe** launch (`agent --continue '<notice>'`),
+   the first stdin/API message for a **conversation** launch. Send it in every
+   surface; gate it only if the agent isn't taught the `System:` convention in
+   that mode.
 
 **Reference.** `optio-agents/…/protocol/prompt.py` (`build_log_channel_prompt`,
 `RESUME_NOTICE`); wrappers' `prompt.py` (`compose_agents_md`) in both packages.
@@ -245,10 +258,13 @@ the local-vs-remote bind decision.
 **Goal.** A terminated task relaunches and picks up conversation, workdir, and
 state. **Touches.** `supports_resume`; snapshot capture/restore (workdir tar +
 session-state blob, with retention); `workdir_exclude`; optional at-rest encryption;
-`on_resume_refresh`; `resume.log`. **Reference.** `snapshots.py` +
-`_capture_snapshot`/`_prepare` in either wrapper; the resume section in `prompt.py`.
-**Done when.** Relaunch by process id restores the session; decrypt failure fails
-loud (never silent fresh-start).
+`on_resume_refresh`; **both halves of resume awareness** — the `resume.log` pull doc
+AND the pushed `System: you have been resumed` notice on relaunch (Part 2D), in
+*every* launch mode. **Reference.** `snapshots.py` + `_capture_snapshot`/`_prepare`
+in either wrapper; the resume section in `prompt.py`; `build_resume_notice_args`
+(iframe positional) and the conversation-body `RESUME_NOTICE` send. **Done when.**
+Relaunch by process id restores the session AND the agent receives the resume
+notice; decrypt failure fails loud (never silent fresh-start).
 
 ### Stage 3 — Seeds
 **Goal.** Start a *fresh* session that is already logged-in/configured — the axis
@@ -535,6 +551,7 @@ A finished wrapper covers this surface. `req` = expected for any wrapper;
 | 5 | local + remote(SSH) | req | `host_actions.build_host` |
 | 6 | readiness detection + monitoring + teardown | req | `session.py` |
 | 7 | resume / snapshots | opt | `snapshots.py`, `_capture_snapshot` |
+| 7b | resume awareness: `resume.log` doc (pull) **+** pushed `RESUME_NOTICE` on relaunch, every mode | req if resume | `prompt.py`; `build_resume_notice_args` + conversation `RESUME_NOTICE` send |
 | 8 | at-rest encryption of session blob | opt | `session_blob_encrypt`/`decrypt` |
 | 9 | crash-orphan rescue | opt | claudecode `_rescue_orphan_if_present` |
 | 10 | auto-resume-on-restart | opt | optio-core; `auto_resume` |
