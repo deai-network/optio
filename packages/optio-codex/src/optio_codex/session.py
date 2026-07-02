@@ -211,7 +211,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             *host_actions.build_codex_flags(
                 model=config.model,
                 ask_for_approval=config.ask_for_approval,
-                sandbox=config.sandbox,
+                sandbox=config.effective_sandbox_mode,
             ),
             # Positional kickoff prompt: fresh launches only (suppressed when
             # a snapshot was restored — re-kicking would duplicate the task).
@@ -274,7 +274,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             cwd=host.workdir,
             permission_gate=config.permission_gate,
             model=config.model,
-            sandbox=config.sandbox,
+            sandbox=config.effective_sandbox_mode,
             # Plan B: on resume, continue the stored thread (thread/resume)
             # instead of starting a fresh one. resume_session_id is the codex
             # thread id recorded in the restored snapshot.

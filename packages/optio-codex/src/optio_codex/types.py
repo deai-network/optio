@@ -14,6 +14,7 @@ __all__ = [
     "DeliverableCallback",
     "HookCallback",
     "SSHConfig",
+    "AllowedDir",
     "CodexTaskConfig",
     "ConversationMode",
     "ToolVerbosity",
@@ -56,6 +57,34 @@ class SeedUnavailableError(Exception):
 
 
 @dataclass
+class AllowedDir:
+    """A caller-supplied extra path grant for filesystem isolation (Stage 8).
+
+    ``mode`` is ``"ro"`` or ``"rw"``. Grants are ADDITIVE: they may widen the
+    sandbox allowlist, never mask the baseline (the workdir/cwd and ``/tmp``
+    are always writable in workspace-write).
+
+    codex divergence (vs grok/claudecode, whose sandboxes also deny reads):
+    codex ``workspace-write`` restricts WRITES only — the read side is open,
+    so ``mode="ro"`` is trivially satisfied and changes nothing (documented
+    no-op, kept for cross-wrapper config portability). Only ``mode="rw"``
+    grants alter behavior, via ``sandbox_workspace_write.writable_roots``.
+    A leading ``~/`` expands against the REAL host home at launch time (the
+    codex process runs under an isolated ``$HOME``).
+    """
+
+    path: str
+    mode: Literal["ro", "rw"]
+
+    def __post_init__(self) -> None:
+        if self.mode not in ("ro", "rw"):
+            raise ValueError(
+                f"AllowedDir.mode={self.mode!r} must be one of 'ro', 'rw' "
+                f"(path={self.path!r})."
+            )
+
+
+@dataclass
 class CodexTaskConfig:
     """Configuration for one optio-codex task instance (Stage 0).
 
@@ -75,7 +104,25 @@ class CodexTaskConfig:
     # watching). In conversation mode the thread's approvalPolicy is derived
     # from permission_gate (never / on-request), NOT from this field.
     ask_for_approval: ApprovalPolicy = "never"
-    sandbox: SandboxMode = "workspace-write"
+    # codex-native sandbox mode. None (default) derives from fs_isolation:
+    # workspace-write when isolation is on, danger-full-access when off.
+    # Explicit values are cross-validated against fs_isolation below.
+    sandbox: SandboxMode | None = None
+    # Grant network to sandboxed tool commands (codex workspace-write default
+    # is network OFF — [sandbox_workspace_write] network_access). False
+    # mirrors codex; note this is STRICTER than grok/claudecode, whose fs
+    # sandboxes do not restrict the network at all.
+    network_access: bool = False
+
+    # --- filesystem isolation (Stage 8) ---------------------------------
+    # Confine codex tool subprocesses to the task workdir + /tmp + explicit
+    # rw grants, kernel-enforced via codex's NATIVE sandbox (bundled
+    # bubblewrap primary, Landlock+seccomp fallback on Linux). Default-ON.
+    fs_isolation: bool = True
+    # Additional path grants beyond the workdir + temp dirs. ``~/`` expands
+    # against the real host home at launch. "ro" grants are a documented
+    # no-op on codex (reads are unrestricted in workspace-write).
+    extra_allowed_dirs: list[AllowedDir] | None = None
 
     ssh: SSHConfig | None = None
 
@@ -153,6 +200,12 @@ class CodexTaskConfig:
     # set to exclude home/.codex/sessions — that is the resume source.
     workdir_exclude: list[str] | None = None
 
+    @property
+    def effective_sandbox_mode(self) -> SandboxMode:
+        if self.sandbox is not None:
+            return self.sandbox
+        return "workspace-write" if self.fs_isolation else "danger-full-access"
+
     def __post_init__(self) -> None:
         if self.mode not in _VALID_MODES:
             raise ValueError(
@@ -208,10 +261,38 @@ class CodexTaskConfig:
                 f"CodexTaskConfig.ask_for_approval={self.ask_for_approval!r} "
                 f"is not one of {sorted(_VALID_APPROVAL_POLICIES)}"
             )
-        if self.sandbox not in _VALID_SANDBOX_MODES:
+        if self.sandbox is not None and self.sandbox not in _VALID_SANDBOX_MODES:
             raise ValueError(
                 f"CodexTaskConfig.sandbox={self.sandbox!r} "
                 f"is not one of {sorted(_VALID_SANDBOX_MODES)}"
+            )
+        if self.fs_isolation and self.effective_sandbox_mode == "danger-full-access":
+            raise ValueError(
+                "CodexTaskConfig: fs_isolation=True is incompatible with "
+                "sandbox='danger-full-access' — fs_isolation exists to "
+                "guarantee a kernel-enforced sandbox. Set fs_isolation=False "
+                "to run unconfined."
+            )
+        if not self.fs_isolation and self.sandbox in ("read-only", "workspace-write"):
+            raise ValueError(
+                "CodexTaskConfig: fs_isolation=False launches codex "
+                "unconfined (danger-full-access); an explicit restrictive "
+                f"sandbox={self.sandbox!r} contradicts it. Drop one of the "
+                "two settings."
+            )
+        rw_extras = [d for d in (self.extra_allowed_dirs or []) if d.mode == "rw"]
+        if rw_extras and self.effective_sandbox_mode == "read-only":
+            raise ValueError(
+                "CodexTaskConfig: extra_allowed_dirs rw grants "
+                f"({[d.path for d in rw_extras]}) cannot be honored under "
+                "sandbox='read-only' — writable_roots is a workspace-write "
+                "feature. ('ro' grants are fine: codex never restricts reads.)"
+            )
+        if self.network_access and self.effective_sandbox_mode == "read-only":
+            raise ValueError(
+                "CodexTaskConfig: network_access=True is a "
+                "[sandbox_workspace_write] knob and cannot apply under "
+                "sandbox='read-only'."
             )
         for field_name in ("codex_install_dir", "ttyd_install_dir"):
             val = getattr(self, field_name)

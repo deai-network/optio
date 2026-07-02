@@ -19,6 +19,7 @@ from optio_codex.seed_manifest import (
 )
 from optio_codex.session import create_codex_task, run_codex_session
 from optio_codex.types import (
+    AllowedDir,
     ApprovalPolicy,
     CodexTaskConfig,
     ConversationMode,
@@ -38,6 +39,7 @@ _logging.getLogger("asyncssh").setLevel(_logging.WARNING)
 __all__ = [
     "create_codex_task",
     "run_codex_session",
+    "AllowedDir",
     "ApprovalPolicy",
     "CodexTaskConfig",
     "ConversationMode",
