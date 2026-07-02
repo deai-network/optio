@@ -1,4 +1,7 @@
+import asyncio
 import re
+import shutil
+import subprocess
 
 import pytest
 
@@ -98,3 +101,33 @@ def test_pgrep_pattern_scoped_to_per_task_path_only():
     # Self-match guard intact ([c]odex): the pattern string itself must not
     # contain the literal token 'codex' at the anchored tail.
     assert "[c]odex" in pattern
+
+
+@pytest.mark.asyncio
+async def test_kill_codex_processes_spares_other_tasks(tmp_path):
+    """Launch two real processes from two per-task paths; killing task A's
+    must leave task B's alive. Uses real pkill against unique tmp paths."""
+    from optio_codex.host_actions import kill_codex_processes
+    from optio_host.host import LocalHost
+
+    sleep_bin = shutil.which("sleep")
+    procs = []
+    paths = []
+    for task in ("a", "b"):
+        bin_dir = tmp_path / task / "workdir" / "home" / ".local" / "bin"
+        bin_dir.mkdir(parents=True)
+        codex = bin_dir / "codex"
+        shutil.copy(sleep_bin, codex)
+        paths.append(str(codex))
+        procs.append(subprocess.Popen([str(codex), "30"]))
+    try:
+        taskdir_a = str(tmp_path / "a")
+        host = LocalHost(taskdir=taskdir_a)
+        await kill_codex_processes(host, paths[0])
+        await asyncio.sleep(0.5)
+        assert procs[0].poll() is not None, "task A's codex should be dead"
+        assert procs[1].poll() is None, "task B's codex must survive"
+    finally:
+        for p in procs:
+            if p.poll() is None:
+                p.kill()
