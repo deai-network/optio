@@ -25,7 +25,35 @@ __all__ = [
     "ToolVerbosity",
     "SeedProvider",
     "SeedUnavailableError",
+    "AllowedDir",
 ]
+
+
+@dataclass
+class AllowedDir:
+    """A caller-supplied extra path grant for filesystem isolation (Stage 8).
+
+    ``mode`` is one of ``"ro"`` (read-only) or ``"rw"`` (read-write). Grants
+    are additive: callers may widen the sandbox allowlist but never mask the
+    security baseline (the workdir + temp dirs are always writable).
+
+    grok's native sandbox is Landlock-only here (no ``deny`` list, so no
+    bubblewrap dependency), so unlike optio-claudecode there is no separate
+    execute bit — Landlock read/write grants cover execution. A leading
+    ``~/`` in ``path`` is expanded against the REAL host home at launch time
+    (the grok process runs under an isolated ``$HOME``, so grants cannot rely
+    on its shell expansion).
+    """
+
+    path: str
+    mode: Literal["ro", "rw"]
+
+    def __post_init__(self) -> None:
+        if self.mode not in ("ro", "rw"):
+            raise ValueError(
+                f"AllowedDir.mode={self.mode!r} must be one of 'ro', 'rw' "
+                f"(path={self.path!r})."
+            )
 
 
 # A seed provider resolves a usable seed_id at launch time (e.g. leasing one
@@ -173,6 +201,20 @@ class GrokTaskConfig:
     # anything larger with HTTP 413. Mirrored to the widget via widgetData.
     max_download_bytes: int = 10_000_000
 
+    # --- filesystem isolation (Stage 8) ---------------------------------
+    # Confine the grok process (and every tool/subprocess it spawns) to the
+    # task workdir + temp dirs + explicit grants, kernel-enforced via grok's
+    # NATIVE sandbox (Landlock on Linux). optio plants a CUSTOM
+    # ``[profiles.optio]`` (extends="strict") under the per-task GROK_HOME and
+    # launches with ``--sandbox optio``. Custom profiles are fail-CLOSED: if
+    # the kernel can't apply them grok refuses to start (built-in profiles
+    # fail-OPEN, which is why optio uses a custom one). Requires Landlock
+    # (kernel >= 5.13) on the worker. Default-ON.
+    fs_isolation: bool = True
+    # Additional path grants beyond the workdir + temp dirs. ``~/`` expands
+    # against the real host home at launch. Ignored when fs_isolation=False.
+    extra_allowed_dirs: list[AllowedDir] | None = None
+
     def __post_init__(self) -> None:
         if (
             self.permission_mode is not None
@@ -231,6 +273,12 @@ class GrokTaskConfig:
                 "GrokTaskConfig: file_download=True requires "
                 "mode='conversation' and conversation_ui=True."
             )
+        for ad in self.extra_allowed_dirs or []:
+            if ad.mode not in ("ro", "rw"):
+                raise ValueError(
+                    f"GrokTaskConfig.extra_allowed_dirs: mode={ad.mode!r} "
+                    f"must be one of 'ro', 'rw' (path={ad.path!r})."
+                )
         for field_name in ("grok_install_dir", "ttyd_install_dir"):
             val = getattr(self, field_name)
             if val is not None and not val.startswith("/") and not val.startswith("~"):
