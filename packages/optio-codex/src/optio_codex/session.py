@@ -32,6 +32,12 @@ def _build_host(config: CodexTaskConfig, process_id: str) -> Host:
 
 async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> None:
     """Execute function body for one optio-codex task instance."""
+    if config.ssh is not None:
+        raise NotImplementedError(
+            "optio-codex Stage 0 supports the local host only; remote (SSH) "
+            "sessions arrive with the Stage 1 work. Remove the ssh field or "
+            "wait for optio-codex >= 0.2."
+        )
     host: Host = _build_host(config, ctx.process_id)
     protocol = get_protocol(browser="suppress")
     launched_handle: ProcessHandle | None = None
