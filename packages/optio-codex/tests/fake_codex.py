@@ -12,7 +12,7 @@ from pathlib import Path
 SCENARIOS = (
     "happy", "deliverable", "error",
     "exit_zero", "exit_nonzero", "long",
-    "resume", "seed",
+    "resume", "seed", "seed_rotate",
 )
 
 
@@ -229,6 +229,39 @@ def _scenario_seed() -> None:
     time.sleep(30.0)
 
 
+def _rotate_auth(ch: Path, new_refresh: str) -> None:
+    """Rotate ``tokens.refresh_token`` in ``<CODEX_HOME>/auth.json``,
+    modelling codex's single-use refresh-token rotation (manager.rs rewrites
+    auth.json in place on refresh) — what the credential watcher must save
+    back."""
+    auth = ch / "auth.json"
+    try:
+        data = json.loads(auth.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        data = {}
+    tokens = data.get("tokens")
+    if isinstance(tokens, dict):
+        tokens["refresh_token"] = new_refresh
+    auth.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _scenario_seed_rotate() -> None:
+    """CONSUME role that rotates the refresh token mid-session.
+
+    The seed engine planted ``home/.codex/auth.json`` before launch; this
+    run rotates its refresh_token (as real codex would on a token refresh),
+    so the session's teardown save-back must write the rotated auth.json
+    back into the seed. Used by the Stage-4 lease/save-back session test."""
+    ch = _codex_home()
+    ch.mkdir(parents=True, exist_ok=True)
+    _rotate_auth(ch, "ROTATED-INSESSION")
+    time.sleep(0.05)
+    _log("STATUS: 10% rotate scenario alive")
+    time.sleep(0.05)
+    _log("DONE: rotate scenario completed")
+    time.sleep(30.0)
+
+
 def main() -> int:
     import argparse
 
@@ -254,6 +287,7 @@ def main() -> int:
         "long": _scenario_long,
         "resume": _scenario_resume,
         "seed": _scenario_seed,
+        "seed_rotate": _scenario_seed_rotate,
     }[scenario]()
     return 0
 

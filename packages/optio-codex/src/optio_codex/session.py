@@ -183,6 +183,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
 
     async def _codex_body(host: Host, hook_ctx: HookContext) -> None:
         nonlocal launched_handle, tmux_path, tmux_socket, tmux_session
+        nonlocal cred_watch_task
 
         bind_addr = os.environ.get("OPTIO_WIDGET_TUNNEL_BIND", "127.0.0.1")
         upstream_host = os.environ.get("OPTIO_WIDGET_TUNNEL_HOST", "127.0.0.1")
@@ -226,6 +227,21 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             "iframeSrc": "{widgetProxyUrl}/",
         })
         ctx.report_progress(None, "Codex is live")
+
+        # Start the in-session credential watcher for a seeded session: it
+        # saves back the rotated auth.json, and (when the seed is leased)
+        # renews the lease and aborts the session on lease loss.
+        if resolved_seed_id is not None:
+            cred_watch_task = asyncio.create_task(
+                cred_watcher.run_credential_watcher(
+                    ctx, host,
+                    seed_id=resolved_seed_id,
+                    baseline=cred_baseline,
+                    encrypt=None,
+                    decrypt=None,
+                    lease_holder=lease_holder,
+                )
+            )
 
         while ctx.should_continue() and await host_actions.tmux_session_alive(
             host, tmux_path, tmux_socket, tmux_session,
@@ -271,6 +287,44 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                 )
             except Exception:
                 _LOG.exception("teardown_session_tree failed")
+
+        # Stop the credential watcher before the final save-back so the two
+        # never race on the same seed blob.
+        if cred_watch_task is not None:
+            cred_watch_task.cancel()
+            try:
+                await cred_watch_task
+            except asyncio.CancelledError:
+                pass
+
+        # Final backstop save-back — LOAD-BEARING, not defensive: codex's
+        # refresh already consumed the old refresh token server-side
+        # (single-use, openai/codex#15410); a rotation in the last poll
+        # window is persisted ONLY here. Runs after codex terminated so
+        # auth.json is final.
+        if resolved_seed_id is not None:
+            try:
+                cred_baseline = await cred_watcher.save_back_if_changed(
+                    ctx, host,
+                    seed_id=resolved_seed_id,
+                    baseline=cred_baseline,
+                    encrypt=None,
+                    decrypt=None,
+                )
+            except Exception:
+                _LOG.exception("final credential save-back failed")
+
+        # Release the lease AFTER the final save-back (opencode's deliberate
+        # ordering, ported via grok): a new acquirer must never merge the
+        # pre-save-back blob.
+        if lease_holder is not None and resolved_seed_id is not None:
+            try:
+                await _seeds.release(
+                    ctx._db, prefix=ctx._prefix, suffix=CODEX_SEED_SUFFIX,
+                    seed_id=resolved_seed_id, holder=lease_holder,
+                )
+            except Exception:
+                _LOG.exception("lease release failed (TTL will reclaim)")
 
         # Seed capture (fresh only): store this session's codex identity as
         # a reusable seed so a later fresh task can start already-authed.
