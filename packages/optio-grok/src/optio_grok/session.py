@@ -322,7 +322,16 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             always_approve=not config.permission_gate,
             fs_isolation=config.fs_isolation,
         )
-        cmd = " ".join(shlex.quote(a) for a in argv)
+        # `exec` so /bin/sh REPLACES itself with the (tty-wrapper →) grok process
+        # instead of forking it. launch_subprocess starts the sh with
+        # start_new_session=True, making sh the session leader; exec transfers that
+        # leadership straight to grok (or the python tty-wrapper that execs grok).
+        # Grok then IS the session leader in the launcher's process group — the pgid
+        # optio's killpg teardown targets. WITHOUT exec, the fs-isolation tty wrapper
+        # calls setsid() (needed to acquire the sandbox's controlling /dev/tty) from a
+        # FORKED (non-leader) child, which escapes into a brand-new session/pgid that
+        # killpg never reaches → grok is orphaned (reparented to init) on cancel.
+        cmd = "exec " + " ".join(shlex.quote(a) for a in argv)
         # Same per-task HOME/GROK_HOME/XDG isolation as the iframe launch. PATH
         # is inherited by launch_subprocess (os.environ.copy) so interpreters
         # resolve. merge_stderr=False keeps grok's diagnostics off the JSON-RPC
