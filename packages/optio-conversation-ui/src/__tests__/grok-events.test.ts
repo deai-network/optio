@@ -47,10 +47,12 @@ describe('grok ACP event reducer', () => {
     expect(bubbles.map((b) => (b as any).text)).toEqual(['first', 'second']);
   });
 
-  it('agent_thought_chunk renders as a muted activity row, not in the answer', () => {
+  it('agent_thought_chunk renders as a distinct thinking row (not activity/System), not in the answer', () => {
     const s = play([thought('reasoning...'), chunk('ANSWER'), turnEnd(1)]);
-    const activity = s.items.find((i) => i.kind === 'activity');
-    expect(activity && activity.kind === 'activity' && activity.text).toContain('reasoning');
+    const thinking = s.items.find((i) => i.kind === 'thinking');
+    expect(thinking && thinking.kind === 'thinking' && thinking.text).toContain('reasoning');
+    // NOT the harness-System 'activity' kind — the view styles/gates them differently.
+    expect(s.items.some((i) => i.kind === 'activity')).toBe(false);
     const b = s.items.find((i) => i.kind === 'assistant');
     expect(b && b.kind === 'assistant' && b.text).toBe('ANSWER');
   });
@@ -67,8 +69,8 @@ describe('grok ACP event reducer', () => {
     expect(bubbles).toHaveLength(1);
     expect((bubbles[0] as any).text).toBe('Hi there!');
     expect((bubbles[0] as any).pending).toBe(false);
-    // reasoning is still surfaced (as muted activity), just not folded into the answer
-    expect(s.items.some((i) => i.kind === 'activity')).toBe(true);
+    // reasoning is still surfaced (as a distinct 'thinking' row), just not folded into the answer
+    expect(s.items.some((i) => i.kind === 'thinking')).toBe(true);
   });
 
   it('tool_call renders a tool row named by its title with its rawInput', () => {
@@ -181,7 +183,7 @@ describe('grok ACP event reducer', () => {
     ]);
     const kinds = s.items.map((i) => i.kind);
     expect(kinds).toContain('user');
-    expect(kinds).toContain('activity');
+    expect(kinds).toContain('thinking');
     expect(kinds).toContain('assistant');
     const b = s.items.find((i) => i.kind === 'assistant');
     expect(b && b.kind === 'assistant' && b.text).toBe('PONG');

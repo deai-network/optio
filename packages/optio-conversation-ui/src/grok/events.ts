@@ -33,7 +33,7 @@ const dropTools = (items: ChatItem[]) => items.filter((i) => i.kind !== 'tool');
 
 // Append a text delta to THIS turn's assistant bubble, matched by the turn's
 // synthetic msgId — NOT by tail position. grok's reasoning models interleave
-// agent_thought_chunk (rendered as muted activity rows) WITH agent_message_chunk;
+// agent_thought_chunk (rendered as distinct 'thinking' rows) WITH agent_message_chunk;
 // a tail-position check would let each interleaved thought split the answer into
 // a new bubble per run (the "tokens rendered separately" bug). Keying on msgId
 // keeps the whole turn's answer in one bubble regardless of interleaving. A new
@@ -59,16 +59,18 @@ function finalizePending(items: ChatItem[]): ChatItem[] {
   return [...items.slice(0, idx), { ...cur, pending: false }, ...items.slice(idx + 1)];
 }
 
-// agent_thought_chunk is reasoning, never folded into the answer. Coalesce
-// contiguous thought chunks into a single muted activity row (its deltas would
-// otherwise spam one row per chunk).
-function appendThought(items: ChatItem[], seq: number, text: string): ChatItem[] {
+// agent_thought_chunk is REASONING — never folded into the answer, and NOT a
+// harness System message (the 'activity' kind). It gets its own 'thinking' kind
+// so the view can style it distinctly and gate it on thinkingVerbosity. Coalesce
+// contiguous thinking chunks into one row (its deltas would otherwise spam one
+// row per token).
+function appendThinking(items: ChatItem[], seq: number, text: string): ChatItem[] {
   const last = items[items.length - 1];
-  if (last && last.kind === 'activity') {
+  if (last && last.kind === 'thinking') {
     const next: ChatItem = { ...last, text: last.text + text };
     return [...items.slice(0, -1), next];
   }
-  return [...items, { kind: 'activity', text, seq }];
+  return [...items, { kind: 'thinking', text, seq }];
 }
 
 export function reduceGrokEvent(state: ChatState, ev: any, seq: number): ChatState {
@@ -136,7 +138,7 @@ function reduce(st: GrokChatState, ev: any, seq: number): GrokChatState {
     if (kind === 'agent_thought_chunk') {
       const text = update.content?.text ?? '';
       if (text === '') return st;
-      return { ...st, busy: true, items: appendThought(st.items, seq, text) };
+      return { ...st, busy: true, items: appendThinking(st.items, seq, text) };
     }
 
     if (kind === 'tool_call') {

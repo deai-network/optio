@@ -414,6 +414,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             await ctx.set_widget_data({
                 "protocol": "grok",
                 "toolVerbosity": config.tool_verbosity,
+                "thinkingVerbosity": config.thinking_verbosity,
                 "showModelSelector": config.show_model_selector,
                 "models": model_list["models"],
                 "currentModel": current_model,

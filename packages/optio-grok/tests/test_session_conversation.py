@@ -224,6 +224,11 @@ def test_config_validation_conversation_fields():
     # bad tool_verbosity
     with pytest.raises(ValueError):
         GrokTaskConfig(consumer_instructions="x", mode="conversation", tool_verbosity="loud")
+    # bad thinking_verbosity
+    with pytest.raises(ValueError):
+        GrokTaskConfig(consumer_instructions="x", mode="conversation", thinking_verbosity="loud")
+    # thinking_verbosity defaults to hidden
+    assert GrokTaskConfig(consumer_instructions="x", mode="conversation").thinking_verbosity == "hidden"
     # host_protocol=False is allowed in conversation mode
     cfg = GrokTaskConfig(consumer_instructions="x", mode="conversation", host_protocol=False)
     assert cfg.host_protocol is False
