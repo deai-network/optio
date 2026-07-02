@@ -272,10 +272,23 @@ offline.
 **Goal.** Install the agent binary into an optio-owned, evictable cache (never
 snapshotted, never polluting the host `~`); give each task its own agent identity.
 **Touches.** A cache dir resolved against the worker's real env; per-task
-`HOME`/`XDG_*` under the workdir; install-if-missing gating. **Reference.**
-`_resolve_install_dir` / `_isolation_env` / `ensure_<agent>_installed` in either
-`host_actions.py`. **Done when.** Concurrent tasks/users have isolated identities;
-the binary is shared and re-downloadable; snapshots exclude it.
+`HOME`/`XDG_*` under the workdir; install-if-missing gating. On a cache miss,
+`ensure_<agent>_installed` MUST actually provision the binary — run the vendor
+installer (or download the release) into the cache. A stub that only re-uses a
+binary already on the worker `PATH` does **not** satisfy this stage: a fresh or
+remote worker with no pre-installed agent must still bootstrap itself. Install
+into a persistent location **outside** the task workdir (so tearing down the
+workdir never destroys the install), then symlink the cached binary into a
+task-accessible launch path under the isolated home (e.g.
+`<workdir>/home/.local/bin/<agent>`); `ensure_<agent>_installed` returns that
+per-task path. Re-call it after any resume/restore (idempotent: cache hit → just
+relink) so the launch symlink — which lives in the wiped-and-restored workdir —
+is re-established. **Reference.** `_resolve_install_dir` / `_isolation_env` /
+`ensure_<agent>_installed` in either `host_actions.py` (both run the vendor
+installer on a miss — claudecode's `install.sh`, grok's `x.ai/cli/install.sh`).
+**Done when.** Concurrent tasks/users have isolated identities; the binary is
+shared and genuinely re-installable on a bare worker with no host agent present;
+snapshots exclude it.
 
 ### Stage 6 — Conversation mode + conversation-ui
 **Goal.** The headless live `Conversation` (Part 2B) plus the dashboard chat widget
@@ -408,7 +421,7 @@ A finished wrapper covers this surface. `req` = expected for any wrapper;
 | 12 | pool / leases | opt | `optio-agents/seeds.py` lease fns |
 | 13 | credential save-back (rotating tokens) | opt | `cred_watcher.py` |
 | 14 | verify / refresh seed (host-free) | opt | `verify.py` / `oauth.py` |
-| 15 | binary cache (evictable, unsnapshotted) | req | `_resolve_install_dir` |
+| 15 | binary cache (evictable, unsnapshotted) + auto-install on miss + symlink into task path | req | `_resolve_install_dir` / `ensure_<agent>_installed` (vendor installer) |
 | 16 | HOME/XDG per-task isolation | req | `_isolation_env` / launch env |
 | 17 | hooks (before/after execute, on_deliverable, …) | req | config fields; `HookContext` |
 | 18 | prompt composition from SSOT | req | `prompt.py`, `optio-agents/protocol/prompt.py` |
