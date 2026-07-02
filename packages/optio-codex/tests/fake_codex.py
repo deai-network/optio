@@ -262,8 +262,54 @@ def _scenario_seed_rotate() -> None:
     time.sleep(30.0)
 
 
+def _scenario_probe(prompt: str) -> int:
+    """One-shot headless probe (``codex exec --json … '<prompt>'``) for
+    verify_and_refresh.
+
+    Mode via ``FAKE_CODEX_PROBE`` (default ``alive``):
+      * ``alive`` — rotate the refresh token (as a live codex would: its
+        8-day proactive refresh / refresh-on-401 rewrites auth.json in
+        place) and print exec-style JSONL carrying the challenge answer;
+        exit 0.
+      * ``dead``  — print an auth error and exit 1 (no answer token).
+      * ``echo``  — echo the prompt back verbatim and exit 1 (proves a
+        prompt-echoing error path does not false-positive: the answer token
+        is absent from the prompt).
+      * ``alive_badexit`` — answer present but exit 3 (stdout-only verdict).
+    """
+    mode = os.environ.get("FAKE_CODEX_PROBE", "alive").strip()
+    if mode == "dead":
+        print(json.dumps({"type": "error",
+                          "message": "401 Unauthorized (invalid_grant)"}),
+              flush=True)
+        return 1
+    if mode == "echo":
+        print(json.dumps({"type": "error",
+                          "message": f"cannot process request: {prompt}"}),
+              flush=True)
+        return 1
+    ch = _codex_home()
+    ch.mkdir(parents=True, exist_ok=True)
+    _rotate_auth(ch, "ROTATED-BY-PROBE")
+    print(json.dumps({"type": "thread.started", "thread_id": "fake-thread"}),
+          flush=True)
+    print(json.dumps({"type": "item.completed", "item": {
+        "type": "agent_message",
+        "text": "The capital of France is Paris."}}), flush=True)
+    print(json.dumps({"type": "turn.completed", "usage": {}}), flush=True)
+    return 3 if mode == "alive_badexit" else 0
+
+
 def main() -> int:
     import argparse
+
+    # Headless probe mode: `codex exec --json [-s MODE] [--skip-git-repo-check]
+    # [-C DIR] '<prompt>'`. Detected before argparse; the prompt is the last
+    # positional argument.
+    argv = sys.argv[1:]
+    if argv and argv[0] == "exec":
+        prompt = argv[-1] if len(argv) > 1 and not argv[-1].startswith("-") else ""
+        return _scenario_probe(prompt)
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", action="store_true")

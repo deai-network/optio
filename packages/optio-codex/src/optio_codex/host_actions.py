@@ -139,6 +139,54 @@ def _isolation_env(workdir: str) -> dict[str, str]:
     }
 
 
+def _codex_isolation_env(host: "Host") -> dict[str, str]:
+    """Per-task isolation env for a headless probe, derived from
+    ``host.workdir`` via :func:`_isolation_env` (the single source of truth)
+    — so the probe reads the seed's planted ``home/.codex/auth.json`` under
+    the same HOME/CODEX_HOME/XDG identity as the launch.
+
+    ``run_command`` replaces (not merges) the child env, so PATH is carried
+    explicitly (the worker's PATH plus the per-task ``.local/bin``) or a
+    missing interpreter/bash would break the probe."""
+    iso = _isolation_env(host.workdir)
+    base_path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+    return {**iso, "PATH": f"{iso['HOME']}/.local/bin:{base_path}"}
+
+
+async def run_codex_probe(
+    host: "Host",
+    *,
+    codex_executable: str,
+    prompt: str,
+    timeout_s: float = 180.0,
+) -> "tuple[str, int]":
+    """Headless one-shot ``codex exec --json -s read-only
+    --skip-git-repo-check '<prompt>'`` under the per-task isolation env.
+    Returns (stdout, exit_code).
+
+    ``exec`` mode has no approvals (hard approval_policy=never) and
+    ``-s read-only`` keeps the probe from touching anything; the JSONL
+    events land on stdout. The caller's verdict is a challenge-answer match
+    on stdout; the exit code is diagnostics only."""
+    argv = [
+        codex_executable, "exec", "--json", "-s", "read-only",
+        "--skip-git-repo-check", prompt,
+    ]
+    inner = " ".join(shlex.quote(a) for a in argv)
+    cmd = f"cd {shlex.quote(host.workdir.rstrip('/'))} && {inner}"
+    # Layer the per-task HOME/CODEX_HOME overrides on top of the ambient
+    # env, mirroring the session launch (which inherits, not ``env -i``).
+    # run_command replaces the child env, so the merge is explicit here. The
+    # caller runs this on a host whose environment carries no provider API
+    # keys (see verify_and_refresh_seed).
+    env = {**os.environ, **_codex_isolation_env(host)}
+    result = await asyncio.wait_for(
+        host.run_command(f"bash -lc {shlex.quote(cmd)}", env=env),
+        timeout=timeout_s,
+    )
+    return (result.stdout or "", result.exit_code)
+
+
 async def _provision_task_home(host: "Host", *, shared_codex_path: str) -> str:
     """Create the per-task isolation home tree and the per-task codex path.
 

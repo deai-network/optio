@@ -28,6 +28,7 @@ from optio_codex.types import (
     SeedProvider,
     SeedUnavailableError,
 )
+from optio_codex.verify import verify_and_refresh_seed
 
 
 _logging.getLogger("asyncssh").setLevel(_logging.WARNING)
@@ -55,4 +56,5 @@ __all__ = [
     "delete_seed",
     "list_seeds",
     "purge_seed",
+    "verify_and_refresh_seed",
 ]
