@@ -63,6 +63,13 @@ _GROK_CACHE_DIR_SHELL_DEFAULT = (
     "${GROK_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/optio-grok/bin}"
 )
 
+# Official grok vendor installer (confirmed: ``~/.grok/README.md``). HOME-driven:
+# writes the heavy versioned binary to ``$HOME/.grok/downloads`` and a stable
+# ``grok`` symlink to ``${GROK_BIN_DIR:-$HOME/.grok/bin}``. optio drives it with
+# HOME = the cache ROOT so the install lands in the persistent cache, never the
+# operator's real ``~/.grok`` and never a task workdir.
+_GROK_INSTALL_URL = "https://x.ai/cli/install.sh"
+
 
 async def _resolve_install_dir(host: "Host", install_dir: str | None) -> str:
     """Return ``install_dir`` if given, else ``<host_home>/.local/bin`` (ttyd)."""
@@ -142,27 +149,33 @@ async def ensure_grok_installed(
     *,
     install_if_missing: bool = True,
     install_dir: str | None = None,
+    progress_label: str = "Preparing grok…",
 ) -> str:
     """Provision ``grok`` for this task from the optio-owned binary cache.
 
     The cache dir (``_resolve_grok_cache_dir``) lives on the worker outside any
     task workdir and never the operator's autoupdating ``~/.grok`` — so it stays
-    shared, evictable, and unsnapshotted. Returns the absolute path of the cached
-    ``grok`` binary. Two outcomes:
+    shared, evictable, and unsnapshotted (it survives task teardown). This makes
+    the cache the single stable home of the binary; the value RETURNED is the
+    per-task launch path ``<workdir>/home/.local/bin/grok`` — a symlink into the
+    cache, on the launch PATH (mirrors claudecode's ``home/.local/bin/claude``).
 
-    - **cache hit** — ``<cache>/grok`` is already executable → return it directly
-      (the stable path every task launches, decoupled from the host's autoupdater).
-    - **cache miss** — seed the cache from the resolved host ``grok`` (login-shell
-      ``command -v grok`` via :func:`resolve_grok`), copying it into ``<cache>/grok``
-      (deref + chmod +x), then return that.
+    Cache population (only on a miss, and only when ``install_if_missing``):
 
-    Uses only generic Host primitives. Raises when the cache is empty and either
-    ``install_if_missing=False`` or no host grok exists to seed from. A real
-    vendor headless auto-install (grok's bootstrap-installer URL is unconfirmed;
-    grok also self-updates via ``grok update``) is a documented future refinement.
+    - **seed from a host grok** — if a ``grok`` is already on the worker
+      (login-shell ``command -v grok`` via :func:`resolve_grok`) copy it into the
+      cache (deref + chmod +x); fast, no download, matches the operator's version.
+    - **vendor auto-install** — otherwise run grok's official installer
+      (:data:`_GROK_INSTALL_URL`) into the persistent cache, so a fresh or remote
+      worker with no host grok still bootstraps itself.
+
+    Uses only generic Host primitives. Raises only when the cache is empty AND
+    ``install_if_missing=False``. Idempotent on a re-call (cache hit → it just
+    re-links the task path), which is how resume re-establishes the launch symlink
+    after ``restore_workdir`` wipes it.
     """
     host = hook_ctx._host
-    hook_ctx.report_progress(None, "Locating grok…")
+    hook_ctx.report_progress(None, progress_label)
 
     cache_dir = await _resolve_grok_cache_dir(host, install_dir)
     cached = f"{cache_dir}/grok"
@@ -172,25 +185,40 @@ async def ensure_grok_installed(
     )
     if "OK" in (probe.stdout or ""):
         _LOG.info("ensure_grok_installed: cache HIT (%s)", cached)
-        return cached
-
-    if not install_if_missing:
+    elif not install_if_missing:
         raise RuntimeError(
             f"grok not present in cache at {cached!r} and "
             f"install_if_missing=False; nothing to do."
         )
+    else:
+        await _populate_grok_cache(hook_ctx, host, cache_dir=cache_dir, cached=cached)
 
-    # Cache miss — seed the optio-owned cache from the resolved host grok.
+    return await _link_grok_into_task(host, cached)
+
+
+async def _populate_grok_cache(
+    hook_ctx: "HookContextProtocol",
+    host: "Host",
+    *,
+    cache_dir: str,
+    cached: str,
+) -> None:
+    """Fill an empty cache: prefer seeding from a pre-existing host grok (fast,
+    no download); fall back to the vendor auto-installer when the worker has
+    none. Leaves an executable ``<cache_dir>/grok`` on success; raises otherwise.
+    """
+    # Fast path — a grok already on the worker (login-shell PATH).
+    source: "str | None"
     try:
         source = await resolve_grok(host, install_dir=None, install_if_missing=False)
-    except RuntimeError as exc:
-        raise RuntimeError(
-            f"no grok binary available to seed the optio cache "
-            f"(cache_dir={cache_dir!r}); a host grok must be on the worker PATH "
-            f"(e.g. ~/.grok/bin/grok). Vendor headless auto-install is a future "
-            f"refinement — for now, install grok on the worker or pass "
-            f"grok_install_dir at a pre-populated cache."
-        ) from exc
+    except RuntimeError:
+        source = None
+
+    if source is None:
+        # No host grok anywhere — bootstrap via the vendor installer.
+        await _install_grok_into_cache(hook_ctx, host, cache_dir=cache_dir, cached=cached)
+        _LOG.info("ensure_grok_installed: cache MISS -> vendor-installed into %s", cached)
+        return
 
     hook_ctx.report_progress(None, "Seeding grok cache…")
     mk = await host.run_command(f"mkdir -p {shlex.quote(cache_dir)}")
@@ -223,8 +251,70 @@ async def ensure_grok_installed(
             f"grok cache seed completed but {cached!r} is still not executable "
             f"on the host. Check the seed source {source!r} and chmod result."
         )
-    _LOG.info("ensure_grok_installed: cache MISS -> seeded from %s", source)
-    return cached
+    _LOG.info("ensure_grok_installed: cache MISS -> seeded from host %s", source)
+
+
+async def _install_grok_into_cache(
+    hook_ctx: "HookContextProtocol",
+    host: "Host",
+    *,
+    cache_dir: str,
+    cached: str,
+) -> None:
+    """Vendor auto-install grok into the persistent cache (miss + no host grok).
+
+    Runs the official installer with ``HOME`` = the cache ROOT (``dirname`` of
+    ``cache_dir``) so the heavy versioned binary lands in
+    ``<cache_root>/.grok/downloads`` — a persistent location OUTSIDE any task
+    workdir — and ``GROK_BIN_DIR`` = ``cache_dir`` so the stable ``grok`` symlink
+    is created at ``<cache_dir>/grok``. HOME is the cache root (never the real
+    ``~``), so nothing touches the operator's ``~/.grok``.
+    """
+    cache_root = os.path.dirname(cache_dir.rstrip("/")) or "/"
+    hook_ctx.report_progress(None, "Installing grok (vendor installer)…")
+    installer = f"curl -fsSL {shlex.quote(_GROK_INSTALL_URL)} | bash"
+    cmd = (
+        f"mkdir -p {shlex.quote(cache_root)} {shlex.quote(cache_dir)} && "
+        f"env HOME={shlex.quote(cache_root)} GROK_BIN_DIR={shlex.quote(cache_dir)} "
+        f"sh -c {shlex.quote(installer)}"
+    )
+    result = await host.run_command(cmd)
+    if result.exit_code != 0:
+        raise RuntimeError(
+            f"grok vendor auto-install failed on host (exit {result.exit_code}): "
+            f"{(result.stderr or '').strip()[:300]}"
+        )
+    verify = await host.run_command(
+        f"[ -x {shlex.quote(cached)} ] && echo OK || true"
+    )
+    if "OK" not in (verify.stdout or ""):
+        raise RuntimeError(
+            f"grok vendor install reported success but {cached!r} is still not "
+            f"executable. Inspect the installer output and the cache {cache_dir!r}."
+        )
+
+
+async def _link_grok_into_task(host: "Host", cached: str) -> str:
+    """Symlink the cached grok binary into the task's isolated home launch dir.
+
+    The cache lives OUTSIDE the workdir (persists across task teardown); the
+    launch path ``<workdir>/home/.local/bin/grok`` is a per-task symlink to it,
+    ahead on the launch PATH. Returns that task path. ``ln -sfn`` is idempotent —
+    a resume re-call just refreshes the symlink on the restored tree.
+    """
+    workdir = host.workdir.rstrip("/")
+    bin_dir = f"{workdir}/home/.local/bin"
+    task_grok = f"{bin_dir}/grok"
+    r = await host.run_command(
+        f"mkdir -p {shlex.quote(bin_dir)} && "
+        f"ln -sfn {shlex.quote(cached)} {shlex.quote(task_grok)}"
+    )
+    if r.exit_code != 0:
+        raise RuntimeError(
+            f"linking grok into the task path ({task_grok!r} -> {cached!r}) "
+            f"failed (exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
+        )
+    return task_grok
 
 
 def build_host(ssh, taskdir: str) -> "Host":

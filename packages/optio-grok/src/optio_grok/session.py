@@ -134,10 +134,19 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             # Restore the workdir tar (carries home/.grok, i.e. grok's session
             # store). A present snapshot that fails to restore is fatal — the
             # restore call is intentionally outside any except so it surfaces
-            # to the caller (no silent fresh-start). grok + ttyd survive the
-            # restore: grok is resolved from PATH and ttyd lives in the real
-            # host home, both OUTSIDE the workdir, so no re-install is needed.
+            # to the caller (no silent fresh-start).
             await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
+            # The grok launch symlink (home/.local/bin/grok) lives INSIDE the
+            # workdir and was wiped by the restore; re-establish it against the
+            # cache (which lives OUTSIDE the workdir and survives). Idempotent:
+            # cache hit → just relinks, no reinstall/redownload. ttyd survives
+            # untouched (real host home, outside the workdir).
+            grok_path = await host_actions.ensure_grok_installed(
+                hook_ctx,
+                install_if_missing=config.install_if_missing,
+                install_dir=config.grok_install_dir,
+                progress_label="Restoring grok runtime…",
+            )
             await host_actions._rotate_optio_log(host)
             # A restored snapshot means grok persisted a session for this cwd;
             # --continue resumes the most recent one. GROK_HOME lives inside the

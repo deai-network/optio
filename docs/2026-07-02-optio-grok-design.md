@@ -143,7 +143,7 @@ conversation demo with Stage 6.
 ## 7. Implementation reconciliation (as shipped)
 
 Deviations from the design above, decided during the staged build (all verified,
-tests green — grok wrapper 107 passed/1 skipped, conversation-ui 110 TS passed):
+tests green — grok wrapper 108 passed/1 skipped, conversation-ui 110 TS passed):
 
 - **Filesystem isolation: grok NATIVE `--sandbox`, not claustrum** (reverses §2
   Decision 7 / the §5 non-goal). Grok ships its own Landlock sandbox. optio-grok
@@ -167,3 +167,15 @@ tests green — grok wrapper 107 passed/1 skipped, conversation-ui 110 TS passed
   the permission seam.
 - **Non-gated conversation uses `--always-approve`** (grok has no headless-safe
   permission-mode analogue to claudecode's).
+- **Stage 5 binary cache: real vendor auto-install + task-path symlink (post-ship
+  fix).** The initial Stage 5 impl was a stub — it only seeded the cache from a
+  host `grok` already on PATH and raised ("future refinement") when none existed,
+  violating the guide's Stage 5 "must auto-install on a bare worker" contract
+  (the installer URL was unconfirmed at build time; it since was —
+  `https://x.ai/cli/install.sh`, per `~/.grok/README.md`). `ensure_grok_installed`
+  now, on a cache miss with no host grok, runs the vendor installer with
+  `HOME=<cache_root>` (persistent, OUTSIDE any workdir) + `GROK_BIN_DIR=<cache_dir>`,
+  then **symlinks** the cached binary into the per-task launch path
+  `<workdir>/home/.local/bin/grok` and returns *that* (was: the raw cache path) —
+  so the heavy binary survives workdir teardown and resume re-links idempotently
+  (mirrors claudecode). Supersedes the Stage 5 plan's "future refinement" note.

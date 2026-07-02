@@ -1,12 +1,16 @@
-"""Stage 5: optio-owned, evictable grok binary cache.
+"""Stage 5: optio-owned, evictable grok binary cache + auto-install.
 
-``ensure_grok_installed`` resolves the grok binary through a cache dir that
-lives outside the task workdir and never the operator's ``~/.grok``:
+``ensure_grok_installed`` resolves grok through a cache dir that lives OUTSIDE
+the task workdir and never the operator's ``~/.grok``, and returns a per-task
+launch symlink into that cache (``<workdir>/home/.local/bin/grok``):
 
-* cache HIT — ``<cache>/grok`` already executable → returned directly, no copy.
-* cache MISS — the resolved host grok is copied into ``<cache>/grok`` (seed).
-* no host grok — a clear "future refinement" error (vendor auto-install is not
-  wired yet; grok's bootstrap-installer URL is unconfirmed).
+* cache HIT — ``<cache>/grok`` already executable → linked into the task path,
+  no seed/install.
+* cache MISS, host grok present — the host grok is copied into ``<cache>/grok``
+  (seed, deref), then linked into the task path.
+* cache MISS, no host grok — the vendor installer bootstraps grok into the
+  persistent cache (HOME = cache root, outside any workdir), then linked in.
+* ``install_if_missing=False`` on a miss — a clear error (nothing to do).
 * default location — ``GROK_CACHE_DIR`` / ``${XDG_CACHE_HOME:-$HOME/.cache}``,
   resolved against the worker's real env; never under the workdir.
 """
@@ -15,6 +19,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+from types import SimpleNamespace
 
 import pytest
 from optio_host.host import LocalHost
@@ -33,6 +38,7 @@ class _FakeHookCtx:
 
 
 def _write_exe(path: pathlib.Path, body: str = "#!/bin/bash\necho fake-grok\n") -> pathlib.Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body)
     path.chmod(0o755)
     return path
@@ -44,56 +50,119 @@ async def _local_ctx(tmp_path: pathlib.Path) -> _FakeHookCtx:
     return _FakeHookCtx(host)
 
 
+def _task_path(ctx: _FakeHookCtx) -> str:
+    return f"{ctx._host.workdir.rstrip('/')}/home/.local/bin/grok"
+
+
 @pytest.mark.asyncio
-async def test_cache_hit_returns_cached_path(tmp_path: pathlib.Path, monkeypatch):
+async def test_cache_hit_links_into_task_path(tmp_path: pathlib.Path, monkeypatch):
     cache = tmp_path / "cache"
-    cache.mkdir()
     _write_exe(cache / "grok")
 
-    # A cache hit must not consult the host grok at all.
+    # A cache hit must not consult the host grok or the installer at all.
     async def _boom(*a, **k):  # noqa: ANN002, ANN003
-        raise AssertionError("resolve_grok should not be called on a cache hit")
+        raise AssertionError("must not seed/install on a cache hit")
 
     monkeypatch.setattr(host_actions, "resolve_grok", _boom)
+    monkeypatch.setattr(host_actions, "_install_grok_into_cache", _boom)
     ctx = await _local_ctx(tmp_path)
 
     result = await host_actions.ensure_grok_installed(ctx, install_dir=str(cache))
-    assert result == str(cache / "grok")
+    # Returns the per-task launch path (a symlink), NOT the raw cache path.
+    assert result == _task_path(ctx)
+    assert os.path.islink(result)
+    assert os.path.realpath(result) == str((cache / "grok").resolve())
+    assert os.access(result, os.X_OK)
 
 
 @pytest.mark.asyncio
 async def test_cache_miss_seeds_from_host_grok(tmp_path: pathlib.Path, monkeypatch):
     cache = tmp_path / "cache"
     cache.mkdir()  # empty → miss
-    source = _write_exe(tmp_path / "hostbin" / "grok") if (tmp_path / "hostbin").mkdir() or True else None
+    source = _write_exe(tmp_path / "hostbin" / "grok")
 
     async def _resolve(host, *, install_dir=None, install_if_missing=True):  # noqa: ANN001
         return str(source)
 
+    async def _no_install(*a, **k):  # noqa: ANN002, ANN003
+        raise AssertionError("must seed from host grok, not vendor-install")
+
     monkeypatch.setattr(host_actions, "resolve_grok", _resolve)
+    monkeypatch.setattr(host_actions, "_install_grok_into_cache", _no_install)
     ctx = await _local_ctx(tmp_path)
 
     result = await host_actions.ensure_grok_installed(ctx, install_dir=str(cache))
-    assert result == str(cache / "grok")
+    assert result == _task_path(ctx)
+    # Cache holds a real, dereferenced copy (not a symlink back to the host bin).
     assert (cache / "grok").is_file()
-    assert os.access(cache / "grok", os.X_OK)
-    # Seeded as a real copy (deref), not a symlink back to the host binary.
     assert not (cache / "grok").is_symlink()
+    assert os.access(cache / "grok", os.X_OK)
+    # Task path is a symlink into the cache.
+    assert os.path.islink(result)
+    assert os.path.realpath(result) == str((cache / "grok").resolve())
 
 
 @pytest.mark.asyncio
-async def test_cache_miss_no_host_grok_raises(tmp_path: pathlib.Path, monkeypatch):
+async def test_cache_miss_no_host_grok_auto_installs(tmp_path: pathlib.Path, monkeypatch):
     cache = tmp_path / "cache"
     cache.mkdir()
 
     async def _resolve(host, *, install_dir=None, install_if_missing=True):  # noqa: ANN001
         raise RuntimeError("grok not found on the worker")
 
+    called = {}
+
+    async def _fake_install(hook_ctx, host, *, cache_dir, cached):  # noqa: ANN001
+        called["cache_dir"] = cache_dir
+        called["cached"] = cached
+        _write_exe(pathlib.Path(cached))  # emulate a successful install
+
     monkeypatch.setattr(host_actions, "resolve_grok", _resolve)
+    monkeypatch.setattr(host_actions, "_install_grok_into_cache", _fake_install)
     ctx = await _local_ctx(tmp_path)
 
-    with pytest.raises(RuntimeError, match="future refinement"):
-        await host_actions.ensure_grok_installed(ctx, install_dir=str(cache))
+    result = await host_actions.ensure_grok_installed(ctx, install_dir=str(cache))
+    assert called["cache_dir"] == str(cache)
+    assert called["cached"] == str(cache / "grok")
+    assert result == _task_path(ctx)
+    assert os.path.islink(result)
+    assert os.path.realpath(result) == str((cache / "grok").resolve())
+
+
+@pytest.mark.asyncio
+async def test_vendor_install_targets_persistent_cache_outside_workdir(tmp_path: pathlib.Path):
+    """The installer runs with HOME = the cache ROOT (persistent, outside the
+    workdir) and GROK_BIN_DIR = the cache dir, via the official install URL."""
+    workdir = tmp_path / "task" / "work"
+    cache_dir = tmp_path / "persistent-cache" / "optio-grok" / "bin"
+    cached = cache_dir / "grok"
+    cache_root = cache_dir.parent  # dirname → the persistent install HOME
+
+    recorded: list[str] = []
+
+    class _RecordingHost:
+        def __init__(self, wd: str) -> None:
+            self.workdir = wd
+
+        async def run_command(self, cmd: str):  # noqa: ANN001
+            recorded.append(cmd)
+            if "install.sh" in cmd:  # emulate the installer creating the binary
+                _write_exe(cached)
+            ok = "[ -x" in cmd and cached.exists()
+            return SimpleNamespace(exit_code=0, stdout=("OK" if ok else ""), stderr="")
+
+    ctx = _FakeHookCtx(host=None)  # type: ignore[arg-type]
+    await host_actions._install_grok_into_cache(
+        ctx, _RecordingHost(str(workdir)), cache_dir=str(cache_dir), cached=str(cached),
+    )
+
+    install_cmd = next(c for c in recorded if "install.sh" in c)
+    assert host_actions._GROK_INSTALL_URL in install_cmd
+    assert f"HOME={str(cache_root)}" in install_cmd
+    assert f"GROK_BIN_DIR={str(cache_dir)}" in install_cmd
+    # The install HOME (cache root) is OUTSIDE the task workdir.
+    assert not str(cache_root).startswith(str(workdir))
+    assert cached.exists()
 
 
 @pytest.mark.asyncio
@@ -102,9 +171,10 @@ async def test_no_install_raises_on_miss(tmp_path: pathlib.Path, monkeypatch):
     cache.mkdir()
 
     async def _boom(*a, **k):  # noqa: ANN002, ANN003
-        raise AssertionError("must not seed when install_if_missing=False")
+        raise AssertionError("must not seed/install when install_if_missing=False")
 
     monkeypatch.setattr(host_actions, "resolve_grok", _boom)
+    monkeypatch.setattr(host_actions, "_install_grok_into_cache", _boom)
     ctx = await _local_ctx(tmp_path)
 
     with pytest.raises(RuntimeError, match="install_if_missing=False"):
@@ -116,13 +186,15 @@ async def test_no_install_raises_on_miss(tmp_path: pathlib.Path, monkeypatch):
 @pytest.mark.asyncio
 async def test_default_cache_dir_from_grok_cache_dir_env(tmp_path: pathlib.Path, monkeypatch):
     """With no override, GROK_CACHE_DIR (worker real env) decides the cache dir —
-    never the workdir, never the operator's ~/.grok."""
+    never the workdir, never the operator's ~/.grok. The returned task path is a
+    symlink whose real target (the cache) is outside the workdir."""
     cache = tmp_path / "xai-cache" / "bin"
-    _write_exe((cache).joinpath("grok") if cache.mkdir(parents=True) or True else cache)
+    _write_exe(cache / "grok")
     monkeypatch.setenv("GROK_CACHE_DIR", str(cache))
     ctx = await _local_ctx(tmp_path)
 
     result = await host_actions.ensure_grok_installed(ctx)  # no install_dir
-    assert result == str(cache / "grok")
-    # The cache dir is NOT under the task workdir.
-    assert not result.startswith(ctx._host.workdir)
+    assert result == _task_path(ctx)
+    # The cached binary (symlink target) is NOT under the task workdir.
+    assert not os.path.realpath(result).startswith(ctx._host.workdir)
+    assert os.path.realpath(result) == str((cache / "grok").resolve())
