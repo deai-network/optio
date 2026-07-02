@@ -159,6 +159,19 @@ Evidence:
   **still enforced** (bwrap needs no materialized helper): outside write
   denied "Read-only file system", file **absent**. Helper-failure branch is
   fail-closed too — it does not disagree with the no-mechanism branch.
+- `codex doctor`, **both environments** (Task 5B pin): mechanism-available on
+  this host reports `✓ sandbox  restricted fs + restricted network · approval
+  OnRequest` / `filesystem sandbox  restricted`. Under the SAME no-mechanism
+  docker restriction (seccomp ENOSYS on `landlock_*` + `no-new-privileges`
+  blocking userns) `codex doctor` STILL reports `✓ sandbox  restricted fs +
+  restricted network` / `filesystem sandbox  restricted` / `network sandbox
+  restricted` — doctor is an OPTIMISTIC capability report (it materializes the
+  landlock helper and does not attempt a live namespace), so it is **not** a
+  fail-open signal and must not be trusted as an enforcement gate. In the very
+  same container, `codex sandbox -c sandbox_mode=workspace-write -- touch
+  /outside/canary` still fails closed ("bwrap: Creating new namespace failed:
+  Permission denied", canary **absent**). Load-bearing conclusion: the
+  command-level touch probe — not `codex doctor` — is the enforcement evidence.
 - Binary strings: the fail-closed panic string above; Landlock/Seccomp
   machinery present (`SandboxLandlock`, `SeccompInstall`, `CreateRuleset`,
   `RestrictSelf`); "execute commands without sandboxing. EXTREMELY DANGEROUS"
