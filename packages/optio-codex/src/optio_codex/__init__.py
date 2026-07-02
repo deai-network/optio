@@ -25,6 +25,8 @@ from optio_codex.types import (
     HookCallback,
     IframeMode,
     SandboxMode,
+    SeedProvider,
+    SeedUnavailableError,
 )
 
 
@@ -40,6 +42,8 @@ __all__ = [
     "HookCallback",
     "IframeMode",
     "SandboxMode",
+    "SeedProvider",
+    "SeedUnavailableError",
     "SSHConfig",
     "HookContext",
     "HookContextProtocol",

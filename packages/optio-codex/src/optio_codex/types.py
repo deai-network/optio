@@ -1,7 +1,7 @@
 """Public data types for optio-codex consumers."""
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Awaitable, Callable, Literal
 
 from optio_agents.protocol.session import (
     DeliverableCallback,
@@ -18,6 +18,8 @@ __all__ = [
     "IframeMode",
     "ApprovalPolicy",
     "SandboxMode",
+    "SeedProvider",
+    "SeedUnavailableError",
 ]
 
 
@@ -29,6 +31,18 @@ _VALID_APPROVAL_POLICIES = {"untrusted", "on-failure", "on-request", "never"}
 
 SandboxMode = Literal["read-only", "workspace-write", "danger-full-access"]
 _VALID_SANDBOX_MODES = {"read-only", "workspace-write", "danger-full-access"}
+
+
+# A seed provider resolves a usable seed_id at launch time (e.g. leasing one
+# from a pool). Mirrors optio-grok's SeedProvider; the callable/lease path
+# is exercised by the Stage-4 wiring — a static string seed_id carries no
+# lease.
+SeedProvider = Callable[[str], Awaitable[str]]
+
+
+class SeedUnavailableError(Exception):
+    """Raised by a seed provider when no usable seed is available; the
+    message is surfaced as the process failure."""
 
 
 @dataclass
@@ -63,6 +77,21 @@ class CodexTaskConfig:
     before_execute: HookCallback | None = None
     after_execute: HookCallback | None = None
     on_deliverable: DeliverableCallback | None = None
+
+    # --- seed surface (start fresh from a stored environment) -----------
+    # Consumed (default/fallback): merge this seed's environment (codex
+    # auth.json + config.toml) into a fresh workdir before launch, beginning
+    # a NEW session already logged-in; the workdir is pre-trusted right
+    # after the merge. A plain string is used as-is; a SeedProvider callable
+    # is awaited at launch to resolve one (lease path — holder is the
+    # process_id). Ignored on resume.
+    seed_id: "str | SeedProvider | None" = None
+    # Capture intent: a (sync or async) callback fired on teardown of a
+    # fresh session after a successful capture, with two args:
+    # (seed_id, info). ``info`` is a human-readable account summary (None
+    # for now; resolved in a later stage). Its presence is what enables
+    # seed capture. Ignored on resume.
+    on_seed_saved: "Callable[[str, str | None], Awaitable[None] | None] | None" = None
 
     mode: IframeMode = "iframe"
     host_protocol: bool = True

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 from typing import AsyncIterator
@@ -11,12 +12,14 @@ from optio_core.context import ProcessContext
 from optio_core.models import TaskInstance
 
 from optio_agents import HookContext, get_protocol
+from optio_agents import seeds as _seeds
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_host.host import Host, LocalHost, ProcessHandle
 from optio_host.paths import task_dir
 
-from optio_codex import host_actions
+from optio_codex import cred_watcher, host_actions
 from optio_codex.prompt import compose_agents_md
+from optio_codex.seed_manifest import CODEX_SEED_MANIFEST, CODEX_SEED_SUFFIX
 from optio_codex.snapshots import (
     effective_workdir_exclude,
     insert_snapshot,
@@ -37,6 +40,13 @@ def _build_host(config: CodexTaskConfig, process_id: str) -> Host:
     return host_actions.build_host(config.ssh, taskdir)
 
 
+async def _call_maybe_async(fn, *args) -> None:
+    """Invoke a callback that may be sync or async."""
+    result = fn(*args)
+    if inspect.isawaitable(result):
+        await result
+
+
 async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> None:
     """Execute function body for one optio-codex task instance."""
     host: Host = _build_host(config, ctx.process_id)
@@ -55,6 +65,17 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
     # `codex resume <id>` relaunch. None ⇒ fresh codex session even when the
     # workdir was restored (the snapshot predates any rollout).
     resume_session_id: str | None = None
+    # Resolved seed id for a fresh, seeded launch (Stage 3). Set by _prepare
+    # (str seed_id → itself; SeedProvider callable → awaited). Stays None on
+    # resume and when no seed_id is configured.
+    resolved_seed_id: str | None = None
+    # Stage 4 lease + credential save-back. ``lease_holder`` is the task's
+    # process_id when the seed came from a lease-holding SeedProvider
+    # (renewed by the watcher, released at teardown). ``cred_baseline`` is
+    # the post-merge auth.json fingerprint the watcher/backstop diff against.
+    lease_holder: str | None = None
+    cred_baseline: str | None = None
+    cred_watch_task: "asyncio.Task | None" = None
 
     await host.connect()
 
@@ -77,6 +98,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
         idempotent), so the launch path can never dangle.
         """
         nonlocal codex_path, ttyd_path, resuming, resume_session_id
+        nonlocal resolved_seed_id, lease_holder, cred_baseline
 
         resume_requested = bool(getattr(ctx, "resume", False))
         snapshot = None
@@ -113,6 +135,34 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             install_if_missing=config.install_ttyd_if_missing,
             install_dir=config.ttyd_install_dir,
         )
+        if not resuming and config.seed_id is not None:
+            # Seeded FRESH start: resolve the seed id (str → itself; a
+            # SeedProvider callable → awaited, may raise
+            # SeedUnavailableError) and overlay the stored codex identity
+            # (auth.json + config.toml) into the fresh workdir BEFORE
+            # AGENTS.md, so codex launches already-authed. Codex auth/config
+            # are cwd-independent, so no rekey is needed — but the new
+            # workdir must be pre-trusted (cwd-dependent, hence a post-merge
+            # edit here rather than a manifest transform).
+            if callable(config.seed_id):
+                # A SeedProvider leases a seed from the pool (holder =
+                # process_id); the watcher renews the lease, teardown
+                # releases it. A plain string carries no lease.
+                resolved_seed_id = await config.seed_id(ctx.process_id)
+                lease_holder = ctx.process_id
+            else:
+                resolved_seed_id = config.seed_id
+            await _seeds.merge_seed(
+                ctx, host,
+                seed_id=resolved_seed_id,
+                manifest=CODEX_SEED_MANIFEST,
+                suffix=CODEX_SEED_SUFFIX,
+                decrypt=None,
+            )
+            await host_actions.ensure_workdir_trusted(host)
+            # Baseline the merged auth.json so the in-session watcher and
+            # the teardown backstop only save back a genuinely rotated token.
+            cred_baseline = await cred_watcher.cred_fingerprint(host)
         await host.write_text(
             "AGENTS.md",
             compose_agents_md(
@@ -221,6 +271,38 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                 )
             except Exception:
                 _LOG.exception("teardown_session_tree failed")
+
+        # Seed capture (fresh only): store this session's codex identity as
+        # a reusable seed so a later fresh task can start already-authed.
+        # Reached-live gate: launched_handle is assigned strictly after a
+        # successful launch — an interrupt before launch leaves it None.
+        # Guarded on a VALID auth.json (capture_gate_ok) — never seed a
+        # login-less identity. Ignored on resume.
+        if (
+            not resuming
+            and config.on_seed_saved is not None
+            and launched_handle is not None
+        ):
+            try:
+                if not await cred_watcher.capture_gate_ok(host):
+                    _LOG.warning(
+                        "seed capture skipped: home/.codex/auth.json absent "
+                        "or invalid (login-less session)",
+                    )
+                else:
+                    seed_id = await _seeds.capture_seed(
+                        ctx, host,
+                        manifest=CODEX_SEED_MANIFEST,
+                        suffix=CODEX_SEED_SUFFIX,
+                        encrypt=None,
+                    )
+                    # 2nd arg (account summary) is resolved in a later
+                    # stage; None for now.
+                    await _call_maybe_async(config.on_seed_saved, seed_id, None)
+            except Exception:
+                _LOG.exception(
+                    "seed capture failed; callback not fired, teardown continues",
+                )
 
         # Reached-live gate: only capture if codex actually came up
         # (launched_handle is assigned strictly after a successful ttyd/codex

@@ -12,7 +12,7 @@ from pathlib import Path
 SCENARIOS = (
     "happy", "deliverable", "error",
     "exit_zero", "exit_nonzero", "long",
-    "resume",
+    "resume", "seed",
 )
 
 
@@ -155,6 +155,80 @@ def _scenario_resume() -> None:
     time.sleep(30.0)
 
 
+def _record_launch() -> None:
+    """Durably record this launch's argv + the config.toml planted in
+    CODEX_HOME at launch time.
+
+    When ``FAKE_CODEX_RECORD`` names a path, append one JSON object per
+    launch: ``{"argv": [...], "config_toml": <content|null>}``. The workdir
+    is wiped on teardown, so this record (outside the workdir) is how tests
+    assert launch-time facts — e.g. that the seeded config.toml carried the
+    workdir pre-trust entry BEFORE codex started (Stage 3), and later which
+    sandbox flags were passed (Stage 8). The fake ACCEPTS and otherwise
+    IGNORES all flags — it enforces nothing.
+    """
+    dest = os.environ.get("FAKE_CODEX_RECORD")
+    if not dest:
+        return
+    config_path = _codex_home() / "config.toml"
+    try:
+        config_toml = config_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        config_toml = None
+    with open(dest, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({
+            "argv": sys.argv[1:],
+            "config_toml": config_toml,
+        }) + "\n")
+        fh.flush()
+
+
+def _scenario_seed() -> None:
+    """Model codex's logged-in identity for the Stage-3 seed tests.
+
+    Two roles, distinguished by whether ``auth.json`` is already present at
+    launch:
+
+    * CONSUME (seed already merged in): the seed engine planted
+      ``home/.codex/auth.json`` before launch. Record that fact via a
+      deliverable so the test can assert the seed reached the workdir
+      before codex started.
+    * CAPTURE (fresh login): no auth yet, so write a fake logged-in
+      ChatGPT-mode identity (auth.json + config.toml) under CODEX_HOME.
+      Teardown capture then stores it as a reusable seed.
+    """
+    ch = _codex_home()
+    ch.mkdir(parents=True, exist_ok=True)
+    auth = ch / "auth.json"
+    if auth.exists():
+        workdir = Path.cwd()
+        (workdir / "deliverables").mkdir(exist_ok=True)
+        (workdir / "deliverables" / "seed_present.txt").write_text(
+            "SEED_PRESENT\n", encoding="utf-8",
+        )
+        time.sleep(0.05)
+        _log("DELIVERABLE: ./deliverables/seed_present.txt")
+    else:
+        auth.write_text(
+            json.dumps({
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "id_token": "fake-id",
+                    "access_token": "fake-access",
+                    "refresh_token": "fake-refresh",
+                },
+                "last_refresh": "2026-07-02T00:00:00Z",
+            }),
+            encoding="utf-8",
+        )
+        (ch / "config.toml").write_text('model = "gpt-5.5"\n', encoding="utf-8")
+    time.sleep(0.05)
+    _log("STATUS: 10% seed scenario alive")
+    time.sleep(0.05)
+    _log("DONE: seed scenario completed")
+    time.sleep(30.0)
+
+
 def main() -> int:
     import argparse
 
@@ -170,6 +244,7 @@ def main() -> int:
     if scenario not in SCENARIOS:
         print(f"unknown FAKE_CODEX_SCENARIO={scenario!r}", file=sys.stderr)
         return 2
+    _record_launch()
     {
         "happy": _scenario_happy,
         "deliverable": _scenario_deliverable,
@@ -178,6 +253,7 @@ def main() -> int:
         "exit_nonzero": _scenario_exit_nonzero,
         "long": _scenario_long,
         "resume": _scenario_resume,
+        "seed": _scenario_seed,
     }[scenario]()
     return 0
 
