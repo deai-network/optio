@@ -84,8 +84,14 @@ class CursorTaskConfig:
     after_execute: HookCallback | None = None
     on_deliverable: DeliverableCallback | None = None
 
-    # Resume machinery arrives in a later stage; Stage 0 tasks never resume.
-    supports_resume: bool = False
+    # Resume machinery (Stage 2). ON by default: cursor persists its chat
+    # state under $HOME/.cursor inside the workdir, so restoring the workdir
+    # tar + passing --continue rehydrates the conversation.
+    supports_resume: bool = True
+    # fnmatch patterns of workdir paths to omit from the resume snapshot tar.
+    # None → the framework defaults (see optio_host.archive). Keep home/.cursor
+    # OUT of this list: it carries the cursor chat state --continue needs.
+    workdir_exclude: list[str] | None = None
 
     # "iframe" = ttyd TUI (Stage 0). Later stages add "conversation".
     mode: ConversationMode = "iframe"

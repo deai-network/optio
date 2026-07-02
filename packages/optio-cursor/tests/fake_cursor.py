@@ -11,13 +11,14 @@ conversation mode and probe/seed scenarios are later stages).
 """
 
 import argparse
+import json
 import os
 import sys
 import time
 from pathlib import Path
 
 
-SCENARIOS = ("happy", "deliverable", "error")
+SCENARIOS = ("happy", "deliverable", "error", "resume")
 
 
 def _log(line: str) -> None:
@@ -56,6 +57,43 @@ def _scenario_error() -> None:
     time.sleep(30.0)
 
 
+def _cursor_home() -> Path:
+    """The per-task cursor state dir (``<workdir>/home/.cursor``).
+
+    The launcher sets ``HOME=<workdir>/home``, so ``$HOME/.cursor`` lives
+    INSIDE the workdir and anything written here is captured by the workdir
+    snapshot and restored on resume — exactly like real cursor-agent's chat
+    store.
+    """
+    home = os.environ.get("HOME") or str(Path.cwd() / "home")
+    return Path(home) / ".cursor"
+
+
+def _scenario_resume() -> None:
+    """Model cursor's cwd-keyed chat persistence for the resume test.
+
+    Records every launch's cursor flags to
+    ``<HOME>/.cursor/fake_cursor_argv.jsonl`` (append-only, one JSON array per
+    launch) and drops a one-time seed marker. After a workdir restore the seed
+    run's line survives, so the file carries one line per launch — proving the
+    restore happened and revealing whether ``--continue`` was passed on the
+    resumed launch.
+    """
+    ch = _cursor_home()
+    ch.mkdir(parents=True, exist_ok=True)
+    with (ch / "fake_cursor_argv.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(sys.argv[1:]) + "\n")
+        fh.flush()
+    marker = ch / "seed_marker.txt"
+    if not marker.exists():
+        marker.write_text("SEEDED\n", encoding="utf-8")
+    time.sleep(0.05)
+    _log("STATUS: 10% resume-scenario alive")
+    time.sleep(0.05)
+    _log("DONE: resume scenario completed")
+    time.sleep(30.0)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", action="store_true")
@@ -73,6 +111,7 @@ def main() -> int:
         "happy": _scenario_happy,
         "deliverable": _scenario_deliverable,
         "error": _scenario_error,
+        "resume": _scenario_resume,
     }[scenario]()
     return 0
 
