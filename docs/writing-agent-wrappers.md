@@ -408,7 +408,9 @@ only conclusive method — **watching a real first-login** in the wrapper.
 the actual OAuth/device/callback path. You MUST run the real first-login
 end-to-end in the wrapper environment (local at minimum): confirm the browser-open
 is intercepted, the flow completes, and a seed is captured with the expected
-credential files. Test remote too if you claim remote login.
+credential files. Test remote too if you claim remote login. This is one instance
+of a general rule — see [Testing](#testing-fakes-for-logic-the-real-binary-for-truth):
+no surface is "done" until the real binary has run it.
 
 **Decision order.** API key → device-code → hosted-redirect OAuth → loopback OAuth
 (local-only, or needs a rewrite). Whatever the agent forces on you, back it with
@@ -419,12 +421,43 @@ Default to fail-closed. Keep auth passwords off the argv (pass via file/env).
 Provide multi-container tunnel-bind knobs where deployments split the worker and the
 dashboard. Prefer conversation-mode + claustrum for the tightest posture.
 
-### Testing pattern
-Both wrappers ship a **fake agent** (a shim binary that speaks the agent's protocol
-without the real backend) plus a **docker-sshd** harness for remote-mode integration
-tests. Copy this pattern: it lets the full session pipeline be tested deterministically,
-local and remote, without network or credentials. Reference: `tests/` in either
-wrapper (`fake_claude.py`/`claude-shim.sh`, `fake_opencode.py`/`opencode-shim.sh`).
+### Testing: fakes for logic, the real binary for truth
+Two layers, **both required**.
+
+**Layer 1 — deterministic logic (necessary).** Both wrappers ship a **fake agent**
+(a shim that speaks the agent's protocol without the real backend) plus a
+**docker-sshd** harness for remote-mode tests. Copy this: it exercises the full
+session pipeline — launch, log-protocol parse, deliverables, resume, seeds, the
+conversation reducer — deterministically, local and remote, with no network or
+credentials. Reference: `tests/` in either wrapper (`fake_claude.py`/`claude-shim.sh`,
+`fake_opencode.py`/`opencode-shim.sh`).
+
+**Layer 2 — real-binary end-to-end (the layer that actually proves it).** A green
+fake-harness suite is **necessary but not sufficient.** A fake cannot reproduce the
+real binary's process semantics — how it opens a browser, whether its sandbox needs
+a controlling tty, how its OAuth callback behaves, where its installer really lands,
+how its transport frames bytes. Each is a place the fake silently disagrees with
+reality. **A surface is not "done" until the real agent binary has run it end-to-end
+in the wrapper environment.** Declaring parity on fakes alone is exactly how
+install-stub, browser-vanish, and sandbox-won't-start bugs ship "green" — the fake
+passed because it doesn't do the thing the real binary does.
+
+Run this checklist against the **real** binary before calling any surface complete:
+- [ ] **iframe/ttyd** — launches, renders, accepts input, reaches `DONE`.
+- [ ] **conversation** — the real `agent` transport handshakes, streams tokens,
+      runs a tool, completes a turn.
+- [ ] **each surface with fs-isolation ON** — the sandbox actually applies (fakes
+      ignore `--sandbox`; a fail-closed sandbox silently refuses to start here).
+- [ ] **first-login** end-to-end (browser-intercept / device-code / API-key) →
+      credential files land → **seed captured**.
+- [ ] **seed replant** — a fresh task starts already-authenticated.
+- [ ] **resume** — a relaunch picks up the prior session.
+- [ ] **remote (SSH)** — at least one surface end-to-end (path / tty / callback
+      assumptions that hold locally routinely break remote).
+
+Keep as many of these as feasible as **opt-in, skip-if-no-real-binary** tests (see
+`test_sandbox_enforce.py` / `test_conversation_sandbox_enforce.py` in optio-grok) so
+the guard is reproducible, not a one-off manual check that rots.
 
 ---
 
@@ -503,8 +536,15 @@ A finished wrapper covers this surface. `req` = expected for any wrapper;
 | 27 | headless-login strategy | req* | seeds / interactive fallback / redirect rewrite |
 | 28 | packaging + editable/release registration | req | `optio-demo/Makefile`, root `Makefile` `RELEASABLE_PY` |
 | 29 | demo tasks: seed-setup + two seed-pinned (iframe & conversation) | req | `optio-demo/…/tasks/{claudecode,opencode}.py` |
+| 30 | **real-binary E2E of every surface** (not just the fake harness) | req | [Testing checklist](#testing-fakes-for-logic-the-real-binary-for-truth); `test_*_sandbox_enforce.py` |
 
 `*` req when the agent needs auth (all real agents do).
+
+**A wrapper is not "full-featured" until row 30 passes for every surface it ships.**
+A green fake-harness suite covers the other rows' *logic*; it does not prove the
+real binary runs. Do not declare parity on fakes alone — that is how this project
+shipped an install stub, a vanishing browser-open, and a conversation mode that
+died on first real launch, all with a green suite.
 
 ## Appendix B — Interface reference (contract symbol → file)
 
