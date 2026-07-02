@@ -9,7 +9,8 @@ from optio_host import (
     SSHConfig,
 )
 
-from optio_cursor.session import create_cursor_task, run_cursor_session
+# Task 5 (session.py) re-enables:
+# from optio_cursor.session import create_cursor_task, run_cursor_session
 from optio_cursor.types import (
     CursorTaskConfig,
     DeliverableCallback,
