@@ -87,7 +87,6 @@ Shipped:
 - per-task `HOME` / `CODEX_HOME` isolation (tree provisioned at prepare)
 - task-scoped teardown (per-task codex path; orphan-ttyd reap)
 - `create_codex_task`, `run_codex_session`, `CodexTaskConfig`
-- demo task in optio-demo (`Codex demo — iframe`)
 - remote SSH workers (`ssh=SSHConfig(...)` routes to `RemoteHost`; verified
   end-to-end against a docker-sshd harness)
 - resume / workdir snapshots: session-id-keyed relaunch (`codex resume <id>`,

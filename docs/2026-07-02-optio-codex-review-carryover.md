@@ -45,6 +45,43 @@ codex divergence.
    Verbatim grok parity — shared-template gap. Evidence:
    `session.py:116-127`, `prompt.py:57`.
 
+## Plan C (Stages 3-5) carryover
+
+Two majors from the Plan-C review were fixed in-diff (commit d4a72a1, both
+verified codex-specific): the binary auto-download used fixed shared
+scratch/tarball paths (concurrent cold-cache starts raced) → per-invocation
+pid+uuid paths + atomic `mv -f`; and `verify_and_refresh_seed`'s probe
+inherited `os.environ` wholesale so an ambient `OPENAI_API_KEY` could mark a
+dead ChatGPT-mode seed alive → probe now scrubs `OPENAI_API_KEY`. Residual
+minors, deliberately not forked from the reference:
+
+6. **Cred watcher saves back BEFORE renewing the lease.** On the tick where
+   the lease was stolen (TTL expired, re-acquired), the stale session writes
+   its auth.json into the shared seed blob once before `renew_lease` detects
+   the loss. Exact grok parity (grok loop = save-back → renew). The window is
+   one tick (10s) and both sides hold a valid-format auth.json; the real
+   protection against concurrent-refresh stranding is the lease itself. Fix in
+   grok + codex together (reorder to renew-then-save) if ever.
+
+7. **`ensure_workdir_trusted` interpolates the workdir into TOML unescaped.**
+   A workdir path containing `"` or `\` yields malformed config.toml. optio's
+   `task_dir` paths are optio-controlled and quote-free, so unreachable in
+   practice; the idempotency substring check itself is sound (anchored by
+   `"]`). Harden with `tomllib`-safe quoting if task-dir policy ever changes.
+
+8. **Teardown seed capture not mutually exclusive with consume.** A config
+   setting BOTH `seed_id` (consume) and `on_seed_saved` (capture) would
+   capture at teardown, duplicating the rotating-token lineage. Same capture
+   gate as grok (`not resuming and on_seed_saved and launched_handle`) — shared
+   parity; the demo trio never sets both. Consider a `resolved_seed_id is None`
+   guard upstream.
+
+9. **Auto-download refuses any tarball shape but exactly one entry.**
+   Deliberate safe-fail (`find -mindepth 1` must yield one entry, else error —
+   never guesses which member is the binary). Correct for the pinned
+   `rust-v0.142.5` musl asset (single binary); revisit only if a future release
+   wraps the binary in a directory.
+
 ## Recorded plan-verbatim deviations (executor drift-guard working as designed)
 
 - Task 6 test `test_host_protocol_false_keeps_resume_section_and_explainer`:
