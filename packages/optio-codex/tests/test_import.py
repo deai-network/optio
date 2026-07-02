@@ -7,4 +7,9 @@ def test_public_surface():
 
 
 def test_vocabulary_literals_exported():
-    from optio_codex import ApprovalPolicy, IframeMode, SandboxMode  # noqa: F401
+    from optio_codex import (  # noqa: F401
+        ApprovalPolicy,
+        ConversationMode,
+        SandboxMode,
+        ToolVerbosity,
+    )

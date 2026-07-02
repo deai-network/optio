@@ -15,7 +15,8 @@ __all__ = [
     "HookCallback",
     "SSHConfig",
     "CodexTaskConfig",
-    "IframeMode",
+    "ConversationMode",
+    "ToolVerbosity",
     "ApprovalPolicy",
     "SandboxMode",
     "SeedProvider",
@@ -23,8 +24,17 @@ __all__ = [
 ]
 
 
-IframeMode = Literal["iframe"]
-_VALID_MODES = {"iframe"}
+# "iframe" = ttyd TUI in the browser. "conversation" = a headless
+# ``codex app-server`` session; the task publishes a live CodexConversation
+# via ctx.publish_result (Stage 6).
+ConversationMode = Literal["iframe", "conversation"]
+_VALID_MODES = {"iframe", "conversation"}
+
+# Verbosity of tool-call rendering in the conversation widget
+# (conversation_ui only). Mirrors optio-claudecode/grok; consumed by the
+# dashboard reducer.
+ToolVerbosity = Literal["silent", "description-only", "verbose"]
+_VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
 
 ApprovalPolicy = Literal["untrusted", "on-failure", "on-request", "never"]
 _VALID_APPROVAL_POLICIES = {"untrusted", "on-failure", "on-request", "never"}
@@ -60,8 +70,10 @@ class CodexTaskConfig:
     scrub_env: list[str] | None = None
 
     model: str | None = None
-    # Interactive iframe defaults: unattended launch in ttyd (mirrors claudecode
-    # bypassPermissions for embedded sessions nobody is watching).
+    # IFRAME-ONLY. Interactive iframe defaults: unattended launch in ttyd
+    # (mirrors claudecode bypassPermissions for embedded sessions nobody is
+    # watching). In conversation mode the thread's approvalPolicy is derived
+    # from permission_gate (never / on-request), NOT from this field.
     ask_for_approval: ApprovalPolicy = "never"
     sandbox: SandboxMode = "workspace-write"
 
@@ -93,8 +105,42 @@ class CodexTaskConfig:
     # seed capture. Ignored on resume.
     on_seed_saved: "Callable[[str, str | None], Awaitable[None] | None] | None" = None
 
-    mode: IframeMode = "iframe"
+    mode: ConversationMode = "iframe"
     host_protocol: bool = True
+
+    # --- conversation surface (Stage 6) ---------------------------------
+    # Conversation mode only: route codex's item/*/requestApproval server
+    # requests to the published conversation's on_permission_request handler
+    # (the caller registers one). When False, the thread is started with
+    # approvalPolicy="never" so tools run without prompting.
+    permission_gate: bool = False
+    # Opt-in dashboard conversation UI: the task starts a per-task listener
+    # and publishes a live chat widget. Conversation mode only.
+    conversation_ui: bool = False
+    # How much tool-call detail the conversation widget renders; only
+    # affects conversation_ui rendering.
+    tool_verbosity: ToolVerbosity = "description-only"
+
+    # --- conversation frontend parity (Stage 7) -------------------------
+    # Model preselected in the widget's model picker. Requires
+    # mode="conversation" and conversation_ui=True. Defaults to the live
+    # thread model when unset. (config.model still drives thread/start;
+    # this only controls the picker's initial value.)
+    default_model: str | None = None
+    # Show the model picker. Codex switches INLINE: the chosen model rides
+    # the next turn/start and sticks — no process restart.
+    show_model_selector: bool = False
+    # Show the file-upload control. Uploaded bytes land under
+    # <workdir>/uploads and are referenced to codex via a System: path line.
+    show_file_upload: bool = False
+    # Upper bound (bytes) on a single uploaded file; the listener rejects
+    # larger with HTTP 413. Mirrored to the widget via widgetData.
+    max_upload_bytes: int = 10_000_000
+    # Offer download links for files codex marks with the optio-file:
+    # sentinel. The listener serves GET /download confined to <workdir>.
+    file_download: bool = False
+    # Upper bound (bytes) on a single downloaded file (HTTP 413 above).
+    max_download_bytes: int = 10_000_000
 
     # Resume/snapshots (Stage 2). When True (default) the session captures a
     # workdir snapshot — plus the codex sessionId — at teardown, and a later
@@ -116,9 +162,46 @@ class CodexTaskConfig:
         if self.mode == "iframe" and not self.host_protocol:
             raise ValueError(
                 "CodexTaskConfig: host_protocol=False requires "
-                "mode='conversation' (not implemented in Stage 0; iframe "
-                "mode's only completion signal is the optio.log keyword "
-                "channel)."
+                "mode='conversation' (in iframe mode the optio.log keyword "
+                "channel is the only completion signal)."
+            )
+        if self.permission_gate and self.mode != "conversation":
+            raise ValueError(
+                "CodexTaskConfig: permission_gate=True requires "
+                "mode='conversation'."
+            )
+        if self.conversation_ui and self.mode != "conversation":
+            raise ValueError(
+                "CodexTaskConfig: conversation_ui=True requires "
+                "mode='conversation'."
+            )
+        if self.tool_verbosity not in _VALID_TOOL_VERBOSITY:
+            raise ValueError(
+                f"CodexTaskConfig.tool_verbosity={self.tool_verbosity!r} "
+                f"is not one of {sorted(_VALID_TOOL_VERBOSITY)}"
+            )
+        # Frontend-parity features are opt-in flags that only make sense
+        # with the conversation UI wired (mirrors claudecode/grok).
+        conv_ui = self.mode == "conversation" and self.conversation_ui
+        if self.default_model is not None and not conv_ui:
+            raise ValueError(
+                "CodexTaskConfig: default_model requires mode='conversation' "
+                "and conversation_ui=True."
+            )
+        if self.show_model_selector and not conv_ui:
+            raise ValueError(
+                "CodexTaskConfig: show_model_selector=True requires "
+                "mode='conversation' and conversation_ui=True."
+            )
+        if self.show_file_upload and not conv_ui:
+            raise ValueError(
+                "CodexTaskConfig: show_file_upload=True requires "
+                "mode='conversation' and conversation_ui=True."
+            )
+        if self.file_download and not conv_ui:
+            raise ValueError(
+                "CodexTaskConfig: file_download=True requires "
+                "mode='conversation' and conversation_ui=True."
             )
         if self.ask_for_approval not in _VALID_APPROVAL_POLICIES:
             raise ValueError(

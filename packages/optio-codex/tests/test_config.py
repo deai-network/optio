@@ -48,3 +48,64 @@ def test_supports_resume_flows_to_task_instance():
     )
     assert on.supports_resume is True
     assert off.supports_resume is False
+
+
+def _cfg(**kw):
+    base = dict(consumer_instructions="do things")
+    base.update(kw)
+    return CodexTaskConfig(**base)
+
+
+def test_conversation_mode_accepted():
+    cfg = _cfg(mode="conversation")
+    assert cfg.mode == "conversation"
+
+
+def test_host_protocol_false_now_legal_in_conversation_mode():
+    cfg = _cfg(mode="conversation", host_protocol=False)
+    assert cfg.host_protocol is False
+
+
+def test_host_protocol_false_still_rejected_in_iframe_mode():
+    with pytest.raises(ValueError, match="host_protocol"):
+        _cfg(mode="iframe", host_protocol=False)
+
+
+def test_permission_gate_requires_conversation_mode():
+    with pytest.raises(ValueError, match="permission_gate"):
+        _cfg(permission_gate=True)
+    assert _cfg(mode="conversation", permission_gate=True).permission_gate
+
+
+def test_conversation_ui_requires_conversation_mode():
+    with pytest.raises(ValueError, match="conversation_ui"):
+        _cfg(conversation_ui=True)
+    assert _cfg(mode="conversation", conversation_ui=True).conversation_ui
+
+
+def test_tool_verbosity_validated():
+    with pytest.raises(ValueError, match="tool_verbosity"):
+        _cfg(mode="conversation", tool_verbosity="loud")
+    assert _cfg(mode="conversation", tool_verbosity="verbose").tool_verbosity == "verbose"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("default_model", "gpt-5.5"),
+    ("show_model_selector", True),
+    ("show_file_upload", True),
+    ("file_download", True),
+])
+def test_frontend_flags_require_conversation_ui(field, value):
+    # Rejected without conversation_ui …
+    with pytest.raises(ValueError, match=field):
+        _cfg(mode="conversation", **{field: value})
+    # … and accepted with it.
+    cfg = _cfg(mode="conversation", conversation_ui=True, **{field: value})
+    assert getattr(cfg, field) == value
+
+
+def test_upload_download_byte_limits_default():
+    cfg = _cfg(mode="conversation", conversation_ui=True,
+               show_file_upload=True, file_download=True)
+    assert cfg.max_upload_bytes == 10_000_000
+    assert cfg.max_download_bytes == 10_000_000
