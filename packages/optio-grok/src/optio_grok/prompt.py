@@ -18,13 +18,13 @@ from optio_agents.protocol import ProtocolFeatures, build_log_channel_prompt
 # clues and, running headlessly here, has guessed it is inside Cursor (both are
 # xAI-owned) — so state its identity explicitly, regardless of host_protocol.
 _GROK_IDENTITY = """You are running inside **Grok Build** (xAI's agentic coding CLI), \
-driven headlessly by the optio harness — not Cursor or any other IDE. If asked \
+driven headlessly by an automation harness — not Cursor or any other IDE. If asked \
 about your environment or identity, you are Grok Build.
 
 """
 
 
-_GROK_INTRO = """# Coordination protocol with the host (optio-grok)
+_GROK_INTRO = """# Coordination protocol with the host harness
 
 You are running inside a coordination harness. Follow these conventions
 throughout the session.
