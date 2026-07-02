@@ -117,8 +117,10 @@ Landlock+seccomp fallback (this host exercises the Landlock path — bwrap/usern
 claustrum findings). Modes: read-only / workspace-write (network OFF by default, `.git/` RO,
 /tmp writable) / danger-full-access. Extra grants: `--add-dir` (writable roots) /
 `-c sandbox_workspace_write.writable_roots=[...]`; NO read-only grant vocabulary (read side is
-open in workspace-write) — `AllowedDir(mode="ro")` semantics need a decision in the Stage-8 plan
-(document divergence vs grok's ro/rw split). Reconcile existing `sandbox: SandboxMode` config
+open in workspace-write) — `AllowedDir(mode="ro")` is a documented **no-op** on codex (decided in
+the Stage-8 plan: an additive grant already trivially satisfied since reads are open; accepted for
+cross-wrapper config portability, only `rw` grants change behavior — see the reconciliation
+section §"Implementation reconciliation" below). Reconcile existing `sandbox: SandboxMode` config
 field with `fs_isolation`/`extra_allowed_dirs` (no duplicate knobs). Fail-open/fail-closed
 analysis required (grok lesson: built-ins failing open → custom profile); probe
 `codex doctor` "filesystem sandbox restricted" + enforcement test gated behind
@@ -245,6 +247,71 @@ Plan A ships a plain iframe demo first; trio completes at Stages 3/6.
   + conversation demo.
 - **E — Stage 8 + release**: native-sandbox isolation, enforcement test, final parity audit,
   README/versions.
+
+## Implementation reconciliation (as shipped)
+
+Deviations decided during the staged build, beyond what the sections above already
+describe as the shipped target (conversation = codex app-server over stdio, inline model
+switching per §2 Decision 7, the config surface, conversation-ui dispatch, demo trio — all
+built as designed and folded into the body sections). Plans A–D landed by the baseline and
+their as-shipped facts are reflected inline above; the deviations recorded here are the
+Stage-8 (filesystem-isolation) and release decisions. Tests green at reconciliation time:
+`packages/optio-codex/tests/` → **188 passed, 4 skipped** (the 4 skips are the opt-in
+real-binary tests — `test_real_codex_session.py` + the three `test_sandbox_enforce.py`
+cases, env-gated, never in the default suite); conversation-ui codex widget/events covered
+by the `optio-conversation-ui` TS suite. Final Appendix-A parity: **28/29 green** (see
+`docs/2026-07-02-optio-codex-parity-audit.md`).
+
+- **Filesystem isolation: codex NATIVE sandbox, not claustrum** (as the Stage-8 section
+  states). Unlike grok — which plants a **custom** fail-closed `[profiles.optio]` because
+  grok's built-in profiles fail *open* — codex has no custom-profile analogue and needs
+  none: it fails **closed** natively (Stage-8 probe verdict, codex-cli 0.142.5). So there is
+  **no planted profile file and no launch-time enforcement guard** (Plan E Task 5B, not 5A).
+  One resolved `SandboxSettings` (`fs_allowlist.resolve_sandbox_settings`) renders to every
+  launch surface via two renderers — `build_sandbox_cli_args` (iframe TUI argv + `codex exec`
+  probe flags: `--sandbox <mode>` + `-c sandbox_workspace_write.*`) and `build_sandbox_policy`
+  (app-server `thread/start.sandboxPolicy`); `host_actions.build_codex_flags` stays the single
+  argv-composition seam.
+- **`sandbox: SandboxMode | None` reconciliation (no duplicate knobs).** The Stage-0 `sandbox`
+  field became `None`-defaulted and derives from `fs_isolation`: `workspace-write` when
+  isolation is on, `danger-full-access` when off; an explicit value wins but is
+  cross-validated. Contradictions raise `ValueError` in `__post_init__`: `fs_isolation=True`
+  with `sandbox="danger-full-access"`; `fs_isolation=False` with an explicit *restrictive*
+  mode; an `rw` grant or `network_access=True` under effective `read-only`. `effective_sandbox_mode`
+  is the single resolver both renderers read.
+- **`AllowedDir(mode="ro")` is an ACCEPTED, documented no-op on codex** (resolves the "needs a
+  decision" note in the Stage-8 section). Grant contracts across optio are *additive* — a grant
+  widens access, never narrows it. codex `workspace-write` leaves the read side globally open,
+  so every `ro` grant is trivially over-satisfied; rejecting it would gratuitously break the
+  portability of one shared `extra_allowed_dirs` list across claudecode/grok/codex. Only `rw`
+  grants change behavior (→ `writable_roots`). The real divergence — codex does **not** deny
+  reads outside the allowlist, unlike grok/claudecode — is documented in the `AllowedDir`
+  docstring, the `fs_allowlist` module docstring, and the README.
+- **`network_access: bool = False` default mirrors codex's own workspace-write default**
+  (network OFF). This is *stricter* than grok/claudecode, whose fs sandboxes never restrict the
+  network — a documented divergence, not a silent loosening; `network_access=True` relaxes it and
+  is a workspace-write-only knob.
+- **Enforcement proven auth-free via the `codex sandbox` surface** — a deliberate structural
+  divergence from grok's analogue. grok's real-binary test needs a live authenticated ~180s
+  agent run; `codex sandbox -- <cmd>` runs a raw command under the sandbox with **no model call,
+  no auth, no billing**, so `test_sandbox_enforce.py` proves outside-write-denied /
+  inside-write-allowed / `writable_roots`-grant-honored in seconds. It stays env-gated
+  (`OPTIO_CODEX_SANDBOX_ENFORCE_TEST=1`) purely because it needs a real binary + sandbox-capable
+  kernel, and never runs in the default suite. The pinned invocation is
+  `codex sandbox -c sandbox_mode=<mode> -- <cmd>` (the *subcommand* takes mode only via
+  `-c sandbox_mode=…`, not `-s/--sandbox`; the agent *launch* surfaces do take `-s/--sandbox`).
+- **`codex doctor` is NOT trusted as the enforcement gate.** The probe recorded that `codex
+  doctor` optimistically reports "filesystem sandbox restricted" even inside a no-mechanism
+  container where a live `codex sandbox` touch still (correctly) fails closed — so the
+  command-level touch probe, not doctor, is the load-bearing enforcement evidence.
+- **Per-task `CODEX_HOME` inside the writable workdir is hardened for free.** codex keeps `.codex/`
+  and `.git/` read-only for sandboxed tool commands, so the agent's own shell cannot rewrite its
+  per-task `auth.json` even though `CODEX_HOME` (`<workdir>/home/.codex`) lives inside the
+  writable root; codex's own unsandboxed process still writes rollouts/auth there normally.
+- **The `verify`/`run_codex_probe` auth probe stays on a hard `-s read-only`**
+  (`codex exec --json -s read-only --skip-git-repo-check`), deliberately NOT derived from the
+  task's `SandboxSettings` SSOT — the tightest posture for a throwaway credential check that never
+  writes, independent of the task's `fs_isolation`.
 
 Grok test-suite inventory is the coverage bar (~3.7k lines; pattern-vs-specific tagging in the
 porting analysis). Real-agent tests env-gated (`OPTIO_CODEX_*_TEST=1`), never in default suite.

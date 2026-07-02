@@ -1,7 +1,9 @@
 # optio-codex
 
-Run OpenAI Codex as an `optio` task — local subprocess with the interactive
-TUI embedded in the optio dashboard via an iframe widget served by `ttyd`.
+Run OpenAI Codex as an `optio` task — either as the interactive TUI embedded
+in the optio dashboard via an iframe widget served by `ttyd`, or in
+conversation mode (codex app-server over stdio) rendered by the
+`optio-conversation-ui` widget. Local or remote (SSH) workers.
 
 ## Install
 
@@ -30,6 +32,47 @@ the operator's real `~/.codex` identity and config do not leak into the
 session. The codex binary is launched via a per-task path
 (`<workdir>/home/.local/bin/codex`), so teardown only ever kills this
 task's process.
+
+### Filesystem sandbox
+
+Beyond the per-task `HOME`, every codex tool subprocess is confined by
+codex's **own native sandbox** — kernel-enforced (bundled bubblewrap
+primary, Landlock+seccomp fallback on Linux), covering all shell/tool
+commands the agent runs. optio-codex does **not** vendor claustrum for
+this; it renders one resolved sandbox posture (`fs_allowlist.py` SSOT)
+onto every launch surface: the interactive TUI argv, the `codex exec`
+probe flags, and the app-server `thread/start.sandboxPolicy`.
+
+`fs_isolation=True` (the default) selects codex `workspace-write`: writes
+are confined to the task workdir, `/tmp`, and any `rw` grants; **reads are
+not restricted**. That read-open behaviour is a deliberate divergence from
+optio-grok/optio-claudecode (whose sandboxes also deny reads) — so
+`AllowedDir("…", "ro")` is a *documented no-op* on codex (an additive grant
+that is already trivially satisfied), kept only for cross-wrapper config
+portability. Only `AllowedDir("…", "rw")` changes behaviour, becoming a
+`sandbox_workspace_write.writable_roots` entry (`~/` expands against the
+real host home at launch). Network access is **OFF** by default (stricter
+than the other wrappers, whose fs sandboxes never touch the network);
+`network_access=True` relaxes it. `fs_isolation=False` runs codex
+unconfined (`danger-full-access`).
+
+Extra grants and the mode are cross-validated at config time — e.g.
+`fs_isolation=True` with `sandbox="danger-full-access"`, or an `rw` grant
+under an explicit `read-only` mode, raise `ValueError` rather than silently
+mis-configuring the sandbox.
+
+**No optio-side enforcement guard is needed.** codex fails **closed**: on a
+host with no working sandbox mechanism (bubblewrap or Landlock), codex
+errors or panics and the model's command never runs — it never falls back
+to running unconfined (the only unconfined path is the explicit
+`--dangerously-bypass-approvals-and-sandbox` opt-out, which optio-codex
+never emits). This was verified empirically against codex-cli 0.142.5 (see
+the Stage-8 probe verdict in `docs/2026-07-02-optio-codex-design.md`), so
+optio-codex relies on that fail-closed guarantee instead of a launch-time
+probe. As a free hardening bonus, `.codex/` and `.git/` under a writable
+root stay read-only to the agent's shell, so the sandboxed agent cannot
+rewrite its own per-task `auth.json` even though `CODEX_HOME` lives inside
+the workdir.
 
 ### Authentication
 
@@ -78,14 +121,26 @@ pinned release is auto-downloaded (`rust-v0.142.5`, static musl,
 (`<workdir>/home/.local/bin/codex`) is preserved and points into the cache,
 so task-scoped teardown stays unaffected.
 
-## Status — Stages 0–5 (iframe, remote SSH, resume, seeds, binary cache)
+## Status — Stages 0–8 (feature-complete against the Appendix-A parity bar)
+
+Verified against `docs/writing-agent-wrappers.md` Appendix A — 28 of 29 items
+green (see `docs/2026-07-02-optio-codex-parity-audit.md` for per-item
+`file:line` evidence). Suite: 188 passed, 4 skipped (the skips are the opt-in
+real-binary tests, env-gated, never in the default suite).
 
 Shipped:
 
-- iframe/ttyd mode on the local host
+- **Two run modes** — iframe/ttyd interactive TUI *and* conversation mode
+  (codex app-server over stdio) with a conversation-ui widget
+  (`optio-conversation-ui`, `widgetData.protocol = "codex"` → `CodexView`)
 - `optio.log` keyword-protocol coordination + exit-status DONE/ERROR channel
 - per-task `HOME` / `CODEX_HOME` isolation (tree provisioned at prepare)
-- task-scoped teardown (per-task codex path; orphan-ttyd reap)
+- **filesystem isolation** via codex's native sandbox — default-ON
+  `fs_isolation` (`workspace-write`), `extra_allowed_dirs` (`rw` grants →
+  `writable_roots`), `network_access` (OFF by default); fail-closed, no
+  optio-side guard needed (see the Filesystem sandbox section above)
+- task-scoped teardown (per-task codex path; orphan-ttyd reap = crash-orphan
+  rescue)
 - `create_codex_task`, `run_codex_session`, `CodexTaskConfig`
 - remote SSH workers (`ssh=SSHConfig(...)` routes to `RemoteHost`; verified
   end-to-end against a docker-sshd harness)
@@ -94,7 +149,8 @@ Shipped:
   GridFS blob carrying `home/.codex/sessions`), `resume.log` + AGENTS.md
   resume section synced to the snapshot exclude list
   (`workdir_exclude`; defaults drop `home/.codex/packages`, `*.sqlite*`,
-  caches — never `home/.codex/sessions`)
+  caches — never `home/.codex/sessions`); auto-resume-on-restart via
+  optio-core (`supports_resume=True`)
 - seeds: log-in-once capture (`on_seed_saved`) + `seed_id` consume with
   automatic workdir pre-trust; store-binding CRUD (`list_seeds` /
   `delete_seed` / `purge_seed`) over `{prefix}_codex_seeds`
@@ -105,15 +161,20 @@ Shipped:
 - optio-owned evictable binary cache (`OPTIO_CODEX_CACHE_DIR`), seeded from a
   host binary (`cp -L`) or real GitHub-release auto-download (pinned
   `rust-v0.142.5`, musl); per-task launch symlink preserved
-- demo: seed-setup + seed-pinned iframe tasks (auto-appear via `fw.resync()`)
+- conversation-ui surface: permission gate, **inline** model switching, file
+  upload/download (`optio-file:`), tool verbosity
+- demo trio: seed-setup + seed-pinned iframe + seed-pinned conversation tasks
+  (auto-appear via `fw.resync()`)
 
-Still missing (tracked gaps toward Appendix A parity, staged plans D–E):
+Remaining opt gaps (deliberate — see the parity audit):
 
-- crash-orphan rescue (snapshot capture for a crashed engine)
-- conversation mode (`codex exec --json` / app-server) + conversation-ui
-  widget (Plan D)
-- model switching; file upload/download; tool verbosity (Plan D)
-- seed-pinned conversation demo (completes the demo trio) (Plan D)
-- filesystem isolation (Landlock / claustrum) reconciled with codex's native
-  sandbox (Plan E)
-- PyPI release (Plan E)
+- **session restore / rebase (scripted transcript reconstruction):** not
+  shipped. codex's resume story is snapshot + `codex resume <id>` (shipped
+  above); claudecode's scripted `transcript.py` rebase is engine-specific and
+  has no codex analogue. optio-grok and optio-opencode also omit it — parity,
+  not a regression.
+- **at-rest encryption of the session blob:** the `encrypt`/`decrypt` seam is
+  plumbed through but not activated (sessions pass `encrypt=None`) — identical
+  posture to every other optio wrapper.
+
+Not yet published to PyPI (first release is a separate, user-approved step).
