@@ -231,5 +231,30 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                 ),
             )
         )
+        tasks.append(
+            create_grok_task(
+                process_id=f"grok-conversation-seed-{seed_id}",
+                name=f"Grok conversation — {name}",
+                description=(
+                    "Conversation-mode Grok Build session from a captured "
+                    f"seed ({name}): chat with the agent in the dashboard, "
+                    "approve tool permissions interactively."
+                ),
+                config=GrokTaskConfig(
+                    consumer_instructions="",   # defaulted conversation prompt
+                    mode="conversation",
+                    conversation_ui=True,
+                    tool_verbosity="description-only",
+                    show_model_selector=True,
+                    show_file_upload=True,
+                    file_download=True,
+                    permission_gate=True,       # exercises the approve/deny UI
+                    host_protocol=False,        # pure conversation gate
+                    ssh=ssh,
+                    seed_id=seed_id,
+                    supports_resume=True,
+                ),
+            )
+        )
 
     return tasks

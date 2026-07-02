@@ -58,7 +58,7 @@ def test_get_tasks_is_async_services_factory():
     assert "supports_resume=True" in src
 
 
-def test_seed_setup_always_and_iframe_when_seed_present():
+def test_seed_setup_always_and_both_pinned_when_seed_present():
     async def _run():
         client = AsyncIOMotorClient(
             os.environ.get("MONGO_URL", "mongodb://localhost:27017"),
@@ -85,7 +85,9 @@ def test_seed_setup_always_and_iframe_when_seed_present():
             defs = await get_task_definitions(_services(db))
             ids = {t.process_id for t in defs}
             assert "grok-seed-setup" in ids
+            # The trio: setup + both seed-pinned tasks (iframe + conversation).
             assert f"grok-demo-seed-{seed_id}" in ids
+            assert f"grok-conversation-seed-{seed_id}" in ids
         finally:
             await client.drop_database(db_name)
             client.close()
