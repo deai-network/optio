@@ -11,6 +11,7 @@ from optio_demo.tasks.marimo import get_tasks as marimo_tasks
 from optio_demo.tasks.opencode import get_tasks as opencode_tasks
 from optio_demo.tasks.client_directed import get_tasks as client_directed_tasks
 from optio_demo.tasks.claudecode import get_tasks as claudecode_tasks
+from optio_demo.tasks.grok import get_tasks as grok_tasks
 
 
 async def get_task_definitions(
@@ -27,4 +28,5 @@ async def get_task_definitions(
         *await opencode_tasks(services),
         *client_directed_tasks(),
         *await claudecode_tasks(services),
+        *await grok_tasks(services),
     ]
