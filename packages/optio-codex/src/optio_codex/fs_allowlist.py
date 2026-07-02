@@ -8,9 +8,23 @@ profile file: one resolved :class:`SandboxSettings` renders to
 
 * CLI surfaces (interactive TUI + ``codex exec``): ``--sandbox <mode>`` plus
   ``-c sandbox_workspace_write.writable_roots=[…]`` /
-  ``-c sandbox_workspace_write.network_access=true`` overrides; and
-* the app-server ``thread/start.sandboxPolicy`` (:func:`build_sandbox_policy`,
-  added in Task 4).
+  ``-c sandbox_workspace_write.network_access=true`` overrides
+  (:func:`build_sandbox_cli_args`); and
+* the ``codex app-server`` launch (conversation mode): the mode travels
+  out-of-band via ``thread/start``'s ``sandbox`` field (a kebab-case
+  ``SandboxMode`` enum — the app-server has NO ``--sandbox`` flag), while
+  writable_roots/network_access ride the SAME ``-c sandbox_workspace_write.*``
+  overrides on the ``codex app-server`` command line
+  (:func:`build_sandbox_config_overrides`).
+
+  Schema note (probed, codex-cli 0.142.5 ``codex app-server
+  generate-json-schema``): ``ThreadStartParams`` exposes only ``sandbox``
+  (SandboxMode enum) + a generic ``config`` object — there is NO
+  ``sandboxPolicy`` object on ``thread/start``. A structured ``SandboxPolicy``
+  (a ``type``-tagged union: ``workspaceWrite``/``readOnly``/
+  ``dangerFullAccess``, camelCase ``writableRoots``/``networkAccess``) exists
+  only on ``turn/start``, which optio does not use to carry the sandbox — the
+  mode+``-c`` pair at launch defines the whole app-server process's posture.
 
 Probed divergences vs grok/claudecode (codex-cli 0.142.5, 2026-07-02):
 
@@ -61,7 +75,8 @@ def _expand_home(path: str, host_home: str) -> str:
 @dataclass(frozen=True)
 class SandboxSettings:
     """One task's resolved sandbox posture — the SSOT every launch surface
-    (iframe argv, exec probe flags, app-server sandboxPolicy) renders from."""
+    (iframe/exec ``--sandbox`` argv, and the app-server's thread/start
+    ``sandbox`` mode + ``-c`` config overrides) renders from."""
 
     mode: "SandboxMode"
     writable_roots: tuple[str, ...] = ()
@@ -97,16 +112,22 @@ def _toml_str_array(paths: tuple[str, ...]) -> str:
     return "[" + ", ".join(json.dumps(p) for p in paths) + "]"
 
 
-def build_sandbox_cli_args(settings: SandboxSettings) -> list[str]:
-    """Render settings as codex CLI args (interactive TUI and ``exec``).
+def build_sandbox_config_overrides(settings: SandboxSettings) -> list[str]:
+    """Render the ``-c sandbox_workspace_write.*`` overrides ONLY (no
+    ``--sandbox`` flag).
 
-    ``--sandbox`` is accepted by both surfaces; ``-c`` values are parsed as
-    TOML, so the roots array is emitted in TOML syntax. No overrides are
-    emitted outside workspace-write.
+    Used by the ``codex app-server`` launch, which selects the mode
+    out-of-band via ``thread/start``'s ``sandbox`` field and has no
+    ``--sandbox`` flag; the writable_roots/network_access still need to reach
+    the process, and ``codex app-server`` accepts ``-c`` config overrides.
+    :func:`build_sandbox_cli_args` composes on top of this — one SSOT, two
+    launch surfaces. ``-c`` values are parsed as TOML, so the roots array is
+    emitted in TOML syntax. Empty outside workspace-write (and for a
+    workspace-write posture with no extras).
     """
-    out: list[str] = ["--sandbox", settings.mode]
     if settings.mode != "workspace-write":
-        return out
+        return []
+    out: list[str] = []
     if settings.writable_roots:
         out += [
             "-c",
@@ -116,3 +137,13 @@ def build_sandbox_cli_args(settings: SandboxSettings) -> list[str]:
     if settings.network_access:
         out += ["-c", "sandbox_workspace_write.network_access=true"]
     return out
+
+
+def build_sandbox_cli_args(settings: SandboxSettings) -> list[str]:
+    """Render settings as codex CLI args (interactive TUI and ``exec``).
+
+    ``--sandbox`` is accepted by both surfaces; the ``-c`` overrides are the
+    same ones :func:`build_sandbox_config_overrides` produces for the
+    app-server (one SSOT). No overrides are emitted outside workspace-write.
+    """
+    return ["--sandbox", settings.mode, *build_sandbox_config_overrides(settings)]

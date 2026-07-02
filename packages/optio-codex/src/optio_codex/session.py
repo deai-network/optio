@@ -28,6 +28,7 @@ from optio_codex.conversation_listener import ConversationListener
 from optio_codex.fs_allowlist import (
     SandboxSettings,
     build_sandbox_cli_args,
+    build_sandbox_config_overrides,
     resolve_sandbox_settings,
 )
 from optio_codex.prompt import compose_agents_md
@@ -71,8 +72,9 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
     ttyd_path: str | None = None
     # Stage 8: the task's resolved native-sandbox posture (mode + writable
     # roots + network), computed ONCE in _prepare from config + the real host
-    # home, then rendered into every launch surface (iframe argv here,
-    # app-server sandboxPolicy in the conversation body).
+    # home, then rendered into every launch surface (iframe/exec argv via
+    # build_sandbox_cli_args; the codex app-server launch via thread/start's
+    # `sandbox` mode + build_sandbox_config_overrides in the conversation body).
     sandbox_settings: SandboxSettings | None = None
     cancelled = False
     # Whether a snapshot was restored this run (suppresses the auto-start
@@ -284,20 +286,26 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
     async def _conversation_body(host: Host, hook_ctx: HookContext) -> None:
         nonlocal launched_handle, conversation, conv_listener
 
-        # Launch `codex app-server` directly (no tmux/ttyd). Model, sandbox and
-        # approval policy travel in thread/start params — no CLI flags.
+        # Launch `codex app-server` directly (no tmux/ttyd). The sandbox MODE
+        # and approval policy travel in thread/start params (the app-server has
+        # no --sandbox flag); the writable_roots/network_access ride the same
+        # `-c sandbox_workspace_write.*` overrides the iframe uses, on the
+        # app-server command line (Stage 8, one SandboxSettings SSOT).
         # merge_stderr=False keeps codex diagnostics off the JSONL stdout.
         conversation = CodexConversation(
             cwd=host.workdir,
             permission_gate=config.permission_gate,
             model=config.model,
-            sandbox=config.effective_sandbox_mode,
+            sandbox=sandbox_settings.mode,
             # Plan B: on resume, continue the stored thread (thread/resume)
             # instead of starting a fresh one. resume_session_id is the codex
             # thread id recorded in the restored snapshot.
             resume_thread_id=resume_session_id if resuming else None,
         )
-        argv = [codex_path, "app-server"]
+        argv = [
+            codex_path, "app-server",
+            *build_sandbox_config_overrides(sandbox_settings),
+        ]
         cmd = " ".join(shlex.quote(a) for a in argv)
         env = {
             **host_actions._isolation_env(host.workdir),

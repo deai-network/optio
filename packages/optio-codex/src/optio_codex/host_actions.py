@@ -408,7 +408,13 @@ async def run_codex_probe(
     ``exec`` mode has no approvals (hard approval_policy=never) and
     ``-s read-only`` keeps the probe from touching anything; the JSONL
     events land on stdout. The caller's verdict is a challenge-answer match
-    on stdout; the exit code is diagnostics only."""
+    on stdout; the exit code is diagnostics only.
+
+    Stage 8 note: ``-s read-only`` here is DELIBERATELY fixed — the tightest
+    posture for a throwaway credential check — and is NOT derived from the
+    task's SandboxSettings SSOT (build_sandbox_cli_args). A verify probe never
+    writes, so it needs no writable roots or network; a task-configured mode
+    would only loosen it."""
     argv = [
         codex_executable, "exec", "--json", "-s", "read-only",
         "--skip-git-repo-check", prompt,

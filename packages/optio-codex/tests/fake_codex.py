@@ -155,32 +155,40 @@ def _scenario_resume() -> None:
     time.sleep(30.0)
 
 
-def _record_launch() -> None:
-    """Durably record this launch's argv + the config.toml planted in
-    CODEX_HOME at launch time.
+def _append_record(obj: dict) -> None:
+    """Append one JSON object to ``FAKE_CODEX_RECORD`` (if set).
 
-    When ``FAKE_CODEX_RECORD`` names a path, append one JSON object per
-    launch: ``{"argv": [...], "config_toml": <content|null>}``. The workdir
-    is wiped on teardown, so this record (outside the workdir) is how tests
-    assert launch-time facts — e.g. that the seeded config.toml carried the
-    workdir pre-trust entry BEFORE codex started (Stage 3), and later which
-    sandbox flags were passed (Stage 8). The fake ACCEPTS and otherwise
-    IGNORES all flags — it enforces nothing.
+    Single durable-record mechanism (the workdir is wiped on teardown, so the
+    record must live outside it). Callers tag their lines with a distinctive
+    key (``argv`` for a launch, ``thread_start_params`` for an app-server
+    thread/start) and readers filter by key.
     """
     dest = os.environ.get("FAKE_CODEX_RECORD")
     if not dest:
         return
+    with open(dest, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(obj) + "\n")
+        fh.flush()
+
+
+def _record_launch() -> None:
+    """Durably record this launch's argv + the config.toml planted in
+    CODEX_HOME at launch time.
+
+    Appends ``{"argv": [...], "config_toml": <content|null>}``. The workdir
+    is wiped on teardown, so this record (outside the workdir) is how tests
+    assert launch-time facts — e.g. that the seeded config.toml carried the
+    workdir pre-trust entry BEFORE codex started (Stage 3), and which sandbox
+    flags/``-c`` overrides were passed (Stage 8, iframe AND app-server
+    surfaces). The fake ACCEPTS and otherwise IGNORES all flags — it enforces
+    nothing.
+    """
     config_path = _codex_home() / "config.toml"
     try:
         config_toml = config_path.read_text(encoding="utf-8")
     except FileNotFoundError:
         config_toml = None
-    with open(dest, "a", encoding="utf-8") as fh:
-        fh.write(json.dumps({
-            "argv": sys.argv[1:],
-            "config_toml": config_toml,
-        }) + "\n")
-        fh.flush()
+    _append_record({"argv": sys.argv[1:], "config_toml": config_toml})
 
 
 def _scenario_seed() -> None:
@@ -345,6 +353,9 @@ def _run_app_server() -> int:
     ``FAKE_CODEX_EXIT_AFTER=N`` makes the process exit non-zero (7) after N
     turns, modelling an unexpected crash for the session-failure test.
     """
+    # Durably record the app-server launch argv (carries the Stage-8
+    # `-c sandbox_workspace_write.*` overrides) before the handshake.
+    _record_launch()
     thread_id = "fake-codex-thread"
     exit_after = int(os.environ.get("FAKE_CODEX_EXIT_AFTER", "0") or "0")
     turn = 0
@@ -385,6 +396,10 @@ def _run_app_server() -> int:
             ], "nextCursor": None}})
         elif method in ("thread/start", "thread/resume"):
             params = msg.get("params") or {}
+            # Stage 8: persist the received params so tests can assert the
+            # kebab-case `sandbox` mode reached thread/start (the app-server's
+            # only sandbox-mode channel).
+            _append_record({"thread_start_params": params})
             if method == "thread/resume" and params.get("threadId"):
                 thread_id = params["threadId"]
             _as_send({"id": mid, "result": {

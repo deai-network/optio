@@ -237,6 +237,101 @@ async def test_conversation_ui_publishes_widget(shim_install_dir, task_root, mon
         await optio.shutdown(grace_seconds=1.0)
 
 
+def _read_records(path: pathlib.Path) -> list[dict]:
+    import json
+    return [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+
+
+@pytest.mark.asyncio
+async def test_conversation_sandbox_wired(
+    shim_install_dir, task_root, mongo_db, tmp_path, monkeypatch,
+):
+    """Stage 8: a default (fs_isolation=True) conversation task launches
+    ``codex app-server`` with the ``-c sandbox_workspace_write.*`` overrides
+    derived from the config, and thread/start carries the kebab-case mode.
+
+    The app-server has no ``--sandbox`` flag, so the mode rides thread/start's
+    ``sandbox`` field while writable_roots/network_access ride ``-c`` at launch
+    — both from the one resolved SandboxSettings.
+    """
+    from optio_codex import AllowedDir
+
+    record = tmp_path / "codex_record.jsonl"
+    monkeypatch.setenv("FAKE_CODEX_RECORD", str(record))
+    optio = await _make_optio(mongo_db, "cxconv6")
+    try:
+        task = create_codex_task(
+            process_id="cx-conv-sandbox",
+            name="Conversation sandbox",
+            config=_conversation_config(
+                shim_install_dir,
+                extra_allowed_dirs=[AllowedDir("/scratch", "rw")],
+                network_access=True,
+            ),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result(
+            "cx-conv-sandbox", session_id=None, timeout=60,
+        )
+
+        recs = _read_records(record)
+        launches = [r for r in recs if "argv" in r]
+        assert launches, "app-server launch was not recorded"
+        argv = launches[-1]["argv"]
+        assert argv[0] == "app-server"
+        assert "--sandbox" not in argv  # app-server has no --sandbox flag
+        assert 'sandbox_workspace_write.writable_roots=["/scratch"]' in argv
+        assert "sandbox_workspace_write.network_access=true" in argv
+
+        starts = [r for r in recs if "thread_start_params" in r]
+        assert starts, "thread/start params were not recorded"
+        assert starts[-1]["thread_start_params"]["sandbox"] == "workspace-write"
+
+        await conv.close()
+        await _wait_terminal(optio, "cx-conv-sandbox")
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
+@pytest.mark.asyncio
+async def test_conversation_unconfined_when_fs_isolation_off(
+    shim_install_dir, task_root, mongo_db, tmp_path, monkeypatch,
+):
+    """fs_isolation=False → app-server launch carries no
+    ``sandbox_workspace_write.*`` overrides and thread/start requests
+    danger-full-access."""
+    record = tmp_path / "codex_record.jsonl"
+    monkeypatch.setenv("FAKE_CODEX_RECORD", str(record))
+    optio = await _make_optio(mongo_db, "cxconv7")
+    try:
+        task = create_codex_task(
+            process_id="cx-conv-unconfined",
+            name="Conversation unconfined",
+            config=_conversation_config(shim_install_dir, fs_isolation=False),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result(
+            "cx-conv-unconfined", session_id=None, timeout=60,
+        )
+
+        recs = _read_records(record)
+        launches = [r for r in recs if "argv" in r]
+        assert launches, "app-server launch was not recorded"
+        argv = launches[-1]["argv"]
+        assert not any(a.startswith("sandbox_workspace_write.") for a in argv)
+
+        starts = [r for r in recs if "thread_start_params" in r]
+        assert starts, "thread/start params were not recorded"
+        assert (
+            starts[-1]["thread_start_params"]["sandbox"] == "danger-full-access"
+        )
+
+        await conv.close()
+        await _wait_terminal(optio, "cx-conv-unconfined")
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
 def test_ui_widget_per_mode():
     """Conversation tasks carry no widget unless conversation_ui; iframe
     tasks keep 'iframe'."""
