@@ -11,9 +11,12 @@ from optio_host import (
 
 from optio_codex.session import create_codex_task, run_codex_session
 from optio_codex.types import (
+    ApprovalPolicy,
     CodexTaskConfig,
     DeliverableCallback,
     HookCallback,
+    IframeMode,
+    SandboxMode,
 )
 
 
@@ -23,9 +26,12 @@ _logging.getLogger("asyncssh").setLevel(_logging.WARNING)
 __all__ = [
     "create_codex_task",
     "run_codex_session",
+    "ApprovalPolicy",
     "CodexTaskConfig",
     "DeliverableCallback",
     "HookCallback",
+    "IframeMode",
+    "SandboxMode",
     "SSHConfig",
     "HookContext",
     "HookContextProtocol",

@@ -86,8 +86,10 @@ async def resolve_codex(
             "codex not found on host and install_if_missing=False; nothing to do."
         )
     raise RuntimeError(
-        "codex not found on the worker (looked via 'command -v codex'). Stage 0 "
-        "has no auto-install — install codex manually or pass codex_install_dir."
+        "codex not found on the worker (looked via 'command -v codex'). "
+        "install_if_missing is accepted but Stage 0 ships no auto-install — "
+        "the optio-owned binary cache arrives in a later stage. Install codex "
+        "manually (npm i -g @openai/codex) or pass codex_install_dir."
     )
 
 

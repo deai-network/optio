@@ -9,6 +9,7 @@ from optio_codex.host_actions import (
     _build_codex_shell_command,
     _codex_pgrep_pattern,
     _isolation_env,
+    resolve_codex,
 )
 
 
@@ -172,3 +173,21 @@ async def test_kill_codex_processes_spares_other_tasks(tmp_path):
         for p in procs:
             if p.poll() is None:
                 p.kill()
+
+
+@pytest.mark.asyncio
+async def test_resolve_codex_missing_names_the_stage_gap():
+    class _NotFoundHost(_RecordingHost):
+        async def run_command(self, cmd, **kwargs):
+            self.commands.append(cmd)
+
+            class _R:
+                stdout = ""
+                stderr = ""
+                exit_code = 1
+
+            return _R()
+
+    host = _NotFoundHost()
+    with pytest.raises(RuntimeError, match="binary cache"):
+        await resolve_codex(host, install_if_missing=True)
