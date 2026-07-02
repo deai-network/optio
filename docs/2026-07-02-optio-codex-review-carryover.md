@@ -82,6 +82,37 @@ minors, deliberately not forked from the reference:
    `rust-v0.142.5` musl asset (single binary); revisit only if a future release
    wraps the binary in a directory.
 
+## Plan D (Stages 6-7) carryover
+
+One major was fixed in-diff (commit d8dae3c): the codex reducer had regressed
+grok's msgId-matching into tail-position matching, so GPT-5's interleaved
+reasoning `activity` rows split the answer into a second bubble + stuck pending
+indicator. Fixed to match grok (verified grok's reference is correct — codex
+regressed the port, so codex was fixed, not forked). Residual minors, all
+codex-specific UI error-edge polish (the widget's core render path is correct;
+tsc + vitest green):
+
+10. **Reducer ignores `willRetry` on the `error` notification.** When codex
+    signals a transient (overload / rate-limit) with `willRetry:true`, the
+    reducer renders a permanent error row even though codex auto-retries and a
+    later `turn/completed` still delivers the answer. Should render transient
+    (activity) or suppress until a terminal error. Deferred: needs a live
+    overload event to TDD the exact rendering honestly (the reducer was built
+    from the schema, not observed retry traffic). `events.ts` error branch.
+
+11. **`interrupt()` awaits the `turn/interrupt` ACK** and can raise
+    `ConversationClosed` if the process dies mid-interrupt — a mechanism
+    divergence from grok's fire-and-forget `session/cancel` notification. NOT a
+    bug: the Conversation contract explicitly permits `interrupt` to raise
+    `ConversationClosed` after the session ends; codex's `turn/interrupt` is a
+    request by protocol design. Left as a documented, contract-conformant
+    divergence.
+
+12. **Duplicate error row when an `error` notification precedes a failed
+    `turn/completed`** carrying the same message. Dedup currently matches only a
+    trailing error item; a non-trailing intervening item defeats it. Rare edge;
+    cosmetic double row. `events.ts` error/turn-completed branches.
+
 ## Recorded plan-verbatim deviations (executor drift-guard working as designed)
 
 - Task 6 test `test_host_protocol_false_keeps_resume_section_and_explainer`:
