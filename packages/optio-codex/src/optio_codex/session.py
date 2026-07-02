@@ -62,8 +62,12 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                 config.consumer_instructions,
                 documentation=protocol.documentation if config.host_protocol else None,
                 host_protocol=config.host_protocol,
+                workdir_exclude=config.workdir_exclude,
+                supports_resume=config.supports_resume,
             ),
         )
+        if config.supports_resume:
+            await host_actions._append_resume_log_entry(host)
         if config.before_execute is not None:
             # End-of-prepare placement matches claudecode (its
             # _plant_session_content ends with before_execute, inside its

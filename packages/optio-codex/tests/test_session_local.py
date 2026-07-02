@@ -36,6 +36,7 @@ async def test_local_happy_path_done_in_optio_log(
         observed["per_task_codex"] = (
             workdir / "home" / ".local" / "bin" / "codex"
         ).exists()  # C2
+        observed["resume_log"] = (workdir / "resume.log").read_text(encoding="utf-8")
 
     task = create_codex_task(
         process_id="codex-local-happy",
@@ -57,6 +58,8 @@ async def test_local_happy_path_done_in_optio_log(
     assert "DONE" in observed["optio_log"]
     assert observed["home_codex_isdir"] is True
     assert observed["per_task_codex"] is True
+    assert observed["resume_log"].count("\n") == 1  # exactly one launch line
+    assert "## Resumes" in observed["agents_md"]
     assert captures.widget_upstream
     assert captures.widget_data
 

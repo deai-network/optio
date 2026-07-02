@@ -35,3 +35,41 @@ def test_host_protocol_false_adds_system_explainer():
     assert "## Log channel" not in md
     assert "System:" in md  # the explainer replaces the protocol docs
     assert "X" in md
+
+
+def test_resume_section_present_and_synced_to_default_excludes():
+    md = compose_agents_md("X")
+    assert "## Resumes" in md
+    assert "resume.log" in md
+    # Truth-sync: the rendered exclude list is the EFFECTIVE codex default
+    # (snapshots.effective_workdir_exclude), not the framework default…
+    assert "`home/.codex/packages`" in md
+    assert "`*.sqlite*`" in md
+    # …and the session store is called out as preserved.
+    assert "home/.codex/sessions" in md
+
+
+def test_resume_section_renders_custom_and_empty_excludes():
+    md = compose_agents_md("X", workdir_exclude=["bigdata"])
+    assert "`bigdata`" in md
+    assert "`home/.codex/packages`" not in md
+
+    md_empty = compose_agents_md("X", workdir_exclude=[])
+    assert "No paths are excluded" in md_empty
+
+
+def test_supports_resume_false_omits_resume_section():
+    md = compose_agents_md("X", supports_resume=False)
+    assert "## Resumes" not in md
+    assert "resume.log" not in md
+
+
+def test_host_protocol_false_keeps_resume_section_and_explainer():
+    md = compose_agents_md("X", host_protocol=False)
+    assert "## Resumes" in md
+    assert "System:" in md
+    # Protocol docs stay omitted. (Cannot assert on the bare "STATUS:"
+    # literal — the imported BASE_PROMPT_POST framing mentions it in
+    # passing; same caveat as test_host_protocol_false_adds_system_explainer.)
+    assert get_protocol(browser="suppress").documentation not in md
+    assert "## Log channel" not in md
