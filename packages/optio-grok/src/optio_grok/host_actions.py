@@ -149,7 +149,7 @@ async def ensure_grok_installed(
     *,
     install_if_missing: bool = True,
     install_dir: str | None = None,
-    progress_label: str = "Preparing grok…",
+    progress_label: str = "Preparing Grok Build…",
 ) -> str:
     """Provision ``grok`` for this task from the optio-owned binary cache.
 
@@ -220,7 +220,7 @@ async def _populate_grok_cache(
         _LOG.info("ensure_grok_installed: cache MISS -> vendor-installed into %s", cached)
         return
 
-    hook_ctx.report_progress(None, "Seeding grok cache…")
+    hook_ctx.report_progress(None, "Seeding Grok Build cache…")
     mk = await host.run_command(f"mkdir -p {shlex.quote(cache_dir)}")
     if mk.exit_code != 0:
         raise RuntimeError(
@@ -271,7 +271,7 @@ async def _install_grok_into_cache(
     ``~``), so nothing touches the operator's ``~/.grok``.
     """
     cache_root = os.path.dirname(cache_dir.rstrip("/")) or "/"
-    hook_ctx.report_progress(None, "Installing grok (vendor installer)…")
+    hook_ctx.report_progress(None, "Installing Grok Build (vendor installer)…")
     installer = f"curl -fsSL {shlex.quote(_GROK_INSTALL_URL)} | bash"
     cmd = (
         f"mkdir -p {shlex.quote(cache_root)} {shlex.quote(cache_dir)} && "

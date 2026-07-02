@@ -145,7 +145,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                 hook_ctx,
                 install_if_missing=config.install_if_missing,
                 install_dir=config.grok_install_dir,
-                progress_label="Restoring grok runtime…",
+                progress_label="Restoring Grok Build runtime…",
             )
             await host_actions._rotate_optio_log(host)
             # A restored snapshot means grok persisted a session for this cwd;
@@ -324,7 +324,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             **(config.env or {}),
             **(hook_ctx.browser_launch_env or {}),
         }
-        ctx.report_progress(None, "Launching Grok (conversation)…")
+        ctx.report_progress(None, "Launching Grok Build (conversation)…")
         handle = await host.launch_subprocess(
             cmd, env=env, cwd=host.workdir,
             env_remove=config.scrub_env, stdin=True, merge_stderr=False,
@@ -339,7 +339,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             raise
 
         ctx.publish_result(conversation)
-        ctx.report_progress(None, "Grok conversation is live")
+        ctx.report_progress(None, "Grok Build conversation is live")
 
         # Opt-in dashboard chat widget: start a per-task SSE listener over the
         # published conversation and publish it as the "conversation" widget via
