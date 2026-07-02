@@ -172,6 +172,38 @@ def _isolation_env(workdir: str) -> dict[str, str]:
     }
 
 
+async def run_cursor_probe(
+    host: "Host",
+    *,
+    cursor_executable: str,
+    prompt: str,
+    wrap: "list[str] | None" = None,
+    timeout_s: float = 180.0,
+) -> "tuple[str, int]":
+    """Headless one-shot ``cursor-agent -p "<prompt>" --trust`` under the
+    per-task isolation env. Returns (stdout, exit_code). ``wrap`` is an argv
+    prefix seam (future claustrum fs-isolation). ``--trust`` grants workspace
+    trust in ``--print`` mode on an unseen dir (without it the headless run
+    stalls on the trust prompt). The caller's verdict is a challenge-answer
+    match on stdout; the exit code is diagnostics only.
+
+    Mirrors grok's ``run_grok_probe`` (grok → cursor renames + ``--trust``).
+    """
+    argv = [*(wrap or []), cursor_executable, "-p", prompt, "--trust"]
+    cmd = " ".join(shlex.quote(a) for a in argv)
+    # Layer the per-task HOME/XDG_* overrides on top of the ambient env,
+    # mirroring the session launch's ``env HOME=… XDG_CONFIG_HOME=… bash -c …``
+    # (which inherits, not ``env -i``). run_command replaces the child env, so
+    # the merge is explicit here. The caller runs this on a host whose
+    # environment carries no provider API keys (see verify_and_refresh_seed).
+    env = {**os.environ, **_isolation_env(host.workdir)}
+    result = await asyncio.wait_for(
+        host.run_command(f"bash -lc {shlex.quote(cmd)}", env=env),
+        timeout=timeout_s,
+    )
+    return (result.stdout or "", result.exit_code)
+
+
 # --- ttyd install (copied verbatim from optio-grok) --------------------------
 
 

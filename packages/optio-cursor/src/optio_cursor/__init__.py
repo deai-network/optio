@@ -25,6 +25,7 @@ from optio_cursor.types import (
     SeedProvider,
     SeedUnavailableError,
 )
+from optio_cursor.verify import verify_and_refresh_seed
 
 
 # asyncssh emits per-connection INFO lines that flood worker stdout
@@ -51,4 +52,5 @@ __all__ = [
     "purge_seed",
     "SeedProvider",
     "SeedUnavailableError",
+    "verify_and_refresh_seed",
 ]

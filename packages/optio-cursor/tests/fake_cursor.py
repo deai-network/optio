@@ -187,15 +187,49 @@ def _scenario_seed_rotate() -> None:
     time.sleep(30.0)
 
 
+def _scenario_probe(prompt: str) -> int:
+    """One-shot headless probe (``cursor-agent -p "<prompt>" --trust``) for
+    verify_and_refresh.
+
+    Mode via ``FAKE_CURSOR_PROBE`` (default ``alive``):
+      * ``alive`` — rotate the refresh token (as a live cursor-agent would)
+        and print the challenge answer to stdout; exit 0.
+      * ``dead``  — print an auth error and exit 1 (no answer token).
+      * ``echo``  — echo the prompt back verbatim and exit 1 (proves a prompt-
+        echoing error path does not false-positive: the answer token is absent
+        from the prompt).
+    """
+    mode = os.environ.get("FAKE_CURSOR_PROBE", "alive").strip()
+    if mode == "dead":
+        print("Error: Unauthorized (invalid_grant)", flush=True)
+        return 1
+    if mode == "echo":
+        print(f"cannot process request: {prompt}", flush=True)
+        return 1
+    cfg_dir = _cursor_config_dir()
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    _rotate_auth(cfg_dir, "ROTATED-BY-PROBE")
+    print("The capital of France is Paris.", flush=True)
+    # ``alive_badexit`` proves the verdict is stdout-only: the answer is
+    # present but the process exits non-zero, and the seed must still be alive.
+    return 3 if mode == "alive_badexit" else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", action="store_true")
+    parser.add_argument("-p", "--print", dest="print_mode", action="store_true")
+    parser.add_argument("--trust", action="store_true")
     parser.add_argument("--model", default=None)
     parser.add_argument("--sandbox", default=None)
     args, _unknown = parser.parse_known_args()
     if args.version:
         print("2026.07.01-fake")
         return 0
+    if args.print_mode:
+        # Headless probe: the prompt is the remaining positional argument.
+        prompt = _unknown[0] if _unknown else ""
+        return _scenario_probe(prompt)
     scenario = os.environ.get("FAKE_CURSOR_SCENARIO", "happy").strip()
     if scenario not in SCENARIOS:
         print(f"unknown FAKE_CURSOR_SCENARIO={scenario!r}", file=sys.stderr)
