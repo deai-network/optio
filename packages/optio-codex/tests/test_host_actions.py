@@ -218,3 +218,111 @@ async def test_resolve_codex_missing_names_the_stage_gap():
     host = _NotFoundHost()
     with pytest.raises(RuntimeError, match="binary cache"):
         await resolve_codex(host, install_if_missing=True)
+
+def test_build_resume_args_subcommand_precedes_flags():
+    """`codex resume <id>` is a SUBCOMMAND: it and the explicit session id
+    lead the argv, before every flag. None ⇒ fresh launch, no prefix."""
+    from optio_codex.host_actions import build_resume_args
+
+    sid = "01234567-89ab-cdef-0123-456789abcdef"
+    assert build_resume_args(sid) == ["resume", sid]
+    assert build_resume_args(None) == []
+
+
+def test_build_auto_start_args_suppressed_on_resume():
+    from optio_codex.host_actions import AUTO_START_PROMPT, build_auto_start_args
+
+    assert build_auto_start_args(auto_start=True) == [AUTO_START_PROMPT]
+    assert build_auto_start_args(auto_start=True, resuming=True) == []
+    assert build_auto_start_args(auto_start=False) == []
+    assert build_auto_start_args(auto_start=False, resuming=True) == []
+
+
+@pytest.mark.asyncio
+async def test_read_latest_session_id_scans_newest_rollout_by_name(tmp_path):
+    """Newest by FILENAME, not mtime: rollout names embed an ISO-ordered
+    timestamp, and mtimes do not survive a workdir tar restore. The test
+    deliberately gives the OLDER rollout the NEWER mtime."""
+    import pathlib as _p
+    import time as _t
+
+    from optio_codex.host_actions import build_host, read_latest_session_id
+
+    host = build_host(None, str(tmp_path / "task"))
+    old_id = "11111111-1111-1111-1111-111111111111"
+    new_id = "22222222-2222-2222-2222-222222222222"
+    sessions = _p.Path(host.workdir) / "home" / ".codex" / "sessions"
+    old_dir = sessions / "2026" / "07" / "01"
+    new_dir = sessions / "2026" / "07" / "02"
+    old_dir.mkdir(parents=True)
+    new_dir.mkdir(parents=True)
+    (new_dir / f"rollout-2026-07-02T09-00-00-{new_id}.jsonl").write_text(
+        "{}\n", encoding="utf-8",
+    )
+    _t.sleep(0.01)
+    (old_dir / f"rollout-2026-07-01T09-00-00-{old_id}.jsonl").write_text(
+        "{}\n", encoding="utf-8",
+    )  # older name, newest mtime
+
+    assert await read_latest_session_id(host) == new_id
+
+
+@pytest.mark.asyncio
+async def test_read_latest_session_id_none_when_no_rollouts(tmp_path):
+    from optio_codex.host_actions import build_host, read_latest_session_id
+
+    host = build_host(None, str(tmp_path / "task"))
+    assert await read_latest_session_id(host) is None
+
+
+@pytest.mark.asyncio
+async def test_rotate_optio_log_moves_content_and_truncates(tmp_path):
+    import pathlib as _p
+
+    from optio_codex.host_actions import _rotate_optio_log, build_host
+
+    host = build_host(None, str(tmp_path / "task"))
+    wd = _p.Path(host.workdir)
+    (wd / "optio.log").write_text("STATUS: old\nDONE\n", encoding="utf-8")
+
+    await _rotate_optio_log(host)
+    assert (wd / "optio.log").read_text(encoding="utf-8") == ""
+    assert "DONE" in (wd / "optio.log.old").read_text(encoding="utf-8")
+
+    # A second rotation APPENDS to optio.log.old (history preserved across
+    # consecutive resumes).
+    (wd / "optio.log").write_text("DONE again\n", encoding="utf-8")
+    await _rotate_optio_log(host)
+    old = (wd / "optio.log.old").read_text(encoding="utf-8")
+    assert "DONE\n" in old and "DONE again\n" in old
+    assert (wd / "optio.log").read_text(encoding="utf-8") == ""
+
+
+@pytest.mark.asyncio
+async def test_rotate_optio_log_missing_log_writes_empty(tmp_path):
+    import pathlib as _p
+
+    from optio_codex.host_actions import _rotate_optio_log, build_host
+
+    host = build_host(None, str(tmp_path / "task"))
+    await _rotate_optio_log(host)
+    assert (_p.Path(host.workdir) / "optio.log").read_text(encoding="utf-8") == ""
+
+
+@pytest.mark.asyncio
+async def test_append_resume_log_entry_formats(tmp_path):
+    import pathlib as _p
+
+    from optio_codex.host_actions import _append_resume_log_entry, build_host
+
+    host = build_host(None, str(tmp_path / "task"))
+    await _append_resume_log_entry(host)
+    await _append_resume_log_entry(host, refreshed=["AGENTS.md", "notes.md"])
+
+    lines = (
+        (_p.Path(host.workdir) / "resume.log")
+        .read_text(encoding="utf-8").splitlines()
+    )
+    assert len(lines) == 2
+    assert re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$", lines[0])
+    assert lines[1].endswith(" REFRESHED:AGENTS.md,notes.md")

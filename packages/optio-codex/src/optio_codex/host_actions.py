@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shlex
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from optio_host.host import proc_wait
@@ -246,9 +247,16 @@ AUTO_START_PROMPT = "Read AGENTS.md and execute the task it describes"
 
 
 def build_auto_start_args(
-    *, auto_start: bool, prompt: str = AUTO_START_PROMPT,
+    *, auto_start: bool, resuming: bool = False, prompt: str = AUTO_START_PROMPT,
 ) -> list[str]:
-    return [prompt] if auto_start else []
+    """Trailing positional prompt for an auto-start FRESH launch.
+
+    Returns ``[prompt]`` when ``auto_start`` and not ``resuming``; empty
+    otherwise. On resume the session continues via ``codex resume <id>``
+    and no positional is appended: re-issuing the kickoff prompt would
+    enqueue a duplicate task on top of the resumed conversation.
+    """
+    return [prompt] if (auto_start and not resuming) else []
 
 
 async def _ttyd_present(host: "Host", ttyd_path: str) -> bool:
@@ -605,4 +613,103 @@ async def send_text_to_codex(
         raise RuntimeError(
             f"send_text_to_codex: tmux injection failed "
             f"(exit {result.exit_code}): {result.stderr!r}"
+        )
+
+
+# --- resume bookkeeping (Stage 2; adapted from optio-grok) ------------------
+
+
+# codex rollout filenames: ``rollout-<timestamp>-<uuid>.jsonl`` under
+# ``$CODEX_HOME/sessions/YYYY/MM/DD/``. The UUID (v7 in real codex; any UUID
+# shape accepted here) is the session id ``codex resume`` takes.
+_ROLLOUT_UUID_RE = re.compile(
+    r"rollout-.*-([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
+    r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl$"
+)
+
+
+async def read_latest_session_id(host: "Host") -> str | None:
+    """Session id of the newest rollout under ``<workdir>/home/.codex/sessions``.
+
+    Newest by FILENAME (lexicographic): rollout names embed an ISO-ordered
+    timestamp, so a name sort IS a chronological sort — and unlike mtime it
+    survives a workdir tar restore. Returns None when no rollout exists yet
+    (codex never persisted a session). The derived sqlite index is
+    deliberately not consulted: it is excluded from snapshots (absolute
+    rollout paths) and codex rebuilds it from the rollout files.
+    """
+    sessions_dir = f"{host.workdir.rstrip('/')}/home/.codex/sessions"
+    r = await host.run_command(
+        f"find {shlex.quote(sessions_dir)} -type f -name 'rollout-*.jsonl' "
+        f"2>/dev/null | sort | tail -n 1"
+    )
+    newest = (r.stdout or "").strip()
+    if not newest:
+        return None
+    m = _ROLLOUT_UUID_RE.search(newest)
+    if m is None:
+        _LOG.warning(
+            "read_latest_session_id: unparseable rollout filename %r", newest,
+        )
+        return None
+    return m.group(1)
+
+
+def build_resume_args(session_id: str | None) -> list[str]:
+    """Leading argv for relaunching into a recorded session.
+
+    ``resume`` is a codex SUBCOMMAND: it and the explicit session id must
+    PRECEDE every flag — ``codex resume <id> [flags]``. Never
+    ``resume --last``: it is cwd-filtered and silently starts a NEW session
+    on a miss (design-doc probe), so resume is always by explicit id.
+    Returns ``[]`` when ``session_id`` is None (fresh launch).
+    """
+    return ["resume", session_id] if session_id else []
+
+
+async def _rotate_optio_log(host: "Host") -> None:
+    """Append the restored optio.log to optio.log.old, then truncate it.
+
+    Preserves historical log content across consecutive resumes while
+    ensuring the tail driver only sees fresh lines from the resumed run (a
+    stale DONE/ERROR carried in the restored log would otherwise be replayed
+    and end the session immediately).
+    """
+    workdir = host.workdir.rstrip("/")
+    log_abs = f"{workdir}/optio.log"
+    old_abs = f"{workdir}/optio.log.old"
+    try:
+        current = (await host.fetch_bytes_from_host(log_abs)).decode("utf-8")
+    except FileNotFoundError:
+        current = ""
+    if not current:
+        await host.write_text("optio.log", "")
+        return
+    try:
+        existing_old = (await host.fetch_bytes_from_host(old_abs)).decode("utf-8")
+    except FileNotFoundError:
+        existing_old = ""
+    await host.write_text("optio.log.old", existing_old + current)
+    await host.write_text("optio.log", "")
+
+
+async def _append_resume_log_entry(
+    host: "Host", *, refreshed: list[str] | None = None,
+) -> None:
+    """Append one line to ``<workdir>/resume.log``.
+
+    Line format: ``<ISO 8601 UTC timestamp>[ REFRESHED:<comma-separated names>]``.
+    The first line is the original launch; each later line marks a resume.
+    The caller gates this on ``config.supports_resume``.
+    """
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    line = f"{ts} REFRESHED:{','.join(refreshed)}" if refreshed else ts
+    target = f"{host.workdir.rstrip('/')}/resume.log"
+    result = await host.run_command(
+        f"echo {shlex.quote(line)} >> {shlex.quote(target)}"
+    )
+    if result.exit_code != 0:
+        raise RuntimeError(
+            f"failed to append to resume.log: exit {result.exit_code}: "
+            f"{result.stderr!r}"
         )
