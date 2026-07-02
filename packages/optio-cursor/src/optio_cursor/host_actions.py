@@ -4,10 +4,10 @@ Free functions; each takes a Host or HookContext and uses only generic
 primitives (run_command, resolve_host_home, etc.). No isinstance branches.
 
 Adapted from optio-grok's ``host_actions`` (itself lifted from
-optio-claudecode). Stage 0 drops the binary cache (Stage 5), seeds, and
-conversation mode; Stage 2 adds the resume bookkeeping. The tmux/ttyd
-machinery and the ttyd installer are copied with only ``grok`` → ``cursor``
-renames.
+optio-claudecode). Stage 2 adds the resume bookkeeping; Stage 5 adds the
+optio-owned cursor-agent binary cache (grok's, plus a vendor-installer
+population branch and version-dir copy semantics). The tmux/ttyd machinery
+and the ttyd installer are copied with only ``grok`` → ``cursor`` renames.
 """
 
 from __future__ import annotations
@@ -56,6 +56,23 @@ _TTYD_RELEASE_BASE = (
 _DEFAULT_INSTALL_SUBDIR = ".local/bin"
 
 
+# The optio-owned cursor-agent binary cache lives on the WORKER, outside every
+# task workdir and never the operator's autoupdating
+# ``~/.local/share/cursor-agent``. Default:
+# ``${XDG_CACHE_HOME:-$HOME/.cache}/optio-cursor``; ``CURSOR_CACHE_DIR``
+# overrides. Resolved via a shell echo so RemoteHost gets the remote location,
+# and so the cache stays shared + evictable (never snapshotted, re-populated
+# on a miss). No ``/bin`` suffix (unlike grok): the cache root carries a whole
+# ``versions/<v>/`` Node dist tree, not a single binary.
+_CURSOR_CACHE_DIR_SHELL_DEFAULT = (
+    "${CURSOR_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/optio-cursor}"
+)
+
+# Confirmed vendor bootstrap installer (``curl https://cursor.com/install
+# -fsS | bash``); installs under ``$HOME/.local/{bin,share/cursor-agent}``.
+_CURSOR_INSTALL_URL = "https://cursor.com/install"
+
+
 async def _resolve_install_dir(host: "Host", install_dir: str | None) -> str:
     """Return ``install_dir`` if given, else ``<host_home>/.local/bin`` (ttyd)."""
     if install_dir is not None:
@@ -64,7 +81,30 @@ async def _resolve_install_dir(host: "Host", install_dir: str | None) -> str:
     return f"{host_home}/{_DEFAULT_INSTALL_SUBDIR}"
 
 
-# --- cursor-agent resolution (Stage 0: no binary cache/download; Stage 5) ---
+async def _resolve_cursor_cache_dir(host: "Host", override: str | None) -> str:
+    """Resolve the optio-owned cursor binary-cache dir as an absolute worker path.
+
+    ``override`` (``config.cursor_install_dir``) wins. Otherwise the worker's
+    REAL env decides via a shell echo: ``CURSOR_CACHE_DIR`` else
+    ``${XDG_CACHE_HOME:-$HOME/.cache}/optio-cursor`` — resolved on the host so
+    RemoteHost gets the remote location. Never under a task workdir (so it is
+    never snapshotted) and never the operator's ``~/.local/share/cursor-agent``.
+    Mirrors grok's ``_resolve_grok_cache_dir`` (the ttyd ``_resolve_install_dir``
+    is a separate, home-relative resolver and is intentionally left untouched).
+    """
+    if override is not None:
+        return override.rstrip("/")
+    r = await host.run_command(f'printf %s "{_CURSOR_CACHE_DIR_SHELL_DEFAULT}"')
+    path = (r.stdout or "").strip()
+    if r.exit_code != 0 or not path:
+        raise RuntimeError(
+            f"failed to resolve cursor cache dir on host "
+            f"(exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
+        )
+    return path.rstrip("/")
+
+
+# --- cursor-agent resolution + optio-owned binary cache (Stage 5) -----------
 
 
 async def resolve_cursor(
@@ -79,7 +119,8 @@ async def resolve_cursor(
     given, otherwise via ``command -v cursor-agent`` in a login shell (so
     worker-profile PATH additions apply, e.g. ``~/.local/bin``). Raises when
     the binary is absent. NEVER resolves the ``cursor`` IDE binary — the
-    agent CLI is ``cursor-agent``.
+    agent CLI is ``cursor-agent``. Shared by ``ensure_cursor_installed``
+    (host-copy cache population) and ``verify`` (engine-free path).
     """
     if install_dir is not None:
         candidate = f"{install_dir.rstrip('/')}/cursor-agent"
@@ -105,11 +146,126 @@ async def resolve_cursor(
         )
     raise RuntimeError(
         "cursor-agent not found on the worker (looked via 'command -v "
-        "cursor-agent'). Stage 0 has no auto-install (the binary cache is a "
-        "later stage) — install cursor-agent manually (e.g. `curl "
+        "cursor-agent'). Install cursor-agent manually (e.g. `curl "
         "https://cursor.com/install -fsS | bash` puts it in ~/.local/bin) "
         "or pass cursor_install_dir."
     )
+
+
+def _vendor_install_command(cache_dir: str) -> str:
+    """Shell command running the confirmed vendor installer into a staging
+    HOME under the cache (``<cache>/staging``), so the install lands in the
+    cache's own tree — never the operator's ``~/.local``. Unit-tested for
+    construction only; tests never run it (network)."""
+    staging = f"{cache_dir.rstrip('/')}/staging"
+    installer = f"curl {_CURSOR_INSTALL_URL} -fsS | bash"
+    return (
+        f"mkdir -p {shlex.quote(staging)} && "
+        f"env HOME={shlex.quote(staging)} bash -c {shlex.quote(installer)}"
+    )
+
+
+async def _vendor_install_cursor(host: "Host", cache_dir: str) -> str | None:
+    """Populate the cache via the vendor installer. Returns the cached
+    entrypoint, or None when the installer fails (offline worker, vendor
+    outage) so the caller can fall back to the host-copy route.
+
+    The installer (run with ``HOME=<cache>/staging``) produces
+    ``staging/.local/share/cursor-agent/versions/<v>/`` plus a
+    ``staging/.local/bin/cursor-agent`` symlink. The version dir is moved to
+    ``<cache>/versions/<v>`` and the entry symlink re-pointed (relative) at
+    ``versions/<v>/cursor-agent``; the staging tree is then removed."""
+    cache = cache_dir.rstrip("/")
+    r = await host.run_command(_vendor_install_command(cache))
+    if r.exit_code != 0:
+        _LOG.info(
+            "vendor cursor installer failed (exit %s): %s — falling back to "
+            "host copy", r.exit_code, (r.stderr or "").strip()[:200],
+        )
+        return None
+    adopt = (
+        "set -e; "
+        f"cache={shlex.quote(cache)}; "
+        'entry="$(readlink -f "$cache/staging/.local/bin/cursor-agent")"; '
+        'ver_dir="$(dirname "$entry")"; ver="$(basename "$ver_dir")"; '
+        'mkdir -p "$cache/versions"; rm -rf "$cache/versions/$ver"; '
+        'mv "$ver_dir" "$cache/versions/$ver"; '
+        'ln -sfn "versions/$ver/cursor-agent" "$cache/cursor-agent"; '
+        'rm -rf "$cache/staging"'
+    )
+    r2 = await host.run_command(f"bash -c {shlex.quote(adopt)}")
+    if r2.exit_code != 0:
+        _LOG.warning(
+            "vendor cursor install succeeded but adopting the staged tree "
+            "into the cache failed (exit %s): %s",
+            r2.exit_code, (r2.stderr or "").strip()[:200],
+        )
+        return None
+    cached = f"{cache}/cursor-agent"
+    verify = await host.run_command(
+        f"[ -x {shlex.quote(cached)} ] && echo OK || true"
+    )
+    return cached if "OK" in (verify.stdout or "") else None
+
+
+async def _seed_cache_from_host(host: "Host", cache_dir: str, source: str) -> str:
+    """Copy the host install into the cache and return the cached entrypoint.
+
+    ``cursor-agent`` is not a single file: the host binary is a symlink into a
+    Node dist dir (``.../cursor-agent/versions/<v>/``). When ``source``
+    resolves into such a ``versions/<v>`` dir, the WHOLE dir is copied
+    (``cp -a``) to ``<cache>/versions/<v>`` and ``<cache>/cursor-agent``
+    becomes a relative symlink to its entrypoint — copying only the symlink
+    target's file is NOT sufficient. A plain single-file install (e.g. a test
+    shim) degrades to grok's deref copy (``cp -L``)."""
+    import posixpath
+
+    cache = cache_dir.rstrip("/")
+    cached = f"{cache}/cursor-agent"
+
+    rl = await host.run_command(f"readlink -f {shlex.quote(source)}")
+    real = (rl.stdout or "").strip()
+    if rl.exit_code != 0 or not real:
+        raise RuntimeError(
+            f"readlink -f {source!r} failed (exit {rl.exit_code}): "
+            f"{(rl.stderr or '').strip()[:200]}"
+        )
+
+    version_dir = posixpath.dirname(real)
+    if posixpath.basename(posixpath.dirname(version_dir)) == "versions":
+        ver = posixpath.basename(version_dir)
+        entry_rel = f"versions/{ver}/cursor-agent"
+        cmd = (
+            f"mkdir -p {shlex.quote(f'{cache}/versions')} && "
+            f"rm -rf {shlex.quote(f'{cache}/versions/{ver}')} && "
+            f"cp -a {shlex.quote(version_dir)} "
+            f"{shlex.quote(f'{cache}/versions/{ver}')} && "
+            f"ln -sfn {shlex.quote(entry_rel)} {shlex.quote(cached)}"
+        )
+    else:
+        # Not a versions/<v> layout — a real, standalone binary. ``-L``
+        # dereferences so the cache holds a stable copy independent of the
+        # host binary the operator may autoupdate.
+        cmd = (
+            f"mkdir -p {shlex.quote(cache)} && "
+            f"cp -L {shlex.quote(source)} {shlex.quote(cached)} && "
+            f"chmod +x {shlex.quote(cached)}"
+        )
+    cp = await host.run_command(cmd)
+    if cp.exit_code != 0:
+        raise RuntimeError(
+            f"seeding cursor cache ({source!r} -> {cached!r}) failed "
+            f"(exit {cp.exit_code}): {(cp.stderr or '').strip()[:200]}"
+        )
+    verify = await host.run_command(
+        f"[ -x {shlex.quote(cached)} ] && echo OK || true"
+    )
+    if "OK" not in (verify.stdout or ""):
+        raise RuntimeError(
+            f"cursor cache seed completed but {cached!r} is still not "
+            f"executable on the host. Check the seed source {source!r}."
+        )
+    return cached
 
 
 async def ensure_cursor_installed(
@@ -118,17 +274,73 @@ async def ensure_cursor_installed(
     install_if_missing: bool = True,
     install_dir: str | None = None,
 ) -> str:
-    """Resolve ``cursor-agent`` for this task (Stage 0: no install/cache).
+    """Provision ``cursor-agent`` for this task from the optio-owned binary cache.
 
-    Delegates to :func:`resolve_cursor` on the host behind ``hook_ctx``.
-    Returns the absolute path of the ``cursor-agent`` binary. The
-    optio-owned binary cache (grok/claudecode style) is a later stage.
+    The cache dir (``_resolve_cursor_cache_dir``) lives on the worker outside
+    any task workdir and never the operator's autoupdating
+    ``~/.local/share/cursor-agent`` — so it stays shared, evictable, and
+    unsnapshotted (re-populated on a miss after eviction). Returns the
+    absolute path of the cached ``cursor-agent`` entrypoint. Population order:
+
+    1. **cache hit** — ``<cache>/cursor-agent`` is already executable →
+       return it directly (the stable path every task launches, decoupled
+       from the host's autoupdater).
+    2. **vendor installer** — cursor HAS a confirmed bootstrap installer
+       (unlike grok): run it with ``HOME=<cache>/staging`` and adopt the
+       installed ``versions/<v>`` tree into the cache
+       (:func:`_vendor_install_cursor`; skipped silently on failure, e.g. no
+       network).
+    3. **host copy** — copy the resolved host install's whole version dir
+       into the cache (:func:`_seed_cache_from_host`).
+    4. Nothing worked → raise naming both failed routes. With
+       ``install_if_missing=False`` a cache miss raises immediately.
+
+    Uses only generic Host primitives.
     """
     host = hook_ctx._host
     hook_ctx.report_progress(None, "Locating cursor-agent…")
-    return await resolve_cursor(
-        host, install_dir=install_dir, install_if_missing=install_if_missing,
+
+    cache_dir = await _resolve_cursor_cache_dir(host, install_dir)
+    cached = f"{cache_dir}/cursor-agent"
+
+    probe = await host.run_command(
+        f"[ -x {shlex.quote(cached)} ] && echo OK || true"
     )
+    if "OK" in (probe.stdout or ""):
+        _LOG.info("ensure_cursor_installed: cache HIT (%s)", cached)
+        return cached
+
+    if not install_if_missing:
+        raise RuntimeError(
+            f"cursor-agent not present in cache at {cached!r} and "
+            f"install_if_missing=False; nothing to do."
+        )
+
+    hook_ctx.report_progress(None, "Installing cursor-agent (vendor installer)…")
+    vendor = await _vendor_install_cursor(host, cache_dir)
+    if vendor is not None:
+        _LOG.info("ensure_cursor_installed: cache MISS -> vendor install (%s)", vendor)
+        return vendor
+
+    # Vendor route unavailable — fall back to copying the host install.
+    try:
+        source = await resolve_cursor(
+            host, install_dir=None, install_if_missing=False,
+        )
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"no cursor-agent available to populate the optio cache "
+            f"(cache_dir={cache_dir!r}): the vendor installer "
+            f"({_CURSOR_INSTALL_URL}) did not produce a binary and no host "
+            f"cursor-agent is on the worker PATH. Install cursor-agent on "
+            f"the worker (`curl {_CURSOR_INSTALL_URL} -fsS | bash`) or pass "
+            f"cursor_install_dir at a pre-populated cache."
+        ) from exc
+
+    hook_ctx.report_progress(None, "Seeding cursor-agent cache from host install…")
+    cached = await _seed_cache_from_host(host, cache_dir, source)
+    _LOG.info("ensure_cursor_installed: cache MISS -> seeded from %s", source)
+    return cached
 
 
 def build_host(ssh, taskdir: str) -> "Host":
