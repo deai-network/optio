@@ -39,7 +39,7 @@ or log in interactively (`codex login`) inside the embedded terminal.
 Seed-based provisioning (log in once, reuse for every task) arrives with
 the seeds stage.
 
-## Status — Stage 0 (hardened MVP)
+## Status — Stages 0–2 (iframe, remote SSH, resume)
 
 Shipped:
 
@@ -49,11 +49,18 @@ Shipped:
 - task-scoped teardown (per-task codex path; orphan-ttyd reap)
 - `create_codex_task`, `run_codex_session`, `CodexTaskConfig`
 - demo task in optio-demo (`Codex demo — iframe`)
+- remote SSH workers (`ssh=SSHConfig(...)` routes to `RemoteHost`; verified
+  end-to-end against a docker-sshd harness)
+- resume / workdir snapshots: session-id-keyed relaunch (`codex resume <id>`,
+  never `resume --last`), Mongo snapshot store (retention 5, single workdir
+  GridFS blob carrying `home/.codex/sessions`), `resume.log` + AGENTS.md
+  resume section synced to the snapshot exclude list
+  (`workdir_exclude`; defaults drop `home/.codex/packages`, `*.sqlite*`,
+  caches — never `home/.codex/sessions`)
 
 Still missing (tracked gaps toward Appendix A parity, staged plans B–E):
 
-- remote SSH host (`ssh` config is rejected until then)
-- resume / workdir snapshots; crash-orphan rescue
+- crash-orphan rescue (snapshot capture for a crashed engine)
 - seeds, pool/leases, credential save-back, seed verify/refresh
 - conversation mode (`codex exec --json` / app-server) + conversation-ui widget
 - model switching; file upload/download; tool verbosity
