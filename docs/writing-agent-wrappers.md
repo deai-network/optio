@@ -273,9 +273,12 @@ offline.
 snapshotted, never polluting the host `~`); give each task its own agent identity.
 **Touches.** A cache dir resolved against the worker's real env; per-task
 `HOME`/`XDG_*` under the workdir; install-if-missing gating. On a cache miss,
-`ensure_<agent>_installed` MUST actually provision the binary — run the vendor
-installer (or download the release) into the cache. A stub that only re-uses a
-binary already on the worker `PATH` does **not** satisfy this stage: a fresh or
+`ensure_<agent>_installed` MUST actually provision the binary. Two-tier is the
+shared pattern: if a binary is already on the worker (login-shell `PATH`), seed
+the cache from it (a fast local copy, no download); **otherwise** run the vendor
+installer (or download the release) into the cache. A stub that does only the
+first tier — re-use a binary already on the worker `PATH` — does **not** satisfy
+this stage: a fresh or
 remote worker with no pre-installed agent must still bootstrap itself. Install
 into a persistent location **outside** the task workdir (so tearing down the
 workdir never destroys the install), then symlink the cached binary into a
