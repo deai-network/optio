@@ -216,7 +216,7 @@ async def test_resolve_codex_missing_names_the_stage_gap():
             return _R()
 
     host = _NotFoundHost()
-    with pytest.raises(RuntimeError, match="binary cache"):
+    with pytest.raises(RuntimeError, match="auto-download"):
         await resolve_codex(host, install_if_missing=True)
 
 def test_build_resume_args_subcommand_precedes_flags():

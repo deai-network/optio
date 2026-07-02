@@ -30,6 +30,16 @@ _TTYD_RELEASE_BASE = (
 )
 _DEFAULT_INSTALL_SUBDIR = ".local/bin"
 
+# The optio-owned codex binary cache lives on the WORKER, outside every task
+# workdir and never the operator's ``~/.codex``. Default:
+# ``${XDG_CACHE_HOME:-$HOME/.cache}/optio-codex/bin``; ``OPTIO_CODEX_CACHE_DIR``
+# overrides. Resolved via a shell echo so RemoteHost gets the remote
+# location, and so the cache stays shared + evictable (never snapshotted,
+# re-seeded/re-downloaded on a miss).
+_CODEX_CACHE_DIR_SHELL_DEFAULT = (
+    "${OPTIO_CODEX_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/optio-codex/bin}"
+)
+
 
 async def _expand_user_path(host: "Host", path: str) -> str:
     """Expand a leading ``~``/``~/`` against the HOST's home directory.
@@ -88,10 +98,31 @@ async def resolve_codex(
         )
     raise RuntimeError(
         "codex not found on the worker (looked via 'command -v codex'). "
-        "install_if_missing is accepted but Stage 0 ships no auto-install — "
-        "the optio-owned binary cache arrives in a later stage. Install codex "
-        "manually (npm i -g @openai/codex) or pass codex_install_dir."
+        "Install codex manually (npm i -g @openai/codex) or rely on the "
+        "optio cache auto-download via ensure_codex_installed."
     )
+
+
+async def _resolve_codex_cache_dir(host: "Host", override: str | None) -> str:
+    """Resolve the optio-owned codex binary-cache dir as an absolute worker
+    path.
+
+    ``override`` (``config.codex_install_dir``) wins. Otherwise the worker's
+    real env decides via a shell echo: ``OPTIO_CODEX_CACHE_DIR`` else
+    ``${XDG_CACHE_HOME:-$HOME/.cache}/optio-codex/bin`` — resolved on the
+    host so RemoteHost gets the remote location. Mirrors grok's
+    ``_resolve_grok_cache_dir`` (the ttyd ``_resolve_install_dir`` is a
+    separate, home-relative resolver and is intentionally left untouched)."""
+    if override is not None:
+        return override.rstrip("/")
+    r = await host.run_command(f'printf %s "{_CODEX_CACHE_DIR_SHELL_DEFAULT}"')
+    path = (r.stdout or "").strip()
+    if r.exit_code != 0 or not path:
+        raise RuntimeError(
+            f"failed to resolve codex cache dir on host "
+            f"(exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
+        )
+    return path.rstrip("/")
 
 
 async def ensure_codex_installed(
@@ -100,20 +131,97 @@ async def ensure_codex_installed(
     install_if_missing: bool = True,
     install_dir: str | None = None,
 ) -> str:
-    """Return the per-task launch path of the ``codex`` binary.
+    """Provision ``codex`` for this task from the optio-owned binary cache.
 
-    Resolves the shared codex binary on the host (raising when absent —
-    Stage 0 has no auto-install), provisions the per-task isolation home
-    tree, and returns ``<workdir>/home/.local/bin/codex`` — a per-task
-    symlink to the shared binary, so teardown's anchored pkill is scoped
-    to this task only.
+    The cache dir (``_resolve_codex_cache_dir``) lives on the worker outside
+    any task workdir and never the operator's autoupdating ``~/.codex`` — so
+    it stays shared, evictable, and unsnapshotted. Resolution order:
+
+    - **cache hit** — ``<cache>/codex`` is already executable.
+    - **cache miss** — seed the cache from the resolved host ``codex``
+      (login-shell ``command -v codex`` via :func:`resolve_codex`), copying
+      it into ``<cache>/codex`` (``cp -L`` deref + chmod + re-verify).
+    - **no host codex** — raise (Task 8 wires the real GitHub-release
+      download here).
+
+    Whatever fills the cache, the RETURNED path is always the per-task
+    ``<workdir>/home/.local/bin/codex`` symlink (via
+    :func:`_provision_task_home`) so teardown's anchored pkill stays scoped
+    to this task — the symlink simply points into the cache now.
+
+    Raises when the cache is empty and ``install_if_missing=False``.
     """
     host = hook_ctx._host
     hook_ctx.report_progress(None, "Locating codex…")
-    shared = await resolve_codex(
-        host, install_dir=install_dir, install_if_missing=install_if_missing,
+
+    cache_dir = await _resolve_codex_cache_dir(host, install_dir)
+    cached = f"{cache_dir}/codex"
+
+    probe = await host.run_command(
+        f"[ -x {shlex.quote(cached)} ] && echo OK || true"
     )
-    return await _provision_task_home(host, shared_codex_path=shared)
+    if "OK" in (probe.stdout or ""):
+        _LOG.info("ensure_codex_installed: cache HIT (%s)", cached)
+        return await _provision_task_home(host, shared_codex_path=cached)
+
+    if not install_if_missing:
+        raise RuntimeError(
+            f"codex not present in cache at {cached!r} and "
+            f"install_if_missing=False; nothing to do."
+        )
+
+    # Cache miss — seed the optio-owned cache from the resolved host codex.
+    try:
+        source = await resolve_codex(host, install_dir=None, install_if_missing=False)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"no codex binary available to seed the optio cache "
+            f"(cache_dir={cache_dir!r}); a host codex must be on the worker "
+            f"PATH. (The GitHub-release auto-download lands with the next "
+            f"task of this plan.)"
+        ) from exc
+
+    hook_ctx.report_progress(None, "Seeding codex cache…")
+    await _install_into_cache_from_host(host, source=source, cached=cached,
+                                        cache_dir=cache_dir)
+    return await _provision_task_home(host, shared_codex_path=cached)
+
+
+async def _install_into_cache_from_host(
+    host: "Host", *, source: str, cached: str, cache_dir: str,
+) -> None:
+    """Copy a resolved host binary into the cache: mkdir + ``cp -L`` (deref:
+    a symlinked host codex becomes a real, stable copy independent of the
+    operator's autoupdater) + chmod + re-verify."""
+    mk = await host.run_command(f"mkdir -p {shlex.quote(cache_dir)}")
+    if mk.exit_code != 0:
+        raise RuntimeError(
+            f"mkdir -p {cache_dir!r} failed (exit {mk.exit_code}): "
+            f"{(mk.stderr or '').strip()[:200]}"
+        )
+    cp = await host.run_command(
+        f"cp -L {shlex.quote(source)} {shlex.quote(cached)}"
+    )
+    if cp.exit_code != 0:
+        raise RuntimeError(
+            f"seeding codex cache (cp {source!r} -> {cached!r}) failed "
+            f"(exit {cp.exit_code}): {(cp.stderr or '').strip()[:200]}"
+        )
+    ch = await host.run_command(f"chmod +x {shlex.quote(cached)}")
+    if ch.exit_code != 0:
+        raise RuntimeError(
+            f"chmod +x {cached!r} failed (exit {ch.exit_code}): "
+            f"{(ch.stderr or '').strip()[:200]}"
+        )
+    verify = await host.run_command(
+        f"[ -x {shlex.quote(cached)} ] && echo OK || true"
+    )
+    if "OK" not in (verify.stdout or ""):
+        raise RuntimeError(
+            f"codex cache seed completed but {cached!r} is still not "
+            f"executable on the host. Check the seed source {source!r}."
+        )
+    _LOG.info("ensure_codex_installed: cache MISS -> seeded from %s", source)
 
 
 def build_host(ssh, taskdir: str) -> "Host":
