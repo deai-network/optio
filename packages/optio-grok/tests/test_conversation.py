@@ -115,6 +115,45 @@ async def test_send_receive_and_on_event_transparent(convo):
 
 
 @pytest.mark.asyncio
+async def test_skills_reload_noise_dropped_but_turn_end_forwarded(convo):
+    """grok emits ~1/sec ``{id:'skills-reload', result:{reloaded:1}}`` — responses
+    to a request we never sent. They must NOT reach viewers (they flood the SSE and
+    evict real events from the bounded replay buffer), while real session/update
+    notifications AND the turn-end response (which the UI needs to clear busy) must
+    still be forwarded."""
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)
+    events: list = []
+    c.on_event(events.append)
+
+    for _ in range(5):
+        handle.stdout.feed({"jsonrpc": "2.0", "id": "skills-reload",
+                            "result": {"result": {"reloaded": 1}}})
+
+    await c.send("hi")
+    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    handle.stdout.feed({"jsonrpc": "2.0", "method": "session/update",
+                        "params": {"sessionId": "s1", "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": "yo"}}}})
+    handle.stdout.feed({"jsonrpc": "2.0", "id": prompt["id"],
+                        "result": {"stopReason": "end_turn"}})
+    await _wait_for(lambda: not c.is_pending())
+
+    # skills-reload noise suppressed
+    assert not any(e.get("id") == "skills-reload" for e in events)
+    # real session/update still forwarded
+    assert any(e.get("method") == "session/update" for e in events)
+    # turn-end response still forwarded (UI needs stopReason to clear busy)
+    assert any(e.get("id") == prompt["id"] and (e.get("result") or {}).get("stopReason")
+               for e in events)
+
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
 async def test_thought_chunks_not_folded_into_answer(convo):
     c, handle = convo
     reader = asyncio.create_task(c.run_reader())

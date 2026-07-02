@@ -193,6 +193,11 @@ class GrokConversation:
     def _route(self, obj: dict) -> None:
         rid = obj.get("id")
         method = obj.get("method")
+        # Whether to fan this object out to viewers (on_event → listener → SSE).
+        # Default yes; a few internal shapes are suppressed below because they are
+        # pure noise to the UI and, left unchecked, flood the SSE and evict real
+        # events from the listener's bounded replay buffer.
+        forward = True
         if method is None and rid is not None and ("result" in obj or "error" in obj):
             # Response to one of OUR requests.
             if rid in self._req_futures:
@@ -206,6 +211,14 @@ class GrokConversation:
                 text = "".join(self._answer_parts)
                 self._answer_parts = []
                 self._fire_message(text)
+            else:
+                # A response to a request we NEVER sent — grok's internal
+                # self-responses (notably the ~1/sec ``skills-reload`` /
+                # ``{reloaded: 1}`` chatter). Meaningless to the UI reducer
+                # (which no-ops on it) but, at ~1/sec, it swamps the SSE and
+                # rolls real events out of the 1000-entry replay buffer within
+                # minutes. Drop it from the viewer fan-out.
+                forward = False
         elif method is not None and rid is not None:
             # Agent -> client REQUEST that we must answer.
             if method == "session/request_permission":
@@ -221,7 +234,8 @@ class GrokConversation:
         elif method == "session/update":
             self._on_session_update(obj)
         # else: other agent notifications (_x.ai/*, plan, …) — pass through only.
-        self._event_queue.put_nowait(obj)
+        if forward:
+            self._event_queue.put_nowait(obj)
 
     def _on_session_update(self, obj: dict) -> None:
         update = (obj.get("params") or {}).get("update") or {}
