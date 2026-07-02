@@ -22,6 +22,8 @@ from optio_cursor.types import (
     CursorTaskConfig,
     DeliverableCallback,
     HookCallback,
+    SeedProvider,
+    SeedUnavailableError,
 )
 
 
@@ -47,4 +49,6 @@ __all__ = [
     "delete_seed",
     "list_seeds",
     "purge_seed",
+    "SeedProvider",
+    "SeedUnavailableError",
 ]

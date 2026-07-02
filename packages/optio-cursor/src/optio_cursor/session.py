@@ -12,6 +12,7 @@ the resume/snapshot branch. The rest arrive in later stages.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -21,12 +22,14 @@ from optio_core.context import ProcessContext
 from optio_core.models import TaskInstance
 
 from optio_agents import HookContext, get_protocol
+from optio_agents import seeds as _seeds
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_host.host import Host, LocalHost, ProcessHandle
 from optio_host.paths import task_dir
 
 from optio_cursor import host_actions
 from optio_cursor.prompt import compose_agents_md
+from optio_cursor.seed_manifest import CURSOR_SEED_MANIFEST, CURSOR_SEED_SUFFIX
 from optio_cursor.snapshots import (
     insert_snapshot,
     load_latest_snapshot,
@@ -38,6 +41,38 @@ from optio_cursor.types import CursorTaskConfig
 _LOG = logging.getLogger(__name__)
 
 READY_TIMEOUT_S = 30.0
+
+# The logged-in cursor identity, relative to the workdir. Our launch env sets
+# XDG_CONFIG_HOME=<workdir>/home/.config, so this is where cursor-agent reads
+# its auth (``status`` reads it, ``logout`` deletes it).
+_CRED_RELPATH = "home/.config/cursor/auth.json"
+
+
+async def _call_maybe_async(fn, *args) -> None:
+    """Invoke a callback that may be sync or async."""
+    result = fn(*args)
+    if inspect.isawaitable(result):
+        await result
+
+
+async def _capture_gate_ok(host: Host) -> bool:
+    """Gate for seed CAPTURE: a valid ``auth.json`` is present.
+
+    Guards against seeding a logged-out / half-written identity: the file must
+    exist, parse as JSON, and be a non-empty object. Mirrors grok's
+    ``cred_watcher.capture_gate_ok`` (a cursor cred_watcher arrives with the
+    Stage-4 save-back machinery).
+    """
+    path = f"{host.workdir.rstrip('/')}/{_CRED_RELPATH}"
+    try:
+        raw = await host.fetch_bytes_from_host(path)
+    except FileNotFoundError:
+        return False
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return False
+    return isinstance(data, dict) and bool(data)
 
 
 def _build_host(config: CursorTaskConfig, process_id: str) -> Host:
@@ -69,6 +104,10 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
     # auto-start suppression). Set by _prepare, read by the body + teardown.
     resuming = False
     pass_continue = False
+    # Resolved seed id for a fresh, seeded launch (Stage 3). Set by _prepare
+    # (str seed_id → itself; SeedProvider callable → awaited). Stays None on
+    # resume and when no seed_id is configured.
+    resolved_seed_id: str | None = None
 
     await host.connect()
 
@@ -83,7 +122,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
         its stale DONE/ERROR, and cli-config.json + AGENTS.md are (re)planted
         AFTER the restore so they are not wiped by it.
         """
-        nonlocal cursor_path, ttyd_path, resuming, pass_continue
+        nonlocal cursor_path, ttyd_path, resuming, pass_continue, resolved_seed_id
         cursor_path = await host_actions.ensure_cursor_installed(
             hook_ctx,
             install_if_missing=config.install_if_missing,
@@ -119,7 +158,10 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
 
         # Permission rules are config-planted (cursor-agent has no
         # --allow/--deny argv): write cli-config.json under the per-task HOME
-        # BEFORE launch so cursor reads it on startup.
+        # BEFORE launch so cursor reads it on startup. Planted BEFORE any seed
+        # merge, so a seeded cli-config.json overlays it (seed wins — the
+        # claudecode plant-then-merge pattern); when the seed carries none,
+        # the generated rules survive.
         cli_config = host_actions.build_cli_config(
             allowed_tools=config.allowed_tools,
             disallowed_tools=config.disallowed_tools,
@@ -128,6 +170,27 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             await host.write_text(
                 "home/.cursor/cli-config.json",
                 json.dumps(cli_config, indent=2) + "\n",
+            )
+
+        if not resuming and config.seed_id is not None:
+            # Seeded FRESH start: resolve the seed id (str → itself; a
+            # SeedProvider callable → awaited, may raise SeedUnavailableError)
+            # and overlay the stored cursor identity (auth.json +
+            # cli-config.json) into the fresh workdir BEFORE AGENTS.md, so
+            # cursor launches already-authed. No --continue: this begins a
+            # NEW session. Cursor auth/config are cwd-independent, so no
+            # rekey is needed. (The Stage-4 lease path holds/renews a lease
+            # for callable seed_ids; Stage 3 only resolves it.)
+            if callable(config.seed_id):
+                resolved_seed_id = await config.seed_id(ctx.process_id)
+            else:
+                resolved_seed_id = config.seed_id
+            await _seeds.merge_seed(
+                ctx, host,
+                seed_id=resolved_seed_id,
+                manifest=CURSOR_SEED_MANIFEST,
+                suffix=CURSOR_SEED_SUFFIX,
+                decrypt=None,
             )
 
         await host.write_text(
@@ -244,6 +307,37 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                 )
             except Exception:
                 _LOG.exception("teardown_session_tree failed")
+
+        # Seed capture (fresh only): store this session's cursor identity as
+        # a reusable seed so a later fresh task can start already-authed.
+        # Same reached-live gate as snapshots (launched_handle assigned
+        # strictly after a successful launch). Guarded on auth.json present —
+        # never seed a login-less identity. Ignored on resume.
+        if (
+            not resuming
+            and config.on_seed_saved is not None
+            and launched_handle is not None
+        ):
+            try:
+                if not await _capture_gate_ok(host):
+                    _LOG.warning(
+                        "seed capture skipped: home/.config/cursor/auth.json "
+                        "absent or invalid (login-less session)",
+                    )
+                else:
+                    seed_id = await _seeds.capture_seed(
+                        ctx, host,
+                        manifest=CURSOR_SEED_MANIFEST,
+                        suffix=CURSOR_SEED_SUFFIX,
+                        encrypt=None,
+                    )
+                    # 2nd arg (account summary) is resolved in a later stage;
+                    # None in Stage 3.
+                    await _call_maybe_async(config.on_seed_saved, seed_id, None)
+            except Exception:
+                _LOG.exception(
+                    "seed capture failed; callback not fired, teardown continues",
+                )
 
         # Reached-live gate: only capture if cursor actually came up
         # (launched_handle is assigned strictly after a successful ttyd/cursor

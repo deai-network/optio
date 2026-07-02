@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 
-SCENARIOS = ("happy", "deliverable", "error", "resume")
+SCENARIOS = ("happy", "deliverable", "error", "resume", "seed")
 
 
 def _log(line: str) -> None:
@@ -94,6 +94,66 @@ def _scenario_resume() -> None:
     time.sleep(30.0)
 
 
+def _cursor_config_dir() -> Path:
+    """The per-task cursor credential dir (``<workdir>/home/.config/cursor``).
+
+    The launcher sets ``XDG_CONFIG_HOME=<workdir>/home/.config``, so this dir
+    lives INSIDE the workdir — exactly where real cursor-agent keeps its
+    ``auth.json`` (``status`` reads it, ``logout`` deletes it).
+    """
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    if xdg:
+        return Path(xdg) / "cursor"
+    home = os.environ.get("HOME") or str(Path.cwd() / "home")
+    return Path(home) / ".config" / "cursor"
+
+
+def _scenario_seed() -> None:
+    """Model cursor's logged-in identity for the Stage-3 seed tests.
+
+    Two roles, distinguished by whether ``auth.json`` is already present at
+    launch:
+
+    * CONSUME (seed already merged in): the seed engine planted
+      ``home/.config/cursor/auth.json`` before launch. Record that fact via a
+      deliverable so the test can assert the seed reached the workdir before
+      cursor started.
+    * CAPTURE (fresh login): no auth yet, so write a fake logged-in identity
+      (auth.json + cli-config.json) under the per-task home. Teardown capture
+      then stores it as a reusable seed.
+    """
+    cfg_dir = _cursor_config_dir()
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    auth = cfg_dir / "auth.json"
+    if auth.exists():
+        workdir = Path.cwd()
+        (workdir / "deliverables").mkdir(exist_ok=True)
+        (workdir / "deliverables" / "seed_present.txt").write_text(
+            "SEED_PRESENT\n", encoding="utf-8",
+        )
+        time.sleep(0.05)
+        _log("DELIVERABLE: ./deliverables/seed_present.txt")
+    else:
+        auth.write_text(
+            json.dumps({
+                "accessToken": "fake-access-token",
+                "refreshToken": "fake-refresh-token",
+            }),
+            encoding="utf-8",
+        )
+        ch = _cursor_home()
+        ch.mkdir(parents=True, exist_ok=True)
+        (ch / "cli-config.json").write_text(
+            json.dumps({"version": 1, "editor": {"vimMode": False}}),
+            encoding="utf-8",
+        )
+    time.sleep(0.05)
+    _log("STATUS: 10% seed scenario alive")
+    time.sleep(0.05)
+    _log("DONE: seed scenario completed")
+    time.sleep(30.0)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", action="store_true")
@@ -112,6 +172,7 @@ def main() -> int:
         "deliverable": _scenario_deliverable,
         "error": _scenario_error,
         "resume": _scenario_resume,
+        "seed": _scenario_seed,
     }[scenario]()
     return 0
 

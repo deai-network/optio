@@ -6,7 +6,7 @@ re-exports them alongside the package-specific ``CursorTaskConfig``.
 """
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Awaitable, Callable, Literal
 
 from optio_agents.protocol.session import (
     DeliverableCallback,
@@ -22,7 +22,20 @@ __all__ = [
     "CursorTaskConfig",
     "SandboxMode",
     "ConversationMode",
+    "SeedProvider",
+    "SeedUnavailableError",
 ]
+
+
+# A seed provider resolves a usable seed_id at launch time (e.g. leasing one
+# from a pool). Mirrors optio-grok's SeedProvider; the callable/lease path is
+# exercised in Stage 4 — Stage 3 only needs a static string seed_id.
+SeedProvider = Callable[[str], Awaitable[str]]
+
+
+class SeedUnavailableError(Exception):
+    """Raised by a seed provider when no usable seed is available; the message
+    is surfaced as the process failure."""
 
 
 # Passed through as ``--sandbox``. cursor-agent's own filesystem sandbox
@@ -83,6 +96,21 @@ class CursorTaskConfig:
     before_execute: HookCallback | None = None
     after_execute: HookCallback | None = None
     on_deliverable: DeliverableCallback | None = None
+
+    # --- seed surface (start fresh from a stored environment) -----------
+    # Consumed (default/fallback): merge this seed's environment (cursor
+    # auth.json + cli-config.json) into a fresh workdir before launch,
+    # beginning a NEW session already logged-in. A plain string is used as-is;
+    # a SeedProvider callable is awaited at launch to resolve one (Stage 4
+    # lease path). Baked at task-creation time; ignored on resume.
+    seed_id: "str | SeedProvider | None" = None
+    # Capture intent: a (sync or async) callback fired on teardown of a fresh
+    # session after a successful capture, with two args: (seed_id, info).
+    # ``info`` is a human-readable account summary (None in Stage 3; resolved
+    # in a later stage). Its presence is what enables seed capture. Both
+    # default None, so existing consumers are unaffected. Both are ignored on
+    # resume.
+    on_seed_saved: "Callable[[str, str | None], Awaitable[None] | None] | None" = None
 
     # Resume machinery (Stage 2). ON by default: cursor persists its chat
     # state under $HOME/.cursor inside the workdir, so restoring the workdir
