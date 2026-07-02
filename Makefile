@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help install check-tooling install-demo run-demo run-demo-dashboard build build-dashboard run-dashboard-api run-dashboard-dev codegen test test-interop lint lint-no-direct-writes clean clean-codegen clean-deep
 
-PY_PACKAGES := optio-core optio-host optio-agents optio-opencode
+PY_PACKAGES := optio-core optio-host optio-agents optio-opencode optio-codex
 
 # Python toolchain — repo-local venv. Override PYTHON to pick a specific interpreter.
 PYTHON ?= python3
