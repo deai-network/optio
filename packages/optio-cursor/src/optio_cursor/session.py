@@ -6,7 +6,8 @@ tmux → optio.log protocol session → teardown.
 
 Adapted from optio-grok's iframe path. Stage 0 drops the seed,
 conversation, credential-watcher, and fs-isolation branches; Stage 2 adds
-the resume/snapshot branch. The rest arrive in later stages.
+the resume/snapshot branch, Stage 3 the seed branch, Stage 4 the pooled
+lease + credential save-back. The rest arrive in later stages.
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ from optio_agents.protocol.session import _SessionFailed, run_log_protocol_sessi
 from optio_host.host import Host, LocalHost, ProcessHandle
 from optio_host.paths import task_dir
 
-from optio_cursor import host_actions
+from optio_cursor import cred_watcher, host_actions
 from optio_cursor.prompt import compose_agents_md
 from optio_cursor.seed_manifest import CURSOR_SEED_MANIFEST, CURSOR_SEED_SUFFIX
 from optio_cursor.snapshots import (
@@ -42,37 +43,12 @@ _LOG = logging.getLogger(__name__)
 
 READY_TIMEOUT_S = 30.0
 
-# The logged-in cursor identity, relative to the workdir. Our launch env sets
-# XDG_CONFIG_HOME=<workdir>/home/.config, so this is where cursor-agent reads
-# its auth (``status`` reads it, ``logout`` deletes it).
-_CRED_RELPATH = "home/.config/cursor/auth.json"
-
 
 async def _call_maybe_async(fn, *args) -> None:
     """Invoke a callback that may be sync or async."""
     result = fn(*args)
     if inspect.isawaitable(result):
         await result
-
-
-async def _capture_gate_ok(host: Host) -> bool:
-    """Gate for seed CAPTURE: a valid ``auth.json`` is present.
-
-    Guards against seeding a logged-out / half-written identity: the file must
-    exist, parse as JSON, and be a non-empty object. Mirrors grok's
-    ``cred_watcher.capture_gate_ok`` (a cursor cred_watcher arrives with the
-    Stage-4 save-back machinery).
-    """
-    path = f"{host.workdir.rstrip('/')}/{_CRED_RELPATH}"
-    try:
-        raw = await host.fetch_bytes_from_host(path)
-    except FileNotFoundError:
-        return False
-    try:
-        data = json.loads(raw.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
-        return False
-    return isinstance(data, dict) and bool(data)
 
 
 def _build_host(config: CursorTaskConfig, process_id: str) -> Host:
@@ -108,6 +84,13 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
     # (str seed_id → itself; SeedProvider callable → awaited). Stays None on
     # resume and when no seed_id is configured.
     resolved_seed_id: str | None = None
+    # Stage 4 lease + credential save-back. ``lease_holder`` is the task's
+    # process_id when the seed came from a lease-holding SeedProvider (renewed
+    # by the watcher, released at teardown). ``cred_baseline`` is the
+    # post-merge auth.json fingerprint the watcher/backstop diff against.
+    lease_holder: str | None = None
+    cred_baseline: str | None = None
+    cred_watch_task: "asyncio.Task | None" = None
 
     await host.connect()
 
@@ -123,6 +106,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
         AFTER the restore so they are not wiped by it.
         """
         nonlocal cursor_path, ttyd_path, resuming, pass_continue, resolved_seed_id
+        nonlocal lease_holder, cred_baseline
         cursor_path = await host_actions.ensure_cursor_installed(
             hook_ctx,
             install_if_missing=config.install_if_missing,
@@ -179,10 +163,13 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             # cli-config.json) into the fresh workdir BEFORE AGENTS.md, so
             # cursor launches already-authed. No --continue: this begins a
             # NEW session. Cursor auth/config are cwd-independent, so no
-            # rekey is needed. (The Stage-4 lease path holds/renews a lease
-            # for callable seed_ids; Stage 3 only resolves it.)
+            # rekey is needed.
             if callable(config.seed_id):
+                # A SeedProvider leases a seed from the pool (holder =
+                # process_id); the watcher renews the lease, teardown releases
+                # it. A plain string carries no lease.
                 resolved_seed_id = await config.seed_id(ctx.process_id)
+                lease_holder = ctx.process_id
             else:
                 resolved_seed_id = config.seed_id
             await _seeds.merge_seed(
@@ -192,6 +179,9 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                 suffix=CURSOR_SEED_SUFFIX,
                 decrypt=None,
             )
+            # Baseline the merged auth.json so the in-session watcher and the
+            # teardown backstop only save back a genuinely rotated token.
+            cred_baseline = await cred_watcher.cred_fingerprint(host)
 
         await host.write_text(
             "AGENTS.md",
@@ -209,6 +199,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
 
     async def _cursor_body(host: Host, hook_ctx: HookContext) -> None:
         nonlocal launched_handle, tmux_path, tmux_socket, tmux_session
+        nonlocal cred_watch_task
 
         # Network binding (same env handling as grok/claudecode for
         # multi-container deploys).
@@ -256,6 +247,21 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             "iframeSrc": "{widgetProxyUrl}/",
         })
         ctx.report_progress(None, "Cursor is live")
+
+        # Start the in-session credential watcher for a seeded session: it
+        # saves back the rotated auth.json, and (when the seed is leased)
+        # renews the lease and aborts the session on lease loss.
+        if resolved_seed_id is not None:
+            cred_watch_task = asyncio.create_task(
+                cred_watcher.run_credential_watcher(
+                    ctx, host,
+                    seed_id=resolved_seed_id,
+                    baseline=cred_baseline,
+                    encrypt=None,
+                    decrypt=None,
+                    lease_holder=lease_holder,
+                )
+            )
 
         # Await the cursor process inside tmux (NOT the ttyd connection). ttyd
         # stays up serving viewers; the task is alive while the tmux session
@@ -308,6 +314,44 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             except Exception:
                 _LOG.exception("teardown_session_tree failed")
 
+        # Stop the credential watcher before the final save-back so the two
+        # never race on the same seed blob.
+        if cred_watch_task is not None:
+            cred_watch_task.cancel()
+            try:
+                await cred_watch_task
+            except asyncio.CancelledError:
+                pass
+
+        # Final backstop save-back — LOAD-BEARING, not defensive: cursor's own
+        # auth write-back is best-effort and the provider may have already
+        # consumed the old refresh token; a rotation in the last poll window is
+        # persisted ONLY here. Runs after cursor terminated so auth.json is
+        # final.
+        if resolved_seed_id is not None:
+            try:
+                cred_baseline = await cred_watcher.save_back_if_changed(
+                    ctx, host,
+                    seed_id=resolved_seed_id,
+                    baseline=cred_baseline,
+                    encrypt=None,
+                    decrypt=None,
+                )
+            except Exception:
+                _LOG.exception("final credential save-back failed")
+
+        # Release the lease AFTER the final save-back (opencode's deliberate
+        # ordering, via grok): a new acquirer must never merge the
+        # pre-save-back blob.
+        if lease_holder is not None and resolved_seed_id is not None:
+            try:
+                await _seeds.release(
+                    ctx._db, prefix=ctx._prefix, suffix=CURSOR_SEED_SUFFIX,
+                    seed_id=resolved_seed_id, holder=lease_holder,
+                )
+            except Exception:
+                _LOG.exception("lease release failed (TTL will reclaim)")
+
         # Seed capture (fresh only): store this session's cursor identity as
         # a reusable seed so a later fresh task can start already-authed.
         # Same reached-live gate as snapshots (launched_handle assigned
@@ -319,7 +363,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             and launched_handle is not None
         ):
             try:
-                if not await _capture_gate_ok(host):
+                if not await cred_watcher.capture_gate_ok(host):
                     _LOG.warning(
                         "seed capture skipped: home/.config/cursor/auth.json "
                         "absent or invalid (login-less session)",

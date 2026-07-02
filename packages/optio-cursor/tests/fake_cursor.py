@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 
-SCENARIOS = ("happy", "deliverable", "error", "resume", "seed")
+SCENARIOS = ("happy", "deliverable", "error", "resume", "seed", "seed_rotate")
 
 
 def _log(line: str) -> None:
@@ -154,6 +154,39 @@ def _scenario_seed() -> None:
     time.sleep(30.0)
 
 
+def _rotate_auth(cfg_dir: Path, new_refresh: str) -> None:
+    """Rotate the refreshToken in ``<XDG_CONFIG_HOME>/cursor/auth.json``,
+    modelling the refresh-token rotation a real cursor-agent may perform on
+    token use (what the credential watcher must save back). Cursor's auth.json
+    is a flat ``accessToken``/``refreshToken`` object (unlike grok's
+    per-account map)."""
+    auth = cfg_dir / "auth.json"
+    try:
+        data = json.loads(auth.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        data = {}
+    data["refreshToken"] = new_refresh
+    auth.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _scenario_seed_rotate() -> None:
+    """CONSUME role that rotates the refresh token mid-session.
+
+    The seed engine planted ``home/.config/cursor/auth.json`` before launch;
+    this run rotates its refreshToken (as real cursor-agent would on a token
+    refresh), so the session's teardown save-back must write the rotated
+    auth.json back into the seed. Used by the Stage-4 lease/save-back session
+    test."""
+    cfg_dir = _cursor_config_dir()
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    _rotate_auth(cfg_dir, "ROTATED-INSESSION")
+    time.sleep(0.05)
+    _log("STATUS: 10% rotate scenario alive")
+    time.sleep(0.05)
+    _log("DONE: rotate scenario completed")
+    time.sleep(30.0)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", action="store_true")
@@ -173,6 +206,7 @@ def main() -> int:
         "error": _scenario_error,
         "resume": _scenario_resume,
         "seed": _scenario_seed,
+        "seed_rotate": _scenario_seed_rotate,
     }[scenario]()
     return 0
 
