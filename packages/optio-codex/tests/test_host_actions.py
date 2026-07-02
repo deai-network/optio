@@ -46,6 +46,33 @@ def test_build_shell_command_honors_extra_env_path_override():
     assert not any(a.startswith("PATH=") for a in env)
 
 
+def test_build_shell_command_survives_shell_significant_paths(tmp_path):
+    # A workdir (or PATH override) containing shell-significant characters
+    # must not break the bash payload or open an injection seam. Proven
+    # functionally: execute the built command against a real workdir with a
+    # space in its path and observe the DONE marker.
+    import subprocess
+
+    workdir = tmp_path / "task with space"
+    workdir.mkdir()
+    probe = tmp_path / "probe.sh"
+    probe.write_text('#!/bin/sh\necho "$PATH" > "$1"\n')
+    probe.chmod(0o755)
+    path_out = tmp_path / "path.txt"
+
+    _, cmd = _build_codex_shell_command(
+        codex_path=str(probe), workdir=str(workdir),
+        extra_env={"PATH": "/custom/dir with space"},
+        codex_flags=[str(path_out)],
+    )
+    subprocess.run(cmd, shell=True, check=True, timeout=10)
+    assert (workdir / "optio.log").read_text().strip() == "DONE"
+    assert (
+        path_out.read_text().strip()
+        == f"{workdir}/home/.local/bin:/custom/dir with space"
+    )
+
+
 def test_env_isolation_and_done_error():
     from optio_codex.host_actions import build_codex_flags
 

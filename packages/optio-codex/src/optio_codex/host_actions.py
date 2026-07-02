@@ -209,9 +209,11 @@ def _build_codex_shell_command(
     log_path = f"{workdir_clean}/optio.log"
 
     if path_override is not None:
-        path_expr = f"export PATH={home_local_bin}:{path_override}; "
+        path_expr = (
+            f"export PATH={shlex.quote(f'{home_local_bin}:{path_override}')}; "
+        )
     else:
-        path_expr = f'export PATH={home_local_bin}:"$PATH"; '
+        path_expr = f'export PATH={shlex.quote(home_local_bin)}:"$PATH"; '
     bash_payload = (
         f"{path_expr}"
         f"cd {shlex.quote(workdir_clean)} && {codex_argv}; rc=$?; "

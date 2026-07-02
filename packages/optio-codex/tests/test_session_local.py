@@ -205,3 +205,8 @@ async def test_cancellation_returns_clean_and_tears_down(
     tmux = shutil.which("tmux")
     alive = await host_actions.tmux_session_alive(host, tmux, socket_path, "optio")
     assert alive is False
+
+    # …and no codex process launched from this task's per-task path survives.
+    per_task_codex = f"{host.workdir}/home/.local/bin/codex"
+    gone = await host_actions.await_codex_gone(host, per_task_codex, timeout_s=5.0)
+    assert gone is True
