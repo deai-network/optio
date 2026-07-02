@@ -52,7 +52,7 @@ dashboard chat UI for free. Where the agent's headless surface is limited (the
 canonical case: **login/auth that cannot run headless**), fall back to an
 interactive surface for that operation and/or pre-provision identity with a
 **seed**. See [Part 1](#part-1--profile-your-target-agent) and
-[Part 4](#the-headless-login-problem).
+[Part 4 — Authentication](#authentication-the-headless--remote-browser-problem).
 
 ### Package landscape
 
@@ -82,7 +82,7 @@ every later decision.
 3. **TUI-only?** If the only rich UI is a terminal UI, embed it via **ttyd** in an
    iframe (the claudecode pattern).
 4. **Headless login?** Can the agent authenticate without an interactive browser?
-   If not, you need one of the login strategies in [Part 4](#the-headless-login-problem).
+   If not, you need one of the login strategies in [Part 4 — Authentication](#authentication-the-headless--remote-browser-problem).
 5. **Resume?** Can a terminated session be relaunched and pick up its
    conversation/state? This determines how much of Stage 2 applies.
 6. **Rotating credentials?** Does it use single-use refresh tokens (so a stored
@@ -334,21 +334,85 @@ Do all host I/O through the generic `optio_host.Host` primitives (`run_command`,
 `isinstance` is the Local-vs-Remote bind-address decision. This is what makes
 remote-over-SSH nearly free.
 
-### The headless-login problem
-When the agent can't authenticate headless, use one or more of:
-1. **Seeds** (Stage 3) — pre-provision a logged-in identity so headless never logs
-   in.
+### Authentication: the headless + remote-browser problem
+Every agent authenticates differently — API key, browser OAuth, device code, an
+external SSO binary — and the optio environment is hostile to the browser-based
+ones in **two** specific ways. Getting login right is per-agent work: you must
+research the agent's actual flow, pick the matching measure, and prove it works
+end-to-end. Do not assume; the flow that "just works" on a laptop usually fails
+here.
+
+**Research the flow first (empirical, like profiling the target).** Before you
+choose a measure, determine, for *your* agent:
+- Does it accept a non-interactive credential — an API key / token in an env var
+  or config file? (If so, that is almost always the right path — no browser.)
+- If it does OAuth: is it a **device-code** flow (prints a URL + short code to the
+  terminal and polls — no callback), a **hosted-redirect** flow (redirects to a
+  server the agent doesn't host), or a **loopback** flow (redirects to
+  `http://127.0.0.1:<port>/callback` that the agent listens on locally)?
+- *How* does it open the browser: by spawning a **terminal subprocess**
+  (`$BROWSER`, `xdg-open`, `open`, a `webbrowser`-style crate), or from
+  **client-side code** (its own web UI / embedded JS `window.open`, or an in-process
+  OS call)? This decides whether you can intercept it at all (see below).
+- Does it try to log in **automatically on first launch**, or only on an explicit
+  `login` command? Auto-login-on-launch is the case that surprises operators.
+
+Determine these by reading the agent's docs, probing its binary/help, and — the
+only conclusive method — **watching a real first-login** in the wrapper.
+
+**The two constraints that make login unusual.**
+1. **No usable browser on the worker.** The agent runs headless; a direct browser
+   launch either silently no-ops or errors. You must *intercept* the open, not let
+   it run. (If you plant silent no-op browser shims, login appears to hang with no
+   feedback — a real failure mode; see `browser="suppress"`.)
+2. **The operator's browser is on a different machine than the agent.** In remote
+   (SSH) deployments the human's browser cannot reach the agent's `127.0.0.1`. So
+   any **loopback callback** the agent expects to catch locally never comes back to
+   it. Local mode (worker == operator's machine) is the lucky exception where
+   loopback still works.
+
+**Login-mechanism taxonomy → the measure to take.**
+| Agent's mechanism | Measure |
+|---|---|
+| **API key / token env var** | Inject it via the launch env / a seed. No browser at all. Prefer this whenever the agent offers it. |
+| **Device-code flow** | Ideal for this environment: no callback, works remote. If the agent supports it (often a `--device-code`/`--device-auth` flag), force it, and surface the printed URL+code (terminal is visible in the iframe/ttyd surface). |
+| **Hosted-redirect OAuth** | Capture the browser-open URL (`redirect` shim) and surface it to the operator; the redirect lands on a server that isn't the agent, so it completes from any machine. |
+| **Loopback (`127.0.0.1`) OAuth** | Completes only in **local** mode. For remote, one of: (a) rewrite the loopback `redirect_uri` to a hosted redirect (`browser_url_rewrite`, ref `optio-claudecode/…/oauth_redirect.py`); (b) switch the agent to device-code; (c) avoid login entirely with a seed. |
+
+**Browser-open taxonomy — can you even intercept it?**
+- **Terminal / subprocess open** (`$BROWSER`, `xdg-open`, `open`, a native crate
+  that shells out) — **interceptable**. optio plants fake browser shims on `PATH`
+  + sets `BROWSER`; the agent's open runs the shim instead. Modes via
+  `get_protocol(browser=…)`: `ignore` (no shims), `suppress` (silent no-op — the
+  agent thinks it opened a browser, operator sees nothing; only for agents that
+  degrade gracefully), or `redirect` (the shim writes `BROWSER: <url>` to
+  `optio.log` → the tail parser surfaces it to the operator). **Default to
+  `redirect` for any agent whose login opens a browser** — `suppress` hides login
+  URLs and strands the operator.
+- **Client-side open** (the agent's own web UI calls `window.open`, or it opens the
+  browser from in-process code that doesn't shell out) — the process shim **cannot**
+  catch it. Fall back to: the **iframe/web surface** where the operator sees and
+  completes the flow directly, or a config flag that disables auto-open so you can
+  surface the URL another way.
+
+**The toolbox (compose as needed).**
+1. **Seeds** (Stage 3) — pre-provision a logged-in identity so steady-state never
+   logs in. The backbone: always back your login story with seeds.
 2. **Interactive fallback mode** — let a human log in once in an iframe/ttyd/web
    surface, then capture that as a seed.
-3. **OAuth-redirect rewrite** — rewrite a loopback `/callback` redirect so the login
-   flow completes on a hosted redirect, enabling login even remote/headless.
-   Reference: `optio-claudecode/…/oauth_redirect.py`, wired as `browser_url_rewrite`.
+3. **OAuth-redirect rewrite** — `browser_url_rewrite` rewrites a loopback
+   `/callback` redirect onto a hosted one so login completes remote/headless. Ref
+   `optio-claudecode/…/oauth_redirect.py`.
 
-### Browser handling
-The agent's "open a browser" action is intercepted by shims with three modes:
-`ignore`, `suppress`, or `redirect` (surface the URL to the operator via `BROWSER:`).
-Chosen via `get_protocol(browser=…)`. claudecode uses `redirect` (to surface login
-URLs); opencode uses `suppress`.
+**Verify for real — unit tests cannot prove login.** A fake agent never exercises
+the actual OAuth/device/callback path. You MUST run the real first-login
+end-to-end in the wrapper environment (local at minimum): confirm the browser-open
+is intercepted, the flow completes, and a seed is captured with the expected
+credential files. Test remote too if you claim remote login.
+
+**Decision order.** API key → device-code → hosted-redirect OAuth → loopback OAuth
+(local-only, or needs a rewrite). Whatever the agent forces on you, back it with
+seeds so the common path is "already authenticated."
 
 ### Isolation & security posture
 Default to fail-closed. Keep auth passwords off the argv (pass via file/env).
