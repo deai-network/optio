@@ -7,12 +7,17 @@ widget proxy (which injects the basic-auth credential):
                      monotonic seq; Last-Event-ID resumes without dupes.
   POST /send       — {text}                 -> conversation.send
   POST /interrupt  — {}                     -> conversation.interrupt
+  POST /model      — {model}                -> conversation.request_model_change
+                     (INLINE session/set_model — no process restart; Stage 7)
+  POST /upload     — multipart {file} parts -> upload_writer; returns
+                     {ok, files:[{filename, path}]} (Stage 7)
+  GET  /download   — ?path=<relpath>        -> download_reader; returns the
+                     bytes with Content-Disposition: attachment (Stage 7)
   POST /permission — {request_id, behavior, updated_input?, message?}
                      resolves the pending session/request_permission future.
 
-Structurally mirrors optio-claudecode's ConversationListener, slimmed for
-Grok's Stage 6 scope: no /model (model switching deferred) and no /upload
-or /download (file transfer deferred). Permissions are correlated by the ACP
+Structurally mirrors optio-claudecode's ConversationListener. Permissions are
+correlated by the ACP
 JSON-RPC ``id`` of the ``session/request_permission`` request — GrokConversation
 hands the whole JSON-RPC object to the handler as ``PermissionRequest.raw``.
 
@@ -175,6 +180,22 @@ class ConversationListener:
             return web.json_response({"ok": False, "reason": "closed"}, status=409)
         return web.json_response({"ok": True})
 
+    async def _handle_model(self, request: web.Request) -> web.Response:
+        if not self._authorized(request):
+            return web.json_response({"ok": False}, status=401)
+        try:
+            payload = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"ok": False, "reason": "bad-json"}, status=400)
+        model = payload.get("model")
+        if not isinstance(model, str) or not model:
+            return web.json_response({"ok": False, "reason": "bad-model"}, status=400)
+        try:
+            self._conversation.request_model_change(model)
+        except ConversationClosed:
+            return web.json_response({"ok": False, "reason": "closed"}, status=409)
+        return web.json_response({"ok": True})
+
     async def _handle_permission(self, request: web.Request) -> web.Response:
         if not self._authorized(request):
             return web.json_response({"ok": False}, status=401)
@@ -203,6 +224,7 @@ class ConversationListener:
         app.router.add_get("/events", self._handle_events)
         app.router.add_post("/send", self._handle_send)
         app.router.add_post("/interrupt", self._handle_interrupt)
+        app.router.add_post("/model", self._handle_model)
         app.router.add_post("/permission", self._handle_permission)
         self._runner = web.AppRunner(app, shutdown_timeout=SHUTDOWN_TIMEOUT_S)
         await self._runner.setup()

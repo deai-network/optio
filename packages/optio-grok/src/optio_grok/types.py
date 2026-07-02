@@ -147,6 +147,32 @@ class GrokTaskConfig:
     # conversation_ui rendering.
     tool_verbosity: ToolVerbosity = "description-only"
 
+    # --- conversation frontend parity (Stage 7) -------------------------
+    # Model preselected in the widget's model picker. Requires
+    # mode="conversation" and conversation_ui=True. Defaults to the live ACP
+    # current model when unset. (config.model still drives the launch --model
+    # flag; this only controls the picker's initial value.)
+    default_model: str | None = None
+    # Show the model picker in the conversation widget. Grok switches inline
+    # over ACP (session/set_model) — no process restart. Requires
+    # mode="conversation" and conversation_ui=True.
+    show_model_selector: bool = False
+    # Show the file-upload control. Uploaded bytes are written under
+    # <workdir>/uploads and referenced to grok via a System: path line so it
+    # reads them with its own tools. Requires mode="conversation" and
+    # conversation_ui=True.
+    show_file_upload: bool = False
+    # Upper bound (bytes) on a single uploaded file; the listener rejects
+    # anything larger with HTTP 413. Mirrored to the widget via widgetData.
+    max_upload_bytes: int = 10_000_000
+    # Offer download links for files grok marks with the optio-file: sentinel.
+    # The listener serves GET /download for paths confined under <workdir>.
+    # Requires mode="conversation" and conversation_ui=True.
+    file_download: bool = False
+    # Upper bound (bytes) on a single downloaded file; the listener rejects
+    # anything larger with HTTP 413. Mirrored to the widget via widgetData.
+    max_download_bytes: int = 10_000_000
+
     def __post_init__(self) -> None:
         if (
             self.permission_mode is not None
@@ -181,6 +207,29 @@ class GrokTaskConfig:
             raise ValueError(
                 f"GrokTaskConfig.tool_verbosity={self.tool_verbosity!r} "
                 f"is not one of {sorted(_VALID_TOOL_VERBOSITY)}"
+            )
+        # Frontend-parity features are opt-in flags that only make sense with
+        # the conversation UI wired (mirrors optio-claudecode).
+        conv_ui = self.mode == "conversation" and self.conversation_ui
+        if self.default_model is not None and not conv_ui:
+            raise ValueError(
+                "GrokTaskConfig: default_model requires mode='conversation' "
+                "and conversation_ui=True."
+            )
+        if self.show_model_selector and not conv_ui:
+            raise ValueError(
+                "GrokTaskConfig: show_model_selector=True requires "
+                "mode='conversation' and conversation_ui=True."
+            )
+        if self.show_file_upload and not conv_ui:
+            raise ValueError(
+                "GrokTaskConfig: show_file_upload=True requires "
+                "mode='conversation' and conversation_ui=True."
+            )
+        if self.file_download and not conv_ui:
+            raise ValueError(
+                "GrokTaskConfig: file_download=True requires "
+                "mode='conversation' and conversation_ui=True."
             )
         for field_name in ("grok_install_dir", "ttyd_install_dir"):
             val = getattr(self, field_name)

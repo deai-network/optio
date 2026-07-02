@@ -24,6 +24,7 @@ class FakeConversation:
         self.perm_handler = None
         self.sent = []
         self.interrupts = 0
+        self.model_changes = []
         self.closed = False
 
     def on_event(self, h):
@@ -43,6 +44,11 @@ class FakeConversation:
         if self.closed:
             raise ConversationClosed("closed")
         self.interrupts += 1
+
+    def request_model_change(self, model):
+        if self.closed:
+            raise ConversationClosed("closed")
+        self.model_changes.append(model)
 
     def fire(self, event):
         for h in list(self.handlers):
@@ -128,6 +134,19 @@ async def test_send_forwards_to_conversation(listener):
         assert r.status == 200 and conv.interrupts == 1
         conv.closed = True
         r = await s.post(f"{url}/send", json={"text": "x"}, headers=_auth("pw"))
+        assert r.status == 409
+
+
+async def test_model_route_forwards_to_conversation(listener):
+    conv, lst, url = listener
+    async with aiohttp.ClientSession() as s:
+        r = await s.post(f"{url}/model", json={"model": "grok-build"}, headers=_auth("pw"))
+        assert r.status == 200 and conv.model_changes == ["grok-build"]
+        # bad payloads
+        r = await s.post(f"{url}/model", json={}, headers=_auth("pw"))
+        assert r.status == 400
+        conv.closed = True
+        r = await s.post(f"{url}/model", json={"model": "grok-build"}, headers=_auth("pw"))
         assert r.status == 409
 
 

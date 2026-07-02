@@ -29,6 +29,7 @@ from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
 from optio_host.paths import task_dir
 
 from optio_grok import cred_watcher, host_actions
+from optio_grok import models as grok_models
 from optio_grok.conversation import GrokConversation
 from optio_grok.conversation_listener import ConversationListener
 from optio_grok.prompt import compose_agents_md
@@ -325,9 +326,24 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                 f"http://{upstream_host}:{listener_port}",
                 inner_auth=BasicAuth(username="optio", password=listener_password),
             )
+            # Model picker options: prefer the ACP session block captured at
+            # bootstrap (authed, exact ids set_model accepts), else `grok
+            # models`, else a static list. default_model overrides the picker's
+            # initial value; otherwise the live current model is shown.
+            model_list = await grok_models.fetch_available_models(
+                conversation.session_models, host=host, grok_path=grok_path,
+            )
+            current_model = config.default_model or model_list.get("default")
             await ctx.set_widget_data({
                 "protocol": "grok",
                 "toolVerbosity": config.tool_verbosity,
+                "showModelSelector": config.show_model_selector,
+                "models": model_list["models"],
+                "currentModel": current_model,
+                "showFileUpload": config.show_file_upload,
+                "maxUploadBytes": config.max_upload_bytes,
+                "fileDownload": config.file_download,
+                "maxDownloadBytes": config.max_download_bytes,
             })
             ctx.report_progress(None, "Conversation UI is live")
 

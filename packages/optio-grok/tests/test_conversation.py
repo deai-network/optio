@@ -276,6 +276,65 @@ async def test_close_sets_close_requested(convo):
     assert c.close_requested.is_set()
 
 
+@pytest.mark.asyncio
+async def test_bootstrap_captures_session_models(convo):
+    # session/new returns the ACP model block; GrokConversation captures it so
+    # the session can push the picker options without a separate `grok models`
+    # subprocess.
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    boot = asyncio.create_task(c.bootstrap())
+    req1 = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    handle.stdout.feed({"jsonrpc": "2.0", "id": req1["id"],
+                        "result": {"protocolVersion": 1, "agentCapabilities": {}}})
+    req2 = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    handle.stdout.feed({"jsonrpc": "2.0", "id": req2["id"], "result": {
+        "sessionId": "s1",
+        "models": {
+            "currentModelId": "grok-composer-2.5-fast",
+            "availableModels": [
+                {"modelId": "grok-composer-2.5-fast", "name": "Composer 2.5"},
+                {"modelId": "grok-build", "name": "Grok Build"},
+            ],
+        },
+    }})
+    await asyncio.wait_for(boot, 1)
+    assert c.current_model_id == "grok-composer-2.5-fast"
+    assert c.session_models["availableModels"][1]["modelId"] == "grok-build"
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_request_model_change_sends_set_model(convo):
+    # Stage-7 Task-0 probe pinned INLINE switching: request_model_change emits a
+    # session/set_model ACP request (no process restart).
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)
+    c.request_model_change("grok-build")
+    msg = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert msg["method"] == "session/set_model"
+    assert msg["params"]["sessionId"] == "s1"
+    assert msg["params"]["modelId"] == "grok-build"
+    assert c.current_model_id == "grok-build"  # optimistic
+    handle.stdout.feed({"jsonrpc": "2.0", "id": msg["id"],
+                        "result": {"_meta": {"model": {"Ok": "grok-build-0.1"}}}})
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_request_model_change_after_close_raises(convo):
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)
+    handle.stdout.eof()
+    await reader
+    with pytest.raises(ConversationClosed):
+        c.request_model_change("grok-build")
+
+
 # --- tiny polling helpers ---------------------------------------------------
 
 async def _first(bucket: list, timeout: float = 2.0):

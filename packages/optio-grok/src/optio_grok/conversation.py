@@ -99,6 +99,11 @@ class GrokConversation:
         self._mcp_servers = mcp_servers or []
         self._handle = None
         self._session_id: str | None = None
+        # ACP model block from session/new (see models.py). Captured at
+        # bootstrap so the session can populate the picker without a separate
+        # `grok models` subprocess.
+        self.session_models: dict | None = None
+        self.current_model_id: str | None = None
         self._pending = 0                    # user turns awaiting their result
         self._closed = asyncio.Event()
         self._close_reason: str | None = None
@@ -156,6 +161,10 @@ class GrokConversation:
             raise RuntimeError(
                 f"grok ACP session/new returned no sessionId: {result!r}"
             )
+        models = result.get("models")
+        if isinstance(models, dict):
+            self.session_models = models
+            self.current_model_id = models.get("currentModelId")
 
     async def run_reader(self) -> None:
         """Drain stdout until EOF; route JSON-RPC messages. Owned by the
@@ -363,6 +372,30 @@ class GrokConversation:
             "jsonrpc": "2.0", "method": "session/cancel",
             "params": {"sessionId": self._session_id},
         })
+
+    def request_model_change(self, model: str) -> None:
+        """Switch model mid-conversation INLINE — Stage-7 Task-0 pinned that
+        grok accepts a ``session/set_model`` ACP request (no process restart;
+        see models.py). Synchronous surface (the listener calls it without
+        await): schedules the ACP write and updates the model optimistically."""
+        if self._closed.is_set():
+            raise ConversationClosed(self._close_reason or "conversation closed")
+        if self._session_id is None:
+            raise RuntimeError(
+                "GrokConversation.request_model_change before bootstrap() completed"
+            )
+        self.current_model_id = model
+        asyncio.ensure_future(self._set_model(model))
+
+    async def _set_model(self, model: str) -> None:
+        try:
+            await self._request("session/set_model", {
+                "sessionId": self._session_id, "modelId": model,
+            })
+        except ConversationClosed:
+            pass  # a swap racing the close is a no-op
+        except Exception:  # noqa: BLE001 — never let a set_model bug kill the driver
+            _LOG.exception("grok conversation: session/set_model failed")
 
     async def close(self) -> None:
         self.close_requested.set()
