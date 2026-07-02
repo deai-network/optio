@@ -276,6 +276,66 @@ async def test_close_sets_close_requested(convo):
     assert c.close_requested.is_set()
 
 
+@pytest.mark.asyncio
+async def test_bootstrap_captures_session_models(convo):
+    # session/new returns the ACP model block ([grok-pinned, cursor
+    # runtime-unverified]); CursorConversation captures it so the session can
+    # push the picker options without a separate `cursor-agent models`
+    # subprocess (which is auth-gated anyway).
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    boot = asyncio.create_task(c.bootstrap())
+    req1 = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    handle.stdout.feed({"jsonrpc": "2.0", "id": req1["id"],
+                        "result": {"protocolVersion": 1, "agentCapabilities": {}}})
+    req2 = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    handle.stdout.feed({"jsonrpc": "2.0", "id": req2["id"], "result": {
+        "sessionId": "s1",
+        "models": {
+            "currentModelId": "composer-1",
+            "availableModels": [
+                {"modelId": "composer-1", "name": "Composer 1"},
+                {"modelId": "gpt-5", "name": "GPT-5"},
+            ],
+        },
+    }})
+    await asyncio.wait_for(boot, 1)
+    assert c.current_model_id == "composer-1"
+    assert c.session_models["availableModels"][1]["modelId"] == "gpt-5"
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_request_model_change_sends_set_model(convo):
+    # INLINE switching via ACP session/set_model — grok's live-pinned
+    # mechanism; the method is present in the cursor binary [cursor-verified]
+    # but a logged-in probe wasn't possible (see models.py header).
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)
+    c.request_model_change("gpt-5")
+    msg = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert msg["method"] == "session/set_model"
+    assert msg["params"]["sessionId"] == "s1"
+    assert msg["params"]["modelId"] == "gpt-5"
+    assert c.current_model_id == "gpt-5"  # optimistic
+    handle.stdout.feed({"jsonrpc": "2.0", "id": msg["id"], "result": {}})
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_request_model_change_after_close_raises(convo):
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)
+    handle.stdout.eof()
+    await reader
+    with pytest.raises(ConversationClosed):
+        c.request_model_change("gpt-5")
+
+
 # --- tiny polling helpers ---------------------------------------------------
 
 async def _first(bucket: list, timeout: float = 2.0):

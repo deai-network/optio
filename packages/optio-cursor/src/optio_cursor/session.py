@@ -31,6 +31,7 @@ from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
 from optio_host.paths import task_dir
 
 from optio_cursor import cred_watcher, host_actions
+from optio_cursor import models as cursor_models
 from optio_cursor.conversation import CursorConversation
 from optio_cursor.conversation_listener import ConversationListener
 from optio_cursor.prompt import compose_agents_md
@@ -349,9 +350,21 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                 f"http://{upstream_host}:{listener_port}",
                 inner_auth=BasicAuth(username="optio", password=listener_password),
             )
+            # Model picker options: prefer the ACP session block captured at
+            # bootstrap (authed, exact ids set_model accepts), else
+            # `cursor-agent models` (auth-gated), else a static list.
+            # default_model overrides the picker's initial value; otherwise
+            # the live current model is shown.
+            model_list = await cursor_models.fetch_available_models(
+                conversation.session_models, host=host, cursor_path=cursor_path,
+            )
+            current_model = config.default_model or model_list.get("default")
             await ctx.set_widget_data({
                 "protocol": "cursor",
                 "toolVerbosity": config.tool_verbosity,
+                "showModelSelector": config.show_model_selector,
+                "models": model_list["models"],
+                "currentModel": current_model,
             })
             ctx.report_progress(None, "Conversation UI is live")
 

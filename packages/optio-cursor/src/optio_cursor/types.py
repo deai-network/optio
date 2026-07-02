@@ -150,6 +150,18 @@ class CursorTaskConfig:
     # conversation_ui rendering.
     tool_verbosity: ToolVerbosity = "description-only"
 
+    # --- conversation frontend parity (Stage 7) -------------------------
+    # Model preselected in the widget's model picker. Requires
+    # mode="conversation" and conversation_ui=True. Defaults to the live ACP
+    # current model when unset. (config.model still drives the launch --model
+    # flag; this only controls the picker's initial value.)
+    default_model: str | None = None
+    # Show the model picker in the conversation widget. Cursor switches inline
+    # over ACP (session/set_model — grok's live-pinned mechanism; cursor
+    # runtime-unverified, see models.py) — no process restart. Requires
+    # mode="conversation" and conversation_ui=True.
+    show_model_selector: bool = False
+
     def __post_init__(self) -> None:
         if self.sandbox is not None and self.sandbox not in _VALID_SANDBOX_MODES:
             raise ValueError(
@@ -181,6 +193,19 @@ class CursorTaskConfig:
             raise ValueError(
                 f"CursorTaskConfig.tool_verbosity={self.tool_verbosity!r} "
                 f"is not one of {sorted(_VALID_TOOL_VERBOSITY)}"
+            )
+        # Frontend-parity features are opt-in flags that only make sense with
+        # the conversation UI wired (mirrors optio-grok/claudecode).
+        conv_ui = self.mode == "conversation" and self.conversation_ui
+        if self.default_model is not None and not conv_ui:
+            raise ValueError(
+                "CursorTaskConfig: default_model requires mode='conversation' "
+                "and conversation_ui=True."
+            )
+        if self.show_model_selector and not conv_ui:
+            raise ValueError(
+                "CursorTaskConfig: show_model_selector=True requires "
+                "mode='conversation' and conversation_ui=True."
             )
         for field_name in ("cursor_install_dir", "ttyd_install_dir"):
             val = getattr(self, field_name)
