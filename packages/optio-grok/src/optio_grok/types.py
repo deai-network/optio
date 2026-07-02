@@ -118,10 +118,14 @@ class GrokTaskConfig:
     grok_install_dir: str | None = None
     ttyd_install_dir: str | None = None
 
-    # When True, a fresh launch passes a trailing positional prompt
-    # ("Read AGENTS.md and execute the task it describes") so grok starts
-    # the task unattended.
-    auto_start: bool = True
+    # When True, a fresh launch kicks off the first turn itself — iframe mode
+    # types a trailing positional prompt, conversation mode sends the
+    # AUTO_START_PROMPT ("Read AGENTS.md and execute the task it describes"). This
+    # is for UNATTENDED task execution; a task must opt in. Defaults to False
+    # (parity with claudecode): a conversation/chat task must NOT auto-fire a
+    # kickoff, or grok-build starts an agentic loop on launch and blocks the
+    # operator's first real prompt (queued behind it as task_already_running).
+    auto_start: bool = False
     # Always pass ``--no-leader`` so tasks never share a grok backend and
     # never touch ~/.grok/leader.sock.
     no_leader: bool = True
