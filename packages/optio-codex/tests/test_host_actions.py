@@ -23,14 +23,26 @@ def test_isolation_env_all_keys():
     }
 
 
-def test_build_shell_command_uses_isolation_env():
-    env, _cmd = _build_codex_shell_command(
+def test_build_shell_command_composes_path_on_host():
+    env, cmd = _build_codex_shell_command(
         codex_path="/x/codex", workdir="/w/task", extra_env=None,
         codex_flags=[],
     )
     for k, v in _isolation_env("/w/task").items():
         assert f"{k}={v}" in env
-    assert any(a.startswith("PATH=") for a in env)
+    # PATH must NOT be baked in from the engine environment…
+    assert not any(a.startswith("PATH=") for a in env)
+    # …it is composed on the HOST inside the bash payload instead.
+    assert 'export PATH=/w/task/home/.local/bin:"$PATH"' in cmd
+
+
+def test_build_shell_command_honors_extra_env_path_override():
+    env, cmd = _build_codex_shell_command(
+        codex_path="/x/codex", workdir="/w/task",
+        extra_env={"PATH": "/custom/bin"}, codex_flags=[],
+    )
+    assert "export PATH=/w/task/home/.local/bin:/custom/bin" in cmd
+    assert not any(a.startswith("PATH=") for a in env)
 
 
 def test_env_isolation_and_done_error():

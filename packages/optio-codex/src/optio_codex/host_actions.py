@@ -194,22 +194,24 @@ def _build_codex_shell_command(
     home_local_bin = f"{home_dir}/.local/bin"
 
     extra = dict(extra_env or {})
-    base_path = extra.pop("PATH", None) or os.environ.get(
-        "PATH", "/usr/local/bin:/usr/bin:/bin",
-    )
-    env_map = {
-        "HOME": home_dir,
-        "PATH": f"{home_local_bin}:{base_path}",
-        **{k: v for k, v in iso.items() if k != "HOME"},
-    }
-    env_assignments: list[str] = [f"{k}={v}" for k, v in env_map.items()]
+    # PATH is composed on the HOST inside the bash payload (below), never
+    # baked in from the engine's os.environ — the command may run on a
+    # remote worker whose PATH differs. Deliberate divergence from the
+    # claudecode template, which still bakes the engine PATH in.
+    path_override = extra.pop("PATH", None)
+    env_assignments: list[str] = [f"{k}={v}" for k, v in iso.items()]
     for k, v in extra.items():
         env_assignments.append(f"{k}={v}")
 
     codex_argv = " ".join(shlex.quote(c) for c in [codex_path, *codex_flags])
     log_path = f"{workdir_clean}/optio.log"
 
+    if path_override is not None:
+        path_expr = f"export PATH={home_local_bin}:{path_override}; "
+    else:
+        path_expr = f'export PATH={home_local_bin}:"$PATH"; '
     bash_payload = (
+        f"{path_expr}"
         f"cd {shlex.quote(workdir_clean)} && {codex_argv}; rc=$?; "
         f'if [ "$rc" = 0 ]; then echo DONE >> {shlex.quote(log_path)}; '
         f"else printf 'ERROR: codex exited %s\\n' \"$rc\" >> {shlex.quote(log_path)}; fi"
