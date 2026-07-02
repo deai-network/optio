@@ -11,7 +11,7 @@ from optio_agents.prompt import downloadables_block
 from optio_agents.protocol import ProtocolFeatures, build_log_channel_prompt
 
 
-_OPENCODE_INTRO = """# Coordination protocol with the host (optio-opencode)
+_OPENCODE_INTRO = """# Coordination protocol with the host harness
 
 You are running inside a coordination harness. Follow these conventions
 throughout the session.
