@@ -1,4 +1,5 @@
-import { useEffect, useReducer, useRef } from 'react';
+import { useEffect, useReducer, useRef, useState } from 'react';
+import { Select } from 'antd';
 import type { WidgetProps } from 'optio-ui';
 import type { ChatState } from '../chat.js';
 import { initialChatState, reduceCursorEvent } from './events.js';
@@ -34,6 +35,9 @@ export function CursorView(props: WidgetProps) {
   const showFileUpload = Boolean(wd.showFileUpload);
   const maxUploadBytes = Number(wd.maxUploadBytes ?? 10_000_000);
   const fileDownload = Boolean(wd.fileDownload);
+  const [currentModel, setCurrentModel] = useState<string | undefined>(wd.currentModel ?? undefined);
+  const showModelSelector = Boolean(wd.showModelSelector);
+  const models: { id: string; label: string; disabled?: boolean }[] = wd.models ?? [];
 
   const { widgetProxyUrl } = props; // ends with '/' — trailing slash is load-bearing
 
@@ -137,6 +141,23 @@ export function CursorView(props: WidgetProps) {
         void post('permission', body);
       }}
       onFileDownload={onFileDownload}
+      modelSelector={
+        showModelSelector ? (
+          <Select
+            data-testid="model-select"
+            size="small"
+            style={{ minWidth: 180, alignSelf: 'center' }}
+            placeholder="Model"
+            disabled={busy || state.closed}
+            value={currentModel}
+            onChange={(v: string) => {
+              setCurrentModel(v); // optimistic
+              void post('model', { model: v }); // INLINE session/set_model
+            }}
+            options={models.map((m) => ({ label: m.label, value: m.id, disabled: m.disabled }))}
+          />
+        ) : undefined
+      }
       themeMode={(props as any).themeMode}
       onToggleTheme={(props as any).onToggleTheme}
     />
