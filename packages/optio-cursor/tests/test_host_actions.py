@@ -48,6 +48,18 @@ def test_env_isolation_and_done_error():
     assert "--force" in cmd
 
 
+def test_teardown_aggressive_grace_for_seeded_sessions():
+    """A seeded session must tear cursor down gracefully even on cancel so it
+    can flush a rotated (single-use) auth.json before save-back — an aggressive
+    kill would strand the rotation and kill the seed. Non-seeded keeps the fast
+    kill. Mirrors optio-grok's _teardown_aggressive."""
+    from optio_cursor.session import _teardown_aggressive
+    assert _teardown_aggressive(cancelled=True, seeded=True) is False    # grace
+    assert _teardown_aggressive(cancelled=True, seeded=False) is True    # fast kill
+    assert _teardown_aggressive(cancelled=False, seeded=True) is False
+    assert _teardown_aggressive(cancelled=False, seeded=False) is False
+
+
 def test_build_resume_notice_args():
     """PUSH half of resume awareness: on resume, cursor is continued with
     ``--continue`` so a trailing positional lands as a new turn — a

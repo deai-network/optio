@@ -58,6 +58,19 @@ async def _call_maybe_async(fn, *args) -> None:
         await result
 
 
+def _teardown_aggressive(*, cancelled: bool, seeded: bool) -> bool:
+    """Whether to SIGKILL cursor immediately on teardown vs SIGTERM-and-wait.
+
+    A **seeded** session is torn down GRACEFULLY even on cancel: cursor's
+    single-use refresh token may have rotated this session, and cursor's
+    auth.json write is best-effort — an aggressive SIGKILL can beat the flush,
+    stranding the rotation so the credential save-back persists the now-spent
+    token and the next launch demands re-auth. SIGTERM-and-wait lets cursor
+    flush first. A non-seeded session keeps the fast aggressive kill on cancel.
+    """
+    return cancelled and not seeded
+
+
 def _build_host(config: CursorTaskConfig, process_id: str) -> Host:
     """Construct the appropriate Host for the given config.
 
@@ -554,6 +567,17 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
     finally:
         if not ctx.should_continue():
             cancelled = True
+        # Cursor authenticates with a SINGLE-USE rotating refresh token. If
+        # cursor rotated it this session, that new auth.json must reach the seed
+        # via the backstop below — but an aggressive SIGKILL can beat cursor's
+        # flush, stranding the rotation (the seed keeps the now-spent token →
+        # the next launch demands re-auth). So when a SEED is in use, tear
+        # cursor down GRACEFULLY (SIGTERM + wait, ≤5s) even on cancel, giving it
+        # time to persist auth.json before the final save-back reads it. Only a
+        # non-seeded session keeps the fast aggressive kill on cancel.
+        cursor_aggressive = _teardown_aggressive(
+            cancelled=cancelled, seeded=resolved_seed_id is not None,
+        )
         # Stop the conversation listener first so its long-lived SSE loops are
         # woken (bounded shutdown) before the subprocess teardown below.
         if conv_listener is not None:
@@ -565,7 +589,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
         # subprocess directly. Its EOF drives the conversation to closed.
         if config.mode == "conversation" and launched_handle is not None:
             try:
-                await host.terminate_subprocess(launched_handle, aggressive=cancelled)
+                await host.terminate_subprocess(launched_handle, aggressive=cursor_aggressive)
             except Exception:
                 _LOG.exception("terminate cursor conversation subprocess failed")
         if (
@@ -583,7 +607,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                     tmux_session=tmux_session,
                     cursor_path=cursor_path,
                     ttyd_handle=launched_handle,
-                    aggressive=cancelled,
+                    aggressive=cursor_aggressive,
                 )
             except Exception:
                 _LOG.exception("teardown_session_tree failed")
