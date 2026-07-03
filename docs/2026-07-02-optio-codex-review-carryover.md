@@ -145,6 +145,34 @@ test `codex-events-fixture.test.ts` skips cleanly (green either way). Do NOT
 fabricate the fixture — a hand-written stream would not exercise the real
 interleaved-reasoning coalescing the test exists to guard.
 
+## Plan F (guide-delta) carryover
+
+Gaps 1-5 closed (resume-push, `auto_start=False`, seeded-teardown flush,
+direct-OIDC verify, real-binary E2E breadth). Residual, not forked:
+
+13. **Iframe-mode seeded teardown still SIGKILLs the agent via
+    `kill_codex_processes`.** Gap 3 gates `aggressive` on seed-in-use, but
+    `teardown_session_tree` calls `kill_codex_processes` with the default
+    `KILL` signal regardless — the `aggressive` flag only affects the ttyd
+    `terminate_subprocess`. **Exact grok parity** (`optio-grok`
+    `teardown_session_tree` is byte-for-byte the same: KILL backstop after the
+    tmux `kill-session` SIGHUP). In iframe mode the grace window is the
+    SIGHUP-before-pkill gap; the fully-graceful SIGTERM-and-wait path is
+    conversation mode (`terminate_subprocess(aggressive=False)`), which is
+    where seeded rotating-token sessions run the credential watcher. Fix in
+    grok + codex together if the iframe grace ever proves insufficient.
+    Evidence: `host_actions.py:906-940` (both wrappers).
+
+14. **Real-binary row-30 tests are wired + env-gated but not yet executed
+    against a real authed codex** (conversation / seed-replant / resume /
+    remote-SSH). They collect-and-skip cleanly (no billable turn in the default
+    suite); the Layer-3 replay fixture is deliberately left absent (not
+    fabricated) until a real capture materializes it. The iframe surface IS
+    proven (`test_real_codex_session.py`, ran green 14.7s). The four new
+    surfaces are tracked-open in the Plan-F coverage ledger above, per the
+    guide's "honest gap, not faked-green" rule. Running them needs an authed
+    `~/.codex` + `OPTIO_CODEX_CONVERSATION_TEST=1` / `OPTIO_CODEX_SEED_RESUME_TEST=1`.
+
 ## Recorded plan-verbatim deviations (executor drift-guard working as designed)
 
 - Task 6 test `test_host_protocol_false_keeps_resume_section_and_explainer`:
