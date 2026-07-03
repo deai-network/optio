@@ -71,6 +71,10 @@ async def test_real_codex_stage0_done_when(ctx_and_captures, task_root):
                 "protocol above describes), then stop. Do nothing else."
             ),
             before_execute=_plant_identity,
+            # Task-execution done-when proof: the agent must auto-run its
+            # AGENTS.md task and emit DONE. auto_start defaults to False
+            # (Gap 2, chat-task parity), so this task opts in explicitly.
+            auto_start=True,
         ),
     )
 

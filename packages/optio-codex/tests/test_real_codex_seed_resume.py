@@ -90,9 +90,12 @@ async def _make_ctx(
     progress: list[tuple[float | None, str | None]] = []
     original = ctx.report_progress
 
-    async def _report(percent=None, message=None):  # noqa: ANN001
+    # report_progress is SYNC (optio_core.context.ProcessContext.report_progress
+    # returns None and product calls it without await); the wrapper must be sync
+    # too, else the coroutine is never awaited and progress is never captured.
+    def _report(percent=None, message=None):  # noqa: ANN001
         progress.append((percent, message))
-        return await original(percent=percent, message=message)
+        return original(percent, message)
 
     ctx.report_progress = _report  # type: ignore[method-assign]
     return ctx, progress
@@ -126,6 +129,7 @@ async def test_seed_capture_then_replant(mongo_db, task_root):
                 consumer_instructions=_DONE_INSTRUCTIONS,
                 before_execute=_plant_identity,
                 on_seed_saved=on_seed_saved,
+                auto_start=True,
             ),
         ),
         timeout=280,
@@ -144,6 +148,7 @@ async def test_seed_capture_then_replant(mongo_db, task_root):
             ctx_dst,
             CodexTaskConfig(
                 consumer_instructions=_DONE_INSTRUCTIONS, seed_id=seed_id,
+                auto_start=True,
             ),
         ),
         timeout=280,
@@ -163,6 +168,7 @@ async def test_resume_relaunch_picks_up_session(mongo_db, task_root):
         consumer_instructions=_DONE_INSTRUCTIONS,
         before_execute=_plant_identity,
         supports_resume=True,
+        auto_start=True,
     )
 
     ctx_fresh, _ = await _make_ctx(mongo_db, pid, resume=False, supports_resume=True)
@@ -204,6 +210,7 @@ async def test_remote_iframe_surface_end_to_end(mongo_db, task_root):
                 consumer_instructions=_DONE_INSTRUCTIONS,
                 ssh=SSHConfig(host=host, user=user, key_path=key_path, port=port),
                 before_execute=_plant_identity,
+                auto_start=True,
             ),
         ),
         timeout=300,

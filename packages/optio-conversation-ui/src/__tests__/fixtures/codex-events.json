@@ -1,0 +1,348 @@
+[
+  {
+    "method": "mcpServer/startupStatus/updated",
+    "params": {
+      "threadId": "019f271f-b09a-78a1-a915-6e4fb2976913",
+      "name": "codex_apps",
+      "status": "starting",
+      "error": null
+    }
+  },
+  {
+    "id": 5,
+    "result": {
+      "turn": {
+        "id": "019f271f-b0b6-7282-aff9-60e7a27cc931",
+        "items": [],
+        "itemsView": "notLoaded",
+        "status": "inProgress",
+        "error": null,
+        "startedAt": null,
+        "completedAt": null,
+        "durationMs": null
+      }
+    }
+  },
+  {
+    "method": "thread/status/changed",
+    "params": {
+      "threadId": "019f271f-b09a-78a1-a915-6e4fb2976913",
+      "status": {
+        "type": "active",
+        "activeFlags": []
+      }
+    }
+  },
+  {
+    "method": "turn/started",
+    "params": {
+      "threadId": "019f271f-b09a-78a1-a915-6e4fb2976913",
+      "turn": {
+        "id": "019f271f-b0b6-7282-aff9-60e7a27cc931",
+        "items": [],
+        "itemsView": "notLoaded",
+        "status": "inProgress",
+        "error": null,
+        "startedAt": 1783067816,
+        "completedAt": null,
+        "durationMs": null
+      }
+    }
+  },
+  {
+    "method": "mcpServer/startupStatus/updated",
+    "params": {
+      "threadId": "019f271f-b09a-78a1-a915-6e4fb2976913",
+      "name": "codex_apps",
+      "status": "ready",
+      "error": null
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "userMessage",
+        "id": "8727fb4f-b418-42fa-bab5-1a0b1d03fa17",
+        "clientId": null,
+        "content": [
+          {
+            "type": "text",
+            "text": "Think step by step, then answer with just the word PONG.",
+            "text_elements": []
+          }
+        ]
+      },
+      "threadId": "019f271f-b09a-78a1-a915-6e4fb2976913",
+      "turnId": "019f271f-b0b6-7282-aff9-60e7a27cc931",
+      "startedAtMs": 1783067819829
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "userMessage",
+        "id": "8727fb4f-b418-42fa-bab5-1a0b1d03fa17",
+        "clientId": null,
+        "content": [
+          {
+            "type": "text",
+            "text": "Think step by step, then answer with just the word PONG.",
+            "text_elements": []
+          }
+        ]
+      },
+      "threadId": "019f271f-b09a-78a1-a915-6e4fb2976913",
+      "turnId": "019f271f-b0b6-7282-aff9-60e7a27cc931",
+      "completedAtMs": 1783067819829
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "reasoning",
+        "id": "rs_080dea4f15946ee8016a4774ad53b4819192a66bfb54d000b0",
+        "summary": [],
+        "content": []
+      },
+      "threadId": "019f271f-b09a-78a1-a915-6e4fb2976913",
+      "turnId": "019f271f-b0b6-7282-aff9-60e7a27cc931",
+      "startedAtMs": 1783067821363
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "reasoning",
+        "id": "rs_080dea4f15946ee8016a4774ad53b4819192a66bfb54d000b0",
+        "summary": [],
+        "content": []
+      },
+      "threadId": "019f271f-b09a-78a1-a915-6e4fb2976913",
+      "turnId": "019f271f-b0b6-7282-aff9-60e7a27cc931",
+      "completedAtMs": 1783067823415
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "commandExecution",
+        "id": "call_62cSJrJi1fwtmgE0dz7SbJvb",
+        "command": "/bin/bash -lc 'tail -n 1 ./resume.log'",
+        "cwd": "/tmp/cxtr-l9ontx_x/codex-real-conv/workdir",
+        "processId": "39224",
+        "source": "unifiedExecStartup",
+        "status": "inProgress",
+        "commandActions": [
+          {
+            "type": "read",
+            "command": "tail -n 1 ./resume.log",
+            "name": "resume.log",
+            "path": "/tmp/cxtr-l9ontx_x/codex-real-conv/workdir/resume.log"
+          }
+        ],
+        "aggregatedOutput": null,
+        "exitCode": null,
+        "durationMs": null
+      },
+      "threadId": "019f271f-b09a-78a1-a915-6e4fb2976913",
+      "turnId": "019f271f-b0b6-7282-aff9-60e7a27cc931",
+      "startedAtMs": 1783067825340
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "commandExecution",
+        "id": "call_62cSJrJi1fwtmgE0dz7SbJvb",
+        "command": "/bin/bash -lc 'tail -n 1 ./resume.log'",
+        "cwd": "/tmp/cxtr-l9ontx_x/codex-real-conv/workdir",
+        "processId": "39224",
+        "source": "unifiedExecStartup",
+        "status": "completed",
+        "commandActions": [
+          {
+            "type": "read",
+            "command": "tail -n 1 ./resume.log",
+            "name": "resume.log",
+            "path": "/tmp/cxtr-l9ontx_x/codex-real-conv/workdir/resume.log"
+          }
+        ],
+        "aggregatedOutput": "2026-07-03T08:36:54Z\n",
+        "exitCode": 0,
+        "durationMs": 0
+      },
+      "threadId": "019f271f-b09a-78a1-a915-6e4fb2976913",
+      "turnId": "019f271f-b0b6-7282-aff9-60e7a27cc931",
+      "completedAtMs": 1783067825340
+    }
+  },
+  {
+    "method": "thread/tokenUsage/updated",
+    "params": {
+      "threadId": "019f271f-b09a-78a1-a915-6e4fb2976913",
+      "turnId": "019f271f-b0b6-7282-aff9-60e7a27cc931",
+      "tokenUsage": {
+        "total": {
+          "totalTokens": 12318,
+          "inputTokens": 12209,
+          "cachedInputTokens": 9088,
+          "outputTokens": 109,
+          "reasoningOutputTokens": 40
+        },
+        "last": {
+          "totalTokens": 12318,
+          "inputTokens": 12209,
+          "cachedInputTokens": 9088,
+          "outputTokens": 109,
+          "reasoningOutputTokens": 40
+        },
+        "modelContextWindow": 258400
+      }
+    }
+  },
+  {
+    "method": "account/rateLimits/updated",
+    "params": {
+      "rateLimits": {
+        "limitId": "codex",
+        "limitName": null,
+        "primary": {
+          "usedPercent": 13,
+          "windowDurationMins": 43200,
+          "resetsAt": 1784650945
+        },
+        "secondary": null,
+        "credits": null,
+        "individualLimit": null,
+        "planType": "free",
+        "rateLimitReachedType": null
+      }
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "agentMessage",
+        "id": "msg_080dea4f15946ee8016a4774b2f00081919c26e4d7bf6f4c90",
+        "text": "",
+        "phase": "final_answer",
+        "memoryCitation": null
+      },
+      "threadId": "019f271f-b09a-78a1-a915-6e4fb2976913",
+      "turnId": "019f271f-b0b6-7282-aff9-60e7a27cc931",
+      "startedAtMs": 1783067826963
+    }
+  },
+  {
+    "method": "item/agentMessage/delta",
+    "params": {
+      "threadId": "019f271f-b09a-78a1-a915-6e4fb2976913",
+      "turnId": "019f271f-b0b6-7282-aff9-60e7a27cc931",
+      "itemId": "msg_080dea4f15946ee8016a4774b2f00081919c26e4d7bf6f4c90",
+      "delta": "P"
+    }
+  },
+  {
+    "method": "item/agentMessage/delta",
+    "params": {
+      "threadId": "019f271f-b09a-78a1-a915-6e4fb2976913",
+      "turnId": "019f271f-b0b6-7282-aff9-60e7a27cc931",
+      "itemId": "msg_080dea4f15946ee8016a4774b2f00081919c26e4d7bf6f4c90",
+      "delta": "ONG"
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "item": {
+        "type": "agentMessage",
+        "id": "msg_080dea4f15946ee8016a4774b2f00081919c26e4d7bf6f4c90",
+        "text": "PONG",
+        "phase": "final_answer",
+        "memoryCitation": null
+      },
+      "threadId": "019f271f-b09a-78a1-a915-6e4fb2976913",
+      "turnId": "019f271f-b0b6-7282-aff9-60e7a27cc931",
+      "completedAtMs": 1783067827178
+    }
+  },
+  {
+    "method": "thread/tokenUsage/updated",
+    "params": {
+      "threadId": "019f271f-b09a-78a1-a915-6e4fb2976913",
+      "turnId": "019f271f-b0b6-7282-aff9-60e7a27cc931",
+      "tokenUsage": {
+        "total": {
+          "totalTokens": 24696,
+          "inputTokens": 24581,
+          "cachedInputTokens": 21248,
+          "outputTokens": 115,
+          "reasoningOutputTokens": 40
+        },
+        "last": {
+          "totalTokens": 12378,
+          "inputTokens": 12372,
+          "cachedInputTokens": 12160,
+          "outputTokens": 6,
+          "reasoningOutputTokens": 0
+        },
+        "modelContextWindow": 258400
+      }
+    }
+  },
+  {
+    "method": "account/rateLimits/updated",
+    "params": {
+      "rateLimits": {
+        "limitId": "codex",
+        "limitName": null,
+        "primary": {
+          "usedPercent": 13,
+          "windowDurationMins": 43200,
+          "resetsAt": 1784650945
+        },
+        "secondary": null,
+        "credits": null,
+        "individualLimit": null,
+        "planType": "free",
+        "rateLimitReachedType": null
+      }
+    }
+  },
+  {
+    "method": "thread/status/changed",
+    "params": {
+      "threadId": "019f271f-b09a-78a1-a915-6e4fb2976913",
+      "status": {
+        "type": "idle"
+      }
+    }
+  },
+  {
+    "method": "turn/completed",
+    "params": {
+      "threadId": "019f271f-b09a-78a1-a915-6e4fb2976913",
+      "turn": {
+        "id": "019f271f-b0b6-7282-aff9-60e7a27cc931",
+        "items": [],
+        "itemsView": "notLoaded",
+        "status": "completed",
+        "error": null,
+        "startedAt": 1783067816,
+        "completedAt": 1783067827,
+        "durationMs": 11071
+      }
+    }
+  },
+  {
+    "type": "x-optio-closed",
+    "reason": "process ended"
+  }
+]

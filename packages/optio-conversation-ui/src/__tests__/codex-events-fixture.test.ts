@@ -36,10 +36,22 @@ describe.skipIf(!present)('codex reducer — recorded real wire (Layer 3)', () =
     expect((assistants[0] as any).text.length).toBeGreaterThan(0);
   });
 
-  it('reasoning renders as its own activity rows, not the answer bubble', () => {
+  it('reasoning renders as its own activity row IFF the turn produced a summary', () => {
     const st = play(events);
-    // At least one reasoning/activity row, distinct from the answer.
-    expect(st.items.some((i) => i.kind === 'activity')).toBe(true);
+    // A trivial turn (e.g. "reply PONG") emits a reasoning item with
+    // summary:[]/content:[] and NO summaryTextDelta — real, observed on the
+    // captured wire. The reducer correctly emits no activity row then; only a
+    // turn that actually carried reasoning summary text should render one.
+    // Assert against what THIS capture contains rather than over-asserting.
+    const hasReasoningText = events.some(
+      (e: any) =>
+        e.method === 'item/reasoning/summaryTextDelta' ||
+        e.method === 'item/reasoning/textDelta' ||
+        (e.params?.item?.type === 'reasoning' &&
+          ((e.params.item.summary?.length ?? 0) > 0 ||
+            (e.params.item.content?.length ?? 0) > 0)),
+    );
+    expect(st.items.some((i) => i.kind === 'activity')).toBe(hasReasoningText);
   });
 
   it('busy is cleared at turn end', () => {

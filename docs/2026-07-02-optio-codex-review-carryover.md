@@ -163,15 +163,36 @@ direct-OIDC verify, real-binary E2E breadth). Residual, not forked:
     grok + codex together if the iframe grace ever proves insufficient.
     Evidence: `host_actions.py:906-940` (both wrappers).
 
-14. **Real-binary row-30 tests are wired + env-gated but not yet executed
-    against a real authed codex** (conversation / seed-replant / resume /
-    remote-SSH). They collect-and-skip cleanly (no billable turn in the default
-    suite); the Layer-3 replay fixture is deliberately left absent (not
-    fabricated) until a real capture materializes it. The iframe surface IS
-    proven (`test_real_codex_session.py`, ran green 14.7s). The four new
-    surfaces are tracked-open in the Plan-F coverage ledger above, per the
-    guide's "honest gap, not faked-green" rule. Running them needs an authed
-    `~/.codex` + `OPTIO_CODEX_CONVERSATION_TEST=1` / `OPTIO_CODEX_SEED_RESUME_TEST=1`.
+14. **Real-binary row-30 tests: RUN and green against a real authed codex
+    0.142.5 (2026-07-03).** iframe (`test_real_codex_session`, 17.7s),
+    conversation (`test_real_codex_conversation`, 12.6s — materialized the
+    Layer-3 fixture), seed-replant + resume (`test_real_codex_seed_resume`,
+    45.4s), and native-sandbox enforcement (`test_sandbox_enforce`, 3 passed)
+    all pass. The Layer-3 replay (`codex-events-fixture.test.ts`) now runs in
+    the DEFAULT UI suite against the committed real-wire capture. Remaining
+    tracked-open: **remote-SSH** (skips without `OPTIO_CODEX_DEMO_SSH_HOST` — no
+    remote configured here). Running the local set needs an authed `~/.codex`
+    + `OPTIO_CODEX_{REAL_SESSION,CONVERSATION,SEED_RESUME,SANDBOX_ENFORCE}_TEST=1`.
+
+    Running these caught two latent TEST bugs (product was clean): the iframe +
+    seed/resume real tests omitted `auto_start=True` (they predate / missed the
+    Gap-2 default flip to False, and skip in the default suite so CI never
+    caught it — the demo task sets it correctly); and the seed/resume test's
+    home-rolled ctx wrapped the SYNC `report_progress` as `async`, so progress
+    was never captured. Both fixed.
+
+15. **Layer-3 capture is reasoning-light.** The committed `codex-events.json`
+    (a "reply PONG" turn) carries a reasoning item with `summary:[]`/`content:[]`
+    and no `summaryTextDelta` — so the reducer correctly emits NO activity row,
+    and the Layer-3 assertion is capture-aware (guards the reasoning→activity
+    property only when the wire carries summary text). OPEN QUESTION (not yet
+    observable): whether real codex delivers reasoning summary text via
+    `item/reasoning/summaryTextDelta` (the delta form the reducer handles + the
+    fake covers) or via a populated `item/completed` reasoning item (which the
+    reducer does NOT currently map to an activity row). A reasoning-heavy
+    capture (harder prompt / `model_reasoning_summary` enabled) would settle it;
+    until then the reducer's completed-reasoning-item path is unverified — no
+    speculative reducer code added without an observed failure.
 
 ## Recorded plan-verbatim deviations (executor drift-guard working as designed)
 
