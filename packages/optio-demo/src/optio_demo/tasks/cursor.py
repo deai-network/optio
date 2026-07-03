@@ -233,6 +233,9 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     seed_id=seed_id,
                     supports_resume=True,
                     # Kick the agent off unattended (reads AGENTS.md + executes).
+                    # auto_start now defaults to False — this iframe run task must
+                    # opt in explicitly; the conversation/seed-setup tasks below
+                    # correctly inherit False so they wait for the operator.
                     auto_start=True,
                 ),
             )

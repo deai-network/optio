@@ -146,8 +146,12 @@ class CursorTaskConfig:
 
     # When True, a fresh launch passes a trailing positional prompt
     # ("Read AGENTS.md and execute the task it describes") so cursor-agent
-    # starts the task unattended.
-    auto_start: bool = True
+    # starts the task unattended. Defaults False (parity with
+    # claudecode/grok/codex): an interactive/conversation task that does not
+    # set this must NOT auto-fire a kickoff — it would start an agentic loop
+    # that blocks the operator's first real chat message. Task-execution
+    # surfaces opt in explicitly.
+    auto_start: bool = False
 
     before_execute: HookCallback | None = None
     after_execute: HookCallback | None = None
