@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import shlex
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -231,6 +232,69 @@ async def launch_kimi_web(
         await host.terminate_subprocess(handle, aggressive=True)
         raise
     return handle, server_port, token
+
+
+# --- resume-awareness PULL helpers (ported from opencode session.py) --------
+
+
+async def rotate_optio_log(host: "Host") -> None:
+    """Append the restored ``optio.log`` to ``optio.log.old``, then truncate it.
+
+    Called on resume AFTER the snapshot restore repopulates the workdir (which
+    carries the previous run's ``optio.log``) and BEFORE the protocol driver
+    subscribes its ``tail -F -n +1``. Without this, the tail would re-emit every
+    stale ``DELIVERABLE`` / ``DONE`` / ``ERROR`` line and the resumed session
+    would terminate within seconds of launch. Historical content is preserved by
+    appending it to ``optio.log.old`` rather than discarding it.
+
+    Ported verbatim from ``optio_opencode.session._rotate_optio_log``.
+    """
+    workdir = host.workdir.rstrip("/")
+    log_abs = f"{workdir}/optio.log"
+    old_abs = f"{workdir}/optio.log.old"
+    try:
+        current = (await host.fetch_bytes_from_host(log_abs)).decode("utf-8")
+    except FileNotFoundError:
+        current = ""
+    if not current:
+        # Nothing to rotate. Still ensure optio.log exists empty so the tail
+        # process has something to follow.
+        await host.write_text("optio.log", "")
+        return
+    try:
+        existing_old = (await host.fetch_bytes_from_host(old_abs)).decode("utf-8")
+    except FileNotFoundError:
+        existing_old = ""
+    await host.write_text("optio.log.old", existing_old + current)
+    await host.write_text("optio.log", "")
+
+
+async def append_resume_log_entry(
+    host: "Host", *, refreshed: "list[str] | None" = None,
+) -> None:
+    """Append one line to ``<workdir>/resume.log``.
+
+    Line format: ``<ISO 8601 UTC timestamp>[ REFRESHED:<comma-separated names>]``.
+    The optional ``REFRESHED:`` suffix signals that the harness rewrote the
+    listed files on this session start; agents re-read tagged files (per the
+    resume section of ``AGENTS.md``). Creates the file if missing (shell ``>>``).
+    Caller gates this on ``config.supports_resume``.
+
+    Ported verbatim from ``optio_opencode.session._append_resume_log_entry``.
+    """
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    line = ts
+    if refreshed:
+        line = f"{ts} REFRESHED:{','.join(refreshed)}"
+    target = f"{host.workdir}/resume.log"
+    result = await host.run_command(
+        f"echo {shlex.quote(line)} >> {shlex.quote(target)}"
+    )
+    if result.exit_code != 0:
+        raise RuntimeError(
+            f"failed to append to resume.log: exit {result.exit_code}: "
+            f"{result.stderr!r}"
+        )
 
 
 async def ensure_kimicode_installed(

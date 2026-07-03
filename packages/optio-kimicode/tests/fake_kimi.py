@@ -10,14 +10,38 @@ Two roles, both driven by the invocation form:
   task, and blocks serving until SIGTERM. Readiness = the server port is up
   (the banner is printed only after the socket is listening).
 
+  The HTTP server also answers the subset of kimi's REST surface the wrapper
+  drives (all under the real ``/api/v1`` prefix, matching
+  ``apps/kimi-web/src/api/config.ts``'s ``buildRestUrl``):
+
+  - ``POST /api/v1/sessions`` — create a session. Mirrors kimi's
+    ``createSessionRequestSchema`` (``{metadata:{cwd}}``) and envelope reply
+    (``{code,msg,data:{id,...},request_id}``). Side effect: writes a minimal
+    session store under ``$KIMI_CODE_HOME/sessions/`` so the wrapper's snapshot
+    capture (session-present guard) has a real subtree to tar — exactly what
+    real kimi does when a session is created.
+  - ``GET /api/v1/sessions/{id}`` — fetch a session (envelope reply).
+  - ``POST /api/v1/sessions/{id}/prompts`` — submit a prompt (kimi's
+    ``promptSubmissionSchema``: ``{content:[{type:'text',text}]}``). Each
+    submission is recorded to the external journal (``FAKE_KIMI_PROMPTS_LOG``)
+    so tests can assert which prompts (auto-start kickoff, resume notice) the
+    wrapper pushed.
+
+  On startup the server journals a ``startup`` record carrying the count of
+  files already present under ``$KIMI_CODE_HOME/sessions`` — a resumed launch
+  sees a non-zero count (the restored session store), a fresh launch sees zero.
+
 Adapted from optio-grok's ``fake_grok.py``. The key delta: kimi serves its own
 web SPA, so this fake IS the web server (grok needed ttyd in front of a tmux
-TUI). The ACP conversation mode, headless probe, seed, and resume roles are
-later stages and are not implemented here yet.
+TUI). The ACP conversation mode, headless probe, and seed roles are later
+stages and are not implemented here yet.
 """
 
+import json
 import os
+import re
 import signal
+import socket
 import sys
 import threading
 import time
@@ -32,12 +56,88 @@ SCENARIOS = ("happy", "deliverable", "error")
 # iframe URL so the SPA authenticates to the loopback server.
 _DEFAULT_TOKEN = "fake-kimi-token"
 
+# Monotonic session-id source + a lock guarding both it and the journal (the
+# HTTP server is threaded, so handlers run concurrently).
+_LOCK = threading.Lock()
+_SESSION_SEQ = {"n": 0}
+
+_SESSION_ROUTE_RE = re.compile(r"^/api/v1/sessions/([^/]+)$")
+_PROMPTS_ROUTE_RE = re.compile(r"^/api/v1/sessions/([^/]+)/prompts$")
+
 
 def _log(line: str) -> None:
     log = Path.cwd() / "optio.log"
     with log.open("a", encoding="utf-8") as fh:
         fh.write(line.rstrip("\n") + "\n")
         fh.flush()
+
+
+def _kimi_home() -> str:
+    return os.environ.get("KIMI_CODE_HOME") or os.path.join(os.getcwd(), "home")
+
+
+def _sessions_dir() -> str:
+    return os.path.join(_kimi_home(), "sessions")
+
+
+def _journal(kind: str, **payload: object) -> None:
+    """Append one JSON record to the external prompts/events journal.
+
+    The path comes from ``FAKE_KIMI_PROMPTS_LOG`` — deliberately OUTSIDE the
+    workdir so it survives teardown (which wipes the taskdir). No-op when the
+    env var is unset (production / non-asserting tests)."""
+    path = os.environ.get("FAKE_KIMI_PROMPTS_LOG")
+    if not path:
+        return
+    record = {"kind": kind, **payload}
+    with _LOCK:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
+            fh.flush()
+
+
+def _count_session_files() -> int:
+    total = 0
+    for _root, _dirs, files in os.walk(_sessions_dir()):
+        total += len(files)
+    return total
+
+
+def _write_session_store(session_id: str, cwd: str | None) -> None:
+    """Materialise a minimal on-disk session store for ``session_id``.
+
+    Mirrors real kimi writing ``$KIMI_CODE_HOME/sessions/<workDirKey>/<id>/``
+    (``state.json`` + ``agents/main/wire.jsonl``) when a session is created, so
+    the wrapper's snapshot capture has a real subtree, and its resume-side
+    session-id recovery (``find … state.json``) can find the id."""
+    session_dir = os.path.join(_sessions_dir(), "wd_fake", session_id)
+    agents_dir = os.path.join(session_dir, "agents", "main")
+    os.makedirs(agents_dir, exist_ok=True)
+    with open(os.path.join(session_dir, "state.json"), "w", encoding="utf-8") as fh:
+        json.dump({"id": session_id, "cwd": cwd}, fh)
+    # Append-only wire log (empty is fine for the fake).
+    open(os.path.join(agents_dir, "wire.jsonl"), "a", encoding="utf-8").close()
+    # Keep session_index.jsonl consistent (real kimi's --continue/list read it).
+    index_path = os.path.join(_sessions_dir(), "session_index.jsonl")
+    with open(index_path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({
+            "sessionId": session_id, "sessionDir": session_dir, "workDir": cwd,
+        }) + "\n")
+
+
+def _new_session(cwd: str | None) -> str:
+    with _LOCK:
+        _SESSION_SEQ["n"] += 1
+        session_id = f"sess_{_SESSION_SEQ['n']:04d}"
+    _write_session_store(session_id, cwd)
+    _journal("create", id=session_id, cwd=cwd)
+    return session_id
+
+
+def _envelope(data: object) -> bytes:
+    return json.dumps({
+        "code": 0, "msg": "success", "data": data, "request_id": "fake-req",
+    }).encode("utf-8")
 
 
 def _scenario_happy() -> None:
@@ -74,16 +174,91 @@ _SCENARIOS = {
 
 
 class _StubHandler(BaseHTTPRequestHandler):
-    """Serves a tiny stub SPA page for any GET, so the iframe/tunnel has a real
-    page to load. Real kimi serves the ``apps/kimi-web`` bundle here."""
+    """Serves the stub SPA page for non-API GETs and the wrapper-driven subset
+    of kimi's ``/api/v1`` REST surface for session create / get / prompt.
+
+    ``protocol_version = 'HTTP/1.1'`` with an explicit ``Connection: close`` and
+    a write-side ``shutdown`` per response: over the asyncssh local forward the
+    wrapper drives (RemoteHost), a plain close with any unread bytes triggers a
+    TCP RST that the client sees as ``RemoteDisconnected``; a Content-Length'd
+    reply plus an orderly half-close makes the forward see a clean FIN instead
+    (the same robustness optio-opencode's raw-socket fake hand-rolls)."""
+
+    protocol_version = "HTTP/1.1"
+
+    def _send(self, status: int, body: bytes, ctype: str) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        try:
+            self.wfile.write(body)
+            self.wfile.flush()
+            self.connection.shutdown(socket.SHUT_WR)
+        except OSError:
+            pass
+
+    def _read_body(self) -> dict:
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        raw = self.rfile.read(length) if length else b""
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except ValueError:
+            return {}
 
     def do_GET(self) -> None:  # noqa: N802 (stdlib naming)
+        path = self.path.split("?", 1)[0]
+        m = _SESSION_ROUTE_RE.match(path)
+        if m:
+            # GET /api/v1/sessions/{id} — envelope with a minimal session.
+            self._send(200, _envelope({"id": m.group(1), "title": ""}),
+                       "application/json")
+            return
+        if path.startswith("/api/"):
+            self._send(200, _envelope(None), "application/json")
+            return
+        # SPA page — covers '/', the '/sessions/<id>' deep link, and any other
+        # extension-less path (the daemon SPA-falls-back to index.html).
         body = b"<!doctype html><title>Kimi (fake)</title><h1>fake kimi web</h1>"
-        self.send_response(200)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        self._send(200, body, "text/html; charset=utf-8")
+
+    def do_POST(self) -> None:  # noqa: N802 (stdlib naming)
+        path = self.path.split("?", 1)[0]
+        body = self._read_body()
+
+        if path == "/api/v1/sessions":
+            metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+            cwd = metadata.get("cwd") if isinstance(metadata, dict) else None
+            session_id = _new_session(cwd if isinstance(cwd, str) else None)
+            self._send(200, _envelope({
+                "id": session_id, "title": "", "metadata": {"cwd": cwd},
+            }), "application/json")
+            return
+
+        m = _PROMPTS_ROUTE_RE.match(path)
+        if m:
+            session_id = m.group(1)
+            text = ""
+            content = body.get("content")
+            if isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        text = str(part.get("text", ""))
+                        break
+            _journal("prompt", sid=session_id, text=text)
+            self._send(200, _envelope({
+                "prompt_id": "p_fake", "user_message_id": "m_fake",
+                "status": "running", "content": content or [],
+                "created_at": "2026-07-03T00:00:00Z",
+            }), "application/json")
+            return
+
+        # Any other POST: a generic envelope so proxied calls don't break.
+        self._send(200, _envelope(None), "application/json")
 
     def log_message(self, *args) -> None:  # silence request logging
         return
@@ -112,6 +287,10 @@ def _run_server(argv: list[str]) -> int:
     httpd = ThreadingHTTPServer((host, port), _StubHandler)
     actual_port = httpd.server_address[1]
     token = os.environ.get("FAKE_KIMI_TOKEN", _DEFAULT_TOKEN)
+
+    # Journal the session-store state visible at launch: a resumed launch sees
+    # the restored subtree (>0 files), a fresh launch sees none.
+    _journal("startup", session_files=_count_session_files())
 
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()

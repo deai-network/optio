@@ -4,4 +4,11 @@ FROM linuxserver/openssh-server:latest
 # SPA), so the "remote" only needs bash (the kimi-shim's shebang + asyncssh's
 # login-shell command wrapping) and python3 (the fake-kimi shim). Unlike grok
 # there is NO tmux — the server is the launched process itself.
-RUN apk add --no-cache python3 bash
+RUN apk add --no-cache python3 bash \
+    # The wrapper drives kimi's REST API (session pre-create, prompt push) over
+    # an asyncssh local port-forward to the remote kimi server. The base image
+    # ships `AllowTcpForwarding no`, which refuses the direct-tcpip channel — the
+    # forward opens but no bytes reach the server, surfacing as a client-side
+    # `RemoteDisconnected`. The init copies /etc/ssh/sshd_config to the runtime
+    # config, so enabling it here makes the tunnel actually relay.
+    && sed -i 's/^AllowTcpForwarding no/AllowTcpForwarding yes/' /etc/ssh/sshd_config

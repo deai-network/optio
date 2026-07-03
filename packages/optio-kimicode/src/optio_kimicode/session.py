@@ -1,39 +1,57 @@
-"""State machine for one optio-kimicode session (Stage 0: iframe/kimi web, local).
+"""State machine for one optio-kimicode session (iframe/kimi web, local + SSH).
 
 Orchestrates a Host (local or remote) through resolve kimi → plant AGENTS.md →
 launch ``kimi server run --foreground`` (the ``kimi web`` surface) → establish a
-tunnel → inject the bearer token via the ``#token=`` URL fragment → optio.log
-protocol session → teardown.
+tunnel → inject the bearer token via the ``#token=`` URL fragment → pre-create a
+kimi session and point the iframe at it → optio.log protocol session → teardown.
 
-Adapted from optio-grok's iframe path. The defining delta: kimi serves its OWN
-web SPA, so there is no ttyd/tmux tree — the launch is a single long-lived
-server subprocess and teardown is a direct terminate. Stage 0 drops the
-resume/snapshot, seed, conversation, credential-planting, and fs-isolation
-branches; those arrive in later stages (plan groups 2-5).
+The iframe surface is driven the **opencode** way (not grok's): kimi web is a
+pure web server with no ``--continue`` / no positional prompt, so the wrapper
+pre-creates a session over REST (``POST /api/v1/sessions``), points the iframe at
+``/sessions/<id>``, and injects agent input (the auto-start kickoff, the resume
+notice, and ``_agent_sender`` feedback) via ``POST /api/v1/sessions/<id>/prompts``.
+
+Resume is the two halves of resume-awareness: the PULL half restores the kimi
+session store from a snapshot, appends ``resume.log``, and rotates a stale
+``optio.log`` out of the way; the PUSH half POSTs ``System: you have been
+resumed`` to the recovered session so the agent notices promptly. Seed,
+credential-planting, conversation mode, and fs-isolation arrive in later stages.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import shlex
 
 from optio_core.context import ProcessContext
 from optio_core.models import TaskInstance
 
 from optio_agents import HookContext, get_protocol
+from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
 from optio_host.paths import task_dir
 
 from optio_kimicode import host_actions
 from optio_kimicode.prompt import compose_agents_md
+from optio_kimicode.snapshots import (
+    capture_snapshot,
+    load_latest_snapshot,
+    restore_snapshot,
+)
 from optio_kimicode.types import KimiCodeTaskConfig
 
 
 _LOG = logging.getLogger(__name__)
 
 READY_TIMEOUT_S = 30.0
+
+# Fresh-launch kickoff prompt POSTed to the pre-created kimi session so the agent
+# starts the task unattended. Suppressed on resume (opencode parity).
+AUTO_START_PROMPT = "Read AGENTS.md and execute the task it describes"
 
 
 def _build_host(config: KimiCodeTaskConfig, process_id: str) -> Host:
@@ -59,38 +77,67 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
     cancelled = False
     kimi_path: str | None = None
 
+    # Set by _prepare (after the workdir wipe, before the optio.log tail); read
+    # by the body, _agent_sender, and the teardown finally.
+    resuming = False
+    preserved_session_id: str | None = None
+
+    # Set by the body at launch; read by _agent_sender.
+    worker_port: int | None = None
+    token: str | None = None
+    session_id: str | None = None
+
     await host.connect()
 
     async def _prepare(host: Host, hook_ctx: HookContext) -> None:
-        """Resolve kimi and plant AGENTS.md.
+        """Resolve kimi, restore a resume snapshot, plant AGENTS.md.
 
         Handed to run_log_protocol_session, which runs it AFTER
-        host.setup_workdir() has wiped the workdir and BEFORE it subscribes the
-        optio.log tail.
+        host.setup_workdir() wiped the workdir and BEFORE it subscribes the
+        optio.log tail — so the resume restore + optio.log rotation land before
+        the tail can re-emit a stale DONE.
         """
-        nonlocal kimi_path
-        # Stage-0 resolution (host-based). The two-tier install cache
-        # (host_actions.ensure_kimicode_installed) supersedes this in group 4.
+        nonlocal kimi_path, resuming, preserved_session_id
         kimi_path = await host_actions.resolve_kimi(
             host,
             install_dir=config.kimi_install_dir,
             install_if_missing=config.install_if_missing,
         )
-        await host.write_text(
-            "AGENTS.md",
-            compose_agents_md(
-                config.consumer_instructions,
-                host_protocol=config.host_protocol,
-                workdir_exclude=config.workdir_exclude,
-                supports_resume=config.supports_resume,
-                file_download=config.file_download,
-            ),
-        )
+
+        snapshot = None
+        if getattr(ctx, "resume", False) and config.supports_resume:
+            snapshot = await load_latest_snapshot(ctx._db, ctx._prefix, ctx.process_id)
+        resuming = snapshot is not None
+
+        if resuming:
+            # PULL half: restore the kimi session store (home/sessions) under
+            # the identical workdir path (workDirKey pins on the abs path), then
+            # rotate the restored optio.log so its stale DONE is not replayed.
+            await restore_snapshot(ctx, host, snapshot)
+            await host_actions.rotate_optio_log(host)
+            preserved_session_id = await _recover_session_id(host)
+        else:
+            # Fresh: plant the AGENTS.md the agent consumes. (On resume the
+            # snapshot-restored AGENTS.md is kept.)
+            await host.write_text(
+                "AGENTS.md",
+                compose_agents_md(
+                    config.consumer_instructions,
+                    host_protocol=config.host_protocol,
+                    workdir_exclude=config.workdir_exclude,
+                    supports_resume=config.supports_resume,
+                    file_download=config.file_download,
+                ),
+            )
+
+        if config.supports_resume:
+            await host_actions.append_resume_log_entry(host)
+
         if config.before_execute is not None:
             await config.before_execute(hook_ctx)
 
     async def _iframe_body(host: Host, hook_ctx: HookContext) -> None:
-        nonlocal launched_handle
+        nonlocal launched_handle, worker_port, token, session_id
 
         # Network binding (same env handling as grok/claudecode for
         # multi-container deploys).
@@ -115,14 +162,38 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
 
         worker_port = await host.establish_tunnel(server_port, bind_addr=bind_addr)
         await ctx.set_widget_upstream(f"http://{upstream_host}:{worker_port}")
-        # The bearer token rides in the iframe URL's `#token=` fragment — a
-        # client-side fragment the SPA reads from location.hash and never sends
-        # to the server (so it never appears in access logs / the proxy).
+
+        # Pre-create (or, on resume, reuse) a single kimi session for this task.
+        # All dashboards embedding the widget navigate to the same session id via
+        # the iframe URL, so concurrent viewers share live state rather than each
+        # opening a fresh session (one background process, N observers).
+        if preserved_session_id is not None:
+            session_id = preserved_session_id
+        else:
+            session_id = await _create_kimi_session(worker_port, token, host.workdir)
+
+        # Point the iframe directly at the session. kimi-web recognises exactly
+        # one deep-link path shape — ``/sessions/<id>`` (apps/kimi-web/src/lib/
+        # sessionRoute.ts) — and reads the bearer from the ``#token=`` fragment
+        # (apps/kimi-web/src/api/daemon/serverAuth.ts), a client-side fragment
+        # the SPA scrubs from the URL and never sends to the server.
         fragment = f"#token={token}" if token else ""
         await ctx.set_widget_data({
-            "iframeSrc": "{widgetProxyUrl}/" + fragment,
+            "iframeSrc": f"{{widgetProxyUrl}}/sessions/{session_id}{fragment}",
         })
         ctx.report_progress(None, "Kimi Code is live")
+
+        # auto_start: on a fresh launch, POST the kickoff prompt so kimi starts
+        # the task unattended. On resume, PUSH the resume notice instead so the
+        # rehydrated agent notices promptly (resume.log stays the pull-based
+        # source of truth). Mirrors opencode session.py lines ~418-432.
+        if config.auto_start and not resuming:
+            await _post_kimi_prompt(worker_port, token, session_id, AUTO_START_PROMPT)
+        elif resuming and config.supports_resume:
+            await _post_kimi_prompt(
+                worker_port, token, session_id,
+                f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}",
+            )
 
         # Await the kimi server. The protocol driver cancels this body when it
         # sees DONE/ERROR in optio.log; if the server exits on its own,
@@ -144,13 +215,10 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                     pass
 
     async def _agent_sender(message: str) -> None:
-        # kimi's web SPA has no programmatic keystroke channel (unlike grok's
-        # tmux TUI): operator feedback in iframe mode is typed into the SPA
-        # directly. Conversation-mode sending arrives with that branch (group 5).
-        raise NotImplementedError(
-            "iframe mode has no agent_sender: kimi web accepts operator input "
-            "through the SPA, not a host-side injection channel."
-        )
+        # worker_port / token / session_id are set by _iframe_body at launch.
+        # _post_kimi_prompt raises on a non-2xx / unreachable worker, which
+        # send_to_agent converts to False.
+        await _post_kimi_prompt(worker_port, token, session_id, message)
 
     try:
         await run_log_protocol_session(
@@ -181,6 +249,20 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             except Exception:
                 _LOG.exception("terminate kimi server subprocess failed")
 
+        # Capture a resume snapshot of the now-static workdir + session store.
+        # Gated on supports_resume + a launched handle (a session actually ran).
+        if config.supports_resume and launched_handle is not None:
+            try:
+                await capture_snapshot(
+                    ctx, host,
+                    end_state="cancelled" if cancelled else "done",
+                    workdir_exclude=config.workdir_exclude,
+                )
+            except Exception:
+                _LOG.exception(
+                    "snapshot capture failed; proceeding with workdir wipe",
+                )
+
         try:
             await host.cleanup_taskdir(aggressive=cancelled)
         except Exception:
@@ -189,6 +271,134 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             await host.disconnect()
         except Exception:
             _LOG.exception("host.disconnect failed")
+
+
+# --- kimi REST helpers (session pre-create / prompt push) ------------------
+#
+# All under kimi's real ``/api/v1`` prefix (apps/kimi-web/src/api/config.ts
+# buildRestUrl). Auth is ``Authorization: Bearer <token>`` (the banner token;
+# packages/server/src/middleware/auth.ts). The blocking urllib calls run in an
+# executor and retry transient connect/read errors because the first request
+# over a freshly-opened SSH local forward occasionally drops while asyncssh
+# wires up the channel (opencode's rationale).
+
+
+def _bearer_headers(token: str | None) -> dict:
+    headers = {"content-type": "application/json"}
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _create_kimi_session_sync(port: int, token: str | None, directory: str) -> str:
+    """POST kimi's ``/api/v1/sessions`` and return the new session id.
+
+    Body mirrors ``createSessionRequestSchema`` (``sessionCreateSchema``):
+    ``{metadata:{cwd}}`` (either ``workspace_id`` or ``metadata.cwd`` is
+    required; the server registers the cwd). The reply is the standard envelope
+    ``{code,msg,data:Session,request_id}`` — the session id is ``data.id``."""
+    import time
+    import urllib.request
+    from urllib.error import URLError
+
+    url = f"http://127.0.0.1:{port}/api/v1/sessions"
+    payload = json.dumps({"metadata": {"cwd": directory}}).encode("utf-8")
+    headers = _bearer_headers(token)
+
+    last_exc: Exception | None = None
+    body = None
+    for attempt in range(4):
+        if attempt > 0:
+            time.sleep(0.15 * attempt)
+        req = urllib.request.Request(url, method="POST", data=payload, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                body = resp.read().decode("utf-8")
+            break
+        except (URLError, ConnectionError, OSError) as exc:
+            last_exc = exc
+            continue
+    else:
+        raise RuntimeError(f"kimi POST /sessions failed after retries: {last_exc!r}")
+
+    envelope = json.loads(body)
+    data = envelope.get("data") if isinstance(envelope, dict) else None
+    session_id = data.get("id") if isinstance(data, dict) else None
+    if not isinstance(session_id, str) or not session_id:
+        raise RuntimeError(
+            f"kimi POST /sessions envelope has no string data.id: {body!r}"
+        )
+    return session_id
+
+
+async def _create_kimi_session(port: int, token: str | None, directory: str) -> str:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None, _create_kimi_session_sync, port, token, directory,
+    )
+
+
+def _post_kimi_prompt_sync(
+    port: int, token: str | None, session_id: str, message: str,
+) -> None:
+    """POST a text prompt to kimi's ``/api/v1/sessions/<id>/prompts``.
+
+    Body mirrors ``promptSubmissionSchema``: a non-empty ``content`` array of
+    message-content parts — here a single ``{type:'text',text}`` part."""
+    import time
+    import urllib.request
+    from urllib.error import URLError
+
+    url = f"http://127.0.0.1:{port}/api/v1/sessions/{session_id}/prompts"
+    payload = json.dumps(
+        {"content": [{"type": "text", "text": message}]}
+    ).encode("utf-8")
+    headers = _bearer_headers(token)
+
+    last_exc: Exception | None = None
+    for attempt in range(4):
+        if attempt > 0:
+            time.sleep(0.15 * attempt)
+        req = urllib.request.Request(url, method="POST", data=payload, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                resp.read()
+            return
+        except (URLError, ConnectionError, OSError) as exc:
+            last_exc = exc
+            continue
+    raise RuntimeError(f"kimi session prompt failed after retries: {last_exc!r}")
+
+
+async def _post_kimi_prompt(
+    port: int, token: str | None, session_id: str, message: str,
+) -> None:
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None, _post_kimi_prompt_sync, port, token, session_id, message,
+    )
+
+
+async def _recover_session_id(host: Host) -> str | None:
+    """Recover the restored kimi session id from the on-disk session store.
+
+    After a snapshot restore, kimi's session store lives at
+    ``<workdir>/home/sessions/<workDirKey>/<sessionId>/state.json`` (design §1).
+    The session id is that dir's name — recovered so the resumed iframe targets
+    (and the resume notice POSTs to) the SAME session rather than a fresh one.
+    Returns None when no restored session is found (body then pre-creates one).
+    """
+    workdir = host.workdir.rstrip("/")
+    sessions_root = f"{workdir}/home/sessions"
+    result = await host.run_command(
+        f"find {shlex.quote(sessions_root)} -name state.json -type f 2>/dev/null "
+        f"| head -n1 || true"
+    )
+    path = (result.stdout or "").strip()
+    if not path:
+        return None
+    # .../sessions/<workDirKey>/<sessionId>/state.json → <sessionId>.
+    return os.path.basename(os.path.dirname(path))
 
 
 def create_kimicode_task(
