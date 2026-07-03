@@ -48,6 +48,22 @@ def test_env_isolation_and_done_error():
     assert "--force" in cmd
 
 
+def test_build_resume_notice_args():
+    """PUSH half of resume awareness: on resume, cursor is continued with
+    ``--continue`` so a trailing positional lands as a new turn — a
+    ``System:``-prefixed "you have been resumed" notice. Empty on a fresh
+    launch. Mirrors optio-grok's build_resume_notice_args."""
+    from optio_cursor.host_actions import build_resume_notice_args
+
+    # Fresh launch → no notice.
+    assert build_resume_notice_args(resuming=False) == []
+    # Resume → a single System:-prefixed "you have been resumed" positional.
+    notice = build_resume_notice_args(resuming=True)
+    assert len(notice) == 1
+    assert notice[0].startswith("System: ")
+    assert "you have been resumed" in notice[0]
+
+
 def test_cli_config_rules():
     cfg = build_cli_config(allowed_tools=["Shell(ls)"], disallowed_tools=None)
     assert cfg["permissions"]["allow"] == ["Shell(ls)"]

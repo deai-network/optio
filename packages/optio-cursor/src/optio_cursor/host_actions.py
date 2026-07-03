@@ -20,6 +20,7 @@ import shlex
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
 from optio_host.host import proc_wait
 
 if TYPE_CHECKING:
@@ -804,6 +805,23 @@ def build_auto_start_args(
     task instead of resuming the existing conversation.
     """
     return [prompt] if (auto_start and not resuming) else []
+
+
+def build_resume_notice_args(*, resuming: bool) -> list[str]:
+    """Trailing positional that notifies a resumed cursor TUI session.
+
+    Returns ``[f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}"]`` on resume (cursor
+    continues with ``--continue``, so a trailing positional is processed as a
+    new turn in the continued session — mirrors claudecode's ``claude
+    --continue '<text>'``). Empty on a fresh launch. This is the PUSH half of
+    resume awareness — it makes the agent notice the resume promptly;
+    ``resume.log`` remains the pull-based source of truth. Mutually exclusive
+    with :func:`build_auto_start_args` (auto_start only fires on a FRESH
+    launch). Adapted from optio-grok's build_resume_notice_args (grok's
+    ``System:`` convention is always taught in the prompt, so no host_protocol
+    gate is needed).
+    """
+    return [f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}"] if resuming else []
 
 
 def build_conversation_argv(

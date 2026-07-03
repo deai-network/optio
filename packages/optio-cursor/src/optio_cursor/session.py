@@ -26,7 +26,7 @@ from typing import AsyncIterator
 from optio_core.context import ProcessContext
 from optio_core.models import BasicAuth, TaskInstance
 
-from optio_agents import HookContext, get_protocol
+from optio_agents import HookContext, RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
 from optio_agents import seeds as _seeds
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
@@ -272,6 +272,12 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             *host_actions.build_auto_start_args(
                 auto_start=config.auto_start, resuming=resuming,
             ),
+            # PUSH resume awareness: a System: notice appended after --continue
+            # so the resumed TUI session gets a "you have been resumed" turn
+            # (mutually exclusive with the fresh-launch kickoff above). Parity
+            # with claudecode/opencode/grok; resume.log stays the pull-based
+            # backstop.
+            *host_actions.build_resume_notice_args(resuming=resuming),
         ]
         launch_env = {
             **(config.env or {}),
@@ -474,9 +480,14 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             )
 
         # Kickoff prompt as the first turn (headless: no positional prompt
-        # path).
+        # path). On resume, push a System: resume notice instead so the resumed
+        # session notices promptly (parity with claudecode/opencode/grok;
+        # resume.log stays the pull-based backstop). The System: convention is
+        # always taught in the prompt, so no host_protocol gate is needed here.
         if config.auto_start and not resuming:
             await conversation.send(host_actions.AUTO_START_PROMPT)
+        elif resuming:
+            await conversation.send(f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}")
 
         try:
             while True:

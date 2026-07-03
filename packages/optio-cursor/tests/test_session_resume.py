@@ -126,6 +126,13 @@ async def test_resume_restores_workdir_and_passes_continue(
     # Fresh launch: no --continue. Resumed launch: --continue present.
     assert "--continue" not in launches[0], launches[0]
     assert "--continue" in launches[1], launches[1]
+    # PUSH resume awareness: the resumed launch carries a trailing
+    # ``System: you have been resumed`` positional (delivered to the continued
+    # cursor TUI as a new turn); the fresh launch does not. resume.log stays
+    # the pull-based backstop; this is the push half.
+    assert not any("you have been resumed" in a for a in launches[0]), launches[0]
+    notice = [a for a in launches[1] if "you have been resumed" in a]
+    assert len(notice) == 1 and notice[0].startswith("System: "), launches[1]
 
 
 async def test_resume_with_no_prior_snapshot_falls_back_to_fresh(
