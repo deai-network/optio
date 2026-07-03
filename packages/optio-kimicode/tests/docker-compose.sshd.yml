@@ -1,0 +1,21 @@
+services:
+  sshd:
+    build:
+      context: .
+      dockerfile: Dockerfile.sshd
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - USER_NAME=optiotest
+      - PUBLIC_KEY_FILE=/keys/id_ed25519.pub
+      - SUDO_ACCESS=false
+      - PASSWORD_ACCESS=false
+    volumes:
+      - ./ssh-keys:/keys:ro
+      - ./fake_kimi.py:/usr/local/bin/fake_kimi.py:ro
+      - ./kimi-shim.sh:/usr/local/bin/kimi:ro
+    # Distinct host port from optio-grok's sshd harness (22223) so both remote
+    # suites can be up at once. Unlike grok there is no ttyd shim to mount —
+    # kimi serves its own web SPA from the single `kimi` process.
+    ports:
+      - "127.0.0.1:22224:2222"

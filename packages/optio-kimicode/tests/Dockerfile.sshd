@@ -1,0 +1,7 @@
+FROM linuxserver/openssh-server:latest
+# optio-kimicode launches `kimi server run --foreground` directly as a
+# long-lived subprocess over SSH (no tmux/ttyd tree — kimi serves its own web
+# SPA), so the "remote" only needs bash (the kimi-shim's shebang + asyncssh's
+# login-shell command wrapping) and python3 (the fake-kimi shim). Unlike grok
+# there is NO tmux — the server is the launched process itself.
+RUN apk add --no-cache python3 bash
