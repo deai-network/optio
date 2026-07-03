@@ -123,3 +123,6 @@ async def test_seeded_fresh_session_plants_identity_before_launch(
     # The workspace-trust marker must be pre-planted before launch, else real
     # cursor-agent blocks on the interactive trust gate (unattended → task dies).
     assert any(p.endswith("trust_present.txt") for p in delivered), delivered
+    # CURSOR_DATA_DIR must be a short symlink into the workdir, else cursor's
+    # socket/temp dir falls back to an ungranted /tmp/.cursor under claustrum.
+    assert any(p.endswith("datadir_present.txt") for p in delivered), delivered

@@ -144,6 +144,15 @@ def _scenario_seed() -> None:
                 "TRUST_PRESENT\n", encoding="utf-8",
             )
             _log("DELIVERABLE: ./deliverables/trust_present.txt")
+        # CURSOR_DATA_DIR must be a SHORT symlink into <workdir>/home/.cursor,
+        # else real cursor falls back to an ungranted /tmp/.cursor (EACCES).
+        dd = os.environ.get("CURSOR_DATA_DIR", "")
+        if (dd and os.path.islink(dd)
+                and os.path.realpath(dd) == os.path.realpath(str(_cursor_home()))):
+            (workdir / "deliverables" / "datadir_present.txt").write_text(
+                "DATADIR_PRESENT\n", encoding="utf-8",
+            )
+            _log("DELIVERABLE: ./deliverables/datadir_present.txt")
         time.sleep(0.05)
         _log("DELIVERABLE: ./deliverables/seed_present.txt")
     else:

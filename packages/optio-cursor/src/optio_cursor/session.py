@@ -240,6 +240,13 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
         _trust_rel, _trust_content = host_actions.workspace_trust_marker(host.workdir)
         await host.write_text(_trust_rel, _trust_content)
 
+        # cursor derives its socket/temp dir from CURSOR_DATA_DIR; the long
+        # taskdir would push it over cursor's path-length limit and make it fall
+        # back to an ungranted /tmp/.cursor (EACCES → exit 1 at startup). Symlink
+        # a short path back into the granted workdir so the temp stays short and
+        # confined. Idempotent — re-links on resume's restored tree.
+        await host_actions.link_cursor_data_dir(host)
+
         if not resuming and config.seed_id is not None:
             # Seeded FRESH start: resolve the seed id (str → itself; a
             # SeedProvider callable → awaited, may raise SeedUnavailableError)
@@ -717,6 +724,14 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                     "snapshot capture failed; proceeding with workdir wipe",
                 )
 
+        try:
+            # Remove the short CURSOR_DATA_DIR symlink (it lives outside the
+            # workdir, so cleanup_taskdir won't reap it). Best-effort.
+            await host.run_command(
+                f"rm -f {shlex.quote(host_actions._cursor_data_dir(host.workdir))}"
+            )
+        except Exception:
+            _LOG.exception("cursor data-dir symlink cleanup failed")
         try:
             await host.cleanup_taskdir(aggressive=cancelled)
         except Exception:

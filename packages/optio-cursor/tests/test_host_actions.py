@@ -2,12 +2,26 @@ import json
 
 from optio_cursor.host_actions import (
     _build_cursor_shell_command,
+    _cursor_data_dir,
     _isolation_env,
     build_cli_config,
     build_conversation_argv,
     build_cursor_flags,
     workspace_trust_marker,
 )
+
+
+def test_cursor_data_dir_is_short_and_deterministic():
+    """CURSOR_DATA_DIR must be SHORT: cursor derives its socket/temp dir from it
+    and falls back to an ungranted /tmp/.cursor when the base exceeds ~84 chars
+    (the long taskdir would trigger that → EACCES). It is symlinked back into the
+    workdir, so it must be stable in the workdir for a resume to re-link it."""
+    long_wd = "/home/u/.local/share/optio-cursor/cursor-demo-seed-6a47c093324db0cfbec0637a/workdir"
+    d = _cursor_data_dir(long_wd)
+    assert d.startswith("/tmp/oc-")
+    assert len(f"{d}/projects") <= 84
+    assert _cursor_data_dir(long_wd) == d  # deterministic
+    assert _cursor_data_dir("/w/other") != d  # per-workdir
 
 
 def test_workspace_trust_marker_path_and_content():
@@ -33,11 +47,16 @@ def test_isolation_env_all_keys():
         "XDG_CONFIG_HOME": "/w/task/home/.config",
         "XDG_DATA_HOME": "/w/task/home/.local/share",
         "XDG_CACHE_HOME": "/w/task/home/.cache",
+        "CURSOR_DATA_DIR": _cursor_data_dir("/w/task"),
     }
     assert "NO_OPEN_BROWSER" not in env
-    # No path-valued entry may point outside the workdir (PATH is layered by
-    # the caller and intentionally absent here).
+    # HOME/XDG are rooted in the workdir. CURSOR_DATA_DIR is the deliberate
+    # exception: a SHORT external path (symlinked back into <workdir>/home/.cursor
+    # by link_cursor_data_dir) so cursor's socket paths stay under the length
+    # limit — it does not leak operator state.
     for key, value in env.items():
+        if key == "CURSOR_DATA_DIR":
+            continue
         if value.startswith("/"):
             assert value.startswith("/w/task/"), f"{key} leaks outside workdir"
 

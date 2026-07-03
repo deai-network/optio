@@ -13,6 +13,7 @@ and the ttyd installer are copied with only ``grok`` → ``cursor`` renames.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -523,6 +524,44 @@ _CURSOR_SSH_DETECT_VARS = (
 )
 
 
+def _cursor_data_dir(workdir: str) -> str:
+    """Short, per-task path used as cursor's ``CURSOR_DATA_DIR``.
+
+    cursor derives its socket/temp dir from ``CURSOR_DATA_DIR`` (default
+    ``~/.cursor``); when that base exceeds ~84 chars it falls back to a hardcoded
+    ``/tmp/.cursor`` (a UNIX-socket path-length limit). The task's isolated
+    ``$HOME`` sits under a long taskdir, so ``$HOME/.cursor/projects`` blows the
+    limit and cursor mkdir's ``/tmp/.cursor/<slug>`` — which the claustrum
+    allowlist does not grant, so cursor exits 1 at startup (EACCES).
+
+    Point ``CURSOR_DATA_DIR`` at this SHORT path instead; :func:`link_cursor_data_dir`
+    symlinks it back to ``<workdir>/home/.cursor``, so cursor's socket paths stay
+    short while its data physically lands inside the granted, snapshot-captured
+    workdir (resume-safe). Deterministic in ``workdir`` so a resume re-links the
+    same path. (Single-writer host assumption: ``ln -sfn`` owns the link.)"""
+    h = hashlib.sha256(workdir.rstrip("/").encode()).hexdigest()[:10]
+    return f"/tmp/oc-{h}"
+
+
+async def link_cursor_data_dir(host: "Host") -> str:
+    """Create the short ``CURSOR_DATA_DIR`` symlink -> ``<workdir>/home/.cursor``
+    and return it. Idempotent (``ln -sfn``); a resume re-links on the restored
+    tree. Keeps cursor's socket/temp paths short while its data stays inside the
+    granted workdir (see :func:`_cursor_data_dir`)."""
+    target = f"{host.workdir.rstrip('/')}/home/.cursor"
+    link = _cursor_data_dir(host.workdir)
+    r = await host.run_command(
+        f"mkdir -p {shlex.quote(target)} && "
+        f"ln -sfn {shlex.quote(target)} {shlex.quote(link)}"
+    )
+    if r.exit_code != 0:
+        raise RuntimeError(
+            f"linking CURSOR_DATA_DIR ({link!r} -> {target!r}) failed "
+            f"(exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
+        )
+    return link
+
+
 def workspace_trust_marker(workdir: str) -> tuple[str, str]:
     """``(relative_path, json_content)`` for cursor's workspace-trust marker.
 
@@ -556,8 +595,9 @@ def _isolation_env(workdir: str) -> dict[str, str]:
 
     Every cursor launch (tmux iframe via ``_build_cursor_shell_command``)
     derives its environment from this map so isolation is identical across
-    launch paths. Four explicit keys, the path-valued ones all rooted at
-    ``<workdir>/home``:
+    launch paths. HOME + the three XDG keys are rooted at ``<workdir>/home``;
+    ``CURSOR_DATA_DIR`` is a short external symlink into it (see
+    :func:`_cursor_data_dir`):
 
     - ``HOME`` — cursor derives ``~/.cursor`` and ``~/.cache`` from ``$HOME``
       (verified), so the per-task home captures all of its state.
@@ -586,6 +626,9 @@ def _isolation_env(workdir: str) -> dict[str, str]:
         "XDG_CONFIG_HOME": f"{home}/.config",
         "XDG_DATA_HOME": f"{home}/.local/share",
         "XDG_CACHE_HOME": f"{home}/.cache",
+        # Short external symlink (into <workdir>/home/.cursor) so cursor's
+        # socket/temp paths stay under the length limit — see _cursor_data_dir.
+        "CURSOR_DATA_DIR": _cursor_data_dir(workdir),
     }
 
 
