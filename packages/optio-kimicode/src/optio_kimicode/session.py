@@ -113,7 +113,10 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             # PULL half: restore the kimi session store (home/sessions) under
             # the identical workdir path (workDirKey pins on the abs path), then
             # rotate the restored optio.log so its stale DONE is not replayed.
-            await restore_snapshot(ctx, host, snapshot)
+            await restore_snapshot(
+                ctx, host, snapshot,
+                session_blob_decrypt=config.session_blob_decrypt,
+            )
             await host_actions.rotate_optio_log(host)
             preserved_session_id = await _recover_session_id(host)
         else:
@@ -256,6 +259,7 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                 await capture_snapshot(
                     ctx, host,
                     end_state="cancelled" if cancelled else "done",
+                    session_blob_encrypt=config.session_blob_encrypt,
                     workdir_exclude=config.workdir_exclude,
                 )
             except Exception:

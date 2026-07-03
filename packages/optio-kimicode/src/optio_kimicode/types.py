@@ -143,6 +143,15 @@ class KimiCodeTaskConfig:
     after_execute: HookCallback | None = None
     on_deliverable: DeliverableCallback | None = None
 
+    # Optional pair of synchronous bytes->bytes transforms wrapping the kimi
+    # session subtree tar at GridFS write/read (the two-blob snapshot's
+    # sessionBlobId, mirrors optio-opencode/optio-claudecode). When both are
+    # set, the session blob is encrypted AT REST; when both are None (default),
+    # plaintext is used (backward-compatible). Setting only one raises a config
+    # error: asymmetric usage is always a mistake.
+    session_blob_encrypt: "Callable[[bytes], bytes] | None" = None
+    session_blob_decrypt: "Callable[[bytes], bytes] | None" = None
+
     # --- seed surface (start fresh from a stored environment) -----------
     # Consumed (default/fallback): merge this seed's environment (kimi
     # credentials/kimi-code.json) into a fresh workdir before launch, beginning
@@ -230,6 +239,14 @@ class KimiCodeTaskConfig:
     extra_allowed_dirs: list[AllowedDir] | None = None
 
     def __post_init__(self) -> None:
+        e = self.session_blob_encrypt is not None
+        d = self.session_blob_decrypt is not None
+        if e != d:
+            raise ValueError(
+                "KimiCodeTaskConfig: session_blob_encrypt and "
+                "session_blob_decrypt must be set together (both callables) "
+                "or both left as None; one without the other is a config error."
+            )
         if (
             self.permission_mode is not None
             and self.permission_mode not in _VALID_PERMISSION_MODES

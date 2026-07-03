@@ -187,6 +187,39 @@ def test_extra_allowed_dirs_accepted():
     assert cfg.extra_allowed_dirs[0].path == "/opt/tools"
 
 
+# --- at-rest session-blob cipher (both-or-none) ----------------------------
+
+
+def _cipher(b: bytes) -> bytes:
+    return b[::-1]
+
+
+def test_session_blob_cipher_defaults_none():
+    cfg = KimiCodeTaskConfig(consumer_instructions="x")
+    assert cfg.session_blob_encrypt is None
+    assert cfg.session_blob_decrypt is None
+
+
+def test_session_blob_cipher_pair_accepted():
+    cfg = KimiCodeTaskConfig(
+        consumer_instructions="x",
+        session_blob_encrypt=_cipher,
+        session_blob_decrypt=_cipher,
+    )
+    assert cfg.session_blob_encrypt is _cipher
+    assert cfg.session_blob_decrypt is _cipher
+
+
+def test_session_blob_encrypt_without_decrypt_rejected():
+    with pytest.raises(ValueError, match="session_blob"):
+        KimiCodeTaskConfig(consumer_instructions="x", session_blob_encrypt=_cipher)
+
+
+def test_session_blob_decrypt_without_encrypt_rejected():
+    with pytest.raises(ValueError, match="session_blob"):
+        KimiCodeTaskConfig(consumer_instructions="x", session_blob_decrypt=_cipher)
+
+
 # --- install-dir override must be absolute ---------------------------------
 
 

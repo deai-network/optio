@@ -86,6 +86,8 @@ async def _run_cycle(
     resume: bool,
     auto_start: bool,
     journal: Path,
+    encrypt=None,
+    decrypt=None,
 ) -> None:
     monkeypatch.setenv("FAKE_KIMI_SCENARIO", "happy")
     monkeypatch.setenv("FAKE_KIMI_PROMPTS_LOG", str(journal))
@@ -96,6 +98,8 @@ async def _run_cycle(
         fs_isolation=False,
         supports_resume=True,
         auto_start=auto_start,
+        session_blob_encrypt=encrypt,
+        session_blob_decrypt=decrypt,
     )
     await run_kimicode_session(ctx, cfg)
 
@@ -108,6 +112,15 @@ def _read_journal(journal: Path) -> list[dict]:
 
 def _prompts(records: list[dict]) -> list[str]:
     return [r["text"] for r in records if r.get("kind") == "prompt"]
+
+
+# Reversible at-rest cipher: reversing the gzip bytes yields an invalid tar, so
+# a restore only succeeds if the matching decrypt runs (mirrors test_snapshots).
+def _reverse(b: bytes) -> bytes:
+    return b[::-1]
+
+
+_GZIP_MAGIC = b"\x1f\x8b"
 
 
 async def _extract_from_workdir_blob(mongo_db, snap: dict, member: str) -> str | None:
@@ -208,4 +221,55 @@ async def test_resume_restores_store_and_pushes_notice(
     optio_old = await _extract_from_workdir_blob(mongo_db, snap2, "optio.log.old")
     assert optio_old is not None and "DONE" in optio_old, (
         "optio.log was not rotated to optio.log.old on resume (stale DONE guard)"
+    )
+
+
+@pytest.mark.asyncio
+async def test_resume_roundtrips_with_encrypted_session_blob(
+    mongo_db, shim_install_dir, task_root, tmp_path, monkeypatch,
+):
+    """When a cipher is supplied, the session blob is encrypted AT REST and a
+    resume still round-trips (decrypt runs on restore)."""
+    pid = "kimi_encrypted"
+    j1 = tmp_path / "j1.jsonl"
+    j2 = tmp_path / "j2.jsonl"
+
+    # Cycle 1 — fresh launch with an at-rest cipher supplied.
+    await _run_cycle(
+        mongo_db, shim_install_dir, monkeypatch, pid,
+        resume=False, auto_start=False, journal=j1,
+        encrypt=_reverse, decrypt=_reverse,
+    )
+    snap1 = await load_latest_snapshot(mongo_db, "test", pid)
+    assert snap1 is not None, "fresh cycle did not capture a snapshot"
+
+    # The session blob is encrypted at rest: the raw stored bytes are the
+    # reversed gzip, so reversing them (only) recovers the gzip magic. If the
+    # cipher were NOT wired through, the raw bytes would be a plaintext gzip and
+    # this discriminator fails.
+    bucket = AsyncIOMotorGridFSBucket(mongo_db)
+    stream = await bucket.open_download_stream(snap1["sessionBlobId"])
+    raw = await stream.read()
+    assert not raw.startswith(_GZIP_MAGIC), (
+        "session blob stored in plaintext — cipher not wired through capture"
+    )
+    assert _reverse(raw).startswith(_GZIP_MAGIC), (
+        "reversed session blob is not a gzip — unexpected at-rest encoding"
+    )
+
+    # Cycle 2 — resume with the SAME cipher: decrypt must run for the restored
+    # session store to be usable by the resumed server.
+    await _run_cycle(
+        mongo_db, shim_install_dir, monkeypatch, pid,
+        resume=True, auto_start=False, journal=j2,
+        encrypt=_reverse, decrypt=_reverse,
+    )
+    records = _read_journal(j2)
+    startup = next((r for r in records if r.get("kind") == "startup"), None)
+    assert startup is not None and startup["session_files"] > 0, (
+        f"resumed server saw no restored session store (decrypt failed?): {startup!r}"
+    )
+    notice = f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}"
+    assert notice in _prompts(records), (
+        f"resume notice not pushed; prompts={_prompts(records)!r}"
     )
