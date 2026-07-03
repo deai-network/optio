@@ -9,6 +9,14 @@ from optio_host import (
     SSHConfig,
 )
 
+from optio_kimicode.seed_manifest import (
+    KIMI_CRED_MANIFEST,
+    KIMI_SEED_MANIFEST,
+    KIMI_SEED_SUFFIX,
+    delete_seed,
+    list_seeds,
+    purge_seed,
+)
 from optio_kimicode.session import create_kimicode_task, run_kimicode_session
 from optio_kimicode.types import (
     AllowedDir,
@@ -41,4 +49,10 @@ __all__ = [
     "SeedProvider",
     "SeedUnavailableError",
     "AllowedDir",
+    "KIMI_SEED_MANIFEST",
+    "KIMI_CRED_MANIFEST",
+    "KIMI_SEED_SUFFIX",
+    "delete_seed",
+    "list_seeds",
+    "purge_seed",
 ]
