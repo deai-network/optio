@@ -562,6 +562,30 @@ async def link_cursor_data_dir(host: "Host") -> str:
     return link
 
 
+async def purge_cursor_session(host: "Host", session_id: str) -> None:
+    """Remove a cursor ACP session's on-disk records from the task home.
+
+    The startup model probe runs on a throwaway session that cursor persists
+    under ``$HOME/.config/cursor/acp-sessions/<id>/`` (plus chat/transcript dirs
+    named by the same id). Left in place they are snapshot-captured and, on
+    resume, rediscovered by the agent — which cites the probe's "capital of
+    Hungary" turns and spelunks the databases (a cascade of permission prompts).
+    Purge every dir named exactly ``session_id`` under cursor's two state roots.
+    Best-effort; ``session_id`` is validated as a plain token so it can never
+    traverse out of the home."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", session_id or ""):
+        return
+    home = f"{host.workdir.rstrip('/')}/home"
+    roots = (
+        f"{shlex.quote(home + '/.config/cursor')} "
+        f"{shlex.quote(home + '/.cursor')}"
+    )
+    await host.run_command(
+        f"find {roots} -depth -type d -name {shlex.quote(session_id)} "
+        f"-exec rm -rf {{}} + 2>/dev/null || true"
+    )
+
+
 def workspace_trust_marker(workdir: str) -> tuple[str, str]:
     """``(relative_path, json_content)`` for cursor's workspace-trust marker.
 

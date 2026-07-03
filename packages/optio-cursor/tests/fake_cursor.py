@@ -268,7 +268,8 @@ def _run_acp_stdio() -> int:
     ``FAKE_CURSOR_EXIT_AFTER=N`` makes the process exit non-zero after N
     prompt turns, modelling an unexpected crash for the session-failure test.
     """
-    session_id = "fake-cursor-session"
+    session_counter = 0
+    session_id = "fake-cursor-session-0"  # replaced on each session/new
     exit_after = int(os.environ.get("FAKE_CURSOR_EXIT_AFTER", "0") or "0")
     # Model-probe scenario (opt-in): FAKE_CURSOR_ACP_MODELS is a comma list of
     # available ids (first = current); FAKE_CURSOR_GATED_MODELS lists the ones
@@ -306,6 +307,8 @@ def _run_acp_stdio() -> int:
                 },
                 "authMethods": [{"id": "cursor_login"}]}})
         elif method == "session/new":
+            session_counter += 1
+            session_id = f"fake-cursor-session-{session_counter}"
             models_block = {}
             if acp_models:
                 models_block = {

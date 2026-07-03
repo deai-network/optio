@@ -190,11 +190,15 @@ class CursorConversation:
             self.session_models = models
             self.current_model_id = models.get("currentModelId")
 
-    async def reset_session(self) -> None:
+    async def reset_session(self) -> str | None:
         """Start a FRESH ACP session (drops the current session's chat context)
         without re-initializing. Used after the startup model probe so its
         throwaway "capital of Hungary" turns never leak into the operator's
-        conversation. Best-effort: on failure the existing session is kept."""
+        conversation. Returns the ABANDONED session id (so the caller can purge
+        its on-disk records, which cursor persists under $HOME and would
+        otherwise be snapshot-captured and rediscovered on resume). Best-effort:
+        on failure the existing session is kept and None is returned."""
+        old = self._session_id
         try:
             resp = await self._request("session/new", {
                 "cwd": self._cwd,
@@ -202,7 +206,7 @@ class CursorConversation:
             })
         except Exception:  # noqa: BLE001 — a reset failure just keeps the session
             _LOG.exception("cursor conversation: reset_session failed")
-            return
+            return None
         result = (resp or {}).get("result") or {}
         sid = result.get("sessionId")
         if sid:
@@ -211,6 +215,7 @@ class CursorConversation:
             if isinstance(models, dict):
                 self.session_models = models
                 self.current_model_id = models.get("currentModelId")
+        return old if (old and old != self._session_id) else None
 
     async def run_reader(self) -> None:
         """Drain stdout until EOF; route JSON-RPC messages. Owned by the

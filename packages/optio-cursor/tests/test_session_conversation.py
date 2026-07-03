@@ -222,9 +222,13 @@ async def test_model_probe_disables_gated_models(
         assert usable == {"m-good": True, "m-gated": False}
         assert conv.current_model_id == "m-good"  # restored after probe
 
-        # reset_session drops the probe's turns (fresh session/new) and the
+        # reset_session drops the probe's turns (fresh session/new), returns the
+        # abandoned session id (so the caller purges its on-disk records), and the
         # conversation stays usable for the operator.
-        await conv.reset_session()
+        prev_sid = conv._session_id
+        abandoned = await conv.reset_session()
+        assert abandoned == prev_sid
+        assert conv._session_id != prev_sid
         assert conv.current_model_id == "m-good"
         msgs: asyncio.Queue[str] = asyncio.Queue()
         conv.on_message(msgs.put_nowait)

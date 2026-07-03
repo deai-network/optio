@@ -114,7 +114,8 @@ async def _build_claustrum_wrap(
 
 
 async def _probe_or_cached_models(
-    ctx, conversation, models: list[dict], *, seed_id: str | None, resuming: bool,
+    ctx, conversation, models: list[dict], *, host, seed_id: str | None,
+    resuming: bool,
 ) -> list[dict]:
     """Grey out models the seed's plan cannot use. cursor lists its full
     catalogue with no plan flag; a gated model silently answers "Upgrade your
@@ -156,8 +157,15 @@ async def _probe_or_cached_models(
             except Exception:  # noqa: BLE001
                 _LOG.exception("model-probe cache save failed")
         # Drop the probe's throwaway turns so they never leak into the operator's
-        # conversation (fresh ACP session; the catalogue is unchanged).
-        await conversation.reset_session()
+        # conversation (fresh ACP session; the catalogue is unchanged), then
+        # purge the probe session's on-disk records so a later resume can't
+        # rediscover them (see host_actions.purge_cursor_session).
+        probe_sid = await conversation.reset_session()
+        if probe_sid:
+            try:
+                await host_actions.purge_cursor_session(host, probe_sid)
+            except Exception:  # noqa: BLE001
+                _LOG.exception("purging the probe session failed")
     return model_probe.apply_probe(models, usable)
 
 
@@ -525,7 +533,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             )
             if config.show_model_selector and model_list.get("models"):
                 model_list["models"] = await _probe_or_cached_models(
-                    ctx, conversation, model_list["models"],
+                    ctx, conversation, model_list["models"], host=host,
                     seed_id=model_probe.probe_cache_key(
                         resolved_seed_id, config.seed_id,
                     ),

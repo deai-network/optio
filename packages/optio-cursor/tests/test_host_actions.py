@@ -24,6 +24,38 @@ def test_cursor_data_dir_is_short_and_deterministic():
     assert _cursor_data_dir("/w/other") != d  # per-workdir
 
 
+async def test_purge_cursor_session_removes_only_matching(tmp_path):
+    """The model-probe's abandoned ACP session must be purged from cursor's
+    on-disk state (acp-sessions/<id>, chats/*/<id>) so it isn't snapshot-captured
+    and rediscovered on resume. Only the named session is removed."""
+    import os
+    from optio_cursor import host_actions as ha
+
+    h = ha.build_host(None, str(tmp_path / "wd"))
+    home = f"{h.workdir}/home"
+    keep = "cccccccc-0000-0000-0000-000000000000"
+    drop = "aaaaaaaa-1111-2222-3333-444444444444"
+    for sid in (keep, drop):
+        os.makedirs(f"{home}/.config/cursor/acp-sessions/{sid}", exist_ok=True)
+        os.makedirs(f"{home}/.config/cursor/chats/somehash/{sid}", exist_ok=True)
+    await ha.purge_cursor_session(h, drop)
+    assert not os.path.exists(f"{home}/.config/cursor/acp-sessions/{drop}")
+    assert not os.path.exists(f"{home}/.config/cursor/chats/somehash/{drop}")
+    assert os.path.exists(f"{home}/.config/cursor/acp-sessions/{keep}")  # untouched
+
+
+async def test_purge_cursor_session_rejects_unsafe_id(tmp_path):
+    """A session id that isn't a plain token is refused — no path traversal."""
+    import os
+    from optio_cursor import host_actions as ha
+
+    h = ha.build_host(None, str(tmp_path / "wd"))
+    victim = f"{h.workdir}/home/.config/cursor/acp-sessions/keep"
+    os.makedirs(victim, exist_ok=True)
+    await ha.purge_cursor_session(h, "../../../../keep")
+    assert os.path.exists(victim)  # nothing removed
+
+
 def test_workspace_trust_marker_path_and_content():
     """Cursor gates a fresh workspace behind an interactive "Do you trust this
     directory?" prompt that blocks an unattended auto_start launch. It records
