@@ -335,10 +335,10 @@ def build_host(ssh, taskdir: str) -> "Host":
 def _isolation_env(workdir: str) -> dict[str, str]:
     """Single source of truth for a task's HOME/XDG/GROK agent identity.
 
-    Every grok launch (tmux iframe via ``_build_grok_shell_command``) and every
-    headless probe (via ``_grok_isolation_env``) derive their environment from
-    this map so isolation is identical across launch paths. Six explicit keys,
-    all rooted at ``<workdir>/home``:
+    Every grok launch (the tmux iframe via ``_build_grok_shell_command`` and the
+    ACP conversation launch) derives its environment from this map so isolation
+    is identical across launch paths. Six explicit keys, all rooted at
+    ``<workdir>/home``:
 
     - ``HOME`` / ``GROK_HOME`` — grok's own state lands in the per-task home.
     - ``XDG_CONFIG_HOME`` / ``XDG_DATA_HOME`` / ``XDG_CACHE_HOME`` — pin the XDG
@@ -349,8 +349,7 @@ def _isolation_env(workdir: str) -> dict[str, str]:
       into the sandboxed task.
 
     PATH is intentionally NOT included: it is layered by the caller (launch adds
-    ``<home>/.local/bin`` ahead of the worker PATH; the probe carries the worker
-    PATH so bash/interpreters resolve)."""
+    ``<home>/.local/bin`` ahead of the worker PATH)."""
     home = f"{workdir.rstrip('/')}/home"
     return {
         "HOME": home,
@@ -360,47 +359,6 @@ def _isolation_env(workdir: str) -> dict[str, str]:
         "XDG_CACHE_HOME": f"{home}/.cache",
         "CLAUDE_CONFIG_DIR": f"{home}/.claude",
     }
-
-
-def _grok_isolation_env(host: "Host") -> dict[str, str]:
-    """Per-task isolation env for a headless probe, derived from ``host.workdir``
-    via :func:`_isolation_env` (the single source of truth) — so the probe reads
-    the seed's planted ``home/.grok/auth.json`` under the same HOME/XDG identity
-    as the launch.
-
-    ``run_command`` replaces (not merges) the child env, so PATH is carried
-    explicitly (the worker's PATH plus the per-task ``.local/bin``) or a missing
-    interpreter/bash would break the probe."""
-    iso = _isolation_env(host.workdir)
-    base_path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
-    return {**iso, "PATH": f"{iso['HOME']}/.local/bin:{base_path}"}
-
-
-async def run_grok_probe(
-    host: "Host",
-    *,
-    grok_executable: str,
-    prompt: str,
-    wrap: "list[str] | None" = None,
-    timeout_s: float = 180.0,
-) -> "tuple[str, int]":
-    """Headless one-shot ``grok -p "<prompt>"`` under the per-task isolation
-    env. Returns (stdout, exit_code). ``wrap`` is an argv prefix seam (future
-    claustrum fs-isolation). The caller's verdict is a challenge-answer match
-    on stdout; the exit code is diagnostics only."""
-    argv = [*(wrap or []), grok_executable, "-p", prompt]
-    cmd = " ".join(shlex.quote(a) for a in argv)
-    # Layer the per-task HOME/GROK_HOME overrides on top of the ambient env,
-    # mirroring the session launch's ``env HOME=… GROK_HOME=… bash -c …`` (which
-    # inherits, not ``env -i``). run_command replaces the child env, so the
-    # merge is explicit here. The caller runs this on a host whose environment
-    # carries no provider API keys (see verify_and_refresh_seed).
-    env = {**os.environ, **_grok_isolation_env(host)}
-    result = await asyncio.wait_for(
-        host.run_command(f"bash -lc {shlex.quote(cmd)}", env=env),
-        timeout=timeout_s,
-    )
-    return (result.stdout or "", result.exit_code)
 
 
 # --- ttyd install (copied verbatim from optio-claudecode) -------------------
