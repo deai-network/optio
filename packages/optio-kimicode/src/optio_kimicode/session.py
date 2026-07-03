@@ -24,7 +24,9 @@ import asyncio
 import inspect
 import json
 import logging
+import mimetypes
 import os
+import re
 import secrets
 import shlex
 
@@ -39,6 +41,7 @@ from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
 from optio_host.paths import task_dir
 
 from optio_kimicode import cred_watcher, host_actions
+from optio_kimicode import models as kimi_models
 from optio_kimicode.conversation import KimiCodeConversation
 from optio_kimicode.conversation_listener import ConversationListener
 from optio_kimicode.prompt import compose_agents_md
@@ -389,15 +392,40 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
 
         # Opt-in dashboard chat widget: start a per-task SSE listener over the
         # published conversation and publish it as the "conversation" widget via
-        # the widget proxy (which injects the basic-auth credential). The
-        # frontend-parity widgetData (model picker, file transfer) is wired in a
-        # later task; here we only bridge the live conversation to the dashboard.
+        # the widget proxy (which injects the basic-auth credential).
         if config.conversation_ui:
             listener_password = secrets.token_urlsafe(32)
             bind_addr = os.environ.get("OPTIO_WIDGET_TUNNEL_BIND", "127.0.0.1")
             upstream_host = os.environ.get("OPTIO_WIDGET_TUNNEL_HOST", "127.0.0.1")
+            # File upload: bytes land under <workdir>/uploads with a sanitized
+            # name; the view injects a System: path reference so kimi reads them
+            # with its own tools (headless kimi acp has no inline ingest).
+            uploads_dir = f"{host.workdir}/uploads"
+
+            async def _write_upload(name: str, data: bytes) -> str:
+                safe = re.sub(r"[^A-Za-z0-9._-]", "_", (name.split("/")[-1] or "file"))[:200] or "file"
+                await host.put_file_to_host(data, f"{uploads_dir}/{safe}")
+                return f"uploads/{safe}"
+
+            # File download: serve workdir-confined bytes for the optio-file:
+            # sentinel links kimi emits. realpath guards against ../ escapes.
+            async def _read_download(relpath: str) -> tuple[bytes, str]:
+                workdir = host.workdir.rstrip("/")
+                real = os.path.realpath(os.path.join(workdir, relpath))
+                if real != workdir and not real.startswith(workdir + os.sep):
+                    raise ValueError("forbidden")           # outside the workdir
+                data = await host.fetch_bytes_from_host(real)
+                if len(data) > config.max_download_bytes:
+                    raise ValueError("too-large")
+                mime = mimetypes.guess_type(real)[0] or "application/octet-stream"
+                return data, mime
+
             conv_listener = ConversationListener(
                 conversation, password=listener_password,
+                upload_writer=_write_upload,
+                max_upload_bytes=config.max_upload_bytes,
+                download_reader=_read_download,
+                max_download_bytes=config.max_download_bytes,
             )
             # The listener is an in-process aiohttp app (not a remote-host
             # process), so it binds directly to the widget-tunnel interface and
@@ -407,6 +435,28 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                 f"http://{upstream_host}:{listener_port}",
                 inner_auth=BasicAuth(username="optio", password=listener_password),
             )
+            # Frontend-parity widgetData (four-touch: config → set_widget_data →
+            # ConversationViewProps → KimiCodeView). Model picker options come
+            # from the ACP configOptions surface captured at bootstrap (authed,
+            # exact ids session/set_model accepts), else the static alias
+            # fallback. default_model overrides the picker's initial value;
+            # otherwise the live current model is shown.
+            model_list = kimi_models.available_models(
+                conversation.session_config_options,
+            )
+            current_model = config.default_model or model_list.get("default")
+            await ctx.set_widget_data({
+                "protocol": "kimicode",
+                "toolVerbosity": config.tool_verbosity,
+                "thinkingVerbosity": config.thinking_verbosity,
+                "showModelSelector": config.show_model_selector,
+                "models": model_list["models"],
+                "currentModel": current_model,
+                "showFileUpload": config.show_file_upload,
+                "maxUploadBytes": config.max_upload_bytes,
+                "fileDownload": config.file_download,
+                "maxDownloadBytes": config.max_download_bytes,
+            })
             ctx.report_progress(None, "Conversation UI is live")
 
         # Start the in-session credential watcher for a seeded conversation: it

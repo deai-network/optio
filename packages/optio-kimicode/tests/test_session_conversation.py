@@ -67,6 +67,17 @@ async def _wait_widget_upstream(optio: Optio, process_id: str, timeout: float = 
     raise AssertionError(f"{process_id} never set widgetUpstream in {timeout}s")
 
 
+async def _wait_widget_data(optio: Optio, process_id: str, timeout: float = 10.0) -> dict:
+    """Poll the process doc until widgetData is set; return the widgetData dict."""
+    end = _time.monotonic() + timeout
+    while _time.monotonic() < end:
+        proc = await optio.get_process(process_id)
+        if proc is not None and proc.get("widgetData"):
+            return proc["widgetData"]
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"{process_id} never set widgetData in {timeout}s")
+
+
 async def _wait_port_refused(port: int, timeout: float = 10.0) -> None:
     """Poll until connecting to 127.0.0.1:<port> is refused."""
     end = _time.monotonic() + timeout
@@ -292,6 +303,85 @@ async def test_conversation_ui_listener_relays_events_over_sse(
         # Teardown stopped the listener: the port refuses connections.
         port = int(url.rsplit(":", 1)[1])
         await _wait_port_refused(port)
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
+@pytest.mark.asyncio
+async def test_conversation_ui_forwards_frontend_parity_widget_data(
+    shim_install_dir, task_root, mongo_db,
+):
+    """The frontend-parity four-touch: config → set_widget_data. The listener
+    task publishes widgetData with camelCase keys the shared ConversationView
+    reads, gated by config: the model picker sources its options from the ACP
+    configOptions surface (fake_kimi advertises kimi-k2 / kimi-k2-thinking),
+    default_model overrides the initial value, and tool/thinking verbosity +
+    file transfer bounds are mirrored through."""
+    optio = await _make_optio(mongo_db, "kkconv6")
+    try:
+        task = create_kimicode_task(
+            process_id="kk-conv-wd",
+            name="Conversation widgetData",
+            config=_conversation_config(
+                shim_install_dir,
+                conversation_ui=True,
+                show_model_selector=True,
+                default_model="kimi-k2-thinking",
+                tool_verbosity="verbose",
+                thinking_verbosity="visible",
+                show_file_upload=True,
+                max_upload_bytes=4242,
+                file_download=True,
+                max_download_bytes=8484,
+            ),
+        )
+        await optio.adhoc_define(task)
+        await optio.launch_and_await_result("kk-conv-wd", session_id=None, timeout=60)
+
+        wd = await _wait_widget_data(optio, "kk-conv-wd")
+        assert wd["protocol"] == "kimicode"
+        assert wd["toolVerbosity"] == "verbose"
+        assert wd["thinkingVerbosity"] == "visible"
+        assert wd["showModelSelector"] is True
+        assert wd["showFileUpload"] is True
+        assert wd["maxUploadBytes"] == 4242
+        assert wd["fileDownload"] is True
+        assert wd["maxDownloadBytes"] == 8484
+        # Model picker options come from the live ACP configOptions surface;
+        # default_model overrides the picker's initial value.
+        assert wd["currentModel"] == "kimi-k2-thinking"
+        ids = [m["id"] for m in wd["models"]]
+        assert ids == ["kimi-k2", "kimi-k2-thinking"]
+        assert all(set(m) == {"id", "label", "disabled"} for m in wd["models"])
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
+@pytest.mark.asyncio
+async def test_conversation_ui_widget_data_defaults_when_ungated(
+    shim_install_dir, task_root, mongo_db,
+):
+    """With only conversation_ui on (no parity opt-ins), the parity flags carry
+    their config defaults: selectors off, verbosity at the type defaults, and
+    the model picker's current value is the live ACP current model."""
+    optio = await _make_optio(mongo_db, "kkconv7")
+    try:
+        task = create_kimicode_task(
+            process_id="kk-conv-wd-def",
+            name="Conversation widgetData defaults",
+            config=_conversation_config(shim_install_dir, conversation_ui=True),
+        )
+        await optio.adhoc_define(task)
+        await optio.launch_and_await_result("kk-conv-wd-def", session_id=None, timeout=60)
+
+        wd = await _wait_widget_data(optio, "kk-conv-wd-def")
+        assert wd["showModelSelector"] is False
+        assert wd["showFileUpload"] is False
+        assert wd["fileDownload"] is False
+        assert wd["toolVerbosity"] == "description-only"
+        assert wd["thinkingVerbosity"] == "hidden"
+        # No default_model override → the live ACP current model.
+        assert wd["currentModel"] == "kimi-k2"
     finally:
         await optio.shutdown(grace_seconds=1.0)
 
