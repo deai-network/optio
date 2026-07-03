@@ -1,7 +1,30 @@
 # optio-codex — final Appendix-A parity audit
 
+> **⚠️ SUPERSEDED / pending refresh (Plan F, 2026-07-03).** This audit reflects
+> the **pre-Plan-F** tree `3ef2142` and the **29-item** Appendix A. `main` has
+> since gained a **30-item** Appendix A (adds **row 7b** resume-awareness
+> pull **+** pushed `RESUME_NOTICE`, and **row 30** real-binary E2E of every
+> surface), and codex has been rebased onto it. Two entries below are now
+> inaccurate and are corrected by Plan F:
+> - **row 7b is not audited here** — closed GREEN by Plan F Gap 1
+>   (`build_resume_notice_args` + both bodies; commit `bf18471`).
+> - **row 30 is not audited here** — addressed by Plan F Gap 5 (env-gated
+>   real-binary breadth + tracked-open ledger).
+> - **item 14 ("verify / refresh seed (host-free)") is mis-labelled GREEN.**
+>   The guide defines that row as *host-free **and non-billable*** (no agent
+>   process, no model inference — `writing-agent-wrappers.md` Stage 4 / Appendix
+>   A row 14). The shipped `verify.py` still runs the **billable** agent probe
+>   (`run_codex_probe`, `codex exec --json`); it is host-free-non-billable only
+>   **after** Plan F Gap 4 (Task 4) lands the direct-OIDC path. Until then item
+>   14 is GREEN-**functional** but not yet GREEN-**host-free-non-billable**.
+>
+> Plan F **Task 5 Step 8** regenerates this file against the current 30-item
+> checklist once all five gaps land; that refresh replaces this banner. Do not
+> cite this audit as current until then.
+
 **Date:** 2026-07-03. **Tree:** branch `csillag/optio-codex` @ `3ef2142`.
-**Yardstick:** `docs/writing-agent-wrappers.md` Appendix A (29 items).
+**Yardstick:** `docs/writing-agent-wrappers.md` Appendix A (29 items — **stale;
+`main` is now 30 items, see banner**).
 **Method:** every row verified by reading the cited code/tests, not plans.
 Suite state at audit time: `packages/optio-codex/tests/` → **188 passed, 4
 skipped** (the 4 skips are the opt-in real-binary tests — `test_real_codex_session.py`
@@ -27,7 +50,7 @@ All paths below are repo-relative to the worktree root
 | 11 | seeds (logged-in fresh start) | req* | GREEN | packages/optio-codex/src/optio_codex/seed_manifest.py:38 (`CODEX_SEED_SUFFIX`), :46 (`CODEX_CRED_MANIFEST` / `SeedManifest`) | packages/optio-codex/tests/test_seed_manifest.py:22,29,38; test_session_seed.py:61,88,109 |
 | 12 | pool / leases | opt | GREEN | packages/optio-codex/src/optio_codex/cred_watcher.py:115-136 (`lease_holder`, `seeds.renew_lease`, abort on lease loss) | packages/optio-codex/tests/test_session_lease.py:105 |
 | 13 | credential save-back | opt | GREEN | packages/optio-codex/src/optio_codex/cred_watcher.py:80 (`save_back_if_changed`), :107 (`run_credential_watcher`) | packages/optio-codex/tests/test_cred_watcher.py:66,70,75 |
-| 14 | verify / refresh seed (host-free) | opt | GREEN | packages/optio-codex/src/optio_codex/verify.py:45 (`verify_and_refresh_seed`) | packages/optio-codex/tests/test_verify.py:68,90,109,124,138,162 |
+| 14 | verify / refresh seed (host-free) | opt | GREEN (functional) — **not yet host-free-non-billable; Gap 4 pending** | packages/optio-codex/src/optio_codex/verify.py:45 (`verify_and_refresh_seed`) — currently the **billable** agent probe (`run_codex_probe`); the guide's host-free-non-billable bar is met only after Plan F Gap 4 (direct-OIDC) lands | packages/optio-codex/tests/test_verify.py:68,90,109,124,138,162 |
 | 15 | binary cache (evictable, unsnapshotted) | req | GREEN | packages/optio-codex/src/optio_codex/host_actions.py:82 (`_resolve_install_dir`), :147 (`ensure_codex_installed`), :51 (cache dir env, XDG-rooted, per-task symlink into shared cache) | packages/optio-codex/tests/test_codex_cache.py:57,76,98,115 |
 | 16 | HOME/XDG per-task isolation | req | GREEN | packages/optio-codex/src/optio_codex/host_actions.py:371 (`_isolation_env` — HOME/CODEX_HOME/XDG_* rooted at `<workdir>/home`), :383 (`_codex_isolation_env`) | packages/optio-codex/tests/test_workdir_trust.py:36,44,56,63 (trust config under isolated CODEX_HOME) |
 | 17 | hooks (before/after execute, on_deliverable) | req | GREEN | packages/optio-codex/src/optio_codex/types.py:136-138 (`before_execute`/`after_execute`/`on_deliverable`); session.py:213-217 fires them | packages/optio-codex/tests/test_session_local.py:68 (`deliverable_callback_fired`) |
@@ -63,3 +86,9 @@ but not activated (session passes `encrypt=None`), matching every other wrapper.
 engine-specific rationale and cross-wrapper parity.** Every `req` item
 (2, 3, 4, 5, 6, 11, 15, 16, 17, 18, 26, 27, 28, 29) is GREEN with code + test
 evidence. No STOP-rule trigger. Cleared to proceed to Tasks 8–9.
+
+> **Verdict caveat (see top banner).** This 28/29 tally is against the **29-item**
+> Appendix A. On the current **30-item** Appendix A, row 7b (GREEN via Gap 1) and
+> row 30 (Gap 5) are additional `req`/`req-if-resume` rows not counted here, and
+> item 14's GREEN is *functional-only* until Gap 4 makes it host-free-non-billable.
+> Plan F Task 5 Step 8 issues the authoritative up-to-date tally.

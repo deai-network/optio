@@ -1244,7 +1244,9 @@ cd packages/optio-conversation-ui && node_modules/.bin/vitest run 2>&1 | tail -6
 node_modules/.bin/tsc --noEmit 2>&1 | tail -3
 ```
 
-- [ ] **Step 8: Commit** `test(optio-codex): real-binary E2E breadth (conversation/seed/resume/remote) + Layer-3 codex wire replay`. Body lists the gate env vars and the row-30 coverage ledger; if the Layer-3 fixture is pending a real capture, say so.
+- [ ] **Step 8: Refresh the parity-audit to the current 30-item guide.** With all five gaps landed (Tasks 1–5), `docs/2026-07-02-optio-codex-parity-audit.md` is now stale: it audits the pre-Plan-F 29-item Appendix A (tree `3ef2142`) and omits the two guide-delta rows Plan F closes — **row 7b** (resume-awareness pull **+** pushed `RESUME_NOTICE`, now GREEN via Gap 1) and **row 30** (real-binary E2E of every surface, now covered via Gap 5's env-gated suite + tracked-open ledger). It also mis-labels **item 14** ("verify / refresh seed (host-free)") GREEN while the pre-Gap-4 `verify.py` was still the **billable** agent probe — the guide defines that row as *host-free and non-billable* (writing-agent-wrappers.md Stage 4 / Appendix A row 14); Gap 4 is what makes it legitimately host-free. Re-audit against the current Appendix A (rows 1–30, incl. 7b): add rows 7b and 30 with code+test evidence; update item 14's evidence to the direct-OIDC `verify.py` (host-free, probe as fallback) and note the freshness/fail-closed semantics; re-state the verdict against the up-to-date checklist. Every row still verified by reading the cited code/tests, not plans. (The interim superseded banner added when this finding was raised is replaced by the refreshed audit.)
+
+- [ ] **Step 9: Commit** `test(optio-codex): real-binary E2E breadth (conversation/seed/resume/remote) + Layer-3 codex wire replay`. Body lists the gate env vars and the row-30 coverage ledger; if the Layer-3 fixture is pending a real capture, say so. Include the parity-audit refresh (Step 8) in this commit (or a immediately-preceding `docs(optio-codex): refresh parity-audit to the 30-item guide` commit) — do not leave the audit stale.
 
 ---
 
@@ -1255,7 +1257,7 @@ node_modules/.bin/tsc --noEmit 2>&1 | tail -3
 2. `auto_start` default → Task 2 (`87342cb`): default flip + full caller audit (2 tests + 1 demo comment; conversation/seed-setup inherit `False`). ✔
 3. Seeded-teardown flush → Task 3 (`3f604c7`): `_teardown_aggressive` gates both subprocess teardowns; `cleanup_taskdir` intentionally excluded (post-flush); `fc1e5ef` verified N/A (Task 0 orphan cross-check). ✔
 4. Direct-OIDC verify → Task 4 (`dd17f6d`): OpenAI OIDC discovery/refresh, `auth.json` mapping, fail-closed status, API-key alive-by-presence; **codex-specific divergence — probe kept as fallback**, so `run_codex_probe` is NOT removed. ✔
-5. Real-binary breadth + Layer-3 → Task 5: conversation/seed/resume/remote opt-in E2E + capture-real-wire→replay-through-`reduceCodexEvent`; honest tracked-open ledger. ✔
+5. Real-binary breadth + Layer-3 → Task 5: conversation/seed/resume/remote opt-in E2E + capture-real-wire→replay-through-`reduceCodexEvent`; honest tracked-open ledger; **plus** the parity-audit refresh to the current 30-item guide (adds rows 7b/30, corrects item-14 host-free, Step 8). ✔
 
 **Placeholder scan.** No `TBD`/`XXX`/`...`-as-code. The only intentional `NotImplementedError` seams are in the **opt-in, never-default** real-binary tests (Task 5 Steps 3/5), each carrying an explicit adaptation note that they must be wired to as-built engine/SSH helpers and run once before commit — they cannot affect the default suite. Task 0's `<DATE>`/`<as discovered>` placeholders are investigation outputs that MUST be filled with probed values before Task 4's docstring is committed (called out inline).
 
