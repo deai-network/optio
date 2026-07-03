@@ -1,36 +1,23 @@
-# optio-codex — final Appendix-A parity audit
+# optio-codex — Appendix-A parity audit (30-item guide, post-Plan-F)
 
-> **⚠️ SUPERSEDED / pending refresh (Plan F, 2026-07-03).** This audit reflects
-> the **pre-Plan-F** tree `3ef2142` and the **29-item** Appendix A. `main` has
-> since gained a **30-item** Appendix A (adds **row 7b** resume-awareness
-> pull **+** pushed `RESUME_NOTICE`, and **row 30** real-binary E2E of every
-> surface), and codex has been rebased onto it. Two entries below are now
-> inaccurate and are corrected by Plan F:
-> - **row 7b is not audited here** — closed GREEN by Plan F Gap 1
->   (`build_resume_notice_args` + both bodies; commit `bf18471`).
-> - **row 30 is not audited here** — addressed by Plan F Gap 5 (env-gated
->   real-binary breadth + tracked-open ledger).
-> - **item 14 ("verify / refresh seed (host-free)") is mis-labelled GREEN.**
->   The guide defines that row as *host-free **and non-billable*** (no agent
->   process, no model inference — `writing-agent-wrappers.md` Stage 4 / Appendix
->   A row 14). The shipped `verify.py` still runs the **billable** agent probe
->   (`run_codex_probe`, `codex exec --json`); it is host-free-non-billable only
->   **after** Plan F Gap 4 (Task 4) lands the direct-OIDC path. Until then item
->   14 is GREEN-**functional** but not yet GREEN-**host-free-non-billable**.
->
-> Plan F **Task 5 Step 8** regenerates this file against the current 30-item
-> checklist once all five gaps land; that refresh replaces this banner. Do not
-> cite this audit as current until then.
+> **Refreshed 2026-07-03 (Plan F Task 5 Step 8).** This audit is now against the
+> current **30-item** Appendix A of `docs/writing-agent-wrappers.md` (the
+> yardstick codex was rebased onto). The prior superseded banner is retired: all
+> five Plan F gaps have landed, so **row 7b** (resume PUSH) and **row 30**
+> (real-binary E2E of every surface) are added below, and **item 14** is
+> re-audited as legitimately host-free-**non-billable** (Gap 4 direct-OIDC).
 
-**Date:** 2026-07-03. **Tree:** branch `csillag/optio-codex` @ `3ef2142`.
-**Yardstick:** `docs/writing-agent-wrappers.md` Appendix A (29 items — **stale;
-`main` is now 30 items, see banner**).
+**Date:** 2026-07-03. **Tree:** branch `csillag/optio-codex` @ HEAD (post-Plan-F).
+**Yardstick:** `docs/writing-agent-wrappers.md` Appendix A (30 items, incl. row 7b).
 **Method:** every row verified by reading the cited code/tests, not plans.
-Suite state at audit time: `packages/optio-codex/tests/` → **188 passed, 4
-skipped** (the 4 skips are the opt-in real-binary tests — `test_real_codex_session.py`
-and the three `test_sandbox_enforce.py` cases, both env-gated, never in the
-default suite). optio-conversation-ui codex widget/events covered by
-`packages/optio-conversation-ui/src/__tests__/codex-{widget.test.tsx,events.test.ts}`.
+Suite state at audit time: `packages/optio-codex/tests/` → **192 passed, 8
+skipped** (the 8 skips are the opt-in real-binary tests — `test_real_codex_session.py`,
+the three `test_sandbox_enforce.py` cases, and Plan F Gap 5's four new
+`test_real_codex_{conversation,seed_resume}.py` cases — all env-gated,
+skip-if-no-binary/no-auth, never in the default suite). optio-conversation-ui
+codex widget/events covered by `packages/optio-conversation-ui/src/__tests__/
+codex-{widget.test.tsx,events.test.ts}`, plus the Layer-3 replay
+`codex-events-fixture.test.ts` (skips until a real wire fixture is captured).
 
 All paths below are repo-relative to the worktree root
 (`/home/csillag/deai/optio/.worktrees/csillag/optio-codex`).
@@ -44,13 +31,14 @@ All paths below are repo-relative to the worktree root
 | 5 | local + remote (SSH) | req | GREEN | packages/optio-codex/src/optio_codex/host_actions.py:360 (`build_host` → `LocalHost`/`RemoteHost`) | packages/optio-codex/tests/test_session_local.py:19; test_session_remote.py |
 | 6 | readiness + monitoring + teardown | req | GREEN | packages/optio-codex/src/optio_codex/session.py:253 (`ready_timeout_s`), :496 (`teardown_session_tree`); host_actions.py:62-81 (`teardown_session_tree`), :43 (`await_codex_gone`) | packages/optio-codex/tests/test_teardown_session_tree.py; test_await_codex_gone.py; test_kill_ttyd_by_socket.py:23,34 |
 | 7 | resume / snapshots | opt | GREEN | packages/optio-codex/src/optio_codex/snapshots.py:94 (`insert_snapshot`), :117 (`load_latest_snapshot`); types.py:196 (`supports_resume=True`); session.py restore path :107-142 | packages/optio-codex/tests/test_snapshots.py:31,35,60,73; test_session_resume.py |
+| 7b | resume awareness: `resume.log` doc (pull) **+** pushed `RESUME_NOTICE` on relaunch, every mode | req if resume | GREEN (Plan F Gap 1, commit `bf18471`) | PULL: packages/optio-codex/src/optio_codex/prompt.py (resume.log doc) + `_append_resume_log_entry`. PUSH: host_actions.py `build_resume_notice_args(*, resuming)` → `[f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}"]`; wired in session.py `_codex_body` iframe `codex_flags` (trailing positional, mutually exclusive with the auto-start kickoff) and `_conversation_body` (first `conversation.send(RESUME_NOTICE)` on resume). `System:` convention taught in both protocol modes, so no `host_protocol` gate | packages/optio-codex/tests/test_host_actions.py (`test_build_resume_notice_args`); test_session_resume.py:167-171 (only the RESUMED launch carries the notice positional); conversation PUSH path exercised by the opt-in `test_real_codex_seed_resume.py` resume case (ledger) |
 | 8 | at-rest encryption of session blob | opt | GREEN (grok-parity: threaded, not activated) | `encrypt`/`decrypt` plumbed through packages/optio-codex/src/optio_codex/cred_watcher.py:86,113; verify.py:53,124; session save-back/plant call sites pass `encrypt=None` (session.py:275,528,568) — identical posture to optio-grok | Exercised via cred/verify suites (encrypt path is a pass-through; no separate activation test, matching grok) |
 | 9 | crash-orphan rescue | opt | GREEN | packages/optio-codex/src/optio_codex/host_actions.py:833 (`_socket_pkill_pattern`), :842 (`_kill_ttyd_by_socket` — reap detached orphan ttyd), invoked from `teardown_session_tree` host_actions.py:903 | packages/optio-codex/tests/test_kill_ttyd_by_socket.py:23,34 |
 | 10 | auto-resume-on-restart | opt | GREEN (via optio-core) | Enabled by packages/optio-codex/src/optio_codex/types.py:196 (`supports_resume=True`) + snapshots.py; the restart timer/scheduler lives in packages/optio-core/src/optio_core/lifecycle.py:975 (`_auto_resume_task`), models.py:80 (`auto_resume`) — wrapper contributes resume capability, core drives the restart | packages/optio-core tests/test_auto_resume.py (core-level); codex resume backing in test_session_resume.py |
 | 11 | seeds (logged-in fresh start) | req* | GREEN | packages/optio-codex/src/optio_codex/seed_manifest.py:38 (`CODEX_SEED_SUFFIX`), :46 (`CODEX_CRED_MANIFEST` / `SeedManifest`) | packages/optio-codex/tests/test_seed_manifest.py:22,29,38; test_session_seed.py:61,88,109 |
 | 12 | pool / leases | opt | GREEN | packages/optio-codex/src/optio_codex/cred_watcher.py:115-136 (`lease_holder`, `seeds.renew_lease`, abort on lease loss) | packages/optio-codex/tests/test_session_lease.py:105 |
 | 13 | credential save-back | opt | GREEN | packages/optio-codex/src/optio_codex/cred_watcher.py:80 (`save_back_if_changed`), :107 (`run_credential_watcher`) | packages/optio-codex/tests/test_cred_watcher.py:66,70,75 |
-| 14 | verify / refresh seed (host-free) | opt | GREEN (functional) — **not yet host-free-non-billable; Gap 4 pending** | packages/optio-codex/src/optio_codex/verify.py:45 (`verify_and_refresh_seed`) — currently the **billable** agent probe (`run_codex_probe`); the guide's host-free-non-billable bar is met only after Plan F Gap 4 (direct-OIDC) lands | packages/optio-codex/tests/test_verify.py:68,90,109,124,138,162 |
+| 14 | verify / refresh seed (host-free) | opt | GREEN (host-free, non-billable — Plan F Gap 4, commit `458a0d5`) | packages/optio-codex/src/optio_codex/verify.py `verify_and_refresh_seed` now refreshes straight against OpenAI's OIDC endpoint — no codex process, no model inference: `_read_auth`/`_parse_last_refresh` parse the seed `auth.json`; API-key seeds are alive-by-presence; ChatGPT-mode seeds refresh via the `refresh_token` grant against the codex-hardcoded `_REFRESH_URL` (`https://auth.openai.com/oauth/token`, NOT the discovery `token_endpoint`), rotated tokens written back. Fail-closed: 4xx → `_DEAD` → status dead; transport/discovery error → inconclusive (status untouched); freshness gate `_REFRESH_AFTER=8d`. **Divergence from grok:** the billable agent probe (`run_codex_probe`) is KEPT as the documented fallback when OIDC discovery is unreachable (`_verify_via_probe`) | packages/optio-codex/tests/test_verify.py (mocked-HTTP suite: stale-refresh-writeback asserting `/oauth/token`, fresh-no-refresh, api-key-alive, 4xx-dead, transport-inconclusive, no-refresh-token-dead, discovery-unavailable→probe-fallback, unknown-seed) |
 | 15 | binary cache (evictable, unsnapshotted) | req | GREEN | packages/optio-codex/src/optio_codex/host_actions.py:82 (`_resolve_install_dir`), :147 (`ensure_codex_installed`), :51 (cache dir env, XDG-rooted, per-task symlink into shared cache) | packages/optio-codex/tests/test_codex_cache.py:57,76,98,115 |
 | 16 | HOME/XDG per-task isolation | req | GREEN | packages/optio-codex/src/optio_codex/host_actions.py:371 (`_isolation_env` — HOME/CODEX_HOME/XDG_* rooted at `<workdir>/home`), :383 (`_codex_isolation_env`) | packages/optio-codex/tests/test_workdir_trust.py:36,44,56,63 (trust config under isolated CODEX_HOME) |
 | 17 | hooks (before/after execute, on_deliverable) | req | GREEN | packages/optio-codex/src/optio_codex/types.py:136-138 (`before_execute`/`after_execute`/`on_deliverable`); session.py:213-217 fires them | packages/optio-codex/tests/test_session_local.py:68 (`deliverable_callback_fired`) |
@@ -66,6 +54,7 @@ All paths below are repo-relative to the worktree root
 | 27 | headless-login strategy | req* | GREEN | Seeds supply the logged-in identity (seed_manifest.py:46; session.py plant path); conversation mode is headless (session.py:165 — app-server stdio, no ttyd login) | packages/optio-codex/tests/test_session_seed.py:61,109 (seeded fresh session plants identity before launch) |
 | 28 | packaging + editable/release registration | req | GREEN | Makefile:4 (`PY_PACKAGES` includes `optio-codex`), :139 (`RELEASABLE_PY` includes `optio-codex`); packages/optio-demo/Makefile:13,36,54 (editable install); packages/optio-demo/pyproject.toml:31 (`optio-codex>=0.1,<0.2`) | Registration verified at Task 9; import smoke test_import.py |
 | 29 | demo trio (seed-setup + iframe + conversation) | req | GREEN | packages/optio-demo/src/optio_demo/tasks/codex.py:185 (`codex-seed-setup`), :216 (`codex-demo-seed-<id>` iframe), :240 (`codex-conversation-seed-<id>`, `mode="conversation"`, `conversation_ui=True`) | Demo wiring exercised via optio-demo; seed lifecycle backed by test_session_seed.py |
+| 30 | real-binary E2E of every surface (not just the fake harness) | req | GREEN-with-ledger (Plan F Gap 5) | Opt-in, skip-if-no-binary/no-auth, never-default real-agent E2E covers every shipped surface: iframe done-when (`test_real_codex_session.py`, `OPTIO_CODEX_REAL_SESSION_TEST`), native-sandbox enforcement (`test_sandbox_enforce.py`, `OPTIO_CODEX_SANDBOX_ENFORCE_TEST`), conversation turn + Layer-3 wire capture (`test_real_codex_conversation.py`, `OPTIO_CODEX_CONVERSATION_TEST`), seed replant / resume relaunch / remote-SSH (`test_real_codex_seed_resume.py`, `OPTIO_CODEX_SEED_RESUME_TEST` [+ `OPTIO_CODEX_DEMO_SSH_HOST`]). Layer-3: `packages/optio-conversation-ui/src/__tests__/codex-events-fixture.test.ts` replays a recorded real wire through `reduceCodexEvent` (skips until the fixture is captured) | The four Gap-5 python cases + the two pre-existing real-binary tests, all env-gated. Per-surface run status tracked in `docs/2026-07-02-optio-codex-review-carryover.md` (Plan F real-binary coverage ledger); the conversation/seed/resume/remote surfaces are wired-but-tracked-open (no authed codex + COST GUARD in this run) |
 
 ## Remaining opt gaps
 
@@ -82,13 +71,19 @@ but not activated (session passes `encrypt=None`), matching every other wrapper.
 
 ## Verdict
 
-**28/29 green; the single non-green (#24) is an `opt` item with a documented
-engine-specific rationale and cross-wrapper parity.** Every `req` item
-(2, 3, 4, 5, 6, 11, 15, 16, 17, 18, 26, 27, 28, 29) is GREEN with code + test
-evidence. No STOP-rule trigger. Cleared to proceed to Tasks 8–9.
+**30/31 rows green; the single non-green (#24) is an `opt` item with a
+documented engine-specific rationale and cross-wrapper parity.** (31 rows = the
+30-item Appendix A counting row 7b as its own row.) Every `req` /
+`req-if-resume` row (2, 3, 4, 5, 6, 7b, 11, 15, 16, 17, 18, 26, 27, 28, 29, 30)
+is GREEN with code + test evidence. Plan F closed the three guide-delta rows the
+rebase surfaced:
+- **row 7b** (resume PUSH) — GREEN via Gap 1 (`build_resume_notice_args` + both
+  bodies; commit `bf18471`).
+- **item 14** (verify/refresh host-free) — now legitimately host-free-**non-billable**
+  via Gap 4's direct-OIDC `verify.py` (commit `458a0d5`), agent probe kept as
+  the documented fallback.
+- **row 30** (real-binary E2E of every surface) — GREEN-with-ledger via Gap 5's
+  env-gated real-agent suite + Layer-3 capture/replay; per-surface real-run
+  status tracked (not silently claimed) in the carryover ledger.
 
-> **Verdict caveat (see top banner).** This 28/29 tally is against the **29-item**
-> Appendix A. On the current **30-item** Appendix A, row 7b (GREEN via Gap 1) and
-> row 30 (Gap 5) are additional `req`/`req-if-resume` rows not counted here, and
-> item 14's GREEN is *functional-only* until Gap 4 makes it host-free-non-billable.
-> Plan F Task 5 Step 8 issues the authoritative up-to-date tally.
+No STOP-rule trigger. This tally supersedes the prior 28/29 (29-item) verdict.

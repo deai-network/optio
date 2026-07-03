@@ -113,6 +113,38 @@ tsc + vitest green):
     trailing error item; a non-trailing intervening item defeats it. Rare edge;
     cosmetic double row. `events.ts` error/turn-completed branches.
 
+## Plan F (guide-delta) real-binary coverage ledger
+
+Guide Appendix-A row 30 (real-binary E2E of every shipped surface) + Testing
+Layers 2/3. Each surface has an opt-in, skip-if-no-binary/no-auth test that
+**never** runs in the default suite. "Exercised" = run once against a real
+authed codex at implementation time.
+
+| Surface | Gate env var(s) | Test | Exercised |
+| --- | --- | --- | --- |
+| iframe done-when (Stage 0) | `OPTIO_CODEX_REAL_SESSION_TEST=1` | `test_real_codex_session.py` | pre-existing |
+| native sandbox enforcement | `OPTIO_CODEX_SANDBOX_ENFORCE_TEST=1` | `test_sandbox_enforce.py` | pre-existing |
+| conversation turn + Layer-3 wire capture | `OPTIO_CODEX_CONVERSATION_TEST=1` | `test_real_codex_conversation.py` | **tracked-open** |
+| seed capture → replant | `OPTIO_CODEX_SEED_RESUME_TEST=1` | `test_real_codex_seed_resume.py::test_seed_capture_then_replant` | **tracked-open** |
+| resume relaunch (session-id round-trip) | `OPTIO_CODEX_SEED_RESUME_TEST=1` | `test_real_codex_seed_resume.py::test_resume_relaunch_picks_up_session` | **tracked-open** |
+| remote-SSH surface end-to-end | `OPTIO_CODEX_SEED_RESUME_TEST=1` + `OPTIO_CODEX_DEMO_SSH_HOST` | `test_real_codex_seed_resume.py::test_remote_iframe_surface_end_to_end` | **tracked-open** |
+
+**Tracked-open** = the harness is fully wired to the as-built engine/host
+patterns (Optio engine for the conversation capture; `run_codex_session` for
+seed/resume; `SSHConfig` from the demo env vars for remote) but has NOT yet been
+run against a real authed codex in this environment (no authed
+`~/.codex/auth.json` available, and the COST GUARD forbids a billable model turn
+in this run). Each must be run once against the real binary (the remote one
+against a real remote) to earn its row-30 checkmark.
+
+**Layer-3 codex wire fixture** (`packages/optio-conversation-ui/src/__tests__/
+fixtures/codex-events.json`): pending a real capture. Until
+`test_real_codex_conversation.py` is run once with `OPTIO_CODEX_CONVERSATION_TEST=1`
+against a real authed codex, the fixture is absent and the default-suite replay
+test `codex-events-fixture.test.ts` skips cleanly (green either way). Do NOT
+fabricate the fixture — a hand-written stream would not exercise the real
+interleaved-reasoning coalescing the test exists to guard.
+
 ## Recorded plan-verbatim deviations (executor drift-guard working as designed)
 
 - Task 6 test `test_host_protocol_false_keeps_resume_section_and_explainer`:
@@ -122,6 +154,14 @@ tsc + vitest green):
   absent instead. Equivalent-or-stronger. (Side note, optio-agents-owned: with
   `host_protocol=False` the composed AGENTS.md references STATUS messages
   "explained above" that are never explained — upstream prompt bug.)
+- Plan F Task 5 Step 1 (`codex-events-fixture.test.ts`): plan's
+  `fileURLToPath(new URL('./fixtures/...', import.meta.url))` throws
+  `TypeError: The URL must be of scheme file` at module-eval time — vite inlines
+  a top-level `import.meta.url` as a non-file URL under the jsdom environment.
+  Shipped test resolves the fixture from the package root
+  (`resolve(process.cwd(), 'src/__tests__/fixtures/codex-events.json')`, cwd is
+  the package dir under vitest). Same intent (optional-fixture presence gate),
+  working resolution.
 - Plan B Task 8 Step 4's combined
   `pytest packages/optio-agents/tests packages/optio-host/tests` aborts on a
   pre-existing `test_download.py` basename collision (no `__init__.py`); both
