@@ -13,15 +13,29 @@ symlinked into ``<workdir>/home/.local/bin/kimi``).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import re
+import shlex
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from optio_agents import HookContextProtocol
     from optio_host import Host
+    from optio_host.host import ProcessHandle
 
 _LOG = logging.getLogger(__name__)
+
+
+# kimi's server ready banner carries an access line with the origin and (when a
+# bearer token is resolvable) the ``#token=<token>`` fragment, e.g.:
+#   Local:    http://127.0.0.1:58627/#token=abc123
+# ``kimi server run``'s onReady hook prints it AFTER the socket is listening, so
+# the banner IS the readiness signal (mirrors grok reading ttyd's "Listening
+# on" line). Group 1 = the actual port; group 2 = the optional bearer token
+# (the token rides in a client-side fragment, never sent to the server).
+_KIMI_READY_RE = re.compile(r"https?://[^\s/]+:(\d+)/(?:#token=(\S+))?")
 
 
 def build_host(ssh, taskdir: str) -> "Host":
@@ -68,6 +82,155 @@ def _isolation_env(workdir: str) -> dict[str, str]:
         "XDG_DATA_HOME": f"{home}/.local/share",
         "XDG_CACHE_HOME": f"{home}/.cache",
     }
+
+
+# --- kimi resolution (Stage 0: no binary cache/download; that is Stage 5) ---
+
+
+async def resolve_kimi(
+    host: "Host",
+    *,
+    install_dir: str | None = None,
+    install_if_missing: bool = True,
+) -> str:
+    """Host-based ``kimi`` binary resolution (no HookContext).
+
+    Resolved from ``<install_dir>/kimi`` when ``install_dir`` is given,
+    otherwise via ``command -v kimi`` in a login shell (so worker-profile PATH
+    additions apply). Raises when the binary is absent. This is the Stage-0
+    resolver; the two-tier install cache (:func:`ensure_kimicode_installed`)
+    lands in plan group 4 and supersedes this in ``session._prepare``. Mirrors
+    grok's ``resolve_grok``.
+    """
+    if install_dir is not None:
+        candidate = f"{install_dir.rstrip('/')}/kimi"
+        probe = await host.run_command(
+            f"[ -x {shlex.quote(candidate)} ] && echo OK || true"
+        )
+        if "OK" in (probe.stdout or ""):
+            return candidate
+        raise RuntimeError(
+            f"kimi not present at {candidate!r} on host "
+            f"(kimi_install_dir={install_dir!r})."
+        )
+
+    result = await host.run_command("bash -lc 'command -v kimi'")
+    path = (result.stdout or "").strip()
+    if result.exit_code == 0 and path:
+        return path
+
+    if not install_if_missing:
+        raise RuntimeError(
+            "kimi not found on host and install_if_missing=False; nothing to do."
+        )
+    raise RuntimeError(
+        "kimi not found on the worker (looked via 'command -v kimi'). Stage 0 "
+        "has no auto-install (the binary cache is a later stage) — install "
+        "kimi manually or pass kimi_install_dir."
+    )
+
+
+# --- kimi web (server) launch ----------------------------------------------
+
+
+def build_launch_env(
+    workdir: str, extra_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Full environment for a kimi launch: the per-task isolation identity
+    (:func:`_isolation_env`) + ``PATH`` (the per-task ``home/.local/bin``
+    prepended ahead of the worker PATH) + caller extras.
+
+    kimi serves its own web SPA (no tmux/bash wrapper needed — the server IS
+    the launched process), so this is returned as a plain dict for
+    ``host.launch_subprocess`` rather than baked into a shell string the way
+    grok's ``_build_grok_shell_command`` must for tmux. ``PATH`` is layered
+    here (not in the isolation SSOT) so the per-task ``kimi`` symlink resolves
+    first.
+    """
+    iso = _isolation_env(workdir)
+    home_local_bin = f"{iso['HOME']}/.local/bin"
+    extra = dict(extra_env or {})
+    base_path = extra.pop("PATH", None) or os.environ.get(
+        "PATH", "/usr/local/bin:/usr/bin:/bin",
+    )
+    return {**iso, "PATH": f"{home_local_bin}:{base_path}", **extra}
+
+
+def build_kimi_server_argv(
+    kimi_path: str, *, bind_iface: str, port: int = 0,
+) -> list[str]:
+    """Argv for the foreground kimi web server.
+
+    ``kimi server run --foreground`` is the non-opening form of ``kimi web``
+    (``kimi web`` defaults ``--open`` true, which would spawn a browser ON THE
+    WORKER — the operator opens the iframe instead). ``--foreground`` keeps the
+    server in THIS process (attached, killable) rather than spawning a detached
+    daemon and exiting, so the wrapper owns its lifecycle and can tear it down.
+    ``--port 0`` binds an ephemeral port; the actual port is read back from the
+    ready banner.
+    """
+    return [
+        kimi_path, "server", "run", "--foreground",
+        "--host", bind_iface, "--port", str(port),
+    ]
+
+
+async def launch_kimi_web(
+    host: "Host",
+    *,
+    kimi_path: str,
+    bind_iface: str,
+    extra_env: dict[str, str] | None,
+    env_remove: list[str] | None = None,
+    ready_timeout_s: float = 30.0,
+    port: int = 0,
+) -> "tuple[ProcessHandle, int, str | None]":
+    """Start ``kimi server run --foreground`` and wait for it to be ready.
+
+    Returns ``(handle, port, token)`` where ``port`` is the actual listening
+    port (read from the ready banner) and ``token`` is the bearer token from
+    the banner's ``#token=`` fragment (``None`` when the server reported none).
+    The caller establishes a tunnel to ``port`` and injects ``token`` into the
+    iframe URL fragment.
+
+    Readiness = the server printed its access banner, which kimi does only
+    AFTER the socket is listening (mirrors grok reading ttyd's listening line).
+    On timeout / early exit the server subprocess is killed before raising.
+    """
+    argv = build_kimi_server_argv(kimi_path, bind_iface=bind_iface, port=port)
+    # ``exec`` so the launched /bin/sh is REPLACED by kimi (kimi becomes the
+    # session leader in the launcher's process group — the pgid teardown
+    # targets), matching grok's conversation launch rationale.
+    cmd = "exec " + " ".join(shlex.quote(a) for a in argv)
+    env = build_launch_env(host.workdir, extra_env)
+    handle = await host.launch_subprocess(
+        cmd, env=env, cwd=host.workdir, env_remove=env_remove,
+    )
+
+    async def _read_ready() -> "tuple[int, str | None]":
+        async for raw in handle.stdout:
+            line = (
+                raw.decode("utf-8", errors="replace").rstrip()
+                if isinstance(raw, bytes) else str(raw).rstrip()
+            )
+            m = _KIMI_READY_RE.search(line)
+            if m:
+                return int(m.group(1)), m.group(2)
+        raise RuntimeError("kimi server exited before printing a ready banner")
+
+    try:
+        server_port, token = await asyncio.wait_for(
+            _read_ready(), timeout=ready_timeout_s,
+        )
+    except asyncio.TimeoutError:
+        await host.terminate_subprocess(handle, aggressive=True)
+        raise TimeoutError(
+            f"kimi server did not print a ready banner within {ready_timeout_s}s"
+        )
+    except BaseException:
+        await host.terminate_subprocess(handle, aggressive=True)
+        raise
+    return handle, server_port, token
 
 
 async def ensure_kimicode_installed(
