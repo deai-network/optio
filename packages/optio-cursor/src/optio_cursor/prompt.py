@@ -8,9 +8,10 @@ appended verbatim.
 
 Adapted from optio-grok's ``compose_agents_md`` (both agents read
 AGENTS.md). Delta vs grok: the browser feature is ``redirect`` (cursor
-login prints a URL when ``NO_OPEN_BROWSER=1``; the agent surfaces it via
-``BROWSER:`` lines), so the ``BROWSER:`` keyword docs ARE included. Stage 2
-adds the resume-awareness section, gated on ``supports_resume``.
+login spawns ``xdg-open`` for the auth URL; the redirect shim captures it and
+surfaces it via ``BROWSER:`` lines), so the ``BROWSER:`` keyword docs ARE
+included. Stage 2 adds the resume-awareness section, gated on
+``supports_resume``.
 """
 
 from optio_agents.prompt import downloadables_block

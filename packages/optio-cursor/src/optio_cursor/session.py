@@ -115,8 +115,10 @@ async def _build_claustrum_wrap(
 async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> None:
     """Execute function body for one optio-cursor task instance."""
     host: Host = _build_host(config, ctx.process_id)
-    # Cursor's login flow prints its auth URL (NO_OPEN_BROWSER=1 is set in the
-    # launch env); "redirect" surfaces it to the operator via BROWSER:.
+    # Cursor's login opens the auth URL via xdg-open; "redirect" shadows
+    # xdg-open with a capture shim that surfaces the URL to the operator on a
+    # BROWSER: line (NO_OPEN_BROWSER is intentionally NOT set — see
+    # host_actions._isolation_env).
     protocol = get_protocol(browser="redirect")
     launched_handle: ProcessHandle | None = None
     tmux_path: str | None = None

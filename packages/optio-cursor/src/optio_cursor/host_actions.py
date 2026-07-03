@@ -506,12 +506,28 @@ def build_host(ssh, taskdir: str) -> "Host":
     return RemoteHost(ssh_config=ssh, taskdir=taskdir)
 
 
+# Cursor's login refuses to open a browser — falling back to printing the auth
+# URL — when its ``isSSH()`` heuristic fires (open-browser.ts). That heuristic
+# checks these env vars; when the optio worker is reached over SSH they are
+# inherited by the launch and cursor never spawns ``xdg-open``, so the redirect
+# browser-shim can never capture the URL. We scrub exactly these from every
+# cursor launch (``env -u``) so cursor DOES spawn ``xdg-open`` → the shim (front
+# of PATH) captures it → ``BROWSER:`` line → operator. SSH_AUTH_SOCK /
+# SSH_AGENT_PID are deliberately NOT scrubbed (not in cursor's detection set;
+# needed for git-over-SSH / agent forwarding inside the task).
+_CURSOR_SSH_DETECT_VARS = (
+    "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "SSH2_CLIENT", "SSH2_TTY",
+    "MOSH_CLIENT", "MOSH_SERVER", "MOSH_TTY",
+    "VSCODE_SSH_HOST", "VSCODE_SSH_SERVER",
+)
+
+
 def _isolation_env(workdir: str) -> dict[str, str]:
     """Single source of truth for a task's HOME/XDG agent identity.
 
     Every cursor launch (tmux iframe via ``_build_cursor_shell_command``)
     derives its environment from this map so isolation is identical across
-    launch paths. Five explicit keys, the path-valued ones all rooted at
+    launch paths. Four explicit keys, the path-valued ones all rooted at
     ``<workdir>/home``:
 
     - ``HOME`` — cursor derives ``~/.cursor`` and ``~/.cache`` from ``$HOME``
@@ -519,9 +535,16 @@ def _isolation_env(workdir: str) -> dict[str, str]:
     - ``XDG_CONFIG_HOME`` / ``XDG_DATA_HOME`` / ``XDG_CACHE_HOME`` — pin the
       XDG base dirs into the task home so no XDG-respecting tool reaches the
       operator's ``~/.config`` / ``~/.cache``.
-    - ``NO_OPEN_BROWSER=1`` — cursor's login flow PRINTs its auth URL instead
-      of spawning a host browser; the printed URL is surfaced to the operator
-      via the ``BROWSER:`` protocol keyword (browser="redirect").
+
+    ``NO_OPEN_BROWSER`` is intentionally NOT set. Cursor's login opens the auth
+    URL by spawning ``xdg-open`` (it resolves the name on PATH; it ignores
+    ``$BROWSER``). The redirect browser-shim shadows ``xdg-open`` at the front of
+    PATH (``<workdir>/bin``), so cursor's open attempt is captured — the shim
+    writes ``BROWSER: "<url>"`` to ``optio.log`` and the tail parser surfaces it
+    to the operator (``ctx.request_browser_open``). Setting NO_OPEN_BROWSER would
+    short-circuit that: cursor would only print the link to its TUI, invisible to
+    a headless/conversation launch. (In an SSH session cursor refuses to open and
+    prints the link regardless — remote tasks fall back to the TUI.)
 
     No claude-compat neutralization is needed (cursor does not ingest claude
     config) and cursor has no dedicated home env var beyond ``$HOME``.
@@ -534,7 +557,6 @@ def _isolation_env(workdir: str) -> dict[str, str]:
         "XDG_CONFIG_HOME": f"{home}/.config",
         "XDG_DATA_HOME": f"{home}/.local/share",
         "XDG_CACHE_HOME": f"{home}/.cache",
-        "NO_OPEN_BROWSER": "1",
     }
 
 
@@ -694,8 +716,9 @@ def _build_cursor_shell_command(
     """Return (env_assignments, shell_command).
 
     ``env_assignments`` is the list of ``KEY=VALUE`` strings (the full
-    :func:`_isolation_env` identity — HOME, XDG_*, NO_OPEN_BROWSER — plus
-    PATH and extras). ``shell_command`` is the full
+    :func:`_isolation_env` identity — HOME, XDG_* — plus PATH and extras;
+    the redirect browser-shim rides in via ``extra_env``/PATH, not here).
+    ``shell_command`` is the full
     ``env <assignments> bash -c <payload>`` string that runs cursor-agent
     under HOME-isolation and appends DONE/ERROR to optio.log when it exits.
     Consumed by build_tmux_session_argv (cursor runs inside the detached tmux
@@ -705,8 +728,9 @@ def _build_cursor_shell_command(
     WHOLE cursor process tree; when set it is prepended to the cursor
     invocation (``claustrum … -- cursor-agent …``), so claustrum execs
     cursor-agent inside the ruleset. None launches unconfined (fs_isolation
-    off). Cursor has no netns/pasta seal (it prints its auth URL rather than
-    running an OAuth loopback), so the claustrum wrap is the outermost layer.
+    off). Cursor has no netns/pasta seal (its login uses a device-code flow —
+    ``redirectTarget=cli`` — not an OAuth loopback server), so the claustrum
+    wrap is the outermost layer.
     """
     workdir_clean = workdir.rstrip("/")
     iso = _isolation_env(workdir_clean)
@@ -718,7 +742,7 @@ def _build_cursor_shell_command(
         "PATH", "/usr/local/bin:/usr/bin:/bin",
     )
     # HOME + PATH first (PATH prepends the per-task .local/bin), then the rest
-    # of the isolation identity (XDG_* + NO_OPEN_BROWSER) from the SSOT.
+    # of the isolation identity (XDG_*) from the SSOT.
     env_map = {
         "HOME": home_dir,
         "PATH": f"{home_local_bin}:{base_path}",
@@ -742,8 +766,16 @@ def _build_cursor_shell_command(
         f'if [ "$rc" = 0 ]; then echo DONE >> {shlex.quote(log_path)}; '
         f"else printf 'ERROR: cursor-agent exited %s\\n' \"$rc\" >> {shlex.quote(log_path)}; fi"
     )
+    # Scrub cursor's SSH-detection vars (see _CURSOR_SSH_DETECT_VARS) so its
+    # login opens the browser via xdg-open (captured by the redirect shim)
+    # instead of falling back to printing the URL. `env -u VAR` is a no-op when
+    # VAR is unset, so this is safe on a non-SSH worker too.
+    unset_flags: list[str] = []
+    for var in _CURSOR_SSH_DETECT_VARS:
+        unset_flags += ["-u", var]
     shell_command = "env " + " ".join(
-        shlex.quote(x) for x in [*env_assignments, "bash", "-c", bash_payload]
+        shlex.quote(x)
+        for x in [*unset_flags, *env_assignments, "bash", "-c", bash_payload]
     )
     return env_assignments, shell_command
 

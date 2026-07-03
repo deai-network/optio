@@ -9,16 +9,17 @@ from optio_cursor.host_actions import (
 
 def test_isolation_env_all_keys():
     """_isolation_env is the single source of truth for per-task HOME/XDG
-    identity — five explicit keys derived from the workdir (NO_OPEN_BROWSER
-    is part of the identity: no launch path may spawn a host browser)."""
+    identity — four explicit keys derived from the workdir. NO_OPEN_BROWSER is
+    intentionally NOT set: cursor is allowed to attempt xdg-open so the redirect
+    browser-shim captures the auth URL and surfaces it via BROWSER:."""
     env = _isolation_env("/w/task")
     assert env == {
         "HOME": "/w/task/home",
         "XDG_CONFIG_HOME": "/w/task/home/.config",
         "XDG_DATA_HOME": "/w/task/home/.local/share",
         "XDG_CACHE_HOME": "/w/task/home/.cache",
-        "NO_OPEN_BROWSER": "1",
     }
+    assert "NO_OPEN_BROWSER" not in env
     # No path-valued entry may point outside the workdir (PATH is layered by
     # the caller and intentionally absent here).
     for key, value in env.items():
@@ -43,9 +44,25 @@ def test_env_isolation_and_done_error():
         cursor_flags=["--force"],
     )
     assert "HOME=/w/task/home" in env
-    assert "NO_OPEN_BROWSER=1" in env
+    assert not any(a.startswith("NO_OPEN_BROWSER") for a in env)
     assert "echo DONE" in cmd and "ERROR: cursor-agent exited" in cmd
     assert "--force" in cmd
+
+
+def test_iframe_scrubs_cursor_ssh_detection_vars():
+    """Cursor's isSSH() gate refuses to spawn xdg-open (so the redirect shim can
+    never capture the login URL) whenever an SSH_* var is present. The launch
+    scrubs cursor's detection vars via ``env -u`` so cursor DOES open → the shim
+    captures. SSH_AUTH_SOCK / SSH_AGENT_PID are deliberately KEPT (not in the
+    detection set; needed for git-over-SSH / agent forwarding inside the task)."""
+    _env, cmd = _build_cursor_shell_command(
+        cursor_path="/x/cursor-agent", workdir="/w/task", extra_env=None,
+        cursor_flags=[],
+    )
+    for var in ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "SSH2_CLIENT", "SSH2_TTY"):
+        assert f"-u {var}" in cmd, var
+    assert "-u SSH_AUTH_SOCK" not in cmd
+    assert "-u SSH_AGENT_PID" not in cmd
 
 
 def test_teardown_aggressive_grace_for_seeded_sessions():

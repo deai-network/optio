@@ -29,8 +29,9 @@ base dirs (`XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_DATA_HOME`) pinned
 under it, so cursor's `~/.cursor` and `~/.cache` state never touches the
 operator's real home. Permission rules are config-planted (cursor has no
 `--allow`/`--deny` argv): they go into `<home>/.cursor/cli-config.json`.
-`NO_OPEN_BROWSER=1` keeps login URLs on the transcript instead of
-popping a browser.
+At login cursor spawns `xdg-open` for the auth URL; the redirect
+browser-shim (front of PATH) captures it and surfaces the URL to the
+operator on a `BROWSER:` line instead of a browser popping on the host.
 
 ## Status
 
