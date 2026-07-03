@@ -60,6 +60,19 @@ async def _call_maybe_async(fn, *args) -> None:
         await result
 
 
+def _teardown_aggressive(*, cancelled: bool, seeded: bool) -> bool:
+    """Whether to SIGKILL codex immediately on teardown vs SIGTERM-and-wait.
+
+    A **seeded** session is torn down GRACEFULLY even on cancel: codex's
+    single-use ChatGPT refresh token may have rotated this session, and codex's
+    auth.json write is best-effort — an aggressive SIGKILL can beat the flush,
+    stranding the rotation so the credential save-back persists the now-spent
+    token and the next launch demands re-auth. SIGTERM-and-wait lets codex
+    flush first. A non-seeded session keeps the fast aggressive kill on cancel.
+    """
+    return cancelled and not seeded
+
+
 async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> None:
     """Execute function body for one optio-codex task instance."""
     host: Host = _build_host(config, ctx.process_id)
@@ -482,6 +495,17 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
     finally:
         if not ctx.should_continue():
             cancelled = True
+        # Codex authenticates (ChatGPT mode) with a SINGLE-USE rotating refresh
+        # token. If codex rotated it this session, the new auth.json must reach
+        # the seed via the backstop below — but an aggressive SIGKILL can beat
+        # codex's flush, stranding the rotation (the seed keeps the now-spent
+        # token → the next launch demands re-auth). So when a SEED is in use,
+        # tear codex down GRACEFULLY (SIGTERM + wait) even on cancel, giving it
+        # time to persist auth.json before the final save-back reads it. Only a
+        # non-seeded session keeps the fast aggressive kill on cancel.
+        codex_aggressive = _teardown_aggressive(
+            cancelled=cancelled, seeded=resolved_seed_id is not None,
+        )
         # Stop the conversation listener first so its long-lived SSE loops are
         # woken (bounded shutdown) before the subprocess teardown below.
         if conv_listener is not None:
@@ -494,7 +518,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
         if config.mode == "conversation" and launched_handle is not None:
             try:
                 await host.terminate_subprocess(
-                    launched_handle, aggressive=cancelled)
+                    launched_handle, aggressive=codex_aggressive)
             except Exception:
                 _LOG.exception("terminate codex conversation subprocess failed")
         if (
@@ -511,7 +535,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                     tmux_session=tmux_session,
                     codex_path=codex_path,
                     ttyd_handle=launched_handle,
-                    aggressive=cancelled,
+                    aggressive=codex_aggressive,
                 )
             except Exception:
                 _LOG.exception("teardown_session_tree failed")

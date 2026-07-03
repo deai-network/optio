@@ -353,3 +353,15 @@ def test_build_codex_flags_embeds_sandbox_args():
     assert flags.index("--sandbox") < flags.index("--model")
     assert flags[flags.index("--sandbox") + 1] == "workspace-write"
     assert 'sandbox_workspace_write.writable_roots=["/s"]' in flags
+
+
+def test_teardown_aggressive_grace_for_seeded_sessions():
+    """A seeded session must tear codex down gracefully even on cancel so it
+    can flush a rotated (single-use) auth.json before the backstop save-back
+    reads it — an aggressive SIGKILL would strand the rotation and kill the
+    seed. A non-seeded session keeps the fast aggressive kill on cancel."""
+    from optio_codex.session import _teardown_aggressive
+    assert _teardown_aggressive(cancelled=True, seeded=True) is False    # grace
+    assert _teardown_aggressive(cancelled=True, seeded=False) is True    # fast kill
+    assert _teardown_aggressive(cancelled=False, seeded=True) is False
+    assert _teardown_aggressive(cancelled=False, seeded=False) is False
