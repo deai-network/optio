@@ -26,10 +26,12 @@ import asyncio
 import io
 import json
 import os
+import socket
 import time
 import urllib.error
 import urllib.request
 
+import pytest
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorGridFSBucket
 from optio_core.context import ProcessContext
@@ -266,3 +268,73 @@ def test_token_endpoint_default():
 def test_token_endpoint_env_override(monkeypatch):
     monkeypatch.setenv("KIMI_CODE_OAUTH_HOST", "https://auth.example.test/")
     assert verify._token_endpoint() == "https://auth.example.test/api/oauth/token"
+
+
+# --- DEFERRED opt-in: real-seed live-refresh (row-30 follow-up) --------------
+#
+# The tests above prove the verify/refresh/save-back/status LOGIC against a real
+# Mongo seed with the HTTP helper stubbed. This one proves the request SHAPE
+# round-trips end to end: it builds a Mongo seed from the operator's REAL
+# ``~/.kimi-code/credentials/kimi-code.json``, forces the refresh window, and runs
+# ``verify_and_refresh_seed`` with NO stub — a live ``grant_type=refresh_token``
+# POST to auth.kimi.com — asserting the token actually rotated in the seed.
+#
+# WARNING (why it is opt-in behind its own flag): kimi's refresh token is
+# SINGLE-USE and rotates on every grant. A successful run SPENDS the operator's
+# on-disk refresh token; the rotated token lands in the Mongo seed copy, NOT back
+# in ``~/.kimi-code``, so the operator's local kimi will need to re-login
+# afterwards. Never run this on a login you cannot re-establish.
+#
+# No real creds exist in this worktree, so it skips cleanly here.
+def _online() -> bool:
+    try:
+        socket.create_connection(("auth.kimi.com", 443), timeout=3).close()
+        return True
+    except OSError:
+        return False
+
+
+def _real_refresh_skip_reason() -> "str | None":
+    from realbin import has_kimi_creds, kimi_creds_path
+
+    if os.environ.get("OPTIO_KIMICODE_REAL_SEED_REFRESH") != "1":
+        return (
+            "opt-in + DESTRUCTIVE (spends the single-use refresh token): set "
+            "OPTIO_KIMICODE_REAL_SEED_REFRESH=1 to run the live-refresh test"
+        )
+    if not has_kimi_creds():
+        return f"no authenticated kimi ({kimi_creds_path()} absent)"
+    if not _online():
+        return "auth.kimi.com unreachable (offline)"
+    return None
+
+
+@pytest.mark.skipif(
+    _real_refresh_skip_reason() is not None,
+    reason=_real_refresh_skip_reason() or "",
+)
+async def test_real_seed_live_refresh_rotates_token(mongo_db, tmp_path):
+    from realbin import kimi_creds_path
+
+    real = json.loads(kimi_creds_path().read_text())
+    original_rt = real.get("refresh_token")
+    assert original_rt, "operator creds carry no refresh_token to rotate"
+
+    # Build a Mongo seed from the operator's REAL creds, but force the refresh
+    # window by back-dating expiry so verify performs the live grant.
+    seed_id = await _make_seed(
+        mongo_db, tmp_path,
+        expires_at=int(time.time()) - 10,      # expired → within any threshold
+        expires_in=real.get("expires_in", 3600),
+        refresh_token=original_rt,
+        access_token=real.get("access_token", "OLD"),
+    )
+
+    alive = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
+    assert alive is True, "live refresh against auth.kimi.com did not confirm the seed"
+
+    creds = await _seed_creds(mongo_db, seed_id)
+    # The single-use refresh token rotated, and a fresh access token landed.
+    assert creds["refresh_token"] != original_rt, "refresh token did not rotate"
+    assert creds["access_token"], "no access token after live refresh"
+    assert creds["expires_at"] > int(time.time()), "expiry not advanced by refresh"
