@@ -16,11 +16,13 @@ rotates ``key`` + ``refresh_token`` and resets ``expires_at``. Identity fields
 (``user_id``/``email``/``principal_*``/``team_id``/``oidc_*``) are unchanged by a
 refresh, so they are preserved verbatim.
 
-NOTE: the endpoint URL, grant, public-client fact, and ``key``→access-token
-mapping are pinned above; the exact request headers still want one confirmation
-against a live seed (like claudecode's "OAuth facts verified" note) — a wrong
-guess fails CLOSED (a 4xx marks the seed dead; a network error is inconclusive
-and never marks a healthy seed dead).
+CONFIRMED end-to-end against a live seed on 2026-07-03: OIDC discovery, a userinfo
+validate, and a real ``refresh_token`` grant (form-encoded, public client,
+``client_id`` only) all succeed; the endpoint returns
+``access_token``/``refresh_token``/``expires_in`` (access tokens live ~6h) and
+``key``←``access_token`` round-trips + saves back. A malformed request would fail
+CLOSED anyway (a 4xx marks the seed dead; a network error is inconclusive and never
+retires a healthy seed).
 """
 
 from __future__ import annotations
