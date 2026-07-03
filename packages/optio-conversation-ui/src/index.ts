@@ -8,6 +8,8 @@ export { reduceCodexEvent } from './codex/events.js';
 export { CodexView } from './codex/CodexView.js';
 export { reduceCursorEvent } from './cursor/events.js';
 export { CursorView } from './cursor/CursorView.js';
+export { reduceKimiCodeEvent } from './kimicode/events.js';
+export { KimiCodeView } from './kimicode/KimiCodeView.js';
 export { initialChatState } from './chat.js';
 export type { ChatItem, ChatState } from './chat.js';
 export { AnswerBlock } from './AnswerBlock.js';
