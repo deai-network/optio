@@ -193,10 +193,20 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             # Restore the workdir tar (carries home/.cursor, i.e. cursor's
             # chat store). A present snapshot that fails to restore is fatal —
             # the restore call is intentionally outside any except so it
-            # surfaces to the caller (no silent fresh-start). cursor-agent +
-            # ttyd survive the restore: both live OUTSIDE the workdir, so no
-            # re-install is needed.
+            # surfaces to the caller (no silent fresh-start).
             await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
+            # The cursor-agent launch symlink (home/.local/bin/cursor-agent)
+            # lives INSIDE the workdir and was wiped by the restore;
+            # re-establish it against the cache (which lives OUTSIDE the workdir
+            # and survives). Idempotent: cache hit → just relinks, no
+            # reinstall/redownload. ttyd survives untouched (real host home,
+            # outside the workdir).
+            cursor_path = await host_actions.ensure_cursor_installed(
+                hook_ctx,
+                install_if_missing=config.install_if_missing,
+                install_dir=config.cursor_install_dir,
+                progress_label="Restoring cursor-agent runtime…",
+            )
             await host_actions._rotate_optio_log(host)
             # A restored snapshot means cursor persisted a chat for this cwd;
             # --continue resumes the most recent one. $HOME lives inside the

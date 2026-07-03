@@ -387,18 +387,22 @@ async def ensure_cursor_installed(
     *,
     install_if_missing: bool = True,
     install_dir: str | None = None,
+    progress_label: str = "Locating cursor-agent…",
 ) -> str:
     """Provision ``cursor-agent`` for this task from the optio-owned binary cache.
 
     The cache dir (``_resolve_cursor_cache_dir``) lives on the worker outside
     any task workdir and never the operator's autoupdating
     ``~/.local/share/cursor-agent`` — so it stays shared, evictable, and
-    unsnapshotted (re-populated on a miss after eviction). Returns the
-    absolute path of the cached ``cursor-agent`` entrypoint. Population order:
+    unsnapshotted (re-populated on a miss after eviction). This makes the cache
+    the single stable home of the binary; the value RETURNED is the per-task
+    launch path ``<workdir>/home/.local/bin/cursor-agent`` — a symlink into the
+    cache, on the launch PATH (mirrors grok's ``home/.local/bin/grok`` and
+    claudecode's ``home/.local/bin/claude``). Population order:
 
     1. **cache hit** — ``<cache>/cursor-agent`` is already executable →
-       return it directly (the stable path every task launches, decoupled
-       from the host's autoupdater).
+       link it into the task path (the stable path every task launches,
+       decoupled from the host's autoupdater).
     2. **vendor installer** — cursor HAS a confirmed bootstrap installer
        (unlike grok): run it with ``HOME=<cache>/staging`` and adopt the
        installed ``versions/<v>`` tree into the cache
@@ -409,10 +413,12 @@ async def ensure_cursor_installed(
     4. Nothing worked → raise naming both failed routes. With
        ``install_if_missing=False`` a cache miss raises immediately.
 
-    Uses only generic Host primitives.
+    Uses only generic Host primitives. Idempotent on a re-call (cache hit → it
+    just re-links the task path), which is how resume re-establishes the launch
+    symlink after ``restore_workdir`` wipes it.
     """
     host = hook_ctx._host
-    hook_ctx.report_progress(None, "Locating cursor-agent…")
+    hook_ctx.report_progress(None, progress_label)
 
     cache_dir = await _resolve_cursor_cache_dir(host, install_dir)
     cached = f"{cache_dir}/cursor-agent"
@@ -422,7 +428,7 @@ async def ensure_cursor_installed(
     )
     if "OK" in (probe.stdout or ""):
         _LOG.info("ensure_cursor_installed: cache HIT (%s)", cached)
-        return cached
+        return await _link_cursor_into_task(host, cached)
 
     if not install_if_missing:
         raise RuntimeError(
@@ -434,7 +440,7 @@ async def ensure_cursor_installed(
     vendor = await _vendor_install_cursor(host, cache_dir)
     if vendor is not None:
         _LOG.info("ensure_cursor_installed: cache MISS -> vendor install (%s)", vendor)
-        return vendor
+        return await _link_cursor_into_task(host, vendor)
 
     # Vendor route unavailable — fall back to copying the host install.
     try:
@@ -454,7 +460,36 @@ async def ensure_cursor_installed(
     hook_ctx.report_progress(None, "Seeding cursor-agent cache from host install…")
     cached = await _seed_cache_from_host(host, cache_dir, source)
     _LOG.info("ensure_cursor_installed: cache MISS -> seeded from %s", source)
-    return cached
+    return await _link_cursor_into_task(host, cached)
+
+
+async def _link_cursor_into_task(host: "Host", cached: str) -> str:
+    """Symlink the cached cursor-agent entrypoint into the task's isolated home
+    launch dir.
+
+    The cache lives OUTSIDE the workdir (persists across task teardown); the
+    launch path ``<workdir>/home/.local/bin/cursor-agent`` is a per-task symlink
+    to it, ahead on the launch PATH. Returns that task path. ``ln -sfn`` is
+    idempotent — a resume re-call just refreshes the symlink on the restored
+    tree. ``cached`` is itself the ``<cache>/cursor-agent`` symlink into the
+    Node ``versions/<v>/`` dist tree, so the launch resolves task → cache →
+    version-dir entrypoint; the whole chain stays inside the rox-granted cache
+    (see fs_allowlist.build_grant_flags). Mirrors grok's ``_link_grok_into_task``.
+    """
+    workdir = host.workdir.rstrip("/")
+    bin_dir = f"{workdir}/home/.local/bin"
+    task_cursor = f"{bin_dir}/cursor-agent"
+    r = await host.run_command(
+        f"mkdir -p {shlex.quote(bin_dir)} && "
+        f"ln -sfn {shlex.quote(cached)} {shlex.quote(task_cursor)}"
+    )
+    if r.exit_code != 0:
+        raise RuntimeError(
+            f"linking cursor-agent into the task path ({task_cursor!r} -> "
+            f"{cached!r}) failed (exit {r.exit_code}): "
+            f"{(r.stderr or '').strip()[:200]}"
+        )
+    return task_cursor
 
 
 def build_host(ssh, taskdir: str) -> "Host":

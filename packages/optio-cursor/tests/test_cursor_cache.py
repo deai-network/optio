@@ -1,19 +1,21 @@
 """Stage 5: optio-owned, evictable cursor-agent binary cache.
 
 ``ensure_cursor_installed`` resolves the ``cursor-agent`` binary through a
-cache dir that lives outside the task workdir and never the operator's
-``~/.local/share/cursor-agent``:
+cache dir that lives OUTSIDE the task workdir and never the operator's
+``~/.local/share/cursor-agent``, and returns a per-task launch symlink into
+that cache (``<workdir>/home/.local/bin/cursor-agent``):
 
-* cache HIT — ``<cache>/cursor-agent`` already executable → returned directly,
-  no copy (this is also the Stage-0 session-test path: those tests pass
-  ``cursor_install_dir=<shim dir>``, which is now the cache dir with the shim).
+* cache HIT — ``<cache>/cursor-agent`` already executable → linked into the
+  task path, no copy (this is also the Stage-0 session-test path: those tests
+  pass ``cursor_install_dir=<shim dir>``, which is now the cache dir with the
+  shim).
 * cache MISS — the vendor installer is tried first (guarded: NEVER hit by
   these tests — its shell-command construction is unit-tested instead), then
   the host install is copied in. Unlike grok's single-file binary,
   ``cursor-agent`` is a symlink into a Node version dir
   (``.../cursor-agent/versions/<v>/``): the WHOLE version dir is copied and
   the cached entrypoint is a ``<cache>/cursor-agent`` symlink resolving
-  through the copied tree.
+  through the copied tree. The task path is then linked to that entrypoint.
 * nothing works — a clear error naming both failed population routes.
 * default location — ``CURSOR_CACHE_DIR`` / ``${XDG_CACHE_HOME:-$HOME/.cache}/
   optio-cursor``, resolved against the worker's REAL env; never the workdir.
@@ -89,8 +91,12 @@ async def _local_ctx(tmp_path: pathlib.Path) -> _FakeHookCtx:
     return _FakeHookCtx(host)
 
 
+def _task_path(ctx: _FakeHookCtx) -> str:
+    return f"{ctx._host.workdir.rstrip('/')}/home/.local/bin/cursor-agent"
+
+
 @pytest.mark.asyncio
-async def test_cache_hit_returns_cached_path(tmp_path: pathlib.Path, monkeypatch):
+async def test_cache_hit_links_into_task_path(tmp_path: pathlib.Path, monkeypatch):
     cache = tmp_path / "cache"
     cache.mkdir()
     _write_exe(cache / "cursor-agent")
@@ -104,7 +110,11 @@ async def test_cache_hit_returns_cached_path(tmp_path: pathlib.Path, monkeypatch
     ctx = await _local_ctx(tmp_path)
 
     result = await host_actions.ensure_cursor_installed(ctx, install_dir=str(cache))
-    assert result == str(cache / "cursor-agent")
+    # Returns the per-task launch path (a symlink), NOT the raw cache path.
+    assert result == _task_path(ctx)
+    assert os.path.islink(result)
+    assert os.path.realpath(result) == str((cache / "cursor-agent").resolve())
+    assert os.access(result, os.X_OK)
 
 
 @pytest.mark.asyncio
@@ -125,10 +135,14 @@ async def test_cache_miss_copies_host_version_dir(
     ctx = await _local_ctx(tmp_path)
 
     result = await host_actions.ensure_cursor_installed(ctx, install_dir=str(cache))
-    assert result == str(cache / "cursor-agent")
+    # Returns the per-task launch symlink, NOT the raw cache path.
+    assert result == _task_path(ctx)
+    assert os.path.islink(result)
     assert os.access(result, os.X_OK)
-    # The entrypoint resolves through the COPIED tree inside the cache, not
-    # back into the host install.
+    # The cache entrypoint is a symlink into the COPIED version dir.
+    assert os.path.islink(cache / "cursor-agent")
+    # The entrypoint resolves (task symlink → cache symlink → copied tree)
+    # into the cache, not back into the host install.
     real = pathlib.Path(result).resolve()
     assert real == (cache / "versions/1.0/cursor-agent").resolve()
     assert str(real).startswith(str(cache))
@@ -186,9 +200,11 @@ async def test_default_cache_dir_from_cursor_cache_dir_env(
     ctx = await _local_ctx(tmp_path)
 
     result = await host_actions.ensure_cursor_installed(ctx)  # no install_dir
-    assert result == str(cache / "cursor-agent")
-    # The cache dir is NOT under the task workdir.
-    assert not result.startswith(ctx._host.workdir)
+    # The returned task path is a symlink whose real target (the cache) is
+    # outside the workdir.
+    assert result == _task_path(ctx)
+    assert not os.path.realpath(result).startswith(ctx._host.workdir)
+    assert os.path.realpath(result) == str((cache / "cursor-agent").resolve())
 
 
 def test_vendor_install_command_construction(tmp_path: pathlib.Path):
