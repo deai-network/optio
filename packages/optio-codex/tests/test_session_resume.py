@@ -74,6 +74,10 @@ def _cfg(shim_install_dir: pathlib.Path) -> CodexTaskConfig:
         codex_install_dir=str(shim_install_dir),
         ttyd_install_dir=str(shim_install_dir),
         supports_resume=True,
+        # Task-execution (iframe) demo shape: opt into the unattended kickoff
+        # (the default is now False — Gap 2). Without this the fresh launch
+        # carries no AUTO_START_PROMPT positional and the resume E2E fails.
+        auto_start=True,
     )
 
 

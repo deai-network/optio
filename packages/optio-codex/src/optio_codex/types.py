@@ -138,7 +138,14 @@ class CodexTaskConfig:
     codex_install_dir: str | None = None
     ttyd_install_dir: str | None = None
 
-    auto_start: bool = True
+    # When True, a fresh launch kicks off the first turn itself — iframe mode
+    # types a trailing positional prompt, conversation mode sends the
+    # AUTO_START_PROMPT ("Read AGENTS.md and execute the task it describes").
+    # This is for UNATTENDED task execution; a task must opt in. Defaults to
+    # False (parity with claudecode/grok/opencode): a conversation/chat task
+    # must NOT auto-fire a kickoff, or codex starts an agentic loop on launch
+    # and blocks the operator's first real prompt (queued behind it).
+    auto_start: bool = False
 
     before_execute: HookCallback | None = None
     after_execute: HookCallback | None = None

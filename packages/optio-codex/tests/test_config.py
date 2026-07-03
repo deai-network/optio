@@ -6,7 +6,7 @@ from optio_codex.types import AllowedDir
 
 def test_defaults_and_validation():
     c = CodexTaskConfig(consumer_instructions="do it")
-    assert c.mode == "iframe" and c.host_protocol is True and c.auto_start is True
+    assert c.mode == "iframe" and c.host_protocol is True and c.auto_start is False
     assert c.ask_for_approval == "never" and c.effective_sandbox_mode == "workspace-write"
     assert c.supports_resume is True
     assert c.workdir_exclude is None

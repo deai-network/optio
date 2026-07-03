@@ -230,7 +230,9 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     seed_id=seed_id,
                     supports_resume=True,
                     # Kick the agent off unattended (reads AGENTS.md +
-                    # executes) — the CodexTaskConfig default, spelled out.
+                    # executes). auto_start now defaults to False (Gap 2) — a
+                    # task-execution surface must opt in explicitly; the
+                    # seed-pinned CONVERSATION demo below correctly omits it.
                     auto_start=True,
                 ),
             )
