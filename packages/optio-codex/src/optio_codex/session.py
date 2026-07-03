@@ -386,6 +386,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             await ctx.set_widget_data({
                 "protocol": "codex",
                 "toolVerbosity": config.tool_verbosity,
+                "thinkingVerbosity": config.thinking_verbosity,
                 "showModelSelector": config.show_model_selector,
                 "models": model_list["models"],
                 "currentModel": current_model,

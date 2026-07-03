@@ -18,6 +18,7 @@ __all__ = [
     "CodexTaskConfig",
     "ConversationMode",
     "ToolVerbosity",
+    "ThinkingVerbosity",
     "ApprovalPolicy",
     "SandboxMode",
     "SeedProvider",
@@ -36,6 +37,12 @@ _VALID_MODES = {"iframe", "conversation"}
 # dashboard reducer.
 ToolVerbosity = Literal["silent", "description-only", "verbose"]
 _VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
+
+# Visibility of the agent's reasoning trace in the conversation widget
+# (conversation_ui only). Mirrors optio-grok; consumed by the dashboard
+# reducer/ConversationView (thinkingVerbosity gate).
+ThinkingVerbosity = Literal["hidden", "visible"]
+_VALID_THINKING_VERBOSITY = {"hidden", "visible"}
 
 ApprovalPolicy = Literal["untrusted", "on-failure", "on-request", "never"]
 _VALID_APPROVAL_POLICIES = {"untrusted", "on-failure", "on-request", "never"}
@@ -167,6 +174,9 @@ class CodexTaskConfig:
     # How much tool-call detail the conversation widget renders; only
     # affects conversation_ui rendering.
     tool_verbosity: ToolVerbosity = "description-only"
+    # Whether the agent's reasoning trace is shown in the conversation
+    # widget; only affects conversation_ui rendering. Default hidden.
+    thinking_verbosity: ThinkingVerbosity = "hidden"
 
     # --- conversation frontend parity (Stage 7) -------------------------
     # Model preselected in the widget's model picker. Requires
@@ -232,6 +242,11 @@ class CodexTaskConfig:
             raise ValueError(
                 f"CodexTaskConfig.tool_verbosity={self.tool_verbosity!r} "
                 f"is not one of {sorted(_VALID_TOOL_VERBOSITY)}"
+            )
+        if self.thinking_verbosity not in _VALID_THINKING_VERBOSITY:
+            raise ValueError(
+                f"CodexTaskConfig.thinking_verbosity={self.thinking_verbosity!r} "
+                f"is not one of {sorted(_VALID_THINKING_VERBOSITY)}"
             )
         # Frontend-parity features are opt-in flags that only make sense
         # with the conversation UI wired (mirrors claudecode/grok).

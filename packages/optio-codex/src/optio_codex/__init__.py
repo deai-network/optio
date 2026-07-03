@@ -27,6 +27,7 @@ from optio_codex.types import (
     HookCallback,
     SandboxMode,
     ToolVerbosity,
+    ThinkingVerbosity,
     SeedProvider,
     SeedUnavailableError,
 )
@@ -47,6 +48,7 @@ __all__ = [
     "HookCallback",
     "SandboxMode",
     "ToolVerbosity",
+    "ThinkingVerbosity",
     "SeedProvider",
     "SeedUnavailableError",
     "SSHConfig",
