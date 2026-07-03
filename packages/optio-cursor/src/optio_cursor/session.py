@@ -33,6 +33,7 @@ from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
 from optio_host.paths import task_dir
 
 from optio_cursor import cred_watcher, host_actions
+from optio_cursor import model_probe
 from optio_cursor import models as cursor_models
 from optio_cursor.conversation import CursorConversation
 from optio_cursor.conversation_listener import ConversationListener
@@ -110,6 +111,42 @@ async def _build_claustrum_wrap(
         host_home=host_home,
     )
     return [claustrum_path, "--best-effort", "--abi-min", "1", *grants, "--"]
+
+
+async def _probe_or_cached_models(
+    ctx, conversation, models: list[dict], *, seed_id: str | None,
+) -> list[dict]:
+    """Grey out models the seed's plan cannot use. cursor lists its full
+    catalogue with no plan flag; a gated model silently answers "Upgrade your
+    plan to continue". So probe each id once (before the widget is shown) and
+    cache the result per seed (24h) — see model_probe. Best-effort: on any
+    failure the list is returned unchanged (nothing wrongly disabled)."""
+    ids = [m["id"] for m in models if m.get("id")]
+    if not ids:
+        return models
+    usable: dict[str, bool] | None = None
+    if seed_id is not None:
+        try:
+            usable = await model_probe.load_probe_cache(ctx._db, ctx._prefix, seed_id)
+        except Exception:  # noqa: BLE001
+            _LOG.exception("model-probe cache load failed")
+    if usable is None:
+        def _report(i: int, total: int, _mid: str) -> None:
+            ctx.report_progress(None, f"Checking available models… ({i}/{total})")
+
+        try:
+            usable = await model_probe.probe_models(conversation, ids, report=_report)
+        except Exception:  # noqa: BLE001
+            _LOG.exception("model probe failed; showing the unfiltered list")
+            return models
+        if seed_id is not None:
+            try:
+                await model_probe.save_probe_cache(
+                    ctx._db, ctx._prefix, seed_id, usable,
+                )
+            except Exception:  # noqa: BLE001
+                _LOG.exception("model-probe cache save failed")
+    return model_probe.apply_probe(models, usable)
 
 
 async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> None:
@@ -466,6 +503,20 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                 mime = mimetypes.guess_type(real)[0] or "application/octet-stream"
                 return data, mime
 
+            # Model picker options: prefer the ACP session block captured at
+            # bootstrap (authed, exact ids set_model accepts), else
+            # `cursor-agent models` (auth-gated), else a static list. The
+            # availability probe runs HERE — before the listener starts — so its
+            # throwaway "capital of Hungary" turns never reach the widget.
+            model_list = await cursor_models.fetch_available_models(
+                conversation.session_models, host=host, cursor_path=cursor_path,
+            )
+            if config.show_model_selector and model_list.get("models"):
+                model_list["models"] = await _probe_or_cached_models(
+                    ctx, conversation, model_list["models"],
+                    seed_id=resolved_seed_id,
+                )
+
             conv_listener = ConversationListener(
                 conversation, password=listener_password,
                 upload_writer=_write_upload,
@@ -481,14 +532,9 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                 f"http://{upstream_host}:{listener_port}",
                 inner_auth=BasicAuth(username="optio", password=listener_password),
             )
-            # Model picker options: prefer the ACP session block captured at
-            # bootstrap (authed, exact ids set_model accepts), else
-            # `cursor-agent models` (auth-gated), else a static list.
             # default_model overrides the picker's initial value; otherwise
-            # the live current model is shown.
-            model_list = await cursor_models.fetch_available_models(
-                conversation.session_models, host=host, cursor_path=cursor_path,
-            )
+            # the live current model is shown (model_list was built + probed
+            # above, before the listener started).
             current_model = config.default_model or model_list.get("default")
             await ctx.set_widget_data({
                 "protocol": "cursor",

@@ -270,6 +270,17 @@ def _run_acp_stdio() -> int:
     """
     session_id = "fake-cursor-session"
     exit_after = int(os.environ.get("FAKE_CURSOR_EXIT_AFTER", "0") or "0")
+    # Model-probe scenario (opt-in): FAKE_CURSOR_ACP_MODELS is a comma list of
+    # available ids (first = current); FAKE_CURSOR_GATED_MODELS lists the ones
+    # that reply "Upgrade your plan to continue". Unset → the historical
+    # models:[] behaviour (existing conversation tests are unaffected).
+    acp_models = [
+        m for m in os.environ.get("FAKE_CURSOR_ACP_MODELS", "").split(",") if m
+    ]
+    gated_models = {
+        m for m in os.environ.get("FAKE_CURSOR_GATED_MODELS", "").split(",") if m
+    }
+    current_model = acp_models[0] if acp_models else None
     turn = 0
     next_perm_id = 1000
     while True:
@@ -295,13 +306,40 @@ def _run_acp_stdio() -> int:
                 },
                 "authMethods": [{"id": "cursor_login"}]}})
         elif method == "session/new":
+            models_block = {}
+            if acp_models:
+                models_block = {
+                    "currentModelId": acp_models[0],
+                    "availableModels": [
+                        {"modelId": m, "name": m} for m in acp_models
+                    ],
+                }
             _acp_send({"jsonrpc": "2.0", "id": mid, "result": {
-                "sessionId": session_id, "models": []}})
+                "sessionId": session_id, "models": models_block}})
+        elif method == "session/set_model":
+            current_model = (msg.get("params") or {}).get("modelId")
+            _acp_send({"jsonrpc": "2.0", "id": mid, "result": {}})
         elif method == "session/prompt":
             turn += 1
             prompt = (msg.get("params") or {}).get("prompt") or []
             text = " ".join(p.get("text", "") for p in prompt)
-            if "TOOL" in text:
+            if acp_models and current_model in gated_models:
+                # Plan-gated model: cursor accepts the turn but only replies with
+                # the upgrade nag (normal end_turn, no error).
+                _acp_notify_update(session_id, {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text",
+                                "text": "Upgrade your plan to continue"}})
+                _acp_send({"jsonrpc": "2.0", "id": mid,
+                           "result": {"stopReason": "end_turn"}})
+            elif acp_models and "capital city of Hungary" in text:
+                _acp_notify_update(session_id, {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text",
+                                "text": "The capital city of Hungary is Budapest."}})
+                _acp_send({"jsonrpc": "2.0", "id": mid,
+                           "result": {"stopReason": "end_turn"}})
+            elif "TOOL" in text:
                 next_perm_id += 1
                 _acp_notify_update(session_id, {
                     "sessionUpdate": "tool_call", "toolCallId": "tc",

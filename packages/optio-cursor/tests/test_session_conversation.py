@@ -194,6 +194,39 @@ async def test_auto_start_sends_kickoff_first(shim_install_dir, task_root, mongo
         await optio.shutdown(grace_seconds=1.0)
 
 
+@pytest.mark.asyncio
+async def test_model_probe_disables_gated_models(
+    shim_install_dir, task_root, mongo_db, monkeypatch,
+):
+    """The startup probe drives the live ACP: a plan-gated model answers
+    'Upgrade your plan to continue' (unusable); a working model answers Budapest
+    (usable). The originally-active model is restored afterwards."""
+    from optio_cursor import model_probe
+
+    monkeypatch.setenv("FAKE_CURSOR_ACP_MODELS", "m-good,m-gated")
+    monkeypatch.setenv("FAKE_CURSOR_GATED_MODELS", "m-gated")
+    optio = await _make_optio(mongo_db, "cuprobe")
+    try:
+        task = create_cursor_task(
+            process_id="cu-probe", name="Probe",
+            config=_conversation_config(shim_install_dir),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result(
+            "cu-probe", session_id=None, timeout=60,
+        )
+        assert conv.current_model_id == "m-good"  # from session/new
+        usable = await model_probe.probe_models(
+            conv, ["m-good", "m-gated"], per_model_timeout=10,
+        )
+        assert usable == {"m-good": True, "m-gated": False}
+        assert conv.current_model_id == "m-good"  # restored after probe
+        await conv.close()
+        await _wait_terminal(optio, "cu-probe")
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
 def test_ui_widget_per_mode():
     """Conversation tasks carry no widget; iframe tasks keep 'iframe'."""
     conv_task = create_cursor_task(

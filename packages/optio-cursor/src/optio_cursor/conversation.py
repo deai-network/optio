@@ -425,6 +425,13 @@ class CursorConversation:
         except Exception:  # noqa: BLE001 — never let a set_model bug kill the driver
             _LOG.exception("cursor conversation: session/set_model failed")
 
+    async def set_active_model(self, model: str) -> None:
+        """Await a ``session/set_model`` round-trip so the NEXT prompt uses
+        ``model``. Used by the startup model probe (model_probe.probe_models);
+        the interactive UI path uses the fire-and-forget request_model_change."""
+        await self._set_model(model)
+        self.current_model_id = model
+
     async def close(self) -> None:
         self.close_requested.set()
 
