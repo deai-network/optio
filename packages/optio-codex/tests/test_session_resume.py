@@ -160,6 +160,11 @@ async def test_resume_restores_workdir_and_relaunches_by_session_id(
     # suppressed (re-kicking would enqueue a duplicate task).
     assert launches[1][:2] == ["resume", session_id]
     assert AUTO_START_PROMPT not in launches[1]
+    # PUSH resume awareness (Gap 1): only the RESUMED launch carries the
+    # System: notice positional, so the resumed session gets a "you have
+    # been resumed" turn. The fresh launch never does (it got the kickoff).
+    assert not any("you have been resumed" in str(a) for a in launches[0]), launches[0]
+    assert any("you have been resumed" in str(a) for a in launches[1]), launches[1]
     # resume.log: one line per session start (fresh + resume).
     assert len(resume_lines) == 2
 

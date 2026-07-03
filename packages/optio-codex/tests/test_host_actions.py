@@ -240,6 +240,17 @@ def test_build_auto_start_args_suppressed_on_resume():
     assert build_auto_start_args(auto_start=False, resuming=True) == []
 
 
+def test_build_resume_notice_args():
+    from optio_codex.host_actions import build_resume_notice_args
+    # Fresh launch → no notice.
+    assert build_resume_notice_args(resuming=False) == []
+    # Resume → a single System:-prefixed "you have been resumed" positional.
+    notice = build_resume_notice_args(resuming=True)
+    assert len(notice) == 1
+    assert "you have been resumed" in notice[0]
+    assert notice[0].startswith("System:")
+
+
 @pytest.mark.asyncio
 async def test_read_latest_session_id_scans_newest_rollout_by_name(tmp_path):
     """Newest by FILENAME, not mtime: rollout names embed an ISO-ordered

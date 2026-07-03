@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
 from optio_host.host import proc_wait
 
 if TYPE_CHECKING:
@@ -592,6 +593,25 @@ def build_auto_start_args(
     enqueue a duplicate task on top of the resumed conversation.
     """
     return [prompt] if (auto_start and not resuming) else []
+
+
+def build_resume_notice_args(*, resuming: bool) -> list[str]:
+    """Trailing positional that notifies a resumed codex TUI session.
+
+    Returns ``[f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}"]`` on resume (codex
+    relaunches with the ``resume <id>`` subcommand, so a trailing positional is
+    processed as the resumed session's first turn — mirrors claudecode's
+    ``claude --continue '<text>'`` and grok's ``grok -c '<text>'``). Empty on a
+    fresh launch. This is the PUSH half of resume awareness — it makes codex
+    notice the resume promptly; ``resume.log`` remains the pull-based source of
+    truth. Codex is taught the ``System:`` convention in BOTH protocol modes
+    (the keyword docs when ``host_protocol=True``; ``_SYSTEM_PREFIX_EXPLAINER``
+    when ``False``; plus the resume section's own ``System:`` note whenever
+    ``supports_resume=True``), so — like grok — no ``host_protocol`` gate is
+    needed. Mutually exclusive with :func:`build_auto_start_args` (auto_start
+    fires only on a FRESH launch; the notice only on a RESUME).
+    """
+    return [f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}"] if resuming else []
 
 
 async def _ttyd_present(host: "Host", ttyd_path: str) -> bool:
