@@ -25,10 +25,11 @@ import inspect
 import json
 import logging
 import os
+import secrets
 import shlex
 
 from optio_core.context import ProcessContext
-from optio_core.models import TaskInstance
+from optio_core.models import BasicAuth, TaskInstance
 
 from optio_agents import HookContext, get_protocol
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
@@ -38,6 +39,8 @@ from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
 from optio_host.paths import task_dir
 
 from optio_kimicode import cred_watcher, host_actions
+from optio_kimicode.conversation import KimiCodeConversation
+from optio_kimicode.conversation_listener import ConversationListener
 from optio_kimicode.prompt import compose_agents_md
 from optio_kimicode.seed_manifest import KIMI_SEED_MANIFEST, KIMI_SEED_SUFFIX
 from optio_kimicode.snapshots import (
@@ -309,16 +312,156 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                 except asyncio.CancelledError:
                     pass
 
+    # Conversation mode is headless (kimi acp stdio) — no kimi web server.
+    conversation: KimiCodeConversation | None = None
+    if config.mode == "conversation":
+        conversation = KimiCodeConversation(
+            cwd=host.workdir, permission_gate=config.permission_gate,
+        )
+    # Per-task conversation listener (conversation_ui only). Started in the
+    # body after publish_result, torn down in the finally block.
+    conv_listener: ConversationListener | None = None
+
+    async def _conversation_body(host: Host, hook_ctx: HookContext) -> None:
+        nonlocal launched_handle, cred_watch_task, conv_listener
+
+        # Launch ``kimi acp`` directly (headless ACP over stdio; no kimi web
+        # server, no tmux/ttyd). ``kimi acp`` accepts only ``--login`` — there
+        # is NO model / sandbox / approve launch flag (verified against
+        # apps/kimi-code/src/cli/sub/acp.ts): the model is chosen over ACP
+        # (``session/set_model``) and the permission gate is the fs/terminal
+        # capability seam KimiCodeConversation withholds, not a CLI flag.
+        # Filesystem isolation (the claustrum wrap) arrives in a later task.
+        argv = [kimi_path, "acp"]
+        # ``exec`` so /bin/sh REPLACES itself with the kimi process, making kimi
+        # the session leader in the launcher's process group (the pgid optio's
+        # teardown targets) rather than a forked grandchild that killpg misses.
+        cmd = "exec " + " ".join(shlex.quote(a) for a in argv)
+        # Same per-task HOME/KIMI_CODE_HOME/XDG isolation + PATH as the iframe
+        # launch (build_launch_env). merge_stderr=False keeps kimi's diagnostics
+        # off the JSON-RPC stdout stream the driver parses.
+        env = host_actions.build_launch_env(
+            host.workdir,
+            {**(config.env or {}), **(hook_ctx.browser_launch_env or {})},
+        )
+        ctx.report_progress(None, "Launching Kimi Code (conversation)…")
+        handle = await host.launch_subprocess(
+            cmd, env=env, cwd=host.workdir,
+            env_remove=config.scrub_env, stdin=True, merge_stderr=False,
+        )
+        launched_handle = handle
+        conversation.attach(handle)
+        reader_task = asyncio.create_task(conversation.run_reader())
+        try:
+            await conversation.bootstrap()
+        except Exception:
+            reader_task.cancel()
+            raise
+
+        ctx.publish_result(conversation)
+        ctx.report_progress(None, "Kimi Code conversation is live")
+
+        # Opt-in dashboard chat widget: start a per-task SSE listener over the
+        # published conversation and publish it as the "conversation" widget via
+        # the widget proxy (which injects the basic-auth credential). The
+        # frontend-parity widgetData (model picker, file transfer) is wired in a
+        # later task; here we only bridge the live conversation to the dashboard.
+        if config.conversation_ui:
+            listener_password = secrets.token_urlsafe(32)
+            bind_addr = os.environ.get("OPTIO_WIDGET_TUNNEL_BIND", "127.0.0.1")
+            upstream_host = os.environ.get("OPTIO_WIDGET_TUNNEL_HOST", "127.0.0.1")
+            conv_listener = ConversationListener(
+                conversation, password=listener_password,
+            )
+            # The listener is an in-process aiohttp app (not a remote-host
+            # process), so it binds directly to the widget-tunnel interface and
+            # its port is reachable without a host tunnel.
+            listener_port = await conv_listener.start(bind_addr)
+            await ctx.set_widget_upstream(
+                f"http://{upstream_host}:{listener_port}",
+                inner_auth=BasicAuth(username="optio", password=listener_password),
+            )
+            ctx.report_progress(None, "Conversation UI is live")
+
+        # Start the in-session credential watcher for a seeded conversation: it
+        # saves back the rotated kimi-code.json, and (when the seed is leased)
+        # renews the lease and aborts the session on lease loss. Same wiring as
+        # the iframe body.
+        if resolved_seed_id is not None:
+            cred_watch_task = asyncio.create_task(
+                cred_watcher.run_credential_watcher(
+                    ctx, host,
+                    seed_id=resolved_seed_id,
+                    baseline=cred_baseline,
+                    encrypt=config.session_blob_encrypt,
+                    decrypt=config.session_blob_decrypt,
+                    lease_holder=lease_holder,
+                )
+            )
+
+        # Kickoff prompt as the first ACP turn (headless: no positional prompt
+        # path). On resume, PUSH the resume notice instead so the rehydrated
+        # session notices promptly (resume.log stays the pull-based backstop) —
+        # parity with the iframe REST push already shipped.
+        if config.auto_start and not resuming:
+            await conversation.send(AUTO_START_PROMPT)
+        elif resuming and config.supports_resume:
+            await conversation.send(f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}")
+
+        try:
+            while True:
+                wait_task = asyncio.create_task(proc_wait(handle))
+                close_task = asyncio.create_task(conversation.close_requested.wait())
+                done, _ = await asyncio.wait(
+                    {wait_task, close_task}, return_when=asyncio.FIRST_COMPLETED,
+                )
+                for t in (wait_task, close_task):
+                    if t not in done:
+                        t.cancel()
+
+                if close_task in done and wait_task not in done:
+                    # Caller asked to close: cooperative clean end.
+                    if config.host_protocol:
+                        # The keyword driver treats a body return without DONE as
+                        # a premature exit; a caller-requested close IS the clean
+                        # end, so emit DONE ourselves and park until the driver
+                        # observes it and cancels this body.
+                        log_path = f"{host.workdir}/optio.log"
+                        await host.run_command(
+                            f"echo DONE >> {shlex.quote(log_path)}"
+                        )
+                        await asyncio.Event().wait()  # cancelled by the driver
+                    break
+
+                # Subprocess exited on its own.
+                try:
+                    rc = wait_task.result()
+                except Exception:
+                    rc = None
+                if not conversation.close_requested.is_set() and ctx.should_continue():
+                    raise RuntimeError(f"kimi acp exited unexpectedly (exit {rc})")
+                break
+        finally:
+            reader_task.cancel()
+            try:
+                await reader_task
+            except asyncio.CancelledError:
+                pass
+
     async def _agent_sender(message: str) -> None:
+        if config.mode == "conversation":
+            await conversation.send(message)
+            return
         # worker_port / token / session_id are set by _iframe_body at launch.
         # _post_kimi_prompt raises on a non-2xx / unreachable worker, which
         # send_to_agent converts to False.
         await _post_kimi_prompt(worker_port, token, session_id, message)
 
+    body = _conversation_body if config.mode == "conversation" else _iframe_body
     try:
         await run_log_protocol_session(
             host, ctx,
-            body=_iframe_body,
+            body=body,
             prepare=_prepare,
             on_deliverable=config.on_deliverable,
             after_execute=config.after_execute,
@@ -342,10 +485,20 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
         kimi_aggressive = _teardown_aggressive(
             cancelled=cancelled, seeded=resolved_seed_id is not None,
         )
-        # kimi serves its own SPA — there is no tmux/ttyd tree. Terminate the
-        # server subprocess directly. A cancelled non-seeded session is torn
-        # down aggressively; a clean completion or any seeded session uses
-        # SIGTERM so kimi shuts its socket down (and flushes creds) gracefully.
+        # Stop the conversation listener first (conversation_ui only) so its
+        # long-lived SSE loops are woken (bounded shutdown) before the
+        # subprocess teardown below.
+        if conv_listener is not None:
+            try:
+                await conv_listener.stop()
+            except Exception:
+                _LOG.exception("conversation listener cleanup failed")
+        # kimi serves its own SPA (iframe) / speaks ACP over stdio
+        # (conversation) — either way there is no tmux/ttyd tree. Terminate the
+        # subprocess directly; its EOF drives the conversation to closed. A
+        # cancelled non-seeded session is torn down aggressively; a clean
+        # completion or any seeded session uses SIGTERM so kimi shuts down (and
+        # flushes creds) gracefully.
         if launched_handle is not None:
             try:
                 await host.terminate_subprocess(
