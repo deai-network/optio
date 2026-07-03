@@ -276,13 +276,42 @@ launches a new task already authenticated.
 
 ### Stage 4 — Leases + credential save-back + verify
 **Goal.** Share N seeds safely across concurrent sessions, and keep rotating tokens
-alive. **Touches.** The pool/lease layer (`acquire`/`renew_lease`/`release`); a
-credential watcher that saves rotated tokens back into the seed; a host-free
-`verify_and_refresh_seed`. **Reference.** `cred_watcher.py` + the lease wiring in
-either wrapper; `verify.py`/`oauth.py`; `optio-agents/…/seeds.py` lease functions.
-**Done when.** Two concurrent sessions on one owner's seed pool don't strand each
-other; a rotated token is persisted back; a stale seed can be verified/refreshed
-offline.
+alive. **Touches.** The pool/lease layer (`acquire`/`renew_lease`/`release`); an
+in-session credential watcher that saves rotated tokens back into the seed, plus a
+`finally` backstop that fires on *every* exit path; a host-free
+`verify_and_refresh_seed`.
+
+**Two findings that bite hard with single-use rotating tokens:**
+1. **Flush before you save — shut the agent down GRACEFULLY when a seed is in
+   use.** The agent's write of a just-rotated `auth.json` is best-effort. If
+   teardown SIGKILLs the agent (the usual aggressive-kill on *cancel*), the kill
+   can beat the flush: the backstop then reads the *stale* file and persists the
+   already-spent token, so the next launch of that seed demands re-auth. Gate the
+   teardown aggressiveness on whether a seed is in use — SIGTERM-and-wait (let it
+   flush) for a seeded session even on cancel; keep the fast kill only for
+   non-seeded ones. Ref `_teardown_aggressive` + the teardown block in grok's
+   `session.py`.
+2. **Verify/refresh via the provider's token endpoint directly — not by launching
+   the agent.** Discover the OAuth/OIDC token endpoint from the seed's stored
+   issuer (`<issuer>/.well-known/openid-configuration`), run the standard
+   `refresh_token` grant (public CLI clients use `client_id` only, no secret), and
+   write the rotated `access_token`/`refresh_token`/expiry back into the seed. This
+   is **host-free and non-billable** — no agent process, no model inference — and
+   the provider owns the token format so you just diff-and-save. Make status
+   **fail-closed and precise**: a 4xx `invalid_grant` marks the seed *dead*; a
+   transport/discovery failure is *inconclusive* and must never retire a healthy
+   seed; a still-valid token is confirmed (userinfo) and left un-rotated. Confirm
+   the request shape once against a live seed. Fall back to an agent
+   challenge-answer probe (billable) only when the provider exposes no usable
+   endpoint.
+
+**Reference.** `cred_watcher.py` + the lease wiring in either wrapper; the direct
+endpoint refresh in `optio-claudecode/…/oauth.py` (Anthropic) and
+`optio-grok/…/verify.py` (xAI OIDC discovery); `optio-agents/…/seeds.py` lease +
+`overwrite_seed_member`. **Done when.** Two concurrent sessions on one owner's seed
+pool don't strand each other; a rotated token is persisted back **and survives a
+cancelled session** (graceful flush before the backstop); a stale seed is
+verified/refreshed offline with no billable agent call.
 
 ### Stage 5 — Binary cache + HOME/XDG isolation
 **Goal.** Install the agent binary into an optio-owned, evictable cache (never
