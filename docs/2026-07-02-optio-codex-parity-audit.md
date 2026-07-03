@@ -54,7 +54,7 @@ All paths below are repo-relative to the worktree root
 | 27 | headless-login strategy | req* | GREEN | Seeds supply the logged-in identity (seed_manifest.py:46; session.py plant path); conversation mode is headless (session.py:165 — app-server stdio, no ttyd login) | packages/optio-codex/tests/test_session_seed.py:61,109 (seeded fresh session plants identity before launch) |
 | 28 | packaging + editable/release registration | req | GREEN | Makefile:4 (`PY_PACKAGES` includes `optio-codex`), :139 (`RELEASABLE_PY` includes `optio-codex`); packages/optio-demo/Makefile:13,36,54 (editable install); packages/optio-demo/pyproject.toml:31 (`optio-codex>=0.1,<0.2`) | Registration verified at Task 9; import smoke test_import.py |
 | 29 | demo trio (seed-setup + iframe + conversation) | req | GREEN | packages/optio-demo/src/optio_demo/tasks/codex.py:185 (`codex-seed-setup`), :216 (`codex-demo-seed-<id>` iframe), :240 (`codex-conversation-seed-<id>`, `mode="conversation"`, `conversation_ui=True`) | Demo wiring exercised via optio-demo; seed lifecycle backed by test_session_seed.py |
-| 30 | real-binary E2E of every surface (not just the fake harness) | req | GREEN-with-ledger (Plan F Gap 5) | Opt-in, skip-if-no-binary/no-auth, never-default real-agent E2E covers every shipped surface: iframe done-when (`test_real_codex_session.py`, `OPTIO_CODEX_REAL_SESSION_TEST`), native-sandbox enforcement (`test_sandbox_enforce.py`, `OPTIO_CODEX_SANDBOX_ENFORCE_TEST`), conversation turn + Layer-3 wire capture (`test_real_codex_conversation.py`, `OPTIO_CODEX_CONVERSATION_TEST`), seed replant / resume relaunch / remote-SSH (`test_real_codex_seed_resume.py`, `OPTIO_CODEX_SEED_RESUME_TEST` [+ `OPTIO_CODEX_DEMO_SSH_HOST`]). Layer-3: `packages/optio-conversation-ui/src/__tests__/codex-events-fixture.test.ts` replays a recorded real wire through `reduceCodexEvent` (skips until the fixture is captured) | The four Gap-5 python cases + the two pre-existing real-binary tests, all env-gated. Per-surface run status tracked in `docs/2026-07-02-optio-codex-review-carryover.md` (Plan F real-binary coverage ledger); the conversation/seed/resume/remote surfaces are wired-but-tracked-open (no authed codex + COST GUARD in this run) |
+| 30 | real-binary E2E of every surface (not just the fake harness) | req | GREEN (Plan F Gap 5; RUN 2026-07-03 vs codex-cli 0.142.5) | Opt-in, skip-if-no-binary/no-auth, never-default real-agent E2E covers every shipped surface, ALL PASSING against a real authed codex: iframe done-when (`test_real_codex_session.py`, 17.7s), native-sandbox enforcement (`test_sandbox_enforce.py`, 3 passed), conversation turn + Layer-3 wire capture (`test_real_codex_conversation.py`, 12.6s), seed replant + resume relaunch (`test_real_codex_seed_resume.py`, 45.4s). Remote-SSH sub-case skips without `OPTIO_CODEX_DEMO_SSH_HOST` (no remote configured). Layer-3: `codex-events-fixture.test.ts` replays the now-committed real wire through `reduceCodexEvent` and RUNS in the default UI suite | Run evidence + the two latent test bugs the run surfaced (both fixed, product clean) recorded in `docs/2026-07-02-optio-codex-review-carryover.md` item 14; only remote-SSH remains tracked-open |
 
 ## Remaining opt gaps
 
@@ -82,8 +82,10 @@ rebase surfaced:
 - **item 14** (verify/refresh host-free) — now legitimately host-free-**non-billable**
   via Gap 4's direct-OIDC `verify.py` (commit `458a0d5`), agent probe kept as
   the documented fallback.
-- **row 30** (real-binary E2E of every surface) — GREEN-with-ledger via Gap 5's
-  env-gated real-agent suite + Layer-3 capture/replay; per-surface real-run
-  status tracked (not silently claimed) in the carryover ledger.
+- **row 30** (real-binary E2E of every surface) — GREEN via Gap 5's env-gated
+  real-agent suite + Layer-3 capture/replay, RUN 2026-07-03 against a real authed
+  codex-cli 0.142.5: iframe / conversation / seed-replant / resume / sandbox all
+  pass; only remote-SSH stays tracked-open (no host). The run surfaced + fixed
+  two latent test-only bugs (see carryover item 14).
 
 No STOP-rule trigger. This tally supersedes the prior 28/29 (29-item) verdict.
