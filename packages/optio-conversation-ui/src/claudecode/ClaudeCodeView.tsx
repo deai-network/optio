@@ -27,7 +27,7 @@ export function ClaudeCodeView(props: WidgetProps) {
     (props.process.widgetData as any)?.currentModel ?? undefined,
   );
   const showModelSelector = Boolean((props.process.widgetData as any)?.showModelSelector);
-  const models: { id: string; label: string; disabled?: boolean }[] =
+  const models: { id: string; label: string; disabled?: boolean; disabledReason?: string }[] =
     (props.process.widgetData as any)?.models ?? [];
   const showFileUpload = Boolean((props.process.widgetData as any)?.showFileUpload);
   const maxUploadBytes = Number((props.process.widgetData as any)?.maxUploadBytes ?? 10_000_000);
@@ -169,7 +169,7 @@ export function ClaudeCodeView(props: WidgetProps) {
               setCurrentModel(v); // optimistic
               void post('model', { model: v }); // engine relaunches
             }}
-            options={models.map((m) => ({ label: m.label, value: m.id, disabled: m.disabled }))}
+            options={models.map((m) => ({ label: m.label, value: m.id, disabled: m.disabled, title: m.disabledReason }))}
           />
         ) : undefined
       }

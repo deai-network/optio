@@ -58,7 +58,7 @@ def test_probe_cache_key_survives_resume():
     assert model_probe.probe_cache_key(None, None) is None
 
 
-def test_apply_probe_disables_only_unusable():
+def test_apply_probe_disables_only_unusable_with_reason():
     models = [
         {"id": "a", "label": "A", "disabled": False},
         {"id": "b", "label": "B", "disabled": False},
@@ -66,8 +66,13 @@ def test_apply_probe_disables_only_unusable():
     ]
     out = model_probe.apply_probe(models, {"a": True, "b": False})
     assert out[0]["disabled"] is False
+    assert "disabledReason" not in out[0]
+    # unusable → disabled + a reason the picker can surface (excavator
+    # decision/reason pattern)
     assert out[1]["disabled"] is True
-    assert out[2]["disabled"] is False  # untouched
+    assert out[1]["disabledReason"] == model_probe.DISABLED_REASON
+    assert out[2]["disabled"] is False  # untouched (not probed)
+    assert "disabledReason" not in out[2]
 
 
 async def test_probe_cache_roundtrip_and_ttl(mongo_db):

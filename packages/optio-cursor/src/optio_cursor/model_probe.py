@@ -23,6 +23,10 @@ PROBE_QUESTION = "What is the capital city of Hungary?"
 PROBE_EXPECT = "budapest"
 PROBE_CACHE_SUFFIX = "_cursor_model_probe"
 PROBE_CACHE_TTL = timedelta(hours=24)
+# Shown in the picker (as a tooltip) for a model the probe found unusable —
+# cursor plan-gates it. Follows excavator's decision/reason pattern: the disabled
+# state carries a human reason.
+DISABLED_REASON = "Not enabled in your Cursor subscription plan"
 
 
 async def _probe_turn(conversation, question: str, timeout: float) -> str:
@@ -97,15 +101,17 @@ def probe_cache_key(resolved_seed_id, config_seed_id):
 
 
 def apply_probe(models: list[dict], usable: dict[str, bool]) -> list[dict]:
-    """Return ``models`` with ``disabled=True`` on any id the probe found
-    unusable. Ids absent from ``usable`` are left as-is (not probed → unchanged)."""
+    """Return ``models`` with ``disabled=True`` + a ``disabledReason`` on any id
+    the probe found unusable (the picker surfaces the reason). Ids absent from
+    ``usable`` are left as-is (not probed → unchanged)."""
     out = []
     for m in models:
         mid = m.get("id")
         if mid in usable and not usable[mid]:
-            m = {**m, "disabled": True}
+            m = {**m, "disabled": True, "disabledReason": DISABLED_REASON}
         elif mid in usable:
-            m = {**m, "disabled": False}
+            m = {k: v for k, v in m.items() if k != "disabledReason"}
+            m["disabled"] = False
         out.append(m)
     return out
 

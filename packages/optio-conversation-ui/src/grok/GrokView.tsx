@@ -33,7 +33,7 @@ export function GrokView(props: WidgetProps) {
   const localSeqRef = useRef(0);
   const [currentModel, setCurrentModel] = useState<string | undefined>(wd.currentModel ?? undefined);
   const showModelSelector = Boolean(wd.showModelSelector);
-  const models: { id: string; label: string; disabled?: boolean }[] = wd.models ?? [];
+  const models: { id: string; label: string; disabled?: boolean; disabledReason?: string }[] = wd.models ?? [];
   const showFileUpload = Boolean(wd.showFileUpload);
   const maxUploadBytes = Number(wd.maxUploadBytes ?? 10_000_000);
   const fileDownload = Boolean(wd.fileDownload);
@@ -152,7 +152,7 @@ export function GrokView(props: WidgetProps) {
               setCurrentModel(v); // optimistic
               void post('model', { model: v }); // INLINE session/set_model
             }}
-            options={models.map((m) => ({ label: m.label, value: m.id, disabled: m.disabled }))}
+            options={models.map((m) => ({ label: m.label, value: m.id, disabled: m.disabled, title: m.disabledReason }))}
           />
         ) : undefined
       }

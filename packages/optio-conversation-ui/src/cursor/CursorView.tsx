@@ -37,7 +37,7 @@ export function CursorView(props: WidgetProps) {
   const fileDownload = Boolean(wd.fileDownload);
   const [currentModel, setCurrentModel] = useState<string | undefined>(wd.currentModel ?? undefined);
   const showModelSelector = Boolean(wd.showModelSelector);
-  const models: { id: string; label: string; disabled?: boolean }[] = wd.models ?? [];
+  const models: { id: string; label: string; disabled?: boolean; disabledReason?: string }[] = wd.models ?? [];
 
   const { widgetProxyUrl } = props; // ends with '/' — trailing slash is load-bearing
 
@@ -154,7 +154,7 @@ export function CursorView(props: WidgetProps) {
               setCurrentModel(v); // optimistic
               void post('model', { model: v }); // INLINE session/set_model
             }}
-            options={models.map((m) => ({ label: m.label, value: m.id, disabled: m.disabled }))}
+            options={models.map((m) => ({ label: m.label, value: m.id, disabled: m.disabled, title: m.disabledReason }))}
           />
         ) : undefined
       }
