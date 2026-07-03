@@ -103,9 +103,11 @@ invalidates every other copy. So a seeded session runs an in-session
 **credential watcher** that saves the rotated `auth.json` back into the
 seed (plus a final teardown backstop); pooled seeds take a **lease** (one
 live lineage per seed — the watcher renews it and aborts the session on
-lease loss); and `verify_and_refresh_seed` probes idle pooled seeds
-headlessly to prove liveness and persist a fresh token before the 8-day
-cliff.
+lease loss); and `verify_and_refresh_seed` refreshes idle pooled seeds
+**host-free** — a direct OpenAI OIDC `refresh_token` grant (no codex
+process, no model turn, non-billable) that persists a fresh token before
+the 8-day cliff, falling back to a headless `codex exec` probe only when
+OIDC discovery is unreachable.
 
 Fallbacks without a seed: pass an API key into the session env
 (`CodexTaskConfig(env={"OPENAI_API_KEY": …})`) or log in interactively
@@ -159,8 +161,10 @@ Shipped:
   `delete_seed` / `purge_seed`) over `{prefix}_codex_seeds`
 - pool leases + in-session credential save-back (single-use rotating
   refresh token) with a teardown backstop; lease loss aborts the session
-- engine-free `verify_and_refresh_seed` (headless `codex exec` probe,
-  stdout-only verdict, rotated-token write-back, pool-status stamping)
+- host-free `verify_and_refresh_seed` — primary path is a direct OpenAI OIDC
+  `refresh_token` grant (non-billable, no codex process) with rotated-token
+  write-back and pool-status stamping; falls back to a headless `codex exec`
+  probe (stdout-only verdict) only when OIDC discovery is unreachable
 - optio-owned evictable binary cache (`OPTIO_CODEX_CACHE_DIR`), seeded from a
   host binary (`cp -L`) or real GitHub-release auto-download (pinned
   `rust-v0.142.5`, musl); per-task launch symlink preserved

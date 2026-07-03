@@ -96,9 +96,14 @@ restore; auto-start positional suppressed on resume; `resume.log` entries; reach
 Port grok cred_watcher wholesale: path `home/.codex/auth.json`; fingerprint = sha256, invalid/
 missing → None gate; `capture_gate_ok` = valid auth.json with non-null tokens or OPENAI_API_KEY;
 10s tick = save-back + renew_lease; lease loss → cancellation_flag. Teardown ordering discipline
-verbatim (watcher-cancel → backstop save-back → lease release). verify.py: challenge probe
-`codex exec --json --skip-git-repo-check -s read-only '<capital-of-France>'` in throwaway
-CODEX_HOME planted from seed, stdout-only verdict, write back rotated auth.json, mark status.
+verbatim (watcher-cancel → backstop save-back → lease release). verify.py (as shipped, Plan F
+Gap 4 — see the reconciliation section below): PRIMARY is **host-free** — a direct OpenAI OIDC
+`refresh_token` grant against codex's hardcoded refresh URL (`https://auth.openai.com/oauth/token`,
+NOT the discovery `token_endpoint`), no codex process, non-billable, rotated tokens written back;
+freshness gate = codex's 8-day proactive-refresh window; API-key seeds are alive-by-presence.
+FALLBACK (only when OIDC discovery is unreachable): the challenge probe
+`codex exec --json --skip-git-repo-check -s read-only '<capital-of-France>'` in a throwaway
+CODEX_HOME planted from the seed, stdout-only verdict, write back rotated auth.json, mark status.
 
 ## Binary cache (Stage 5)
 
@@ -314,7 +319,18 @@ by the `optio-conversation-ui` TS suite. Final Appendix-A parity: **28/29 green*
   and `.git/` read-only for sandboxed tool commands, so the agent's own shell cannot rewrite its
   per-task `auth.json` even though `CODEX_HOME` (`<workdir>/home/.codex`) lives inside the
   writable root; codex's own unsandboxed process still writes rollouts/auth there normally.
-- **The `verify`/`run_codex_probe` auth probe stays on a hard `-s read-only`**
+- **Seed verify is host-free (Plan F Gap 4, commit `458a0d5`).** `verify_and_refresh_seed` no
+  longer runs a billable agent turn as its primary path. It refreshes the seed's rotating token via
+  a direct OpenAI OIDC `refresh_token` grant against codex's hardcoded refresh URL
+  (`https://auth.openai.com/oauth/token`, honoring `CODEX_REFRESH_TOKEN_URL_OVERRIDE`; NOT the
+  discovery `token_endpoint`, which is an `/api/accounts` account-management surface) — no codex
+  process, no model inference, rotated tokens written back. API-key seeds are alive-by-presence; the
+  8-day proactive-refresh window is the freshness gate; a 4xx `invalid_grant` retires the seed
+  (`dead`) while a transport/discovery failure is inconclusive (status untouched). The billable
+  `codex exec` probe (`run_codex_probe` via `_verify_via_probe`) is KEPT as the documented fallback
+  for when OIDC discovery is unreachable — a deliberate divergence from optio-grok, which removed
+  its probe.
+- **The verify FALLBACK probe (`run_codex_probe`) stays on a hard `-s read-only`**
   (`codex exec --json -s read-only --skip-git-repo-check`), deliberately NOT derived from the
   task's `SandboxSettings` SSOT — the tightest posture for a throwaway credential check that never
   writes, independent of the task's `fs_isolation`.
