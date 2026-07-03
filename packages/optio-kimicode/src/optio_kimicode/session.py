@@ -21,6 +21,7 @@ credential-planting, conversation mode, and fs-isolation arrive in later stages.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -31,12 +32,14 @@ from optio_core.models import TaskInstance
 
 from optio_agents import HookContext, get_protocol
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
+from optio_agents import seeds as _seeds
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
 from optio_host.paths import task_dir
 
-from optio_kimicode import host_actions
+from optio_kimicode import cred_watcher, host_actions
 from optio_kimicode.prompt import compose_agents_md
+from optio_kimicode.seed_manifest import KIMI_SEED_MANIFEST, KIMI_SEED_SUFFIX
 from optio_kimicode.snapshots import (
     capture_snapshot,
     load_latest_snapshot,
@@ -52,6 +55,27 @@ READY_TIMEOUT_S = 30.0
 # Fresh-launch kickoff prompt POSTed to the pre-created kimi session so the agent
 # starts the task unattended. Suppressed on resume (opencode parity).
 AUTO_START_PROMPT = "Read AGENTS.md and execute the task it describes"
+
+
+async def _call_maybe_async(fn, *args) -> None:
+    """Invoke a callback that may be sync or async."""
+    result = fn(*args)
+    if inspect.isawaitable(result):
+        await result
+
+
+def _teardown_aggressive(*, cancelled: bool, seeded: bool) -> bool:
+    """Whether to SIGKILL kimi immediately on teardown vs SIGTERM-and-wait.
+
+    A **seeded** session is torn down GRACEFULLY even on cancel: kimi's
+    single-use refresh token may have rotated this session, and kimi's
+    credential write is best-effort — an aggressive SIGKILL can beat the flush,
+    stranding the rotation so the credential save-back persists the now-spent
+    token and the next launch demands re-auth. SIGTERM-and-wait lets kimi flush
+    ``kimi-code.json`` first. A non-seeded session keeps the fast aggressive kill
+    on cancel.
+    """
+    return cancelled and not seeded
 
 
 def _build_host(config: KimiCodeTaskConfig, process_id: str) -> Host:
@@ -82,6 +106,18 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
     resuming = False
     preserved_session_id: str | None = None
 
+    # Stage-4 seed lease + credential save-back. ``resolved_seed_id`` is the
+    # seed planted for a fresh, seeded launch (str seed_id → itself; a
+    # SeedProvider callable → awaited); None on resume / when unseeded.
+    # ``lease_holder`` is the task's process_id when the seed came from a
+    # lease-holding SeedProvider (renewed by the watcher, released at teardown).
+    # ``cred_baseline`` is the post-merge kimi-code.json fingerprint the watcher
+    # + backstop diff against; ``cred_watch_task`` is the in-session watcher.
+    resolved_seed_id: str | None = None
+    lease_holder: str | None = None
+    cred_baseline: str | None = None
+    cred_watch_task: "asyncio.Task | None" = None
+
     # Set by the body at launch; read by _agent_sender.
     worker_port: int | None = None
     token: str | None = None
@@ -98,6 +134,7 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
         the tail can re-emit a stale DONE.
         """
         nonlocal kimi_path, resuming, preserved_session_id
+        nonlocal resolved_seed_id, lease_holder, cred_baseline
         kimi_path = await host_actions.resolve_kimi(
             host,
             install_dir=config.kimi_install_dir,
@@ -120,6 +157,33 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             await host_actions.rotate_optio_log(host)
             preserved_session_id = await _recover_session_id(host)
         else:
+            # Seeded FRESH start: resolve the seed id (str → itself; a
+            # SeedProvider callable → awaited, may raise SeedUnavailableError)
+            # and overlay the stored kimi identity (credentials/kimi-code.json)
+            # into the fresh workdir BEFORE AGENTS.md, so kimi launches
+            # already-authed. No resume/preserved session: this begins anew.
+            # kimi credentials are cwd-independent, so no rekey is needed.
+            if config.seed_id is not None:
+                if callable(config.seed_id):
+                    # A SeedProvider leases a seed from the pool (holder =
+                    # process_id); the watcher renews the lease, teardown
+                    # releases it. A plain string carries no lease.
+                    resolved_seed_id = await config.seed_id(ctx.process_id)
+                    lease_holder = ctx.process_id
+                else:
+                    resolved_seed_id = config.seed_id
+                await _seeds.merge_seed(
+                    ctx, host,
+                    seed_id=resolved_seed_id,
+                    manifest=KIMI_SEED_MANIFEST,
+                    suffix=KIMI_SEED_SUFFIX,
+                    decrypt=config.session_blob_decrypt,
+                )
+                # Baseline the merged kimi-code.json so the in-session watcher
+                # and the teardown backstop only save back a genuinely rotated
+                # token.
+                cred_baseline = await cred_watcher.cred_fingerprint(host)
+
             # Fresh: plant the AGENTS.md the agent consumes. (On resume the
             # snapshot-restored AGENTS.md is kept.)
             await host.write_text(
@@ -141,6 +205,7 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
 
     async def _iframe_body(host: Host, hook_ctx: HookContext) -> None:
         nonlocal launched_handle, worker_port, token, session_id
+        nonlocal cred_watch_task
 
         # Network binding (same env handling as grok/claudecode for
         # multi-container deploys).
@@ -185,6 +250,21 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             "iframeSrc": f"{{widgetProxyUrl}}/sessions/{session_id}{fragment}",
         })
         ctx.report_progress(None, "Kimi Code is live")
+
+        # Start the in-session credential watcher for a seeded session: it saves
+        # back the rotated kimi-code.json, and (when the seed is leased) renews
+        # the lease and aborts the session on lease loss.
+        if resolved_seed_id is not None:
+            cred_watch_task = asyncio.create_task(
+                cred_watcher.run_credential_watcher(
+                    ctx, host,
+                    seed_id=resolved_seed_id,
+                    baseline=cred_baseline,
+                    encrypt=config.session_blob_encrypt,
+                    decrypt=config.session_blob_decrypt,
+                    lease_holder=lease_holder,
+                )
+            )
 
         # auto_start: on a fresh launch, POST the kickoff prompt so kimi starts
         # the task unattended. On resume, PUSH the resume notice instead so the
@@ -239,18 +319,94 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
     finally:
         if not ctx.should_continue():
             cancelled = True
+        # kimi authenticates with a SINGLE-USE rotating refresh token. If kimi
+        # rotated it this session, the new kimi-code.json must reach the seed via
+        # the backstop below — but an aggressive SIGKILL can beat kimi's flush,
+        # stranding the rotation (the seed keeps the now-spent token → the next
+        # launch demands re-auth). So when a SEED is in use, tear kimi down
+        # GRACEFULLY (SIGTERM + wait, ≤5s) even on cancel, giving it time to
+        # persist kimi-code.json before the final save-back reads it. Only a
+        # non-seeded session keeps the fast aggressive kill on cancel.
+        kimi_aggressive = _teardown_aggressive(
+            cancelled=cancelled, seeded=resolved_seed_id is not None,
+        )
         # kimi serves its own SPA — there is no tmux/ttyd tree. Terminate the
-        # server subprocess directly. A cancelled (non-seeded) session is torn
-        # down aggressively; a clean DONE completion uses SIGTERM so the server
-        # shuts its socket down gracefully. (Seed-gated graceful teardown is a
-        # Stage-4 concern.)
+        # server subprocess directly. A cancelled non-seeded session is torn
+        # down aggressively; a clean completion or any seeded session uses
+        # SIGTERM so kimi shuts its socket down (and flushes creds) gracefully.
         if launched_handle is not None:
             try:
                 await host.terminate_subprocess(
-                    launched_handle, aggressive=cancelled,
+                    launched_handle, aggressive=kimi_aggressive,
                 )
             except Exception:
                 _LOG.exception("terminate kimi server subprocess failed")
+
+        # Stop the credential watcher before the final save-back so the two
+        # never race on the same seed blob.
+        if cred_watch_task is not None:
+            cred_watch_task.cancel()
+            try:
+                await cred_watch_task
+            except asyncio.CancelledError:
+                pass
+
+        # Final backstop save-back — LOAD-BEARING, not defensive: kimi's own
+        # credential write is best-effort and the kimi provider has already
+        # consumed the old refresh token; a rotation in the last poll window is
+        # persisted ONLY here. Runs after kimi terminated so kimi-code.json is
+        # final (the graceful teardown above ensured the flush completed).
+        if resolved_seed_id is not None:
+            try:
+                cred_baseline = await cred_watcher.save_back_if_changed(
+                    ctx, host,
+                    seed_id=resolved_seed_id,
+                    baseline=cred_baseline,
+                    encrypt=config.session_blob_encrypt,
+                    decrypt=config.session_blob_decrypt,
+                )
+            except Exception:
+                _LOG.exception("final credential save-back failed")
+
+        # Release the lease AFTER the final save-back (opencode's deliberate
+        # ordering): a new acquirer must never merge the pre-save-back blob.
+        if lease_holder is not None and resolved_seed_id is not None:
+            try:
+                await _seeds.release(
+                    ctx._db, prefix=ctx._prefix, suffix=KIMI_SEED_SUFFIX,
+                    seed_id=resolved_seed_id, holder=lease_holder,
+                )
+            except Exception:
+                _LOG.exception("lease release failed (TTL will reclaim)")
+
+        # Seed capture (fresh only): store this session's kimi identity as a
+        # reusable seed so a later fresh task can start already-authed. Same
+        # reached-live gate as snapshots (launched_handle assigned strictly
+        # after a successful launch). Guarded on kimi-code.json present — never
+        # seed a login-less identity. Ignored on resume.
+        if (
+            not resuming
+            and config.on_seed_saved is not None
+            and launched_handle is not None
+        ):
+            try:
+                if not await cred_watcher.capture_gate_ok(host):
+                    _LOG.warning(
+                        "seed capture skipped: home/credentials/kimi-code.json "
+                        "absent or invalid (login-less session)",
+                    )
+                else:
+                    seed_id = await _seeds.capture_seed(
+                        ctx, host,
+                        manifest=KIMI_SEED_MANIFEST,
+                        suffix=KIMI_SEED_SUFFIX,
+                        encrypt=config.session_blob_encrypt,
+                    )
+                    await _call_maybe_async(config.on_seed_saved, seed_id, None)
+            except Exception:
+                _LOG.exception(
+                    "seed capture failed; callback not fired, teardown continues",
+                )
 
         # Capture a resume snapshot of the now-static workdir + session store.
         # Gated on supports_resume + a launched handle (a session actually ran).

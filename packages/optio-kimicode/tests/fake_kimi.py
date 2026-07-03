@@ -49,7 +49,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
-SCENARIOS = ("happy", "deliverable", "error")
+SCENARIOS = (
+    "happy", "deliverable", "error", "seed_rotate", "seed_rotate_on_term",
+)
 
 # The default bearer token the fake advertises in its ready banner. The
 # wrapper parses it out of the ``#token=`` fragment and injects it into the
@@ -78,6 +80,31 @@ def _kimi_home() -> str:
 
 def _sessions_dir() -> str:
     return os.path.join(_kimi_home(), "sessions")
+
+
+def _cred_path() -> str:
+    """The rotating single-use credential file the seed watcher save-back tracks
+    (``$KIMI_CODE_HOME/credentials/kimi-code.json``, verified from kimi source)."""
+    return os.path.join(_kimi_home(), "credentials", "kimi-code.json")
+
+
+def _rotate_cred(new_refresh: str) -> None:
+    """Rotate ``refresh_token`` (and ``access_token``) in the planted
+    ``kimi-code.json``, modelling kimi's single-use refresh-token rotation on a
+    token refresh — the change the credential watcher/backstop must save back."""
+    path = _cred_path()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (FileNotFoundError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data["refresh_token"] = new_refresh
+    data["access_token"] = f"access-{new_refresh}"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
 
 
 def _journal(kind: str, **payload: object) -> None:
@@ -166,10 +193,40 @@ def _scenario_error() -> None:
     _log("ERROR: scenario asked for failure")
 
 
+def _scenario_seed_rotate() -> None:
+    """CONSUME role that rotates the single-use refresh token mid-session, EAGERLY.
+
+    The seed engine planted ``credentials/kimi-code.json`` before launch; this
+    run rotates it on the disk right away (as real kimi does on a token
+    refresh), then reaches DONE. With the watcher's poll interval left long, the
+    rotation lands ONLY via the teardown finally backstop — proving the backstop
+    fires on an early (clean) exit."""
+    _rotate_cred("ROTATED-INSESSION")
+    time.sleep(0.05)
+    _log("STATUS: 10% rotate scenario alive")
+    time.sleep(0.05)
+    _log("DONE: rotate scenario completed")
+
+
+def _scenario_seed_rotate_on_term() -> None:
+    """CONSUME role that rotates the token ONLY inside its SIGTERM handler.
+
+    Emits no DONE — it holds until torn down. The rotation is deferred to the
+    ``_term`` handler (see ``_run_server``), so the rotated token reaches disk
+    ONLY when the wrapper tears kimi down GRACEFULLY (SIGTERM + wait). An
+    aggressive SIGKILL kills this process before the handler runs, leaving the
+    original token on disk — which is exactly the race the seeded graceful
+    teardown must avoid on cancel."""
+    time.sleep(0.05)
+    _log("STATUS: 10% rotate-on-term scenario alive (holding)")
+
+
 _SCENARIOS = {
     "happy": _scenario_happy,
     "deliverable": _scenario_deliverable,
     "error": _scenario_error,
+    "seed_rotate": _scenario_seed_rotate,
+    "seed_rotate_on_term": _scenario_seed_rotate_on_term,
 }
 
 
@@ -300,7 +357,18 @@ def _run_server(argv: list[str]) -> int:
     # doubles as the readiness signal (mirrors kimi's onReady banner).
     print(f"Local:    http://{host}:{actual_port}/#token={token}", flush=True)
 
+    scenario = os.environ.get("FAKE_KIMI_SCENARIO", "happy").strip()
+
     def _term(_signum, _frame) -> None:
+        # Graceful-flush hook: the ``seed_rotate_on_term`` scenario writes the
+        # rotated single-use token to disk ONLY here, so it survives a graceful
+        # SIGTERM teardown but is lost to an aggressive SIGKILL — letting the
+        # seeded-cancel test distinguish the two.
+        if scenario == "seed_rotate_on_term":
+            try:
+                _rotate_cred("ROTATED-ON-TERM")
+            except Exception:
+                pass
         try:
             httpd.shutdown()
         except Exception:
@@ -309,7 +377,6 @@ def _run_server(argv: list[str]) -> int:
 
     signal.signal(signal.SIGTERM, _term)
 
-    scenario = os.environ.get("FAKE_KIMI_SCENARIO", "happy").strip()
     if scenario not in _SCENARIOS:
         print(f"unknown FAKE_KIMI_SCENARIO={scenario!r}", file=sys.stderr)
         return 2
