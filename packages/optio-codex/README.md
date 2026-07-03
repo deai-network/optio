@@ -20,9 +20,11 @@ optio-codex launches `codex` inside a detached tmux session, serves the
 TUI over `ttyd`, and coordinates with the host harness through the
 `optio.log` keyword channel (STATUS / DELIVERABLE / DONE / ERROR). The
 agent reads its task from an `AGENTS.md` file planted in the workdir.
-The tmux+ttyd machinery follows the optio-claudecode pattern; browser
-handling deliberately differs (`suppress` — codex login is handled via
-env/API key or interactively, not via surfaced browser URLs).
+The tmux+ttyd machinery follows the optio-claudecode pattern, including
+browser handling: `redirect` — `codex login` opens the loopback OAuth URL
+via `xdg-open`, which the redirect shim captures as a `BROWSER:` marker so
+the harness surfaces it to the operator (who completes the sign-in),
+instead of silently swallowing it.
 
 ### Isolation
 

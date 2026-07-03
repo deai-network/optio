@@ -76,7 +76,11 @@ def _teardown_aggressive(*, cancelled: bool, seeded: bool) -> bool:
 async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> None:
     """Execute function body for one optio-codex task instance."""
     host: Host = _build_host(config, ctx.process_id)
-    protocol = get_protocol(browser="suppress")
+    # redirect (not suppress): codex's first-launch `codex login` opens the
+    # loopback OAuth URL via xdg-open; the redirect shim captures it as a
+    # BROWSER: marker so the driver surfaces it to the operator (who completes
+    # the sign-in), instead of silently swallowing it. Matches claudecode/grok.
+    protocol = get_protocol(browser="redirect")
     launched_handle: ProcessHandle | None = None
     tmux_path: str | None = None
     tmux_socket: str | None = None

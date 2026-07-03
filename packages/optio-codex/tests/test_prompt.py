@@ -10,11 +10,22 @@ def test_agents_md_has_protocol_and_instructions():
     assert "STATUS:" in md and "DELIVERABLE:" in md and "DONE" in md
 
 
+def test_agents_md_advertises_browser_redirect_keyword():
+    """Codex runs in ``browser="redirect"`` so its first-launch loopback OAuth
+    browser-open (`codex login` → xdg-open → the shim) is CAPTURED as a
+    ``BROWSER:`` marker and surfaced to the operator, not silently swallowed.
+    The parser only recognizes ``BROWSER:`` under redirect, so the docs must
+    advertise it. Guards against a revert to ``suppress`` — which no-op'd the
+    login with no operator feedback (mirrors optio-grok/claudecode)."""
+    md = compose_agents_md("BUILD THE THING", host_protocol=True)
+    assert "BROWSER:" in md
+
+
 def test_documentation_threads_from_session_protocol():
     """SSOT: the session's protocol documentation is the one that lands in
     AGENTS.md — and the standalone default must render identically, so the
     two construction sites cannot drift."""
-    protocol = get_protocol(browser="suppress")
+    protocol = get_protocol(browser="redirect")
     threaded = compose_agents_md("X", documentation=protocol.documentation)
     defaulted = compose_agents_md("X")
     assert threaded == defaulted
@@ -31,7 +42,7 @@ def test_host_protocol_false_adds_system_explainer():
     # The keyword-protocol documentation block is omitted. (Cannot assert on
     # the bare literal "STATUS:" — the SSOT BASE_PROMPT_POST framing, imported
     # verbatim, itself mentions `STATUS:` in passing.)
-    assert get_protocol(browser="suppress").documentation not in md
+    assert get_protocol(browser="redirect").documentation not in md
     assert "## Log channel" not in md
     assert "System:" in md  # the explainer replaces the protocol docs
     assert "X" in md
@@ -71,5 +82,5 @@ def test_host_protocol_false_keeps_resume_section_and_explainer():
     # Protocol docs stay omitted. (Cannot assert on the bare "STATUS:"
     # literal — the imported BASE_PROMPT_POST framing mentions it in
     # passing; same caveat as test_host_protocol_false_adds_system_explainer.)
-    assert get_protocol(browser="suppress").documentation not in md
+    assert get_protocol(browser="redirect").documentation not in md
     assert "## Log channel" not in md

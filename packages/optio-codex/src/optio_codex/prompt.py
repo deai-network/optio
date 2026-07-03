@@ -132,8 +132,8 @@ def compose_agents_md(
     """Build the full AGENTS.md body.
 
     ``documentation`` is the keyword-protocol block; the session passes
-    ``get_protocol(browser="suppress").documentation``. Defaults (for unit
-    tests / standalone callers) to codex's ``suppress`` docs. It must
+    ``get_protocol(browser="redirect").documentation``. Defaults (for unit
+    tests / standalone callers) to codex's ``redirect`` docs. It must
     always come from the session's ``Protocol`` where one exists — never
     rebuild features at a second site.
 
@@ -162,7 +162,7 @@ def compose_agents_md(
     if host_protocol:
         if documentation is None:
             documentation = build_log_channel_prompt(
-                ProtocolFeatures(browser="suppress")
+                ProtocolFeatures(browser="redirect")
             )
     else:
         documentation = None
