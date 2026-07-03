@@ -1,11 +1,8 @@
 import os
 
-import pytest
-
 from optio_kimicode.host_actions import (
     _isolation_env,
     build_host,
-    ensure_kimicode_installed,
 )
 
 
@@ -56,10 +53,3 @@ def test_build_host_remote_when_ssh(tmp_path):
     assert isinstance(host, RemoteHost)
     # Remote hosts must not materialize the taskdir locally.
     assert not os.path.exists(taskdir)
-
-
-async def test_ensure_kimicode_installed_is_stub():
-    """Two-tier install is deferred to plan group 4; the entrypoint exists but
-    fails loudly rather than silently pretending kimi is provisioned."""
-    with pytest.raises(NotImplementedError):
-        await ensure_kimicode_installed(object())

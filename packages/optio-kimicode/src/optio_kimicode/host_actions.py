@@ -3,12 +3,12 @@
 Free functions; each takes a Host or HookContext and uses only generic
 primitives (run_command, resolve_host_home, etc.). No isinstance branches.
 
-Ported from ``optio_grok.host_actions``. This module currently carries the
-host constructor (:func:`build_host`) and the per-task isolation identity
-(:func:`_isolation_env`). The full two-tier install
-(:func:`ensure_kimicode_installed`) is a documented stub — plan group 4
-completes it (reuse a worker ``kimi`` on PATH, else the vendor installer,
-symlinked into ``<workdir>/home/.local/bin/kimi``).
+Ported from ``optio_grok.host_actions``. Carries the host constructor
+(:func:`build_host`), the per-task isolation identity (:func:`_isolation_env`),
+and the two-tier binary install (:func:`ensure_kimicode_installed`): reuse a
+worker ``kimi`` on the login-shell PATH, else run the vendor installer, seeding
+an evictable cache outside the workdir and symlinking it into
+``<workdir>/home/.local/bin/kimi`` (idempotently re-linked after a resume).
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from optio_agents import HookContextProtocol
     from optio_host import Host
     from optio_host.host import ProcessHandle
 
@@ -37,6 +36,37 @@ _LOG = logging.getLogger(__name__)
 # on" line). Group 1 = the actual port; group 2 = the optional bearer token
 # (the token rides in a client-side fragment, never sent to the server).
 _KIMI_READY_RE = re.compile(r"https?://[^\s/]+:(\d+)/(?:#token=(\S+))?")
+
+
+# The optio-owned kimi binary cache lives on the WORKER, outside every task
+# workdir and never the operator's autoupdating ``~/.kimi-code``. Default:
+# ``${XDG_CACHE_HOME:-$HOME/.cache}/optio-kimicode/bin``; ``OPTIO_KIMICODE_CACHE_DIR``
+# overrides. Resolved via a shell echo so RemoteHost gets the remote location and
+# the cache stays shared + evictable — it lives OUTSIDE any task workdir, so it is
+# never captured by the resume snapshot (``Host.archive_workdir`` = ``cd
+# host.workdir && tar czf - .``) and survives task teardown. Mirrors grok's
+# ``_GROK_CACHE_DIR_SHELL_DEFAULT`` (using the optio-prefixed override name, as
+# claudecode does).
+_KIMICODE_CACHE_DIR_SHELL_DEFAULT = (
+    "${OPTIO_KIMICODE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/optio-kimicode/bin}"
+)
+
+# Official kimi vendor installer (confirmed against ``.kimi-src/kimi-code``:
+# README.md + docs/en/guides/getting-started.md). The script downloads the latest
+# single-binary release, verifies its checksum, and "places the ``kimi``
+# executable on your PATH" — under ``$HOME/.local/bin`` (the docs' IDE examples,
+# docs/en/guides/ides.md, show ``~/.local/bin/kimi``). optio drives it with
+# ``HOME`` = a staging root under the cache so the binary lands in
+# ``<home>/.local/bin/kimi`` — never the operator's real ``~`` and never a task
+# workdir — then copies it to the stable cache path ``<cache_dir>/kimi``.
+_KIMICODE_INSTALL_URL = "https://code.kimi.com/kimi-code/install.sh"
+
+# Where the vendor install.sh drops the binary, relative to the ``HOME`` it runs
+# under. NOTE (tracked real-binary follow-up, plan group 6 / row 30): the
+# install.sh is fetched over the network and is not vendored, so only its
+# documented behaviour is available offline. ``test_install.py``'s opt-in
+# ``test_real_vendor_install_lands_runnable_kimi`` confirms this layout live.
+_KIMICODE_INSTALL_REL = ".local/bin/kimi"
 
 
 def build_host(ssh, taskdir: str) -> "Host":
@@ -297,27 +327,199 @@ async def append_resume_log_entry(
         )
 
 
-async def ensure_kimicode_installed(
-    hook_ctx: "HookContextProtocol",
-    *,
-    install_if_missing: bool = True,
-    install_dir: str | None = None,
-    progress_label: str = "Preparing Kimi Code…",
-) -> str:
-    """Provision ``kimi`` for this task (two-tier install) — DEFERRED to group 4.
+async def _resolve_kimicode_cache_dir(host: "Host", override: str | None) -> str:
+    """Resolve the optio-owned kimi binary-cache dir as an absolute worker path.
 
-    The full implementation (ported from grok/claudecode's
-    ``ensure_<agent>_installed``) reuses a worker ``kimi`` on the login-shell
-    PATH when present (fast copy into an evictable cache outside the workdir),
-    else runs the vendor installer ``code.kimi.com/kimi-code/install.sh``, then
-    symlinks the cached binary into ``<workdir>/home/.local/bin/kimi`` (re-linked
-    idempotently after a resume). Returns that per-task launch path.
-
-    Stubbed for now: raises ``NotImplementedError`` so callers fail loudly rather
-    than silently assuming kimi is provisioned. See plan Task 4.1.
+    ``override`` (``config.kimi_install_dir``) wins. Otherwise the worker's real
+    env decides via a shell echo: ``OPTIO_KIMICODE_CACHE_DIR`` else
+    ``${XDG_CACHE_HOME:-$HOME/.cache}/optio-kimicode/bin`` — resolved on the host
+    so RemoteHost gets the remote location. Deliberately mirrors grok's
+    ``_resolve_grok_cache_dir``. The result lives OUTSIDE any task workdir, so the
+    binary it points at is never captured by the resume snapshot.
     """
-    raise NotImplementedError(
-        "ensure_kimicode_installed: two-tier kimi install is implemented in "
-        "plan group 4 (Task 4.1). Until then, ensure a `kimi` binary is on the "
-        "worker PATH or pass an explicit install_dir."
+    if override is not None:
+        return override.rstrip("/")
+    r = await host.run_command(f'printf %s "{_KIMICODE_CACHE_DIR_SHELL_DEFAULT}"')
+    path = (r.stdout or "").strip()
+    if r.exit_code != 0 or not path:
+        raise RuntimeError(
+            f"failed to resolve kimi cache dir on host "
+            f"(exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
+        )
+    return path.rstrip("/")
+
+
+async def ensure_kimicode_installed(
+    host: "Host",
+    workdir: str | None = None,
+    *,
+    install_dir: str | None = None,
+    install_if_missing: bool = True,
+) -> str:
+    """Provision ``kimi`` for this task from the optio-owned binary cache.
+
+    The cache dir (:func:`_resolve_kimicode_cache_dir`) lives on the worker
+    OUTSIDE any task workdir and never the operator's autoupdating
+    ``~/.kimi-code`` — so it stays shared, evictable, and unsnapshotted (it
+    survives task teardown; ``Host.archive_workdir`` only tars ``host.workdir``).
+    The cache is the single stable home of the binary; the value RETURNED is the
+    per-task launch path ``<workdir>/home/.local/bin/kimi`` — a symlink into the
+    cache, on the launch PATH (mirrors grok's ``home/.local/bin/grok``).
+
+    ``workdir`` defaults to ``host.workdir`` (the launch home is
+    ``<workdir>/home``); it is accepted explicitly to match the Task 4.1 contract.
+
+    Cache population (only on a miss, and only when ``install_if_missing``) is
+    two-tier (:func:`_populate_kimicode_cache`):
+
+    - **TIER 1 — seed from a worker kimi**: if a ``kimi`` is already on the worker
+      login-shell PATH (:func:`resolve_kimi`) copy it into the cache (deref +
+      chmod +x); fast, no download, matches the operator's version.
+    - **TIER 2 — vendor auto-install**: otherwise run kimi's official installer
+      (:data:`_KIMICODE_INSTALL_URL`) into the persistent cache, so a fresh or
+      remote worker with no worker kimi still bootstraps itself.
+
+    Host-based (no HookContext) — symmetric with :func:`resolve_kimi` and usable
+    from the engine-free ``verify`` path. Raises only when the cache is empty AND
+    ``install_if_missing=False``. Idempotent on a re-call (cache hit → it just
+    re-links the task path), which is how resume re-establishes the launch symlink
+    after ``restore_snapshot`` wipes it.
+    """
+    workdir = (workdir if workdir is not None else host.workdir).rstrip("/")
+    cache_dir = await _resolve_kimicode_cache_dir(host, install_dir)
+    cached = f"{cache_dir}/kimi"
+
+    probe = await host.run_command(
+        f"[ -x {shlex.quote(cached)} ] && echo OK || true"
     )
+    if "OK" in (probe.stdout or ""):
+        _LOG.info("ensure_kimicode_installed: cache HIT (%s)", cached)
+    elif not install_if_missing:
+        raise RuntimeError(
+            f"kimi not present in cache at {cached!r} and "
+            f"install_if_missing=False; nothing to do."
+        )
+    else:
+        await _populate_kimicode_cache(host, cache_dir=cache_dir, cached=cached)
+
+    return await _link_kimicode_into_task(host, workdir, cached)
+
+
+async def _populate_kimicode_cache(
+    host: "Host", *, cache_dir: str, cached: str,
+) -> None:
+    """Fill an empty cache: prefer seeding from a pre-existing worker kimi (TIER
+    1 — fast, no download); fall back to the vendor auto-installer when the worker
+    has none (TIER 2). Leaves an executable ``<cache_dir>/kimi`` on success;
+    raises otherwise. Mirrors grok's ``_populate_grok_cache``.
+    """
+    # TIER 1 — a kimi already on the worker (login-shell PATH).
+    source: "str | None"
+    try:
+        source = await resolve_kimi(host, install_dir=None, install_if_missing=False)
+    except RuntimeError:
+        source = None
+
+    if source is None:
+        # No worker kimi anywhere — bootstrap via the vendor installer (TIER 2).
+        await _install_kimicode_into_cache(host, cache_dir=cache_dir, cached=cached)
+        _LOG.info("ensure_kimicode_installed: cache MISS -> vendor-installed into %s", cached)
+        return
+
+    mk = await host.run_command(f"mkdir -p {shlex.quote(cache_dir)}")
+    if mk.exit_code != 0:
+        raise RuntimeError(
+            f"mkdir -p {cache_dir!r} failed (exit {mk.exit_code}): "
+            f"{(mk.stderr or '').strip()[:200]}"
+        )
+    # ``-L`` dereferences: a symlinked worker kimi becomes a real, stable copy in
+    # the cache (independent of the worker binary the operator may autoupdate).
+    cp = await host.run_command(
+        f"cp -L {shlex.quote(source)} {shlex.quote(cached)}"
+    )
+    if cp.exit_code != 0:
+        raise RuntimeError(
+            f"seeding kimi cache (cp {source!r} -> {cached!r}) failed "
+            f"(exit {cp.exit_code}): {(cp.stderr or '').strip()[:200]}"
+        )
+    ch = await host.run_command(f"chmod +x {shlex.quote(cached)}")
+    if ch.exit_code != 0:
+        raise RuntimeError(
+            f"chmod +x {cached!r} failed (exit {ch.exit_code}): "
+            f"{(ch.stderr or '').strip()[:200]}"
+        )
+    verify = await host.run_command(
+        f"[ -x {shlex.quote(cached)} ] && echo OK || true"
+    )
+    if "OK" not in (verify.stdout or ""):
+        raise RuntimeError(
+            f"kimi cache seed completed but {cached!r} is still not executable "
+            f"on the host. Check the seed source {source!r} and chmod result."
+        )
+    _LOG.info("ensure_kimicode_installed: cache MISS -> seeded from worker %s", source)
+
+
+async def _install_kimicode_into_cache(
+    host: "Host", *, cache_dir: str, cached: str,
+) -> None:
+    """Vendor auto-install kimi into the persistent cache (TIER 2: miss + no
+    worker kimi).
+
+    Runs the official installer with ``HOME`` = the cache ROOT (``dirname`` of
+    ``cache_dir``) so the single-binary release lands at
+    ``<cache_root>/.local/bin/kimi`` — a persistent location OUTSIDE any task
+    workdir and never the operator's ``~`` — then copies it to the stable cache
+    path ``<cache_dir>/kimi``. HOME is the cache root (never the real ``~``), so
+    nothing touches the operator's ``~/.kimi-code`` or ``~/.local``. Unlike grok
+    (whose installer honours ``GROK_BIN_DIR``) kimi's install.sh exposes no
+    bin-dir override, so the produced binary is located under the staging HOME and
+    copied into place.
+    """
+    cache_root = os.path.dirname(cache_dir.rstrip("/")) or "/"
+    produced = f"{cache_root}/{_KIMICODE_INSTALL_REL}"
+    installer = f"curl -fsSL {shlex.quote(_KIMICODE_INSTALL_URL)} | bash"
+    cmd = (
+        f"mkdir -p {shlex.quote(cache_root)} {shlex.quote(cache_dir)} && "
+        f"env HOME={shlex.quote(cache_root)} sh -c {shlex.quote(installer)} && "
+        f"cp -L {shlex.quote(produced)} {shlex.quote(cached)} && "
+        f"chmod +x {shlex.quote(cached)}"
+    )
+    result = await host.run_command(cmd)
+    if result.exit_code != 0:
+        raise RuntimeError(
+            f"kimi vendor auto-install failed on host (exit {result.exit_code}): "
+            f"{(result.stderr or '').strip()[:300]}"
+        )
+    verify = await host.run_command(
+        f"[ -x {shlex.quote(cached)} ] && echo OK || true"
+    )
+    if "OK" not in (verify.stdout or ""):
+        raise RuntimeError(
+            f"kimi vendor install reported success but {cached!r} is still not "
+            f"executable. The installer may place the binary somewhere other than "
+            f"{produced!r}; inspect the installer output and the cache {cache_dir!r}."
+        )
+
+
+async def _link_kimicode_into_task(host: "Host", workdir: str, cached: str) -> str:
+    """Symlink the cached kimi binary into the task's isolated home launch dir.
+
+    The cache lives OUTSIDE the workdir (persists across task teardown); the
+    launch path ``<workdir>/home/.local/bin/kimi`` is a per-task symlink to it,
+    ahead on the launch PATH (:func:`build_launch_env`). Returns that task path.
+    ``ln -sfn`` is idempotent — a resume re-call just refreshes the symlink on the
+    restored tree. Mirrors grok's ``_link_grok_into_task``.
+    """
+    workdir = workdir.rstrip("/")
+    bin_dir = f"{workdir}/home/.local/bin"
+    task_kimi = f"{bin_dir}/kimi"
+    r = await host.run_command(
+        f"mkdir -p {shlex.quote(bin_dir)} && "
+        f"ln -sfn {shlex.quote(cached)} {shlex.quote(task_kimi)}"
+    )
+    if r.exit_code != 0:
+        raise RuntimeError(
+            f"linking kimi into the task path ({task_kimi!r} -> {cached!r}) "
+            f"failed (exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
+        )
+    return task_kimi

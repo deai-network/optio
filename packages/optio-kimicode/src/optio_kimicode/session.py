@@ -135,7 +135,10 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
         """
         nonlocal kimi_path, resuming, preserved_session_id
         nonlocal resolved_seed_id, lease_holder, cred_baseline
-        kimi_path = await host_actions.resolve_kimi(
+        # Two-tier provision: reuse a worker kimi on the login-shell PATH (fast
+        # copy), else vendor-install, into an evictable cache OUTSIDE the workdir;
+        # returns the per-task launch symlink ``<workdir>/home/.local/bin/kimi``.
+        kimi_path = await host_actions.ensure_kimicode_installed(
             host,
             install_dir=config.kimi_install_dir,
             install_if_missing=config.install_if_missing,
@@ -153,6 +156,15 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             await restore_snapshot(
                 ctx, host, snapshot,
                 session_blob_decrypt=config.session_blob_decrypt,
+            )
+            # The launch symlink (home/.local/bin/kimi) lives INSIDE the workdir
+            # and was wiped + re-materialized by the restore; re-establish it
+            # against the cache (which lives OUTSIDE the workdir and survives).
+            # Idempotent: cache hit → just relinks, no reinstall/redownload.
+            kimi_path = await host_actions.ensure_kimicode_installed(
+                host,
+                install_dir=config.kimi_install_dir,
+                install_if_missing=config.install_if_missing,
             )
             await host_actions.rotate_optio_log(host)
             preserved_session_id = await _recover_session_id(host)
