@@ -61,12 +61,13 @@ Authorized color: turquoise
 
 CONSUMER_PROMPT = (
     "First, read the file `./context.txt` in your working directory. It "
-    "contains a mission code-name and an authorized color. Ship a "
-    "deliverable file at `./deliverables/mission-report.txt` containing "
-    "the mission code-name, the authorized color, and the number 42. "
-    "Then signal completion by appending a `DONE` line to the "
-    "`./optio.log` file (writing `DONE` in the chat has no effect — it "
-    "must go into that file)."
+    "contains a mission code-name and an authorized color. Then ask the "
+    "human about their favorite color. Ship a deliverable file at "
+    "`./deliverables/mission-report.txt` containing the mission "
+    "code-name, the authorized color, the human's favorite color, and "
+    "the number 42. Then signal completion by appending a `DONE` line "
+    "to the `./optio.log` file (writing `DONE` in the chat has no "
+    "effect — it must go into that file)."
 )
 
 
@@ -218,8 +219,8 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                 description=(
                     "Fresh Codex session started from a captured seed "
                     f"({name}): logged-in and configured, new "
-                    "conversation. Reads context.txt, ships a "
-                    "deliverable, exercises the feedback channel."
+                    "conversation. Reads context.txt, asks for a color, "
+                    "ships a deliverable, exercises the feedback channel."
                 ),
                 config=CodexTaskConfig(
                     consumer_instructions=CONSUMER_PROMPT,
