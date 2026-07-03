@@ -23,6 +23,7 @@ __all__ = [
     "SandboxMode",
     "ConversationMode",
     "ToolVerbosity",
+    "ThinkingVerbosity",
     "SeedProvider",
     "SeedUnavailableError",
     "AllowedDir",
@@ -79,6 +80,11 @@ ConversationMode = Literal["iframe", "conversation"]
 # only). Mirrors optio-grok/claudecode; consumed by the dashboard reducer.
 ToolVerbosity = Literal["silent", "description-only", "verbose"]
 _VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
+
+# Visibility of reasoning/thinking traces (cursor's agent_thought_chunk) in the
+# conversation widget. Task-level, mirrors ToolVerbosity; the UI never decides.
+ThinkingVerbosity = Literal["hidden", "visible"]
+_VALID_THINKING_VERBOSITY = {"hidden", "visible"}
 
 
 @dataclass
@@ -192,6 +198,9 @@ class CursorTaskConfig:
     # How much tool-call detail the conversation widget renders; only affects
     # conversation_ui rendering.
     tool_verbosity: ToolVerbosity = "description-only"
+    # Whether the conversation widget shows cursor's reasoning/thinking traces
+    # (agent_thought_chunk). Default hidden — thinking is noisy; opt in per task.
+    thinking_verbosity: ThinkingVerbosity = "hidden"
 
     # --- conversation frontend parity (Stage 7) -------------------------
     # Model preselected in the widget's model picker. Requires
@@ -251,6 +260,11 @@ class CursorTaskConfig:
             raise ValueError(
                 f"CursorTaskConfig.tool_verbosity={self.tool_verbosity!r} "
                 f"is not one of {sorted(_VALID_TOOL_VERBOSITY)}"
+            )
+        if self.thinking_verbosity not in _VALID_THINKING_VERBOSITY:
+            raise ValueError(
+                f"CursorTaskConfig.thinking_verbosity={self.thinking_verbosity!r} "
+                f"is not one of {sorted(_VALID_THINKING_VERBOSITY)}"
             )
         # Frontend-parity features are opt-in flags that only make sense with
         # the conversation UI wired (mirrors optio-grok/claudecode).

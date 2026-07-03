@@ -28,6 +28,7 @@ export function CursorView(props: WidgetProps) {
   const wd = (props.process.widgetData as any) ?? {};
   const toolVerbosity = (wd.toolVerbosity ?? 'description-only') as
     'silent' | 'description-only' | 'verbose';
+  const thinkingVerbosity = (wd.thinkingVerbosity ?? 'hidden') as 'hidden' | 'visible';
   const [state, dispatch] = useReducer(chatReducer, initialChatState);
   const localSeqRef = useRef(0);
   const showFileUpload = Boolean(wd.showFileUpload);
@@ -102,6 +103,7 @@ export function CursorView(props: WidgetProps) {
       closed={state.closed}
       busy={busy}
       toolVerbosity={toolVerbosity}
+      thinkingVerbosity={thinkingVerbosity}
       showFileUpload={showFileUpload}
       maxUploadBytes={maxUploadBytes}
       fileDownload={fileDownload}

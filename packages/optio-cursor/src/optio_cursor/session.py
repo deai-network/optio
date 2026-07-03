@@ -447,6 +447,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             await ctx.set_widget_data({
                 "protocol": "cursor",
                 "toolVerbosity": config.tool_verbosity,
+                "thinkingVerbosity": config.thinking_verbosity,
                 "showModelSelector": config.show_model_selector,
                 "models": model_list["models"],
                 "currentModel": current_model,
