@@ -103,6 +103,10 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
     launched_handle: ProcessHandle | None = None
     cancelled = False
     kimi_path: str | None = None
+    # Stage 8: the on-host claustrum binary for the fs-isolation wrap. Resolved
+    # in _prepare when config.fs_isolation (fail-closed: provisioning raises
+    # rather than launching unconfined); None when isolation is off.
+    claustrum_path: str | None = None
 
     # Set by _prepare (after the workdir wipe, before the optio.log tail); read
     # by the body, _agent_sender, and the teardown finally.
@@ -136,7 +140,7 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
         optio.log tail — so the resume restore + optio.log rotation land before
         the tail can re-emit a stale DONE.
         """
-        nonlocal kimi_path, resuming, preserved_session_id
+        nonlocal kimi_path, claustrum_path, resuming, preserved_session_id
         nonlocal resolved_seed_id, lease_holder, cred_baseline
         # Two-tier provision: reuse a worker kimi on the login-shell PATH (fast
         # copy), else vendor-install, into an evictable cache OUTSIDE the workdir;
@@ -146,6 +150,16 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             install_dir=config.kimi_install_dir,
             install_if_missing=config.install_if_missing,
         )
+
+        # Stage 8 filesystem isolation: provision claustrum (cross-compiled on
+        # the engine, placed on the worker, --version verified). Default-on;
+        # fail-closed — a provisioning failure RAISES here and aborts the
+        # session rather than launching kimi unconfined. Resolved once (the
+        # binary lives OUTSIDE the workdir and survives resume's restore).
+        if config.fs_isolation:
+            claustrum_path = await host_actions.ensure_claustrum_installed(
+                hook_ctx, install_dir=config.kimi_install_dir,
+            )
 
         snapshot = None
         if getattr(ctx, "resume", False) and config.supports_resume:
@@ -233,6 +247,11 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             **(hook_ctx.browser_launch_env or {}),
         }
         ctx.report_progress(None, "Launching Kimi Code…")
+        # Stage 8: confine the kimi web server (and its tool subprocesses) to
+        # the workdir + grants. None when fs_isolation is off.
+        claustrum_wrap = await host_actions._build_claustrum_wrap(
+            host, config, claustrum_path,
+        )
         handle, server_port, token = await host_actions.launch_kimi_web(
             host,
             kimi_path=kimi_path,
@@ -240,6 +259,7 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             extra_env=launch_env,
             env_remove=config.scrub_env,
             ready_timeout_s=READY_TIMEOUT_S,
+            claustrum_wrap=claustrum_wrap,
         )
         launched_handle = handle
 
@@ -331,12 +351,18 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
         # apps/kimi-code/src/cli/sub/acp.ts): the model is chosen over ACP
         # (``session/set_model``) and the permission gate is the fs/terminal
         # capability seam KimiCodeConversation withholds, not a CLI flag.
-        # Filesystem isolation (the claustrum wrap) arrives in a later task.
         argv = [kimi_path, "acp"]
-        # ``exec`` so /bin/sh REPLACES itself with the kimi process, making kimi
-        # the session leader in the launcher's process group (the pgid optio's
-        # teardown targets) rather than a forked grandchild that killpg misses.
-        cmd = "exec " + " ".join(shlex.quote(a) for a in argv)
+        # Stage 8 filesystem isolation: prepend the claustrum wrap so kimi acp
+        # (and its tool subprocesses) run confined. None when fs_isolation is
+        # off. claustrum execve's kimi, so the bidirectional JSON-RPC stdio
+        # pipes pass through unchanged.
+        claustrum_wrap = await host_actions._build_claustrum_wrap(
+            host, config, claustrum_path,
+        )
+        # ``exec`` so /bin/sh REPLACES itself with claustrum (then kimi), making
+        # kimi the session leader in the launcher's process group (the pgid
+        # optio's teardown targets) rather than a forked grandchild killpg misses.
+        cmd = host_actions.build_wrapped_exec_cmd(argv, claustrum_wrap=claustrum_wrap)
         # Same per-task HOME/KIMI_CODE_HOME/XDG isolation + PATH as the iframe
         # launch (build_launch_env). merge_stderr=False keeps kimi's diagnostics
         # off the JSON-RPC stdout stream the driver parses.
