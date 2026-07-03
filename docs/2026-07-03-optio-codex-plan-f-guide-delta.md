@@ -373,7 +373,7 @@ Green (same skip count as baseline).
 
 ### Task 4 (Gap 4): Direct-endpoint (OIDC) verify/refresh — non-billable, agent-probe as fallback
 
-Port grok `dd17f6d`, adapted to OpenAI/codex facts. Codex `verify.py` currently plants the seed and runs a **billable** agent probe (`codex exec --json … '<capital-of-France>'`). Rewrite it to talk straight to OpenAI's OIDC token endpoint (host-free, no model call): parse `auth.json`; an API-key seed is alive-by-presence; a ChatGPT-mode seed is refreshed via the standard `refresh_token` grant (public client), rotated tokens written back, status fail-closed and precise. **Divergence from grok:** codex **keeps** the agent probe as the documented **fallback** when OIDC discovery yields no usable `token_endpoint`.
+Port grok `dd17f6d`, adapted to OpenAI/codex facts. Codex `verify.py` currently plants the seed and runs a **billable** agent probe (`codex exec --json … '<capital-of-France>'`). Rewrite it to refresh straight against OpenAI's token endpoint (host-free, no model call): parse `auth.json`; an API-key seed is alive-by-presence; a ChatGPT-mode seed is refreshed via the standard `refresh_token` grant (public client), rotated tokens written back, status fail-closed and precise. **Endpoint caveat (Task 0):** unlike grok — whose xAI OIDC discovery `token_endpoint` *is* its refresh endpoint — codex's discovery `token_endpoint` (`…/api/accounts/oauth/token`) is a different surface; codex hardcodes its refresh URL to `https://auth.openai.com/oauth/token` (`CODEX_REFRESH_TOKEN_URL_OVERRIDE`), so Task 4 refreshes against that hardcoded URL and uses discovery only as a reachability gate (see the Interfaces endpoint note). **Divergence from grok:** codex **keeps** the agent probe as the documented **fallback** when OIDC discovery is unreachable.
 
 **Files:**
 - Modify: `packages/optio-codex/src/optio_codex/verify.py` (rewrite `verify_and_refresh_seed`; add sync HTTP helpers, `_read_auth`, `_parse_last_refresh`; keep the probe-fallback branch calling the existing `run_codex_probe`).
@@ -382,8 +382,9 @@ Port grok `dd17f6d`, adapted to OpenAI/codex facts. Codex `verify.py` currently 
 
 **Interfaces:**
 - Signature is **unchanged** (keeps `ssh`, `install_dir` — the fallback probe needs a host, unlike grok which dropped them): `verify_and_refresh_seed(db, *, prefix, suffix=CODEX_SEED_SUFFIX, seed_id, ssh=None, install_dir=None, encrypt=None, decrypt=None) -> bool`.
-- New module-private sync helpers (run in an executor, mirror grok): `_discover_sync(issuer) -> dict | None`, `_refresh_sync(token_endpoint, refresh_token, client_id) -> dict | str | None` (`_DEAD` sentinel on 4xx, `None` on transport), `_read_auth(blob_plain) -> dict | None`, `_parse_last_refresh(value) -> datetime | None`.
-- **Pinned facts (from Task 0 Step 3/4), written into the module docstring verbatim:** issuer `https://auth.openai.com`; discovery `…/.well-known/openid-configuration`; `token_endpoint` (as discovered — likely `https://auth.openai.com/oauth/token`); public CLI `client_id = app_EMoamEEZ73f0CkXaXp7hrann`; `auth.json` ChatGPT shape `{"OPENAI_API_KEY": null, "tokens": {"id_token","access_token","refresh_token","account_id"}, "last_refresh": …}`; refresh rotates `tokens.access_token` + `tokens.refresh_token` (+ `tokens.id_token` if returned) and stamps `last_refresh`. Refresh-freshness gate: codex refreshes proactively after 8 days (`TOKEN_REFRESH_INTERVAL`), so `need_refresh = last_refresh age ≥ 8 days` (or unparseable/absent).
+- New module-private sync helpers (run in an executor, mirror grok): `_discover_sync(issuer) -> dict | None` (a **reachability gate only** — see the endpoint note below; its `token_endpoint` is NOT the refresh URL for codex), `_refresh_sync(refresh_url, refresh_token, client_id) -> dict | str | None` (`_DEAD` sentinel on 4xx, `None` on transport), `_read_auth(blob_plain) -> dict | None`, `_parse_last_refresh(value) -> datetime | None`.
+- **Pinned facts (from Task 0 Step 3/4 — see `docs/2026-07-03-optio-codex-task0-oidc-facts.md`, written into the module docstring verbatim):** issuer `https://auth.openai.com`; discovery `…/.well-known/openid-configuration`; public CLI `client_id = app_EMoamEEZ73f0CkXaXp7hrann`; `auth.json` ChatGPT shape `{"OPENAI_API_KEY": null, "tokens": {"id_token","access_token","refresh_token","account_id"}, "last_refresh": …}` (a top-level `auth_mode` is also present and is preserved automatically); refresh rotates `tokens.access_token` + `tokens.refresh_token` (+ `tokens.id_token` if returned) and stamps `last_refresh`. Refresh-freshness gate: codex refreshes proactively after 8 days (`TOKEN_REFRESH_INTERVAL`), so `need_refresh = last_refresh age ≥ 8 days` (or unparseable/absent).
+- **⚠️ REFRESH ENDPOINT (Task 0 divergence — do NOT use discovery's `token_endpoint`):** the OIDC discovery `token_endpoint` is `https://auth.openai.com/api/accounts/oauth/token` — a **different** OAuth surface (account-management / rmcp-MCP), NOT what codex uses to rotate its own credential. The codex binary hardcodes its refresh URL as **`https://auth.openai.com/oauth/token`** (env override `CODEX_REFRESH_TOKEN_URL_OVERRIDE`). Task 4 therefore refreshes against the **codex-hardcoded URL** (`_REFRESH_URL = os.environ.get("CODEX_REFRESH_TOKEN_URL_OVERRIDE", "https://auth.openai.com/oauth/token")`), and uses `_discover_sync` **only** as a reachability signal (discovery down/unreachable → probe fallback). Fail-closed semantics unchanged (4xx → dead; transport/discovery error → inconclusive).
 
 - [ ] **Step 1: Rewrite the tests (RED).** Replace `packages/optio-codex/tests/test_verify.py` with a mocked-HTTP suite plus one probe-fallback test that retains the existing fake-probe harness. Full file:
 
@@ -420,9 +421,14 @@ from optio_codex.verify import verify_and_refresh_seed
 
 _ISSUER = "https://auth.openai.com"
 _CLIENT = "app_EMoamEEZ73f0CkXaXp7hrann"
+# Discovery's token_endpoint is the REAL discovered value — an account-management
+# surface, NOT codex's refresh URL. Production must IGNORE this and refresh
+# against the hardcoded _REFRESH_URL (https://auth.openai.com/oauth/token). The
+# stale-refresh test below asserts the refresh call used /oauth/token, so it
+# fails if anyone regresses to disco["token_endpoint"].
 _DISCO = {
     "issuer": _ISSUER,
-    "token_endpoint": "https://auth.openai.com/oauth/token",
+    "token_endpoint": "https://auth.openai.com/api/accounts/oauth/token",
 }
 
 
@@ -488,8 +494,8 @@ async def test_stale_chatgpt_refreshes_and_writes_back(mongo_db, tmp_path, monke
     monkeypatch.setattr(verify, "_discover_sync", lambda issuer: _DISCO)
     seen = {}
 
-    def fake_refresh(token_endpoint, refresh_token, client_id):
-        seen["call"] = (token_endpoint, refresh_token, client_id)
+    def fake_refresh(refresh_url, refresh_token, client_id):
+        seen["call"] = (refresh_url, refresh_token, client_id)
         return {
             "access_token": "NEW_ACCESS", "refresh_token": "ROTATED",
             "id_token": "NEW_ID", "expires_in": 864000,
@@ -605,20 +611,28 @@ non-billable) — with the agent probe kept as a documented fallback.
 
 Primary path: read the seed's ``auth.json`` and, for a ChatGPT-mode seed whose
 token is stale (codex refreshes proactively after 8 days — TOKEN_REFRESH_INTERVAL),
-perform a standard OIDC ``refresh_token`` grant against OpenAI's token endpoint
-(discovered from the fixed issuer), writing the rotated tokens back into the
-seed. No codex process, no model inference — mirrors optio-claudecode's
-direct-endpoint ``oauth.py`` and optio-grok's ``verify.py``.
+perform a standard OIDC ``refresh_token`` grant against codex's hardcoded
+refresh URL (_REFRESH_URL; NOT the OIDC discovery token_endpoint — see the facts
+block below), writing the rotated tokens back into the seed. No codex process,
+no model inference — mirrors optio-claudecode's direct-endpoint ``oauth.py`` and
+optio-grok's ``verify.py`` (grok's discovery token_endpoint IS its refresh URL;
+codex's is not — the one divergence in this path).
 
 Fallback (codex-specific divergence from grok, which removed its probe): when
-OIDC discovery yields no usable ``token_endpoint``, fall back to the billable
+OIDC discovery is unreachable (no usable ``token_endpoint`` in the response —
+used only to confirm reachability), fall back to the billable
 agent probe (``codex exec --json … '<challenge>'``) — the previous behavior —
 so a seed is still verifiable if the endpoint is unreachable.
 
-OpenAI OIDC facts (pinned Task 0, <DATE>, codex-cli 0.142.5):
+OpenAI OIDC facts (pinned Task 0, 2026-07-03, codex-cli 0.142.5):
   issuer            = https://auth.openai.com
   discovery         = <issuer>/.well-known/openid-configuration
-  token_endpoint    = <as discovered; e.g. https://auth.openai.com/oauth/token>
+  discovery.token_endpoint = https://auth.openai.com/api/accounts/oauth/token
+                      -- an account-management surface; NOT codex's refresh URL.
+                      Used here ONLY as a reachability signal (discovery down
+                      -> agent-probe fallback), never as the refresh endpoint.
+  refresh_url       = https://auth.openai.com/oauth/token   (codex hardcodes
+                      this; env override CODEX_REFRESH_TOKEN_URL_OVERRIDE)
   public client_id  = app_EMoamEEZ73f0CkXaXp7hrann   (login OAuth URL; no secret)
   auth.json shape   = {"OPENAI_API_KEY": null|str,
                        "tokens": {"id_token","access_token","refresh_token",
@@ -641,6 +655,7 @@ import asyncio
 import io
 import json
 import logging
+import os
 import re
 import tarfile
 import urllib.parse
@@ -660,6 +675,12 @@ _LOG = logging.getLogger(__name__)
 
 _ISSUER = "https://auth.openai.com"
 _CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
+# Codex hardcodes its ChatGPT refresh URL (manager.rs) — it is NOT the OIDC
+# discovery `token_endpoint` (…/api/accounts/oauth/token), which is a separate
+# account-management surface. Honor codex's own env override.
+_REFRESH_URL = os.environ.get(
+    "CODEX_REFRESH_TOKEN_URL_OVERRIDE", "https://auth.openai.com/oauth/token"
+)
 _AUTH_RELPATH = "home/.codex/auth.json"
 _AUTH_MEMBER = ".codex/auth.json"
 _HTTP_TIMEOUT_S = 20
@@ -692,16 +713,18 @@ def _discover_sync(issuer: str) -> "dict | None":
         return None
 
 
-def _refresh_sync(token_endpoint: str, refresh_token: str, client_id: str) -> "dict | str | None":
-    """OIDC refresh_token grant. Returns the token response dict on success,
-    ``_DEAD`` on a 4xx (dead lineage), or ``None`` on a transport error."""
+def _refresh_sync(refresh_url: str, refresh_token: str, client_id: str) -> "dict | str | None":
+    """OIDC refresh_token grant against codex's hardcoded refresh URL (NOT the
+    discovery token_endpoint — see module docstring). Returns the token response
+    dict on success, ``_DEAD`` on a 4xx (dead lineage), or ``None`` on a
+    transport error."""
     body = urllib.parse.urlencode({
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
         "client_id": client_id,
     }).encode("utf-8")
     req = urllib.request.Request(
-        token_endpoint, data=body, method="POST",
+        refresh_url, data=body, method="POST",
         headers={
             "User-Agent": _USER_AGENT,
             "Content-Type": "application/x-www-form-urlencoded",
@@ -817,6 +840,11 @@ async def verify_and_refresh_seed(
     if not refresh_token:
         return await _finish(False, mark_dead=True)
 
+    # Discovery is a REACHABILITY gate only: if OpenAI's OIDC surface is
+    # unreachable we fall back to the agent probe. We deliberately do NOT use
+    # disco["token_endpoint"] as the refresh URL — for codex that is a different
+    # (account-management) surface; codex refreshes against the hardcoded
+    # _REFRESH_URL (see module docstring / Task 0 facts).
     disco = await _in_executor(_discover_sync, _ISSUER)
     if not isinstance(disco, dict) or not disco.get("token_endpoint"):
         _LOG.warning(
@@ -828,7 +856,6 @@ async def verify_and_refresh_seed(
             install_dir=install_dir, encrypt=encrypt, decrypt=decrypt,
             finish=_finish,
         )
-    token_endpoint = disco["token_endpoint"]
 
     now = datetime.now(timezone.utc)
     last = _parse_last_refresh(auth.get("last_refresh"))
@@ -839,7 +866,7 @@ async def verify_and_refresh_seed(
         # freshness is the liveness signal — documented divergence.)
         return await _finish(True, mark_dead=False)
 
-    resp = await _in_executor(_refresh_sync, token_endpoint, refresh_token, _CLIENT_ID)
+    resp = await _in_executor(_refresh_sync, _REFRESH_URL, refresh_token, _CLIENT_ID)
     if resp is _DEAD:
         return await _finish(False, mark_dead=True)
     if not isinstance(resp, dict) or not resp.get("access_token"):
