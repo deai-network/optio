@@ -27,6 +27,7 @@ from optio_kimicode.types import (
     SeedProvider,
     SeedUnavailableError,
 )
+from optio_kimicode.verify import verify_and_refresh_seed
 
 
 # asyncssh emits per-connection INFO lines that flood worker stdout once an
@@ -55,4 +56,5 @@ __all__ = [
     "delete_seed",
     "list_seeds",
     "purge_seed",
+    "verify_and_refresh_seed",
 ]
