@@ -95,7 +95,7 @@ the shared `run_log_protocol_session` driver; everything generic (workdir lifecy
 | Concern | Decision | Rationale |
 |---|---|---|
 | Conversation mode (req) | `kimi acp` JSON-RPC over stdio | native ACP; multi-turn; real permission gating; grok/cursor are direct references |
-| Iframe mode | **`kimi web`** (`kimi server run`), token via `#token=`, loopback | native driving SPA; opencode-parity. `kimi vis` = later observe-only option |
+| Iframe mode | **`kimi web`** (`kimi server run`), token via `#token=`, loopback. Pre-create a session (`POST /sessions`), point the iframe at it, and drive the agent via `POST /sessions/{id}/prompts` (opencode-parity — this is `_agent_sender`, resume PUSH, and auto_start). NOT grok's positional/keystroke (kimi web is a pure server, has no `--continue`/positional). | native driving SPA; opencode-parity. `kimi vis` = later observe-only option |
 | Auth | seed-only + direct host-free refresh; API-key bypass alt | endpoints known; RFC 8628 works headless |
 | Model switch | inline `/model` (opencode-style) + `-m` launch; effort low..max | kimi supports live switch |
 | Browser handling | `redirect` protocol mode | device-code URL surfaced; no interception needed |

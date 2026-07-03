@@ -104,11 +104,24 @@ line; **restore under identical workdir path** (workDirKey hashes abs path);
 retention; optional at-rest encryption (fail-loud on decrypt error).
 - [ ] Test: capture→wipe→restore round-trips the session dir + index line. Commit.
 
-### Task 2.2 — resume wiring in `session.py` + `prompt.py`
-**Deltas:** launch with `--continue`; both resume-awareness halves — `resume.log`
-pull doc in `prompt.py` AND pushed `RESUME_NOTICE` on every relaunch, every mode
-(`build_resume_notice_args` for iframe positional; conversation body send).
-- [ ] Test: relaunch-by-pid restores session AND agent gets the notice (fake). Commit.
+### Task 2.2 — resume wiring in `session.py` + `prompt.py` (+ correct group-1 iframe)
+**CORRECTION (post group-1):** kimi's iframe is `kimi server run`/`kimi web` — a pure
+web server with NO `--continue`, NO positional prompt (grok's iframe PUSH shape does not
+apply). The parity target is **opencode**: it pre-creates a session, points the iframe at
+it, and PUSHes via `POST /sessions/{id}/prompts`. Group 1 shipped iframe `_agent_sender`
+as `NotImplementedError` — this task replaces it with the REST session-POST.
+**Deltas (mirror opencode `session.py` lines ~380-446 + `_post_opencode_prompt`):**
+- Pre-create a kimi session (`POST /sessions`), capture `session_id`, point the iframe
+  `iframeSrc` at that session (verify SPA URL form against `.kimi-src/.../apps/kimi-web`).
+- Implement iframe `_agent_sender(text)` = `POST /sessions/{session_id}/prompts` (bearer token, loopback).
+- Snapshot restore in `_prepare` (on `ctx.resume` + latest snapshot), capture on teardown
+  (gated `supports_resume`).
+- PULL half: `resume.log` doc already in `prompt.py` (group 1); port `_append_resume_log_entry`
+  + `_rotate_optio_log` to `host_actions`, call in `_prepare` (append every start; rotate on resume).
+- PUSH half: on resume, `POST` `SYSTEM_MESSAGE_PREFIX+RESUME_NOTICE` to the session (fires
+  in BOTH iframe and conversation, like opencode line 429). auto_start POSTs kickoff on fresh launch.
+- [ ] Test: relaunch restores the kimi session store AND a resume-notice prompt is POSTed
+  to the session AND `resume.log` appended AND `optio.log` rotated (fake kimi server). Commit.
 
 ---
 
