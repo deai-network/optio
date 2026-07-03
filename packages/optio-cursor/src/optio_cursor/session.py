@@ -114,13 +114,14 @@ async def _build_claustrum_wrap(
 
 
 async def _probe_or_cached_models(
-    ctx, conversation, models: list[dict], *, seed_id: str | None,
+    ctx, conversation, models: list[dict], *, seed_id: str | None, resuming: bool,
 ) -> list[dict]:
     """Grey out models the seed's plan cannot use. cursor lists its full
     catalogue with no plan flag; a gated model silently answers "Upgrade your
-    plan to continue". So probe each id once (before the widget is shown) and
-    cache the result per seed (24h) — see model_probe. Best-effort: on any
-    failure the list is returned unchanged (nothing wrongly disabled)."""
+    plan to continue". So probe each id once on a FRESH launch (before the widget
+    is shown), cache the result per seed (24h), and reuse it on later launches
+    incl. resumes — see model_probe. Never probes on resume (the plan was already
+    determined). Best-effort: on any failure the list is returned unchanged."""
     ids = [m["id"] for m in models if m.get("id")]
     if not ids:
         return models
@@ -131,6 +132,10 @@ async def _probe_or_cached_models(
         except Exception:  # noqa: BLE001
             _LOG.exception("model-probe cache load failed")
     if usable is None:
+        if resuming:
+            # A resumed session never re-probes: the plan was settled on the
+            # fresh run (and a cache miss here must not pay the probe cost).
+            return models
         # Log the milestone ONCE, then advance the progress bar silently per
         # model (percent-only calls are coalesced — no per-model log spam).
         ctx.report_progress(0.0, "Checking available models…")
@@ -150,6 +155,9 @@ async def _probe_or_cached_models(
                 )
             except Exception:  # noqa: BLE001
                 _LOG.exception("model-probe cache save failed")
+        # Drop the probe's throwaway turns so they never leak into the operator's
+        # conversation (fresh ACP session; the catalogue is unchanged).
+        await conversation.reset_session()
     return model_probe.apply_probe(models, usable)
 
 
@@ -518,7 +526,10 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             if config.show_model_selector and model_list.get("models"):
                 model_list["models"] = await _probe_or_cached_models(
                     ctx, conversation, model_list["models"],
-                    seed_id=resolved_seed_id,
+                    seed_id=model_probe.probe_cache_key(
+                        resolved_seed_id, config.seed_id,
+                    ),
+                    resuming=resuming,
                 )
 
             conv_listener = ConversationListener(

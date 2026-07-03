@@ -82,6 +82,20 @@ async def probe_models(
     return result
 
 
+def probe_cache_key(resolved_seed_id, config_seed_id):
+    """Stable per-seed cache key that survives resume.
+
+    A fresh seeded launch sets ``resolved_seed_id`` (the merged/leased seed); a
+    RESUMED session skips the merge, leaving it ``None``. Fall back to the
+    config's string ``seed_id`` so the cache still hits/saves across resumes. A
+    pooled (callable) seed has no stable key on resume → ``None`` (probe again)."""
+    if resolved_seed_id is not None:
+        return resolved_seed_id
+    if isinstance(config_seed_id, str):
+        return config_seed_id
+    return None
+
+
 def apply_probe(models: list[dict], usable: dict[str, bool]) -> list[dict]:
     """Return ``models`` with ``disabled=True`` on any id the probe found
     unusable. Ids absent from ``usable`` are left as-is (not probed → unchanged)."""

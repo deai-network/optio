@@ -43,6 +43,21 @@ async def test_probe_marks_gated_models_unusable():
     assert conv.set_calls[-1] == "m-default"
 
 
+def test_probe_cache_key_survives_resume():
+    """A fresh merge sets resolved_seed_id; a RESUMED session skips the merge so
+    resolved_seed_id is None — fall back to the config's string seed_id so the
+    per-seed cache still hits/saves. Pooled (callable) seeds have no stable key
+    on resume → None."""
+    # fresh: resolved id wins
+    assert model_probe.probe_cache_key("resolved", "cfg") == "resolved"
+    # resumed (resolved None): string config seed_id is the stable key
+    assert model_probe.probe_cache_key(None, "cfg-seed") == "cfg-seed"
+    # resumed pooled seed (callable) → no stable key
+    assert model_probe.probe_cache_key(None, lambda pid: "x") is None
+    # no seed at all
+    assert model_probe.probe_cache_key(None, None) is None
+
+
 def test_apply_probe_disables_only_unusable():
     models = [
         {"id": "a", "label": "A", "disabled": False},
