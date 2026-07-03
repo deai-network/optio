@@ -131,8 +131,12 @@ async def _probe_or_cached_models(
         except Exception:  # noqa: BLE001
             _LOG.exception("model-probe cache load failed")
     if usable is None:
+        # Log the milestone ONCE, then advance the progress bar silently per
+        # model (percent-only calls are coalesced — no per-model log spam).
+        ctx.report_progress(0.0, "Checking available models…")
+
         def _report(i: int, total: int, _mid: str) -> None:
-            ctx.report_progress(None, f"Checking available models… ({i}/{total})")
+            ctx.report_progress(i / total * 100.0)
 
         try:
             usable = await model_probe.probe_models(conversation, ids, report=_report)
