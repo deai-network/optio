@@ -433,7 +433,11 @@ only conclusive method — **watching a real first-login** in the wrapper.
   degrade gracefully), or `redirect` (the shim writes `BROWSER: <url>` to
   `optio.log` → the tail parser surfaces it to the operator). **Default to
   `redirect` for any agent whose login opens a browser** — `suppress` hides login
-  URLs and strands the operator.
+  URLs and strands the operator. (Diagnostic breadcrumb: the symptom of wrongly
+  choosing `suppress` looks like "the agent tries to open a browser and nothing
+  happens / the interception isn't engaging" — but the shim *is* engaging; it is
+  silently discarding the URL. Confirm by making the shim log its `$1`: the auth
+  URL arrives, then vanishes. The fix is `redirect`, not more shim wiring.)
 - **Client-side open** (the agent's own web UI calls `window.open`, or it opens the
   browser from in-process code that doesn't shell out) — the process shim **cannot**
   catch it. Fall back to: the **iframe/web surface** where the operator sees and
@@ -525,6 +529,19 @@ Keep as many of these as feasible as **opt-in, skip-if-no-real-binary** tests (s
 `test_sandbox_enforce.py` / `test_conversation_sandbox_enforce.py` in optio-grok) so
 the guard is reproducible, not a one-off manual check that rots.
 
+**Two traps that keep a green suite lying.** (1) *Wired but never run.* A
+real-binary test that is authored and "correct by construction" but never actually
+executed against the live binary is worth nothing — it is exactly where a mis-set
+config default, a sync-vs-async harness mismatch, or a stale wire assumption hides.
+Run each Layer-2 surface at least once against the authed binary before claiming it;
+"it would pass" is not "it passed" (a conversation/seed/resume test can sit green-by-
+skip for a whole release while carrying a launch-breaking bug). (2) *Flipping a
+config default demands a skipped-test audit.* When you change a default (e.g.
+`auto_start` True→False), the default suite stays green while every **opt-in or
+skipped** test that relied on the old default silently breaks — and so does any
+demo/consumer that didn't set the field explicitly. Grep every construction site,
+not just what CI runs.
+
 ---
 
 ## Part 5 — Wiring: packaging, registration, and demo tasks
@@ -549,6 +566,19 @@ wrappers ship the same set: one **seed-setup task** (log in / configure once, st
 to capture a reusable seed) and **two seed-pinned run tasks** — one **iframe** and
 one **conversation** — that auto-appear after a seed exists and run unattended
 against the captured identity. Keep this trio.
+
+**Task shape — copy the reference `CONSUMER_PROMPT` verbatim.** The seed-pinned
+run task is deliberately not a trivial "say hello": with ONE consumer prompt
+shared word-for-word by every wrapper, it reads a planted `context.txt` (a
+`before_execute` hook ships it), **asks the human for their favorite color**,
+then ships a deliverable combining the file's data with the human's answer and
+signals `DONE` via `optio.log`. The "ask the human" step is load-bearing — it is
+the only part that exercises the **two-way dialogue channel** (operator reply →
+agent), so a demo the agent can finish without talking to anyone tests nothing
+interactive. A wrapper that quietly trims that clause (or any other) silently
+degrades the demo to a non-interactive one and **no unit test will catch it** —
+the real tests use a separate DONE-only prompt. Diff your `CONSUMER_PROMPT`
+against the reference and keep it identical.
 
 **Interface to implement.** Expose `async def get_tasks(services) -> list[TaskInstance]`
 in `optio_demo/tasks/<agent>.py` (services gives `db`, `prefix`, and the framework
