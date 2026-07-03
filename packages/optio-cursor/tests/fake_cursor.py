@@ -16,6 +16,7 @@ Adapted from optio-grok's ``fake_grok.py``.
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -134,6 +135,15 @@ def _scenario_seed() -> None:
         (workdir / "deliverables" / "seed_present.txt").write_text(
             "SEED_PRESENT\n", encoding="utf-8",
         )
+        # Real cursor-agent would block on the interactive workspace-trust gate
+        # unless the marker was pre-planted; record that it reached the workdir.
+        slug = re.sub(r"[^A-Za-z0-9]+", "-", str(workdir)).strip("-")
+        marker = _cursor_home() / "projects" / slug / ".workspace-trusted"
+        if marker.exists():
+            (workdir / "deliverables" / "trust_present.txt").write_text(
+                "TRUST_PRESENT\n", encoding="utf-8",
+            )
+            _log("DELIVERABLE: ./deliverables/trust_present.txt")
         time.sleep(0.05)
         _log("DELIVERABLE: ./deliverables/seed_present.txt")
     else:

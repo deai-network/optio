@@ -232,6 +232,14 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                 json.dumps(cli_config, indent=2) + "\n",
             )
 
+        # Pre-authorize the workspace. cursor-agent gates a fresh directory
+        # behind an interactive "Do you trust this directory?" prompt that
+        # --force does not bypass; an unattended auto_start launch would hang
+        # there and the task would die. Planting cursor's own trust marker skips
+        # it (see host_actions.workspace_trust_marker).
+        _trust_rel, _trust_content = host_actions.workspace_trust_marker(host.workdir)
+        await host.write_text(_trust_rel, _trust_content)
+
         if not resuming and config.seed_id is not None:
             # Seeded FRESH start: resolve the seed id (str → itself; a
             # SeedProvider callable → awaited, may raise SeedUnavailableError)

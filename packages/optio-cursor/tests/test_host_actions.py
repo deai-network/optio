@@ -1,10 +1,25 @@
+import json
+
 from optio_cursor.host_actions import (
     _build_cursor_shell_command,
     _isolation_env,
     build_cli_config,
     build_conversation_argv,
     build_cursor_flags,
+    workspace_trust_marker,
 )
+
+
+def test_workspace_trust_marker_path_and_content():
+    """Cursor gates a fresh workspace behind an interactive "Do you trust this
+    directory?" prompt that blocks an unattended auto_start launch. It records
+    trust at $HOME/.cursor/projects/<slug-of-abs-workspace>/.workspace-trusted
+    (existence-only check). Pre-plant it so the launch is pre-authorized."""
+    rel, content = workspace_trust_marker("/w/my_task/workdir/")
+    assert rel == "home/.cursor/projects/w-my-task-workdir/.workspace-trusted"
+    doc = json.loads(content)
+    assert doc["workspacePath"] == "/w/my_task/workdir"
+    assert "trustedAt" in doc and "trustMethod" in doc
 
 
 def test_isolation_env_all_keys():

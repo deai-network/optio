@@ -13,6 +13,7 @@ and the ttyd installer are copied with only ``grok`` → ``cursor`` renames.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -520,6 +521,34 @@ _CURSOR_SSH_DETECT_VARS = (
     "MOSH_CLIENT", "MOSH_SERVER", "MOSH_TTY",
     "VSCODE_SSH_HOST", "VSCODE_SSH_SERVER",
 )
+
+
+def workspace_trust_marker(workdir: str) -> tuple[str, str]:
+    """``(relative_path, json_content)`` for cursor's workspace-trust marker.
+
+    cursor-agent gates a fresh workspace behind an interactive "Do you trust the
+    contents of this directory?" prompt (``--force`` does NOT bypass it; the
+    ``--trust`` flag only works with ``--print``). That blocks an UNATTENDED
+    ``auto_start`` launch — cursor never reads AGENTS.md and the task dies. Cursor
+    records trust at ``$HOME/.cursor/projects/<slug>/.workspace-trusted`` where
+    ``<slug>`` is the workspace ABSOLUTE path (the cwd) with every run of
+    non-alphanumerics collapsed to ``-``; its ``isTrusted()`` check is
+    existence-only. Pre-planting the marker pre-authorizes the workspace so the
+    launch proceeds. ``$HOME`` is ``<workdir>/home`` (see :func:`_isolation_env`),
+    so the path is workdir-relative. The slug uses the absolute workdir, matching
+    what cursor computes from its cwd on both local and remote hosts."""
+    clean = workdir.rstrip("/")
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", clean).strip("-")
+    rel = f"home/.cursor/projects/{slug}/.workspace-trusted"
+    content = json.dumps(
+        {
+            "trustedAt": "1970-01-01T00:00:00.000Z",
+            "workspacePath": clean,
+            "trustMethod": "pre-authorized",
+        },
+        indent=2,
+    ) + "\n"
+    return rel, content
 
 
 def _isolation_env(workdir: str) -> dict[str, str]:

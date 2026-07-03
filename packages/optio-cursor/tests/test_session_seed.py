@@ -120,3 +120,6 @@ async def test_seeded_fresh_session_plants_identity_before_launch(
     )
 
     assert any(p.endswith("seed_present.txt") for p in delivered), delivered
+    # The workspace-trust marker must be pre-planted before launch, else real
+    # cursor-agent blocks on the interactive trust gate (unattended → task dies).
+    assert any(p.endswith("trust_present.txt") for p in delivered), delivered
