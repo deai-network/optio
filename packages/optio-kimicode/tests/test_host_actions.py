@@ -92,3 +92,29 @@ async def test_write_kimi_config_replaces_not_duplicates(tmp_path):
     assert body.count("default_permission_mode") == 1
     assert 'default_permission_mode = "yolo"' in body
     assert 'default_model = "kimi-code/kimi-for-coding"' in body
+
+
+async def test_write_kimi_config_root_scoped_even_with_tables(tmp_path):
+    """Regression (the config #4 'manual' bug): a config.toml with [table] sections
+    (as a seed-captured one has) must still get default_permission_mode as a ROOT
+    key. Appending it after a table scopes it INTO that table, so kimi ignores it
+    and permission stays 'manual'. Verified via a real TOML parse."""
+    import tomllib
+    from optio_kimicode.host_actions import build_host, write_kimi_config
+
+    host = build_host(None, str(tmp_path / "t"))
+    home = os.path.join(host.workdir, "home")
+    os.makedirs(home, exist_ok=True)
+    cfg = os.path.join(home, "config.toml")
+    with open(cfg, "w") as f:
+        f.write(
+            'default_model = "kimi-code/kimi-for-coding"\n\n'
+            '[providers."managed:kimi-code"]\ntype = "kimi"\n\n'
+            '[services.moonshot_fetch.oauth]\nstorage = "file"\n'
+        )
+    await write_kimi_config(host, host.workdir, permission_mode="yolo")
+    data = tomllib.loads(open(cfg).read())
+    assert data["default_permission_mode"] == "yolo"          # ROOT key
+    assert data["default_model"] == "kimi-code/kimi-for-coding"
+    assert data["providers"]["managed:kimi-code"]["type"] == "kimi"
+    assert "default_permission_mode" not in data["services"]["moonshot_fetch"]["oauth"]

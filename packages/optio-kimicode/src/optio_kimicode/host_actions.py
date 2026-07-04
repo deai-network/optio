@@ -195,12 +195,19 @@ async def write_kimi_config(
         return
     home = f"{workdir.rstrip('/')}/home"
     cfg = f"{home}/config.toml"
+    tmp = f"{cfg}.optio-tmp"
     line = f'default_permission_mode = "{permission_mode}"'
+    # PREPEND as a root-table key (before any ``[table]`` header), dropping any
+    # prior occurrence. A bare ``key = val`` APPENDED after a ``[table]`` section
+    # (e.g. the seed's ``[providers."managed:kimi-code"]`` / ``[services...]``)
+    # would be parsed as a member of THAT table, not a top-level default — kimi
+    # then ignores it and permission stays ``manual``. Keys before the first
+    # table live in the root table, so prepending is the only correct placement.
     cmd = (
-        f"mkdir -p {shlex.quote(home)} && "
-        f"if grep -q '^default_permission_mode' {shlex.quote(cfg)} 2>/dev/null; then "
-        f"sed -i {shlex.quote(f's/^default_permission_mode.*/{line}/')} {shlex.quote(cfg)}; "
-        f"else printf '%s\\n' {shlex.quote(line)} >> {shlex.quote(cfg)}; fi"
+        f"mkdir -p {shlex.quote(home)} && touch {shlex.quote(cfg)} && "
+        f"{{ printf '%s\\n' {shlex.quote(line)}; "
+        f"grep -v '^default_permission_mode' {shlex.quote(cfg)} 2>/dev/null || true; }} "
+        f"> {shlex.quote(tmp)} && mv {shlex.quote(tmp)} {shlex.quote(cfg)}"
     )
     r = await host.run_command(cmd)
     if r.exit_code != 0:
