@@ -223,7 +223,10 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                 ),
                 config=KimiCodeTaskConfig(
                     consumer_instructions=CONSUMER_PROMPT,
-                    permission_mode="bypassPermissions",
+                    # Blanket permissions: the task runs unattended (auto_start),
+                    # so auto-approve every tool action rather than stalling on a
+                    # permission prompt nobody is there to answer.
+                    permission_mode="yolo",
                     ssh=ssh,
                     before_execute=_before_execute,
                     after_execute=_after_execute,

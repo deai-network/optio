@@ -53,3 +53,42 @@ def test_build_host_remote_when_ssh(tmp_path):
     assert isinstance(host, RemoteHost)
     # Remote hosts must not materialize the taskdir locally.
     assert not os.path.exists(taskdir)
+
+
+async def test_write_kimi_config_creates_permission_mode(tmp_path):
+    """write_kimi_config sets default_permission_mode in <workdir>/home/config.toml
+    (the daemon applies it to every session — blanket 'yolo' auto-approves)."""
+    from optio_kimicode.host_actions import build_host, write_kimi_config
+
+    host = build_host(None, str(tmp_path / "t"))
+    await write_kimi_config(host, host.workdir, permission_mode="yolo")
+    cfg = os.path.join(host.workdir, "home", "config.toml")
+    assert os.path.exists(cfg)
+    assert 'default_permission_mode = "yolo"' in open(cfg).read()
+
+
+async def test_write_kimi_config_none_is_noop(tmp_path):
+    """permission_mode=None writes nothing (no config.toml)."""
+    from optio_kimicode.host_actions import build_host, write_kimi_config
+
+    host = build_host(None, str(tmp_path / "t"))
+    await write_kimi_config(host, host.workdir, permission_mode=None)
+    assert not os.path.exists(os.path.join(host.workdir, "home", "config.toml"))
+
+
+async def test_write_kimi_config_replaces_not_duplicates(tmp_path):
+    """A pre-existing default_permission_mode is REPLACED (no duplicate key that
+    would make the TOML invalid), other config lines are preserved."""
+    from optio_kimicode.host_actions import build_host, write_kimi_config
+
+    host = build_host(None, str(tmp_path / "t"))
+    home = os.path.join(host.workdir, "home")
+    os.makedirs(home, exist_ok=True)
+    cfg = os.path.join(home, "config.toml")
+    with open(cfg, "w") as f:
+        f.write('default_model = "kimi-code/kimi-for-coding"\ndefault_permission_mode = "manual"\n')
+    await write_kimi_config(host, host.workdir, permission_mode="yolo")
+    body = open(cfg).read()
+    assert body.count("default_permission_mode") == 1
+    assert 'default_permission_mode = "yolo"' in body
+    assert 'default_model = "kimi-code/kimi-for-coding"' in body

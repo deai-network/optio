@@ -232,6 +232,14 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                 ),
             )
 
+        # Permission mode (e.g. "yolo" = blanket auto-approve): written into the
+        # task's config.toml so the daemon applies it to every session it creates
+        # (iframe + conversation). Runs after seed-merge / resume-restore so it is
+        # not wiped; no-op when permission_mode is None.
+        await host_actions.write_kimi_config(
+            host, host.workdir, permission_mode=config.permission_mode,
+        )
+
         if config.supports_resume:
             await host_actions.append_resume_log_entry(host)
 

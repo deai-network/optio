@@ -68,13 +68,14 @@ def test_bad_effort_rejected():
 
 
 def test_bad_permission_mode_rejected():
+    # kimi's modes are yolo/manual/auto — claudecode values are NOT valid here.
     with pytest.raises(ValueError, match="permission_mode"):
-        KimiCodeTaskConfig(consumer_instructions="x", permission_mode="yolo")  # type: ignore[arg-type]
+        KimiCodeTaskConfig(consumer_instructions="x", permission_mode="bypassPermissions")  # type: ignore[arg-type]
 
 
 def test_valid_permission_mode_accepted():
-    cfg = KimiCodeTaskConfig(consumer_instructions="x", permission_mode="bypassPermissions")
-    assert cfg.permission_mode == "bypassPermissions"
+    cfg = KimiCodeTaskConfig(consumer_instructions="x", permission_mode="yolo")
+    assert cfg.permission_mode == "yolo"
 
 
 # --- conversation-only flags require mode=conversation ---------------------

@@ -69,12 +69,14 @@ class SeedUnavailableError(Exception):
     is surfaced as the process failure."""
 
 
-PermissionMode = Literal[
-    "default", "acceptEdits", "auto", "dontAsk", "bypassPermissions", "plan"
-]
-_VALID_PERMISSION_MODES = {
-    "default", "acceptEdits", "auto", "dontAsk", "bypassPermissions", "plan"
-}
+# kimi's own permission modes (``PermissionModeSchema`` in kimi-code:
+# agent-core/config/schema.ts). ``yolo`` = auto-approve every action (blanket
+# permissions); ``auto`` = auto permission mode; ``manual`` = prompt. Wired to the
+# task's ``config.toml`` ``default_permission_mode`` (host_actions.write_kimi_config),
+# which the daemon applies to every session it creates — iframe and conversation
+# alike (core-impl createSession: ``options.permission ?? config.defaultPermissionMode``).
+PermissionMode = Literal["manual", "auto", "yolo"]
+_VALID_PERMISSION_MODES = {"manual", "auto", "yolo"}
 
 # "iframe" = the native ``kimi web`` SPA (``kimi server run``) in the browser
 # (Stages 0-5). "conversation" = a headless ``kimi acp`` (ACP over stdio)

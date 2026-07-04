@@ -177,6 +177,39 @@ def build_launch_env(
     return {**iso, "PATH": f"{home_local_bin}:{base_path}", **extra}
 
 
+async def write_kimi_config(
+    host: "Host", workdir: str, *, permission_mode: str | None,
+) -> None:
+    """Set ``default_permission_mode`` in the task's ``$KIMI_CODE_HOME/config.toml``.
+
+    The daemon applies this to EVERY session it creates — the iframe pre-created
+    session and the ACP conversation session alike (kimi-code core-impl
+    ``createSession``: ``options.permission ?? config.defaultPermissionMode``), so
+    one config key gives blanket/permission control across both surfaces without a
+    per-session REST call. ``"yolo"`` auto-approves every action.
+
+    No-op when ``permission_mode`` is None. Merge-safe: replaces the key if already
+    present (e.g. a resume-restored / seeded config.toml), appends it otherwise,
+    creates the file when absent — never clobbering other config."""
+    if permission_mode is None:
+        return
+    home = f"{workdir.rstrip('/')}/home"
+    cfg = f"{home}/config.toml"
+    line = f'default_permission_mode = "{permission_mode}"'
+    cmd = (
+        f"mkdir -p {shlex.quote(home)} && "
+        f"if grep -q '^default_permission_mode' {shlex.quote(cfg)} 2>/dev/null; then "
+        f"sed -i {shlex.quote(f's/^default_permission_mode.*/{line}/')} {shlex.quote(cfg)}; "
+        f"else printf '%s\\n' {shlex.quote(line)} >> {shlex.quote(cfg)}; fi"
+    )
+    r = await host.run_command(cmd)
+    if r.exit_code != 0:
+        raise RuntimeError(
+            f"writing kimi config.toml (default_permission_mode) failed "
+            f"(exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
+        )
+
+
 def build_kimi_server_argv(
     kimi_path: str, *, bind_iface: str, port: int = 0,
 ) -> list[str]:
