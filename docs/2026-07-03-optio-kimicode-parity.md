@@ -9,6 +9,29 @@ real-`kimi`-binary confirmation of every surface — is scaffolded as an opt-in,
 skip-if-no-binary suite (plan Task 6.3) and is a **TRACKED GAP** until run on a
 provisioned, authenticated host.
 
+## Update 2026-07-04 — first real-binary run (kimi-code 0.22.x)
+
+kimi-code was installed and the wrapper driven against it for the first time,
+which immediately surfaced a bug a green fake suite had hidden: the host's
+``kimi`` was the unrelated Python **kimi-cli** (no ``server`` command), and Tier-1
+install adopted it with no identity check → ``kimi server run`` exited before its
+ready banner. Fixed in ``a4d45fb`` (``_is_kimicode`` identity probe gating
+cache-hit + Tier-1; corrected Tier-2 install dir; same fix in ``resolve_real_kimi``)
+and covered by a new pre-auth real-binary test (``test_real_server_ready.py``).
+
+**Now REAL-verified** (ran against the real binary, no creds needed):
+- Binary install/identity (row 15): Tier-2 vendor-install lands a runnable
+  kimi-code; the kimi-cli name-collision is rejected. **DONE (real-verified).**
+- iframe server startup (row 1): real ``kimi server run`` reaches its ready banner
+  **plain AND under the production claustrum wrap** (ruling out a cursor-style
+  ``/tmp`` sandbox regression). Full iframe render/input/DONE over a live task
+  still needs an authed run.
+- fs-isolation (row 25): server starts under real Landlock enforcement; the
+  deny-enforcement leg is still the opt-in ``test_*_sandbox_enforce`` suite.
+
+Everything requiring **auth** (device-code login, a full conversation turn, seed
+capture/replant, resume) remains a tracked gap pending operator login.
+
 ## Status legend
 
 | Status | Meaning |
@@ -44,7 +67,7 @@ real work is enumerated, not silent.
 | 12 | pool / leases | DONE (fake-verified) | `SeedProvider` path in `session.py` / `cred_watcher.py`; `test_cred_watcher.py` |
 | 13 | credential save-back (rotating tokens) | DONE (fake-verified) | `test_cred_watcher.py` |
 | 14 | verify / refresh seed (host-free) | DONE (fake-verified) · real-refresh TRACKED | `test_verify.py` (mocked HTTP) → **gap:** `test_verify.py::test_real_seed_live_refresh_rotates_token` |
-| 15 | binary cache + auto-install + symlink | DONE (fake-verified) · real install TRACKED | `test_install.py` (fake installer) → **gap:** `test_install.py::test_real_vendor_install_lands_runnable_kimi` |
+| 15 | binary cache + auto-install + symlink | **DONE (real-verified)** | `test_install.py` (fake) + Tier-2 vendor-install landed kimi-code 0.22.3 live; identity-check rejects the kimi-cli collision (`test_real_server_ready.py`) |
 | 16 | HOME/XDG per-task isolation | DONE (fake-verified) | `test_host_actions.py`, `_isolation_env` |
 | 17 | hooks (before/after/on_deliverable) | DONE (fake-verified) | `test_session_iframe.py` (deliverable), `test_host_actions.py` |
 | 18 | prompt composition from SSOT | DONE (fake-verified) | `test_prompt.py` |
