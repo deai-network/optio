@@ -4,6 +4,7 @@ import {
   resolveWidgetUpstream,
   applyInnerAuthHeaders,
   applyInnerAuthQuery,
+  stripEmbedderOrigin,
 } from '../widget-proxy-core.js';
 import { createWidgetUpstreamRegistry } from '../widget-upstream-registry.js';
 
@@ -168,6 +169,26 @@ describe('applyInnerAuthHeaders', () => {
       { x: '1' },
     );
     expect(h).toEqual({ x: '1' });
+  });
+});
+
+describe('stripEmbedderOrigin', () => {
+  it('removes the Origin header so a strict upstream admits the request', () => {
+    const h = stripEmbedderOrigin({ origin: 'http://parent.example', host: 'x', 'x-tok': 's' });
+    expect('origin' in h).toBe(false);
+    expect(h).toEqual({ host: 'x', 'x-tok': 's' });
+  });
+
+  it('is a no-op when no Origin header is present', () => {
+    const input = { host: 'x', 'sec-websocket-protocol': 'kimi-code.bearer.tok' };
+    const h = stripEmbedderOrigin(input);
+    expect(h).toEqual(input);
+  });
+
+  it('does not mutate the input headers object', () => {
+    const input = { origin: 'http://parent.example', host: 'x' };
+    stripEmbedderOrigin(input);
+    expect(input.origin).toBe('http://parent.example');
   });
 });
 

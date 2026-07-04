@@ -61,6 +61,26 @@ export function applyInnerAuthHeaders(
   return headers;
 }
 
+/**
+ * Drop the browser `Origin` header before forwarding to the widget upstream.
+ *
+ * The upstream runs on loopback and is reachable only through this authenticated
+ * proxy, but @fastify/reply-from rewrites the outgoing `Host` to the loopback
+ * upstream while the browser's `Origin` still carries the parent page's origin.
+ * Strict upstreams (e.g. kimi-code) treat that `Origin` != `Host` mismatch as
+ * cross-origin and reject every Origin-bearing request — WebSocket handshakes
+ * (which always send `Origin`) and same-origin POSTs alike. Removing the header
+ * makes the upstream see a non-browser (originless) client and admit the
+ * request; the proxy stays the CSRF/auth trust boundary.
+ */
+export function stripEmbedderOrigin(
+  headers: Record<string, string | string[] | undefined>,
+): Record<string, string | string[] | undefined> {
+  if (!('origin' in headers)) return headers;
+  const { origin: _origin, ...rest } = headers;
+  return rest;
+}
+
 export function applyInnerAuthQuery(
   innerAuth: InnerAuthDoc | null,
   url: string,

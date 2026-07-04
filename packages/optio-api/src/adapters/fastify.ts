@@ -21,6 +21,7 @@ import {
   resolveWidgetUpstream,
   applyInnerAuthHeaders,
   applyInnerAuthQuery,
+  stripEmbedderOrigin,
   isWriteMethod,
 } from '../widget-proxy-core.js';
 import {
@@ -236,14 +237,16 @@ function registerWidgetProxy(app: FastifyInstance, opts: WidgetProxyInternalOpti
       delete (req.raw.headers as Record<string, any>)['accept-encoding'];
     },
 
-    // Rewrite headers for outgoing WebSocket handshake (inner-auth injection).
-    // The Fastify request object is passed as the second argument, which has
-    // request.raw.__optioWidget set by preHandler (runs before the upgrade handshake).
+    // Rewrite headers for outgoing WebSocket handshake (inner-auth injection +
+    // drop the browser Origin so strict upstreams don't reject the cross-origin
+    // handshake — see stripEmbedderOrigin). The Fastify request object is passed
+    // as the second argument, which has request.raw.__optioWidget set by
+    // preHandler (runs before the upgrade handshake).
     wsClientOptions: {
       rewriteRequestHeaders: (headers: Record<string, any>, req: any) => {
         const widget = (req.raw as any).__optioWidget;
-        if (!widget) return headers;
-        return applyInnerAuthHeaders(widget.upstream.innerAuth, headers);
+        if (!widget) return stripEmbedderOrigin(headers);
+        return stripEmbedderOrigin(applyInnerAuthHeaders(widget.upstream.innerAuth, headers));
       },
     },
 
@@ -272,9 +275,12 @@ function registerWidgetProxy(app: FastifyInstance, opts: WidgetProxyInternalOpti
         return widget?.upstream.url ?? 'http://127.0.0.1/';
       },
       rewriteRequestHeaders: (req: any, headers: Record<string, any>) => {
+        // Drop the browser Origin (stripEmbedderOrigin) so a strict upstream
+        // that compares Origin against the reply-from-rewritten Host doesn't
+        // reject same-origin POSTs as cross-origin.
         const widget = (req.raw as any).__optioWidget;
-        if (!widget) return headers;
-        return applyInnerAuthHeaders(widget.upstream.innerAuth, headers);
+        if (!widget) return stripEmbedderOrigin(headers);
+        return stripEmbedderOrigin(applyInnerAuthHeaders(widget.upstream.innerAuth, headers));
       },
       rewriteHeaders: rewriteResponseHeaders,
       // onResponse takes over the response forwarding so we can rewrite
