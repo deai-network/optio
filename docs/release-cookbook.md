@@ -63,7 +63,11 @@ a manual bump).
 3. **Release changed packages in dependency order** — a package must be
    published AFTER its workspace/sibling deps and BEFORE its consumers:
    - **Python:** `wire` (core) → `optio-host` → `optio-agents` →
-     `optio-opencode` → `optio-claudecode` → `optio-demo`
+     `optio-opencode` → `optio-claudecode` → `optio-grok` → `optio-codex` →
+     `optio-cursor` → `optio-demo`
+     (the agent wrappers `optio-grok` / `optio-codex` / `optio-cursor` all
+     depend on `optio-agents`+`optio-host` and are consumed by `optio-demo`,
+     so they slot between `optio-claudecode` and `optio-demo`.)
    - **TS:** `wire` (contracts) → `optio-ui` → `optio-api` →
      `optio-conversation-ui` → `optio-dashboard`
      (`filtrum-core`, `filtrum-mongo` are independent)
