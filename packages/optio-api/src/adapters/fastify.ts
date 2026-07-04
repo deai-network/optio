@@ -111,10 +111,16 @@ function injectBaseHref(html: string, proxyPrefix: string): HtmlInjection {
   const prefixLiteralForRegex = proxyPrefix
     .replace(/\/$/, '') // the script uses the stripped form without trailing slash
     .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Collapse any leading slashes in the stripped remainder before re-forming the
+  // path. The remainder can begin with a stray '/' (e.g. an iframe src that joined
+  // a trailing-slash base with a leading-slash route -> '<prefix>//sessions/...').
+  // Left as-is that would yield a protocol-relative '//sessions/...' URL, and
+  // history.replaceState would throw a cross-origin SecurityError.
   const scriptBody =
     `(function(){var r=new RegExp('^' + ${JSON.stringify(prefixLiteralForRegex)});` +
     `var p=location.pathname;var m=p.match(r);` +
-    `if(m){history.replaceState(null,'',(p.slice(m[0].length)||'/')+location.search+location.hash);}` +
+    `if(m){var rest='/'+p.slice(m[0].length).replace(/^\\/+/,'');` +
+    `history.replaceState(null,'',rest+location.search+location.hash);}` +
     `})();`;
   const stripScriptSha256 = createHash('sha256').update(scriptBody, 'utf-8').digest('base64');
   const stripScript = `<script>${scriptBody}</script>`;

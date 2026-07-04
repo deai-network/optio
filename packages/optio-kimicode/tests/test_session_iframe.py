@@ -53,7 +53,12 @@ async def test_iframe_reaches_done_and_registers_token_widget(
     # bearer token in the `#token=` fragment.
     assert cap.widget_data, "no widget data was set"
     iframe_src = cap.widget_data[-1]["iframeSrc"]
-    assert iframe_src.startswith("{widgetProxyUrl}/")
+    # widgetProxyUrl already ends in '/', so 'sessions/' follows it directly.
+    # Regression guard: a '{widgetProxyUrl}/sessions' would render as a '//sessions'
+    # path which, after the proxy prefix-strip, becomes a protocol-relative '//'
+    # URL and crashes history.replaceState with a cross-origin SecurityError.
+    assert iframe_src.startswith("{widgetProxyUrl}sessions/")
+    assert "{widgetProxyUrl}/sessions" not in iframe_src
     assert "#token=fake-kimi-token" in iframe_src
 
     # A tunnel upstream was published for the running kimi server.

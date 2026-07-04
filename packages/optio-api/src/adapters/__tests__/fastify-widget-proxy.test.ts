@@ -272,6 +272,41 @@ describe('registerWidgetProxy — HTTP path', () => {
     await app.close();
   });
 
+  it('strip script collapses a stray leading // so replaceState never gets a protocol-relative (cross-origin) URL', async () => {
+    upstreamResponder = (_req, res, _body) => {
+      res.statusCode = 200;
+      res.setHeader('content-type', 'text/html; charset=utf-8');
+      res.end('<!doctype html>\n<html><head></head><body></body></html>');
+    };
+    const app = await makeApp();
+    const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+    const res = await app.inject({ method: 'GET', url: widgetUrl(oid, '/foo/bar') });
+    const scriptBody = res.body.match(/<script>([\s\S]*?)<\/script>/)![1];
+    const prefix = `/api/widget/${encodeURIComponent(DB_NAME)}/${encodeURIComponent(PREFIX)}/${oid}`;
+    const vm = require('node:vm');
+
+    // Run the injected IIFE against a fake window for each pathname shape and
+    // capture the URL handed to history.replaceState.
+    const run = (pathname: string, hash = ''): string | null => {
+      let captured: string | null = null;
+      vm.runInNewContext(scriptBody, {
+        RegExp,
+        location: { pathname, search: '', hash },
+        history: { replaceState: (_s: unknown, _t: string, url: string) => (captured = url) },
+      });
+      return captured;
+    };
+
+    // The bug: '<prefix>//sessions/<id>' would yield a leading '//sessions/...'.
+    // The fix collapses it to a single leading slash (same-origin, absolute path).
+    expect(run(`${prefix}//sessions/session_abc`, '#token=t')).toBe('/sessions/session_abc#token=t');
+    // Ordinary single-slash subpath is untouched.
+    expect(run(`${prefix}/sessions/session_abc`)).toBe('/sessions/session_abc');
+    // Bare prefix (no subpath) still strips to root.
+    expect(run(prefix)).toBe('/');
+    await app.close();
+  });
+
   it('appends SHA-256 hash of the inline script to script-src so CSPs that forbid inline scripts still allow it', async () => {
     upstreamResponder = (_req, res, _body) => {
       res.statusCode = 200;

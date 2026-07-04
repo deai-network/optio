@@ -284,8 +284,12 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
         # (apps/kimi-web/src/api/daemon/serverAuth.ts), a client-side fragment
         # the SPA scrubs from the URL and never sends to the server.
         fragment = f"#token={token}" if token else ""
+        # ``widgetProxyUrl`` already ends in ``/`` (optio-ui ProcessWidget.tsx),
+        # so do NOT prefix ``sessions/`` with another ``/`` — a ``//`` here becomes
+        # a protocol-relative leading ``//`` after the proxy's prefix-strip script
+        # runs, which makes ``history.replaceState`` throw a cross-origin SecurityError.
         await ctx.set_widget_data({
-            "iframeSrc": f"{{widgetProxyUrl}}/sessions/{session_id}{fragment}",
+            "iframeSrc": f"{{widgetProxyUrl}}sessions/{session_id}{fragment}",
         })
         ctx.report_progress(None, "Kimi Code is live")
 
