@@ -124,6 +124,14 @@ async def test_capture_gate_requires_valid_cred(host):
     assert not await cred_watcher.capture_gate_ok(host)
     _write_cred(host.workdir, "not json")
     assert not await cred_watcher.capture_gate_ok(host)
+    # Non-empty JSON but NO usable refresh_token (a login-less / half-written /
+    # logged-out file) must gate OUT — else a dead seed (nothing to refresh with)
+    # is captured. This is the claudecode-parity fix.
+    _write_cred(host.workdir, {"access_token": "A", "scope": "kimi-code"})
+    assert not await cred_watcher.capture_gate_ok(host)
+    _write_cred(host.workdir, {"refresh_token": ""})
+    assert not await cred_watcher.capture_gate_ok(host)
+    assert await cred_watcher.cred_fingerprint(host) is None
     _write_cred(host.workdir, {"refresh_token": "T"})
     assert await cred_watcher.capture_gate_ok(host)
 

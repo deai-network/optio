@@ -46,11 +46,14 @@ _SEED_MEMBER_PATH = "credentials/kimi-code.json"
 
 
 async def _read_cred_bytes(host: Host) -> bytes | None:
-    """Raw bytes of the live ``home/credentials/kimi-code.json``, or None when
-    it is missing, unparseable, or an empty object (nothing worth saving back).
+    """Raw bytes of the live ``home/credentials/kimi-code.json``, or None when it
+    is missing, unparseable, or carries no non-empty ``refresh_token``.
 
-    Guards against corrupting a seed with a half-written / logged-out file — the
-    kimi analog of grok's auth.json gate."""
+    A file without a refresh token is a login-less / half-written / logged-out
+    identity: a seed built from it is dead on arrival (nothing to refresh with),
+    so it must gate out of BOTH capture and save-back. Mirrors claudecode's cred
+    gate (which requires ``claudeAiOauth.refreshToken``) — the kimi analog of
+    grok's auth.json gate."""
     path = f"{host.workdir.rstrip('/')}/{_CRED_RELPATH}"
     try:
         raw = await host.fetch_bytes_from_host(path)
@@ -60,24 +63,25 @@ async def _read_cred_bytes(host: Host) -> bytes | None:
         data = json.loads(raw.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
         return None
-    if not isinstance(data, dict) or not data:
+    if not isinstance(data, dict) or not data.get("refresh_token"):
         return None
     return raw
 
 
 async def cred_fingerprint(host: Host) -> str | None:
     """SHA-256 of the live ``kimi-code.json``, or None when it is missing /
-    unparseable / an empty object."""
+    unparseable / carries no non-empty ``refresh_token``."""
     raw = await _read_cred_bytes(host)
     return hashlib.sha256(raw).hexdigest() if raw is not None else None
 
 
 async def capture_gate_ok(host: Host) -> bool:
-    """Gate for seed CAPTURE: a valid ``kimi-code.json`` is present.
+    """Gate for seed CAPTURE: a ``kimi-code.json`` with a usable ``refresh_token``
+    is present — never seed a login-less / half-written identity.
 
     kimi keeps no separate config member in the identity seed (the model is a
     launch flag, not persisted auth), so a valid credential is the whole gate.
-    Mirrors grok's terminal capture gate."""
+    Mirrors grok's terminal capture gate + claudecode's refresh-token gate."""
     return await cred_fingerprint(host) is not None
 
 
