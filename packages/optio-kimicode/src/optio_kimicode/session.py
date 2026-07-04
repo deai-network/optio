@@ -145,11 +145,14 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
         """
         nonlocal kimi_path, claustrum_path, resuming, preserved_session_id
         nonlocal resolved_seed_id, lease_holder, cred_baseline
-        # Two-tier provision: reuse a worker kimi on the login-shell PATH (fast
-        # copy), else vendor-install, into an evictable cache OUTSIDE the workdir;
-        # returns the per-task launch symlink ``<workdir>/home/.local/bin/kimi``.
+        # Provision the fork kimi via smart-install --check + optio's own
+        # downloader (progress in the UI), into an evictable cache OUTSIDE the
+        # workdir; returns the per-task launch symlink
+        # ``<workdir>/home/.local/bin/kimi``.
         kimi_path = await host_actions.ensure_kimicode_installed(
             host,
+            download=hook_ctx.download_file,
+            report_progress=hook_ctx.report_progress,
             install_dir=config.kimi_install_dir,
             install_if_missing=config.install_if_missing,
         )

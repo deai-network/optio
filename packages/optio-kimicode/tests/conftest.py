@@ -33,8 +33,22 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from optio_core.context import ProcessContext
 
+from optio_kimicode import host_actions
+
 
 TESTS_DIR = pathlib.Path(__file__).parent
+
+
+@pytest.fixture(autouse=True)
+def _stub_smart_install(monkeypatch):
+    """Integration tests ship a kimi shim via ``kimi_install_dir``; default the
+    fork smart-install resolver to "ok" so ``ensure_kimicode_installed`` just
+    links the shim into the task path — no network, no child-download task in the
+    fake ctx. Tests that exercise the resolver/download paths override this with
+    their own ``monkeypatch.setattr`` (which runs after this fixture)."""
+    async def _ok(host, *, cache_dir):  # noqa: ANN001, ANN202
+        return ("ok", None)
+    monkeypatch.setattr(host_actions, "_smart_install_check", _ok)
 
 
 @pytest.fixture

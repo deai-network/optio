@@ -5,10 +5,11 @@ primitives (run_command, resolve_host_home, etc.). No isinstance branches.
 
 Ported from ``optio_grok.host_actions``. Carries the host constructor
 (:func:`build_host`), the per-task isolation identity (:func:`_isolation_env`),
-and the two-tier binary install (:func:`ensure_kimicode_installed`): reuse a
-worker ``kimi`` on the login-shell PATH, else run the vendor installer, seeding
-an evictable cache outside the workdir and symlinking it into
-``<workdir>/home/.local/bin/kimi`` (idempotently re-linked after a resume).
+and the binary install (:func:`ensure_kimicode_installed`): resolve the fork
+release via the fork's ``smart-install.sh --check`` and, when missing or stale,
+download the zip with optio's own tooling into an evictable cache outside the
+workdir, symlinked into ``<workdir>/home/.local/bin/kimi`` (idempotently
+re-linked after a resume).
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ from typing import TYPE_CHECKING
 from optio_agents import claustrum
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from optio_agents import HookContextProtocol
     from optio_host import Host
     from optio_host.host import ProcessHandle
@@ -56,22 +59,17 @@ _KIMICODE_CACHE_DIR_SHELL_DEFAULT = (
     "${OPTIO_KIMICODE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/optio-kimicode/bin}"
 )
 
-# Official kimi vendor installer (confirmed live against the served install.sh).
-# The script downloads the latest single-binary kimi-code release into
-# ``$KIMI_INSTALL_DIR`` (default ``$HOME/.kimi-code``) and drops the executable at
-# ``$KIMI_INSTALL_DIR/bin/kimi``. optio drives it with an explicit
-# ``KIMI_INSTALL_DIR`` = a staging dir under the cache root (and ``HOME`` there
-# too, and ``KIMI_NO_MODIFY_PATH=1`` so it never edits the operator's shell rc),
-# then copies ``<staging>/bin/kimi`` to the stable cache path ``<cache_dir>/kimi``.
-_KIMICODE_INSTALL_URL = "https://code.kimi.com/kimi-code/install.sh"
-
-# Staging KIMI_INSTALL_DIR name (under the cache root) + the binary's path within
-# it. Confirmed live: install.sh honours ``KIMI_INSTALL_DIR`` and places the
-# binary at ``$KIMI_INSTALL_DIR/bin/kimi``. (The earlier ``.local/bin/kimi``
-# assumption was WRONG — it was never exercised because Tier-1 silently adopted a
-# name-colliding ``kimi`` off PATH; see ``_is_kimicode``.)
-_KIMICODE_STAGING_DIRNAME = ".kimi-code"
-_KIMICODE_INSTALL_REL = ".kimi-code/bin/kimi"
+# The fork's smart-install.sh resolver. In ``--check`` mode it prints exactly one
+# line — ``kimi ok`` or ``download <url>`` — deciding, by comparing the on-PATH
+# ``kimi --version`` to the latest fork release, whether a fetch is needed. optio
+# then downloads ``<url>`` with its OWN tooling (progress/visibility) and unpacks
+# the ``kimi`` binary (at the zip root) into the stable cache path
+# ``<cache_dir>/kimi``. Replaces the upstream vendor installer: the fork build
+# (csillag/kimi-code) carries the iframe-embedding fixes and is version-gated, so
+# a stock upstream ``kimi`` on the worker is never adopted.
+_KIMICODE_SMART_INSTALL_URL = (
+    "https://raw.githubusercontent.com/csillag/kimi-code/csillag/iframe-build/smart-install.sh"
+)
 
 # claustrum: standalone Landlock filesystem-sandbox CLI, vendored by pinned tag
 # (Stage 8). Bumping is deliberate. Mirrors optio-claudecode; kimi has no native
@@ -125,52 +123,6 @@ def _isolation_env(workdir: str) -> dict[str, str]:
         "XDG_DATA_HOME": f"{home}/.local/share",
         "XDG_CACHE_HOME": f"{home}/.cache",
     }
-
-
-# --- kimi resolution (Stage 0: no binary cache/download; that is Stage 5) ---
-
-
-async def resolve_kimi(
-    host: "Host",
-    *,
-    install_dir: str | None = None,
-    install_if_missing: bool = True,
-) -> str:
-    """Host-based ``kimi`` binary resolution (no HookContext).
-
-    Resolved from ``<install_dir>/kimi`` when ``install_dir`` is given,
-    otherwise via ``command -v kimi`` in a login shell (so worker-profile PATH
-    additions apply). Raises when the binary is absent. This is the Stage-0
-    resolver; the two-tier install cache (:func:`ensure_kimicode_installed`)
-    lands in plan group 4 and supersedes this in ``session._prepare``. Mirrors
-    grok's ``resolve_grok``.
-    """
-    if install_dir is not None:
-        candidate = f"{install_dir.rstrip('/')}/kimi"
-        probe = await host.run_command(
-            f"[ -x {shlex.quote(candidate)} ] && echo OK || true"
-        )
-        if "OK" in (probe.stdout or ""):
-            return candidate
-        raise RuntimeError(
-            f"kimi not present at {candidate!r} on host "
-            f"(kimi_install_dir={install_dir!r})."
-        )
-
-    result = await host.run_command("bash -lc 'command -v kimi'")
-    path = (result.stdout or "").strip()
-    if result.exit_code == 0 and path:
-        return path
-
-    if not install_if_missing:
-        raise RuntimeError(
-            "kimi not found on host and install_if_missing=False; nothing to do."
-        )
-    raise RuntimeError(
-        "kimi not found on the worker (looked via 'command -v kimi'). Stage 0 "
-        "has no auto-install (the binary cache is a later stage) — install "
-        "kimi manually or pass kimi_install_dir."
-    )
 
 
 async def _is_kimicode(host: "Host", path: str) -> bool:
@@ -409,14 +361,146 @@ async def _resolve_kimicode_cache_dir(host: "Host", override: str | None) -> str
     return path.rstrip("/")
 
 
+def _path_augmented(cmd: str, cache_dir: str) -> str:
+    """Prefix ``cmd`` with an export that prepends the cache dir to PATH, so
+    smart-install's internal ``command -v kimi`` finds a binary a prior install
+    placed at ``<cache_dir>/kimi`` (the python process often inherits a slim PATH
+    that omits it, which would make smart-install falsely say ``download`` and
+    reinstall every run). Mirrors opencode's ``_path_augmented``."""
+    return f'export PATH={shlex.quote(cache_dir)}:"$PATH"; {cmd}'
+
+
+async def _smart_install_check(
+    host: "Host", *, cache_dir: str,
+) -> "tuple[str, str | None]":
+    """Run the fork ``smart-install.sh --check`` on ``host`` and parse its
+    one-line contract.
+
+    Returns ``("ok", None)`` when the installed ``kimi`` already matches the
+    latest fork release, or ``("download", url)`` when missing/stale (``url`` is
+    the release-zip to fetch). ``cache_dir`` is prepended to PATH so the script's
+    internal ``command -v kimi`` sees ``<cache_dir>/kimi``. Raises on non-zero
+    exit or unparseable output.
+    """
+    cmd = _path_augmented(
+        f"curl -fsSL {_KIMICODE_SMART_INSTALL_URL} | bash -s -- --check",
+        cache_dir,
+    )
+    result = await host.run_command(cmd)
+    if result.exit_code != 0:
+        raise RuntimeError(
+            f"smart-install --check failed on host (exit {result.exit_code}): "
+            f"{(result.stderr or '').strip()[:200]}"
+        )
+    line = (result.stdout or "").strip()
+    if line == "kimi ok":
+        return ("ok", None)
+    if line.startswith("download "):
+        url = line[len("download "):].strip()
+        if not url:
+            raise RuntimeError(
+                f"smart-install --check returned an empty URL: {result.stdout!r}"
+            )
+        return ("download", url)
+    raise RuntimeError(
+        f"smart-install --check returned unexpected output: {result.stdout!r}"
+    )
+
+
+async def _install_kimicode_from_zip(
+    host: "Host",
+    download: "Callable[[str, str], Awaitable[None]]",
+    url: str,
+    *,
+    cached: str,
+) -> None:
+    """Fetch the fork release zip from ``url`` with optio's ``download`` and
+    unpack the ``kimi`` binary (at the zip ROOT — kimi-code zips carry the
+    executable directly, unlike opencode's ``bin/opencode``) into ``<cached>``.
+
+    Engine callers pass ``hook_ctx.download_file`` (a child download task with
+    progress in the UI); engine-less callers pass :func:`curl_downloader`.
+    Uniform on Local/RemoteHost; cleans up the tempdir in ``finally``.
+    """
+    cache_dir = os.path.dirname(cached)
+    r = await host.run_command("mktemp -d -t optio-kimicode-XXXXXX")
+    if r.exit_code != 0:
+        raise RuntimeError(
+            f"mktemp -d failed (exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
+        )
+    tmpdir = r.stdout.strip()
+    zip_path = f"{tmpdir}/kimi-code.zip"
+    try:
+        await download(url, zip_path)
+
+        r = await host.run_command(
+            f"unzip -o -q {shlex.quote(zip_path)} -d {shlex.quote(tmpdir)}"
+        )
+        if r.exit_code != 0:
+            raise RuntimeError(
+                f"unzip failed (exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
+            )
+        r = await host.run_command(f"mkdir -p {shlex.quote(cache_dir)}")
+        if r.exit_code != 0:
+            raise RuntimeError(
+                f"mkdir -p {cache_dir!r} failed (exit {r.exit_code}): "
+                f"{(r.stderr or '').strip()[:200]}"
+            )
+        src = f"{tmpdir}/kimi"
+        r = await host.run_command(f"mv -f {shlex.quote(src)} {shlex.quote(cached)}")
+        if r.exit_code != 0:
+            raise RuntimeError(
+                f"mv {src!r} -> {cached!r} failed (exit {r.exit_code}): "
+                f"{(r.stderr or '').strip()[:200]}"
+            )
+        r = await host.run_command(f"chmod +x {shlex.quote(cached)}")
+        if r.exit_code != 0:
+            raise RuntimeError(
+                f"chmod +x {cached!r} failed (exit {r.exit_code}): "
+                f"{(r.stderr or '').strip()[:200]}"
+            )
+    finally:
+        # Best-effort cleanup; don't mask a primary exception.
+        await host.run_command(f"rm -rf {shlex.quote(tmpdir)}")
+
+
+async def _seed_cache_from_path(
+    host: "Host", *, cache_dir: str, cached: str,
+) -> None:
+    """smart-install said ``kimi ok`` but ``<cached>`` is absent — a
+    fork-versioned ``kimi`` is on PATH elsewhere (e.g. a manual install). Copy it
+    (deref) into the cache so the launch symlink has a stable, snapshot-independent
+    target. Rare; the common ``ok`` path already has the binary at ``<cached>``."""
+    lookup = _path_augmented("command -v kimi", cache_dir)
+    r = await host.run_command(f"bash -lc {shlex.quote(lookup)}")
+    src = (r.stdout or "").strip()
+    if r.exit_code != 0 or not src:
+        raise RuntimeError(
+            "smart-install reported 'kimi ok' but 'command -v kimi' failed on the "
+            f"host (exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
+        )
+    r = await host.run_command(
+        f"mkdir -p {shlex.quote(cache_dir)} && "
+        f"cp -L {shlex.quote(src)} {shlex.quote(cached)} && "
+        f"chmod +x {shlex.quote(cached)}"
+    )
+    if r.exit_code != 0:
+        raise RuntimeError(
+            f"seeding kimi cache from {src!r} -> {cached!r} failed "
+            f"(exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
+        )
+
+
 async def ensure_kimicode_installed(
     host: "Host",
     workdir: str | None = None,
     *,
+    download: "Callable[[str, str], Awaitable[None]] | None" = None,
+    report_progress: "Callable | None" = None,
     install_dir: str | None = None,
     install_if_missing: bool = True,
 ) -> str:
-    """Provision ``kimi`` for this task from the optio-owned binary cache.
+    """Provision the fork ``kimi`` for this task from the optio-owned binary cache.
 
     The cache dir (:func:`_resolve_kimicode_cache_dir`) lives on the worker
     OUTSIDE any task workdir and never the operator's autoupdating
@@ -426,160 +510,69 @@ async def ensure_kimicode_installed(
     per-task launch path ``<workdir>/home/.local/bin/kimi`` — a symlink into the
     cache, on the launch PATH (mirrors grok's ``home/.local/bin/grok``).
 
-    ``workdir`` defaults to ``host.workdir`` (the launch home is
-    ``<workdir>/home``); it is accepted explicitly to match the Task 4.1 contract.
+    Staleness/correctness is delegated entirely to the fork's
+    ``smart-install.sh --check`` (:func:`_smart_install_check`), run on EVERY
+    call so a newer fork release upgrades the cache. On ``download`` the zip is
+    fetched with ``download`` (engine callers pass ``hook_ctx.download_file`` for
+    UI progress; when None it defaults to :func:`curl_downloader`) and unpacked
+    into ``<cache_dir>/kimi``. Because ``--check`` version-gates on the fork
+    version string, a stock upstream ``kimi`` on the worker is never adopted (it
+    would lack the iframe-embedding fixes).
 
-    Cache population (only on a miss, and only when ``install_if_missing``) is
-    two-tier (:func:`_populate_kimicode_cache`):
-
-    - **TIER 1 — seed from a worker kimi**: if a ``kimi`` is already on the worker
-      login-shell PATH (:func:`resolve_kimi`) copy it into the cache (deref +
-      chmod +x); fast, no download, matches the operator's version.
-    - **TIER 2 — vendor auto-install**: otherwise run kimi's official installer
-      (:data:`_KIMICODE_INSTALL_URL`) into the persistent cache, so a fresh or
-      remote worker with no worker kimi still bootstraps itself.
-
-    Host-based (no HookContext) — symmetric with :func:`resolve_kimi` and usable
-    from the engine-free ``verify`` path. Raises only when the cache is empty AND
-    ``install_if_missing=False``. Idempotent on a re-call (cache hit → it just
-    re-links the task path), which is how resume re-establishes the launch symlink
-    after ``restore_snapshot`` wipes it.
+    ``workdir`` defaults to ``host.workdir``. Host-based (no HookContext) —
+    usable from the engine-free ``verify`` path. Idempotent on a re-call (``ok``
+    → just re-links the task path), which is how resume re-establishes the launch
+    symlink after ``restore_snapshot`` wipes it. Raises when an install is needed
+    but ``install_if_missing=False``.
     """
     workdir = (workdir if workdir is not None else host.workdir).rstrip("/")
     cache_dir = await _resolve_kimicode_cache_dir(host, install_dir)
     cached = f"{cache_dir}/kimi"
+    if download is None:
+        download = curl_downloader(host)
 
-    probe = await host.run_command(
-        f"[ -x {shlex.quote(cached)} ] && echo OK || true"
-    )
-    hit = "OK" in (probe.stdout or "")
-    # A cache HIT is only valid if the cached binary is really kimi-code. A prior
-    # run may have poisoned the cache by seeding it from a name-colliding kimi-cli
-    # (Tier-1 pre-fix); treat that as a miss and repopulate rather than return a
-    # binary whose launch will fail with "kimi server exited before ready banner".
-    if hit and not await _is_kimicode(host, cached):
-        _LOG.warning(
-            "ensure_kimicode_installed: cached %s is NOT kimi-code (kimi-cli "
-            "name-collision) — discarding and repopulating", cached,
+    if report_progress is not None:
+        report_progress(None, "Checking kimi-code installation…")
+    kind, url = await _smart_install_check(host, cache_dir=cache_dir)
+
+    if kind == "ok":
+        # Normally the current binary IS <cached>; only seed when a fork-versioned
+        # kimi is on PATH elsewhere and the cache is empty.
+        probe = await host.run_command(
+            f"[ -x {shlex.quote(cached)} ] && echo OK || true"
         )
-        hit = False
-    if hit:
-        _LOG.info("ensure_kimicode_installed: cache HIT (%s)", cached)
-    elif not install_if_missing:
-        raise RuntimeError(
-            f"no valid kimi-code binary in cache at {cached!r} and "
-            f"install_if_missing=False; nothing to do."
-        )
-    else:
-        await _populate_kimicode_cache(host, cache_dir=cache_dir, cached=cached)
+        if "OK" not in (probe.stdout or ""):
+            await _seed_cache_from_path(host, cache_dir=cache_dir, cached=cached)
+        _LOG.info("ensure_kimicode_installed: up-to-date (%s)", cached)
+    else:  # "download"
+        if not install_if_missing:
+            raise RuntimeError(
+                "kimi-code is missing or stale on the host and "
+                "install_if_missing=False was requested."
+            )
+        assert url is not None  # _smart_install_check guarantees
+        if report_progress is not None:
+            report_progress(None, "Installing kimi-code…")
+        await _install_kimicode_from_zip(host, download, url, cached=cached)
+        _LOG.info("ensure_kimicode_installed: installed fork binary into %s", cached)
 
     return await _link_kimicode_into_task(host, workdir, cached)
 
 
-async def _populate_kimicode_cache(
-    host: "Host", *, cache_dir: str, cached: str,
-) -> None:
-    """Fill an empty cache: prefer seeding from a pre-existing worker kimi (TIER
-    1 — fast, no download); fall back to the vendor auto-installer when the worker
-    has none (TIER 2). Leaves an executable ``<cache_dir>/kimi`` on success;
-    raises otherwise. Mirrors grok's ``_populate_grok_cache``.
-    """
-    # TIER 1 — a kimi already on the worker (login-shell PATH) — BUT only if it is
-    # actually kimi-code. A name-colliding kimi-cli must NOT be adopted (its launch
-    # has no ``server`` command); fall through to the vendor installer instead.
-    source: "str | None"
-    try:
-        source = await resolve_kimi(host, install_dir=None, install_if_missing=False)
-    except RuntimeError:
-        source = None
-
-    if source is not None and not await _is_kimicode(host, source):
-        _LOG.warning(
-            "worker kimi at %s is not kimi-code (kimi-cli name-collision) — "
-            "vendor-installing kimi-code instead of seeding from it", source,
+def curl_downloader(host: "Host") -> "Callable[[str, str], Awaitable[None]]":
+    """Context-free downloader for engine-less callers (verify / host-only): fetch
+    a URL to a host path via curl on the host itself, vs the engine's child-task
+    ``download_file``. Mirrors opencode's ``curl_downloader``."""
+    async def download(url: str, dest: str) -> None:
+        r = await host.run_command(
+            f"curl -fsSL {shlex.quote(url)} -o {shlex.quote(dest)}"
         )
-        source = None
-
-    if source is None:
-        # No kimi-code on the worker — bootstrap via the vendor installer (TIER 2).
-        await _install_kimicode_into_cache(host, cache_dir=cache_dir, cached=cached)
-        _LOG.info("ensure_kimicode_installed: cache MISS -> vendor-installed into %s", cached)
-        return
-
-    mk = await host.run_command(f"mkdir -p {shlex.quote(cache_dir)}")
-    if mk.exit_code != 0:
-        raise RuntimeError(
-            f"mkdir -p {cache_dir!r} failed (exit {mk.exit_code}): "
-            f"{(mk.stderr or '').strip()[:200]}"
-        )
-    # ``-L`` dereferences: a symlinked worker kimi becomes a real, stable copy in
-    # the cache (independent of the worker binary the operator may autoupdate).
-    cp = await host.run_command(
-        f"cp -L {shlex.quote(source)} {shlex.quote(cached)}"
-    )
-    if cp.exit_code != 0:
-        raise RuntimeError(
-            f"seeding kimi cache (cp {source!r} -> {cached!r}) failed "
-            f"(exit {cp.exit_code}): {(cp.stderr or '').strip()[:200]}"
-        )
-    ch = await host.run_command(f"chmod +x {shlex.quote(cached)}")
-    if ch.exit_code != 0:
-        raise RuntimeError(
-            f"chmod +x {cached!r} failed (exit {ch.exit_code}): "
-            f"{(ch.stderr or '').strip()[:200]}"
-        )
-    verify = await host.run_command(
-        f"[ -x {shlex.quote(cached)} ] && echo OK || true"
-    )
-    if "OK" not in (verify.stdout or ""):
-        raise RuntimeError(
-            f"kimi cache seed completed but {cached!r} is still not executable "
-            f"on the host. Check the seed source {source!r} and chmod result."
-        )
-    _LOG.info("ensure_kimicode_installed: cache MISS -> seeded from worker %s", source)
-
-
-async def _install_kimicode_into_cache(
-    host: "Host", *, cache_dir: str, cached: str,
-) -> None:
-    """Vendor auto-install kimi into the persistent cache (TIER 2: miss + no
-    worker kimi).
-
-    Runs the official installer with an explicit ``KIMI_INSTALL_DIR`` =
-    ``<cache_root>/.kimi-code`` (and ``HOME`` = the cache root, and
-    ``KIMI_NO_MODIFY_PATH=1`` so it never edits a shell rc), so the single-binary
-    release lands at ``<cache_root>/.kimi-code/bin/kimi`` — a persistent location
-    OUTSIDE any task workdir and never the operator's ``~`` — then copies it to the
-    stable cache path ``<cache_dir>/kimi``. install.sh honours ``KIMI_INSTALL_DIR``
-    and drops the binary at ``$KIMI_INSTALL_DIR/bin/kimi`` (confirmed live).
-    """
-    cache_root = os.path.dirname(cache_dir.rstrip("/")) or "/"
-    staging = f"{cache_root}/{_KIMICODE_STAGING_DIRNAME}"
-    produced = f"{staging}/bin/kimi"
-    installer = f"curl -fsSL {shlex.quote(_KIMICODE_INSTALL_URL)} | bash"
-    cmd = (
-        f"mkdir -p {shlex.quote(cache_root)} {shlex.quote(cache_dir)} && "
-        f"env HOME={shlex.quote(cache_root)} "
-        f"KIMI_INSTALL_DIR={shlex.quote(staging)} KIMI_NO_MODIFY_PATH=1 "
-        f"sh -c {shlex.quote(installer)} && "
-        f"cp -L {shlex.quote(produced)} {shlex.quote(cached)} && "
-        f"chmod +x {shlex.quote(cached)}"
-    )
-    result = await host.run_command(cmd)
-    if result.exit_code != 0:
-        raise RuntimeError(
-            f"kimi vendor auto-install failed on host (exit {result.exit_code}): "
-            f"{(result.stderr or '').strip()[:300]}"
-        )
-    verify = await host.run_command(
-        f"[ -x {shlex.quote(cached)} ] && echo OK || true"
-    )
-    if "OK" not in (verify.stdout or ""):
-        raise RuntimeError(
-            f"kimi vendor install reported success but {cached!r} is still not "
-            f"executable. The installer may place the binary somewhere other than "
-            f"{produced!r}; inspect the installer output and the cache {cache_dir!r}."
-        )
+        if r.exit_code != 0:
+            raise RuntimeError(
+                f"curl download failed (exit {r.exit_code}): "
+                f"{(r.stderr or '').strip()[:200]}"
+            )
+    return download
 
 
 async def _link_kimicode_into_task(host: "Host", workdir: str, cached: str) -> str:
