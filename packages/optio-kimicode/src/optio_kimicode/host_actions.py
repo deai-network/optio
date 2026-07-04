@@ -279,16 +279,32 @@ async def launch_kimi_web(
         cmd, env=env, cwd=host.workdir, env_remove=env_remove,
     )
 
+    # Accumulate what kimi actually prints (stderr is merged into stdout by
+    # launch_subprocess) so an early exit is NOT a black box — its complaint is
+    # surfaced in the raised error instead of the useless "exited before banner".
+    seen: list[str] = []
+
     async def _read_ready() -> "tuple[int, str | None]":
         async for raw in handle.stdout:
             line = (
                 raw.decode("utf-8", errors="replace").rstrip()
                 if isinstance(raw, bytes) else str(raw).rstrip()
             )
+            if line:
+                seen.append(line)
             m = _KIMI_READY_RE.search(line)
             if m:
                 return int(m.group(1)), m.group(2)
-        raise RuntimeError("kimi server exited before printing a ready banner")
+        rc = None
+        try:
+            rc = await asyncio.wait_for(handle.wait(), timeout=2.0)
+        except (asyncio.TimeoutError, Exception):
+            pass
+        tail = "\n".join(seen[-40:]) or "(no output)"
+        raise RuntimeError(
+            f"kimi server exited before printing a ready banner "
+            f"(exit {rc}). Output:\n{tail}"
+        )
 
     try:
         server_port, token = await asyncio.wait_for(
@@ -296,8 +312,10 @@ async def launch_kimi_web(
         )
     except asyncio.TimeoutError:
         await host.terminate_subprocess(handle, aggressive=True)
+        tail = "\n".join(seen[-40:]) or "(no output)"
         raise TimeoutError(
-            f"kimi server did not print a ready banner within {ready_timeout_s}s"
+            f"kimi server did not print a ready banner within {ready_timeout_s}s. "
+            f"Output:\n{tail}"
         )
     except BaseException:
         await host.terminate_subprocess(handle, aggressive=True)
