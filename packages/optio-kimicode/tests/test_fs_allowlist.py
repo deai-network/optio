@@ -227,9 +227,11 @@ async def test_ensure_claustrum_fail_closed_when_verify_fails(monkeypatch, tmp_p
                 return RunResult(stdout="x86_64", stderr="", exit_code=0)
             if "printf" in cmd:
                 return RunResult(stdout=str(tmp_path / "cache"), stderr="", exit_code=0)
-            if "--version" in cmd:
-                # both the pre-probe and the post-place verify fail.
-                return RunResult(stdout="", stderr="boom", exit_code=1)
+            if "__optio_claustrum_ok__" in cmd:
+                # The functional probe: a non-functioning claustrum (here, the
+                # stub) never echoes the sentinel, so both the pre-probe and the
+                # post-place verify treat it as invalid.
+                return RunResult(stdout="", stderr="", exit_code=0)
             # chmod / test -x etc.
             return RunResult(stdout="", stderr="", exit_code=0)
 
@@ -249,8 +251,24 @@ async def test_ensure_claustrum_fail_closed_when_verify_fails(monkeypatch, tmp_p
             f.write("#!/bin/sh\n")
 
     monkeypatch.setattr(host_actions, "_build_claustrum_on_engine", _fake_build)
+    # CRITICAL isolation: the engine-local build cache in ensure_claustrum_installed
+    # is ``~/.cache/optio-kimicode/...`` (NOT the install_dir), so without redirecting
+    # HOME the fake build would poison the operator's real cache — exactly the bug
+    # that broke the live dashboard. Pin HOME into tmp so the stub stays in tmp.
+    monkeypatch.setenv("HOME", str(tmp_path))
 
-    with pytest.raises(RuntimeError, match="version"):
+    with pytest.raises(RuntimeError, match="functioning claustrum"):
         await host_actions.ensure_claustrum_installed(
             _HookCtx(), install_dir=str(tmp_path / "cache"),
         )
+
+
+def test_is_elf_rejects_shell_stub(tmp_path):
+    """_is_elf accepts a real ELF header and rejects a #!/bin/sh stub — the guard
+    that stops a poisoned/placeholder engine-cache file from being shipped."""
+    from optio_kimicode import host_actions
+    stub = tmp_path / "stub"; stub.write_text("#!/bin/sh\n")
+    assert host_actions._is_elf(str(stub)) is False
+    elf = tmp_path / "elf"; elf.write_bytes(b"\x7fELF" + b"\x00" * 60)
+    assert host_actions._is_elf(str(elf)) is True
+    assert host_actions._is_elf(str(tmp_path / "missing")) is False

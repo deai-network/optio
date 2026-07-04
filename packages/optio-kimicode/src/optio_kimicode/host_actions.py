@@ -678,6 +678,36 @@ async def _build_claustrum_on_engine(goarch: str, tag: str, dest: str) -> None:
             raise RuntimeError(f"go build claustrum ({goarch}) failed: {out.decode()[:400]}")
 
 
+def _is_elf(path: str) -> bool:
+    """True iff the engine-local file starts with the ELF magic — i.e. a real
+    compiled binary, not a ``#!/bin/sh`` stub. Guards the engine build cache so a
+    poisoned/placeholder file is rebuilt rather than shipped to the target."""
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(4) == b"\x7fELF"
+    except OSError:
+        return False
+
+
+async def _claustrum_works(host: "Host", path: str) -> bool:
+    """True iff ``path`` is a FUNCTIONING claustrum, proven by having it wrap and
+    exec a trivial target and pass the sentinel through.
+
+    ``--version`` alone cannot distinguish a real claustrum from a shell-script
+    stub (``/bin/sh --version`` also exits 0), and such a stub silently no-ops the
+    launch — kimi never execs, producing the "exited before ready banner (exit
+    None, no output)" failure. This probe fails for a stub (``/bin/sh`` chokes on
+    the claustrum flags and never echoes the sentinel) and for any non-claustrum
+    binary. ``--best-effort`` keeps it runnable where Landlock cannot enforce."""
+    sentinel = "__optio_claustrum_ok__"
+    probe = await host.run_command(
+        f"{shlex.quote(path)} --best-effort --abi-min 1 "
+        f"--rox /usr --rox /bin --rox /lib --rox /lib64 "
+        f"-- /bin/echo {sentinel} 2>/dev/null || true"
+    )
+    return sentinel in (probe.stdout or "")
+
+
 async def ensure_claustrum_installed(
     hook_ctx: "HookContextProtocol",
     *,
@@ -697,11 +727,13 @@ async def ensure_claustrum_installed(
     cache_dir = await _resolve_kimicode_cache_dir(host, install_dir)
     target_path = f"{cache_dir}/claustrum/{_CLAUSTRUM_PINNED_TAG}/{goarch}/claustrum"
 
-    # Already on the target host?
+    # Already on the target host AND actually functions as claustrum? (A prior
+    # run — or a stray stub — may have left a non-functioning file that passes a
+    # bare --version but silently no-ops the launch.)
     probe = await host.run_command(
-        f"test -x {shlex.quote(target_path)} && {shlex.quote(target_path)} --version"
+        f"test -x {shlex.quote(target_path)} && echo present || true"
     )
-    if probe.exit_code == 0:
+    if "present" in (probe.stdout or "") and await _claustrum_works(host, target_path):
         return target_path
 
     hook_ctx.report_progress(None, "Preparing claustrum (filesystem isolation)…")
@@ -709,7 +741,9 @@ async def ensure_claustrum_installed(
     engine_cache = os.path.expanduser(
         f"~/.cache/optio-kimicode/claustrum/{_CLAUSTRUM_PINNED_TAG}/{goarch}/claustrum"
     )
-    if not os.path.exists(engine_cache):
+    # Rebuild if the engine cache is missing OR not a real compiled binary (a
+    # stub/placeholder must never be shipped to the target).
+    if not os.path.exists(engine_cache) or not _is_elf(engine_cache):
         await _build_claustrum_on_engine(goarch, _CLAUSTRUM_PINNED_TAG, engine_cache)
 
     await host.put_file_to_host(engine_cache, target_path)
@@ -718,11 +752,13 @@ async def ensure_claustrum_installed(
         raise RuntimeError(
             f"chmod +x claustrum failed (exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
         )
-    v = await host.run_command(f"{shlex.quote(target_path)} --version")
-    if v.exit_code != 0:
+    # Fail-closed: verify the PLACED binary actually functions as claustrum (a
+    # bare --version would pass a shell stub); never launch kimi unconfined.
+    if not await _claustrum_works(host, target_path):
         raise RuntimeError(
-            f"claustrum placed at {target_path!r} but --version failed "
-            f"(exit {v.exit_code}): {(v.stderr or '').strip()[:200]}"
+            f"claustrum placed at {target_path!r} is not a functioning claustrum "
+            f"(failed a wrapped-exec probe — a stub or wrong binary would silently "
+            f"no-op the launch). Refusing to launch unconfined."
         )
     return target_path
 
