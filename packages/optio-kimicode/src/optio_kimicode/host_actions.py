@@ -54,22 +54,22 @@ _KIMICODE_CACHE_DIR_SHELL_DEFAULT = (
     "${OPTIO_KIMICODE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/optio-kimicode/bin}"
 )
 
-# Official kimi vendor installer (confirmed against ``.kimi-src/kimi-code``:
-# README.md + docs/en/guides/getting-started.md). The script downloads the latest
-# single-binary release, verifies its checksum, and "places the ``kimi``
-# executable on your PATH" — under ``$HOME/.local/bin`` (the docs' IDE examples,
-# docs/en/guides/ides.md, show ``~/.local/bin/kimi``). optio drives it with
-# ``HOME`` = a staging root under the cache so the binary lands in
-# ``<home>/.local/bin/kimi`` — never the operator's real ``~`` and never a task
-# workdir — then copies it to the stable cache path ``<cache_dir>/kimi``.
+# Official kimi vendor installer (confirmed live against the served install.sh).
+# The script downloads the latest single-binary kimi-code release into
+# ``$KIMI_INSTALL_DIR`` (default ``$HOME/.kimi-code``) and drops the executable at
+# ``$KIMI_INSTALL_DIR/bin/kimi``. optio drives it with an explicit
+# ``KIMI_INSTALL_DIR`` = a staging dir under the cache root (and ``HOME`` there
+# too, and ``KIMI_NO_MODIFY_PATH=1`` so it never edits the operator's shell rc),
+# then copies ``<staging>/bin/kimi`` to the stable cache path ``<cache_dir>/kimi``.
 _KIMICODE_INSTALL_URL = "https://code.kimi.com/kimi-code/install.sh"
 
-# Where the vendor install.sh drops the binary, relative to the ``HOME`` it runs
-# under. NOTE (tracked real-binary follow-up, plan group 6 / row 30): the
-# install.sh is fetched over the network and is not vendored, so only its
-# documented behaviour is available offline. ``test_install.py``'s opt-in
-# ``test_real_vendor_install_lands_runnable_kimi`` confirms this layout live.
-_KIMICODE_INSTALL_REL = ".local/bin/kimi"
+# Staging KIMI_INSTALL_DIR name (under the cache root) + the binary's path within
+# it. Confirmed live: install.sh honours ``KIMI_INSTALL_DIR`` and places the
+# binary at ``$KIMI_INSTALL_DIR/bin/kimi``. (The earlier ``.local/bin/kimi``
+# assumption was WRONG — it was never exercised because Tier-1 silently adopted a
+# name-colliding ``kimi`` off PATH; see ``_is_kimicode``.)
+_KIMICODE_STAGING_DIRNAME = ".kimi-code"
+_KIMICODE_INSTALL_REL = ".kimi-code/bin/kimi"
 
 # claustrum: standalone Landlock filesystem-sandbox CLI, vendored by pinned tag
 # (Stage 8). Bumping is deliberate. Mirrors optio-claudecode; kimi has no native
@@ -170,6 +170,32 @@ async def resolve_kimi(
         "has no auto-install (the binary cache is a later stage) — install "
         "kimi manually or pass kimi_install_dir."
     )
+
+
+async def _is_kimicode(host: "Host", path: str) -> bool:
+    """True iff the binary at ``path`` is **kimi-code** (Moonshot's Node/SEA CLI),
+    NOT the unrelated Python ``kimi-cli`` that shares the ``kimi`` command name.
+
+    Both products install a binary called ``kimi``; a worker that has kimi-cli on
+    PATH (e.g. a leftover ``uv tool install kimi-cli``) would otherwise be adopted
+    by the Tier-1 install and every launch would fail — kimi-cli has no ``server``
+    (nor the ``kimi web`` / REST surface) this wrapper drives. kimi-code ships the
+    ``server run`` subcommand; kimi-cli answers "No such command 'server'". So
+    ``kimi server run --help`` cleanly discriminates: it is local (no auth, no
+    network, no tty), and exits 0 only on kimi-code. Used to (a) reject a
+    name-colliding worker kimi in Tier-1 and (b) invalidate a cache that a prior
+    run poisoned with the wrong binary.
+    """
+    # Bounded with ``timeout``: real kimi-code answers ``--help`` in well under a
+    # second and exits. A binary that instead HANGS on the probe (e.g. a launcher
+    # that starts serving on ``server run`` and ignores ``--help``) is, for our
+    # purposes, not a usable kimi-code — the timeout makes it a clean False rather
+    # than a hang.
+    probe = await host.run_command(
+        f"timeout 10 {shlex.quote(path)} server run --help >/dev/null 2>&1 "
+        f"&& echo OK || true"
+    )
+    return "OK" in (probe.stdout or "")
 
 
 # --- kimi web (server) launch ----------------------------------------------
@@ -407,11 +433,22 @@ async def ensure_kimicode_installed(
     probe = await host.run_command(
         f"[ -x {shlex.quote(cached)} ] && echo OK || true"
     )
-    if "OK" in (probe.stdout or ""):
+    hit = "OK" in (probe.stdout or "")
+    # A cache HIT is only valid if the cached binary is really kimi-code. A prior
+    # run may have poisoned the cache by seeding it from a name-colliding kimi-cli
+    # (Tier-1 pre-fix); treat that as a miss and repopulate rather than return a
+    # binary whose launch will fail with "kimi server exited before ready banner".
+    if hit and not await _is_kimicode(host, cached):
+        _LOG.warning(
+            "ensure_kimicode_installed: cached %s is NOT kimi-code (kimi-cli "
+            "name-collision) — discarding and repopulating", cached,
+        )
+        hit = False
+    if hit:
         _LOG.info("ensure_kimicode_installed: cache HIT (%s)", cached)
     elif not install_if_missing:
         raise RuntimeError(
-            f"kimi not present in cache at {cached!r} and "
+            f"no valid kimi-code binary in cache at {cached!r} and "
             f"install_if_missing=False; nothing to do."
         )
     else:
@@ -428,15 +465,24 @@ async def _populate_kimicode_cache(
     has none (TIER 2). Leaves an executable ``<cache_dir>/kimi`` on success;
     raises otherwise. Mirrors grok's ``_populate_grok_cache``.
     """
-    # TIER 1 — a kimi already on the worker (login-shell PATH).
+    # TIER 1 — a kimi already on the worker (login-shell PATH) — BUT only if it is
+    # actually kimi-code. A name-colliding kimi-cli must NOT be adopted (its launch
+    # has no ``server`` command); fall through to the vendor installer instead.
     source: "str | None"
     try:
         source = await resolve_kimi(host, install_dir=None, install_if_missing=False)
     except RuntimeError:
         source = None
 
+    if source is not None and not await _is_kimicode(host, source):
+        _LOG.warning(
+            "worker kimi at %s is not kimi-code (kimi-cli name-collision) — "
+            "vendor-installing kimi-code instead of seeding from it", source,
+        )
+        source = None
+
     if source is None:
-        # No worker kimi anywhere — bootstrap via the vendor installer (TIER 2).
+        # No kimi-code on the worker — bootstrap via the vendor installer (TIER 2).
         await _install_kimicode_into_cache(host, cache_dir=cache_dir, cached=cached)
         _LOG.info("ensure_kimicode_installed: cache MISS -> vendor-installed into %s", cached)
         return
@@ -480,22 +526,23 @@ async def _install_kimicode_into_cache(
     """Vendor auto-install kimi into the persistent cache (TIER 2: miss + no
     worker kimi).
 
-    Runs the official installer with ``HOME`` = the cache ROOT (``dirname`` of
-    ``cache_dir``) so the single-binary release lands at
-    ``<cache_root>/.local/bin/kimi`` — a persistent location OUTSIDE any task
-    workdir and never the operator's ``~`` — then copies it to the stable cache
-    path ``<cache_dir>/kimi``. HOME is the cache root (never the real ``~``), so
-    nothing touches the operator's ``~/.kimi-code`` or ``~/.local``. Unlike grok
-    (whose installer honours ``GROK_BIN_DIR``) kimi's install.sh exposes no
-    bin-dir override, so the produced binary is located under the staging HOME and
-    copied into place.
+    Runs the official installer with an explicit ``KIMI_INSTALL_DIR`` =
+    ``<cache_root>/.kimi-code`` (and ``HOME`` = the cache root, and
+    ``KIMI_NO_MODIFY_PATH=1`` so it never edits a shell rc), so the single-binary
+    release lands at ``<cache_root>/.kimi-code/bin/kimi`` — a persistent location
+    OUTSIDE any task workdir and never the operator's ``~`` — then copies it to the
+    stable cache path ``<cache_dir>/kimi``. install.sh honours ``KIMI_INSTALL_DIR``
+    and drops the binary at ``$KIMI_INSTALL_DIR/bin/kimi`` (confirmed live).
     """
     cache_root = os.path.dirname(cache_dir.rstrip("/")) or "/"
-    produced = f"{cache_root}/{_KIMICODE_INSTALL_REL}"
+    staging = f"{cache_root}/{_KIMICODE_STAGING_DIRNAME}"
+    produced = f"{staging}/bin/kimi"
     installer = f"curl -fsSL {shlex.quote(_KIMICODE_INSTALL_URL)} | bash"
     cmd = (
         f"mkdir -p {shlex.quote(cache_root)} {shlex.quote(cache_dir)} && "
-        f"env HOME={shlex.quote(cache_root)} sh -c {shlex.quote(installer)} && "
+        f"env HOME={shlex.quote(cache_root)} "
+        f"KIMI_INSTALL_DIR={shlex.quote(staging)} KIMI_NO_MODIFY_PATH=1 "
+        f"sh -c {shlex.quote(installer)} && "
         f"cp -L {shlex.quote(produced)} {shlex.quote(cached)} && "
         f"chmod +x {shlex.quote(cached)}"
     )

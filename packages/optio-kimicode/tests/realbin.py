@@ -29,23 +29,42 @@ from pathlib import Path
 
 # --- where a real kimi / its creds live -------------------------------------
 
-# The vendor installer drops the single binary at ``$HOME/.local/bin/kimi``
-# (host_actions._KIMICODE_INSTALL_REL); optio's own cache keeps one at
+# The vendor installer drops the single binary at ``$KIMI_INSTALL_DIR/bin/kimi``
+# (default ``~/.kimi-code/bin/kimi``); optio's own cache keeps one at
 # ``<cache>/kimi``. Prefer a kimi already on PATH, then the documented locations.
 _REAL_KIMI_CANDIDATES = (
-    Path.home() / ".local" / "bin" / "kimi",
-    Path.home() / ".cache" / "optio-kimicode" / "bin" / "kimi",
+    Path.home() / ".kimi-code" / "bin" / "kimi",             # vendor installer default
+    Path.home() / ".cache" / "optio-kimicode" / "bin" / "kimi",  # optio cache
+    Path.home() / ".local" / "bin" / "kimi",                 # legacy documented path
 )
 
 
+def _is_real_kimicode(path: str) -> bool:
+    """True iff ``path`` is **kimi-code**, not the name-colliding Python
+    ``kimi-cli`` (same ``kimi`` command name). kimi-code ships ``server run``;
+    kimi-cli answers "No such command 'server'". Mirrors
+    ``host_actions._is_kimicode`` — a real-binary probe MUST reject the wrong
+    product, else the whole opt-in suite silently exercises kimi-cli (or skips
+    when a real kimi-code IS installed but under a name it doesn't recognise)."""
+    try:
+        r = subprocess.run(
+            [path, "server", "run", "--help"],
+            capture_output=True, timeout=20,
+        )
+        return r.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def resolve_real_kimi() -> "str | None":
-    """Absolute path to a real ``kimi`` binary, or None. PATH first, then the
-    documented install/cache locations."""
+    """Absolute path to a real **kimi-code** binary, or None. PATH first, then the
+    documented install/cache locations — every candidate is identity-checked so a
+    leftover kimi-cli is never returned."""
     found = shutil.which("kimi")
-    if found:
+    if found and _is_real_kimicode(found):
         return found
     for cand in _REAL_KIMI_CANDIDATES:
-        if cand.exists() and os.access(cand, os.X_OK):
+        if cand.exists() and os.access(cand, os.X_OK) and _is_real_kimicode(str(cand)):
             return str(cand)
     return None
 

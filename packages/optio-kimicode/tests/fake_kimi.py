@@ -522,6 +522,17 @@ def main() -> int:
     if "--version" in argv:
         print("kimi 0.1.0 (fake)")
         return 0
+    # Identity probe: `kimi server run --help` — real kimi-code prints help and
+    # exits 0 (it is how host_actions._is_kimicode distinguishes kimi-code from the
+    # name-colliding Python kimi-cli, which has no `server`). The fake must answer
+    # it FAST and NOT start the blocking server, else the probe hangs. Handled
+    # before the server-launch route below.
+    if "--help" in argv or "-h" in argv:
+        if "server" in argv:
+            print("Usage: kimi server run [--foreground] [--host H] [--port P]")
+            return 0
+        print("Usage: kimi [OPTIONS] COMMAND")
+        return 0
     # ACP conversation mode: `kimi acp`. Detected before the server-launch
     # check so the `acp` subcommand routes to the JSON-RPC stdio responder.
     if "acp" in argv:
