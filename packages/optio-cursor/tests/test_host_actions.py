@@ -1,5 +1,6 @@
 import json
 
+from optio_cursor import host_actions as _host_actions
 from optio_cursor.host_actions import (
     _build_cursor_shell_command,
     _cursor_data_dir,
@@ -9,6 +10,11 @@ from optio_cursor.host_actions import (
     build_cursor_flags,
     workspace_trust_marker,
 )
+
+# Captured at import time — BEFORE conftest's autouse ``fake_claustrum`` fixture
+# rebinds ``host_actions.ensure_claustrum_installed`` to the shim stub. The
+# delegation test calls this real shim directly to observe its delegation.
+_REAL_ENSURE_CLAUSTRUM = _host_actions.ensure_claustrum_installed
 
 
 def test_cursor_data_dir_is_short_and_deterministic():
@@ -227,3 +233,59 @@ def test_shell_command_no_wrap_unchanged():
     )
     assert "claustrum" not in cmd
     assert "/x/cursor-agent" in cmd
+
+
+async def test_ensure_claustrum_installed_delegates_to_shared_module(
+    tmp_path, monkeypatch,
+):
+    """The wrapper's ``ensure_claustrum_installed`` is a THIN shim over
+    ``optio_agents.claustrum.ensure_claustrum_installed``: it resolves the
+    cursor-owned target cache dir, pins the ENGINE build cache to
+    ``~/.cache/optio-cursor`` (a HOME-relative path — never the operator's real
+    cache in a test), and forwards the UI progress callback. The real
+    provisioning (cross-compile, ELF guard, functional probe) is the shared
+    module's, unit-tested in optio_agents/tests/test_claustrum.py."""
+    from optio_cursor import host_actions as ha
+
+    # HOME isolation: guarantees the pinned engine cache path resolves under the
+    # tmp home, never the operator's real ~/.cache (the class of bug that once
+    # poisoned the live dashboard's cache).
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    captured: dict = {}
+
+    async def _spy(host, *, cache_dir, engine_cache_dir, report_progress=None):
+        captured["host"] = host
+        captured["cache_dir"] = cache_dir
+        captured["engine_cache_dir"] = engine_cache_dir
+        captured["report_progress"] = report_progress
+        return f"{cache_dir}/claustrum/vX/amd64/claustrum"
+
+    monkeypatch.setattr(ha.claustrum, "ensure_claustrum_installed", _spy)
+
+    host = ha.build_host(None, str(tmp_path / "wd"))
+
+    progress_calls: list = []
+
+    class _HookCtx:
+        _host = host
+
+        def report_progress(self, percent, message=None):
+            progress_calls.append((percent, message))
+
+    hook_ctx = _HookCtx()
+
+    # ``install_dir`` override drives the cache-dir resolver's non-shell branch,
+    # keeping the delegation test hermetic.
+    cache_override = str(tmp_path / "cur-cache")
+    # Call the REAL shim (captured pre-fixture) — the autouse fake_claustrum
+    # fixture has rebound the module attribute to a stub.
+    result = await _REAL_ENSURE_CLAUSTRUM(
+        hook_ctx, install_dir=cache_override + "/",
+    )
+
+    assert captured["host"] is host
+    assert captured["cache_dir"] == cache_override  # trailing slash stripped
+    assert captured["engine_cache_dir"] == str(tmp_path / ".cache" / "optio-cursor")
+    assert captured["report_progress"] == hook_ctx.report_progress
+    assert result == f"{cache_override}/claustrum/vX/amd64/claustrum"

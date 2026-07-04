@@ -176,99 +176,49 @@ def test_wrapped_exec_cmd_no_wrap_is_plain_exec():
     assert cmd == "exec /wd/home/.local/bin/kimi acp"
 
 
-# --- fail-closed: no silent unconfined launch -------------------------------
-
-
-def test_detect_goarch_maps_known_arches():
-    assert host_actions._GOARCH_BY_UNAME["x86_64"] == "amd64"
-    assert host_actions._GOARCH_BY_UNAME["aarch64"] == "arm64"
-
-
-@pytest.mark.asyncio
-async def test_detect_goarch_rejects_non_linux():
-    class _Host:
-        async def run_command(self, cmd, cwd=None):
-            from optio_host.host import RunResult
-            return RunResult(stdout="Darwin", stderr="", exit_code=0)
-
-    with pytest.raises(RuntimeError, match="Linux"):
-        await host_actions._detect_goarch(_Host())
+# --- claustrum provisioning is delegated to the shared module ---------------
+#
+# The provisioning logic itself (detect arch, cross-compile on the engine, ELF
+# guard, place + FUNCTIONAL validate, fail-closed) now lives in
+# ``optio_agents.claustrum`` and is covered by ``optio_agents/tests/test_claustrum.py``.
+# Here we only assert the wrapper shim wires the two wrapper-specific paths
+# (target cache dir + engine cache dir) and the progress callback into it.
 
 
 @pytest.mark.asyncio
-async def test_detect_goarch_rejects_unknown_arch():
-    class _Host:
-        async def run_command(self, cmd, cwd=None):
-            from optio_host.host import RunResult
-            out = "Linux" if cmd == "uname -s" else "riscv64"
-            return RunResult(stdout=out, stderr="", exit_code=0)
+async def test_ensure_claustrum_installed_delegates_to_shared_module(monkeypatch):
+    from optio_agents import claustrum
 
-    with pytest.raises(RuntimeError, match="unsupported host arch"):
-        await host_actions._detect_goarch(_Host())
+    captured: dict = {}
 
+    async def _fake_shared(host, *, cache_dir, engine_cache_dir, report_progress=None):
+        captured["host"] = host
+        captured["cache_dir"] = cache_dir
+        captured["engine_cache_dir"] = engine_cache_dir
+        captured["report_progress"] = report_progress
+        return f"{cache_dir}/claustrum/vX/amd64/claustrum"
 
-@pytest.mark.asyncio
-async def test_ensure_claustrum_fail_closed_when_verify_fails(monkeypatch, tmp_path):
-    # If claustrum is placed but ``--version`` fails, provisioning RAISES rather
-    # than returning a path — so an fs-isolated session can never launch
-    # unconfined (fail-closed). Mirrors the claudecode contract.
-    from optio_host.host import RunResult
+    # Patch the name the shim actually calls (bound in host_actions' namespace).
+    monkeypatch.setattr(claustrum, "ensure_claustrum_installed", _fake_shared)
 
-    calls: list[str] = []
+    host = _FakeHost(cache="/worker/cache/bin")
 
-    class _Host:
-        workdir = "/wd"
-
-        async def run_command(self, cmd, cwd=None):
-            calls.append(cmd)
-            if cmd == "uname -s":
-                return RunResult(stdout="Linux", stderr="", exit_code=0)
-            if cmd == "uname -m":
-                return RunResult(stdout="x86_64", stderr="", exit_code=0)
-            if "printf" in cmd:
-                return RunResult(stdout=str(tmp_path / "cache"), stderr="", exit_code=0)
-            if "__optio_claustrum_ok__" in cmd:
-                # The functional probe: a non-functioning claustrum (here, the
-                # stub) never echoes the sentinel, so both the pre-probe and the
-                # post-place verify treat it as invalid.
-                return RunResult(stdout="", stderr="", exit_code=0)
-            # chmod / test -x etc.
-            return RunResult(stdout="", stderr="", exit_code=0)
-
-        async def put_file_to_host(self, src, dst):
-            return None
+    def _report(percent, message=None):
+        pass
 
     class _HookCtx:
-        _host = _Host()
+        _host = host
+        report_progress = staticmethod(_report)
 
-        def report_progress(self, percent, message=None):
-            pass
+    result = await host_actions.ensure_claustrum_installed(_HookCtx())
 
-    async def _fake_build(goarch, tag, dest):
-        import os
-        os.makedirs(os.path.dirname(dest), exist_ok=True)
-        with open(dest, "w") as f:
-            f.write("#!/bin/sh\n")
-
-    monkeypatch.setattr(host_actions, "_build_claustrum_on_engine", _fake_build)
-    # CRITICAL isolation: the engine-local build cache in ensure_claustrum_installed
-    # is ``~/.cache/optio-kimicode/...`` (NOT the install_dir), so without redirecting
-    # HOME the fake build would poison the operator's real cache — exactly the bug
-    # that broke the live dashboard. Pin HOME into tmp so the stub stays in tmp.
-    monkeypatch.setenv("HOME", str(tmp_path))
-
-    with pytest.raises(RuntimeError, match="functioning claustrum"):
-        await host_actions.ensure_claustrum_installed(
-            _HookCtx(), install_dir=str(tmp_path / "cache"),
-        )
-
-
-def test_is_elf_rejects_shell_stub(tmp_path):
-    """_is_elf accepts a real ELF header and rejects a #!/bin/sh stub — the guard
-    that stops a poisoned/placeholder engine-cache file from being shipped."""
-    from optio_kimicode import host_actions
-    stub = tmp_path / "stub"; stub.write_text("#!/bin/sh\n")
-    assert host_actions._is_elf(str(stub)) is False
-    elf = tmp_path / "elf"; elf.write_bytes(b"\x7fELF" + b"\x00" * 60)
-    assert host_actions._is_elf(str(elf)) is True
-    assert host_actions._is_elf(str(tmp_path / "missing")) is False
+    # cache_dir is resolved via the wrapper's own _resolve_kimicode_cache_dir
+    # (the _FakeHost echoes it back from run_command).
+    assert captured["host"] is host
+    assert captured["cache_dir"] == "/worker/cache/bin"
+    # engine_cache_dir is the wrapper-owned engine build root (expanded ~).
+    import os
+    assert captured["engine_cache_dir"] == os.path.expanduser("~/.cache/optio-kimicode")
+    # the HookContext's progress callback is threaded through for the UI.
+    assert captured["report_progress"] is _report
+    assert result == "/worker/cache/bin/claustrum/vX/amd64/claustrum"

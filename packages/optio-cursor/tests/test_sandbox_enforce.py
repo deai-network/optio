@@ -35,9 +35,10 @@ from pathlib import Path
 
 import pytest
 
+from optio_agents.claustrum import CLAUSTRUM_PINNED_TAG
 from optio_cursor import host_actions
 from optio_cursor.fs_allowlist import build_grant_flags
-from optio_cursor.host_actions import _CLAUSTRUM_PINNED_TAG, run_cursor_probe
+from optio_cursor.host_actions import run_cursor_probe
 
 
 _CURSOR_AUTH = Path.home() / ".config" / "cursor" / "auth.json"
@@ -72,7 +73,7 @@ def _resolve_claustrum() -> "str | None":
     if override and os.path.exists(override):
         return override
     pattern = os.path.expanduser(
-        f"~/.cache/optio-cursor/claustrum/{_CLAUSTRUM_PINNED_TAG}/*/claustrum"
+        f"~/.cache/optio-cursor/claustrum/{CLAUSTRUM_PINNED_TAG}/*/claustrum"
     )
     hits = [p for p in glob.glob(pattern) if os.path.exists(p)]
     return hits[0] if hits else None

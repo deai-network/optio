@@ -34,7 +34,7 @@ from optio_agents.protocol.session import _SessionFailed, run_log_protocol_sessi
 from optio_host.host import Host, LocalHost, ProcessHandle, RemoteHost, proc_wait
 from optio_host.paths import task_dir
 from optio_agents import seeds as _seeds
-from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
+from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, claustrum, get_protocol
 
 from optio_claudecode import cred_watcher
 from optio_claudecode import host_actions
@@ -316,7 +316,7 @@ async def run_claudecode_session(
             rel = f"{config.delivery_type}/claustrum-update-{claustrum_newer}.md"
             text = (
                 f"A newer claustrum release ({claustrum_newer}) is available; "
-                f"the pinned version is {host_actions._CLAUSTRUM_PINNED_TAG}. "
+                f"the pinned version is {claustrum.CLAUSTRUM_PINNED_TAG}. "
                 f"Audit it and consider bumping the pin."
             )
             await host.write_text(f"deliverables/{rel}", text)

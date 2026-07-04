@@ -38,6 +38,7 @@ from optio_agents.protocol import (
     validate_deliverable_path,
 )
 from optio_agents import browser_shims
+from optio_agents import claustrum
 from optio_agents import seeds
 
 __all__ = [
@@ -49,6 +50,7 @@ __all__ = [
     "PermissionDecision",
     "PermissionRequest",
     "browser_shims",
+    "claustrum",
     "seeds",
     "run_log_protocol_session",
     "fetch_deliverable_text",

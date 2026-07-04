@@ -21,6 +21,8 @@ import shlex
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from optio_agents import claustrum
+
 if TYPE_CHECKING:
     from optio_agents import HookContextProtocol
     from optio_host import Host
@@ -73,11 +75,10 @@ _KIMICODE_INSTALL_REL = ".kimi-code/bin/kimi"
 
 # claustrum: standalone Landlock filesystem-sandbox CLI, vendored by pinned tag
 # (Stage 8). Bumping is deliberate. Mirrors optio-claudecode; kimi has no native
-# fail-closed sandbox flag (unlike grok), so claustrum wraps the launch.
-_CLAUSTRUM_REPO = "https://github.com/deai-network/claustrum"
-_CLAUSTRUM_PINNED_TAG = "v0.1.1"
-# uname -m -> Go GOARCH.
-_GOARCH_BY_UNAME = {"x86_64": "amd64", "aarch64": "arm64"}
+# fail-closed sandbox flag (unlike grok), so claustrum wraps the launch. The
+# provisioning (detect arch, cross-compile on the engine, place + functionally
+# validate) lives in the shared ``optio_agents.claustrum`` module; the pinned
+# tag / repo constants come from there too.
 
 
 def build_host(ssh, taskdir: str) -> "Host":
@@ -628,86 +629,6 @@ def build_wrapped_exec_cmd(
     return "exec " + " ".join(shlex.quote(a) for a in full)
 
 
-async def _detect_goarch(host: "Host") -> str:
-    """Map the host's uname -m to a Go GOARCH (Linux only)."""
-    r_os = await host.run_command("uname -s")
-    if r_os.exit_code != 0 or (r_os.stdout or "").strip() != "Linux":
-        raise RuntimeError(
-            f"claustrum requires a Linux host (uname -s={(r_os.stdout or '').strip()!r})."
-        )
-    r = await host.run_command("uname -m")
-    if r.exit_code != 0:
-        raise RuntimeError(
-            f"uname -m failed (exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
-        )
-    arch = (r.stdout or "").strip()
-    goarch = _GOARCH_BY_UNAME.get(arch)
-    if goarch is None:
-        raise RuntimeError(
-            f"unsupported host arch {arch!r} for claustrum (supported: "
-            f"{sorted(_GOARCH_BY_UNAME)})."
-        )
-    return goarch
-
-
-async def _build_claustrum_on_engine(goarch: str, tag: str, dest: str) -> None:
-    """Clone claustrum at ``tag`` and cross-compile a static binary to ``dest``.
-
-    Runs ON THE ENGINE (where git + the Go toolchain live), never on an ssh
-    target. ``dest`` is an engine-local path.
-    """
-    import tempfile
-
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="claustrum-src-") as src:
-        clone = await asyncio.create_subprocess_exec(
-            "git", "clone", "--depth", "1", "--branch", tag, _CLAUSTRUM_REPO, src,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-        )
-        out, _ = await clone.communicate()
-        if clone.returncode != 0:
-            raise RuntimeError(f"git clone claustrum {tag} failed: {out.decode()[:400]}")
-        env = {**os.environ, "CGO_ENABLED": "0", "GOOS": "linux", "GOARCH": goarch}
-        build = await asyncio.create_subprocess_exec(
-            "go", "build", "-trimpath", "-ldflags", "-s -w", "-o", dest, ".",
-            cwd=src, env=env,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-        )
-        out, _ = await build.communicate()
-        if build.returncode != 0:
-            raise RuntimeError(f"go build claustrum ({goarch}) failed: {out.decode()[:400]}")
-
-
-def _is_elf(path: str) -> bool:
-    """True iff the engine-local file starts with the ELF magic — i.e. a real
-    compiled binary, not a ``#!/bin/sh`` stub. Guards the engine build cache so a
-    poisoned/placeholder file is rebuilt rather than shipped to the target."""
-    try:
-        with open(path, "rb") as fh:
-            return fh.read(4) == b"\x7fELF"
-    except OSError:
-        return False
-
-
-async def _claustrum_works(host: "Host", path: str) -> bool:
-    """True iff ``path`` is a FUNCTIONING claustrum, proven by having it wrap and
-    exec a trivial target and pass the sentinel through.
-
-    ``--version`` alone cannot distinguish a real claustrum from a shell-script
-    stub (``/bin/sh --version`` also exits 0), and such a stub silently no-ops the
-    launch — kimi never execs, producing the "exited before ready banner (exit
-    None, no output)" failure. This probe fails for a stub (``/bin/sh`` chokes on
-    the claustrum flags and never echoes the sentinel) and for any non-claustrum
-    binary. ``--best-effort`` keeps it runnable where Landlock cannot enforce."""
-    sentinel = "__optio_claustrum_ok__"
-    probe = await host.run_command(
-        f"{shlex.quote(path)} --best-effort --abi-min 1 "
-        f"--rox /usr --rox /bin --rox /lib --rox /lib64 "
-        f"-- /bin/echo {sentinel} 2>/dev/null || true"
-    )
-    return sentinel in (probe.stdout or "")
-
-
 async def ensure_claustrum_installed(
     hook_ctx: "HookContextProtocol",
     *,
@@ -715,52 +636,27 @@ async def ensure_claustrum_installed(
 ) -> str:
     """Ensure a claustrum binary (pinned tag, host arch) is on the host.
 
-    Builds on the engine (clone + cross-compile, cached by (tag, arch)), places
-    the static binary on the target host via the Host protocol, chmods +x, and
-    verifies ``--version``. Returns the claustrum path on the target host. Any
-    failure RAISES (fail-closed): an fs-isolated session never launches
-    unconfined. The cache lives beside the kimi binary cache
-    (:func:`_resolve_kimicode_cache_dir`), outside every task workdir.
+    Thin wrapper-specific shim over :func:`optio_agents.claustrum.ensure_claustrum_installed`
+    (the shared provisioner: detect arch, cross-compile on the engine cached by
+    (tag, arch), place on the target host, and FUNCTIONALLY validate). This layer
+    only resolves the two wrapper-specific paths:
+
+    - the TARGET-host cache dir (:func:`_resolve_kimicode_cache_dir`), beside the
+      kimi binary cache and outside every task workdir; and
+    - the ENGINE-local build cache root ``~/.cache/optio-kimicode`` (a parameter of
+      the shared function, never hardcoded inside it, so tests isolate it).
+
+    Returns the claustrum path on the target host. Any failure RAISES (fail-closed):
+    an fs-isolated session never launches unconfined.
     """
     host = hook_ctx._host
-    goarch = await _detect_goarch(host)
     cache_dir = await _resolve_kimicode_cache_dir(host, install_dir)
-    target_path = f"{cache_dir}/claustrum/{_CLAUSTRUM_PINNED_TAG}/{goarch}/claustrum"
-
-    # Already on the target host AND actually functions as claustrum? (A prior
-    # run — or a stray stub — may have left a non-functioning file that passes a
-    # bare --version but silently no-ops the launch.)
-    probe = await host.run_command(
-        f"test -x {shlex.quote(target_path)} && echo present || true"
+    return await claustrum.ensure_claustrum_installed(
+        host,
+        cache_dir=cache_dir,
+        engine_cache_dir=os.path.expanduser("~/.cache/optio-kimicode"),
+        report_progress=hook_ctx.report_progress,
     )
-    if "present" in (probe.stdout or "") and await _claustrum_works(host, target_path):
-        return target_path
-
-    hook_ctx.report_progress(None, "Preparing claustrum (filesystem isolation)…")
-    # Engine-local cached build, then place onto the (possibly remote) target.
-    engine_cache = os.path.expanduser(
-        f"~/.cache/optio-kimicode/claustrum/{_CLAUSTRUM_PINNED_TAG}/{goarch}/claustrum"
-    )
-    # Rebuild if the engine cache is missing OR not a real compiled binary (a
-    # stub/placeholder must never be shipped to the target).
-    if not os.path.exists(engine_cache) or not _is_elf(engine_cache):
-        await _build_claustrum_on_engine(goarch, _CLAUSTRUM_PINNED_TAG, engine_cache)
-
-    await host.put_file_to_host(engine_cache, target_path)
-    r = await host.run_command(f"chmod +x {shlex.quote(target_path)}")
-    if r.exit_code != 0:
-        raise RuntimeError(
-            f"chmod +x claustrum failed (exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
-        )
-    # Fail-closed: verify the PLACED binary actually functions as claustrum (a
-    # bare --version would pass a shell stub); never launch kimi unconfined.
-    if not await _claustrum_works(host, target_path):
-        raise RuntimeError(
-            f"claustrum placed at {target_path!r} is not a functioning claustrum "
-            f"(failed a wrapped-exec probe — a stub or wrong binary would silently "
-            f"no-op the launch). Refusing to launch unconfined."
-        )
-    return target_path
 
 
 async def _build_claustrum_wrap(
@@ -796,7 +692,7 @@ async def claustrum_newer_tag() -> str | None:
     """
     try:
         p = await asyncio.create_subprocess_exec(
-            "git", "ls-remote", "--tags", "--refs", _CLAUSTRUM_REPO,
+            "git", "ls-remote", "--tags", "--refs", claustrum.CLAUSTRUM_REPO,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
         )
         out, _ = await p.communicate()
@@ -816,4 +712,4 @@ async def claustrum_newer_tag() -> str | None:
     if not tags:
         return None
     newest = max(tags, key=key)
-    return newest if key(newest) > key(_CLAUSTRUM_PINNED_TAG) else None
+    return newest if key(newest) > key(claustrum.CLAUSTRUM_PINNED_TAG) else None

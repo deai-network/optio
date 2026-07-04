@@ -22,7 +22,7 @@ import shlex
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
+from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, claustrum
 from optio_host.host import proc_wait
 
 if TYPE_CHECKING:
@@ -76,18 +76,6 @@ _CURSOR_CACHE_DIR_SHELL_DEFAULT = (
 _CURSOR_INSTALL_URL = "https://cursor.com/install"
 
 
-# claustrum: standalone Landlock filesystem-sandbox CLI, vendored by pinned tag
-# (Stage 8). Bumping is deliberate. Cursor uses claustrum — not its own native
-# sandbox — because the native one wraps individual shell-exec commands only,
-# leaving cursor-agent's in-process Write/Edit tools unconfined; claustrum
-# Landlock-confines the WHOLE process tree. See fs_allowlist.py for the probe
-# decision. Ported from optio-claudecode's host_actions.
-_CLAUSTRUM_REPO = "https://github.com/deai-network/claustrum"
-_CLAUSTRUM_PINNED_TAG = "v0.1.1"
-# uname -m -> Go GOARCH.
-_GOARCH_BY_UNAME = {"x86_64": "amd64", "aarch64": "arm64"}
-
-
 async def _resolve_install_dir(host: "Host", install_dir: str | None) -> str:
     """Return ``install_dir`` if given, else ``<host_home>/.local/bin`` (ttyd)."""
     if install_dir is not None:
@@ -119,57 +107,17 @@ async def _resolve_cursor_cache_dir(host: "Host", override: str | None) -> str:
     return path.rstrip("/")
 
 
-# --- claustrum provisioning (Stage 8, ported from optio-claudecode) ---------
-
-
-async def _detect_goarch(host: "Host") -> str:
-    """Map the host's uname -m to a Go GOARCH (Linux only)."""
-    r_os = await host.run_command("uname -s")
-    if r_os.exit_code != 0 or r_os.stdout.strip() != "Linux":
-        raise RuntimeError(
-            f"claustrum requires a Linux host (uname -s={r_os.stdout.strip()!r})."
-        )
-    r = await host.run_command("uname -m")
-    if r.exit_code != 0:
-        raise RuntimeError(
-            f"uname -m failed (exit {r.exit_code}): {r.stderr.strip()[:200]}"
-        )
-    arch = r.stdout.strip()
-    goarch = _GOARCH_BY_UNAME.get(arch)
-    if goarch is None:
-        raise RuntimeError(
-            f"unsupported host arch {arch!r} for claustrum (supported: "
-            f"{sorted(_GOARCH_BY_UNAME)})."
-        )
-    return goarch
-
-
-async def _build_claustrum_on_engine(goarch: str, tag: str, dest: str) -> None:
-    """Clone claustrum at ``tag`` and cross-compile a static binary to ``dest``.
-
-    Runs ON THE ENGINE (where git + the Go toolchain live), never on an ssh
-    target. ``dest`` is an engine-local path.
-    """
-    import tempfile
-
-    os.makedirs(os.path.dirname(dest), exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="claustrum-src-") as src:
-        clone = await asyncio.create_subprocess_exec(
-            "git", "clone", "--depth", "1", "--branch", tag, _CLAUSTRUM_REPO, src,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-        )
-        out, _ = await clone.communicate()
-        if clone.returncode != 0:
-            raise RuntimeError(f"git clone claustrum {tag} failed: {out.decode()[:400]}")
-        env = {**os.environ, "CGO_ENABLED": "0", "GOOS": "linux", "GOARCH": goarch}
-        build = await asyncio.create_subprocess_exec(
-            "go", "build", "-trimpath", "-ldflags", "-s -w", "-o", dest, ".",
-            cwd=src, env=env,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
-        )
-        out, _ = await build.communicate()
-        if build.returncode != 0:
-            raise RuntimeError(f"go build claustrum ({goarch}) failed: {out.decode()[:400]}")
+# --- claustrum provisioning (Stage 8) ---------------------------------------
+#
+# The provisioning logic (engine cross-compile, ELF-guarded build cache,
+# functional wrap+exec validation, fail-closed placement) is the shared
+# ``optio_agents.claustrum`` module — the single source of truth across every
+# wrapper. This wrapper contributes only the cursor-owned cache-dir resolution
+# and, in session.py, the grant set (``_build_claustrum_wrap``). Cursor uses
+# claustrum — not its own native sandbox — because the native one wraps
+# individual shell-exec commands only, leaving cursor-agent's in-process
+# Write/Edit tools unconfined; claustrum Landlock-confines the WHOLE process
+# tree. See fs_allowlist.py for the probe decision.
 
 
 async def ensure_claustrum_installed(
@@ -177,47 +125,23 @@ async def ensure_claustrum_installed(
     *,
     install_dir: str | None = None,
 ) -> str:
-    """Ensure a claustrum binary (pinned tag, host arch) is on the host.
+    """Ensure a functioning claustrum binary is on the host; return its path.
 
-    Builds on the engine (clone + cross-compile, cached by (tag, arch)), places
-    the static binary on the (possibly remote) target host via the Host
-    protocol, chmods +x, and verifies ``--version``. Returns the claustrum path
-    on the target host. Raises on any failure — the caller keeps fs isolation
-    fail-closed (never launches unconfined when this raises).
+    Thin wrapper over :func:`optio_agents.claustrum.ensure_claustrum_installed`:
+    resolves the cursor-owned target cache dir, pins the engine build cache to
+    ``~/.cache/optio-cursor``, and forwards the UI progress callback. All the
+    real work (cross-compile, ELF-guarded engine cache, functional wrap+exec
+    validation) lives in the shared module. Fail-closed — any failure RAISES, so
+    the caller never proceeds to an unconfined launch.
     """
     host = hook_ctx._host
-    goarch = await _detect_goarch(host)
     cache_dir = await _resolve_cursor_cache_dir(host, install_dir)
-    target_path = f"{cache_dir}/claustrum/{_CLAUSTRUM_PINNED_TAG}/{goarch}/claustrum"
-
-    # Already on the target host?
-    probe = await host.run_command(
-        f"test -x {shlex.quote(target_path)} && {shlex.quote(target_path)} --version"
+    return await claustrum.ensure_claustrum_installed(
+        host,
+        cache_dir=cache_dir,
+        engine_cache_dir=os.path.expanduser("~/.cache/optio-cursor"),
+        report_progress=hook_ctx.report_progress,
     )
-    if probe.exit_code == 0:
-        return target_path
-
-    hook_ctx.report_progress(None, "Preparing claustrum (filesystem isolation)…")
-    # Engine-local cached build, then place onto the (possibly remote) target.
-    engine_cache = os.path.expanduser(
-        f"~/.cache/optio-cursor/claustrum/{_CLAUSTRUM_PINNED_TAG}/{goarch}/claustrum"
-    )
-    if not os.path.exists(engine_cache):
-        await _build_claustrum_on_engine(goarch, _CLAUSTRUM_PINNED_TAG, engine_cache)
-
-    await host.put_file_to_host(engine_cache, target_path)
-    r = await host.run_command(f"chmod +x {shlex.quote(target_path)}")
-    if r.exit_code != 0:
-        raise RuntimeError(
-            f"chmod +x claustrum failed (exit {r.exit_code}): {r.stderr.strip()[:200]}"
-        )
-    v = await host.run_command(f"{shlex.quote(target_path)} --version")
-    if v.exit_code != 0:
-        raise RuntimeError(
-            f"claustrum placed at {target_path!r} but --version failed "
-            f"(exit {v.exit_code}): {v.stderr.strip()[:200]}"
-        )
-    return target_path
 
 
 # --- cursor-agent resolution + optio-owned binary cache (Stage 5) -----------
