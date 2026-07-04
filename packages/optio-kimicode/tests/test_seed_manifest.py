@@ -48,12 +48,14 @@ def test_no_consume_transform():
     assert KIMI_CRED_MANIFEST.consume_transform is None
 
 
-def test_cred_manifest_is_creds_only():
-    # kimi has no config member → the save-back CRED manifest and the full SEED
-    # manifest coincide (both carry only the creds dir).
+def test_cred_manifest_is_creds_only_but_seed_adds_config():
+    # The save-back CRED manifest carries ONLY the rotating creds dir; the full
+    # SEED manifest ALSO carries config.toml (the managed:kimi-code provider
+    # registration login provisions — without it a replant has a token but no
+    # provider and shows the login screen).
     assert KIMI_CRED_MANIFEST.home_subdir == "home"
     assert KIMI_CRED_MANIFEST.include == ["credentials"]
-    assert KIMI_SEED_MANIFEST.include == KIMI_CRED_MANIFEST.include
+    assert KIMI_SEED_MANIFEST.include == ["credentials", "config.toml"]
 
 
 def test_seed_suffix():

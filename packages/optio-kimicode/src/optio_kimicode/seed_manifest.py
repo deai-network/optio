@@ -15,12 +15,16 @@ Like grok (and opencode, and unlike claudecode), kimi needs no consume-time
 rekey: its credential file is a cwd-independent JSON blob, so
 ``consume_transform`` is None.
 
-Delta from grok: grok's full seed adds a ``config.toml`` member alongside its
-rotating ``auth.json``; kimi keeps no config in the identity seed (model choice
-is a launch flag / env var, not persisted auth), so the full
-``KIMI_SEED_MANIFEST`` and the save-back ``KIMI_CRED_MANIFEST`` coincide — both
-carry only the creds dir. Both are kept as distinct names to preserve grok's
-public API shape (session plant reads SEED; in-session save-back reads CRED).
+Like grok, the full seed carries a ``config.toml`` member ALONGSIDE the rotating
+credential. This is load-bearing, not optional: ``kimi login`` provisions the
+managed OAuth provider (``[providers."managed:kimi-code"]`` + models +
+``default_model``) into ``config.toml`` — provisioning is login-only, kimi never
+re-derives the provider from the credential at startup. A seed with only
+``credentials/`` replants a token but NO provider, so the daemon reports
+``providers_count: 0`` and shows the login screen despite a perfectly valid token.
+Hence ``KIMI_SEED_MANIFEST`` = creds dir + ``config.toml``, while the save-back
+``KIMI_CRED_MANIFEST`` carries ONLY the creds dir (config.toml is static provider
+config; only ``kimi-code.json`` rotates, so only it is written back mid-session).
 
 Path note: the engine roots capture/extract at ``host.workdir + "/" +
 home_subdir`` (see ``SeedManifest.home_subdir`` — "HOME relative to the
@@ -49,12 +53,13 @@ KIMI_CRED_MANIFEST = seeds.SeedManifest(
 )
 
 
-# kimi has no config member in the identity seed, so the full seed is exactly
-# the credential set. (grok appends ``.grok/config.toml`` here; kimi has no
-# analog to append.)
+# Full identity seed = the rotating credential dir PLUS ``config.toml`` (the
+# managed:kimi-code provider registration that login provisions; without it a
+# replant has a token but no provider -> login screen). Mirrors grok appending
+# ``.grok/config.toml`` to its full seed.
 KIMI_SEED_MANIFEST = seeds.SeedManifest(
     home_subdir="home",
-    include=list(KIMI_CRED_MANIFEST.include),
+    include=[*KIMI_CRED_MANIFEST.include, "config.toml"],
     version=KIMI_SEED_MANIFEST_VERSION,
     consume_transform=None,  # no cwd-rekey for kimi
 )
