@@ -40,6 +40,8 @@ from optio_agents.protocol import (
 from optio_agents import browser_shims
 from optio_agents import claustrum
 from optio_agents import seeds
+from optio_agents import session_controls
+from optio_agents.session_controls import ControlOption, SessionControl
 
 __all__ = [
     "HookContext",
@@ -52,6 +54,9 @@ __all__ = [
     "browser_shims",
     "claustrum",
     "seeds",
+    "session_controls",
+    "SessionControl",
+    "ControlOption",
     "run_log_protocol_session",
     "fetch_deliverable_text",
     "AgentSender",

@@ -74,6 +74,12 @@ class Conversation(Protocol):
         """Abort the current turn at the next safe point. No-op when idle."""
         ...
 
+    async def set_control(self, control_id: str, value: "str | bool") -> None:
+        """Push a session-control value change to the native transport
+        (generalizes model selection). ``control_id`` matches a
+        ``SessionControl.id`` the wrapper published. No-op for unknown ids."""
+        ...
+
     async def close(self) -> None:
         """Request cooperative shutdown of the owning task. Idempotent."""
         ...
