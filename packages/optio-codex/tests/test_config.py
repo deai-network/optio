@@ -92,7 +92,7 @@ def test_tool_verbosity_validated():
 
 @pytest.mark.parametrize("field,value", [
     ("default_model", "gpt-5.5"),
-    ("show_model_selector", True),
+    ("show_session_controls", True),
     ("show_file_upload", True),
     ("file_download", True),
 ])

@@ -8,7 +8,7 @@ MODEL-SWITCH MECHANISM — pinned from the app-server contract (codex-cli
 Decision: **INLINE** (opencode/grok-style), NOT restart (claudecode-style) —
 and codex needs NO dedicated set-model request at all: a ``model`` override
 on ``turn/start`` "become[s] the default for subsequent turns" (README,
-turn/start). So ``CodexConversation.request_model_change()`` just pins the
+turn/start). So ``CodexConversation.set_control("model", …)`` just pins the
 model sent with the next ``turn/start``; the session body needs no
 model_change_requested restart loop.
 

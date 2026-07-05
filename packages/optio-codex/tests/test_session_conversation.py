@@ -205,7 +205,7 @@ async def test_conversation_ui_publishes_widget(shim_install_dir, task_root, mon
             name="Conversation UI",
             config=_conversation_config(
                 shim_install_dir, conversation_ui=True,
-                show_model_selector=True, tool_verbosity="verbose",
+                show_session_controls=True, tool_verbosity="verbose",
             ),
         )
         assert task.ui_widget == "conversation"
@@ -227,9 +227,14 @@ async def test_conversation_ui_publishes_widget(shim_install_dir, task_root, mon
             await asyncio.sleep(0.05)
         assert wd.get("protocol") == "codex"
         assert wd.get("toolVerbosity") == "verbose"
-        assert wd.get("showModelSelector") is True
-        assert [m["id"] for m in wd.get("models", [])] == ["gpt-5.5", "gpt-5.4-mini"]
-        assert wd.get("currentModel") == "gpt-5.5"
+        assert wd.get("showSessionControls") is True
+        # The model picker is now the generic id="model" SessionControl.
+        controls = wd.get("controls", [])
+        model_ctrl = next((c for c in controls if c.get("id") == "model"), None)
+        assert model_ctrl is not None
+        assert model_ctrl["kind"] == "select"
+        assert [o["value"] for o in model_ctrl["options"]] == ["gpt-5.5", "gpt-5.4-mini"]
+        assert model_ctrl["value"] == "gpt-5.5"
 
         await conv.close()
         await _wait_terminal(optio, "cx-conv-ui")

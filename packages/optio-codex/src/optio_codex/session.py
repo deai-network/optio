@@ -18,6 +18,7 @@ from optio_core.models import BasicAuth, TaskInstance
 from optio_agents import HookContext, RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
 from optio_agents import seeds as _seeds
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
+from optio_agents.session_controls import model_control
 from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
 from optio_host.paths import task_dir
 
@@ -406,13 +407,17 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                 or conversation.current_model_id
                 or model_list.get("default")
             )
+            # The model picker is now the generic id="model" SessionControl;
+            # codex exposes only this one (INLINE switch via set_control).
+            control = model_control(
+                models=model_list["models"], current=current_model,
+            )
             await ctx.set_widget_data({
                 "protocol": "codex",
                 "toolVerbosity": config.tool_verbosity,
                 "thinkingVerbosity": config.thinking_verbosity,
-                "showModelSelector": config.show_model_selector,
-                "models": model_list["models"],
-                "currentModel": current_model,
+                "showSessionControls": config.show_session_controls,
+                "controls": [control.to_dict()],
                 "showFileUpload": config.show_file_upload,
                 "maxUploadBytes": config.max_upload_bytes,
                 "fileDownload": config.file_download,

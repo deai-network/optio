@@ -53,7 +53,7 @@ Client -> server REQUESTS (have ``id``, expect a ``result``):
     IMMEDIATE ACK {turn:{id, status:"inProgress", items:[]}} — the ACK is
     NOT the turn end. Per-turn overrides (``model``) become the default for
     subsequent turns on the thread == the INLINE model-switch seam
-    (request_model_change pins the next turn's model; no wire write).
+    (set_control("model", …) pins the next turn's model; no wire write).
   * ``turn/interrupt`` {threadId, turnId} -> {} ACK; the completion signal
     is the subsequent ``turn/completed`` with status "interrupted".
 
@@ -482,19 +482,23 @@ class CodexConversation:
             "threadId": self.thread_id, "turnId": self.current_turn_id,
         })
 
-    def request_model_change(self, model: str) -> None:
-        """Switch model mid-conversation INLINE — with NO wire write: a
-        ``model`` override on the next ``turn/start`` becomes the thread's
-        default for subsequent turns (app-server contract; see models.py).
-        Synchronous surface (the listener calls it without await)."""
+    async def set_control(self, control_id: str, value) -> None:
+        """Push a session-control value change to the native transport
+        (generalizes model selection). Codex exposes only the ``model``
+        control, switched INLINE — with NO wire write: a ``model`` override on
+        the next ``turn/start`` becomes the thread's default for subsequent
+        turns (app-server contract; see models.py). Unknown control ids are
+        ignored (no-op)."""
+        if control_id != "model":
+            return  # codex exposes only the model control
         if self._closed.is_set():
             raise ConversationClosed(self._close_reason or "conversation closed")
         if self.thread_id is None:
             raise RuntimeError(
-                "CodexConversation.request_model_change before bootstrap() completed"
+                "CodexConversation.set_control before bootstrap() completed"
             )
-        self._requested_model = model
-        self.current_model_id = model  # optimistic; the next turn pins it
+        self._requested_model = value
+        self.current_model_id = value  # optimistic; the next turn pins it
 
     async def close(self) -> None:
         self.close_requested.set()

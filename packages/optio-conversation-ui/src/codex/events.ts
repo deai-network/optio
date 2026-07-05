@@ -16,6 +16,7 @@
 //   * synthetic x-optio-* events (permission-answered / closed / local-user).
 
 import type { ChatItem, ChatState } from '../chat.js';
+import { foldControlUpdate } from '../chat.js';
 import { explainApiError } from '../apiError.js';
 export { initialChatState } from '../chat.js';
 
@@ -127,6 +128,13 @@ function reduce(st: CodexChatState, ev: any, seq: number): CodexChatState {
   if (synthetic === 'x-optio-closed') {
     const item: ChatItem = { kind: 'closed', reason: String(ev.reason ?? ''), seq };
     return { ...st, items: [...dropTools(st.items), item], busy: false, closed: true };
+  }
+  if (synthetic === 'x-optio-control-update') {
+    // Session-control value change (model picker). Codex switches the model
+    // INLINE, so the only source is the view's own optimistic fold on change;
+    // the generic patch keeps state.controls in sync (extra codex fields ride
+    // through foldControlUpdate's spread).
+    return foldControlUpdate(st, ev) as CodexChatState;
   }
   if (synthetic !== undefined) return st; // x-optio-unparseable, forward compat
 

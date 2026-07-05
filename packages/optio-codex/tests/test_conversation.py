@@ -461,13 +461,13 @@ async def test_bootstrap_resume_uses_thread_resume():
 
 
 @pytest.mark.asyncio
-async def test_request_model_change_applies_on_next_turn(convo):
+async def test_set_control_model_applies_on_next_turn(convo):
     # INLINE switch, no wire write: the next turn/start pins the model and it
     # sticks for subsequent turns (app-server contract).
     c, handle = convo
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle)
-    c.request_model_change("gpt-5.4-mini")
+    await c.set_control("model", "gpt-5.4-mini")
     assert c.current_model_id == "gpt-5.4-mini"   # optimistic
     assert handle.stdin.lines.empty()              # nothing on the wire yet
     await c.send("hello")
@@ -478,14 +478,28 @@ async def test_request_model_change_applies_on_next_turn(convo):
 
 
 @pytest.mark.asyncio
-async def test_request_model_change_after_close_raises(convo):
+async def test_set_control_unknown_id_is_noop(convo):
+    # Codex exposes only the model control; other ids are ignored.
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)
+    await c.set_control("thinking", "high")
+    assert c.current_model_id == "gpt-5.5"         # unchanged
+    assert c._requested_model is None              # no inline override armed
+    assert handle.stdin.lines.empty()
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_set_control_after_close_raises(convo):
     c, handle = convo
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle)
     handle.stdout.eof()
     await reader
     with pytest.raises(ConversationClosed):
-        c.request_model_change("gpt-5.4-mini")
+        await c.set_control("model", "gpt-5.4-mini")
 
 
 @pytest.mark.asyncio

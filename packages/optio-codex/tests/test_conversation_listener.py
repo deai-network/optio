@@ -23,7 +23,7 @@ class FakeConversation:
         self.perm_handler = None
         self.sent = []
         self.interrupts = 0
-        self.model_changes = []
+        self.control_changes = []
         self.closed = False
 
     def on_event(self, h):
@@ -44,10 +44,10 @@ class FakeConversation:
             raise ConversationClosed("closed")
         self.interrupts += 1
 
-    def request_model_change(self, model):
+    async def set_control(self, control_id, value):
         if self.closed:
             raise ConversationClosed("closed")
-        self.model_changes.append(model)
+        self.control_changes.append((control_id, value))
 
     def fire(self, event):
         for h in list(self.handlers):
@@ -135,16 +135,16 @@ async def test_send_forwards_to_conversation(listener):
         assert r.status == 409
 
 
-async def test_model_route_forwards_to_conversation(listener):
+async def test_control_route_forwards_to_conversation(listener):
     conv, lst, url = listener
     async with aiohttp.ClientSession() as s:
-        r = await s.post(f"{url}/model", json={"model": "gpt-5.4-mini"}, headers=_auth("pw"))
-        assert r.status == 200 and conv.model_changes == ["gpt-5.4-mini"]
-        # bad payloads
-        r = await s.post(f"{url}/model", json={}, headers=_auth("pw"))
+        r = await s.post(f"{url}/control", json={"id": "model", "value": "gpt-5.4-mini"}, headers=_auth("pw"))
+        assert r.status == 200 and conv.control_changes == [("model", "gpt-5.4-mini")]
+        # bad payloads: missing id
+        r = await s.post(f"{url}/control", json={"value": "x"}, headers=_auth("pw"))
         assert r.status == 400
         conv.closed = True
-        r = await s.post(f"{url}/model", json={"model": "gpt-5.4-mini"}, headers=_auth("pw"))
+        r = await s.post(f"{url}/control", json={"id": "model", "value": "gpt-5.4-mini"}, headers=_auth("pw"))
         assert r.status == 409
 
 

@@ -56,34 +56,9 @@ describe('CodexView (Stages 6-7 parity)', () => {
     seq = 0;
   });
 
-  it('model selector POSTs the chosen model to /model', async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
-    vi.stubGlobal('fetch', fetchMock);
-    render(
-      <ConversationWidget
-        {...makeProps({
-          protocol: 'codex',
-          showModelSelector: true,
-          currentModel: 'gpt-5.5',
-          models: [
-            { id: 'gpt-5.5', label: 'GPT-5.5' },
-            { id: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' },
-          ],
-        })}
-      />,
-    );
-    // antd Select: open the dropdown, then pick the second option.
-    const combo = document.querySelector('[data-testid="model-select"] .ant-select-selector') as HTMLElement;
-    fireEvent.mouseDown(combo);
-    await waitFor(() => expect(screen.getByText('GPT-5.4 Mini')).toBeTruthy());
-    fireEvent.click(screen.getByText('GPT-5.4 Mini'));
-
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const calls = fetchMock.mock.calls as any[];
-    const modelCall = calls.find((c) => String(c[0]).endsWith('/model'));
-    expect(modelCall).toBeTruthy();
-    expect(JSON.parse((modelCall[1] as RequestInit).body as string)).toEqual({ model: 'gpt-5.4-mini' });
-  });
+  // NOTE: the model-picker POST is now the generic SessionControls path
+  // (POST /control {id,value}); see codex-controls.test.tsx. The bespoke
+  // /model surface was removed in the session-controls migration.
 
   it('upload attaches a System: reference to the next prompt', async () => {
     const fetchMock = vi.fn(async (...args: any[]) => {

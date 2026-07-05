@@ -7,8 +7,8 @@ widget proxy (which injects the basic-auth credential):
                      monotonic seq; Last-Event-ID resumes without dupes.
   POST /send       — {text}                 -> conversation.send
   POST /interrupt  — {}                     -> conversation.interrupt
-  POST /model      — {model}                -> conversation.request_model_change
-                     (INLINE: pins the next turn/start's model — no restart)
+  POST /control    — {id, value}            -> conversation.set_control
+                     (model: INLINE — pins the next turn/start's model, no restart)
   POST /upload     — multipart {file} parts -> upload_writer; returns
                      {ok, files:[{filename, path}]}
   GET  /download   — ?path=<relpath>        -> download_reader; returns the
@@ -246,18 +246,19 @@ class ConversationListener:
             },
         )
 
-    async def _handle_model(self, request: web.Request) -> web.Response:
+    async def _handle_control(self, request: web.Request) -> web.Response:
         if not self._authorized(request):
             return web.json_response({"ok": False}, status=401)
         try:
             payload = await request.json()
         except Exception:  # noqa: BLE001
             return web.json_response({"ok": False, "reason": "bad-json"}, status=400)
-        model = payload.get("model")
-        if not isinstance(model, str) or not model:
-            return web.json_response({"ok": False, "reason": "bad-model"}, status=400)
+        cid = payload.get("id")
+        if not isinstance(cid, str) or not cid:
+            return web.json_response({"ok": False, "reason": "bad-id"}, status=400)
+        value = payload.get("value")
         try:
-            self._conversation.request_model_change(model)
+            await self._conversation.set_control(cid, value)
         except ConversationClosed:
             return web.json_response({"ok": False, "reason": "closed"}, status=409)
         return web.json_response({"ok": True})
@@ -290,7 +291,7 @@ class ConversationListener:
         app.router.add_get("/events", self._handle_events)
         app.router.add_post("/send", self._handle_send)
         app.router.add_post("/interrupt", self._handle_interrupt)
-        app.router.add_post("/model", self._handle_model)
+        app.router.add_post("/control", self._handle_control)
         app.router.add_post("/upload", self._handle_upload)
         app.router.add_get("/download", self._handle_download)
         app.router.add_post("/permission", self._handle_permission)

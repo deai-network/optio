@@ -191,9 +191,10 @@ class CodexTaskConfig:
     # thread model when unset. (config.model still drives thread/start;
     # this only controls the picker's initial value.)
     default_model: str | None = None
-    # Show the model picker. Codex switches INLINE: the chosen model rides
-    # the next turn/start and sticks — no process restart.
-    show_model_selector: bool = False
+    # Show the session controls (the model picker is the id="model" control).
+    # Codex switches the model INLINE: the chosen model rides the next
+    # turn/start and sticks — no process restart.
+    show_session_controls: bool = False
     # Show the file-upload control. Uploaded bytes land under
     # <workdir>/uploads and are referenced to codex via a System: path line.
     show_file_upload: bool = False
@@ -263,9 +264,9 @@ class CodexTaskConfig:
                 "CodexTaskConfig: default_model requires mode='conversation' "
                 "and conversation_ui=True."
             )
-        if self.show_model_selector and not conv_ui:
+        if self.show_session_controls and not conv_ui:
             raise ValueError(
-                "CodexTaskConfig: show_model_selector=True requires "
+                "CodexTaskConfig: show_session_controls=True requires "
                 "mode='conversation' and conversation_ui=True."
             )
         if self.show_file_upload and not conv_ui:
