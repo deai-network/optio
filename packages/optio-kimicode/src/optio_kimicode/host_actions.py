@@ -167,6 +167,13 @@ def build_launch_env(
     grok's ``_build_grok_shell_command`` must for tmux. ``PATH`` is layered
     here (not in the isolation SSOT) so the per-task ``kimi`` symlink resolves
     first.
+
+    ``KIMI_CODE_NO_AUTO_UPDATE=1`` fully disables kimi's update preflight (no
+    check, no background install, no prompt — see the fork's
+    ``isAutoUpdateDisabledByEnv`` in ``apps/kimi-code/src/cli/update/preflight.ts``).
+    A managed wrapper pins the binary itself (Tier-1 install / fork), so a
+    self-update would fight our version control and can stall a launch on a
+    network probe. Set as a base default; a caller ``extra_env`` may override.
     """
     iso = _isolation_env(workdir)
     home_local_bin = f"{iso['HOME']}/.local/bin"
@@ -174,7 +181,12 @@ def build_launch_env(
     base_path = extra.pop("PATH", None) or os.environ.get(
         "PATH", "/usr/local/bin:/usr/bin:/bin",
     )
-    return {**iso, "PATH": f"{home_local_bin}:{base_path}", **extra}
+    return {
+        **iso,
+        "KIMI_CODE_NO_AUTO_UPDATE": "1",
+        "PATH": f"{home_local_bin}:{base_path}",
+        **extra,
+    }
 
 
 async def write_kimi_config(

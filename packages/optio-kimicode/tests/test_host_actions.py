@@ -3,6 +3,7 @@ import os
 from optio_kimicode.host_actions import (
     _isolation_env,
     build_host,
+    build_launch_env,
 )
 
 
@@ -31,6 +32,22 @@ def test_isolation_env_no_path_key():
     """PATH is layered by the caller (launch prepends <home>/.local/bin), never
     baked into the isolation identity."""
     assert "PATH" not in _isolation_env("/w/task")
+
+
+def test_build_launch_env_disables_auto_update():
+    """Every kimi launch pins KIMI_CODE_NO_AUTO_UPDATE=1 — the wrapper controls
+    the binary version, so kimi must not self-update (fork preflight gate)."""
+    env = build_launch_env("/w/task")
+    assert env["KIMI_CODE_NO_AUTO_UPDATE"] == "1"
+    # carries the isolation identity + a layered PATH
+    assert env["KIMI_CODE_HOME"] == "/w/task/home"
+    assert env["PATH"].startswith("/w/task/home/.local/bin:")
+
+
+def test_build_launch_env_extra_can_override():
+    """A caller extra_env wins over the base defaults (merged last)."""
+    env = build_launch_env("/w/task", {"KIMI_CODE_NO_AUTO_UPDATE": "0"})
+    assert env["KIMI_CODE_NO_AUTO_UPDATE"] == "0"
 
 
 def test_build_host_local_when_no_ssh(tmp_path):
