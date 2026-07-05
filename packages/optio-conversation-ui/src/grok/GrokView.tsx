@@ -1,7 +1,6 @@
-import { useEffect, useReducer, useRef, useState } from 'react';
-import { Select } from 'antd';
+import { useEffect, useReducer, useRef } from 'react';
 import type { WidgetProps } from 'optio-ui';
-import type { ChatState } from '../chat.js';
+import type { ChatState, SessionControl } from '../chat.js';
 import { initialChatState, reduceGrokEvent } from './events.js';
 import { type Attachment } from '../attachments.js';
 import { blobDownload } from '../FileDownloadContext.js';
@@ -29,11 +28,16 @@ export function GrokView(props: WidgetProps) {
   const toolVerbosity = (wd.toolVerbosity ?? 'description-only') as
     'silent' | 'description-only' | 'verbose';
   const thinkingVerbosity = (wd.thinkingVerbosity ?? 'hidden') as 'hidden' | 'visible';
-  const [state, dispatch] = useReducer(chatReducer, initialChatState);
+  // Seed the reducer's controls from widgetData so the session-controls bar
+  // renders the model selector from the first paint; live updates fold in via
+  // the shared ACP reducer's x-optio-control-update case.
+  const initialControls = (wd.controls ?? []) as SessionControl[];
+  const showSessionControls = Boolean(wd.showSessionControls);
+  const [state, dispatch] = useReducer(chatReducer, {
+    ...initialChatState,
+    controls: initialControls,
+  });
   const localSeqRef = useRef(0);
-  const [currentModel, setCurrentModel] = useState<string | undefined>(wd.currentModel ?? undefined);
-  const showModelSelector = Boolean(wd.showModelSelector);
-  const models: { id: string; label: string; disabled?: boolean; disabledReason?: string }[] = wd.models ?? [];
   const showFileUpload = Boolean(wd.showFileUpload);
   const maxUploadBytes = Number(wd.maxUploadBytes ?? 10_000_000);
   const fileDownload = Boolean(wd.fileDownload);
@@ -139,22 +143,18 @@ export function GrokView(props: WidgetProps) {
         void post('permission', body);
       }}
       onFileDownload={onFileDownload}
-      modelSelector={
-        showModelSelector ? (
-          <Select
-            data-testid="model-select"
-            size="small"
-            style={{ minWidth: 180, alignSelf: 'center' }}
-            placeholder="Model"
-            disabled={busy || state.closed}
-            value={currentModel}
-            onChange={(v: string) => {
-              setCurrentModel(v); // optimistic
-              void post('model', { model: v }); // INLINE session/set_model
-            }}
-            options={models.map((m) => ({ label: m.label, value: m.id, disabled: m.disabled, title: m.disabledReason }))}
-          />
-        ) : undefined
+      controls={showSessionControls ? state.controls : undefined}
+      onControlChange={
+        showSessionControls
+          ? (id, value) => {
+              // Optimistic fold via the shared reducer, then push the change to
+              // the listener's /control route (grok switches model INLINE over
+              // ACP — session/set_model, no restart).
+              localSeqRef.current -= 1;
+              dispatch({ ev: { type: 'x-optio-control-update', id, value }, seq: localSeqRef.current });
+              void post('control', { id, value });
+            }
+          : undefined
       }
       themeMode={(props as any).themeMode}
       onToggleTheme={(props as any).onToggleTheme}

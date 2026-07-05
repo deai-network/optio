@@ -20,7 +20,7 @@ Evidence (probe transcript):
   * param must be ``modelId`` (not ``model``)  -> -32602 "missing field modelId".
   * ``x.ai/set_model`` / ``session/select_model`` -> -32601.
 
-So GrokConversation.request_model_change() fires session/set_model directly
+So GrokConversation.set_control("model", …) fires session/set_model directly
 (see conversation.py); the session body needs NO model_change_requested
 restart loop (that is claudecode's mechanism).
 

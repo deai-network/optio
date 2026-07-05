@@ -1,8 +1,8 @@
 """ConversationListener unit tests against a fake Grok (ACP) Conversation.
 
 Adapted from optio-claudecode's test_conversation_listener.py. The grok
-listener is slimmer (no /model, /upload, /download — Stage 6 defers model
-switching and file transfer) and correlates permissions by the ACP JSON-RPC
+listener exposes /control (engine-neutral session controls) instead of the old
+/model route, and correlates permissions by the ACP JSON-RPC
 ``id`` of the ``session/request_permission`` request (grok's PermissionRequest
 carries the whole JSON-RPC object as ``raw``).
 """
@@ -24,7 +24,7 @@ class FakeConversation:
         self.perm_handler = None
         self.sent = []
         self.interrupts = 0
-        self.model_changes = []
+        self.controls = []
         self.closed = False
 
     def on_event(self, h):
@@ -45,10 +45,10 @@ class FakeConversation:
             raise ConversationClosed("closed")
         self.interrupts += 1
 
-    def request_model_change(self, model):
+    async def set_control(self, control_id, value):
         if self.closed:
             raise ConversationClosed("closed")
-        self.model_changes.append(model)
+        self.controls.append((control_id, value))
 
     def fire(self, event):
         for h in list(self.handlers):
@@ -137,16 +137,16 @@ async def test_send_forwards_to_conversation(listener):
         assert r.status == 409
 
 
-async def test_model_route_forwards_to_conversation(listener):
+async def test_control_route_forwards_to_conversation(listener):
     conv, lst, url = listener
     async with aiohttp.ClientSession() as s:
-        r = await s.post(f"{url}/model", json={"model": "grok-build"}, headers=_auth("pw"))
-        assert r.status == 200 and conv.model_changes == ["grok-build"]
-        # bad payloads
-        r = await s.post(f"{url}/model", json={}, headers=_auth("pw"))
+        r = await s.post(f"{url}/control", json={"id": "model", "value": "grok-build"}, headers=_auth("pw"))
+        assert r.status == 200 and conv.controls == [("model", "grok-build")]
+        # bad payloads (missing id)
+        r = await s.post(f"{url}/control", json={"value": "x"}, headers=_auth("pw"))
         assert r.status == 400
         conv.closed = True
-        r = await s.post(f"{url}/model", json={"model": "grok-build"}, headers=_auth("pw"))
+        r = await s.post(f"{url}/control", json={"id": "model", "value": "grok-build"}, headers=_auth("pw"))
         assert r.status == 409
 
 

@@ -54,34 +54,8 @@ describe('GrokView (Stage 7 parity)', () => {
     seq = 0;
   });
 
-  it('model selector POSTs the chosen model to /model', async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
-    vi.stubGlobal('fetch', fetchMock);
-    render(
-      <ConversationWidget
-        {...makeProps({
-          protocol: 'grok',
-          showModelSelector: true,
-          currentModel: 'grok-composer-2.5-fast',
-          models: [
-            { id: 'grok-composer-2.5-fast', label: 'Composer 2.5' },
-            { id: 'grok-build', label: 'Grok Build' },
-          ],
-        })}
-      />,
-    );
-    // antd Select: open the dropdown, then pick the second option.
-    const combo = document.querySelector('[data-testid="model-select"] .ant-select-selector') as HTMLElement;
-    fireEvent.mouseDown(combo);
-    await waitFor(() => expect(screen.getByText('Grok Build')).toBeTruthy());
-    fireEvent.click(screen.getByText('Grok Build'));
-
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const calls = fetchMock.mock.calls as any[];
-    const modelCall = calls.find((c) => String(c[0]).endsWith('/model'));
-    expect(modelCall).toBeTruthy();
-    expect(JSON.parse((modelCall[1] as RequestInit).body as string)).toEqual({ model: 'grok-build' });
-  });
+  // The model selector migrated to the engine-neutral session-controls bar;
+  // its coverage now lives in grok-controls.test.tsx (control-model → /control).
 
   it('upload attaches a System: reference to the next prompt', async () => {
     const fetchMock = vi.fn(async (...args: any[]) => {

@@ -3,7 +3,7 @@
 File-disjoint units that don't need a live grok:
   * models.py parse helpers (ACP session block + `grok models` CLI text);
   * fetch_available_models source precedence (ACP → CLI → fallback);
-  * GrokTaskConfig.show_model_selector / default_model validation.
+  * GrokTaskConfig.show_session_controls / default_model validation.
 
 The inline model-switch mechanism itself (session/set_model over ACP) is
 covered at the conversation level in test_conversation.py; the end-to-end swap
@@ -130,14 +130,14 @@ async def test_fetch_falls_back_when_cli_fails():
 # --- config validation -----------------------------------------------------
 
 
-def test_show_model_selector_requires_conversation_ui():
-    with pytest.raises(ValueError, match="show_model_selector"):
-        _cfg(mode="conversation", conversation_ui=False, show_model_selector=True)
+def test_show_session_controls_requires_conversation_ui():
+    with pytest.raises(ValueError, match="show_session_controls"):
+        _cfg(mode="conversation", conversation_ui=False, show_session_controls=True)
 
 
-def test_show_model_selector_ok_in_conversation_ui():
-    cfg = _cfg(mode="conversation", conversation_ui=True, show_model_selector=True)
-    assert cfg.show_model_selector is True
+def test_show_session_controls_ok_in_conversation_ui():
+    cfg = _cfg(mode="conversation", conversation_ui=True, show_session_controls=True)
+    assert cfg.show_session_controls is True
 
 
 def test_default_model_requires_conversation_ui():

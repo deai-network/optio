@@ -195,10 +195,11 @@ class GrokTaskConfig:
     # current model when unset. (config.model still drives the launch --model
     # flag; this only controls the picker's initial value.)
     default_model: str | None = None
-    # Show the model picker in the conversation widget. Grok switches inline
-    # over ACP (session/set_model) — no process restart. Requires
-    # mode="conversation" and conversation_ui=True.
-    show_model_selector: bool = False
+    # Show the engine-neutral session controls in the conversation widget.
+    # Grok exposes only the model control, switched inline over ACP
+    # (session/set_model) — no process restart. Requires mode="conversation"
+    # and conversation_ui=True.
+    show_session_controls: bool = False
     # Show the file-upload control. Uploaded bytes are written under
     # <workdir>/uploads and referenced to grok via a System: path line so it
     # reads them with its own tools. Requires mode="conversation" and
@@ -277,9 +278,9 @@ class GrokTaskConfig:
                 "GrokTaskConfig: default_model requires mode='conversation' "
                 "and conversation_ui=True."
             )
-        if self.show_model_selector and not conv_ui:
+        if self.show_session_controls and not conv_ui:
             raise ValueError(
-                "GrokTaskConfig: show_model_selector=True requires "
+                "GrokTaskConfig: show_session_controls=True requires "
                 "mode='conversation' and conversation_ui=True."
             )
         if self.show_file_upload and not conv_ui:

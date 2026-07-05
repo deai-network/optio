@@ -344,34 +344,8 @@ async def test_bootstrap_captures_session_models(convo):
     await reader
 
 
-@pytest.mark.asyncio
-async def test_request_model_change_sends_set_model(convo):
-    # Stage-7 Task-0 probe pinned INLINE switching: request_model_change emits a
-    # session/set_model ACP request (no process restart).
-    c, handle = convo
-    reader = asyncio.create_task(c.run_reader())
-    await _bootstrap(c, handle)
-    c.request_model_change("grok-build")
-    msg = await asyncio.wait_for(handle.stdin.lines.get(), 1)
-    assert msg["method"] == "session/set_model"
-    assert msg["params"]["sessionId"] == "s1"
-    assert msg["params"]["modelId"] == "grok-build"
-    assert c.current_model_id == "grok-build"  # optimistic
-    handle.stdout.feed({"jsonrpc": "2.0", "id": msg["id"],
-                        "result": {"_meta": {"model": {"Ok": "grok-build-0.1"}}}})
-    handle.stdout.eof()
-    await reader
-
-
-@pytest.mark.asyncio
-async def test_request_model_change_after_close_raises(convo):
-    c, handle = convo
-    reader = asyncio.create_task(c.run_reader())
-    await _bootstrap(c, handle)
-    handle.stdout.eof()
-    await reader
-    with pytest.raises(ConversationClosed):
-        c.request_model_change("grok-build")
+# NOTE: model switching moved from request_model_change() to the engine-neutral
+# set_control("model", …) surface — see test_conversation_controls.py.
 
 
 # --- tiny polling helpers ---------------------------------------------------

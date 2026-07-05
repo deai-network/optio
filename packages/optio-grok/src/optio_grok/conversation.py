@@ -387,29 +387,25 @@ class GrokConversation:
             "params": {"sessionId": self._session_id},
         })
 
-    def request_model_change(self, model: str) -> None:
-        """Switch model mid-conversation INLINE — Stage-7 Task-0 pinned that
-        grok accepts a ``session/set_model`` ACP request (no process restart;
-        see models.py). Synchronous surface (the listener calls it without
-        await): schedules the ACP write and updates the model optimistically."""
+    async def set_control(self, control_id: str, value) -> None:
+        """Push a session-control value change to grok's native transport
+        (the generic replacement for the bespoke model selector). grok exposes
+        only the ``model`` control, switched INLINE over ACP with
+        ``session/set_model`` — Stage-7 Task-0 pinned that grok accepts it with
+        no process restart (see models.py). Unknown control ids are ignored;
+        the model is updated optimistically before the round-trip is awaited."""
+        if control_id != "model":
+            return  # grok exposes only the model control
         if self._closed.is_set():
             raise ConversationClosed(self._close_reason or "conversation closed")
         if self._session_id is None:
             raise RuntimeError(
-                "GrokConversation.request_model_change before bootstrap() completed"
+                "GrokConversation.set_control before bootstrap() completed"
             )
-        self.current_model_id = model
-        asyncio.ensure_future(self._set_model(model))
-
-    async def _set_model(self, model: str) -> None:
-        try:
-            await self._request("session/set_model", {
-                "sessionId": self._session_id, "modelId": model,
-            })
-        except ConversationClosed:
-            pass  # a swap racing the close is a no-op
-        except Exception:  # noqa: BLE001 — never let a set_model bug kill the driver
-            _LOG.exception("grok conversation: session/set_model failed")
+        self.current_model_id = value
+        await self._request("session/set_model", {
+            "sessionId": self._session_id, "modelId": value,
+        })
 
     async def close(self) -> None:
         self.close_requested.set()
