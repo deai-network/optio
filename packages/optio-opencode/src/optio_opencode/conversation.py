@@ -327,6 +327,12 @@ class OpencodeConversation:
         ) as resp:
             resp.raise_for_status()
 
+    async def set_control(self, control_id: str, value: "str | bool") -> None:
+        # opencode's only session control is the model, which is resolved and
+        # applied entirely UI-local (attached per-prompt); there is no server
+        # round-trip, so this satisfies the Conversation protocol as a no-op.
+        return None
+
     async def close(self) -> None:
         self.close_requested.set()
 

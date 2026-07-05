@@ -342,17 +342,19 @@ async def test_conversation_ui_forwards_frontend_parity_widget_data(
         assert wd["protocol"] == "kimicode"
         assert wd["toolVerbosity"] == "verbose"
         assert wd["thinkingVerbosity"] == "visible"
-        assert wd["showModelSelector"] is True
+        assert wd["showSessionControls"] is True
         assert wd["showFileUpload"] is True
         assert wd["maxUploadBytes"] == 4242
         assert wd["fileDownload"] is True
         assert wd["maxDownloadBytes"] == 8484
-        # Model picker options come from the live ACP configOptions surface;
-        # default_model overrides the picker's initial value.
-        assert wd["currentModel"] == "kimi-k2-thinking"
-        ids = [m["id"] for m in wd["models"]]
+        # The model picker is now the id="model" SessionControl; its options
+        # come from the live ACP configOptions surface and default_model
+        # overrides the control's initial value.
+        model = next(c for c in wd["controls"] if c["id"] == "model")
+        assert model["kind"] == "select" and model["value"] == "kimi-k2-thinking"
+        ids = [o["value"] for o in model["options"]]
         assert ids == ["kimi-k2", "kimi-k2-thinking"]
-        assert all(set(m) == {"id", "label", "disabled"} for m in wd["models"])
+        assert all(set(o) == {"value", "label", "disabled"} for o in model["options"])
     finally:
         await optio.shutdown(grace_seconds=1.0)
 
@@ -375,13 +377,14 @@ async def test_conversation_ui_widget_data_defaults_when_ungated(
         await optio.launch_and_await_result("kk-conv-wd-def", session_id=None, timeout=60)
 
         wd = await _wait_widget_data(optio, "kk-conv-wd-def")
-        assert wd["showModelSelector"] is False
+        assert wd["showSessionControls"] is False
         assert wd["showFileUpload"] is False
         assert wd["fileDownload"] is False
         assert wd["toolVerbosity"] == "description-only"
         assert wd["thinkingVerbosity"] == "hidden"
-        # No default_model override → the live ACP current model.
-        assert wd["currentModel"] == "kimi-k2"
+        # No default_model override → the model control shows the live ACP current model.
+        model = next(c for c in wd["controls"] if c["id"] == "model")
+        assert model["value"] == "kimi-k2"
     finally:
         await optio.shutdown(grace_seconds=1.0)
 

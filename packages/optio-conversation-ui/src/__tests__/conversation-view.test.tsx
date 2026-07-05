@@ -28,7 +28,7 @@ beforeEach(() => {
 // A ChatState carrying one of every ChatItem kind, so a single render exercises
 // the whole renderItem switch. seq is the React key; the reducer keeps order.
 function makeState(items: ChatItem[], over: Partial<ChatState> = {}): ChatState {
-  return { items, busy: false, closed: false, ...over };
+  return { items, busy: false, closed: false, controls: [], ...over };
 }
 
 const ALL_KINDS: ChatItem[] = [
