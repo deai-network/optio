@@ -151,6 +151,9 @@ function SessionControls({
   return (
     <>
       {controls.map((c) => {
+        // A control the engine marked unchangeable (e.g. a select/segmented
+        // collapsed to one option) is grayed and explains itself on hover.
+        const dis = disabled || Boolean(c.disabled);
         let node: React.ReactNode;
         if (c.kind === 'boolean') {
           node = (
@@ -158,7 +161,7 @@ function SessionControls({
               data-testid={`control-${c.id}`}
               size="small"
               checked={Boolean(c.value)}
-              disabled={disabled}
+              disabled={dis}
               onChange={(v) => onChange(c.id, v)}
             />
           );
@@ -168,7 +171,7 @@ function SessionControls({
               data-testid={`control-${c.id}`}
               size="small"
               value={String(c.value)}
-              disabled={disabled}
+              disabled={dis}
               options={(c.levels ?? []).map((l) => ({
                 label: l.charAt(0).toUpperCase() + l.slice(1),
                 value: l,
@@ -183,7 +186,7 @@ function SessionControls({
               size="small"
               style={{ minWidth: 180, alignSelf: 'center' }}
               placeholder={c.label}
-              disabled={disabled}
+              disabled={dis}
               value={c.value ? String(c.value) : undefined}
               onChange={(v: string) => onChange(c.id, v)}
               options={(c.options ?? []).map((o) => ({
@@ -197,16 +200,22 @@ function SessionControls({
         }
         // Prefix each control with its (muted) label so "Thinking"/"Mode" are
         // named — a bare Select/Segmented/Switch shows only its value.
-        return (
-          <span
-            key={c.id}
-            style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
-          >
+        const labeled = (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <span style={{ fontSize: 12, opacity: 0.65, whiteSpace: 'nowrap' }}>
               {c.label}
             </span>
             {node}
           </span>
+        );
+        // A disabled antd control emits no hover events, so hang the tooltip on
+        // the (enabled) labeled wrapper — hovering the label/name still fires.
+        return c.disabled && c.whyDisabled ? (
+          <Tooltip key={c.id} title={c.whyDisabled}>
+            {labeled}
+          </Tooltip>
+        ) : (
+          <span key={c.id}>{labeled}</span>
         );
       })}
     </>

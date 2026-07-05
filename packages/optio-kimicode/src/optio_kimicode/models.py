@@ -133,7 +133,15 @@ def parse_all_controls(session_config_options, default_model=None):
     (``config.default_model`` precedence); otherwise the live ``currentValue``
     is shown. Missing/malformed input yields an empty list.
     """
-    from optio_agents.session_controls import ControlOption, SessionControl
+    from optio_agents.session_controls import (
+        SINGLE_OPTION_REASON,
+        ControlOption,
+        SessionControl,
+    )
+
+    # An always-thinking model advertises thinking as a single 'on' option (the
+    # runtime cannot disable it); surface that as a disabled control + reason.
+    ALWAYS_THINKING_REASON = "This model always thinks; thinking can't be turned off."
 
     controls: list = []
     for opt in (session_config_options or []):
@@ -150,26 +158,34 @@ def parse_all_controls(session_config_options, default_model=None):
             if isinstance(o, dict)
         ]
         cur = opt.get("currentValue")
+        locked = len(options) <= 1  # nothing to switch to -> unchangeable
         if oid == "model":
             controls.append(SessionControl(
                 id="model", kind="select", label="Model", category="model",
                 value=(default_model or cur or ""), options=options,
+                disabled=locked,
+                why_disabled=SINGLE_OPTION_REASON if locked else None,
             ))
         elif oid == "thinking":
             # off/on wire (see docstring) -> a 2-level segmented; the levels ARE
             # the option values so the segmented value maps 1:1 to configId's
-            # accepted string.
+            # accepted string. An always-thinking model collapses this to a
+            # single 'on' -> disabled with a thinking-specific reason.
             levels = [o.value for o in options]
             controls.append(SessionControl(
                 id="thinking", kind="segmented", label="Thinking",
                 category="thought_level",
                 value=(cur or (levels[0] if levels else "")),
                 levels=levels,
+                disabled=locked,
+                why_disabled=ALWAYS_THINKING_REASON if locked else None,
             ))
         elif oid == "mode":
             controls.append(SessionControl(
                 id="mode", kind="select", label="Mode", category="mode",
                 value=(cur or ""), options=options,
+                disabled=locked,
+                why_disabled=SINGLE_OPTION_REASON if locked else None,
             ))
         elif opt.get("type") == "boolean":
             controls.append(SessionControl(
@@ -180,5 +196,7 @@ def parse_all_controls(session_config_options, default_model=None):
             controls.append(SessionControl(
                 id=oid or "", kind="select", label=(oid or "").title(),
                 value=(cur or ""), options=options,
+                disabled=locked,
+                why_disabled=SINGLE_OPTION_REASON if locked else None,
             ))
     return controls

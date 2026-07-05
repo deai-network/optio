@@ -40,6 +40,8 @@ export interface SessionControl {
   description?: string;
   options?: ControlOption[]; // kind === 'select'
   levels?: string[]; // kind === 'segmented'
+  disabled?: boolean; // whole control unchangeable (e.g. single option)
+  whyDisabled?: string; // hover explanation when disabled
 }
 
 export interface ChatState {

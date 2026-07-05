@@ -41,4 +41,17 @@ describe('SessionControls renderer', () => {
     const opt = screen.getByText('B').closest('.ant-select-item');
     expect(opt?.getAttribute('title')).toBe('plan-gated');
   });
+
+  it('a control-level disabled flag grays the control and hover explains why', async () => {
+    const locked: SessionControl[] = [
+      { id: 'thinking', kind: 'segmented', label: 'Thinking', value: 'on',
+        levels: ['on'], disabled: true, whyDisabled: 'always on' },
+    ];
+    render(<ConversationView {...{ ...base(vi.fn()), controls: locked }} />);
+    // grayed: antd Segmented carries the disabled class
+    expect(screen.getByTestId('control-thinking').className).toContain('ant-segmented-disabled');
+    // hover the (enabled) labeled wrapper -> tooltip explains why
+    fireEvent.mouseEnter(screen.getByText('Thinking'));
+    await waitFor(() => expect(screen.getByText('always on')).toBeTruthy());
+  });
 });

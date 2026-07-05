@@ -61,6 +61,8 @@ SessionControl:
   category?:   str                    # optional grouping/icon hint (model / thought_level / mode)
   value:       str | bool             # current value
   description?: str
+  disabled:    bool = false           # whole control unchangeable (e.g. collapsed to one option)
+  whyDisabled?: str                   # if present, shown as a hover tooltip on the disabled control
   # kind-specific:
   options?:    [ControlOption]        # kind = select
   levels?:     [str]                  # kind = segmented (ordered, e.g. off -> low -> high -> max)
@@ -78,10 +80,14 @@ Notes:
 - The agent owns and pushes the **full current list** of controls (a live
   snapshot) whenever anything changes. The model becomes the `id: "model"`
   entry — no longer special-cased.
-- `disabled` / `whyDisabled` generalize the existing "decision/reason" pattern
-  already on main (cursor's model probe greys out plan-gated models with a
-  reason). Default `disabled = false`; `whyDisabled` is rendered as a hover
-  tooltip on the disabled option only.
+- `disabled` / `whyDisabled` exist at **two levels**, both generalizing the
+  existing "decision/reason" pattern (cursor's model probe greys plan-gated
+  models with a reason): on a `ControlOption` (one unselectable choice) and on
+  the whole `SessionControl` (an unchangeable control). Engines auto-mark a
+  select/segmented that collapses to ≤1 option as disabled with a reason
+  (`SINGLE_OPTION_REASON`, or a control-specific one — e.g. kimi's always
+  -thinking model: "This model always thinks; thinking can't be turned off").
+  The UI greys the control and shows `whyDisabled` on hover.
 - `boolean` carries no `options` / `levels`; `value` is the bool.
 - `segmented` uses `levels` (ordered); `value` is the current level string.
 

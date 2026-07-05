@@ -221,6 +221,8 @@ def test_parse_all_controls_model_thinking_mode():
     assert by_id["model"].category == "model" and by_id["model"].value == "kimi-k2"
     assert by_id["thinking"].levels == ["off", "on"]
     assert by_id["thinking"].category == "thought_level" and by_id["thinking"].value == "off"
+    # multi-option controls are switchable -> not disabled
+    assert by_id["thinking"].disabled is False and by_id["model"].disabled is False
     assert by_id["mode"].value == "default"
     # to_dict is camelCase-serializable for widgetData.
     d = by_id["model"].to_dict()
@@ -234,6 +236,24 @@ def test_parse_all_controls_default_model_override():
     ]
     controls = parse_all_controls(config_options, default_model="kimi-k2-thinking")
     assert controls[0].value == "kimi-k2-thinking"
+
+
+def test_parse_all_controls_always_thinking_locks_single_option():
+    # An always-thinking model advertises thinking as a single 'on' option ->
+    # the control is disabled with a thinking-specific hover reason.
+    config_options = [
+        {"type": "select", "id": "model", "currentValue": "k2t",
+         "options": [{"value": "k2t", "name": "K2 Thinking"},
+                     {"value": "k2", "name": "K2"}]},
+        {"type": "select", "id": "thinking", "category": "thought_level",
+         "currentValue": "on", "options": [{"value": "on", "name": "Thinking On"}]},
+    ]
+    by_id = {c.id: c for c in parse_all_controls(config_options)}
+    assert by_id["thinking"].disabled is True
+    assert by_id["thinking"].why_disabled == "This model always thinks; thinking can't be turned off."
+    assert by_id["thinking"].to_dict()["whyDisabled"]
+    # a 2-model picker is still switchable
+    assert by_id["model"].disabled is False
 
 
 def test_parse_all_controls_empty_and_malformed():

@@ -14,6 +14,11 @@ from typing import Literal
 
 ControlKind = Literal["select", "boolean", "segmented"]
 
+# A select/segmented control that collapses to a single choice is inherently
+# unchangeable — engines mark it disabled with this reason so the UI grays it
+# and explains why on hover (see SessionControl.why_disabled).
+SINGLE_OPTION_REASON = "Only one option available."
+
 
 @dataclass(frozen=True)
 class ControlOption:
@@ -46,9 +51,14 @@ class SessionControl:
     description: str | None = None
     options: "list[ControlOption] | None" = None
     levels: "list[str] | None" = None
+    disabled: bool = False
+    why_disabled: str | None = None
 
     def to_dict(self) -> dict:
-        d: dict = {"id": self.id, "kind": self.kind, "label": self.label, "value": self.value}
+        d: dict = {
+            "id": self.id, "kind": self.kind, "label": self.label,
+            "value": self.value, "disabled": self.disabled,
+        }
         if self.category is not None:
             d["category"] = self.category
         if self.description is not None:
@@ -57,6 +67,8 @@ class SessionControl:
             d["options"] = [o.to_dict() for o in self.options]
         if self.levels is not None:
             d["levels"] = list(self.levels)
+        if self.why_disabled is not None:
+            d["whyDisabled"] = self.why_disabled
         return d
 
 
@@ -75,7 +87,10 @@ def model_control(
         )
         for m in models
     ]
+    locked = len(options) <= 1
     return SessionControl(
         id="model", kind="select", label=label, category="model",
         value=current or "", options=options,
+        disabled=locked,
+        why_disabled=SINGLE_OPTION_REASON if locked else None,
     )
