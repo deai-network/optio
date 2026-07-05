@@ -1,4 +1,5 @@
 import type { ChatItem, ChatState } from '../chat.js';
+import { foldControlUpdate } from '../chat.js';
 import { explainApiError } from '../apiError.js';
 
 /** Reducer over opencode's native /global/event SSE frames.
@@ -61,6 +62,14 @@ function reduce(
   if (!t) return st;
   const evSid = sid(frame);
   if (evSid !== undefined && evSid !== sessionID) return st;
+
+  // Synthetic, dispatched locally by the view: a session-control change (the
+  // model select is UI-local for opencode — applied inline on the next prompt,
+  // no round-trip). A snapshot ({controls}) seeds/replaces, a patch ({id,value})
+  // updates one control's value. frame carries controls/id/value at top level.
+  if (t === 'x-optio-control-update') {
+    return foldControlUpdate(st, frame) as OpencodeChatState;
+  }
 
   // Synthetic, dispatched locally by the view on send (optimistic echo):
   if (t === 'x-optio-local-user') {

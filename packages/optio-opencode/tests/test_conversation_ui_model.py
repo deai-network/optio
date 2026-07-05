@@ -60,7 +60,7 @@ def test_widget_data_carries_model_fields():
         "directory": "/wd",
         "toolVerbosity": "verbose",
         "thinkingVerbosity": "hidden",
-        "showModelSelector": True,
+        "showSessionControls": True,
         "defaultModel": "opencode/big-pickle",
         "showFileUpload": False,
         "maxUploadBytes": 10_000_000,
@@ -74,5 +74,5 @@ def test_widget_data_defaults():
         consumer_instructions="task", mode="conversation", conversation_ui=True
     )
     wd = conversation_widget_data(cfg, session_id="s1", directory="/wd")
-    assert wd["showModelSelector"] is False
+    assert wd["showSessionControls"] is False
     assert wd["defaultModel"] is None

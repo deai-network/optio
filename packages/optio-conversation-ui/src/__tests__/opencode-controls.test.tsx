@@ -2,6 +2,11 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { OpencodeView } from '../opencode/OpencodeView.js';
 
+// opencode's model picker is UI-local: no /control listener, no POST. The model
+// SessionControl is built from GET /config/providers and applied inline on the
+// next prompt_async. These tests mirror the former model-widget test, retargeted
+// to the generic `control-model` rendered by the shared ConversationView.
+
 class MockEventSource {
   static last: MockEventSource | null = null;
   url: string; onmessage: ((e: MessageEvent) => void) | null = null;
@@ -81,7 +86,7 @@ describe('OpencodeView model send', () => {
       .toEqual({ providerID: 'opencode', modelID: 'deepseek-v4-flash' });
   });
 
-  it('uses defaultModel (validated) on a fresh session even with the picker hidden', async () => {
+  it('uses defaultModel (validated) on a fresh session even with the control hidden', async () => {
     const posts: { url: string; body: any }[] = [];
     installFetch({ history: [], posts });
     render(<OpencodeView {...makeProps({
@@ -98,30 +103,29 @@ describe('OpencodeView model send', () => {
   });
 });
 
-describe('OpencodeView model picker', () => {
-  it('is hidden when showModelSelector is false', async () => {
+describe('OpencodeView model control', () => {
+  it('is hidden when showSessionControls is false', async () => {
     installFetch({ history: [], posts: [] });
     render(<OpencodeView {...makeProps({ sessionID: 'fake-session-id', directory: '/wd' })} />);
     await waitFor(() => expect(screen.getByTestId('conversation-input-box')).toBeTruthy());
-    expect(screen.queryByTestId('model-select')).toBeNull();
+    expect(screen.queryByTestId('control-model')).toBeNull();
   });
 
-  it('is shown when showModelSelector is true', async () => {
+  it('is shown when showSessionControls is true', async () => {
     installFetch({ history: [], posts: [] });
-    render(<OpencodeView {...makeProps({ sessionID: 'fake-session-id', directory: '/wd', showModelSelector: true })} />);
-    await waitFor(() => expect(screen.getByTestId('model-select')).toBeTruthy());
+    render(<OpencodeView {...makeProps({ sessionID: 'fake-session-id', directory: '/wd', showSessionControls: true })} />);
+    await waitFor(() => expect(screen.getByTestId('control-model')).toBeTruthy());
   });
 
-  it('selecting a model changes the model sent on the next prompt', async () => {
+  it('selecting a model changes the model sent on the next prompt (UI-local, no POST)', async () => {
     const posts: { url: string; body: any }[] = [];
     installFetch({ history: [], posts });
-    render(<OpencodeView {...makeProps({ sessionID: 'fake-session-id', directory: '/wd', showModelSelector: true })} />);
-    await waitFor(() => expect(screen.getByTestId('model-select')).toBeTruthy());
+    render(<OpencodeView {...makeProps({ sessionID: 'fake-session-id', directory: '/wd', showSessionControls: true })} />);
+    await waitFor(() => expect(screen.getByTestId('control-model')).toBeTruthy());
 
-    // antd Select renders a hidden native <select> in test env when we pass a
-    // plain options model; drive it via the combobox role. Open + pick the
-    // option labelled "DeepSeek V4 Flash" (value "opencode/deepseek-v4-flash").
-    fireEvent.mouseDown(screen.getByTestId('model-select').querySelector('.ant-select-selector')!);
+    // Open the generic select + pick the option labelled "DeepSeek V4 Flash"
+    // (value "opencode/deepseek-v4-flash"). Single provider → label unprefixed.
+    fireEvent.mouseDown(screen.getByTestId('control-model').querySelector('.ant-select-selector')!);
     await waitFor(() => expect(screen.getByText('DeepSeek V4 Flash')).toBeTruthy());
     fireEvent.click(screen.getByText('DeepSeek V4 Flash'));
 
@@ -129,6 +133,9 @@ describe('OpencodeView model picker', () => {
     fireEvent.change(box, { target: { value: 'hi' } });
     fireEvent.click(screen.getByTestId('conversation-send'));
     await waitFor(() => expect(posts.some((p) => p.url.includes('/prompt_async'))).toBe(true));
+
+    // No /control POST is issued — the change is UI-local, carried on the prompt.
+    expect(posts.some((p) => p.url.includes('/control'))).toBe(false);
     expect(posts.find((p) => p.url.includes('/prompt_async'))!.body.model)
       .toEqual({ providerID: 'opencode', modelID: 'deepseek-v4-flash' });
   });

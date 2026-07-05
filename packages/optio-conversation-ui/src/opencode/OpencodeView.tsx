@@ -1,8 +1,7 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
-import { Select } from 'antd';
 import { isTerminalState } from 'optio-ui';
 import type { WidgetProps } from 'optio-ui';
-import type { ChatItem, ChatState } from '../chat.js';
+import type { ChatItem, ChatState, SessionControl } from '../chat.js';
 import { initialChatState } from '../chat.js';
 import {
   historyToChatItems, reduceOpencodeEvent,
@@ -12,6 +11,28 @@ import {
 import { type Attachment, readAsDataUrl } from '../attachments.js';
 import { blobDownload } from '../FileDownloadContext.js';
 import { ConversationView } from '../ConversationView.js';
+
+// Build the generic model SessionControl from opencode's provider catalog.
+// opencode's provider options are GROUPED per provider; the engine-neutral
+// `select` control is single-level, so we flatten — prefixing the label with
+// the provider name only when more than one provider is present (to keep the
+// common single-provider label clean). Grouped optgroup support is out of scope
+// (YAGNI). The value encodes "providerID/modelID" (what prompt_async wants).
+function modelControlFromGroups(
+  groups: ModelGroup[], current: OpencodeModel | null,
+): SessionControl {
+  const options = groups.flatMap((g) =>
+    g.models.map((m) => ({
+      value: `${m.providerID}/${m.modelID}`,
+      label: groups.length > 1 ? `${g.providerName} / ${m.label}` : m.label,
+    })),
+  );
+  return {
+    id: 'model', kind: 'select', label: 'Model', category: 'model',
+    value: current ? `${current.providerID}/${current.modelID}` : '',
+    options,
+  };
+}
 
 // Conversation view for opencode tasks: speaks opencode's native HTTP+SSE API
 // through the widget proxy (exactly like iframe mode does), reduces the wire
@@ -23,7 +44,7 @@ interface OpencodeWidgetData {
   sessionID?: string;
   directory?: string;
   toolVerbosity?: 'silent' | 'description-only' | 'verbose';
-  showModelSelector?: boolean;
+  showSessionControls?: boolean;
   defaultModel?: string; // "providerID/modelID"
 }
 
@@ -41,16 +62,16 @@ export function OpencodeView(props: WidgetProps) {
       {...props}
       sessionID={widgetData.sessionID}
       directory={widgetData.directory ?? ''}
-      showModelSelector={widgetData.showModelSelector ?? false}
+      showSessionControls={widgetData.showSessionControls ?? false}
       defaultModel={widgetData.defaultModel}
     />
   );
 }
 
 function OpencodeChat(
-  props: WidgetProps & { sessionID: string; directory: string; showModelSelector: boolean; defaultModel?: string },
+  props: WidgetProps & { sessionID: string; directory: string; showSessionControls: boolean; defaultModel?: string },
 ) {
-  const { sessionID, directory, widgetProxyUrl, showModelSelector, defaultModel } = props; // widgetProxyUrl ends with '/' — trailing slash is load-bearing
+  const { sessionID, directory, widgetProxyUrl, showSessionControls, defaultModel } = props; // widgetProxyUrl ends with '/' — trailing slash is load-bearing
   const toolVerbosity = ((props.process.widgetData as any)?.toolVerbosity ?? 'description-only') as
     'silent' | 'description-only' | 'verbose';
   const thinkingVerbosity = ((props.process.widgetData as any)?.thinkingVerbosity ?? 'hidden') as
@@ -74,7 +95,9 @@ function OpencodeChat(
   );
   const seqRef = useRef(0);
   const localSeqRef = useRef(-1);
-  const [groups, setGroups] = useState<ModelGroup[]>([]);
+  // currentModel is the send-path source of truth (attached inline to each
+  // prompt_async); the equivalent select value also lives in state.controls for
+  // display. onControlChange keeps the two in sync (UI-local, no round-trip).
   const [currentModel, setCurrentModel] = useState<OpencodeModel | null>(null);
 
   // "Session ended": the opencode server (and the proxy route to it) dies with
@@ -132,7 +155,6 @@ function OpencodeChat(
         if (r.ok) history = await r.json();
       } catch { /* non-fatal */ }
       if (cancelled) return;
-      setGroups(parsed.groups);
       const inList = (m: OpencodeModel) =>
         parsed.groups.some((g) => g.models.some((x) => x.providerID === m.providerID && x.modelID === m.modelID));
       // (1) history-last → (2) validated defaultModel → (3) providers default → (4) null
@@ -145,9 +167,26 @@ function OpencodeChat(
       }
       if (!resolved) resolved = parsed.defaultModel;
       setCurrentModel(resolved);
+      // Seed the model control into state.controls (snapshot). The shared
+      // ConversationView renders it generically; it only surfaces to the user
+      // when showSessionControls gates the prop pass-through below.
+      dispatch({
+        ev: { type: 'x-optio-control-update', controls: [modelControlFromGroups(parsed.groups, resolved)] },
+        seq: localSeqRef.current--,
+      });
     })();
     return () => { cancelled = true; };
   }, [widgetProxyUrl, sessionID]);
+
+  // Model change is UI-local: opencode applies the selection inline on the next
+  // prompt_async (no /control listener, no POST). Update the send-path source
+  // and fold a value patch so the select reflects the choice immediately.
+  function onControlChange(id: string, value: string | boolean) {
+    if (id !== 'model' || typeof value !== 'string') return;
+    const [providerID, modelID] = value.split('/');
+    setCurrentModel({ providerID, modelID });
+    dispatch({ ev: { type: 'x-optio-control-update', id, value }, seq: localSeqRef.current-- });
+  }
 
   async function post(path: string, body: unknown): Promise<boolean> {
     try {
@@ -220,27 +259,8 @@ function OpencodeChat(
       onInterrupt={onInterrupt}
       onPermission={onPermission}
       onFileDownload={onFileDownload}
-      modelSelector={showModelSelector ? (
-        <Select
-          data-testid="model-select"
-          size="small"
-          style={{ minWidth: 180, alignSelf: 'center' }}
-          placeholder="Model"
-          disabled={busy || closed}
-          value={currentModel ? `${currentModel.providerID}/${currentModel.modelID}` : undefined}
-          onChange={(v: string) => {
-            const [providerID, modelID] = v.split('/');
-            setCurrentModel({ providerID, modelID });
-          }}
-          options={groups.map((g) => ({
-            label: g.providerName,
-            options: g.models.map((m) => ({
-              label: m.label,
-              value: `${m.providerID}/${m.modelID}`,
-            })),
-          }))}
-        />
-      ) : undefined}
+      controls={showSessionControls ? state.controls : undefined}
+      onControlChange={showSessionControls ? onControlChange : undefined}
       themeMode={(props as any).themeMode}
       onToggleTheme={(props as any).onToggleTheme}
     />
