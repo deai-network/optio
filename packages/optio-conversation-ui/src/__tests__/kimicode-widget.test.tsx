@@ -2,11 +2,13 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { ConversationWidget } from '../ConversationWidget.js';
 
-// KimiCodeView parity (Stage 7): the model picker (INLINE session/set_model —
-// no restart), file upload (System: reference), file download (optio-file:
-// sentinel), and tool/thinking verbosity all funnel through the shared
-// ConversationView, driven by kimi's ACP wire over the listener SSE. Mirrors
-// grok-widget.test.tsx — only the protocol string ('kimicode') differs.
+// KimiCodeView parity (Stage 7): the session-controls bar (model + thinking +
+// mode, INLINE over ACP — no restart), file upload (System: reference), file
+// download (optio-file: sentinel), and tool/thinking verbosity all funnel
+// through the shared ConversationView, driven by kimi's ACP wire over the
+// listener SSE. Mirrors grok-widget.test.tsx — only the protocol string
+// ('kimicode') and the extra thinking/mode controls differ. The dedicated
+// session-controls assertions live in kimicode-controls.test.tsx.
 
 class MockEventSource {
   static last: MockEventSource | null = null;
@@ -63,32 +65,36 @@ describe('KimiCodeView (Stage 7 parity)', () => {
     expect(MockEventSource.last?.url).toBe('/api/widget/db/gm/p1/events');
   });
 
-  it('model selector POSTs the chosen model to /model (INLINE set_model)', async () => {
+  it('model control POSTs the chosen model to /control (INLINE set_model)', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
     render(
       <ConversationWidget
         {...makeProps({
           protocol: 'kimicode',
-          showModelSelector: true,
-          currentModel: 'kimi-k2',
-          models: [
-            { id: 'kimi-k2', label: 'Kimi K2' },
-            { id: 'kimi-k2-thinking', label: 'Kimi K2 Thinking' },
+          showSessionControls: true,
+          controls: [
+            {
+              id: 'model', kind: 'select', label: 'Model', category: 'model', value: 'kimi-k2',
+              options: [
+                { value: 'kimi-k2', label: 'Kimi K2' },
+                { value: 'kimi-k2-thinking', label: 'Kimi K2 Thinking' },
+              ],
+            },
           ],
         })}
       />,
     );
-    const combo = document.querySelector('[data-testid="model-select"] .ant-select-selector') as HTMLElement;
+    const combo = document.querySelector('[data-testid="control-model"] .ant-select-selector') as HTMLElement;
     fireEvent.mouseDown(combo);
     await waitFor(() => expect(screen.getByText('Kimi K2 Thinking')).toBeTruthy());
     fireEvent.click(screen.getByText('Kimi K2 Thinking'));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const calls = fetchMock.mock.calls as any[];
-    const modelCall = calls.find((c) => String(c[0]).endsWith('/model'));
-    expect(modelCall).toBeTruthy();
-    expect(JSON.parse((modelCall[1] as RequestInit).body as string)).toEqual({ model: 'kimi-k2-thinking' });
+    const controlCall = calls.find((c) => String(c[0]).endsWith('/control'));
+    expect(controlCall).toBeTruthy();
+    expect(JSON.parse((controlCall[1] as RequestInit).body as string)).toEqual({ id: 'model', value: 'kimi-k2-thinking' });
   });
 
   it('upload attaches a System: reference to the next prompt', async () => {

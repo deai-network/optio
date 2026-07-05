@@ -1,7 +1,6 @@
-import { useEffect, useReducer, useRef, useState } from 'react';
-import { Select } from 'antd';
+import { useEffect, useReducer, useRef } from 'react';
 import type { WidgetProps } from 'optio-ui';
-import type { ChatState } from '../chat.js';
+import type { ChatState, SessionControl } from '../chat.js';
 import { initialChatState, reduceKimiCodeEvent } from './events.js';
 import { type Attachment } from '../attachments.js';
 import { blobDownload } from '../FileDownloadContext.js';
@@ -12,9 +11,11 @@ import { ConversationView } from '../ConversationView.js';
 // reduces the raw ACP objects into the shared ChatState, and hands all
 // rendering + local UI to the shared ConversationView. A thin transport
 // adapter — only the wire (kimi's ACP over the listener) differs from
-// ClaudeCodeView; the ACP shape is shared with GrokView. Model switching is
-// INLINE (session/set_model — no restart); file upload lands in the session
-// workdir via the listener's /upload; file download via /download.
+// ClaudeCodeView; the ACP shape is shared with GrokView. Session controls are
+// engine-neutral: kimi seeds model + thinking + mode (the only engine with
+// more than the model knob) into the shared controls bar and channels changes
+// back through /control (INLINE over ACP — no restart). File upload lands in
+// the session workdir via the listener's /upload; file download via /download.
 
 interface ChatAction {
   ev: unknown;
@@ -30,11 +31,16 @@ export function KimiCodeView(props: WidgetProps) {
   const toolVerbosity = (wd.toolVerbosity ?? 'description-only') as
     'silent' | 'description-only' | 'verbose';
   const thinkingVerbosity = (wd.thinkingVerbosity ?? 'hidden') as 'hidden' | 'visible';
-  const [state, dispatch] = useReducer(chatReducer, initialChatState);
+  // Seed the reducer's controls from widgetData so the engine-neutral
+  // session-controls bar (model + thinking + mode) renders immediately, before
+  // any live config_option_update arrives.
+  const initialControls = (wd.controls ?? []) as SessionControl[];
+  const showSessionControls = Boolean(wd.showSessionControls);
+  const [state, dispatch] = useReducer(chatReducer, {
+    ...initialChatState,
+    controls: initialControls,
+  });
   const localSeqRef = useRef(0);
-  const [currentModel, setCurrentModel] = useState<string | undefined>(wd.currentModel ?? undefined);
-  const showModelSelector = Boolean(wd.showModelSelector);
-  const models: { id: string; label: string; disabled?: boolean }[] = wd.models ?? [];
   const showFileUpload = Boolean(wd.showFileUpload);
   const maxUploadBytes = Number(wd.maxUploadBytes ?? 10_000_000);
   const fileDownload = Boolean(wd.fileDownload);
@@ -140,22 +146,18 @@ export function KimiCodeView(props: WidgetProps) {
         void post('permission', body);
       }}
       onFileDownload={onFileDownload}
-      modelSelector={
-        showModelSelector ? (
-          <Select
-            data-testid="model-select"
-            size="small"
-            style={{ minWidth: 180, alignSelf: 'center' }}
-            placeholder="Model"
-            disabled={busy || state.closed}
-            value={currentModel}
-            onChange={(v: string) => {
-              setCurrentModel(v); // optimistic
-              void post('model', { model: v }); // INLINE session/set_model
-            }}
-            options={models.map((m) => ({ label: m.label, value: m.id, disabled: m.disabled }))}
-          />
-        ) : undefined
+      controls={showSessionControls ? state.controls : undefined}
+      onControlChange={
+        showSessionControls
+          ? (id, value) => {
+              // Optimistic fold via the shared reducer, then push the change to
+              // the listener's /control route (INLINE over ACP — session/set_model
+              // for the model, session/set_config_option for thinking/mode).
+              localSeqRef.current -= 1;
+              dispatch({ ev: { type: 'x-optio-control-update', id, value }, seq: localSeqRef.current });
+              void post('control', { id, value });
+            }
+          : undefined
       }
       themeMode={(props as any).themeMode}
       onToggleTheme={(props as any).onToggleTheme}

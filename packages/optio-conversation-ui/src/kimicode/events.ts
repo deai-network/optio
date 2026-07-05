@@ -19,6 +19,7 @@
 // (not tail position) so the interleaving never splits it into a bubble-per-run.
 
 import type { ChatItem, ChatState } from '../chat.js';
+import { foldControlUpdate } from '../chat.js';
 import { explainApiError } from '../apiError.js';
 export { initialChatState } from '../chat.js';
 
@@ -108,6 +109,12 @@ function reduce(st: KimiCodeChatState, ev: any, seq: number): KimiCodeChatState 
     const item: ChatItem = { kind: 'closed', reason: String(ev.reason ?? ''), seq };
     return { ...st, items: [...dropTools(st.items), item], busy: false, closed: true };
   }
+  if (synthetic === 'x-optio-control-update') {
+    // A live picker change (config_option_update, re-projected engine-side to a
+    // full controls snapshot) or the view's own optimistic {id, value} patch —
+    // fold into state.controls, leaving chat items untouched.
+    return foldControlUpdate(st, ev) as KimiCodeChatState;
+  }
   if (synthetic !== undefined) return st; // x-optio-unparseable, forward compat
 
   const method = ev?.method as string | undefined;
@@ -189,8 +196,11 @@ function reduce(st: KimiCodeChatState, ev: any, seq: number): KimiCodeChatState 
       };
     }
 
-    // plan / available_commands_update / config_option_update / user_message_chunk
-    // — no dedicated rendering yet; passed through as no-ops.
+    // plan / available_commands_update / user_message_chunk — no dedicated
+    // rendering yet; passed through as no-ops. config_option_update is folded
+    // via the synthetic x-optio-control-update the engine re-projects from it
+    // (see conversation.py:_emit_control_update), so the raw notification here
+    // is a no-op too.
     return st;
   }
 

@@ -253,10 +253,41 @@ class KimiCodeConversation:
 
     def _on_session_update(self, obj: dict) -> None:
         update = (obj.get("params") or {}).get("update") or {}
-        if update.get("sessionUpdate") == "agent_message_chunk":
+        kind = update.get("sessionUpdate")
+        if kind == "agent_message_chunk":
             text = ((update.get("content") or {}).get("text")) or ""
             if text:
                 self._answer_parts.append(text)
+        elif kind == "config_option_update":
+            # A live picker change (model/thinking/mode) — surface it to the
+            # widget so the controls bar tracks the authoritative state.
+            self._emit_control_update(update.get("configOptions"))
+
+    def _emit_control_update(self, config_options) -> None:
+        """Fan out a synthetic ``x-optio-control-update`` from a live
+        ``config_option_update`` snapshot so the widget reducer refreshes
+        ``state.controls``.
+
+        kimi's ``config_option_update`` notification carries the FULL refreshed
+        ``configOptions`` array (verified: kimi-code fork
+        ``acp-adapter/src/events-map.ts:configOptionUpdateNotification``), so we
+        re-project the whole snapshot through the same projection the widgetData
+        seed uses (single source of truth: ``models.parse_all_controls``) and
+        fold it as a complete controls snapshot — not a single-value patch."""
+        if not isinstance(config_options, list):
+            return
+        # Lazy import: optio_kimicode.__init__ imports session -> conversation,
+        # so importing models at module scope here risks a partial-init cycle.
+        from optio_kimicode.models import parse_all_controls
+
+        controls = parse_all_controls(config_options)
+        for c in controls:
+            if c.id == "model" and isinstance(c.value, str) and c.value:
+                self.current_model_id = c.value
+        self._event_queue.put_nowait({
+            "type": "x-optio-control-update",
+            "controls": [c.to_dict() for c in controls],
+        })
 
     # -- event fan-out -----------------------------------------------------
 
@@ -401,30 +432,42 @@ class KimiCodeConversation:
             "params": {"sessionId": self._session_id},
         })
 
-    def request_model_change(self, model: str) -> None:
-        """Switch model mid-conversation INLINE via a ``session/set_model`` ACP
-        request (no process restart) — kimi implements the experimental ACP
-        setter (``unstable_setSessionModel``, params ``{sessionId, modelId}``;
-        see server.ts). Synchronous surface (the listener calls it without
-        await): schedules the ACP write and updates the model optimistically."""
+    async def set_control(self, control_id: str, value) -> None:
+        """Push a session-control value change to kimi over ACP (generalizes the
+        former model selector — the model is just ``control_id == "model"``).
+
+        Routing:
+          * ``model`` -> ``session/set_model`` (the experimental
+            ``unstable_setSessionModel {sessionId, modelId}``; LIVE-VERIFIED).
+          * everything else (``thinking``, ``mode``, …) -> the generic
+            ``session/set_config_option``.
+
+        **VERIFIED against the kimi-code fork** (``packages/acp-adapter/src/
+        server.ts:setSessionConfigOption`` + ``@agentclientprotocol/sdk`` 0.23.0
+        ``SetSessionConfigOptionRequest`` in ``schema/types.gen.d.ts``): the
+        request params are ``{sessionId, configId, value}`` — the option key is
+        ``configId`` (NOT ``optionId``, which the plan flagged as an unknown to
+        confirm), and ``value`` is the raw string the server dispatches on
+        (``value === 'on'`` for ``thinking``; ``configId`` routes ``model`` /
+        ``mode`` / ``thinking``, any other id -> JSON-RPC invalid_params).
+
+        Awaited by the listener's ``/control`` route; raises ConversationClosed
+        after teardown so the listener can answer 409."""
         if self._closed.is_set():
             raise ConversationClosed(self._close_reason or "conversation closed")
         if self._session_id is None:
             raise RuntimeError(
-                "KimiCodeConversation.request_model_change before bootstrap() completed"
+                "KimiCodeConversation.set_control before bootstrap() completed"
             )
-        self.current_model_id = model
-        asyncio.ensure_future(self._set_model(model))
-
-    async def _set_model(self, model: str) -> None:
-        try:
+        if control_id == "model":
+            self.current_model_id = value  # optimistic
             await self._request("session/set_model", {
-                "sessionId": self._session_id, "modelId": model,
+                "sessionId": self._session_id, "modelId": value,
             })
-        except ConversationClosed:
-            pass  # a swap racing the close is a no-op
-        except Exception:  # noqa: BLE001 — never let a set_model bug kill the driver
-            _LOG.exception("kimi conversation: session/set_model failed")
+            return
+        await self._request("session/set_config_option", {
+            "sessionId": self._session_id, "configId": control_id, "value": value,
+        })
 
     async def close(self) -> None:
         self.close_requested.set()

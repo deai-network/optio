@@ -3,8 +3,9 @@
 Ported from optio-grok's test_conversation_listener.py (both listeners are the
 same ACP-shaped structure). Permissions are correlated by the ACP JSON-RPC
 ``id`` of the ``session/request_permission`` request — KimiCodeConversation
-carries the whole JSON-RPC object as ``PermissionRequest.raw``. The ``/model``
-route drives kimi's inline ``session/set_model`` switch.
+carries the whole JSON-RPC object as ``PermissionRequest.raw``. The ``/control``
+route drives kimi's inline session-control switch (model -> session/set_model,
+thinking/mode -> session/set_config_option).
 """
 
 import asyncio
@@ -24,7 +25,7 @@ class FakeConversation:
         self.perm_handler = None
         self.sent = []
         self.interrupts = 0
-        self.model_changes = []
+        self.controls = []  # list[(id, value)] set via set_control
         self.closed = False
 
     def on_event(self, h):
@@ -45,10 +46,10 @@ class FakeConversation:
             raise ConversationClosed("closed")
         self.interrupts += 1
 
-    def request_model_change(self, model):
+    async def set_control(self, control_id, value):
         if self.closed:
             raise ConversationClosed("closed")
-        self.model_changes.append(model)
+        self.controls.append((control_id, value))
 
     def fire(self, event):
         for h in list(self.handlers):
@@ -137,16 +138,20 @@ async def test_send_forwards_to_conversation(listener):
         assert r.status == 409
 
 
-async def test_model_route_forwards_to_conversation(listener):
+async def test_control_route_forwards_to_conversation(listener):
     conv, lst, url = listener
     async with aiohttp.ClientSession() as s:
-        r = await s.post(f"{url}/model", json={"model": "kimi-k2-thinking"}, headers=_auth("pw"))
-        assert r.status == 200 and conv.model_changes == ["kimi-k2-thinking"]
-        # bad payloads
-        r = await s.post(f"{url}/model", json={}, headers=_auth("pw"))
+        # model control -> set_control("model", ...)
+        r = await s.post(f"{url}/control", json={"id": "model", "value": "kimi-k2-thinking"}, headers=_auth("pw"))
+        assert r.status == 200 and conv.controls == [("model", "kimi-k2-thinking")]
+        # a non-model control (thinking) round-trips the same route
+        r = await s.post(f"{url}/control", json={"id": "thinking", "value": "on"}, headers=_auth("pw"))
+        assert r.status == 200 and conv.controls[-1] == ("thinking", "on")
+        # missing id -> 400
+        r = await s.post(f"{url}/control", json={"value": "x"}, headers=_auth("pw"))
         assert r.status == 400
         conv.closed = True
-        r = await s.post(f"{url}/model", json={"model": "kimi-k2-thinking"}, headers=_auth("pw"))
+        r = await s.post(f"{url}/control", json={"id": "model", "value": "kimi-k2-thinking"}, headers=_auth("pw"))
         assert r.status == 409
 
 

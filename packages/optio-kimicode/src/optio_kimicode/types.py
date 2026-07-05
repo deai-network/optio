@@ -208,10 +208,11 @@ class KimiCodeTaskConfig:
     # current model when unset. (config.model still drives the launch -m flag;
     # this only controls the picker's initial value.)
     default_model: str | None = None
-    # Show the model picker in the conversation widget. kimi switches inline
-    # (/model, no process restart). Requires mode="conversation" and
-    # conversation_ui=True.
-    show_model_selector: bool = False
+    # Show the engine-neutral session-controls bar (model + thinking + mode) in
+    # the conversation widget. kimi switches inline over ACP (session/set_model
+    # for the model, session/set_config_option for thinking/mode — no process
+    # restart). Requires mode="conversation" and conversation_ui=True.
+    show_session_controls: bool = False
     # Show the file-upload control. Uploaded bytes are written under
     # <workdir>/uploads and referenced to kimi via a System: path line so it
     # reads them with its own tools. Requires mode="conversation" and
@@ -301,9 +302,9 @@ class KimiCodeTaskConfig:
                 "KimiCodeTaskConfig: default_model requires mode='conversation' "
                 "and conversation_ui=True."
             )
-        if self.show_model_selector and not conv_ui:
+        if self.show_session_controls and not conv_ui:
             raise ValueError(
-                "KimiCodeTaskConfig: show_model_selector=True requires "
+                "KimiCodeTaskConfig: show_session_controls=True requires "
                 "mode='conversation' and conversation_ui=True."
             )
         if self.show_file_upload and not conv_ui:

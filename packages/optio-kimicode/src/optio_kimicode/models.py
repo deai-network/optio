@@ -12,9 +12,11 @@ process relaunch, no --continue resume:
          "params": {"sessionId": <sid>, "modelId": "kimi-k2-thinking"}}
     <-- {"result": {}}
 
-KimiCodeConversation.request_model_change() fires session/set_model directly
+KimiCodeConversation.set_control("model", <id>) fires session/set_model directly
 (see conversation.py); the session body needs NO model_change_requested restart
-loop (that is claudecode's mechanism).
+loop (that is claudecode's mechanism). ``set_control`` also carries kimi's
+thinking + mode controls via ``session/set_config_option`` (see
+``parse_all_controls`` below and conversation.py).
 
 ------------------------------------------------------------------------
 MODEL LIST source. **KIMI DELTA**: unlike grok/cursor's ``models`` block, kimi
@@ -106,3 +108,77 @@ def _copy_fallback() -> dict:
         "models": [dict(m) for m in FALLBACK_MODELS["models"]],
         "default": FALLBACK_MODELS["default"],
     }
+
+
+def parse_all_controls(session_config_options, default_model=None):
+    """Project kimi's ACP ``configOptions`` surface into ``SessionControl[]``.
+
+    kimi advertises its live pickers as a unified ``configOptions`` list
+    (PLAN D11, kimi-code fork ``packages/acp-adapter/src/config-options.ts``),
+    NOT grok/cursor's ``models`` block. Each option is projected by its id:
+
+      * ``model``    -> ``select``    (category ``model``) — the model picker.
+      * ``thinking`` -> ``segmented`` (category ``thought_level``) — a 2-entry
+        ``off`` / ``on`` toggle. **VERIFIED against the fork**
+        (``config-options.ts:buildThinkingOption``): the wire shape is a
+        2-entry SELECT (``off``/``on``), NOT a graded effort list, and the
+        option is present only when the current model is ``thinkingSupported``.
+        Rendered as a 2-level ``segmented`` so its string value round-trips
+        unchanged to ``session/set_config_option`` (the server compares
+        ``value === 'on'``).
+      * ``mode``     -> ``select``    (category ``mode``) — the 4-mode taxonomy.
+
+    Unknown option ids fall back to a generic ``boolean``/``select`` by their
+    ACP ``type``. ``default_model`` overrides the model control's initial value
+    (``config.default_model`` precedence); otherwise the live ``currentValue``
+    is shown. Missing/malformed input yields an empty list.
+    """
+    from optio_agents.session_controls import ControlOption, SessionControl
+
+    controls: list = []
+    for opt in (session_config_options or []):
+        if not isinstance(opt, dict):
+            continue
+        oid = opt.get("id")
+        options = [
+            ControlOption(
+                value=o.get("value"),
+                label=o.get("name", o.get("value")),
+                description=o.get("description"),
+            )
+            for o in (opt.get("options") or [])
+            if isinstance(o, dict)
+        ]
+        cur = opt.get("currentValue")
+        if oid == "model":
+            controls.append(SessionControl(
+                id="model", kind="select", label="Model", category="model",
+                value=(default_model or cur or ""), options=options,
+            ))
+        elif oid == "thinking":
+            # off/on wire (see docstring) -> a 2-level segmented; the levels ARE
+            # the option values so the segmented value maps 1:1 to configId's
+            # accepted string.
+            levels = [o.value for o in options]
+            controls.append(SessionControl(
+                id="thinking", kind="segmented", label="Thinking",
+                category="thought_level",
+                value=(cur or (levels[0] if levels else "")),
+                levels=levels,
+            ))
+        elif oid == "mode":
+            controls.append(SessionControl(
+                id="mode", kind="select", label="Mode", category="mode",
+                value=(cur or ""), options=options,
+            ))
+        elif opt.get("type") == "boolean":
+            controls.append(SessionControl(
+                id=oid or "", kind="boolean", label=(oid or "").title(),
+                value=bool(cur),
+            ))
+        else:
+            controls.append(SessionControl(
+                id=oid or "", kind="select", label=(oid or "").title(),
+                value=(cur or ""), options=options,
+            ))
+    return controls

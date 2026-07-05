@@ -455,22 +455,23 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                 inner_auth=BasicAuth(username="optio", password=listener_password),
             )
             # Frontend-parity widgetData (four-touch: config → set_widget_data →
-            # ConversationViewProps → KimiCodeView). Model picker options come
-            # from the ACP configOptions surface captured at bootstrap (authed,
-            # exact ids session/set_model accepts), else the static alias
-            # fallback. default_model overrides the picker's initial value;
-            # otherwise the live current model is shown.
-            model_list = kimi_models.available_models(
+            # ConversationViewProps → KimiCodeView). The engine-neutral session
+            # controls are projected from the ACP configOptions surface captured
+            # at bootstrap (authed; exact ids the ACP setters accept): model
+            # (select) + thinking (segmented off/on) + mode (select). kimi is
+            # the one engine that surfaces more than just the model control.
+            # default_model overrides the model control's initial value;
+            # otherwise the live current values are shown.
+            controls = kimi_models.parse_all_controls(
                 conversation.session_config_options,
+                default_model=config.default_model,
             )
-            current_model = config.default_model or model_list.get("default")
             await ctx.set_widget_data({
                 "protocol": "kimicode",
                 "toolVerbosity": config.tool_verbosity,
                 "thinkingVerbosity": config.thinking_verbosity,
-                "showModelSelector": config.show_model_selector,
-                "models": model_list["models"],
-                "currentModel": current_model,
+                "showSessionControls": config.show_session_controls,
+                "controls": [c.to_dict() for c in controls],
                 "showFileUpload": config.show_file_upload,
                 "maxUploadBytes": config.max_upload_bytes,
                 "fileDownload": config.file_download,

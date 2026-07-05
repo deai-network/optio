@@ -413,34 +413,9 @@ async def test_bootstrap_captures_config_options(convo):
     await reader
 
 
-@pytest.mark.asyncio
-async def test_request_model_change_sends_set_model(convo):
-    # kimi implements the experimental ACP model switch
-    # (`session/set_model` → unstable_setSessionModel); request_model_change
-    # emits it INLINE (no process restart) and updates the model optimistically.
-    c, handle = convo
-    reader = asyncio.create_task(c.run_reader())
-    await _bootstrap(c, handle)
-    c.request_model_change("kimi-k2-thinking")
-    msg = await asyncio.wait_for(handle.stdin.lines.get(), 1)
-    assert msg["method"] == "session/set_model"
-    assert msg["params"]["sessionId"] == "s1"
-    assert msg["params"]["modelId"] == "kimi-k2-thinking"
-    assert c.current_model_id == "kimi-k2-thinking"  # optimistic
-    handle.stdout.feed({"jsonrpc": "2.0", "id": msg["id"], "result": {}})
-    handle.stdout.eof()
-    await reader
-
-
-@pytest.mark.asyncio
-async def test_request_model_change_after_close_raises(convo):
-    c, handle = convo
-    reader = asyncio.create_task(c.run_reader())
-    await _bootstrap(c, handle)
-    handle.stdout.eof()
-    await reader
-    with pytest.raises(ConversationClosed):
-        c.request_model_change("kimi-k2-thinking")
+# NOTE: the model/thinking/mode switch surface moved from the sync
+# `request_model_change` to the async `set_control` (session-controls
+# migration); those cases now live in test_conversation_controls.py.
 
 
 # --- tiny polling helpers ---------------------------------------------------
