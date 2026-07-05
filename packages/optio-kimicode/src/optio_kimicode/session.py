@@ -300,7 +300,11 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
         # a protocol-relative leading ``//`` after the proxy's prefix-strip script
         # runs, which makes ``history.replaceState`` throw a cross-origin SecurityError.
         await ctx.set_widget_data({
-            "iframeSrc": f"{{widgetProxyUrl}}sessions/{session_id}{fragment}",
+            # ``?embed=1`` puts the kimi-web SPA in embedded mode (no sidebar/nav
+            # chrome) for the iframe surface. Query goes BEFORE the ``#token=``
+            # fragment; the proxy's prefix-strip script preserves location.search,
+            # so the flag survives the rewrite.
+            "iframeSrc": f"{{widgetProxyUrl}}sessions/{session_id}?embed=1{fragment}",
         })
         ctx.report_progress(None, "Kimi Code is live")
 
