@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Input, Spin, Switch, Tooltip, theme } from 'antd';
+import { Alert, Button, Input, Segmented, Select, Spin, Switch, Tooltip, theme } from 'antd';
 import type { GlobalToken } from 'antd';
 import type { TextAreaRef } from 'antd/es/input/TextArea';
-import type { ChatItem, ChatState } from './chat.js';
+import type { ChatItem, ChatState, SessionControl } from './chat.js';
 import { AnswerBlock } from './AnswerBlock.js';
 import { type Attachment, toAttachment, withinCap } from './attachments.js';
 import { FileDownloadContext } from './FileDownloadContext.js';
@@ -30,6 +30,11 @@ export interface ConversationViewProps {
   onPermission: (requestId: string, behavior: 'allow' | 'deny') => void;
   onFileDownload: (relpath: string, filename: string) => void;
   modelSelector?: React.ReactNode; // engine's own <Select>, rendered in the input bar
+  // Engine-neutral session controls (model / thinking / mode / ...) rendered
+  // generically in the input bar; onControlChange channels a value change back
+  // to the wrapper (POST /control or UI-local).
+  controls?: SessionControl[];
+  onControlChange?: (id: string, value: string | boolean) => void;
   // theming (only set by ConversationWidget when ownTheme):
   themeMode?: 'light' | 'dark';
   onToggleTheme?: () => void; // absent => no ☀/🌙 button
@@ -130,6 +135,70 @@ function toolSummary(input: unknown): string {
     }
   }
   return '';
+}
+
+// Generic renderer for engine-neutral session controls. Each control renders by
+// kind: boolean -> <Switch>, segmented -> <Segmented>, select -> <Select>
+// (disabled options greyed with a whyDisabled tooltip title). Every control
+// carries a `control-<id>` data-testid.
+function SessionControls({
+  controls, disabled, onChange,
+}: {
+  controls: SessionControl[];
+  disabled: boolean;
+  onChange: (id: string, value: string | boolean) => void;
+}) {
+  if (!controls.length) return null;
+  return (
+    <>
+      {controls.map((c) => {
+        if (c.kind === 'boolean') {
+          return (
+            <Switch
+              key={c.id}
+              data-testid={`control-${c.id}`}
+              size="small"
+              checked={Boolean(c.value)}
+              disabled={disabled}
+              onChange={(v) => onChange(c.id, v)}
+            />
+          );
+        }
+        if (c.kind === 'segmented') {
+          return (
+            <Segmented
+              key={c.id}
+              data-testid={`control-${c.id}`}
+              size="small"
+              value={String(c.value)}
+              disabled={disabled}
+              options={(c.levels ?? []).map((l) => ({ label: l, value: l }))}
+              onChange={(v) => onChange(c.id, String(v))}
+            />
+          );
+        }
+        // select
+        return (
+          <Select
+            key={c.id}
+            data-testid={`control-${c.id}`}
+            size="small"
+            style={{ minWidth: 180, alignSelf: 'center' }}
+            placeholder={c.label}
+            disabled={disabled}
+            value={c.value ? String(c.value) : undefined}
+            onChange={(v: string) => onChange(c.id, v)}
+            options={(c.options ?? []).map((o) => ({
+              label: o.label,
+              value: o.value,
+              disabled: o.disabled,
+              title: o.whyDisabled,
+            }))}
+          />
+        );
+      })}
+    </>
+  );
 }
 
 export function ConversationView(props: ConversationViewProps): React.JSX.Element {
@@ -592,6 +661,13 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
           {/* Row 2: a single-height toolbar — model + attach on the left,
               Send/Interrupt pushed right. All size="small" so heights match. */}
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {props.controls && props.onControlChange ? (
+              <SessionControls
+                controls={props.controls}
+                disabled={props.busy || props.state.closed}
+                onChange={props.onControlChange}
+              />
+            ) : null}
             {modelSelector}
             <div style={{ flex: 1 }} />
             {showFileUpload && (

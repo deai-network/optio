@@ -15,6 +15,7 @@
 //   * synthetic x-optio-* events (permission-answered / closed / local-user).
 
 import type { ChatItem, ChatState } from '../chat.js';
+import { foldControlUpdate } from '../chat.js';
 import { explainApiError } from '../apiError.js';
 export { initialChatState } from '../chat.js';
 
@@ -84,6 +85,9 @@ export function reduceAcpEvent(state: ChatState, ev: any, seq: number): ChatStat
 function reduce(st: AcpChatState, ev: any, seq: number): AcpChatState {
   // Synthetic, widget/engine-emitted events (bare `type`, no JSON-RPC frame).
   const synthetic = ev?.type as string | undefined;
+  if (synthetic === 'x-optio-control-update') {
+    return foldControlUpdate(st, ev) as AcpChatState;
+  }
   if (synthetic === 'x-optio-local-user') {
     const text = typeof ev.text === 'string' ? ev.text : '';
     if (text === '') return st;
