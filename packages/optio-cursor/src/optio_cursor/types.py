@@ -212,11 +212,12 @@ class CursorTaskConfig:
     # current model when unset. (config.model still drives the launch --model
     # flag; this only controls the picker's initial value.)
     default_model: str | None = None
-    # Show the model picker in the conversation widget. Cursor switches inline
-    # over ACP (session/set_model — grok's live-pinned mechanism; cursor
+    # Show the engine-neutral session controls (the model picker) in the
+    # conversation widget. Cursor switches model inline over ACP
+    # (session/set_model — grok's live-pinned mechanism; cursor
     # runtime-unverified, see models.py) — no process restart. Requires
     # mode="conversation" and conversation_ui=True.
-    show_model_selector: bool = False
+    show_session_controls: bool = False
     # Show the file-upload control. Uploaded bytes are written under
     # <workdir>/uploads and referenced to cursor via a System: path line so it
     # reads them with its own tools (headless cursor has no inline ingest).
@@ -278,9 +279,9 @@ class CursorTaskConfig:
                 "CursorTaskConfig: default_model requires mode='conversation' "
                 "and conversation_ui=True."
             )
-        if self.show_model_selector and not conv_ui:
+        if self.show_session_controls and not conv_ui:
             raise ValueError(
-                "CursorTaskConfig: show_model_selector=True requires "
+                "CursorTaskConfig: show_session_controls=True requires "
                 "mode='conversation' and conversation_ui=True."
             )
         if self.show_file_upload and not conv_ui:

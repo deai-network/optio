@@ -40,33 +40,40 @@ describe('CursorView (Stage 7 parity)', () => {
     (globalThis as any).EventSource = MockEventSource as any;
   });
 
-  it('model selector POSTs the chosen model to /model', async () => {
+  it('model control POSTs the chosen model to /control', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
     render(
       <ConversationWidget
         {...makeProps({
           protocol: 'cursor',
-          showModelSelector: true,
-          currentModel: 'gpt-5',
-          models: [
-            { id: 'gpt-5', label: 'GPT-5' },
-            { id: 'sonnet-4-thinking', label: 'Sonnet 4 (thinking)' },
+          showSessionControls: true,
+          controls: [
+            {
+              id: 'model',
+              kind: 'select',
+              label: 'Model',
+              value: 'gpt-5',
+              options: [
+                { value: 'gpt-5', label: 'GPT-5' },
+                { value: 'sonnet-4-thinking', label: 'Sonnet 4 (thinking)' },
+              ],
+            },
           ],
         })}
       />,
     );
     // antd Select: open the dropdown, then pick the second option.
-    const combo = document.querySelector('[data-testid="model-select"] .ant-select-selector') as HTMLElement;
+    const combo = document.querySelector('[data-testid="control-model"] .ant-select-selector') as HTMLElement;
     fireEvent.mouseDown(combo);
     await waitFor(() => expect(screen.getByText('Sonnet 4 (thinking)')).toBeTruthy());
     fireEvent.click(screen.getByText('Sonnet 4 (thinking)'));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const calls = fetchMock.mock.calls as any[];
-    const modelCall = calls.find((c) => String(c[0]).endsWith('/model'));
-    expect(modelCall).toBeTruthy();
-    expect(JSON.parse((modelCall[1] as RequestInit).body as string)).toEqual({ model: 'sonnet-4-thinking' });
+    const controlCall = calls.find((c) => String(c[0]).endsWith('/control'));
+    expect(controlCall).toBeTruthy();
+    expect(JSON.parse((controlCall[1] as RequestInit).body as string)).toEqual({ id: 'model', value: 'sonnet-4-thinking' });
   });
 
   it('hides the attach control when showFileUpload is absent/false', () => {

@@ -425,22 +425,25 @@ class CursorConversation:
             "params": {"sessionId": self._session_id},
         })
 
-    def request_model_change(self, model: str) -> None:
-        """Switch model mid-conversation INLINE via a ``session/set_model``
-        ACP request (no process restart) — grok's live-pinned mechanism,
-        [grok-pinned, cursor runtime-unverified]; the method is present in
-        the cursor binary. See models.py for the probe record + the
-        restart-based fallback. Synchronous surface (the listener calls it
-        without await): schedules the ACP write and updates the model
-        optimistically."""
+    async def set_control(self, control_id: str, value) -> None:
+        """Push a session-control value change to the native transport
+        (generalizes model selection). cursor exposes only the ``model``
+        control; its change switches model mid-conversation INLINE via a
+        ``session/set_model`` ACP request (no process restart) — grok's
+        live-pinned mechanism, [grok-pinned, cursor runtime-unverified]; the
+        method is present in the cursor binary. See models.py for the probe
+        record + the restart-based fallback. Unknown control ids are no-ops."""
+        if control_id != "model":
+            return
         if self._closed.is_set():
             raise ConversationClosed(self._close_reason or "conversation closed")
         if self._session_id is None:
             raise RuntimeError(
-                "CursorConversation.request_model_change before bootstrap() completed"
+                "CursorConversation.set_control before bootstrap() completed"
             )
-        self.current_model_id = model
-        asyncio.ensure_future(self._set_model(model))
+        # Reuse the awaited session/set_model helper (also used by the startup
+        # model probe); it updates current_model_id after the round-trip.
+        await self.set_active_model(value)
 
     async def _set_model(self, model: str) -> None:
         try:
@@ -454,8 +457,8 @@ class CursorConversation:
 
     async def set_active_model(self, model: str) -> None:
         """Await a ``session/set_model`` round-trip so the NEXT prompt uses
-        ``model``. Used by the startup model probe (model_probe.probe_models);
-        the interactive UI path uses the fire-and-forget request_model_change."""
+        ``model``. Used by the startup model probe (model_probe.probe_models)
+        and by ``set_control("model", ...)`` for the interactive UI path."""
         await self._set_model(model)
         self.current_model_id = model
 

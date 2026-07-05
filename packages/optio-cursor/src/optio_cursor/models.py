@@ -21,9 +21,9 @@ swap, claudecode-style — relaunch ``cursor-agent --resume <chatId>
 --model <m>`` (both ``--resume`` and ``create-chat`` exist in the binary),
 driven by a model_change_requested restart loop in the session body.
 
-So CursorConversation.request_model_change() fires session/set_model directly
-(see conversation.py); the session body needs NO restart loop under the
-working assumption.
+So CursorConversation.set_control("model", ...) fires session/set_model
+directly (see conversation.py); the session body needs NO restart loop under
+the working assumption.
 
 ------------------------------------------------------------------------
 MODEL LIST source precedence (mirrors grok):

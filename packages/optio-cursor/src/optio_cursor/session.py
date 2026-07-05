@@ -28,6 +28,7 @@ from optio_core.models import BasicAuth, TaskInstance
 
 from optio_agents import HookContext, RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
 from optio_agents import seeds as _seeds
+from optio_agents.session_controls import model_control
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
 from optio_host.paths import task_dir
@@ -531,7 +532,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             model_list = await cursor_models.fetch_available_models(
                 conversation.session_models, host=host, cursor_path=cursor_path,
             )
-            if config.show_model_selector and model_list.get("models"):
+            if config.show_session_controls and model_list.get("models"):
                 model_list["models"] = await _probe_or_cached_models(
                     ctx, conversation, model_list["models"], host=host,
                     seed_id=model_probe.probe_cache_key(
@@ -559,13 +560,16 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             # the live current model is shown (model_list was built + probed
             # above, before the listener started).
             current_model = config.default_model or model_list.get("default")
+            # The model picker is now the engine-neutral id="model" session
+            # control (probed catalogue → disabled ControlOptions carry
+            # whyDisabled for plan-gated ids). Serialized camelCase for the UI.
+            control = model_control(models=model_list["models"], current=current_model)
             await ctx.set_widget_data({
                 "protocol": "cursor",
                 "toolVerbosity": config.tool_verbosity,
                 "thinkingVerbosity": config.thinking_verbosity,
-                "showModelSelector": config.show_model_selector,
-                "models": model_list["models"],
-                "currentModel": current_model,
+                "showSessionControls": config.show_session_controls,
+                "controls": [control.to_dict()],
                 "showFileUpload": config.show_file_upload,
                 "maxUploadBytes": config.max_upload_bytes,
                 "fileDownload": config.file_download,

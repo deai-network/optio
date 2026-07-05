@@ -7,8 +7,8 @@ optio-api widget proxy (which injects the basic-auth credential):
                      monotonic seq; Last-Event-ID resumes without dupes.
   POST /send       — {text}                 -> conversation.send
   POST /interrupt  — {}                     -> conversation.interrupt
-  POST /model      — {model}                -> conversation.request_model_change
-                     (INLINE session/set_model — no process restart; Stage 7)
+  POST /control    — {id, value}            -> conversation.set_control
+                     (model change is INLINE session/set_model — no restart)
   POST /upload     — multipart {file} parts -> upload_writer; returns
                      {ok, files:[{filename, path}]} (Stage 7)
   GET  /download   — ?path=<relpath>        -> download_reader; returns the
@@ -245,18 +245,18 @@ class ConversationListener:
             },
         )
 
-    async def _handle_model(self, request: web.Request) -> web.Response:
+    async def _handle_control(self, request: web.Request) -> web.Response:
         if not self._authorized(request):
             return web.json_response({"ok": False}, status=401)
         try:
             payload = await request.json()
         except Exception:  # noqa: BLE001
             return web.json_response({"ok": False, "reason": "bad-json"}, status=400)
-        model = payload.get("model")
-        if not isinstance(model, str) or not model:
-            return web.json_response({"ok": False, "reason": "bad-model"}, status=400)
+        control_id = payload.get("id")
+        if not isinstance(control_id, str) or not control_id:
+            return web.json_response({"ok": False, "reason": "bad-id"}, status=400)
         try:
-            self._conversation.request_model_change(model)
+            await self._conversation.set_control(control_id, payload.get("value"))
         except ConversationClosed:
             return web.json_response({"ok": False, "reason": "closed"}, status=409)
         return web.json_response({"ok": True})
@@ -289,7 +289,7 @@ class ConversationListener:
         app.router.add_get("/events", self._handle_events)
         app.router.add_post("/send", self._handle_send)
         app.router.add_post("/interrupt", self._handle_interrupt)
-        app.router.add_post("/model", self._handle_model)
+        app.router.add_post("/control", self._handle_control)
         app.router.add_post("/upload", self._handle_upload)
         app.router.add_get("/download", self._handle_download)
         app.router.add_post("/permission", self._handle_permission)

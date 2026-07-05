@@ -1,7 +1,6 @@
-import { useEffect, useReducer, useRef, useState } from 'react';
-import { Select } from 'antd';
+import { useEffect, useReducer, useRef } from 'react';
 import type { WidgetProps } from 'optio-ui';
-import type { ChatState } from '../chat.js';
+import type { ChatState, SessionControl } from '../chat.js';
 import { initialChatState, reduceCursorEvent } from './events.js';
 import { type Attachment } from '../attachments.js';
 import { blobDownload } from '../FileDownloadContext.js';
@@ -30,14 +29,19 @@ export function CursorView(props: WidgetProps) {
   const toolVerbosity = (wd.toolVerbosity ?? 'description-only') as
     'silent' | 'description-only' | 'verbose';
   const thinkingVerbosity = (wd.thinkingVerbosity ?? 'hidden') as 'hidden' | 'visible';
-  const [state, dispatch] = useReducer(chatReducer, initialChatState);
+  // Seed the reducer with the engine-neutral session controls (the model
+  // picker) from widgetData; live changes fold through the shared ACP reducer.
+  const initialControls = (wd.controls ?? []) as SessionControl[];
+  const [state, dispatch] = useReducer(
+    chatReducer,
+    initialControls,
+    (controls) => ({ ...initialChatState, controls }),
+  );
   const localSeqRef = useRef(0);
   const showFileUpload = Boolean(wd.showFileUpload);
   const maxUploadBytes = Number(wd.maxUploadBytes ?? 10_000_000);
   const fileDownload = Boolean(wd.fileDownload);
-  const [currentModel, setCurrentModel] = useState<string | undefined>(wd.currentModel ?? undefined);
-  const showModelSelector = Boolean(wd.showModelSelector);
-  const models: { id: string; label: string; disabled?: boolean; disabledReason?: string }[] = wd.models ?? [];
+  const showSessionControls = Boolean(wd.showSessionControls);
 
   const { widgetProxyUrl } = props; // ends with '/' — trailing slash is load-bearing
 
@@ -141,22 +145,17 @@ export function CursorView(props: WidgetProps) {
         void post('permission', body);
       }}
       onFileDownload={onFileDownload}
-      modelSelector={
-        showModelSelector ? (
-          <Select
-            data-testid="model-select"
-            size="small"
-            style={{ minWidth: 180, alignSelf: 'center' }}
-            placeholder="Model"
-            disabled={busy || state.closed}
-            value={currentModel}
-            onChange={(v: string) => {
-              setCurrentModel(v); // optimistic
-              void post('model', { model: v }); // INLINE session/set_model
-            }}
-            options={models.map((m) => ({ label: m.label, value: m.id, disabled: m.disabled, title: m.disabledReason }))}
-          />
-        ) : undefined
+      controls={showSessionControls ? state.controls : undefined}
+      onControlChange={
+        showSessionControls
+          ? (id, value) => {
+              // Optimistic patch through the shared ACP reducer, then push the
+              // change to the listener (model → INLINE session/set_model).
+              localSeqRef.current -= 1;
+              dispatch({ ev: { type: 'x-optio-control-update', id, value }, seq: localSeqRef.current });
+              void post('control', { id, value });
+            }
+          : undefined
       }
       themeMode={(props as any).themeMode}
       onToggleTheme={(props as any).onToggleTheme}

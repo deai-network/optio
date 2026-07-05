@@ -5,7 +5,7 @@ a live cursor:
   * models.py parse helpers (ACP session block + `cursor-agent models` CLI
     text — CLI format runtime-unverified, see models.py header);
   * fetch_available_models source precedence (ACP → CLI → fallback);
-  * CursorTaskConfig.show_model_selector / default_model validation.
+  * CursorTaskConfig.show_session_controls / default_model validation.
 
 The inline model-switch mechanism itself (session/set_model over ACP,
 [grok-pinned, cursor runtime-unverified]) is covered at the conversation level
@@ -148,14 +148,14 @@ async def test_fetch_falls_back_when_cli_output_unparseable():
 # --- config validation -----------------------------------------------------
 
 
-def test_show_model_selector_requires_conversation_ui():
-    with pytest.raises(ValueError, match="show_model_selector"):
-        _cfg(mode="conversation", conversation_ui=False, show_model_selector=True)
+def test_show_session_controls_requires_conversation_ui():
+    with pytest.raises(ValueError, match="show_session_controls"):
+        _cfg(mode="conversation", conversation_ui=False, show_session_controls=True)
 
 
-def test_show_model_selector_ok_in_conversation_ui():
-    cfg = _cfg(mode="conversation", conversation_ui=True, show_model_selector=True)
-    assert cfg.show_model_selector is True
+def test_show_session_controls_ok_in_conversation_ui():
+    cfg = _cfg(mode="conversation", conversation_ui=True, show_session_controls=True)
+    assert cfg.show_session_controls is True
 
 
 def test_default_model_requires_conversation_ui():

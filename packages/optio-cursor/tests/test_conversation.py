@@ -307,33 +307,46 @@ async def test_bootstrap_captures_session_models(convo):
 
 
 @pytest.mark.asyncio
-async def test_request_model_change_sends_set_model(convo):
-    # INLINE switching via ACP session/set_model — grok's live-pinned
-    # mechanism; the method is present in the cursor binary [cursor-verified]
-    # but a logged-in probe wasn't possible (see models.py header).
+async def test_set_control_model_sends_set_model(convo):
+    # The engine-neutral model control switches INLINE via ACP session/set_model
+    # — grok's live-pinned mechanism; the method is present in the cursor binary
+    # [cursor-verified] but a logged-in probe wasn't possible (see models.py).
     c, handle = convo
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle)
-    c.request_model_change("gpt-5")
+    change = asyncio.create_task(c.set_control("model", "gpt-5"))
     msg = await asyncio.wait_for(handle.stdin.lines.get(), 1)
     assert msg["method"] == "session/set_model"
     assert msg["params"]["sessionId"] == "s1"
     assert msg["params"]["modelId"] == "gpt-5"
-    assert c.current_model_id == "gpt-5"  # optimistic
     handle.stdout.feed({"jsonrpc": "2.0", "id": msg["id"], "result": {}})
+    await asyncio.wait_for(change, 1)
+    assert c.current_model_id == "gpt-5"  # set after the round-trip
     handle.stdout.eof()
     await reader
 
 
 @pytest.mark.asyncio
-async def test_request_model_change_after_close_raises(convo):
+async def test_set_control_unknown_id_is_noop(convo):
+    # cursor exposes only the model control; any other id must not touch the wire.
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)
+    await asyncio.wait_for(c.set_control("thinking", "high"), 1)
+    assert handle.stdin.lines.empty()
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_set_control_model_after_close_raises(convo):
     c, handle = convo
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle)
     handle.stdout.eof()
     await reader
     with pytest.raises(ConversationClosed):
-        c.request_model_change("gpt-5")
+        await c.set_control("model", "gpt-5")
 
 
 # --- tiny polling helpers ---------------------------------------------------
