@@ -252,7 +252,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     mode="conversation",
                     conversation_ui=True,
                     tool_verbosity="description-only",
-                    show_model_selector=True,
+                    show_session_controls=True,
                     show_file_upload=True,
                     file_download=True,
                     permission_gate=True,       # exercises the approve/deny UI

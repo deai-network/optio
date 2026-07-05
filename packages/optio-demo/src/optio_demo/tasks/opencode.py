@@ -249,7 +249,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     consumer_instructions="",   # defaulted conversation prompt
                     mode="conversation",
                     conversation_ui=True,
-                    show_model_selector=True,
+                    show_session_controls=True,
                     show_file_upload=True,
                     file_download=True,
                     host_protocol=False,

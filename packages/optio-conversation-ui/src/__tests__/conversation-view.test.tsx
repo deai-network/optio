@@ -9,7 +9,7 @@ import type { ChatItem, ChatState } from '../chat.js';
 // input bar + a thin header. These tests drive it directly with a stub `state`
 // and spy callbacks, asserting both the §3 visual polish (bubble tails, tints,
 // copy button) and the interaction wiring (send/clear, Escape-to-interrupt,
-// closable error Alert, modelSelector node, theme toggle) — independent of any
+// closable error Alert, session controls, theme toggle) — independent of any
 // engine transport.
 
 // jsdom has no clipboard by default; install a spy so the per-answer copy
@@ -255,14 +255,16 @@ describe('ConversationView send', () => {
   });
 });
 
-describe('ConversationView model selector slot', () => {
-  it('renders the modelSelector node in the input bar', () => {
+describe('ConversationView session controls slot', () => {
+  it('renders declared session controls in the input bar', () => {
     renderView(
       makeProps({
-        modelSelector: <div data-testid="my-model-selector">picker</div>,
+        controls: [{ id: 'model', kind: 'select', label: 'Model', value: 'a',
+                     options: [{ value: 'a', label: 'A' }] }],
+        onControlChange: () => {},
       }),
     );
-    expect(screen.getByTestId('my-model-selector')).toBeTruthy();
+    expect(screen.getByTestId('control-model')).toBeTruthy();
   });
 });
 

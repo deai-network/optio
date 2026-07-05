@@ -9,7 +9,7 @@ def test_defaults_are_off():
         consumer_instructions="task", mode="conversation", conversation_ui=True
     )
     assert cfg.default_model is None
-    assert cfg.show_model_selector is False
+    assert cfg.show_session_controls is False
 
 
 def test_fields_accepted_in_conversation_ui():
@@ -18,19 +18,19 @@ def test_fields_accepted_in_conversation_ui():
         mode="conversation",
         conversation_ui=True,
         default_model="opencode/big-pickle",
-        show_model_selector=True,
+        show_session_controls=True,
     )
     assert cfg.default_model == "opencode/big-pickle"
-    assert cfg.show_model_selector is True
+    assert cfg.show_session_controls is True
 
 
-def test_show_model_selector_requires_conversation_ui():
+def test_show_session_controls_requires_conversation_ui():
     with pytest.raises(ValueError, match="conversation_ui=True"):
         OpencodeTaskConfig(
             consumer_instructions="task",
             mode="conversation",
             conversation_ui=False,
-            show_model_selector=True,
+            show_session_controls=True,
         )
 
 
@@ -50,7 +50,7 @@ def test_widget_data_carries_model_fields():
         mode="conversation",
         conversation_ui=True,
         default_model="opencode/big-pickle",
-        show_model_selector=True,
+        show_session_controls=True,
         tool_verbosity="verbose",
     )
     wd = conversation_widget_data(cfg, session_id="s1", directory="/wd")

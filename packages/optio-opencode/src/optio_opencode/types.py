@@ -138,12 +138,12 @@ class OpencodeTaskConfig:
     # Default model for a fresh conversation session, "providerID/modelID".
     # Forwarded to the widget, which applies it once at the start of a non-
     # resumed session (history empty) and only if present in the live model
-    # list. Effective regardless of show_model_selector. Requires
+    # list. Effective regardless of show_session_controls. Requires
     # conversation_ui=True.
     default_model: str | None = None
     # Show the model picker in the conversation widget. Requires
     # conversation_ui=True.
-    show_model_selector: bool = False
+    show_session_controls: bool = False
     # Show the file-attach control in the conversation widget. Requires
     # conversation_ui=True. Files ride inline as data-URL `file` parts.
     show_file_upload: bool = False
@@ -180,9 +180,9 @@ class OpencodeTaskConfig:
                 "OpencodeTaskConfig: conversation_ui=True requires "
                 "mode='conversation'."
             )
-        if self.show_model_selector and not self.conversation_ui:
+        if self.show_session_controls and not self.conversation_ui:
             raise ValueError(
-                "OpencodeTaskConfig: show_model_selector=True requires "
+                "OpencodeTaskConfig: show_session_controls=True requires "
                 "conversation_ui=True."
             )
         if self.show_file_upload and not self.conversation_ui:

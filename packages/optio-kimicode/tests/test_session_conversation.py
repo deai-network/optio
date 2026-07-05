@@ -325,7 +325,7 @@ async def test_conversation_ui_forwards_frontend_parity_widget_data(
             config=_conversation_config(
                 shim_install_dir,
                 conversation_ui=True,
-                show_model_selector=True,
+                show_session_controls=True,
                 default_model="kimi-k2-thinking",
                 tool_verbosity="verbose",
                 thinking_verbosity="visible",

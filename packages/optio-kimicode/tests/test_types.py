@@ -120,10 +120,10 @@ def test_default_model_requires_conversation_ui():
         )
 
 
-def test_show_model_selector_requires_conversation_ui():
-    with pytest.raises(ValueError, match="show_model_selector"):
+def test_show_session_controls_requires_conversation_ui():
+    with pytest.raises(ValueError, match="show_session_controls"):
         KimiCodeTaskConfig(
-            consumer_instructions="x", mode="conversation", show_model_selector=True
+            consumer_instructions="x", mode="conversation", show_session_controls=True
         )
 
 
@@ -147,11 +147,11 @@ def test_frontend_parity_flags_ok_with_conversation_ui():
         mode="conversation",
         conversation_ui=True,
         default_model="kimi-k2",
-        show_model_selector=True,
+        show_session_controls=True,
         show_file_upload=True,
         file_download=True,
     )
-    assert cfg.show_model_selector is True
+    assert cfg.show_session_controls is True
 
 
 # --- verbosity enums -------------------------------------------------------

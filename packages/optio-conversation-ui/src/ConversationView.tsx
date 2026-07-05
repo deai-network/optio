@@ -7,11 +7,11 @@ import { AnswerBlock } from './AnswerBlock.js';
 import { type Attachment, toAttachment, withinCap } from './attachments.js';
 import { FileDownloadContext } from './FileDownloadContext.js';
 
-// Shared conversation chrome for every engine view. ClaudeCodeView and
-// OpencodeView reduce their native wire events into the engine-neutral
-// ChatState, then hand the rendering, local UI state, the input bar, and a thin
-// header to this single component — only the transport callbacks and the model
-// <Select> differ between engines (supplied via props / modelSelector).
+// Shared conversation chrome for every engine view. Each engine view reduces
+// its native wire events into the engine-neutral ChatState, then hands the
+// rendering, local UI state, the input bar, and a thin header to this single
+// component — only the transport callbacks and the declared session controls
+// (model / thinking / mode / ...) differ between engines.
 
 export interface ConversationViewProps {
   state: ChatState;
@@ -29,7 +29,6 @@ export interface ConversationViewProps {
   onInterrupt: () => void;
   onPermission: (requestId: string, behavior: 'allow' | 'deny') => void;
   onFileDownload: (relpath: string, filename: string) => void;
-  modelSelector?: React.ReactNode; // engine's own <Select>, rendered in the input bar
   // Engine-neutral session controls (model / thinking / mode / ...) rendered
   // generically in the input bar; onControlChange channels a value change back
   // to the wrapper (POST /control or UI-local).
@@ -216,7 +215,6 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     onInterrupt,
     onPermission,
     onFileDownload,
-    modelSelector,
   } = props;
 
   const [text, setText] = useState('');
@@ -668,7 +666,6 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                 onChange={props.onControlChange}
               />
             ) : null}
-            {modelSelector}
             <div style={{ flex: 1 }} />
             {showFileUpload && (
               <>

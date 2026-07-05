@@ -234,7 +234,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     consumer_instructions="",   # defaulted conversation prompt
                     mode="conversation",
                     conversation_ui=True,
-                    show_model_selector=True,
+                    show_session_controls=True,
                     show_file_upload=True,
                     file_download=True,
                     permission_gate=True,       # exercises the approve/deny UI
@@ -262,7 +262,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     consumer_instructions=CONSUMER_PROMPT,
                     mode="conversation",
                     conversation_ui=True,
-                    show_model_selector=True,
+                    show_session_controls=True,
                     show_file_upload=True,
                     file_download=True,
                     # host_protocol left at its True default — keyword channel on.
