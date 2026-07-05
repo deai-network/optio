@@ -35,6 +35,7 @@ from optio_host.host import Host, LocalHost, ProcessHandle, RemoteHost, proc_wai
 from optio_host.paths import task_dir
 from optio_agents import seeds as _seeds
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, claustrum, get_protocol
+from optio_agents.session_controls import model_control
 
 from optio_claudecode import cred_watcher
 from optio_claudecode import host_actions
@@ -534,13 +535,17 @@ async def run_claudecode_session(
                 inner_auth=BasicAuth(username="optio", password=listener_password),
             )
             model_list = await cc_models.fetch_available_models(host, home_dir=f"{host.workdir}/home")
+            # The model is the sole session control claudecode exposes; build it
+            # from the account-available catalog. current may be None (no
+            # --model): the view sniffs the runtime model from system/init and
+            # folds it into the control value.
+            control = model_control(models=model_list["models"], current=current_model)
             await ctx.set_widget_data({
                 "protocol": "claudecode",
                 "toolVerbosity": config.tool_verbosity,
                 "thinkingVerbosity": config.thinking_verbosity,
-                "showModelSelector": config.show_model_selector,
-                "models": model_list["models"],
-                "currentModel": current_model,
+                "showSessionControls": config.show_session_controls,
+                "controls": [control.to_dict()],
                 "showFileUpload": config.show_file_upload,
                 "maxUploadBytes": config.max_upload_bytes,
                 "fileDownload": config.file_download,

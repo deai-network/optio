@@ -11,7 +11,7 @@ Three layers (Phase II spec, docs/2026-06-10-claudecode-conversation-ui-design.m
      — real engine, claude shim): a ``conversation_ui=True`` task registers
      a reachable ConversationListener as widgetUpstream (per-task basic-auth
      inner credential, ``widgetData`` carrying ``protocol``/``toolVerbosity``
-     plus the model-picker keys (``showModelSelector``/``models``/``currentModel``),
+     plus the session-control keys (``showSessionControls``/``controls``),
      ``uiWidget == "conversation"``), the SSE replay carries the
      fake's ``system/init`` event, and the listener port is closed once the
      task reaches its terminal state.
@@ -249,13 +249,21 @@ async def test_conversation_ui_session_lifecycle(
             "protocol": "claudecode",
             "toolVerbosity": "description-only",
             "thinkingVerbosity": "hidden",
-            "showModelSelector": False,
-            "models": [
-                {"id": "claude-opus-4-8", "label": "Claude Opus 4.8", "disabled": False},
-                {"id": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6", "disabled": False},
-                {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5", "disabled": False},
+            "showSessionControls": False,
+            "controls": [
+                {
+                    "id": "model",
+                    "kind": "select",
+                    "label": "Model",
+                    "category": "model",
+                    "value": "",
+                    "options": [
+                        {"value": "claude-opus-4-8", "label": "Claude Opus 4.8", "disabled": False},
+                        {"value": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6", "disabled": False},
+                        {"value": "claude-haiku-4-5", "label": "Claude Haiku 4.5", "disabled": False},
+                    ],
+                },
             ],
-            "currentModel": None,
             "showFileUpload": False,
             "maxUploadBytes": 10_000_000,
             "fileDownload": False,

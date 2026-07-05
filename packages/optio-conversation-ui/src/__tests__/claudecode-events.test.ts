@@ -316,6 +316,45 @@ describe('reduceEvent', () => {
   });
 });
 
+describe('model control fold', () => {
+  const seeded = (value = ''): ChatState => ({
+    ...initialChatState,
+    controls: [
+      {
+        id: 'model',
+        kind: 'select',
+        label: 'Model',
+        value,
+        options: [{ value: 'claude-opus-4-8', label: 'Opus' }],
+      },
+    ],
+  });
+
+  it('folds the system/init model into an empty model control (stripping the [variant] suffix)', () => {
+    const s = reduceEvent(seeded(), { type: 'system', subtype: 'init', model: 'claude-opus-4-8[1m]' }, 1);
+    expect(s.controls.find((c) => c.id === 'model')!.value).toBe('claude-opus-4-8');
+  });
+
+  it('does not override a model control that already has a value (operator pick wins)', () => {
+    const s = reduceEvent(
+      seeded('claude-sonnet-4-6'),
+      { type: 'assistant', message: { model: 'claude-opus-4-8', content: [] } },
+      2,
+    );
+    expect(s.controls.find((c) => c.id === 'model')!.value).toBe('claude-sonnet-4-6');
+  });
+
+  it('folds an x-optio-control-update value patch onto the matching control', () => {
+    const s = reduceEvent(seeded(), { type: 'x-optio-control-update', id: 'model', value: 'claude-haiku-4-5' }, 3);
+    expect(s.controls.find((c) => c.id === 'model')!.value).toBe('claude-haiku-4-5');
+  });
+
+  it('is a no-op when no model control is seeded', () => {
+    const s = reduceEvent(initialChatState, { type: 'system', subtype: 'init', model: 'claude-opus-4-8' }, 1);
+    expect(s).toEqual(initialChatState);
+  });
+});
+
 describe('System-message block separation', () => {
   it('separates multiple text blocks (coalesced System notices) with a linebreak', () => {
     // claude can echo several harness "System:" sends as ONE user event with

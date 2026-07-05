@@ -209,10 +209,11 @@ class ClaudeCodeTaskConfig:
     # Whether the conversation widget shows the agent's reasoning/thinking traces.
     # Default hidden — thinking is noisy; opt in per task.
     thinking_verbosity: ThinkingVerbosity = "hidden"
-    # Show the model picker in the conversation widget. Requires
-    # mode="conversation" and conversation_ui=True. The default model is
-    # config.model (no separate field).
-    show_model_selector: bool = False
+    # Show the generic session controls (currently the model picker) in the
+    # conversation widget. Requires mode="conversation" and
+    # conversation_ui=True. The default model is config.model (no separate
+    # field).
+    show_session_controls: bool = False
     # Show the file-upload control in the conversation widget. Requires
     # mode="conversation" and conversation_ui=True. Uploaded files are written
     # under <workdir>/uploads on the host; carried to the widget via widgetData.
@@ -300,9 +301,9 @@ class ClaudeCodeTaskConfig:
                 "ClaudeCodeTaskConfig: conversation_ui=True requires "
                 "mode='conversation'."
             )
-        if self.show_model_selector and not (self.mode == "conversation" and self.conversation_ui):
+        if self.show_session_controls and not (self.mode == "conversation" and self.conversation_ui):
             raise ValueError(
-                "ClaudeCodeTaskConfig: show_model_selector=True requires "
+                "ClaudeCodeTaskConfig: show_session_controls=True requires "
                 "mode='conversation' and conversation_ui=True."
             )
         if self.show_file_upload and not (self.mode == "conversation" and self.conversation_ui):

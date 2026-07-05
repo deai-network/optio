@@ -25,27 +25,27 @@ def _cfg(**kw):
     return ClaudeCodeTaskConfig(**base)
 
 
-def test_show_model_selector_requires_conversation_ui():
+def test_show_session_controls_requires_conversation_ui():
     # A valid conversation permission setup (permission_gate=True) gets us past
-    # the unrelated conversation-mode validation so the show_model_selector
+    # the unrelated conversation-mode validation so the show_session_controls
     # check is the one that fires.
-    with pytest.raises(ValueError, match="show_model_selector"):
+    with pytest.raises(ValueError, match="show_session_controls"):
         _cfg(
             mode="conversation",
             permission_gate=True,
             conversation_ui=False,
-            show_model_selector=True,
+            show_session_controls=True,
         )
 
 
-def test_show_model_selector_ok_in_conversation_ui():
+def test_show_session_controls_ok_in_conversation_ui():
     cfg = _cfg(
         mode="conversation",
         permission_gate=True,
         conversation_ui=True,
-        show_model_selector=True,
+        show_session_controls=True,
     )
-    assert cfg.show_model_selector is True
+    assert cfg.show_session_controls is True
 
 
 def test_parse_models_maps_id_and_label():
@@ -116,12 +116,23 @@ async def test_fetch_marks_unavailable_models_disabled_and_skips_known_good():
 
 
 @pytest.mark.asyncio
-async def test_conversation_request_model_change_sets_signal():
+async def test_set_control_model_sets_restart_signal():
     from optio_claudecode.conversation import ClaudeCodeConversation
     conv = ClaudeCodeConversation()
-    conv.request_model_change("claude-opus-4-8")
+    await conv.set_control("model", "claude-opus-4-8")
     assert conv.requested_model == "claude-opus-4-8"
     assert conv.model_change_requested.is_set()
+
+
+@pytest.mark.asyncio
+async def test_set_control_ignores_unknown_id():
+    # claudecode exposes only the model control; any other id is a no-op and
+    # never triggers a restart.
+    from optio_claudecode.conversation import ClaudeCodeConversation
+    conv = ClaudeCodeConversation()
+    await conv.set_control("thinking", "high")
+    assert conv.requested_model is None
+    assert not conv.model_change_requested.is_set()
 
 
 @pytest.mark.asyncio

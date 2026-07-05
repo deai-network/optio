@@ -231,12 +231,17 @@ class ClaudeCodeConversation:
             await self._finish("stdin write failed")
             raise
 
-    def request_model_change(self, model: str) -> None:
-        """Request a model swap. The conversation body observes
-        model_change_requested and relaunches claude with this model."""
-        if self._closed.is_set():
-            raise ConversationClosed(self._close_reason or "conversation closed")
-        self.requested_model = model
+    async def set_control(self, control_id: str, value) -> None:
+        """Push a session-control value change to the native transport.
+
+        Claude Code applies a model change by restart: setting
+        ``requested_model`` + firing ``model_change_requested`` makes the
+        session body kill and relaunch claude with the new model (the restart
+        loop is unchanged). ``model`` is the only control claudecode exposes;
+        unknown ids are ignored."""
+        if control_id != "model":
+            return
+        self.requested_model = value
         self.model_change_requested.set()
 
     def begin_restart(self) -> None:

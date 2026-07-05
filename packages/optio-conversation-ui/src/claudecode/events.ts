@@ -7,6 +7,7 @@
 // partials arrive as {type:"stream_event", event:{...content_block_delta}}).
 
 import type { ChatItem, ChatState } from '../chat.js';
+import { foldControlUpdate } from '../chat.js';
 import { explainApiError } from '../apiError.js';
 export { initialChatState } from '../chat.js';
 
@@ -120,7 +121,24 @@ function insertUserBeforePending(items: ChatItem[], item: ChatItem): ChatItem[] 
 }
 
 export function reduceEvent(state: ChatState, ev: any, seq: number): ChatState {
+  // Sniff the runtime model and fold it into the model control. Claude Code
+  // reports the model at top level on `system`/`init` (fires immediately at
+  // launch) and on each assistant `message.model`. The stream uses the
+  // runtime/variant id (e.g. claude-opus-4-8[1m]); strip the [..] suffix so it
+  // matches a catalog option. Only fill while the control has no value yet — an
+  // operator pick (reflected optimistically) must win, and the in-flight
+  // process keeps reporting the OLD model until the restart completes.
+  const rawModel = ev?.model ?? ev?.message?.model;
+  if (typeof rawModel === 'string' && rawModel) {
+    const modelCtrl = state.controls.find((c) => c.id === 'model');
+    if (modelCtrl && !modelCtrl.value) {
+      state = foldControlUpdate(state, { id: 'model', value: rawModel.replace(/\[[^\]]*\]$/, '') });
+    }
+  }
   switch (ev?.type) {
+    case 'x-optio-control-update':
+      return foldControlUpdate(state, ev);
+
     case 'user': {
       const text = extractText(ev.message?.content);
       if (text === '') return state;
