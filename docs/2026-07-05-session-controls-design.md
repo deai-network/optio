@@ -2,8 +2,8 @@
 
 **Date:** 2026-07-05
 **Status:** Approved design (brainstorming output); implementation plan to follow.
-**Scope:** All five agent wrappers (kimicode, cursor, grok, opencode, claudecode),
-`optio-agents`, and `optio-conversation-ui`.
+**Scope:** All six agent wrappers (kimicode, cursor, grok, opencode, claudecode,
+codex), `optio-agents`, and `optio-conversation-ui`.
 
 ## Problem
 
@@ -32,7 +32,7 @@ control among many.
 - **Live-updating:** the agent owns the control set and pushes a fresh snapshot
   whenever it changes; the UI reacts.
 - Control kinds: `select`, `boolean`, `segmented`.
-- **Full migration** of all five engines — no compatibility shim in the end
+- **Full migration** of all six engines — no compatibility shim in the end
   state.
 - Each engine exposes **every** control its native transport offers, not just
   the model (kimi's thinking/mode being the first case; cursor/grok/opencode/
@@ -87,25 +87,31 @@ Notes:
 
 ## Data Flow (live round-trip)
 
-### Inbound (agent → UI), live
+### Inbound (agent → UI): widgetData seeds, reducer updates
 
-Controls ride the **event stream**, not static `widgetData` — they are live and
-the conversation reducer already consumes that stream.
+`state.controls` is the **render source of truth**, but it is *seeded* from
+`widgetData` (where the model catalog already lives) and *updated live* by the
+reducer. This matches the existing architecture — model options reach the UI via
+`ctx.set_widget_data(...)` today, not the reduced event stream, and opencode has
+no Python model surface at all (the UI fetches `config/providers` itself).
 
-1. The wrapper's `Conversation` receives native control updates:
-   - **kimi (ACP):** `session/new` `configOptions` + `config_option_update`.
-   - **cursor / grok (ACP):** the same `configOptions` once adopted (they read
-     the older `models` block today).
-   - **opencode / claudecode:** their native events.
-2. The wrapper maps them to `SessionControl[]` and surfaces the snapshot.
-3. The engine's **reducer** folds that snapshot into a new
-   `controls: SessionControl[]` field on `ChatState` (alongside chat items).
-4. The shared `ConversationView` renders `state.controls` — model dropdown,
-   thinking segmented, mode select, toggles — replacing the special-cased model
-   selector.
+1. **Seed (mount):** each wrapper emits `controls: SessionControl[]` in its
+   `set_widget_data({...})` payload — replacing the bespoke `models` /
+   `currentModel` / `showModelSelector` keys. For opencode, whose catalog is
+   UI-fetched, the view assembles the initial model control from its
+   `config/providers` fetch as it does today. The engine view reads
+   `widgetData.controls` into the initial `state.controls`.
+2. **Live update:** the engine **reducer** folds live control events into
+   `state.controls` without dropping or reordering chat items — kimi's
+   `config_option_update` (currently a no-op) → the changed control's value;
+   claudecode's `system.init` model sniff → the model control's value; etc.
+3. **Render:** the shared `ConversationView` renders `state.controls` — model
+   dropdown, thinking segmented, mode select, toggles — replacing the special
+   -cased `modelSelector` React node.
 
-The reducer is the single source of truth for `state.controls`; a live update
-must not drop or reorder chat items.
+So: **catalog seeded via widgetData (as today); live value-changes via the
+reducer.** `state.controls` is what the view renders; the reducer owns live
+mutation of it.
 
 ### Outbound (UI → agent)
 
@@ -125,45 +131,58 @@ optimistic update for snappiness; the native echo is the source of truth.
 
 ## Per-Engine Mapping
 
-Each wrapper does two small things: map its native control state →
-`SessionControl[]` (fed into its reducer → `state.controls`), and implement
-`set_control(id, value)` → native.
+Each wrapper does two small things: emit its controls as `SessionControl[]` in
+`widgetData` (seed) + fold live updates in its reducer, and implement
+`set_control(id, value)` → native (generalizing today's `request_model_change`).
 
-| Engine | Inbound map | `set_control` → | Notes |
+| Engine | Model set-mechanism (today) | Controls beyond model | `set_control("model")` → |
 |---|---|---|---|
-| kimi (ACP) | `configOptions` (model / thinking / mode) → controls | `session/set_config_option` | Already receives them; least work |
-| cursor (ACP) | adopt `configOptions` if present, else model-only from `models` block | `set_config_option` / `set_model` | Survey may unlock thinking/mode |
-| grok (ACP) | same as cursor | same | same |
-| opencode (HTTP/SSE) | model (+ survey native extras) → controls | native set | inline |
-| claudecode (stream-json) | model (+ survey thinking/permission) → controls | native | **restart-based** model switch |
+| kimi (ACP) | `session/set_model` INLINE | **thinking + mode** (from `configOptions`, received today but IGNORED) | `session/set_model`; thinking/mode → `session/set_config_option` |
+| grok (ACP) | `session/set_model` INLINE (live-pinned) | none (reads `models` block, no `configOptions`) | `session/set_model` |
+| cursor (ACP) | `session/set_model` INLINE (unverified; restart fallback) | none | `session/set_model` |
+| opencode (HTTP/SSE) | inline per-prompt `prompt_async.model` (UI-local) | none (`config/providers` UI-fetched) | UI-local, applied next prompt |
+| claudecode (stream-json) | **RESTART** `claude --model <m> --continue` (`model_change_requested` Event) | none (permission is per-tool `can_use_tool`, not a mode) | restart |
+| codex (app-server) | **RESTART** (`model_change_requested`, mirrors claudecode) | none | restart |
 
-**Survey obligation.** For cursor, grok, opencode, and claudecode, the
-implementer must inspect the native transport for controls beyond model
-(thinking / reasoning-effort, plan / permission mode) and map every one found.
-The table's "model-only" entries are floors, not ceilings.
+**Kimi is the only engine gaining new controls in v1** — thinking (segmented
+effort) + mode (select), already arriving on kimi's ACP `configOptions` and
+currently discarded. The other five surface exactly one control (model) through
+the generic contract; their bespoke `<Select>` is replaced, mechanism unchanged.
 
-### Restart-based controls (claudecode `--model`)
+**Survey obligation.** For grok, cursor, opencode, claudecode, codex, the
+implementer confirms (from the native transport) whether any control beyond
+model exists; the audit above found none, so "model-only" stands unless the
+implementer disproves it. Not speculative work — a confirm step.
 
-Some controls apply inline (ACP `set_config_option`); claudecode's model change
-needs a session restart. The contract is unchanged — `set_control` does whatever
-the engine needs; the wrapper handles the restart, and `state.controls` reflects
-the new value once it settles. No contract change; it is a per-wrapper
-implementation detail. (A future `appliesOnRestart` hint could let the UI warn —
-YAGNI for v1.)
+### Set-mechanism variants (inline / restart / UI-local)
+
+`set_control` hides three native mechanisms behind one method: ACP inline
+(`session/set_model`, `session/set_config_option` — kimi/grok/cursor), process
+restart (`--model --continue` — claudecode/codex, via the existing
+`model_change_requested` Event), and UI-local next-prompt (opencode). The
+contract is unchanged across all three; `state.controls` reflects the new value
+once it settles. (A future `appliesOnRestart` hint could let the UI warn on
+restart controls — YAGNI for v1.)
 
 ## Migration (the "full" part)
 
-- Shared `ConversationView`: **replace** the bespoke model selector with a
-  generic controls renderer over `state.controls` (dropdown / segmented / toggle
-  by `kind`; disabled option greyed + `whyDisabled` tooltip).
-- Each engine's reducer folds its control snapshot into `state.controls` (model
-  at minimum).
-- `ConversationViewProps`: `onModelChange` → generic
-  `onControlChange(id, value)`. The old `models` / `currentModel` `widgetData`
-  path is removed.
+- Shared `ConversationView`: **replace** the bespoke `modelSelector` React node
+  with a generic controls renderer over `state.controls` (dropdown / segmented /
+  toggle by `kind`; disabled option greyed + `whyDisabled` tooltip), plus a new
+  `onControlChange(id, value)` prop. There is no `onModelChange` today — the old
+  surface is the opaque `modelSelector?: React.ReactNode` slot.
+- Each engine view seeds `state.controls` from `widgetData.controls` and passes
+  its own `onControlChange` handler (dispatching per-engine: `POST /control` to
+  the listener for kimi/grok/cursor/claudecode/codex; UI-local for opencode).
+- Each engine reducer folds live control updates into `state.controls`.
+- Python: `widgetData` carries `controls: SessionControl[]` in place of
+  `models` / `currentModel`; the `Conversation` protocol gains
+  `set_control(id, value)` (generalizing `request_model_change`); each
+  `conversation_listener.py` gains a `/control` route → `set_control` (opencode
+  has no listener — UI-local).
 - Task-config surface: `show_model_selector` → `show_session_controls` (master
   on/off, default on); `default_model` stays (sets the initial model-control
-  value). Ship these field renames to all engines for parity even where only
+  value). Ship these field renames to all six engines for parity even where only
   some controls exist.
 
 ## Testing
@@ -193,14 +212,15 @@ Incremental internally, clean end-state:
 1. **Land the contract** — `SessionControl` in optio-agents + TS mirror; generic
    renderer in `ConversationView` (tolerates empty `controls`); add
    `onControlChange`. The old model path is still present.
-2. **Migrate engines one at a time**, kimi first (richest, already has
-   `configOptions`) → cursor → grok → opencode → claudecode. Each flips from
-   model-`widgetData` to `state.controls`.
-3. **Remove the old path** once all five emit `state.controls`: switch
-   `ConversationView` to render solely from it, delete `models` / `currentModel`
-   / `onModelChange`, and the `show_model_selector` → `show_session_controls`
-   rename. No compat left.
+2. **Migrate engines**, kimi first (richest, already has `configOptions`) →
+   grok → cursor → claudecode → codex → opencode. Each flips its `widgetData`
+   from `models`/`currentModel` to `controls[]`, seeds `state.controls`, and
+   passes `onControlChange`. File-disjoint across packages → parallelizable.
+3. **Remove the old path** once all six emit `state.controls`: delete the
+   `modelSelector` node construction + `models`/`currentModel`/
+   `showModelSelector` widgetData keys, and land the `show_model_selector` →
+   `show_session_controls` rename. No compat left.
 
 Version chain at release time (per the changed-deps-first order):
-optio-agents → optio-conversation-ui → the five engine packages → demo /
+optio-agents → optio-conversation-ui → the six engine packages → demo /
 dashboard.
