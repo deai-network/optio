@@ -68,7 +68,7 @@ _KIMICODE_CACHE_DIR_SHELL_DEFAULT = (
 # (csillag/kimi-code) carries the iframe-embedding fixes and is version-gated, so
 # a stock upstream ``kimi`` on the worker is never adopted.
 _KIMICODE_SMART_INSTALL_URL = (
-    "https://raw.githubusercontent.com/csillag/kimi-code/csillag/iframe-build/smart-install.sh"
+    "https://raw.githubusercontent.com/csillag/kimi-code/main/smart-install.sh"
 )
 
 # claustrum: standalone Landlock filesystem-sandbox CLI, vendored by pinned tag
