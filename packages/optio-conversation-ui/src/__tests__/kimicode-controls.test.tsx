@@ -113,8 +113,8 @@ describe('KimiCodeView session controls', () => {
     vi.stubGlobal('fetch', fetchMock);
     render(<ConversationWidget {...seededProps()} />);
 
-    // antd Segmented renders each level as a clickable label.
-    fireEvent.click(screen.getByText('on'));
+    // antd Segmented renders each level as a clickable label (capitalized).
+    fireEvent.click(screen.getByText('On'));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const controlCall = (fetchMock.mock.calls as any[]).find((c) => String(c[0]).endsWith('/control'));
@@ -158,11 +158,12 @@ describe('KimiCodeView session controls', () => {
         1,
       ),
     );
-    // The thinking segmented now reflects 'on' as the selected level.
+    // The thinking segmented now reflects 'on' as the selected level
+    // (rendered capitalized).
     await waitFor(() => {
       const seg = screen.getByTestId('control-thinking');
       const selected = seg.querySelector('.ant-segmented-item-selected');
-      expect(selected?.textContent).toBe('on');
+      expect(selected?.textContent).toBe('On');
     });
   });
 });

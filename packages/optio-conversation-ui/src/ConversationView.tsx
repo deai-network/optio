@@ -151,10 +151,10 @@ function SessionControls({
   return (
     <>
       {controls.map((c) => {
+        let node: React.ReactNode;
         if (c.kind === 'boolean') {
-          return (
+          node = (
             <Switch
-              key={c.id}
               data-testid={`control-${c.id}`}
               size="small"
               checked={Boolean(c.value)}
@@ -162,38 +162,51 @@ function SessionControls({
               onChange={(v) => onChange(c.id, v)}
             />
           );
-        }
-        if (c.kind === 'segmented') {
-          return (
+        } else if (c.kind === 'segmented') {
+          node = (
             <Segmented
-              key={c.id}
               data-testid={`control-${c.id}`}
               size="small"
               value={String(c.value)}
               disabled={disabled}
-              options={(c.levels ?? []).map((l) => ({ label: l, value: l }))}
+              options={(c.levels ?? []).map((l) => ({
+                label: l.charAt(0).toUpperCase() + l.slice(1),
+                value: l,
+              }))}
               onChange={(v) => onChange(c.id, String(v))}
             />
           );
+        } else {
+          node = (
+            <Select
+              data-testid={`control-${c.id}`}
+              size="small"
+              style={{ minWidth: 180, alignSelf: 'center' }}
+              placeholder={c.label}
+              disabled={disabled}
+              value={c.value ? String(c.value) : undefined}
+              onChange={(v: string) => onChange(c.id, v)}
+              options={(c.options ?? []).map((o) => ({
+                label: o.label,
+                value: o.value,
+                disabled: o.disabled,
+                title: o.whyDisabled,
+              }))}
+            />
+          );
         }
-        // select
+        // Prefix each control with its (muted) label so "Thinking"/"Mode" are
+        // named — a bare Select/Segmented/Switch shows only its value.
         return (
-          <Select
+          <span
             key={c.id}
-            data-testid={`control-${c.id}`}
-            size="small"
-            style={{ minWidth: 180, alignSelf: 'center' }}
-            placeholder={c.label}
-            disabled={disabled}
-            value={c.value ? String(c.value) : undefined}
-            onChange={(v: string) => onChange(c.id, v)}
-            options={(c.options ?? []).map((o) => ({
-              label: o.label,
-              value: o.value,
-              disabled: o.disabled,
-              title: o.whyDisabled,
-            }))}
-          />
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+          >
+            <span style={{ fontSize: 12, opacity: 0.65, whiteSpace: 'nowrap' }}>
+              {c.label}
+            </span>
+            {node}
+          </span>
         );
       })}
     </>

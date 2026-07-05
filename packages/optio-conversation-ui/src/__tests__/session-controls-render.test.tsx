@@ -31,7 +31,7 @@ describe('SessionControls renderer', () => {
   it('segmented change fires onControlChange(id, value)', () => {
     const cb = vi.fn();
     render(<ConversationView {...base(cb)} />);
-    fireEvent.click(screen.getByText('high'));
+    fireEvent.click(screen.getByText('High'));
     expect(cb).toHaveBeenCalledWith('thinking', 'high');
   });
   it('disabled select option shows whyDisabled tooltip title', async () => {
