@@ -184,8 +184,9 @@ reducers can tell them apart.
    engine-specific knowledge lives; it is DOM-free and unit-tested.
 2. A thin **transport-adapter view** that opens the agent's event stream, feeds the
    reducer, and wires the `ConversationViewProps` callbacks (`onSend`,
-   `onInterrupt`, `onPermission`, `onFileDownload`, optional `modelSelector`) to the
-   agent's endpoints. It then hands all rendering to the shared `ConversationView`.
+   `onInterrupt`, `onPermission`, `onFileDownload`, and `onControlChange` for the
+   generic session controls) to the agent's endpoints. It then hands all rendering
+   to the shared `ConversationView`.
 3. A `widgetData.protocol` discriminator so `ConversationWidget` dispatches to your
    view.
 
@@ -201,9 +202,9 @@ reducer emits `ChatItem`s.
   and `…/src/opencode/` (`events.ts` reducer, `OpencodeView.tsx`).
 
 **Divergence.** claudecode's view is a client of a per-task optio-side listener;
-opencode's view is a direct client of the spawned opencode server. Model selection,
-file transfer, and permission-verb mapping differ per engine but all funnel through
-the same `ConversationViewProps`.
+opencode's view is a direct client of the spawned opencode server. Session controls
+(Stage 7), file transfer, and permission-verb mapping differ per engine but all
+funnel through the same `ConversationViewProps` (`onControlChange`, etc.).
 
 ### D. Prompt composition
 
@@ -271,8 +272,23 @@ notice; decrypt failure fails loud (never silent fresh-start).
 resume can't give, and the answer to headless login. **Touches.** A per-agent seed
 manifest adopting the generic `optio_agents.seeds` engine; `seed_id` / `on_seed_saved`;
 seed CRUD wrappers. **Reference.** `seed_manifest.py` in either wrapper;
-`optio-agents/…/seeds.py`. **Done when.** A seed captured from a logged-in session
-launches a new task already authenticated.
+`optio-agents/…/seeds.py`.
+
+**A seed must carry everything login *provisions*, not just the rotating
+credential.** The trap: login often writes MORE than a token — a provider/account
+registration, a `config.toml`/`config.json` entry, a default-model or endpoint
+block — *once*, and the agent never re-derives it at startup. A seed that captures
+only the credential file replants a valid token but no provider, so the agent boots
+to its **login screen despite a perfectly good token** (e.g. kimi: `login`
+provisions the `managed:*` provider into `config.toml`; a creds-only seed reports
+`providers_count: 0`). Watch a real login and diff the *entire* agent home before
+vs after — every file it created is a seed-manifest candidate. Split the manifests
+if their write cadence differs: the full **seed** manifest carries the static
+provisioned config **plus** the credential; the **save-back** manifest (Stage 4)
+carries only the file(s) that rotate mid-session. **Done when.** A seed captured
+from a logged-in session launches a new task already authenticated — verified
+**functionally** (the agent reaches a working state / never shows the login
+screen), not just "the token file landed."
 
 ### Stage 4 — Leases + credential save-back + verify
 **Goal.** Share N seeds safely across concurrent sessions, and keep rotating tokens
@@ -281,7 +297,7 @@ in-session credential watcher that saves rotated tokens back into the seed, plus
 `finally` backstop that fires on *every* exit path; a host-free
 `verify_and_refresh_seed`.
 
-**Two findings that bite hard with single-use rotating tokens:**
+**Three findings that bite hard with single-use rotating tokens:**
 1. **Flush before you save — shut the agent down GRACEFULLY when a seed is in
    use.** The agent's write of a just-rotated `auth.json` is best-effort. If
    teardown SIGKILLs the agent (the usual aggressive-kill on *cancel*), the kill
@@ -304,6 +320,11 @@ in-session credential watcher that saves rotated tokens back into the seed, plus
    the request shape once against a live seed. Fall back to an agent
    challenge-answer probe (billable) only when the provider exposes no usable
    endpoint.
+3. **Gate capture and save-back on a *valid* credential.** A present-but-empty or
+   malformed token file must never be captured as a seed nor written back over a
+   good one — validate the credential's shape (e.g. a non-empty `refresh_token`)
+   before it touches storage. One aborted login otherwise silently poisons the
+   seed pool with an unauthenticated blob.
 
 **Reference.** `cred_watcher.py` + the lease wiring in either wrapper; the direct
 endpoint refresh in `optio-claudecode/…/oauth.py` (Anthropic) and
@@ -331,12 +352,36 @@ task-accessible launch path under the isolated home (e.g.
 `<workdir>/home/.local/bin/<agent>`); `ensure_<agent>_installed` returns that
 per-task path. Re-call it after any resume/restore (idempotent: cache hit → just
 relink) so the launch symlink — which lives in the wiped-and-restored workdir —
-is re-established. **Reference.** `_resolve_install_dir` / `_isolation_env` /
+is re-established.
+
+**Verify the binary is the RIGHT one — a name is not an identity.** Two different
+products can install the same command name (kimi-code the Node CLI vs the unrelated
+Python `kimi-cli`; both are `kimi` on `PATH`). If your first tier adopts "a `<agent>`
+already on the worker," it can adopt the *wrong* program — and every launch then
+fails with a confusing "server exited"/"no such command." Gate adoption on a
+**functional discriminator**: run a subcommand only the intended product answers
+(e.g. `kimi server run --help` → exit 0), not mere presence or `--version` (both
+impostors have those). Reject a mismatched worker binary in Tier-1, **and invalidate
+a cache a prior run poisoned** with the wrong binary (a cache hit must re-verify, not
+blindly trust). Bound the probe with a `timeout` so a binary that *hangs* on the
+probe is a clean reject, not a hang.
+
+**Disable the agent's self-update.** A managed wrapper pins the binary version
+(Tier-1 copy / vendor installer / your fork); an agent that self-updates on launch
+fights that control and can stall a launch on a network probe. Find the agent's
+no-auto-update env flag in its source (kimi: `KIMI_CODE_NO_AUTO_UPDATE=1`, gating
+`isAutoUpdateDisabledByEnv`) and set it in the launch env for **every** launch path.
+If you ship a **fork** (to carry wrapper-specific fixes), the install step must fetch
+*your fork*, not upstream — point the vendor installer/download at the fork ref.
+
+**Reference.** `_resolve_install_dir` / `_isolation_env` /
 `ensure_<agent>_installed` in either `host_actions.py` (both run the vendor
-installer on a miss — claudecode's `install.sh`, grok's `x.ai/cli/install.sh`).
-**Done when.** Concurrent tasks/users have isolated identities; the binary is
-shared and genuinely re-installable on a bare worker with no host agent present;
-snapshots exclude it.
+installer on a miss — claudecode's `install.sh`, grok's `x.ai/cli/install.sh`);
+kimi's `_is_kimicode` identity probe + `build_launch_env` (no-auto-update).
+**Done when.** Concurrent tasks/users have isolated identities; the resolved binary
+is verified to be the intended product (name collisions rejected, poisoned cache
+invalidated); self-update is off; the binary is shared and genuinely re-installable
+on a bare worker with no host agent present; snapshots exclude it.
 
 ### Stage 6 — Conversation mode + conversation-ui
 **Goal.** The headless live `Conversation` (Part 2B) plus the dashboard chat widget
@@ -348,24 +393,57 @@ live conversation programmatically, and the same task renders in the dashboard c
 UI.
 
 ### Stage 7 — Frontend parity
-**Goal.** Permission gating, model switching, file upload/download, tool verbosity
-in the conversation UI. **Touches.** `permission_gate`; model config
-(`show_model_selector`, default model); `show_file_upload`/`max_upload_bytes`,
+**Goal.** Permission gating, **session controls**, file upload/download, tool
+verbosity in the conversation UI. **Touches.** `permission_gate`;
+`show_session_controls` + `default_model`; `show_file_upload`/`max_upload_bytes`,
 `file_download`/`max_download_bytes` (the `optio-file:` sentinel); `tool_verbosity`.
+
+**Session controls are one engine-neutral contract, not a bespoke model dropdown.**
+The model picker is just the `id:"model"` entry in a generic `SessionControl[]`
+(`optio_agents.session_controls`, mirrored in `conversation-ui/src/chat.ts`). Each
+control is `select` / `boolean` / `segmented`, carries its `value` + `disabled` /
+`whyDisabled`, and is emitted in `widgetData.controls`; the shared `ConversationView`
+renders them generically and calls `onControlChange(id, value)`, which routes to the
+wrapper's `Conversation.set_control(id, value)` (via a `/control` listener route, or
+UI-local where the agent has no round-trip). Expose **every** live control the agent
+offers, not only the model — kimi additionally surfaces `thinking` and `mode` from
+its ACP `configOptions`. A control that collapses to ≤1 option is auto-marked
+`disabled` with a reason (e.g. an always-thinking model can't toggle thinking off),
+which the UI greys and explains on hover.
+
 **Reference.** The listener/endpoints in either wrapper (claudecode's
-`conversation_listener.py`; opencode's server client) and the per-engine view in
-`optio-conversation-ui`. **Done when.** Each feature works in the widget for your
-engine; model switch may be restart-based (claudecode) or inline (opencode) — both
-valid.
+`conversation_listener.py`; opencode's server client), `session_controls.py` +
+`set_control` in each wrapper, and the per-engine view in `optio-conversation-ui`.
+**Done when.** Each feature works in the widget for your engine; `set_control("model", …)`
+switches the model — restart-based (claudecode/codex), inline ACP (grok/cursor/kimi),
+or next-prompt UI-local (opencode) are all valid — and any engine-specific controls
+round-trip.
 
 ### Stage 8 — Filesystem isolation
 **Goal.** Sandbox the agent (and its tool subprocesses) to an explicit allowlist,
 where the launch model allows. **Touches.** A Landlock sandbox wrap
 (claustrum) with a grant-flag builder; `fs_isolation` / `extra_allowed_dirs` /
-`delivery_type`; fail-closed. **Reference.** `fs_allowlist.py` +
-`_build_claustrum_wrap` in `optio-claudecode` (currently the only implementation —
-follow its pattern). **Done when.** The agent can only touch the workdir + explicit
-grants; default-on, fail-closed, local and remote.
+`delivery_type`; fail-closed.
+
+**Provision claustrum via the shared engine, and validate it by FUNCTION.** The
+sandbox binary is provisioned by `optio_agents.claustrum.ensure_claustrum_installed`
+(shared across claudecode/cursor/kimicode) — do not re-implement it. Two lessons
+that silently break a live sandbox:
+- **Validate by running it, not `--version`.** A cache can hold a *poisoned stub* — a
+  10-byte `#!/bin/sh` that answers `--version` cleanly but enforces nothing. `--version`
+  passing is not "the sandbox works." Validate functionally (it actually restricts a
+  path) and **guard the binary format** (reject a non-ELF/script masquerading as the
+  compiled tool) before trusting a cached copy.
+- **The engine cache dir must be a parameter.** Hardcoding one wrapper's cache
+  location into shared provisioning makes another engine build/validate into the
+  wrong place and fail closed on a host where the binary "is there." Thread the
+  per-engine cache dir through.
+
+**Reference.** `optio_agents.claustrum` (shared provisioning + functional
+validation + ELF guard); `fs_allowlist.py` + `_build_claustrum_wrap` in
+`optio-claudecode` / `optio-kimicode`. **Done when.** The agent can only touch the
+workdir + explicit grants; the sandbox binary is functionally validated (a poisoned
+`--version`-faking stub is rejected); default-on, fail-closed, local and remote.
 
 ---
 
@@ -378,6 +456,43 @@ Do all host I/O through the generic `optio_host.Host` primitives (`run_command`,
 `host_actions.py` a free-function layer over these. The **only** sanctioned
 `isinstance` is the Local-vs-Remote bind-address decision. This is what makes
 remote-over-SSH nearly free.
+
+### Injecting settings into the agent's config file
+When you write a setting into the agent's own config (`config.toml` /
+`config.json` / `settings.*`) — a permission mode, a default model, a provider —
+**respect the file's structure; do not blind-append.** A bare `key = value`
+appended to the end of a TOML file does **not** land at the root: it belongs to
+whatever `[table]` header precedes it, so a `default_permission_mode` appended after
+a `[providers.…]` block silently becomes `providers.default_permission_mode` and the
+agent never reads it (real bug: a task ran `manual` while the wrapper "set" `yolo`).
+Parse → set at the intended scope (prepend a root key *above* the first table header,
+or set it inside the correct table) → re-serialize, and **assert on the parsed
+result**, not on a string match. Same discipline for JSON/YAML: mutate the loaded
+document, don't concatenate text. Beware seed interaction: if a replanted seed brings
+its own config, decide explicitly whether your injected setting merges over it or is
+overwritten by it.
+
+### Embedding a web-UI agent in an iframe
+An agent that ships its own web SPA is embedded in an optio iframe surface — its
+UI was built to be the whole page, not a frame, so expect friction the standalone
+app never shows:
+- **Use the agent's embed/chromeless mode if it has one.** A full SPA renders its
+  own nav/sidebar/login chrome that is redundant (or wrong) inside the frame. Look
+  for an embed flag / query param (kimi: `?embed=1`) that strips it; surface only
+  the conversation.
+- **The widget proxy must be transparent to the SPA's assumptions.** Two that bit:
+  (a) **strip the browser `Origin` header** before forwarding to the agent upstream
+  — a forwarded cross-origin `Origin` trips the agent server's CORS/websocket checks
+  and the SPA silently fails to connect; (b) survive **protocol-relative and
+  base-href-rewritten URLs** — an injected `//host/…` or a doubled `//` can crash the
+  SPA's `history.replaceState`/router. Test the *embedded* app, not just the app.
+- **A launch that "exits before its ready banner" must say WHY.** If the server dies
+  during startup, surface its captured **stdout + exit code**, never a black-box
+  "exited before ready" — that opacity cost two debugging rounds on this project.
+
+Both of these are covered by, and are the reason for, the real-binary
+**embedded-launch** acceptance gate in [Testing](#testing-fakes-for-logic-the-real-binary-for-truth):
+a fake serving the SPA proves none of it.
 
 ### Authentication: the headless + remote-browser problem
 Every agent authenticates differently — API key, browser OAuth, device code, an
@@ -618,12 +733,12 @@ A finished wrapper covers this surface. `req` = expected for any wrapper;
 | 12 | pool / leases | opt | `optio-agents/seeds.py` lease fns |
 | 13 | credential save-back (rotating tokens) | opt | `cred_watcher.py` |
 | 14 | verify / refresh seed (host-free) | opt | `verify.py` / `oauth.py` |
-| 15 | binary cache (evictable, unsnapshotted) + auto-install on miss + symlink into task path | req | `_resolve_install_dir` / `ensure_<agent>_installed` (vendor installer) |
+| 15 | binary cache (evictable, unsnapshotted) + auto-install on miss + symlink into task path; **identity-verified** (reject name collisions) + **self-update off** | req | `_resolve_install_dir` / `ensure_<agent>_installed` (vendor installer); kimi `_is_kimicode` + `KIMI_CODE_NO_AUTO_UPDATE` |
 | 16 | HOME/XDG per-task isolation | req | `_isolation_env` / launch env |
 | 17 | hooks (before/after execute, on_deliverable, …) | req | config fields; `HookContext` |
 | 18 | prompt composition from SSOT | req | `prompt.py`, `optio-agents/protocol/prompt.py` |
 | 19 | permission gating | opt | `conversation.py`, `permission_gate` |
-| 20 | model switching | opt | claudecode restart / opencode inline |
+| 20 | session controls (model + any engine extras: thinking/mode/…) | opt | `SessionControl` + `set_control`; kimi thinking/mode |
 | 21 | file upload | opt | listener/server upload path |
 | 22 | file download (`optio-file:`) | opt | listener/server download path |
 | 23 | tool verbosity | opt | `tool_verbosity` → widgetData |
@@ -654,6 +769,8 @@ died on first real launch, all with a green suite.
 | `build_log_channel_prompt`, `RESUME_NOTICE` | `optio-agents/…/protocol/prompt.py` |
 | `Conversation`, `PermissionRequest`, `PermissionDecision`, `ConversationClosed` | `optio-agents/…/conversation.py` |
 | `HookContext`, `HookContextProtocol` | `optio-agents/…/context.py` |
+| `SessionControl`, `ControlOption`, `model_control`, `Conversation.set_control` | `optio-agents/…/session_controls.py` + `…/conversation.py` |
+| `ensure_claustrum_installed` (shared fs-sandbox provisioning + functional validation) | `optio-agents/…/claustrum.py` |
 | seed/lease engine (`capture_seed`, `plant_seed`, `merge_seed`, `refresh_seed`, `acquire`, `renew_lease`, `release`, `SeedManifest`) | `optio-agents/…/seeds.py` |
 | `ChatItem`, `ChatState` | `optio-conversation-ui/src/chat.ts` |
 | `ConversationViewProps` | `optio-conversation-ui/src/ConversationView.tsx` |
@@ -705,7 +822,7 @@ out-of-range enums, and cross-field constraints — e.g. `conversation_ui` requi
 |---|---|
 | `tool_verbosity` | `silent` / `description-only` / `verbose` — tool-call detail. |
 | `thinking_verbosity` | `hidden` / `visible` — reasoning/thinking traces (e.g. a reasoning model's thought stream). **Default `hidden`** (thinking is noisy); rendered as a distinct reasoning row, never the System style. Visibility is a *task* option — the UI never decides. |
-| `show_model_selector` / `default_model` | Model picker in the widget + its initial value. |
+| `show_session_controls` / `default_model` | Master on/off for the generic session-controls bar + the model control's initial value. Controls themselves (model + engine extras) are agent-declared as `SessionControl[]`; see Stage 7. |
 | `show_file_upload` / `max_upload_bytes` | Operator → workdir file upload. |
 | `file_download` / `max_download_bytes` | Agent → operator download (the `optio-file:` sentinel). |
 
