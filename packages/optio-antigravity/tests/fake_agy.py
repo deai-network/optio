@@ -126,11 +126,16 @@ def _token_store(gem: Path) -> Path:
     TODO(S1): reconcile with the real-login spike. The real ``agy`` keeps its
     Google OAuth token in the OS keyring; the design's likely fallback (§2
     option 1) is an encrypted file when no Secret Service is present. This fake
-    models that file at ``<gemini>/oauth_creds.json`` so the Stage-3/4 seed +
+    models that file at ``~/.gemini/oauth_creds.json`` so the Stage-3/4 seed +
     save-back machinery has a concrete file to capture/rotate. Adjust the path
     once S1 pins where the token actually lives.
+
+    ``gem`` is ``~/.gemini/antigravity`` (the state dir); the token store lives
+    one level up at ``~/.gemini/oauth_creds.json`` — the path the production
+    seed manifest (``_TOKEN_STORE_RELPATH``) and cred watcher capture, and the
+    same parent ``_scenario_seed`` uses for ``antigravity-cli/settings.json``.
     """
-    return gem / "oauth_creds.json"
+    return gem.parent / "oauth_creds.json"
 
 
 def _scenario_seed() -> None:

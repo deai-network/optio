@@ -108,8 +108,12 @@ async def run_antigravity_session(
     # callable → awaited); it stays None on resume and when no seed is
     # configured, and gates both the in-session watcher and the graceful
     # teardown. ``cred_baseline`` is the post-merge token-store fingerprint the
-    # watcher/backstop diff against. Lease acquire/renew/release is Task 4.3.
+    # watcher/backstop diff against. ``lease_holder`` is the task's process_id
+    # when the seed came from a lease-holding SeedProvider (a pool lease); the
+    # watcher renews it, teardown releases it (a plain-string seed carries no
+    # lease, so it stays None).
     resolved_seed_id: str | None = None
+    lease_holder: str | None = None
     cred_baseline: str | None = None
     cred_watch_task: "asyncio.Task | None" = None
 
@@ -126,7 +130,7 @@ async def run_antigravity_session(
         wiped by it.
         """
         nonlocal agy_path, ttyd_path, resuming, pass_continue, claustrum_path
-        nonlocal resolved_seed_id, cred_baseline
+        nonlocal resolved_seed_id, lease_holder, cred_baseline
         agy_path = await host_actions.ensure_antigravity_installed(
             hook_ctx,
             install_if_missing=config.install_if_missing,
@@ -180,11 +184,13 @@ async def run_antigravity_session(
             # registration + agy settings) into the fresh workdir BEFORE
             # AGENTS.md, so agy launches already-authed. No --continue: this
             # begins a NEW conversation. agy's creds are cwd-independent OAuth,
-            # so no rekey is needed (consume_transform=None). Pool leasing —
-            # the callable-seed lease_holder plumbing — lands in Task 4.3; here
-            # a resolved SeedProvider is merged without a renewed lease.
+            # so no rekey is needed (consume_transform=None).
             if callable(config.seed_id):
+                # A SeedProvider leases a seed from the pool (holder =
+                # process_id); the watcher renews the lease, teardown releases
+                # it. A plain string carries no lease.
                 resolved_seed_id = await config.seed_id(ctx.process_id)
+                lease_holder = ctx.process_id
             else:
                 resolved_seed_id = config.seed_id
             await _seeds.merge_seed(
@@ -291,8 +297,9 @@ async def run_antigravity_session(
         ctx.report_progress(None, "Antigravity is live")
 
         # Start the in-session credential watcher for a seeded session: it saves
-        # back the rotated token store as agy refreshes its OAuth token. (Pool
-        # lease renewal — lease_holder — is Task 4.3; here save-back only.)
+        # back the rotated token store as agy refreshes its OAuth token, and
+        # (when the seed is leased) renews the lease and aborts the session on
+        # lease loss.
         if resolved_seed_id is not None:
             cred_watch_task = asyncio.create_task(
                 cred_watcher.run_credential_watcher(
@@ -301,6 +308,7 @@ async def run_antigravity_session(
                     baseline=cred_baseline,
                     encrypt=None,
                     decrypt=None,
+                    lease_holder=lease_holder,
                 )
             )
 
@@ -552,6 +560,17 @@ async def run_antigravity_session(
                 )
             except Exception:
                 _LOG.exception("final credential save-back failed")
+
+        # Release the lease AFTER the final save-back (opencode's deliberate
+        # ordering): a new acquirer must never merge the pre-save-back blob.
+        if lease_holder is not None and resolved_seed_id is not None:
+            try:
+                await _seeds.release(
+                    ctx._db, prefix=ctx._prefix, suffix=ANTIGRAVITY_SEED_SUFFIX,
+                    seed_id=resolved_seed_id, holder=lease_holder,
+                )
+            except Exception:
+                _LOG.exception("lease release failed (TTL will reclaim)")
 
         # Reached-live gate: only capture if agy actually came up
         # (launched_handle is assigned strictly after a successful ttyd/agy
