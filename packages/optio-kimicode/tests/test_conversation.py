@@ -122,6 +122,35 @@ async def test_send_receive_and_on_event_transparent(convo):
 
 
 @pytest.mark.asyncio
+async def test_bootstrap_surfaces_session_new_error(convo):
+    """When session/new returns a JSON-RPC error (e.g. an invalid/rejected
+    credential, so kimi refuses to create a session), bootstrap must raise with
+    kimi's ACTUAL error message — not the masked 'no sessionId: {}' that
+    discards the real reason."""
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    boot = asyncio.create_task(c.bootstrap())
+    req1 = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert req1["method"] == "initialize"
+    handle.stdout.feed({"jsonrpc": "2.0", "id": req1["id"],
+                        "result": {"protocolVersion": 1, "agentCapabilities": {}}})
+    req2 = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert req2["method"] == "session/new"
+    handle.stdout.feed({"jsonrpc": "2.0", "id": req2["id"], "error": {
+        "code": -32000, "message": "not authenticated: send /login to login"}})
+
+    with pytest.raises(RuntimeError) as exc:
+        await asyncio.wait_for(boot, 1)
+    # The real reason is surfaced, not the empty masked result.
+    assert "not authenticated" in str(exc.value)
+    assert "send /login" in str(exc.value)
+    assert "no sessionId: {}" not in str(exc.value)
+
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
 async def test_exactly_one_message_per_turn(convo):
     """Two full turns must fire on_message exactly twice — one final answer per
     completed prompt, never per chunk."""

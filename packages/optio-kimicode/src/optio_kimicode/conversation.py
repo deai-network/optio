@@ -175,6 +175,17 @@ class KimiCodeConversation:
             "cwd": self._cwd,
             "mcpServers": self._mcp_servers,
         })
+        # session/new can come back as a JSON-RPC ERROR rather than a result
+        # (e.g. an invalid/rejected credential, so kimi refuses to create a
+        # session). Surface kimi's ACTUAL error message — otherwise the masking
+        # below (`.get("result") or {}` → {}) discards the real reason and the
+        # operator is left with a useless "no sessionId: {}".
+        error = (resp or {}).get("error")
+        if error is not None:
+            message = error.get("message") if isinstance(error, dict) else None
+            raise RuntimeError(
+                f"kimi ACP session/new failed: {message or error!r}"
+            )
         result = (resp or {}).get("result") or {}
         self._session_id = result.get("sessionId")
         if not self._session_id:
