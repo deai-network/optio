@@ -24,16 +24,21 @@ from optio_core.context import ProcessContext
 from optio_core.models import BasicAuth, TaskInstance
 
 from optio_agents import HookContext, RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
+from optio_agents import seeds as _seeds
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_agents.session_controls import model_control
 from optio_host.host import Host, LocalHost, ProcessHandle
 from optio_host.paths import task_dir
 
-from optio_antigravity import host_actions
+from optio_antigravity import cred_watcher, host_actions
 from optio_antigravity import models as antigravity_models
 from optio_antigravity.conversation import AntigravityConversation
 from optio_antigravity.conversation_listener import ConversationListener
 from optio_antigravity.prompt import compose_agents_md
+from optio_antigravity.seed_manifest import (
+    ANTIGRAVITY_SEED_MANIFEST,
+    ANTIGRAVITY_SEED_SUFFIX,
+)
 from optio_antigravity.snapshots import (
     insert_snapshot,
     load_latest_snapshot,
@@ -45,6 +50,18 @@ from optio_antigravity.types import AntigravityTaskConfig
 _LOG = logging.getLogger(__name__)
 
 READY_TIMEOUT_S = 30.0
+
+
+def _teardown_aggressive(*, cancelled: bool, seeded: bool) -> bool:
+    """Whether to SIGKILL agy immediately on teardown vs SIGTERM-and-wait.
+
+    A **seeded** session is torn down GRACEFULLY even on cancel: agy's Google
+    OAuth token store rotates on refresh, and that write is best-effort — an
+    aggressive SIGKILL can beat the flush, stranding the rotation (the seed
+    keeps the now-spent token → the next launch demands re-auth). SIGTERM-and-
+    wait lets agy flush first. A non-seeded session keeps the fast aggressive
+    kill on cancel."""
+    return cancelled and not seeded
 
 
 def _build_host(config: AntigravityTaskConfig, process_id: str) -> Host:
@@ -86,6 +103,15 @@ async def run_antigravity_session(
     # snapshot-capture skip in teardown.
     resuming = False
     pass_continue = False
+    # Stage 4 seeds + credential save-back. ``resolved_seed_id`` is the seed
+    # merged into a fresh, seeded launch (str seed_id → itself; SeedProvider
+    # callable → awaited); it stays None on resume and when no seed is
+    # configured, and gates both the in-session watcher and the graceful
+    # teardown. ``cred_baseline`` is the post-merge token-store fingerprint the
+    # watcher/backstop diff against. Lease acquire/renew/release is Task 4.3.
+    resolved_seed_id: str | None = None
+    cred_baseline: str | None = None
+    cred_watch_task: "asyncio.Task | None" = None
 
     await host.connect()
 
@@ -100,6 +126,7 @@ async def run_antigravity_session(
         wiped by it.
         """
         nonlocal agy_path, ttyd_path, resuming, pass_continue, claustrum_path
+        nonlocal resolved_seed_id, cred_baseline
         agy_path = await host_actions.ensure_antigravity_installed(
             hook_ctx,
             install_if_missing=config.install_if_missing,
@@ -146,6 +173,31 @@ async def run_antigravity_session(
             # (deterministic taskdir), so the workspace-keyed lookup matches.
             pass_continue = True
 
+        if not resuming and config.seed_id is not None:
+            # Seeded FRESH start: resolve the seed id (str → itself; a
+            # SeedProvider callable → awaited, may raise SeedUnavailableError)
+            # and overlay the stored Google identity (token store + account
+            # registration + agy settings) into the fresh workdir BEFORE
+            # AGENTS.md, so agy launches already-authed. No --continue: this
+            # begins a NEW conversation. agy's creds are cwd-independent OAuth,
+            # so no rekey is needed (consume_transform=None). Pool leasing —
+            # the callable-seed lease_holder plumbing — lands in Task 4.3; here
+            # a resolved SeedProvider is merged without a renewed lease.
+            if callable(config.seed_id):
+                resolved_seed_id = await config.seed_id(ctx.process_id)
+            else:
+                resolved_seed_id = config.seed_id
+            await _seeds.merge_seed(
+                ctx, host,
+                seed_id=resolved_seed_id,
+                manifest=ANTIGRAVITY_SEED_MANIFEST,
+                suffix=ANTIGRAVITY_SEED_SUFFIX,
+                decrypt=None,
+            )
+            # Baseline the merged token store so the in-session watcher and the
+            # teardown backstop only save back a genuinely rotated token.
+            cred_baseline = await cred_watcher.cred_fingerprint(host)
+
         # Stage 8 filesystem isolation: provision claustrum (cross-compiled on
         # the engine, cached by (tag, arch), placed on the target host, and
         # FUNCTIONALLY validated). Fail-closed — any provisioning failure raises,
@@ -182,6 +234,7 @@ async def run_antigravity_session(
 
     async def _agy_body(host: Host, hook_ctx: HookContext) -> None:
         nonlocal launched_handle, tmux_path, tmux_socket, tmux_session
+        nonlocal cred_watch_task
 
         # Network binding (same env handling as grok/claudecode for
         # multi-container deploys).
@@ -236,6 +289,20 @@ async def run_antigravity_session(
             "iframeSrc": "{widgetProxyUrl}/",
         })
         ctx.report_progress(None, "Antigravity is live")
+
+        # Start the in-session credential watcher for a seeded session: it saves
+        # back the rotated token store as agy refreshes its OAuth token. (Pool
+        # lease renewal — lease_holder — is Task 4.3; here save-back only.)
+        if resolved_seed_id is not None:
+            cred_watch_task = asyncio.create_task(
+                cred_watcher.run_credential_watcher(
+                    ctx, host,
+                    seed_id=resolved_seed_id,
+                    baseline=cred_baseline,
+                    encrypt=None,
+                    decrypt=None,
+                )
+            )
 
         # Await the agy process inside tmux (NOT the ttyd connection). ttyd stays
         # up serving viewers; the task is alive while the tmux session is. The
@@ -413,6 +480,17 @@ async def run_antigravity_session(
     finally:
         if not ctx.should_continue():
             cancelled = True
+        # agy authenticates with a rotating Google OAuth refresh token. If agy
+        # rotated it this session, the new token store must reach the seed via
+        # the save-back backstop below — but an aggressive SIGKILL can beat
+        # agy's flush, stranding the rotation (the seed keeps the now-spent
+        # token → the next launch demands re-auth). So a SEEDED session is torn
+        # down GRACEFULLY (SIGTERM + wait) even on cancel; only a non-seeded
+        # session keeps the fast aggressive kill. Taskdir cleanup below stays
+        # ``aggressive=cancelled`` (unrelated to agy's credential flush).
+        agy_aggressive = _teardown_aggressive(
+            cancelled=cancelled, seeded=resolved_seed_id is not None,
+        )
         # Stop the conversation listener first so its long-lived SSE loops are
         # woken (bounded shutdown) before any subprocess teardown below.
         if conv_listener is not None:
@@ -425,7 +503,7 @@ async def run_antigravity_session(
         # kills any in-flight turn and flips the conversation closed.
         if config.mode == "conversation" and conversation is not None:
             try:
-                await conversation.close()
+                await conversation.close(aggressive=agy_aggressive)
             except Exception:
                 _LOG.exception("conversation close failed")
         if (
@@ -443,10 +521,37 @@ async def run_antigravity_session(
                     tmux_session=tmux_session,
                     agy_path=agy_path,
                     ttyd_handle=launched_handle,
-                    aggressive=cancelled,
+                    aggressive=agy_aggressive,
                 )
             except Exception:
                 _LOG.exception("teardown_session_tree failed")
+
+        # Stop the credential watcher before the final save-back so the two
+        # never race on the same seed blob.
+        if cred_watch_task is not None:
+            cred_watch_task.cancel()
+            try:
+                await cred_watch_task
+            except asyncio.CancelledError:
+                pass
+
+        # Final backstop save-back — LOAD-BEARING, not defensive: agy's own
+        # token write-back is best-effort and the Google provider has already
+        # rotated the old refresh token; a rotation in the last poll window (or
+        # the whole rotation, for a short conversation session with no watcher)
+        # is persisted ONLY here. Runs after agy terminated so the token store
+        # is final.
+        if resolved_seed_id is not None:
+            try:
+                cred_baseline = await cred_watcher.save_back_if_changed(
+                    ctx, host,
+                    seed_id=resolved_seed_id,
+                    baseline=cred_baseline,
+                    encrypt=None,
+                    decrypt=None,
+                )
+            except Exception:
+                _LOG.exception("final credential save-back failed")
 
         # Reached-live gate: only capture if agy actually came up
         # (launched_handle is assigned strictly after a successful ttyd/agy

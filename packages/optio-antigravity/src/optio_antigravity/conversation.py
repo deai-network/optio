@@ -214,7 +214,14 @@ class AntigravityConversation:
             raise ConversationClosed("conversation closed")
         self._model = value
 
-    async def close(self) -> None:
+    async def close(self, aggressive: bool = True) -> None:
+        """Close the conversation, reaping any in-flight ``-p`` turn.
+
+        ``aggressive`` gates how the live turn is torn down. A SEEDED session
+        passes ``aggressive=False`` (SIGTERM-and-wait) so agy can flush a
+        rotated OAuth token store before the teardown save-back reads it; a
+        non-seeded session keeps the default fast kill. See
+        ``session._teardown_aggressive``."""
         self._closed = True
         self.close_requested.set()
         # Kill any in-flight turn so a parked -p process never leaks.
@@ -222,7 +229,7 @@ class AntigravityConversation:
         if handle is not None:
             self._interrupted = True
             try:
-                await self._host.terminate_subprocess(handle, aggressive=True)
+                await self._host.terminate_subprocess(handle, aggressive=aggressive)
             except Exception:  # noqa: BLE001 — teardown must not raise
                 _LOG.exception("antigravity conversation: terminate on close failed")
 
