@@ -194,7 +194,7 @@ async def test_auto_start_sends_kickoff_first(shim_install_dir, task_root, mongo
 
 
 def test_ui_widget_per_mode():
-    """Conversation tasks carry no widget; iframe tasks keep 'iframe'."""
+    """Conversation tasks carry no widget; iframe tasks use 'iframe-input'."""
     conv_task = create_grok_task(
         process_id="gk-widget-conv",
         name="Widget conv",
@@ -207,7 +207,7 @@ def test_ui_widget_per_mode():
         name="Widget iframe",
         config=GrokTaskConfig(consumer_instructions="x"),
     )
-    assert iframe_task.ui_widget == "iframe"
+    assert iframe_task.ui_widget == "iframe-input"
 
 
 def test_config_validation_conversation_fields():

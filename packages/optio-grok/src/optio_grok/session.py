@@ -26,6 +26,7 @@ from optio_core.models import BasicAuth, TaskInstance
 
 from optio_agents import HookContext, RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
 from optio_agents import seeds as _seeds
+from optio_agents.input_listener import serialized, start_input_listener
 from optio_agents.session_controls import model_control
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
@@ -117,6 +118,11 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
     lease_holder: str | None = None
     cred_baseline: str | None = None
     cred_watch_task: "asyncio.Task | None" = None
+    # iframe-input widget: an engine-side HTTP listener injects operator input
+    # (typed messages + NAV keystrokes) into the grok tmux TUI. One lock serializes
+    # human input against the system (_agent_sender) sends so bursts never interleave.
+    input_runner = None
+    injection_lock = asyncio.Lock()
 
     await host.connect()
 
@@ -237,7 +243,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
 
     async def _grok_body(host: Host, hook_ctx: HookContext) -> None:
         nonlocal launched_handle, tmux_path, tmux_socket, tmux_session
-        nonlocal cred_watch_task
+        nonlocal cred_watch_task, input_runner
 
         # Network binding (same env handling as claudecode/opencode for
         # multi-container deploys).
@@ -291,6 +297,27 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             "iframeSrc": "{widgetProxyUrl}/",
         })
         ctx.report_progress(None, "Grok Build is live")
+
+        # iframe-input widget: start the engine-side input listener and publish it
+        # as the control upstream. The operator types messages / drives TUI menus
+        # via /api/widget-control. Both the human path and the system _agent_sender
+        # share ``injection_lock`` so tmux injection bursts never interleave.
+        async def _human_input(text: str) -> None:
+            await host_actions.send_text_to_grok(
+                host, tmux_path, tmux_socket, tmux_session, text,
+            )
+
+        async def _human_key(key: str) -> None:
+            await host_actions.send_key_to_grok(
+                host, tmux_path, tmux_socket, tmux_session, key,
+            )
+
+        input_runner, input_port = await start_input_listener(
+            bind_iface=bind_addr,
+            on_input=serialized(injection_lock, _human_input),
+            on_key=serialized(injection_lock, _human_key),
+        )
+        await ctx.set_control_upstream(f"http://{upstream_host}:{input_port}")
 
         # Start the in-session credential watcher for a seeded session: it
         # saves back the rotated auth.json, and (when the seed is leased)
@@ -504,9 +531,12 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
         if config.mode == "conversation":
             await conversation.send(message)
             return
-        await host_actions.send_text_to_grok(
-            host, tmux_path, tmux_socket, tmux_session, message,
-        )
+        # Share the iframe-input lock so a system send never interleaves with a
+        # concurrent operator injection into the same tmux TUI.
+        async with injection_lock:
+            await host_actions.send_text_to_grok(
+                host, tmux_path, tmux_socket, tmux_session, message,
+            )
 
     body = _conversation_body if config.mode == "conversation" else _grok_body
     try:
@@ -569,6 +599,17 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                 )
             except Exception:
                 _LOG.exception("teardown_session_tree failed")
+
+        # Tear down the iframe-input listener + clear its control upstream.
+        if input_runner is not None:
+            try:
+                await ctx.clear_control_upstream()
+            except Exception:
+                _LOG.exception("clear_control_upstream failed")
+            try:
+                await input_runner.cleanup()
+            except Exception:
+                _LOG.exception("input listener cleanup failed")
 
         # Stop the credential watcher before the final save-back so the two
         # never race on the same seed blob.
@@ -725,7 +766,9 @@ def create_grok_task(
     async def _execute(ctx: ProcessContext) -> None:
         await run_grok_session(ctx, config)
 
-    # iframe → the ttyd TUI widget. Conversation mode carries the live chat
+    # iframe → the ttyd TUI widget WITH an operator input box (iframe-input): a
+    # textarea to type messages + on-screen NAV keys to drive grok's TUI menus,
+    # reached via the control upstream. Conversation mode carries the live chat
     # widget only when conversation_ui is on (Group 6b); otherwise no widget
     # (the published Conversation is driven programmatically).
     if config.conversation_ui:
@@ -733,7 +776,7 @@ def create_grok_task(
     elif config.mode == "conversation":
         ui_widget = None
     else:
-        ui_widget = "iframe"
+        ui_widget = "iframe-input"
 
     return TaskInstance(
         execute=_execute,
