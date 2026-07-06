@@ -77,10 +77,19 @@ function rewriteFileLinks(content: string): string {
 // Pull the operator's actual request out of a USER_INPUT `content` blob. The
 // real transcript wraps it as "<USER_REQUEST>\n{text}\n</USER_REQUEST>\n<…meta>";
 // we show only {text}. Absent tags (defensive) → the raw content, trimmed.
+// On a file upload the view prepends one `System: upload received, stored in
+// <path>` line per file (+ a blank line) to the prompt sent to agy, so those
+// lines land INSIDE the USER_INPUT. Strip them: the user bubble must show only
+// the real request — otherwise it renders the System notice as the operator's
+// message AND fails to dedupe against the optimistic echo (which is just the
+// typed text), showing the prompt twice.
+function stripUploadNotice(text: string): string {
+  return text.replace(/^(?:System: upload received, stored in [^\n]*\n)+\n?/, '');
+}
 function extractUserRequest(content: unknown): string {
   if (typeof content !== 'string') return '';
   const m = content.match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/);
-  return (m ? m[1] : content).trim();
+  return stripUploadNotice((m ? m[1] : content).trim()).trim();
 }
 
 // Coalesce a turn's answer into ONE assistant bubble. A turn is delimited by the

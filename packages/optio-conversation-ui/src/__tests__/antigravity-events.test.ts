@@ -203,3 +203,20 @@ describe('antigravity answer polish (agy quirks)', () => {
     expect(t.input.Command).toBe('ls -la');           // raw args preserved
   });
 });
+
+describe('antigravity upload notice (no duplicate / not shown as user)', () => {
+  it('strips the prepended System: upload notice and dedupes with the echo', () => {
+    let s = initialChatState;
+    // optimistic echo carries just the typed text
+    s = reduceAntigravityEvent(s, { type: 'x-optio-local-user', text: 'explain the file' } as any, -1);
+    // the real USER_INPUT carries the notice + body (what agy recorded)
+    s = reduceAntigravityEvent(s, {
+      type: 'USER_INPUT', source: 'USER_EXPLICIT',
+      content: '<USER_REQUEST>\nSystem: upload received, stored in uploads/x.md\n\nexplain the file\n</USER_REQUEST>',
+    } as any, 1);
+    const users = s.items.filter((i) => i.kind === 'user');
+    expect(users).toHaveLength(1);                         // no duplicate
+    expect((users[0] as any).text).toBe('explain the file'); // notice stripped
+    expect((users[0] as any).local).toBeUndefined();        // echo confirmed
+  });
+});
