@@ -413,6 +413,123 @@ async def test_bootstrap_captures_config_options(convo):
     await reader
 
 
+@pytest.mark.asyncio
+async def test_bootstrap_uses_session_new_never_load(convo):
+    # Fresh (non-resume) start establishes the working session with session/new,
+    # never session/load — replay is a resume-only path (see replay_history).
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    boot = asyncio.create_task(c.bootstrap())
+    req1 = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert req1["method"] == "initialize"
+    handle.stdout.feed({"jsonrpc": "2.0", "id": req1["id"],
+                        "result": {"protocolVersion": 1, "agentCapabilities": {}}})
+    req2 = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert req2["method"] == "session/new"          # NOT session/load
+    handle.stdout.feed({"jsonrpc": "2.0", "id": req2["id"],
+                        "result": {"sessionId": "s1", "configOptions": []}})
+    await asyncio.wait_for(boot, 1)
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_replay_history_sends_session_load_and_backfills_on_event(convo):
+    # On resume replay_history issues ACP session/load(preserved_id); the agent
+    # replays the prior conversation as session/update notifications, which reach
+    # on_event through the same fan-out live turns use. It is pure buffer backfill:
+    # on_message must NEVER fire (no coalesced answer synthesised), and the
+    # replayed agent_message_chunk text must NOT leak into the next turn's answer.
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)                       # session/new -> s1
+
+    events, texts = [], []
+    c.on_event(events.append)
+    c.on_message(texts.append)
+
+    task = asyncio.create_task(c.replay_history("prior-sess"))
+    load = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert load["method"] == "session/load"
+    assert load["params"]["sessionId"] == "prior-sess"
+    assert load["params"]["cwd"] == "/w"
+    # The agent replays prior turns (user + assistant) as session/update, THEN
+    # settles the session/load response (configOptions) — order per the adapter.
+    handle.stdout.feed({"jsonrpc": "2.0", "method": "session/update",
+                        "params": {"sessionId": "prior-sess", "update": {
+                            "sessionUpdate": "user_message_chunk",
+                            "content": {"type": "text", "text": "prior-q"}}}})
+    handle.stdout.feed({"jsonrpc": "2.0", "method": "session/update",
+                        "params": {"sessionId": "prior-sess", "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": "prior-a"}}}})
+    handle.stdout.feed({"jsonrpc": "2.0", "id": load["id"],
+                        "result": {"configOptions": []}})
+    ok = await asyncio.wait_for(task, 2)
+    assert ok is True
+
+    # Both historic session/updates reached on_event, in order; on_message silent.
+    await _wait_for(lambda: sum(
+        1 for e in events if e.get("method") == "session/update") >= 2)
+    kinds = [e["params"]["update"]["sessionUpdate"]
+             for e in events if e.get("method") == "session/update"]
+    assert kinds == ["user_message_chunk", "agent_message_chunk"]
+    assert texts == []
+
+    # The next real turn's answer is clean — the replayed "prior-a" chunk did not
+    # pollute the answer accumulator (replay_history reset it).
+    await c.send("hi")
+    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert prompt["method"] == "session/prompt"
+    handle.stdout.feed({"jsonrpc": "2.0", "method": "session/update",
+                        "params": {"sessionId": "s1", "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": "PONG"}}}})
+    handle.stdout.feed({"jsonrpc": "2.0", "id": prompt["id"],
+                        "result": {"stopReason": "end_turn"}})
+    reply = await asyncio.wait_for(_first(texts), 2)
+    assert reply == "PONG"
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_replay_history_falls_back_when_session_load_rejected(convo):
+    # Graceful fallback: when the agent rejects session/load (unknown/invalid id,
+    # capability mismatch) with a JSON-RPC error, replay_history returns False and
+    # NEVER raises — the session/new session from bootstrap remains the working
+    # session, so a subsequent send still succeeds (resume without history).
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)                       # session/new -> s1
+    texts = []
+    c.on_message(texts.append)
+
+    task = asyncio.create_task(c.replay_history("stale-id"))
+    load = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert load["method"] == "session/load"
+    handle.stdout.feed({"jsonrpc": "2.0", "id": load["id"],
+                        "error": {"code": -32602, "message": "session not found"}})
+    ok = await asyncio.wait_for(task, 2)
+    assert ok is False                                # fell back, no exception
+
+    # The conversation is still usable: a turn goes to the session/new session.
+    await c.send("still works")
+    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert prompt["method"] == "session/prompt"
+    assert prompt["params"]["sessionId"] == "s1"
+    handle.stdout.feed({"jsonrpc": "2.0", "method": "session/update",
+                        "params": {"sessionId": "s1", "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": "ok"}}}})
+    handle.stdout.feed({"jsonrpc": "2.0", "id": prompt["id"],
+                        "result": {"stopReason": "end_turn"}})
+    reply = await asyncio.wait_for(_first(texts), 2)
+    assert reply == "ok"
+    handle.stdout.eof()
+    await reader
+
+
 # NOTE: the model/thinking/mode switch surface moved from the sync
 # `request_model_change` to the async `set_control` (session-controls
 # migration); those cases now live in test_conversation_controls.py.

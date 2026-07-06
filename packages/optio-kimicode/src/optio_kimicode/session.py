@@ -483,6 +483,23 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             })
             ctx.report_progress(None, "Conversation UI is live")
 
+            # Resume history backfill: bootstrap opened a FRESH session/new for
+            # this task, so kimi never re-emitted the prior conversation — a viewer
+            # attaching after resume would see only new turns. Now that the
+            # ConversationListener above has subscribed to conversation.on_event (in
+            # its constructor), issue ACP session/load(preserved_session_id): kimi
+            # replays the prior turns as session/update notifications through the
+            # SAME on_event fan-out, landing them in the listener's replay buffer so
+            # a late viewer reconstructs the full history. ORDERING is load-bearing:
+            # strictly AFTER the listener subscribes (the fan-out has no
+            # late-subscriber buffer of its own) and BEFORE the resume-notice send
+            # below (whose new turn must not be tangled with the replay). Gated on
+            # resuming + a recovered id; replay_history falls back to the
+            # session/new session (logging, never raising) when session/load fails —
+            # resume then shows no history but stays fully usable.
+            if resuming and preserved_session_id:
+                await conversation.replay_history(preserved_session_id)
+
         # Start the in-session credential watcher for a seeded conversation: it
         # saves back the rotated kimi-code.json, and (when the seed is leased)
         # renews the lease and aborts the session on lease loss. Same wiring as

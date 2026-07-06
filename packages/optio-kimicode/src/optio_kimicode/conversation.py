@@ -472,6 +472,72 @@ class KimiCodeConversation:
     async def close(self) -> None:
         self.close_requested.set()
 
+    async def replay_history(self, session_id: str) -> bool:
+        """Backfill the event stream with the RESTORED session's prior turns on
+        resume, via ACP ``session/load``.
+
+        The wrapper's ``bootstrap`` opened a FRESH ``session/new`` for this task,
+        so kimi never re-emitted the prior conversation — a viewer attaching after
+        a resume would see only NEW turns. ``session/load(sessionId)`` makes the
+        agent rehydrate the on-disk session and replay its whole history as a
+        synchronous batch of ``session/update`` notifications (user_message_chunk /
+        agent_message_chunk / tool_call*), then settle its response. Those
+        notifications flow through the SAME ``_route`` -> event-queue -> on_event
+        fan-out live turns use, so they land in the listener's replay buffer with
+        no extra wiring; a late viewer then reconstructs the full prior history.
+        (server.ts:loadSession replays BEFORE returning; session.ts:replayHistory
+        emits the per-message updates — verified against the kimi-code fork.)
+
+        ORDERING is load-bearing: the event fan-out has no late-subscriber buffer
+        of its own (``_dispatch_loop`` drops events fired before a handler
+        subscribes), so this MUST be called AFTER the ConversationListener has
+        subscribed to ``on_event`` (session.py calls it inside the
+        ``if config.conversation_ui:`` block, after the listener is constructed).
+        Awaiting the ``session/load`` response guarantees every replayed
+        notification was already routed onto the (FIFO) event queue.
+
+        Pure buffer backfill, NOT a completed turn: the replayed
+        ``agent_message_chunk`` text is folded into ``_answer_parts`` by
+        ``_on_session_update`` (the shared notification handler), but there is no
+        matching ``session/prompt`` id, so no ``on_message`` fires — we reset
+        ``_answer_parts`` afterwards so the replayed history never prefixes the
+        first NEW turn's answer.
+
+        GRACEFUL FALLBACK: if ``session/load`` errors (the recovered id is unknown
+        to the ``kimi acp`` server, a capability mismatch, or the agent rejects
+        it) the agent emits no notifications and returns a JSON-RPC error — we log
+        and return ``False`` WITHOUT raising. Resume then simply shows no prior
+        history: the ``session/new`` session bootstrap already opened stays the
+        working session, so the conversation remains fully usable. Returns ``True``
+        only when the load succeeded and history was replayed."""
+        if self._closed.is_set():
+            return False
+        try:
+            resp = await self._request("session/load", {
+                "sessionId": session_id,
+                "cwd": self._cwd,
+                "mcpServers": self._mcp_servers,
+            })
+        except ConversationClosed as exc:
+            _LOG.info(
+                "kimicode resume: session/load unavailable (%s); starting fresh session",
+                exc,
+            )
+            return False
+        error = (resp or {}).get("error")
+        if error:
+            _LOG.info(
+                "kimicode resume: session/load unavailable (%s); starting fresh session",
+                error.get("message") if isinstance(error, dict) else error,
+            )
+            return False
+        # Discard the answer-part accumulation the replayed agent_message_chunk
+        # notifications left behind — this was history, not a live turn, so it must
+        # not leak into the next real turn's coalesced answer.
+        self._answer_parts = []
+        _LOG.info("kimicode resume: session/load replayed prior history")
+        return True
+
     @property
     def closed(self) -> bool:
         return self._closed.is_set()

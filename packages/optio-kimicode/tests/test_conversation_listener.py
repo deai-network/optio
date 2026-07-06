@@ -27,6 +27,9 @@ class FakeConversation:
         self.interrupts = 0
         self.controls = []  # list[(id, value)] set via set_control
         self.closed = False
+        # Prior session/updates the driver backfills on resume (replay_history).
+        self.history = []
+        self.loaded = None  # sessionId passed to replay_history
 
     def on_event(self, h):
         self.handlers.append(h)
@@ -54,6 +57,16 @@ class FakeConversation:
     def fire(self, event):
         for h in list(self.handlers):
             h(event)
+
+    async def replay_history(self, session_id):
+        # Resume backfill: session/load re-emits the restored prior session's
+        # turns through the SAME on_event fan-out live turns use (what
+        # KimiCodeConversation does), landing them in the listener's replay
+        # buffer. Returns True when it replayed (mirrors the real bool contract).
+        self.loaded = session_id
+        for e in list(self.history):
+            self.fire(e)
+        return bool(self.history)
 
 
 def _auth(pw):
@@ -113,6 +126,33 @@ async def test_replay_to_late_subscriber(listener):
                 "content": {"type": "text", "text": "more"}}}})
             live = await _read_events(resp, 1)
             assert live[0]["params"]["update"]["content"]["text"] == "more"
+
+
+async def test_replay_history_backfills_buffer_for_late_subscriber(listener):
+    # Resume backfill: the driver's replay_history (session/load) re-emits the
+    # restored prior turns through on_event AFTER the listener has subscribed (its
+    # constructor), landing them in the replay buffer BEFORE any viewer attaches.
+    # A viewer connecting post-resume then sees the full prior history, not just
+    # new turns — the crux of the resume-history fix. Mirrors how session.py wires
+    # replay_history after ConversationListener(...) is constructed.
+    conv, lst, url = listener
+    conv.history = [
+        {"jsonrpc": "2.0", "method": "session/update", "params": {"update": {
+            "sessionUpdate": "user_message_chunk",
+            "content": {"type": "text", "text": "prior-q"}}}},
+        {"jsonrpc": "2.0", "method": "session/update", "params": {"update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": "prior-a"}}}},
+    ]
+    replayed = await conv.replay_history("prior-sess")
+    assert replayed is True
+    assert conv.loaded == "prior-sess"
+    async with aiohttp.ClientSession() as s:
+        async with s.get(f"{url}/events", headers=_auth("pw")) as resp:
+            assert resp.status == 200
+            replay = await _read_events(resp, 2)
+            assert [e["params"]["update"]["content"]["text"]
+                    for e in replay] == ["prior-q", "prior-a"]
 
 
 async def test_last_event_id_resume(listener):
