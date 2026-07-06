@@ -46,6 +46,34 @@ export { initialChatState } from '../chat.js';
 // Tool rows persist as transcript history, so — unlike the streaming engines —
 // the answer bubble must NOT strip them. There is no withoutTools() here.
 
+// agy stores a tool call's args with human text in `toolAction`
+// ("Listing directory contents") and `toolSummary` ("Directory listing"), both
+// JSON-quoted (the value is itself wrapped in `"`), plus tool-specific keys
+// (capitalized: DirectoryPath / AbsolutePath / Query / Command …). The shared
+// tool renderer's summary only checks lowercase/generic keys, so it showed a
+// bare "running <name>:" with no detail. Surface a clean `description` (which
+// the shared renderer prefers) from toolAction → toolSummary.
+function dequote(s: unknown): string {
+  if (typeof s !== 'string') return '';
+  const t = s.trim();
+  return t.length >= 2 && t.startsWith('"') && t.endsWith('"') ? t.slice(1, -1) : t;
+}
+function normalizeToolInput(args: unknown): Record<string, unknown> {
+  const a = (args && typeof args === 'object' && !Array.isArray(args))
+    ? (args as Record<string, unknown>) : {};
+  const description = dequote(a.toolAction) || dequote(a.toolSummary);
+  return description ? { description, ...a } : { ...a };
+}
+
+// agy links deliverables in its answer as `[name](file:///abs/path)` markdown —
+// NOT the optio-file: sentinel — and react-markdown strips the file:// scheme so
+// the link isn't even clickable. Rewrite the link scheme to optio-file: so the
+// shared Markdown renderer turns it into a /download click; the download reader
+// confines the (absolute, in-workdir) path.
+function rewriteFileLinks(content: string): string {
+  return content.replace(/\]\(\s*file:\/\//g, '](optio-file:');
+}
+
 // Pull the operator's actual request out of a USER_INPUT `content` blob. The
 // real transcript wraps it as "<USER_REQUEST>\n{text}\n</USER_REQUEST>\n<…meta>";
 // we show only {text}. Absent tags (defensive) → the raw content, trimmed.
@@ -145,7 +173,7 @@ export function reduceAntigravityEvent(state: ChatState, ev: any, seq: number): 
       // Answer content coalesces into the turn's single bubble (last wins).
       let busy = state.busy;
       if (typeof ev.content === 'string' && ev.content !== '') {
-        items = upsertTurnAnswer(items, seq, ev.content);
+        items = upsertTurnAnswer(items, seq, rewriteFileLinks(ev.content));
         // The answer landing IS the turn end (no streaming, no turn-end frame).
         busy = false;
       }
@@ -154,7 +182,7 @@ export function reduceAntigravityEvent(state: ChatState, ev: any, seq: number): 
       if (Array.isArray(ev.tool_calls)) {
         for (const tc of ev.tool_calls) {
           const name = String(tc?.name ?? 'tool');
-          items = [...items, { kind: 'tool', name, input: tc?.args ?? {}, seq }];
+          items = [...items, { kind: 'tool', name, input: normalizeToolInput(tc?.args), seq }];
         }
       }
       return items === state.items && busy === state.busy ? state : { ...state, items, busy };

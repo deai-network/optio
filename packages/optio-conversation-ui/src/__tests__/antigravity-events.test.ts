@@ -76,7 +76,7 @@ describe('antigravity transcript event reducer (real agy schema)', () => {
     ]);
     const t = s.items.find((i) => i.kind === 'tool');
     expect(t && t.kind === 'tool' && t.name).toBe('list_dir');
-    expect(t && t.kind === 'tool' && t.input).toEqual({ DirectoryPath: '/w', toolAction: 'Listing' });
+    expect(t && t.kind === 'tool' && t.input).toEqual({ description: 'Listing', DirectoryPath: '/w', toolAction: 'Listing' });
     // still present after the answer arrived
     expect(s.items.some((i) => i.kind === 'tool')).toBe(true);
   });
@@ -179,5 +179,27 @@ describe('antigravity transcript event reducer (real agy schema)', () => {
     const s = play([{ type: 'x-optio-unparseable', line: '{bad' }, planner({ content: 'still fine' })]);
     const bubbles = s.items.filter((i) => i.kind === 'assistant');
     expect(bubbles).toHaveLength(1);
+  });
+});
+
+describe('antigravity answer polish (agy quirks)', () => {
+  it('rewrites a file:// deliverable link into an optio-file: download link', () => {
+    let s = initialChatState;
+    s = reduceAntigravityEvent(s, planner({
+      content: 'Done. [numbers.txt](file:///w/home/.gemini/scratch/numbers.txt)',
+    }), 1);
+    const ans = s.items.find((i) => i.kind === 'assistant') as any;
+    expect(ans.text).toContain('](optio-file:/w/home/.gemini/scratch/numbers.txt)');
+    expect(ans.text).not.toContain('file://');
+  });
+
+  it('surfaces toolAction/toolSummary as a description (dequoted)', () => {
+    let s = initialChatState;
+    s = reduceAntigravityEvent(s, planner({
+      tool_calls: [{ name: 'run_command', args: { Command: 'ls -la', toolAction: '"Running ls"' } }],
+    }), 1);
+    const t = s.items.find((i) => i.kind === 'tool') as any;
+    expect(t.input.description).toBe('Running ls');   // dequoted
+    expect(t.input.Command).toBe('ls -la');           // raw args preserved
   });
 });

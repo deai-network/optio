@@ -454,11 +454,16 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
       case 'tool': {
         if (toolVerbosity === 'silent') return null;
         const summary = toolVerbosity === 'description-only' ? toolSummary(item.input) : '';
+        // A completed tool call (its result folded into the row) is history, not
+        // in-flight — don't label it "running". Engines whose tool rows never
+        // carry a result keep the "running" prefix unchanged.
+        const done =
+          !!item.input && typeof item.input === 'object' && 'result' in (item.input as Record<string, unknown>);
         return (
           <div key={item.seq} data-testid="tool-call" style={{ color: token.colorTextTertiary, fontSize: 12 }}>
             <div style={{ fontFamily: 'monospace' }}>
-              running <strong>{item.name}</strong>
-              {summary ? `: ${summary}` : ':'}
+              {done ? '' : 'running '}<strong>{item.name}</strong>
+              {summary ? `: ${summary}` : (done ? '' : ':')}
             </div>
             {toolVerbosity === 'verbose' ? renderInputKV(item.input, token) : null}
           </div>
