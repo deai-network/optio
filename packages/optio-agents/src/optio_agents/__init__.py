@@ -42,8 +42,19 @@ from optio_agents import claustrum
 from optio_agents import seeds
 from optio_agents import session_controls
 from optio_agents.session_controls import ControlOption, SessionControl
+from optio_agents import input_listener
+from optio_agents import tmux_input
+from optio_agents.input_listener import serialized, start_input_listener
+from optio_agents.tmux_input import NAV_KEYS, send_key_to_tmux, send_text_to_tmux
 
 __all__ = [
+    "input_listener",
+    "tmux_input",
+    "serialized",
+    "start_input_listener",
+    "NAV_KEYS",
+    "send_key_to_tmux",
+    "send_text_to_tmux",
     "HookContext",
     "HookContextProtocol",
     "SYSTEM_MESSAGE_PREFIX",
