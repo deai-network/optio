@@ -541,12 +541,19 @@ class KimiCodeConversation:
         ``_answer_parts`` afterwards so the replayed history never prefixes the
         first NEW turn's answer.
 
+        WORKING SESSION on success: a successful ``session/load`` ADOPTS the
+        loaded session as ``self._session_id`` (replacing the fresh
+        ``session/new`` id bootstrap opened), so the resume-notice and every
+        subsequent ``send()``/``session/prompt`` run in the RESTORED session and
+        kimi rehydrates its history as the model's context — semantic continuity,
+        not just visual replay.
+
         GRACEFUL FALLBACK: if ``session/load`` errors (the recovered id is unknown
         to the ``kimi acp`` server, a capability mismatch, or the agent rejects
         it) the agent emits no notifications and returns a JSON-RPC error — we log
-        and return ``False`` WITHOUT raising. Resume then simply shows no prior
-        history: the ``session/new`` session bootstrap already opened stays the
-        working session, so the conversation remains fully usable. Returns ``True``
+        and return ``False`` WITHOUT raising, WITHOUT adopting. The fresh
+        ``session/new`` session stays the working session, so resume shows no
+        prior history but the conversation remains fully usable. Returns ``True``
         only when the load succeeded and history was replayed."""
         if self._closed.is_set():
             return False
@@ -573,6 +580,15 @@ class KimiCodeConversation:
         # notifications left behind — this was history, not a live turn, so it must
         # not leak into the next real turn's coalesced answer.
         self._answer_parts = []
+        # Adopt the loaded session as the WORKING session (semantic continuity):
+        # bootstrap set self._session_id to the fresh session/new id, but every
+        # subsequent send()/session/prompt must run in the RESTORED session so
+        # kimi rehydrates its on-disk history as the model's context — otherwise
+        # the resume-notice and all user turns prompt an EMPTY fresh session and
+        # the agent has no memory of the prior conversation (resume amnesia).
+        # Grok/cursor adopt likewise on load success; only a FAILED load (above)
+        # keeps the fresh session/new id.
+        self._session_id = session_id
         _LOG.info("kimicode resume: session/load replayed prior history")
         return True
 

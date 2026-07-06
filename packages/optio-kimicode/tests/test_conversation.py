@@ -568,6 +568,37 @@ async def test_replay_history_sends_session_load_and_backfills_on_event(convo):
 
 
 @pytest.mark.asyncio
+async def test_replay_history_adopts_loaded_session_as_working_session(convo):
+    # Semantic continuity: on a SUCCESSFUL session/load the recovered session
+    # becomes the WORKING session — self._session_id is adopted, so subsequent
+    # send()/session/prompt run in the RESTORED session (kimi rehydrates its
+    # history as the model's context) instead of the empty fresh session/new id.
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)                       # session/new -> s1 (fresh)
+    assert c._session_id == "s1"
+
+    task = asyncio.create_task(c.replay_history("prior-sess"))
+    load = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert load["method"] == "session/load"
+    handle.stdout.feed({"jsonrpc": "2.0", "id": load["id"],
+                        "result": {"configOptions": []}})
+    assert await asyncio.wait_for(task, 2) is True
+
+    # Adopted: the recovered id is now the working session.
+    assert c._session_id == "prior-sess"
+
+    # A subsequent turn prompts the RESTORED session, not the fresh s1.
+    await c.send("do you remember our earlier chat?")
+    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert prompt["method"] == "session/prompt"
+    assert prompt["params"]["sessionId"] == "prior-sess"
+
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
 async def test_replay_history_falls_back_when_session_load_rejected(convo):
     # Graceful fallback: when the agent rejects session/load (unknown/invalid id,
     # capability mismatch) with a JSON-RPC error, replay_history returns False and
@@ -586,6 +617,7 @@ async def test_replay_history_falls_back_when_session_load_rejected(convo):
                         "error": {"code": -32602, "message": "session not found"}})
     ok = await asyncio.wait_for(task, 2)
     assert ok is False                                # fell back, no exception
+    assert c._session_id == "s1"                      # NOT adopted on failure
 
     # The conversation is still usable: a turn goes to the session/new session.
     await c.send("still works")
