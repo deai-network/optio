@@ -123,14 +123,30 @@ async def _merge_seed_with_refresh(
             encrypt=config.session_blob_encrypt,
             decrypt=config.session_blob_decrypt,
         )
-        if not alive:
-            _LOG.warning(
-                "kimi seed %s could not be refreshed before launch; the merged "
-                "credential may be expired (kimi will report an auth error)",
-                seed_id,
-            )
-    except Exception:  # noqa: BLE001 — a refresh failure must never block launch
+    except Exception:  # noqa: BLE001 — a transport bug is inconclusive, not dead
         _LOG.exception("kimi seed %s pre-merge refresh failed", seed_id)
+        alive = None
+    if alive is False:
+        # verify returns False for BOTH a SPOILED seed (spent/revoked refresh
+        # token → verify marks pool status "dead") and a transient failure
+        # (network → status untouched). A spoiled seed can NEVER launch, so fail
+        # now with an actionable message rather than merging a dead credential
+        # and letting kimi surface a cryptic 'Authentication required'. A
+        # transient failure is inconclusive — merge the existing credential and
+        # let session/new surface any error.
+        doc = await _seeds.load_seed(
+            ctx._db, prefix=ctx._prefix, suffix=KIMI_SEED_SUFFIX, seed_id=seed_id,
+        )
+        if doc is not None and doc.get("status") == "dead":
+            raise RuntimeError(
+                f"Kimi Code seed {seed_id} is spoiled: its login token is expired "
+                f"or revoked and can no longer be refreshed — a fresh Kimi Code "
+                f"login is required to use this seed."
+            )
+        _LOG.warning(
+            "kimi seed %s could not be refreshed (transient); merging the existing "
+            "credential — kimi may report an auth error", seed_id,
+        )
     await _seeds.merge_seed(
         ctx, host,
         seed_id=seed_id,
@@ -235,35 +251,37 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             )
             await host_actions.rotate_optio_log(host)
             preserved_session_id = await _recover_session_id(host)
-        else:
-            # Seeded FRESH start: resolve the seed id (str → itself; a
-            # SeedProvider callable → awaited, may raise SeedUnavailableError)
-            # and overlay the stored kimi identity (credentials/kimi-code.json)
-            # into the fresh workdir BEFORE AGENTS.md, so kimi launches
-            # already-authed. No resume/preserved session: this begins anew.
-            # kimi credentials are cwd-independent, so no rekey is needed.
-            if config.seed_id is not None:
-                if callable(config.seed_id):
-                    # A SeedProvider leases a seed from the pool (holder =
-                    # process_id); the watcher renews the lease, teardown
-                    # releases it. A plain string carries no lease.
-                    resolved_seed_id = await config.seed_id(ctx.process_id)
-                    lease_holder = ctx.process_id
-                else:
-                    resolved_seed_id = config.seed_id
-                # Refresh the seed's short-lived access token host-free BEFORE
-                # merging, so kimi launches already-authed instead of with an
-                # expired token (empty model picker / "Authentication required").
-                await _merge_seed_with_refresh(
-                    ctx, host, config, seed_id=resolved_seed_id,
-                )
-                # Baseline the merged kimi-code.json so the in-session watcher
-                # and the teardown backstop only save back a genuinely rotated
-                # token.
-                cred_baseline = await cred_watcher.cred_fingerprint(host)
+        # Seed refresh + merge — BOTH the fresh and resume paths. Fresh: overlay
+        # the stored kimi identity (credentials/kimi-code.json + config.toml) into
+        # the empty workdir so kimi launches already-authed. RESUME: the restored
+        # snapshot carries the session's now-EXPIRED token, so overlay a
+        # freshly-refreshed credential on top — otherwise a resumed conversation
+        # re-uses the stale token and kimi ships an empty model picker or rejects
+        # session/new with "Authentication required" (the resume-launch failure).
+        # The manifest touches only credentials/ + config.toml, so the restored
+        # home/sessions store survives the overlay. The refresh is host-free (no
+        # kimi process): a no-op when the token is fresh, a refresh_token grant
+        # when stale, and a hard abort with an actionable message when the seed is
+        # spoiled. kimi credentials are cwd-independent, so no rekey is needed.
+        if config.seed_id is not None:
+            if callable(config.seed_id):
+                # A SeedProvider leases a seed from the pool (holder =
+                # process_id); the watcher renews the lease, teardown releases
+                # it. A plain string carries no lease.
+                resolved_seed_id = await config.seed_id(ctx.process_id)
+                lease_holder = ctx.process_id
+            else:
+                resolved_seed_id = config.seed_id
+            await _merge_seed_with_refresh(
+                ctx, host, config, seed_id=resolved_seed_id,
+            )
+            # Baseline the merged kimi-code.json so the in-session watcher and
+            # the teardown backstop only save back a genuinely rotated token.
+            cred_baseline = await cred_watcher.cred_fingerprint(host)
 
-            # Fresh: plant the AGENTS.md the agent consumes. (On resume the
-            # snapshot-restored AGENTS.md is kept.)
+        # Fresh: plant the AGENTS.md the agent consumes. On resume the
+        # snapshot-restored AGENTS.md is kept.
+        if not resuming:
             await host.write_text(
                 "AGENTS.md",
                 compose_agents_md(
