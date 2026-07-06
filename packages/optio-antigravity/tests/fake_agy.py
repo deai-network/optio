@@ -121,21 +121,15 @@ def _scenario_resume() -> None:
 
 
 def _token_store(gem: Path) -> Path:
-    """The seed's encrypted-token-store stand-in.
+    """The seed's OAuth token store — mirrors the REAL agy path (S1).
 
-    TODO(S1): reconcile with the real-login spike. The real ``agy`` keeps its
-    Google OAuth token in the OS keyring; the design's likely fallback (§2
-    option 1) is an encrypted file when no Secret Service is present. This fake
-    models that file at ``~/.gemini/oauth_creds.json`` so the Stage-3/4 seed +
-    save-back machinery has a concrete file to capture/rotate. Adjust the path
-    once S1 pins where the token actually lives.
-
-    ``gem`` is ``~/.gemini/antigravity`` (the state dir); the token store lives
-    one level up at ``~/.gemini/oauth_creds.json`` — the path the production
-    seed manifest (``_TOKEN_STORE_RELPATH``) and cred watcher capture, and the
-    same parent ``_scenario_seed`` uses for ``antigravity-cli/settings.json``.
+    ``gem`` is ``~/.gemini/antigravity`` (the state dir); the token store the
+    real agy writes on login is ``~/.gemini/antigravity-cli/antigravity-oauth-token``
+    (a plain JSON file, NOT the keyring) — the path the production seed manifest
+    (``_TOKEN_STORE_RELPATH``) and cred watcher capture/rotate. The fake writes
+    the same nested Google-token shape agy uses (see ``_scenario_seed``).
     """
-    return gem.parent / "oauth_creds.json"
+    return gem.parent / "antigravity-cli" / "antigravity-oauth-token"
 
 
 def _scenario_seed() -> None:
@@ -161,11 +155,16 @@ def _scenario_seed() -> None:
         time.sleep(0.05)
         _log("DELIVERABLE: ./deliverables/seed_present.txt")
     else:
+        token.parent.mkdir(parents=True, exist_ok=True)
         token.write_text(
             json.dumps({
-                "access_token": "fake-access",
-                "refresh_token": "fake-refresh",
-                "expires_at": 9999999999,
+                "auth_method": "consumer",
+                "token": {
+                    "access_token": "fake-access",
+                    "token_type": "Bearer",
+                    "refresh_token": "fake-refresh",
+                    "expiry": "2099-01-01T00:00:00Z",
+                },
             }),
             encoding="utf-8",
         )
@@ -189,7 +188,8 @@ def _rotate_token(gem: Path, new_refresh: str) -> None:
         data = json.loads(token.read_text(encoding="utf-8"))
     except (FileNotFoundError, ValueError):
         data = {}
-    data["refresh_token"] = new_refresh
+    # Rotate the NESTED refresh token (agy's real shape: {token: {refresh_token}}).
+    data.setdefault("token", {})["refresh_token"] = new_refresh
     token.write_text(json.dumps(data), encoding="utf-8")
 
 

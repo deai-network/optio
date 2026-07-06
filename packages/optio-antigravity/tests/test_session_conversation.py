@@ -360,4 +360,4 @@ def test_ui_widget_per_mode():
         name="Widget iframe",
         config=AntigravityTaskConfig(consumer_instructions="x"),
     )
-    assert iframe_task.ui_widget == "iframe"
+    assert iframe_task.ui_widget == "iframe-input"

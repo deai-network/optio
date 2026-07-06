@@ -13,7 +13,7 @@ the other and a later acquirer can re-lease both (a still-held 60s TTL lease
 would return None).
 
 Mirrors optio-grok's ``test_session_lease`` (grok ← agy renames; the token store
-is ``.gemini/oauth_creds.json``, the fake scenario env var ``FAKE_AGY_SCENARIO``).
+is ``.gemini/antigravity-cli/antigravity-oauth-token``, the fake scenario env var ``FAKE_AGY_SCENARIO``).
 """
 
 from __future__ import annotations
@@ -70,14 +70,15 @@ def _cfg(shim_install_dir: pathlib.Path, **kw) -> AntigravityTaskConfig:
 
 
 async def _seed_token(mongo_db, seed_id: str) -> dict:
-    """Extract ``.gemini/oauth_creds.json`` from the seed blob for assertions."""
+    """Extract the agy token store from the seed blob for assertions (the real
+    nested store at ``.gemini/antigravity-cli/antigravity-oauth-token``)."""
     doc = await seeds.load_seed(
         mongo_db, prefix="test", suffix=ANTIGRAVITY_SEED_SUFFIX, seed_id=seed_id,
     )
     buf = io.BytesIO()
     await AsyncIOMotorGridFSBucket(mongo_db).download_to_stream(doc["blobId"], buf)
     with tarfile.open(fileobj=io.BytesIO(buf.getvalue()), mode="r:gz") as tar:
-        f = tar.extractfile(".gemini/oauth_creds.json")
+        f = tar.extractfile(".gemini/antigravity-cli/antigravity-oauth-token")
         return json.loads(f.read().decode("utf-8"))
 
 
@@ -94,14 +95,17 @@ async def _plant_seed(mongo_db, tmp_path, name: str) -> str:
     await src.setup_workdir()
     gem = os.path.join(src.workdir, "home", ".gemini")
     os.makedirs(os.path.join(gem, "antigravity-cli"), exist_ok=True)
-    with open(os.path.join(gem, "oauth_creds.json"), "w") as fh:
+    # agy's real nested token store at antigravity-cli/antigravity-oauth-token.
+    with open(os.path.join(gem, "antigravity-cli", "antigravity-oauth-token"), "w") as fh:
         fh.write(json.dumps({
-            "access_token": "fake-access",
-            "refresh_token": "ORIGINAL",
-            "expires_at": 9999999999,
+            "auth_method": "consumer",
+            "token": {
+                "access_token": "fake-access",
+                "token_type": "Bearer",
+                "refresh_token": "ORIGINAL",
+                "expiry": "2099-01-01T00:00:00Z",
+            },
         }))
-    with open(os.path.join(gem, "google_accounts.json"), "w") as fh:
-        fh.write(json.dumps({"account": "seed@example.com"}))
     with open(os.path.join(gem, "antigravity-cli", "settings.json"), "w") as fh:
         fh.write(json.dumps({"model": "gemini-fake"}))
     return await seeds.capture_seed(
@@ -141,7 +145,7 @@ async def test_seeded_session_saves_back_and_releases_lease(
 
     # Save-back fired: the seed's stored token store carries the rotated token.
     tok = await _seed_token(mongo_db, seed_id)
-    assert tok["refresh_token"] == "ROTATED-INSESSION", tok
+    assert tok["token"]["refresh_token"] == "ROTATED-INSESSION", tok
 
     # Lease released: a fresh holder can immediately re-acquire the same seed
     # (a still-held 60s TTL lease would return None).
@@ -195,7 +199,7 @@ async def test_two_concurrent_sessions_share_pool_without_stranding(
     # Each seed's token store carries the in-session rotation (both saved back).
     for sid in (seed_a, seed_b):
         tok = await _seed_token(mongo_db, sid)
-        assert tok["refresh_token"] == "ROTATED-INSESSION", (sid, tok)
+        assert tok["token"]["refresh_token"] == "ROTATED-INSESSION", (sid, tok)
 
     # Both leases were released: a fresh acquirer can re-lease BOTH seeds. A
     # stranded (still-held) lease would return None on the second acquire.

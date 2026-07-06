@@ -209,3 +209,38 @@ Everything else on the 30-row checklist is reachable.
   dep; we wrap `-p` + transcript directly).
 - No API-key auth path (does not exist).
 - No attempt to fake per-token streaming the transport can't provide.
+
+---
+
+## Spike results (S1 — real login, 2026-07-06)
+
+Resolved live by driving a real interactive Google login in the seed-setup task
+and inspecting the isolated HOME before teardown (a snapshot was taken).
+
+**Where agy persists auth (isolated `<workdir>/home`):**
+- **Token store:** `.gemini/antigravity-cli/antigravity-oauth-token` — JSON
+  `{"auth_method":"consumer","token":{"access_token","token_type":"Bearer",
+  "refresh_token":"1//0…","expiry":"<RFC3339Nano+offset>"}}`. A plain FILE — the
+  system keyring (`~/.local/share/keyrings/login.keyring`) was byte-unchanged
+  across login, so the design §2 "OS keyring / oauth_creds.json" guesses were
+  BOTH wrong. This is the sole file agy rewrites on refresh (cred/save-back).
+- **Settings:** `.gemini/antigravity-cli/settings.json` =
+  `{AutoUpdate:false, trustedWorkspaces:[<capture workdir>]}` — confirms the S2
+  self-update disable works; trustedWorkspaces holds the CAPTURE workdir → a
+  replant must **rekey** it to the new workdir (`_rekey_trusted_workspaces`).
+- **Provisioned set (seed):** `.gemini/antigravity-cli/cache/onboarding.json`
+  (`onboardingComplete:true`), `.gemini/config/` (`config.json`,
+  `mcp_config.json`, `.migrated`, `projects/default-cli-project.json`).
+- **Auth flow:** hosted-redirect + PKCE (`code_challenge`), manual code paste;
+  print-only (no browser-open — the redirect shims never fire; hence the pane
+  scraper). Public client, id
+  `1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com`,
+  no client_secret (PKCE) for refresh.
+
+**The seed-capture bug this explains:** the manifest's guessed
+`.gemini/oauth_creds.json` didn't exist → validity gate saw no token → capture
+rejected → 0 seeds → no seed-pinned demo tasks. Fixed: manifest paths + nested
+validity gate + provisioned set + trustedWorkspaces rekey (verified: capture
+from the real authed home grabs token+settings+onboarding+config, excludes
+junk); verify.py updated to the same path/format (nested, ISO expiry, PKCE
+client, invalid_grant-only-dead).
