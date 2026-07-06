@@ -15,6 +15,7 @@ from optio_antigravity.session import (
     run_antigravity_session,
 )
 from optio_antigravity.types import AntigravityTaskConfig
+from optio_antigravity.verify import verify_and_refresh_seed
 
 
 # asyncssh emits per-connection INFO lines that flood worker stdout
@@ -32,4 +33,5 @@ __all__ = [
     "delete_seed",
     "list_seeds",
     "purge_seed",
+    "verify_and_refresh_seed",
 ]
