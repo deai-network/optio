@@ -98,6 +98,30 @@ def _teardown_aggressive(*, cancelled: bool, seeded: bool) -> bool:
     return cancelled and not seeded
 
 
+async def _eof_shutdown(handle, *, timeout: float) -> bool:
+    """Graceful shutdown for a conversation (ACP-over-stdio) subprocess: close
+    its stdin so kimi sees EOF and exits on its own.
+
+    Verified against the real binary: ``kimi acp`` exits rc=0 in ~20ms on stdin
+    EOF (a clean shutdown that flushes its state) — whereas it IGNORES SIGTERM
+    for the ENTIRE 5s graceful grace before being SIGKILLed, which both wastes
+    the whole cancel budget and risks cutting the credential flush short. So EOF
+    is strictly better: faster AND cleaner. Returns True if kimi exited within
+    ``timeout`` (the common case), else False — the caller's signal-based
+    ``terminate_subprocess`` is the backstop."""
+    stdin = getattr(handle, "stdin", None)
+    if stdin is not None:
+        try:
+            stdin.close()
+        except Exception:  # noqa: BLE001 — a broken pipe is fine; it means EOF already
+            pass
+    try:
+        await asyncio.wait_for(proc_wait(handle), timeout=timeout)
+        return True
+    except Exception:  # noqa: BLE001 — TimeoutError or a wait quirk → fall back to signals
+        return False
+
+
 def _build_host(config: KimiCodeTaskConfig, process_id: str) -> Host:
     """Construct the appropriate Host for the given config.
 
@@ -698,14 +722,25 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
         # cancelled non-seeded session is torn down aggressively; a clean
         # completion or any seeded session uses SIGTERM so kimi shuts down (and
         # flushes creds) gracefully.
+        # Conversation (ACP over stdio): close stdin first so kimi exits cleanly
+        # on EOF (rc=0, ~20ms, flushing its creds) instead of ignoring SIGTERM
+        # for the full 5s grace. This is the real graceful path; the
+        # terminate_subprocess below becomes an instant SIGKILL backstop for any
+        # group stragglers once kimi is already gone (or the real signal fallback
+        # if EOF didn't take). The iframe (ttyd) path has no stdin to EOF.
+        eof_exited = False
+        if config.mode == "conversation" and launched_handle is not None:
+            _trace("finally: eof_shutdown START (close stdin)")
+            eof_exited = await _eof_shutdown(launched_handle, timeout=3.0)
+            _trace("finally: eof_shutdown DONE exited=%s", eof_exited)
         if launched_handle is not None:
             _trace(
-                "finally: terminate_subprocess START aggressive=%s (graceful "
-                "SIGTERM waits up to 5s)", kimi_aggressive,
+                "finally: terminate_subprocess START aggressive=%s",
+                kimi_aggressive or eof_exited,
             )
             try:
                 await host.terminate_subprocess(
-                    launched_handle, aggressive=kimi_aggressive,
+                    launched_handle, aggressive=kimi_aggressive or eof_exited,
                 )
             except Exception:
                 _LOG.exception("terminate kimi server subprocess failed")
