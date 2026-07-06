@@ -14,17 +14,21 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
+import shlex
 from typing import AsyncIterator
 
 from optio_core.context import ProcessContext
-from optio_core.models import TaskInstance
+from optio_core.models import BasicAuth, TaskInstance
 
-from optio_agents import HookContext, get_protocol
+from optio_agents import HookContext, RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_host.host import Host, LocalHost, ProcessHandle
 from optio_host.paths import task_dir
 
 from optio_antigravity import host_actions
+from optio_antigravity.conversation import AntigravityConversation
+from optio_antigravity.conversation_listener import ConversationListener
 from optio_antigravity.prompt import compose_agents_md
 from optio_antigravity.snapshots import (
     insert_snapshot,
@@ -93,11 +97,14 @@ async def run_antigravity_session(
             install_if_missing=config.install_if_missing,
             install_dir=config.agy_install_dir,
         )
-        ttyd_path = await host_actions.ensure_ttyd_installed(
-            hook_ctx,
-            install_if_missing=config.install_ttyd_if_missing,
-            install_dir=config.ttyd_install_dir,
-        )
+        # Conversation mode is headless (each turn is a one-shot `agy -p` under a
+        # PTY) — no ttyd is launched, so skip its install.
+        if config.mode != "conversation":
+            ttyd_path = await host_actions.ensure_ttyd_installed(
+                hook_ctx,
+                install_if_missing=config.install_ttyd_if_missing,
+                install_dir=config.ttyd_install_dir,
+            )
 
         resume_requested = bool(getattr(ctx, "resume", False))
         snapshot = None
@@ -213,15 +220,112 @@ async def run_antigravity_session(
         ):
             await asyncio.sleep(1.0)
 
+    # Conversation-mode driver + its opt-in dashboard listener. Both are
+    # constructed inside _conversation_body (agy_path is only resolved in
+    # _prepare); the nonlocals let _agent_sender + teardown reach them.
+    conversation: AntigravityConversation | None = None
+    conv_listener: ConversationListener | None = None
+
+    async def _conversation_body(host: Host, hook_ctx: HookContext) -> None:
+        nonlocal conversation, conv_listener
+
+        # Antigravity has NO live transport: a conversation is synthetic, each
+        # turn driven by a fresh `agy -p` under a PTY with events read from the
+        # transcript file (design §1/§5). So — unlike grok's persistent `agent
+        # stdio` process — there is no long-lived subprocess to launch/await
+        # here; AntigravityConversation.send spawns and reaps one process per
+        # turn. The task stays live between turns, ended by the caller's close.
+        launch_env = {
+            **host_actions._isolation_env(host.workdir),
+            **(config.env or {}),
+            **(hook_ctx.browser_launch_env or {}),
+        }
+        # The per-task HOME (from _isolation_env) is <workdir>/home, so agy
+        # writes its transcript to <workdir>/home/.gemini/antigravity/....
+        transcript_path = (
+            f"{launch_env['HOME']}/.gemini/antigravity/transcript.jsonl"
+        )
+        conversation = AntigravityConversation(
+            host=host,
+            agy_path=agy_path,
+            cwd=host.workdir,
+            transcript_path=transcript_path,
+            env=launch_env,
+            model=config.model,
+        )
+        ctx.publish_result(conversation)
+        ctx.report_progress(None, "Antigravity conversation is live")
+
+        # Opt-in dashboard chat widget: start a per-task SSE listener over the
+        # published conversation and publish it as the "conversation" widget via
+        # the widget proxy (which injects the basic-auth credential).
+        if config.conversation_ui:
+            listener_password = secrets.token_urlsafe(32)
+            bind_addr = os.environ.get("OPTIO_WIDGET_TUNNEL_BIND", "127.0.0.1")
+            upstream_host = os.environ.get("OPTIO_WIDGET_TUNNEL_HOST", "127.0.0.1")
+            conv_listener = ConversationListener(
+                conversation, password=listener_password,
+            )
+            # The listener is an in-process aiohttp app (not a remote-host
+            # process like ttyd), so it binds directly to the widget-tunnel
+            # interface and its port is reachable without a host tunnel.
+            listener_port = await conv_listener.start(bind_addr)
+            await ctx.set_widget_upstream(
+                f"http://{upstream_host}:{listener_port}",
+                inner_auth=BasicAuth(username="optio", password=listener_password),
+            )
+            # Session controls (model) + file up/down are wired in Stage 7
+            # (Tasks 7.1/7.2); Stage 6 ships the transcript stream with an empty
+            # controls list.
+            await ctx.set_widget_data({
+                "protocol": "antigravity",
+                "toolVerbosity": config.tool_verbosity,
+                "thinkingVerbosity": config.thinking_verbosity,
+                "showSessionControls": config.show_session_controls,
+                "controls": [],
+                "showFileUpload": config.show_file_upload,
+                "maxUploadBytes": config.max_upload_bytes,
+                "fileDownload": config.file_download,
+                "maxDownloadBytes": config.max_download_bytes,
+            })
+            ctx.report_progress(None, "Conversation UI is live")
+
+        # Kickoff prompt as the first turn (unattended runs). On resume, push a
+        # System: resume notice instead so the resumed conversation notices
+        # promptly (resume.log stays the pull-based backstop).
+        if config.auto_start and not resuming:
+            await conversation.send(host_actions.AUTO_START_PROMPT)
+        elif resuming:
+            await conversation.send(f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}")
+
+        # Park until the caller closes the conversation. There is no persistent
+        # subprocess to await (the conversation is idle between turns), so
+        # close_requested is the sole completion signal.
+        await conversation.close_requested.wait()
+        if config.host_protocol:
+            # The keyword driver treats a body return without DONE as a premature
+            # exit; a caller-requested close IS the clean end, so emit DONE
+            # ourselves and park until the driver observes it and cancels this
+            # body. With host_protocol=False the driver runs scaffolding-only, so
+            # the body's normal return below is itself the clean completion.
+            log_path = f"{host.workdir}/optio.log"
+            await host.run_command(f"echo DONE >> {shlex.quote(log_path)}")
+            await asyncio.Event().wait()  # cancelled by the driver
+
     async def _agent_sender(message: str) -> None:
+        if config.mode == "conversation":
+            if conversation is not None:
+                await conversation.send(message)
+            return
         await host_actions.send_text_to_agy(
             host, tmux_path, tmux_socket, tmux_session, message,
         )
 
+    body = _conversation_body if config.mode == "conversation" else _agy_body
     try:
         await run_log_protocol_session(
             host, ctx,
-            body=_agy_body,
+            body=body,
             prepare=_prepare,
             on_deliverable=config.on_deliverable,
             after_execute=config.after_execute,
@@ -234,6 +338,21 @@ async def run_antigravity_session(
     finally:
         if not ctx.should_continue():
             cancelled = True
+        # Stop the conversation listener first so its long-lived SSE loops are
+        # woken (bounded shutdown) before any subprocess teardown below.
+        if conv_listener is not None:
+            try:
+                await conv_listener.stop()
+            except Exception:
+                _LOG.exception("conversation listener cleanup failed")
+        # Conversation mode has no tmux/ttyd tree and no persistent agy
+        # subprocess — each turn is spawned and reaped inside send(). close()
+        # kills any in-flight turn and flips the conversation closed.
+        if config.mode == "conversation" and conversation is not None:
+            try:
+                await conversation.close()
+            except Exception:
+                _LOG.exception("conversation close failed")
         if (
             launched_handle is not None
             and tmux_path is not None
