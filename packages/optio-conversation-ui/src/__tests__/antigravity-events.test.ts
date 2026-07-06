@@ -135,6 +135,32 @@ describe('antigravity transcript event reducer (real agy schema)', () => {
     expect((users[0] as any).local).toBeUndefined();
   });
 
+  it('a harness System: USER_INPUT renders as an activity row, not a user bubble', () => {
+    // Resume notices / harness sends go through the same send() path, so agy
+    // records them as USER_INPUT lines with a "System: " prefix. On replay they
+    // must render as muted activity rows, never user bubbles.
+    const s = play([userInput('System: you have been resumed')]);
+    expect(s.items.some((i) => i.kind === 'user')).toBe(false);
+    const a = s.items.find((i) => i.kind === 'activity');
+    expect(a && a.kind === 'activity' && a.text).toBe('System: you have been resumed');
+  });
+
+  it('a System: turn between two real turns keeps BOTH answers (System row is a turn boundary)', () => {
+    // A harness System: input triggers its own agy turn, just like a real
+    // prompt — so it must delimit the answer coalescing. Otherwise the System
+    // turn's reply REPLACES the prior real question's reply in one bubble and
+    // the real answer is dropped (regression the activity-row rendering caused).
+    const s = play([
+      userInput('real question'),
+      planner({ content: 'real answer' }),
+      userInput('System: you have been resumed'),
+      planner({ content: 'system reply' }),
+    ]);
+    const texts = s.items.filter((i) => i.kind === 'assistant').map((a) => (a as any).text);
+    expect(texts).toContain('real answer');
+    expect(texts).toContain('system reply');
+  });
+
   it('x-optio-local-user renders an optimistic user bubble and sets busy', () => {
     const s = play([{ type: 'x-optio-local-user', text: 'hello' }]);
     const u = s.items.find((i) => i.kind === 'user');

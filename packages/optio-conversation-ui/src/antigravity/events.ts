@@ -86,6 +86,10 @@ function rewriteFileLinks(content: string): string {
 function stripUploadNotice(text: string): string {
   return text.replace(/^(?:System: upload received, stored in [^\n]*\n)+\n?/, '');
 }
+
+// Harness-injected messages (resume notices, auto-start prompt) carry this
+// prefix; they render as activity rows, never user bubbles.
+const HARNESS_PREFIX = 'System: ';
 function extractUserRequest(content: unknown): string {
   if (typeof content !== 'string') return '';
   const m = content.match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/);
@@ -93,14 +97,20 @@ function extractUserRequest(content: unknown): string {
 }
 
 // Coalesce a turn's answer into ONE assistant bubble. A turn is delimited by the
-// most recent `user` row; within it there is at most one assistant bubble, whose
+// most recent INPUT row; within it there is at most one assistant bubble, whose
 // text is REPLACED by each new PLANNER_RESPONSE content (last content wins — the
 // design pins no streaming, so a content line is a whole statement). Tool rows
 // emitted between two content lines of the same turn do not fragment the answer.
+//
+// An input row is a `user` bubble OR a harness `System:` row (rendered as an
+// `activity` row — antigravity's only source of activity rows): both trigger
+// their own agy turn, so each opens a NEW answer bubble. Without treating the
+// System row as a boundary, a resume-notice turn's reply would REPLACE the prior
+// real question's reply in one bubble and drop the real answer.
 function upsertTurnAnswer(items: ChatItem[], seq: number, text: string): ChatItem[] {
   let boundary = -1;
   for (let i = items.length - 1; i >= 0; i--) {
-    if (items[i].kind === 'user') {
+    if (items[i].kind === 'user' || items[i].kind === 'activity') {
       boundary = i;
       break;
     }
@@ -152,6 +162,13 @@ export function reduceAntigravityEvent(state: ChatState, ev: any, seq: number): 
     case 'USER_INPUT': {
       const text = extractUserRequest(ev.content);
       if (text === '') return state;
+      // Harness-injected messages (resume notices, auto-start prompt) go through
+      // the same send() path, so agy records them as USER_INPUT lines with a
+      // "System: " prefix. Render them as muted activity rows, never user
+      // bubbles (mirrors claudecode's HARNESS_PREFIX handling).
+      if (text.startsWith(HARNESS_PREFIX)) {
+        return { ...state, items: [...state.items, { kind: 'activity', text, seq }], busy: true };
+      }
       // Wire echo of an optimistically-rendered local message: confirm the
       // local bubble in place instead of inserting a duplicate. FIFO by text —
       // sends are echoed in transcript order. (The local echo carries the raw

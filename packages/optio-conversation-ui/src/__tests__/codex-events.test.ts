@@ -210,6 +210,76 @@ describe('codex app-server event reducer', () => {
     expect(s.busy).toBe(false);
   });
 
+  it('a replayed userMessage item/completed renders a past user bubble (resume history)', () => {
+    // On resume the driver re-emits each prior turn's items as item/completed;
+    // the operator's own past prompts arrive as userMessage items and MUST
+    // render — else a resumed conversation shows only the agent's past replies
+    // (the whole prompts-dropped bug).
+    const s = play([
+      itemCompleted({ type: 'userMessage', id: 'u1',
+        content: [{ type: 'text', text: 'prior question' }] }),
+      delta('prior answer'), turnCompleted(),
+    ]);
+    const users = s.items.filter((i) => i.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0].kind === 'user' && users[0].text).toBe('prior question');
+    // Not an optimistic echo — this is replayed history.
+    expect(users[0].kind === 'user' && users[0].local).toBeFalsy();
+  });
+
+  it('a replayed userMessage reads item.text too (rollout shape), not only content[]', () => {
+    const s = play([
+      itemCompleted({ type: 'userMessage', id: 'u1', text: 'plain-text prompt' }),
+    ]);
+    const u = s.items.find((i) => i.kind === 'user');
+    expect(u && u.kind === 'user' && u.text).toBe('plain-text prompt');
+  });
+
+  it('a live userMessage echo confirms the optimistic bubble instead of duplicating it', () => {
+    // In live flow the view already showed the prompt optimistically
+    // (x-optio-local-user); real codex then echoes it back as a userMessage
+    // item. The reducer must CONFIRM the existing local bubble, not append a
+    // second one.
+    const s = play([
+      { type: 'x-optio-local-user', text: 'say PONG' },
+      itemCompleted({ type: 'userMessage', id: 'u1',
+        content: [{ type: 'text', text: 'say PONG' }] }),
+    ]);
+    const users = s.items.filter((i) => i.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0].kind === 'user' && users[0].local).toBeFalsy();
+  });
+
+  it('a harness System: userMessage renders as an activity row, not a user bubble', () => {
+    // Resume notices / harness sends go through the same send() path, so codex
+    // echoes them back as userMessage items with a "System: " prefix. They must
+    // render as muted activity rows, never user bubbles (mirrors claudecode).
+    const s = play([
+      itemCompleted({ type: 'userMessage', id: 's1',
+        content: [{ type: 'text', text: 'System: you have been resumed' }] }),
+    ]);
+    expect(s.items.some((i) => i.kind === 'user')).toBe(false);
+    const a = s.items.find((i) => i.kind === 'activity');
+    expect(a && a.kind === 'activity' && a.text).toBe('System: you have been resumed');
+  });
+
+  it('an upload-notice userMessage strips the System notice and confirms the optimistic body', () => {
+    // On upload the prompt sent to codex is "System: upload received…\n\n<body>",
+    // but the optimistic echo is just <body>. The wire echo must strip the notice
+    // and confirm the optimistic bubble — not render the System notice as the
+    // operator's message nor duplicate it.
+    const s = play([
+      { type: 'x-optio-local-user', text: 'summarize this' },
+      itemCompleted({ type: 'userMessage', id: 'u1', content: [{ type: 'text',
+        text: 'System: upload received, stored in uploads/a.txt\n\nsummarize this' }] }),
+    ]);
+    const users = s.items.filter((i) => i.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0].kind === 'user' && users[0].text).toBe('summarize this');
+    expect(users[0].kind === 'user' && users[0].local).toBeFalsy();
+    expect(s.items.some((i) => i.kind === 'activity')).toBe(false);
+  });
+
   it('a full turn: local echo → reasoning → tool → answer → turn end', () => {
     const s = play([
       { type: 'x-optio-local-user', text: 'say PONG' },

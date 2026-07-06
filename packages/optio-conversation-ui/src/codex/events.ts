@@ -86,6 +86,33 @@ function appendThought(items: ChatItem[], seq: number, text: string): ChatItem[]
   return [...items, { kind: 'activity', text, seq }];
 }
 
+// Harness-injected messages (resume notices, auto-start prompt, upload
+// notices) go through the same send() path as the operator's own turns, so
+// codex echoes them back as userMessage items too. They carry this prefix.
+const HARNESS_PREFIX = 'System: ';
+
+// On a file upload the view prepends one `System: upload received, stored in
+// <path>` line per file (+ a blank line) to the prompt sent to codex, but the
+// optimistic echo is just the typed body. Strip those lines from the wire echo
+// so the user bubble shows only the real request — otherwise it renders the
+// System notice as the operator's message AND fails to dedupe against the
+// optimistic echo, showing the prompt twice.
+function stripUploadNotice(text: string): string {
+  return text.replace(/^(?:System: upload received, stored in [^\n]*\n)+\n?/, '');
+}
+
+// A userMessage item's prompt text. The live app-server wire wraps it in
+// content:[{type:"text",text}] (verified capture); the thread/resume rollout
+// items the driver replays carry a flat `text` — accept either so the same
+// branch renders live echoes AND replayed history.
+function userMessageText(item: any): string {
+  if (typeof item?.text === 'string') return item.text;
+  const content = Array.isArray(item?.content) ? item.content : [];
+  return content
+    .map((c: any) => (typeof c?.text === 'string' ? c.text : ''))
+    .join('');
+}
+
 // item.type -> tool-row shape (name + KV input for verbose rendering).
 function toolRow(item: any): { name: string; input: unknown } | null {
   switch (item?.type) {
@@ -216,6 +243,32 @@ function reduce(st: CodexChatState, ev: any, seq: number): CodexChatState {
           return { ...st, busy: true, items: appendPending(dropTools(st.items), seq, full, msgId) };
         }
         return st;
+      }
+      if (item.type === 'userMessage') {
+        // Codex echoes the operator's own prompt back as a userMessage item.
+        // Live, the view already rendered it optimistically (x-optio-local-user)
+        // on send, so a wire echo that matches an unconfirmed optimistic bubble
+        // just CONFIRMS it (drop `local`) — never a second bubble. On resume the
+        // driver replays prior turns' userMessage items with NO optimistic bubble
+        // to match, so this appends the past prompt — the fix for resumed
+        // conversations that previously showed only the agent's replies.
+        const text = stripUploadNotice(userMessageText(item));
+        if (!text) return st;
+        // A pure harness message (resume notice, auto-start prompt) — after the
+        // upload notice is stripped — renders as a muted activity row, never a
+        // user bubble (mirrors claudecode's HARNESS_PREFIX handling).
+        if (text.startsWith(HARNESS_PREFIX)) {
+          return { ...st, items: [...st.items, { kind: 'activity', text, seq }] };
+        }
+        const idx = st.items.findIndex(
+          (i) => i.kind === 'user' && i.local && i.text === text,
+        );
+        if (idx !== -1) {
+          const cur = st.items[idx] as Extract<ChatItem, { kind: 'user' }>;
+          const items = [...st.items.slice(0, idx), { ...cur, local: false }, ...st.items.slice(idx + 1)];
+          return { ...st, items };
+        }
+        return { ...st, items: [...st.items, { kind: 'user', text, seq }] };
       }
       const row = toolRow(item);
       if (!row) return st;
