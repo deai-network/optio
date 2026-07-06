@@ -197,8 +197,9 @@ async def test_host_protocol_false_body_returns(shim_install_dir, task_root, mon
 @pytest.mark.asyncio
 async def test_conversation_ui_session_lifecycle(shim_install_dir, task_root, mongo_db):
     """conversation_ui=True end to end: widgetUpstream + innerAuth registered,
-    widgetData primed (empty controls until Stage 7), uiWidget set, the listener
-    replays the turn's assistant event over SSE, and it stops with the task."""
+    widgetData primed with the model session-control (from `agy models`),
+    uiWidget set, the listener replays the turn's assistant event over SSE, and
+    it stops with the task."""
     optio = await _make_optio(mongo_db, "agconv4")
     try:
         task = create_antigravity_task(
@@ -225,7 +226,20 @@ async def test_conversation_ui_session_lifecycle(shim_install_dir, task_root, mo
             "toolVerbosity": "description-only",
             "thinkingVerbosity": "hidden",
             "showSessionControls": False,
-            "controls": [],
+            "controls": [{
+                "id": "model",
+                "kind": "select",
+                "label": "Model",
+                "value": "gemini-2.5-pro",
+                "category": "model",
+                "disabled": False,
+                "options": [
+                    {"value": "gemini-2.5-pro", "label": "gemini-2.5-pro", "disabled": False},
+                    {"value": "gemini-2.5-flash", "label": "gemini-2.5-flash", "disabled": False},
+                    {"value": "claude-sonnet-4", "label": "claude-sonnet-4", "disabled": False},
+                    {"value": "gpt-oss-120b", "label": "gpt-oss-120b", "disabled": False},
+                ],
+            }],
             "showFileUpload": False,
             "maxUploadBytes": 10_000_000,
             "fileDownload": False,

@@ -23,10 +23,12 @@ from optio_core.models import BasicAuth, TaskInstance
 
 from optio_agents import HookContext, RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
+from optio_agents.session_controls import model_control
 from optio_host.host import Host, LocalHost, ProcessHandle
 from optio_host.paths import task_dir
 
 from optio_antigravity import host_actions
+from optio_antigravity import models as antigravity_models
 from optio_antigravity.conversation import AntigravityConversation
 from optio_antigravity.conversation_listener import ConversationListener
 from optio_antigravity.prompt import compose_agents_md
@@ -274,15 +276,28 @@ async def run_antigravity_session(
                 f"http://{upstream_host}:{listener_port}",
                 inner_auth=BasicAuth(username="optio", password=listener_password),
             )
-            # Session controls (model) + file up/down are wired in Stage 7
-            # (Tasks 7.1/7.2); Stage 6 ships the transcript stream with an empty
-            # controls list.
+            # Model picker options: `agy models` on the host (Gemini + BYO
+            # Claude/GPT ids), else a static list. Antigravity has no ACP
+            # session block to prefer (design §1), so the CLI is the only live
+            # source. default_model overrides the picker's initial value.
+            model_list = await antigravity_models.fetch_available_models(
+                host=host, agy_path=agy_path,
+            )
+            current_model = (
+                config.default_model or config.model or model_list.get("default")
+            )
+            # The model is the id="model" entry of the engine-neutral
+            # session-controls list; antigravity exposes only this one control
+            # (switched restart-based via set_control — the next turn's --model).
+            control = model_control(
+                models=model_list["models"], current=current_model,
+            )
             await ctx.set_widget_data({
                 "protocol": "antigravity",
                 "toolVerbosity": config.tool_verbosity,
                 "thinkingVerbosity": config.thinking_verbosity,
                 "showSessionControls": config.show_session_controls,
-                "controls": [],
+                "controls": [control.to_dict()],
                 "showFileUpload": config.show_file_upload,
                 "maxUploadBytes": config.max_upload_bytes,
                 "fileDownload": config.file_download,
