@@ -795,31 +795,38 @@ AUTO_START_PROMPT = "Read AGENTS.md and execute the task it describes"
 def build_auto_start_args(
     *, auto_start: bool, resuming: bool = False, prompt: str = AUTO_START_PROMPT,
 ) -> list[str]:
-    """Trailing positional prompt for an auto-start FRESH launch.
+    """Initial-prompt args for an auto-start FRESH launch.
 
-    Returns ``[prompt]`` when ``auto_start`` and not ``resuming``; empty
-    otherwise. On resume the session is continued with ``--continue`` and no
-    positional is appended: re-issuing the kickoff prompt would start a new task
-    instead of resuming the existing conversation.
+    Returns ``["--prompt-interactive", prompt]`` when ``auto_start`` and not
+    ``resuming``; empty otherwise. agy has NO bare-positional prompt — it runs an
+    initial prompt only behind ``-i``/``--prompt-interactive`` ("Run an initial
+    prompt interactively and continue the session"); a bare positional is silently
+    ignored and the TUI sits idle (the demo-task "does nothing" bug). On resume the
+    session is continued with ``--continue`` and no kickoff is appended: re-issuing
+    it would start a new task instead of resuming.
     """
-    return [prompt] if (auto_start and not resuming) else []
+    return ["--prompt-interactive", prompt] if (auto_start and not resuming) else []
 
 
 def build_resume_notice_args(*, resuming: bool) -> list[str]:
-    """Trailing positional that notifies a resumed agy TUI session.
+    """Initial-prompt args that notify a resumed agy TUI session.
 
-    Returns ``[f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}"]`` on resume (agy
-    continues with ``--continue``, so a trailing positional is processed as a new
-    turn in the continued conversation — mirrors claudecode's
-    ``claude --continue '<text>'`` and grok's ``grok -c '<text>'``). Empty on a
-    fresh launch. This is the PUSH half of resume awareness — it makes the agent
-    notice the resume promptly; ``resume.log`` remains the pull-based source of
-    truth. In iframe mode ``host_protocol`` is always on, so the optio.log
-    keyword docs teach the ``System:`` convention and no host_protocol gate is
-    needed here. Mutually exclusive with :func:`build_auto_start_args`
-    (auto_start only fires on a FRESH launch).
+    Returns ``["--prompt-interactive", f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}"]``
+    on resume — agy has no bare-positional prompt (same reason as
+    :func:`build_auto_start_args`), so the notice is delivered via
+    ``--prompt-interactive`` alongside ``--continue``. This is the PUSH half of
+    resume awareness — it makes the agent notice the resume promptly;
+    ``resume.log`` remains the pull-based source of truth. Empty on a fresh launch.
+    Mutually exclusive with :func:`build_auto_start_args`.
+
+    TODO(real-binary): verify agy accepts ``--continue --prompt-interactive
+    <notice>`` together (Stage-10). If the combo is rejected, deliver the notice
+    via a post-ready tmux inject instead (proven to work).
     """
-    return [f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}"] if resuming else []
+    return (
+        ["--prompt-interactive", f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}"]
+        if resuming else []
+    )
 
 
 # --- tmux / ttyd machinery (adapted verbatim from optio-grok) ---------------

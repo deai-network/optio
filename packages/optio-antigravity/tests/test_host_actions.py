@@ -67,3 +67,21 @@ def test_build_host_local(tmp_path):
     from optio_host.host import LocalHost
     host = build_host(None, str(tmp_path / "task"))
     assert isinstance(host, LocalHost)
+
+
+def test_auto_start_args_use_prompt_interactive_flag():
+    # agy has no bare-positional prompt — the kickoff MUST be behind
+    # --prompt-interactive or the TUI sits idle (the demo "does nothing" bug).
+    from optio_antigravity.host_actions import (
+        AUTO_START_PROMPT, build_auto_start_args, build_resume_notice_args,
+    )
+    assert build_auto_start_args(auto_start=True, resuming=False) == [
+        "--prompt-interactive", AUTO_START_PROMPT,
+    ]
+    # No kickoff when not auto_start, or when resuming (that path uses --continue).
+    assert build_auto_start_args(auto_start=False, resuming=False) == []
+    assert build_auto_start_args(auto_start=True, resuming=True) == []
+    # The resume notice is likewise delivered via --prompt-interactive, not bare.
+    args = build_resume_notice_args(resuming=True)
+    assert args[0] == "--prompt-interactive" and len(args) == 2
+    assert build_resume_notice_args(resuming=False) == []
