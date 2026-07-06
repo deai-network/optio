@@ -130,6 +130,30 @@ def _count_session_files() -> int:
     return total
 
 
+def _iso_now() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _record_session_prompt(session_id: str, text: str) -> None:
+    """Mirror real kimi recording a submitted prompt into the session's
+    state.json (``lastPrompt`` + ``updatedAt`` bump, and ``title`` on first
+    prompt) so resume-side recovery can distinguish a real conversation from an
+    empty/notice session."""
+    state_path = os.path.join(_sessions_dir(), "wd_fake", session_id, "state.json")
+    try:
+        with open(state_path, encoding="utf-8") as fh:
+            state = json.load(fh)
+    except (OSError, ValueError):
+        return
+    state["lastPrompt"] = text
+    state["updatedAt"] = _iso_now()
+    if not state.get("title"):
+        state["title"] = text[:60]
+    with open(state_path, "w", encoding="utf-8") as fh:
+        json.dump(state, fh)
+
+
 def _write_session_store(session_id: str, cwd: str | None) -> None:
     """Materialise a minimal on-disk session store for ``session_id``.
 
@@ -140,8 +164,16 @@ def _write_session_store(session_id: str, cwd: str | None) -> None:
     session_dir = os.path.join(_sessions_dir(), "wd_fake", session_id)
     agents_dir = os.path.join(session_dir, "agents", "main")
     os.makedirs(agents_dir, exist_ok=True)
+    # Match real kimi's state.json shape (title / lastPrompt / updatedAt): a
+    # freshly-created session has an EMPTY lastPrompt (no turns yet); it is filled
+    # in by _record_session_prompt when a prompt is submitted. Resume-side
+    # recovery (_recover_session_id) keys on lastPrompt to tell a real
+    # conversation from an empty/notice session.
     with open(os.path.join(session_dir, "state.json"), "w", encoding="utf-8") as fh:
-        json.dump({"id": session_id, "cwd": cwd}, fh)
+        json.dump({
+            "id": session_id, "cwd": cwd, "title": "", "lastPrompt": "",
+            "createdAt": _iso_now(), "updatedAt": _iso_now(),
+        }, fh)
     # Append-only wire log (empty is fine for the fake).
     open(os.path.join(agents_dir, "wire.jsonl"), "a", encoding="utf-8").close()
     # Keep session_index.jsonl consistent (real kimi's --continue/list read it).
@@ -307,6 +339,7 @@ class _StubHandler(BaseHTTPRequestHandler):
                         text = str(part.get("text", ""))
                         break
             _journal("prompt", sid=session_id, text=text)
+            _record_session_prompt(session_id, text)
             self._send(200, _envelope({
                 "prompt_id": "p_fake", "user_message_id": "m_fake",
                 "status": "running", "content": content or [],

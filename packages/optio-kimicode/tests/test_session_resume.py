@@ -171,11 +171,13 @@ async def test_resume_restores_store_and_pushes_notice(
     j1 = tmp_path / "j1.jsonl"
     j2 = tmp_path / "j2.jsonl"
 
-    # Cycle 1 — fresh launch: pre-creates a session (writes home/sessions),
-    # reaches DONE, captures a terminal snapshot on teardown.
+    # Cycle 1 — fresh launch WITH a kickoff prompt so the session holds a REAL
+    # turn (recorded as state.json.lastPrompt): resume must recover THIS
+    # conversation, not an empty session. Reaches DONE, captures a terminal
+    # snapshot on teardown.
     await _run_cycle(
         mongo_db, shim_install_dir, monkeypatch, pid,
-        resume=False, auto_start=False, journal=j1,
+        resume=False, auto_start=True, journal=j1,
     )
     snap1 = await load_latest_snapshot(mongo_db, "test", pid)
     assert snap1 is not None, "fresh cycle did not capture a snapshot"

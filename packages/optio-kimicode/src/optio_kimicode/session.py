@@ -959,25 +959,58 @@ async def _post_kimi_prompt(
 
 
 async def _recover_session_id(host: Host) -> str | None:
-    """Recover the restored kimi session id from the on-disk session store.
+    """Recover the id of the REAL prior conversation from the restored session
+    store, so ``session/load`` replays the actual history — not an arbitrary one.
 
-    After a snapshot restore, kimi's session store lives at
-    ``<workdir>/home/sessions/<workDirKey>/<sessionId>/state.json`` (design §1).
-    The session id is that dir's name — recovered so the resumed iframe targets
-    (and the resume notice POSTs to) the SAME session rather than a fresh one.
-    Returns None when no restored session is found (body then pre-creates one).
-    """
+    After a restore, kimi's session store at ``<workdir>/home/sessions/
+    <workDirKey>/<sessionId>/state.json`` (design §1) holds SEVERAL sessions: the
+    real prior conversation PLUS, from earlier resume cycles, empty
+    ``session/new`` sessions (no turns) and resume-notice-only sessions (whose
+    only turn is the injected ``System: you have been resumed`` notice, so kimi
+    titles/last-prompts them with it). The old ``find | head -n1`` picked a
+    filesystem-ARBITRARY one — landing on an empty/notice session meant
+    ``session/load`` replayed nothing (the history-loss bug), and the resume
+    notice then minted yet another empty session, compounding it.
+
+    So enumerate EVERY session, read its ``state.json``, and select the
+    most-recently-updated one that carries a REAL user turn:
+
+      * EXCLUDE a session whose ``lastPrompt`` is empty (a fresh ``session/new``)
+        or begins with ``System: `` (:data:`SYSTEM_MESSAGE_PREFIX` — a harness
+        notice, i.e. a resume-notice-only session): kimi records the injected
+        message there, never a real user prompt.
+      * Among the rest, keep the newest by ``updatedAt`` (ISO-8601, so a plain
+        string compare orders it; kimi always writes it).
+
+    The recovered id is the ``session_<uuid>`` dir name (matches the store's
+    ``session_index.jsonl`` ``sessionId``). Returns None when NO session carries
+    a real turn — the body then starts a clean session rather than resuming an
+    empty/notice one (no arbitrary fallback)."""
     workdir = host.workdir.rstrip("/")
     sessions_root = f"{workdir}/home/sessions"
-    result = await host.run_command(
-        f"find {shlex.quote(sessions_root)} -name state.json -type f 2>/dev/null "
-        f"| head -n1 || true"
+    listing = await host.run_command(
+        f"find {shlex.quote(sessions_root)} -name state.json -type f 2>/dev/null || true"
     )
-    path = (result.stdout or "").strip()
-    if not path:
-        return None
-    # .../sessions/<workDirKey>/<sessionId>/state.json → <sessionId>.
-    return os.path.basename(os.path.dirname(path))
+    best_id: str | None = None
+    best_updated = ""
+    for path in (listing.stdout or "").splitlines():
+        path = path.strip()
+        if not path:
+            continue
+        r = await host.run_command(f"cat {shlex.quote(path)} 2>/dev/null || true")
+        try:
+            state = json.loads(r.stdout or "")
+        except (ValueError, TypeError):
+            continue
+        last_prompt = (state.get("lastPrompt") or "").strip()
+        # Skip empty (fresh session/new) and harness-notice-only sessions.
+        if not last_prompt or last_prompt.startswith(SYSTEM_MESSAGE_PREFIX):
+            continue
+        updated = str(state.get("updatedAt") or "")
+        if best_id is None or updated > best_updated:
+            # .../sessions/<workDirKey>/<sessionId>/state.json → <sessionId>.
+            best_id, best_updated = os.path.basename(os.path.dirname(path)), updated
+    return best_id
 
 
 def create_kimicode_task(
