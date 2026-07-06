@@ -5,7 +5,8 @@ token**: each refresh rotates the stored ``refresh_token`` in agy's token store.
 That is the single-use-token failure mode optio-opencode's watcher was built for
 and optio-grok reuses, so this module is a direct adaptation of
 ``optio_grok.cred_watcher`` (grok → antigravity renames; the credential store is
-``<workdir>/home/.gemini/oauth_creds.json``).
+``<workdir>/home/.gemini/antigravity-cli/antigravity-oauth-token``, nested JSON
+with a ``token.refresh_token`` — see ``seed_manifest``).
 
 The watcher keeps the seed current by writing the changed in-session token store
 back into the existing seed, plus a final backstop at teardown. It also renews
@@ -13,14 +14,9 @@ the seed's pool lease each tick and aborts the session on lease loss (a new
 holder must never rotate the same token concurrently). The seed is the single
 source of truth for credentials.
 
-============================================================================
-TODO(S1): the credential path/format is the design's **likely-outcome** (§2
-option 1: an encrypted-file OAuth token fallback at
-``home/.gemini/oauth_creds.json``); reconcile with the real-login spike (plan
-Task S1). The save-back *contract* and the validity gate (a non-empty
-``refresh_token`` — see ``seed_manifest.token_capture_is_valid``) are invariant
-across the S1 outcomes; only the concrete relpath moves.
-============================================================================
+The watched relpath is derived from ``seed_manifest`` (``home_subdir`` +
+``_TOKEN_STORE_RELPATH``) — the single source of truth for the token path — so
+the watcher can never drift from what the seed manifest captures.
 """
 
 from __future__ import annotations
@@ -36,17 +32,18 @@ from optio_agents import seeds
 from optio_antigravity.seed_manifest import (
     ANTIGRAVITY_CRED_MANIFEST,
     ANTIGRAVITY_SEED_SUFFIX,
+    _TOKEN_STORE_RELPATH,
     token_capture_is_valid,
 )
 
 _LOG = logging.getLogger(__name__)
 
 CRED_WATCH_INTERVAL_S = 10.0
-# The rotating OAuth token store, relative to the task workdir. Kept in lockstep
-# with the seed manifest (``home_subdir="home"`` + ``.gemini/oauth_creds.json``),
-# so the live file resolves to ``<workdir>/home/.gemini/oauth_creds.json``.
-# TODO(S1): reconcile the relpath with the real-login spike.
-_CRED_RELPATH = "home/.gemini/oauth_creds.json"
+# The rotating OAuth token store, relative to the task workdir. Derived from the
+# seed manifest (SSOT for the token path) so the live file the watcher fingerprints
+# is exactly the member the cred manifest captures — resolves to
+# ``<workdir>/home/.gemini/antigravity-cli/antigravity-oauth-token``.
+_CRED_RELPATH = f"{ANTIGRAVITY_CRED_MANIFEST.home_subdir}/{_TOKEN_STORE_RELPATH}"
 
 
 async def cred_fingerprint(host: Host) -> str | None:

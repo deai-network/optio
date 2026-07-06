@@ -48,7 +48,7 @@ async def test_local_happy_path_done_in_optio_log(
             after_execute=after_execute,
         ),
     )
-    assert task.ui_widget == "iframe"
+    assert task.ui_widget == "iframe-input"
     assert task.supports_resume is True  # Stage 2: resumable by default
 
     await task.execute(ctx)

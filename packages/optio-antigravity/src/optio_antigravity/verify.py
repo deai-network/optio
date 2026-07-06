@@ -1,39 +1,42 @@
 """Host-free antigravity seed verify + refresh via Google's OIDC token endpoint.
 
-No ``agy`` process and no model inference: read the seed's token store
-(``.gemini/oauth_creds.json``), and when the access token is expired (or a
-userinfo liveness check fails) perform a standard OIDC ``refresh_token`` grant
-against Google's token endpoint, writing the rotated tokens back into the seed.
-Mirrors optio-grok's ``verify.py`` (there: xAI OIDC discovered from the seed's
-``oidc_issuer``; here: Google — a fixed, well-known issuer).
+No ``agy`` process and no model inference: read the seed's token store and, when
+the access token is expired (or a userinfo liveness check fails), perform a
+standard OIDC ``refresh_token`` grant against Google's token endpoint, writing
+the rotated tokens back into the seed. Mirrors optio-grok's ``verify.py`` (there:
+xAI OIDC discovered from the seed's ``oidc_issuer``; here: Google — a fixed,
+well-known issuer).
+
+Token store (S1 spike, real interactive Google login 2026-07-06). agy writes its
+OAuth state to ``.gemini/antigravity-cli/antigravity-oauth-token`` (imported from
+``seed_manifest._TOKEN_STORE_RELPATH`` — the single source of truth for the path,
+so verify and the capture manifest can never diverge). The file is NESTED JSON::
+
+    {"auth_method": "consumer",
+     "token": {"access_token": "...", "token_type": "Bearer",
+               "refresh_token": "1//0...", "expiry": "2026-07-06T15:17:07.684178639+02:00"}}
+
+The access/refresh tokens and ``expiry`` live under ``token`` (not top-level).
+``expiry`` is an ISO-8601 string with NANOSECOND fractional seconds and a timezone
+offset (Go's RFC3339Nano) — ``datetime.fromisoformat`` accepts at most microseconds,
+so the fractional part is truncated to <=6 digits before parsing. There is no
+``expiry_date`` epoch-millis field. A refresh rotates ``access_token`` (and *may*
+rotate ``refresh_token``) and resets ``expiry``; ``auth_method`` and any other
+outer keys are preserved verbatim on write-back.
+
+OAuth client (S1): agy's authorize URL carries ``code_challenge`` +
+``code_challenge_method=S256``, so agy is a **PUBLIC PKCE client**. A public-client
+``refresh_token`` grant uses ``client_id`` ONLY — no ``client_secret`` is sent.
+The client_id is ``_AGY_CLIENT_ID`` below.
 
 Google OIDC facts (``accounts.google.com/.well-known/openid-configuration``):
 ``token_endpoint = https://oauth2.googleapis.com/token``; the ``refresh_token``
-grant is supported. Google's installed-app clients are **public** but the grant
-still requires the (non-secret) ``client_id`` + ``client_secret`` pair baked into
-the CLI. The seed's token store is agy's flat Google ``oauth_creds.json``
-(``access_token`` / ``refresh_token`` / ``expiry_date`` epoch-millis / ``scope`` /
-``id_token`` / ``token_type``); a refresh rotates ``access_token`` (and *may*
-rotate ``refresh_token``) and resets ``expiry_date``. Identity/scope fields are
-unchanged by a refresh, so they are preserved verbatim.
+grant is supported.
 
-Fail-closed: a 4xx (``invalid_grant``) marks the seed dead; a network/discovery
-error is inconclusive and NEVER retires a healthy seed. Host-free, non-billable.
-
-============================================================================
-TODO(S1): the real credential-location spike (plan Task S1) has NOT run yet.
-Every credential assumption below is the design's **likely-outcome** (§2 option 1:
-a keyring file-fallback OAuth token store at ``.gemini/oauth_creds.json``) and is
-flagged for reconciliation once S1 records the empirical login diff:
-  * the token-store relpath + flat Google shape (``_TOKEN_MEMBER``);
-  * that Google (fixed issuer) is the OIDC provider (``_GOOGLE_ISSUER``);
-  * the public CLI ``client_id`` / ``client_secret`` — the store does not carry
-    them, so we fall back to the well-known Gemini-CLI public values
-    (``_GEMINI_CLI_CLIENT_ID`` / ``_GEMINI_CLI_CLIENT_SECRET``); S1 must confirm
-    antigravity uses the same OAuth client (record the real id/secret there).
-The fail-closed *contract* (dead only on a definitive dead signal; inconclusive
-on transport) is invariant across the S1 outcomes.
-============================================================================
+Fail-closed: the seed is marked ``dead`` ONLY on a definitive ``invalid_grant``
+(the refresh-token lineage is spent/revoked). Any other 4xx/5xx (``invalid_client``,
+``invalid_request``, a server error), a network/discovery error, or a save-back
+failure is inconclusive and NEVER retires a healthy seed. Host-free, non-billable.
 """
 
 from __future__ import annotations
@@ -42,43 +45,44 @@ import asyncio
 import io
 import json
 import logging
+import re
 import tarfile
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 from urllib.error import HTTPError, URLError
 
 from optio_agents import seeds
-from optio_antigravity.seed_manifest import ANTIGRAVITY_SEED_SUFFIX
+from optio_antigravity.seed_manifest import (
+    ANTIGRAVITY_SEED_SUFFIX,
+    _TOKEN_STORE_RELPATH as _TOKEN_MEMBER,
+)
 
 _LOG = logging.getLogger(__name__)
 
-# The seed's token store (in-tar path; home_subdir="home" is stripped at capture
-# and re-added at extract, mirroring the seed manifest's include relpath).
-# TODO(S1): reconcile the relpath/shape with the real-login spike.
-_TOKEN_MEMBER = ".gemini/oauth_creds.json"
-
 # Google is a fixed, well-known OIDC issuer (unlike grok, the seed does not carry
-# an ``oidc_issuer`` — agy authenticates only against Google). TODO(S1): confirm.
+# an ``oidc_issuer`` — agy authenticates only against Google).
 _GOOGLE_ISSUER = "https://accounts.google.com"
 
-# The public Gemini-CLI OAuth client (a Google "installed app": the client_secret
-# is published, not confidential). The flat ``oauth_creds.json`` does not carry
-# these, so they are the fallback when the store omits them.
-# TODO(S1): confirm antigravity shares this OAuth client; record the real values.
-_GEMINI_CLI_CLIENT_ID = (
-    "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com"
+# agy's PUBLIC PKCE OAuth client. A PKCE public-client refresh grant is
+# authenticated by ``client_id`` alone — there is NO client_secret to send (S1:
+# the authorize URL uses code_challenge/S256, so agy is a public client).
+_AGY_CLIENT_ID = (
+    "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
 )
-_GEMINI_CLI_CLIENT_SECRET = "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"
 
 _HTTP_TIMEOUT_S = 20
 _USER_AGENT = "optio-antigravity-seed-verify/1"
 
-# Sentinel: the refresh endpoint returned a 4xx (invalid_grant) — the refresh
-# token lineage is definitively spent/revoked → mark the seed dead. Distinct from
-# ``None`` (a network/transport failure → inconclusive, never mark dead).
+# Sentinel: the refresh endpoint returned a definitive ``invalid_grant`` — the
+# refresh-token lineage is spent/revoked → mark the seed dead. Distinct from
+# ``None`` (a transport error or a non-invalid_grant HTTP error → inconclusive).
 _DEAD = "__dead__"
+
+# Go RFC3339Nano emits up to 9 fractional-second digits; Python's fromisoformat
+# accepts at most 6 (microseconds). Truncate the excess before parsing.
+_FRAC_RE = re.compile(r"(\.\d{6})\d+")
 
 
 # --- synchronous HTTP (run in an executor; no host, no agy) -----------------
@@ -97,15 +101,16 @@ def _discover_sync(issuer: str) -> "dict | None":
 
 
 def _refresh_sync(
-    token_endpoint: str, refresh_token: str, client_id: str, client_secret: str,
+    token_endpoint: str, refresh_token: str, client_id: str,
 ) -> "dict | str | None":
-    """OIDC refresh_token grant against Google. Returns the token response dict on
-    success, ``_DEAD`` on a 4xx (dead lineage), or ``None`` on a transport error."""
+    """OIDC refresh_token grant against Google as a PUBLIC PKCE client (client_id
+    only, no client_secret). Returns the token response dict on success, ``_DEAD``
+    on a definitive ``invalid_grant`` (dead lineage), or ``None`` on any other HTTP
+    error (inconclusive) or a transport error."""
     body = urllib.parse.urlencode({
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
         "client_id": client_id,
-        "client_secret": client_secret,
     }).encode("utf-8")
     req = urllib.request.Request(
         token_endpoint, data=body, method="POST",
@@ -118,8 +123,15 @@ def _refresh_sync(
     try:
         with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
             return json.loads(resp.read().decode("utf-8"))
-    except HTTPError:
-        return _DEAD  # invalid_grant / 4xx → the refresh token is spent
+    except HTTPError as exc:
+        # Retire the seed ONLY on a definitive invalid_grant. Any other 4xx/5xx
+        # (invalid_client, invalid_request, a server error) is inconclusive — it
+        # may signal an imperfect client/PKCE assumption, not a dead seed.
+        try:
+            err = json.loads(exc.read().decode("utf-8")).get("error")
+        except (ValueError, UnicodeDecodeError, OSError, AttributeError):
+            err = None
+        return _DEAD if err == "invalid_grant" else None
     except (URLError, OSError, ValueError):
         return None  # network/transport → inconclusive
 
@@ -142,10 +154,23 @@ async def _in_executor(fn, *args):
 
 # --- helpers ----------------------------------------------------------------
 
+def _token_node(store: dict) -> dict:
+    """The nested credential node holding access_token / refresh_token / expiry.
+
+    agy's real store nests them under ``token``; return that dict so callers read
+    and mutate it in place (write-back preserves ``auth_method`` and any other
+    outer keys). Fall back to the top-level dict defensively for a hypothetical
+    future build that flattens the store."""
+    tok = store.get("token")
+    return tok if isinstance(tok, dict) else store
+
+
 def _parse_expiry(value) -> "datetime | None":
-    """Parse Google's ``expiry_date`` — epoch milliseconds (an int/float, the
-    google-auth default) or, defensively, an epoch-seconds number. None when
-    unparseable (→ treated as expired, i.e. refresh)."""
+    """Parse agy's ``expiry`` into an aware UTC datetime.
+
+    Accepts the real ISO-8601 string (nanosecond-tolerant, offset-aware → converted
+    to UTC) and, defensively, an epoch-millis/seconds number. None when unparseable
+    (→ treated as expired, i.e. refresh)."""
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
@@ -154,22 +179,33 @@ def _parse_expiry(value) -> "datetime | None":
             return datetime.fromtimestamp(ts, tz=timezone.utc)
         except (ValueError, OSError, OverflowError):
             return None
+    if isinstance(value, str) and value.strip():
+        s = _FRAC_RE.sub(r"\1", value.strip())  # RFC3339Nano → <=6 frac digits
+        if s.endswith(("Z", "z")):
+            s = s[:-1] + "+00:00"
+        try:
+            dt = datetime.fromisoformat(s)
+        except ValueError:
+            return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
     return None
 
 
 def _read_token_store(blob_plain: bytes) -> "dict | None":
-    """The flat Google OAuth creds dict from the seed's token store, or None if
-    absent/malformed. Shape: ``{ access_token, refresh_token, expiry_date, ... }``
-    (unlike grok's ``{issuer::client: creds}`` wrapper)."""
+    """The agy OAuth store dict from the seed's token member, or None if
+    absent/malformed. Shape: ``{"auth_method": ..., "token": {access_token,
+    refresh_token, expiry, token_type}}`` (nested — see module docstring)."""
     try:
         with tarfile.open(fileobj=io.BytesIO(blob_plain), mode="r:gz") as tar:
             f = tar.extractfile(_TOKEN_MEMBER)
             if f is None:
                 return None
-            creds = json.loads(f.read().decode("utf-8"))
+            store = json.loads(f.read().decode("utf-8"))
     except (tarfile.TarError, KeyError, ValueError, UnicodeDecodeError):
         return None
-    return creds if isinstance(creds, dict) and creds else None
+    return store if isinstance(store, dict) and store else None
 
 
 # --- public API -------------------------------------------------------------
@@ -185,17 +221,19 @@ async def verify_and_refresh_seed(
 ) -> bool:
     """Verify an antigravity seed host-free and refresh its rotating OAuth token.
 
-    Reads the seed's ``oauth_creds.json``; if the access token is expired (or a
+    Reads the seed's nested token store; if the access token is expired (or a
     userinfo liveness check fails) performs an OIDC ``refresh_token`` grant against
-    Google's token endpoint (discovered from the fixed Google issuer) and writes
-    the rotated ``access_token``/``refresh_token``/``expiry_date`` back into the
-    seed. Returns True iff the seed is alive (token still valid, or a successful
-    refresh).
+    Google's token endpoint (discovered from the fixed Google issuer) as a public
+    PKCE client (client_id only) and writes the rotated ``access_token`` /
+    ``refresh_token`` / ``expiry`` back into ``store["token"]`` (preserving
+    ``auth_method`` and any other outer keys). Returns True iff the seed is alive
+    (token still valid, or a successful refresh).
 
     Never raises for a dead seed. Marks pool status ``dead`` ONLY on a definitive
-    dead signal (no refresh token, malformed store, or a 4xx invalid_grant); a
-    transport/discovery failure is inconclusive and leaves status untouched. No
-    ``agy`` process, no model inference (mirrors optio-grok's verify.py).
+    dead signal (no refresh token, malformed store, or a ``invalid_grant`` refresh
+    response); a transport/discovery failure or any non-invalid_grant HTTP error is
+    inconclusive and leaves status untouched. No ``agy`` process, no model inference
+    (mirrors optio-grok's verify.py).
 
     Call only on a FREE seed or one whose lease the caller holds: a refresh may
     rotate a single-use refresh token, stranding any live session on that seed.
@@ -221,18 +259,14 @@ async def verify_and_refresh_seed(
     buf = io.BytesIO()
     await AsyncIOMotorGridFSBucket(db).download_to_stream(doc["blobId"], buf)
     dec = decrypt or (lambda b: b)
-    creds = _read_token_store(dec(buf.getvalue()))
-    if creds is None:
+    store = _read_token_store(dec(buf.getvalue()))
+    if store is None:
         return await _finish(False, mark_dead=True)
 
-    refresh_token = creds.get("refresh_token")
+    tok = _token_node(store)
+    refresh_token = tok.get("refresh_token")
     if not refresh_token:
         return await _finish(False, mark_dead=True)
-
-    # TODO(S1): the store does not carry client_id/secret — fall back to the
-    # public Gemini-CLI OAuth client. S1 must confirm antigravity shares it.
-    client_id = creds.get("client_id") or _GEMINI_CLI_CLIENT_ID
-    client_secret = creds.get("client_secret") or _GEMINI_CLI_CLIENT_SECRET
 
     disco = await _in_executor(_discover_sync, _GOOGLE_ISSUER)
     if not isinstance(disco, dict) or not disco.get("token_endpoint"):
@@ -242,34 +276,34 @@ async def verify_and_refresh_seed(
     userinfo_endpoint = disco.get("userinfo_endpoint")
 
     now = datetime.now(timezone.utc)
-    exp = _parse_expiry(creds.get("expiry_date"))
+    exp = _parse_expiry(tok.get("expiry"))
     need_refresh = exp is None or exp <= now
     if not need_refresh and userinfo_endpoint:
         # Not expired: a cheap liveness check catches a revoked-but-unexpired
         # token; refresh only if it fails.
-        if not await _in_executor(_validate_sync, userinfo_endpoint, creds.get("access_token") or ""):
+        if not await _in_executor(_validate_sync, userinfo_endpoint, tok.get("access_token") or ""):
             need_refresh = True
     if not need_refresh:
         return await _finish(True, mark_dead=False)
 
     resp = await _in_executor(
-        _refresh_sync, token_endpoint, refresh_token, client_id, client_secret,
+        _refresh_sync, token_endpoint, refresh_token, _AGY_CLIENT_ID,
     )
     if resp is _DEAD:
         return await _finish(False, mark_dead=True)
     if not isinstance(resp, dict) or not resp.get("access_token"):
-        return await _finish(False, mark_dead=False)  # transport → inconclusive
+        return await _finish(False, mark_dead=False)  # inconclusive
 
-    creds["access_token"] = resp["access_token"]
+    tok["access_token"] = resp["access_token"]
     if resp.get("refresh_token"):  # Google usually omits this; keep the old one
-        creds["refresh_token"] = resp["refresh_token"]
+        tok["refresh_token"] = resp["refresh_token"]
     expires_in = resp.get("expires_in")
     if isinstance(expires_in, (int, float)) and not isinstance(expires_in, bool):
-        creds["expiry_date"] = int((now.timestamp() + expires_in) * 1000)
+        tok["expiry"] = (now + timedelta(seconds=expires_in)).isoformat()
     try:
         await seeds.overwrite_seed_member(
             db, prefix=prefix, suffix=suffix, seed_id=seed_id,
-            member_path=_TOKEN_MEMBER, content=json.dumps(creds).encode("utf-8"),
+            member_path=_TOKEN_MEMBER, content=json.dumps(store).encode("utf-8"),
             encrypt=encrypt, decrypt=decrypt,
         )
     except Exception:  # noqa: BLE001 — save-back failed; the refresh still rotated

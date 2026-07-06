@@ -340,7 +340,7 @@ async def test_conversation_unconfined_when_fs_isolation_off(
 
 def test_ui_widget_per_mode():
     """Conversation tasks carry no widget unless conversation_ui; iframe
-    tasks keep 'iframe'."""
+    tasks use the 'iframe-input' widget (TUI + operator input box)."""
     conv_task = create_codex_task(
         process_id="cx-widget-conv",
         name="Widget conv",
@@ -362,4 +362,4 @@ def test_ui_widget_per_mode():
         name="Widget iframe",
         config=CodexTaskConfig(consumer_instructions="x"),
     )
-    assert iframe_task.ui_widget == "iframe"
+    assert iframe_task.ui_widget == "iframe-input"

@@ -3,7 +3,8 @@
 Mirrors optio-grok's test_cred_watcher (grok ← antigravity renames). agy's
 rotating Google OAuth refresh token is the exact save-back failure mode the
 watcher exists for. The token store lives at
-``<workdir>/home/.gemini/oauth_creds.json`` (design likely-outcome; TODO(S1)).
+``<workdir>/home/.gemini/antigravity-cli/antigravity-oauth-token`` (S1 real-login
+path, imported from the seed manifest SSOT).
 """
 
 from __future__ import annotations
@@ -21,14 +22,22 @@ from optio_antigravity import cred_watcher
 from optio_antigravity.seed_manifest import (
     ANTIGRAVITY_CRED_MANIFEST,
     ANTIGRAVITY_SEED_SUFFIX,
+    _TOKEN_STORE_RELPATH,
 )
+
+# The live token store path under the isolated HOME (seed manifest SSOT).
+_TOKEN_PARTS = ("home", *_TOKEN_STORE_RELPATH.split("/"))
+
+
+def _token_path(workdir: str) -> str:
+    return os.path.join(workdir, *_TOKEN_PARTS)
 
 
 def _write_creds(workdir: str, payload: dict | str) -> None:
-    d = os.path.join(workdir, "home", ".gemini")
-    os.makedirs(d, exist_ok=True)
+    p = _token_path(workdir)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
     text = payload if isinstance(payload, str) else json.dumps(payload)
-    with open(os.path.join(d, "oauth_creds.json"), "w") as fh:
+    with open(p, "w") as fh:
         fh.write(text)
 
 
@@ -125,7 +134,7 @@ async def test_save_back_only_on_change(mongo_db, host, tmp_path):
         ctx, dst, seed_id=seed_id, manifest=ANTIGRAVITY_CRED_MANIFEST,
         suffix=ANTIGRAVITY_SEED_SUFFIX, decrypt=None,
     )
-    with open(os.path.join(dst.workdir, "home", ".gemini", "oauth_creds.json")) as fh:
+    with open(_token_path(dst.workdir)) as fh:
         assert "T2" in fh.read()
 
 
@@ -171,8 +180,7 @@ async def test_watcher_saves_back_on_change(mongo_db, host, tmp_path, monkeypatc
                 ctx, dst, seed_id=seed_id, manifest=ANTIGRAVITY_CRED_MANIFEST,
                 suffix=ANTIGRAVITY_SEED_SUFFIX, decrypt=None,
             )
-            p = os.path.join(dst.workdir, "home", ".gemini", "oauth_creds.json")
-            with open(p) as fh:
+            with open(_token_path(dst.workdir)) as fh:
                 if "T2" in fh.read():
                     break
         else:

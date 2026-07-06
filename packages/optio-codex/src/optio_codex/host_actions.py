@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
+from optio_agents import tmux_input as _tmux_input
 from optio_host.host import proc_wait
 
 if TYPE_CHECKING:
@@ -953,22 +954,25 @@ async def tmux_session_alive(
 async def send_text_to_codex(
     host: "Host", tmux_path: str, tmux_socket: str, tmux_session: str, text: str,
 ) -> None:
-    s = shlex.quote(tmux_socket)
-    sess = shlex.quote(tmux_session)
-    tp = shlex.quote(tmux_path)
-    buf = "optio-feedback"
-    cmd = (
-        f"{tp} -S {s} set-buffer -b {buf} -- {shlex.quote(text)} && "
-        f"{tp} -S {s} paste-buffer -d -b {buf} -t {sess} && "
-        f"sleep {_SUBMIT_SETTLE_S} && "
-        f"{tp} -S {s} send-keys -t {sess} Enter"
+    """Fake-type a message into the codex TUI and submit it.
+
+    Thin wrapper over the shared
+    :func:`optio_agents.tmux_input.send_text_to_tmux`, pinned to codex's buffer
+    name (``optio-feedback``) and settle (``_SUBMIT_SETTLE_S``) so behavior is
+    identical to the previous inline implementation."""
+    await _tmux_input.send_text_to_tmux(
+        host, tmux_path, tmux_socket, tmux_session, text,
+        buffer="optio-feedback", submit_settle=_SUBMIT_SETTLE_S,
     )
-    result = await host.run_command(cmd)
-    if result.exit_code != 0:
-        raise RuntimeError(
-            f"send_text_to_codex: tmux injection failed "
-            f"(exit {result.exit_code}): {result.stderr!r}"
-        )
+
+
+async def send_key_to_codex(
+    host: "Host", tmux_path: str, tmux_socket: str, tmux_session: str, key: str,
+) -> None:
+    """Send a single navigation keystroke into the codex TUI (iframe-input
+    empty-box TUI nav). Thin wrapper over
+    :func:`optio_agents.tmux_input.send_key_to_tmux`."""
+    await _tmux_input.send_key_to_tmux(host, tmux_path, tmux_socket, tmux_session, key)
 
 
 # --- resume bookkeeping (Stage 2; adapted from optio-grok) ------------------

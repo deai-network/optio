@@ -1,70 +1,75 @@
 """antigravity adopter of the generic optio-agents seed engine.
 
 Defines the antigravity seed manifest (HOME layout + capture-time include
-triage), the Mongo collection suffix, a token-store validity gate, and
-ergonomic `delete_seed` / `list_seeds` / `purge_seed` wrappers that bind the
-suffix for consuming apps.
+triage), the Mongo collection suffix, a token-store validity gate, a
+consume-time rekey, and ergonomic `delete_seed` / `list_seeds` / `purge_seed`
+wrappers that bind the suffix for consuming apps.
 
 An antigravity *seed* carries the logged-in Google identity that ``agy``
 provisions under its isolated HOME (``<workdir>/home`` — see
-``host_actions._isolation_env``). All of agy's state lives under
-``~/.gemini`` (a tree shared with the Gemini CLI), so — like grok/kimi — this
-manifest uses ``home_subdir="home"`` with ``.gemini/`` prefixes on the include
-paths (the engine roots capture/extract at ``host.workdir + "/" + home_subdir``).
-
-Like grok/kimi (and unlike claudecode) the credential is a cwd-independent OAuth
-blob, so the likely-outcome is no consume-time rekey (``consume_transform=None``).
+``host_actions._isolation_env``). agy keeps its state under ``~/.gemini`` (a tree
+shared with the Gemini CLI), so — like grok/kimi — this manifest uses
+``home_subdir="home"`` with ``.gemini/`` prefixes on the include paths (the
+engine roots capture/extract at ``host.workdir + "/" + home_subdir``).
 
 ============================================================================
-TODO(S1): the real credential-location spike (plan Task S1) has NOT run yet.
-Per the design (§2), agy stores its OAuth token in the **OS keyring**
-(libsecret / Secret Service), NOT a plain file — so where a *headless* worker's
-token actually lands is unproven. This module is written against the design's
-**most-likely** outcome (§2 option 1: a keyring **file fallback** when no Secret
-Service is present) and every path/format assumption below is flagged for
-reconciliation once S1 records the empirical login diff. The seed *shape* pinned
-here (full provisioned set ⊋ token-only cred manifest + a validity gate) is
-invariant across the S1 outcomes; only the concrete relpaths move.
+S1 spike RESULTS (empirical, from a real interactive Google login, 2026-07-06).
+Where agy actually writes its login state under the isolated HOME:
+
+- Token store: ``.gemini/antigravity-cli/antigravity-oauth-token`` — JSON
+  ``{"auth_method": "consumer", "token": {"access_token", "token_type",
+  "refresh_token", "expiry"}}``. This is the ONLY file agy rewrites on OAuth
+  refresh → the sole member of the cred (save-back) manifest. (The design's §2
+  guess of ``.gemini/oauth_creds.json`` / a keyring blob was WRONG — agy writes
+  a plain file here; the system keyring was untouched across login.)
+- Settings: ``.gemini/antigravity-cli/settings.json`` — ``{AutoUpdate:false,
+  trustedWorkspaces:[<capture workdir>]}``. The trustedWorkspaces path is the
+  CAPTURE workdir, so a replant must rekey it to the new workdir (else agy
+  treats the restored workspace as untrusted) → ``_rekey_trusted_workspaces``.
+- Onboarding + project: ``.gemini/antigravity-cli/cache/onboarding.json``
+  (``onboardingComplete:true`` — skips the onboarding flow on replant) and
+  ``.gemini/config/`` (``config.json``, ``mcp_config.json``, ``.migrated``,
+  ``projects/default-cli-project.json``, ``cache`` pointers).
+
+Excluded (regenerated / device-specific / static / conversation state):
+``installation_id`` (per-install id, regenerated), ``log/``,
+``conversation_summaries.db``, ``jetski_state.pbtxt``, ``knowledge/``,
+``builtin/`` (static skills re-provisioned by agy), ``bin/`` (binary assets),
+and all of ``.gemini/antigravity/`` (transcript.jsonl, artifacts — the seed
+engine's contract is "no conversation/session data").
 ============================================================================
 """
 
 from __future__ import annotations
 
 import json
+import shlex
 
 from optio_agents import seeds
+from optio_host.host import Host
 
 ANTIGRAVITY_SEED_SUFFIX = "_antigravity_seeds"
 ANTIGRAVITY_SEED_MANIFEST_VERSION = 1
 
 
-# --- credential-location assumptions (all TODO(S1)) ------------------------
-#
-# The rotating OAuth token store. agy shares ``~/.gemini`` with the Gemini CLI,
-# whose OAuth credentials live at ``~/.gemini/oauth_creds.json``; the design's
-# §2-option-1 file fallback is expected to land here (or, per option 1, beside
-# the settings under ``antigravity-cli/``). This is the ONLY member of the
-# save-back (cred) manifest — the single file agy mutates on token refresh.
-# TODO(S1): confirm the real file path (and whether it exists at all, vs. a
-# keyring-export blob that the seed must synthesize).
-_TOKEN_STORE_RELPATH = ".gemini/oauth_creds.json"
+# The rotating OAuth token store — the single file agy mutates on token refresh
+# (sole member of the save-back cred manifest).
+_TOKEN_STORE_RELPATH = ".gemini/antigravity-cli/antigravity-oauth-token"
 
-# The login-provisioned account/provider registration (the Gemini-CLI shared
-# tree records the signed-in Google account + selected project here). Without it
-# a replant has a token but no account binding and can drop to the login screen
-# (the kimi "token but no provider" failure mode). TODO(S1): confirm path/name.
-_ACCOUNT_REGISTRATION_RELPATH = ".gemini/google_accounts.json"
-
-# agy's own settings (color scheme, model, trusted paths, AutoUpdate keys).
-# Confirmed in the design's state-tree table; non-secret, login-independent.
+# agy's settings: AutoUpdate + trustedWorkspaces (the latter rekeyed on consume).
 _SETTINGS_RELPATH = ".gemini/antigravity-cli/settings.json"
+
+# Onboarding completion flag — without it a fresh replant re-enters onboarding.
+_ONBOARDING_RELPATH = ".gemini/antigravity-cli/cache/onboarding.json"
+
+# Login/onboarding-provisioned config tree (account/project/mcp). A directory
+# include: the engine captures/extracts every member under it.
+_CONFIG_DIR_RELPATH = ".gemini/config"
 
 
 # Credential-only manifest for in-session save-back (the write-back analog of
-# the full ANTIGRAVITY_SEED_MANIFEST; mirrors grok's GROK_CRED_MANIFEST and
-# kimi's KIMI_CRED_MANIFEST). Carries ONLY the rotating token store — the single
-# file agy mutates on OAuth-token refresh; settings/account registration are
-# static login-time state and are never written back mid-session.
+# the full ANTIGRAVITY_SEED_MANIFEST; mirrors grok's / kimi's cred manifest).
+# ONLY the rotating token store — settings/config are static login-time state.
 ANTIGRAVITY_CRED_MANIFEST = seeds.SeedManifest(
     home_subdir="home",
     include=[_TOKEN_STORE_RELPATH],
@@ -73,43 +78,59 @@ ANTIGRAVITY_CRED_MANIFEST = seeds.SeedManifest(
 )
 
 
-# Full identity seed = the rotating token store PLUS everything login provisions
-# that a fresh, already-authenticated task needs: the account/provider
-# registration and agy's settings. A token-only replant is NOT enough (kimi's
+async def _rekey_trusted_workspaces(host: Host) -> None:
+    """Point settings.json ``trustedWorkspaces`` at the replant workdir.
+
+    The captured settings.json trusts the ORIGINAL (capture-time) workdir path;
+    a replant restores under a different workdir, so agy would treat the restored
+    workspace as untrusted. Rewrite the list to exactly the new workdir. Parse →
+    set → re-serialize (never blind-append), and tolerate an absent/corrupt file
+    (agy rewrites settings on start anyway). Best-effort: never raise out of the
+    consume path."""
+    workdir = host.workdir.rstrip("/")
+    settings_abs = f"{workdir}/home/{_SETTINGS_RELPATH}"
+    try:
+        raw = await host.run_command(f"cat {shlex.quote(settings_abs)} 2>/dev/null")
+        doc = json.loads(raw.stdout) if raw.exit_code == 0 and raw.stdout.strip() else {}
+        if not isinstance(doc, dict):
+            doc = {}
+    except (ValueError, UnicodeDecodeError):
+        doc = {}
+    doc["trustedWorkspaces"] = [workdir]
+    payload = json.dumps(doc, indent=2)
+    # write via a heredoc through the host (uniform Local/Remote)
+    await host.write_text(f"home/{_SETTINGS_RELPATH}", payload)
+
+
+# Full identity seed = token store PLUS everything login/onboarding provisions
+# that a fresh, already-authenticated task needs (settings, onboarding flag,
+# config/account/project tree). A token-only replant is NOT enough (kimi's
 # "token but no provider -> login screen" lesson), so the full manifest is a
-# strict superset of the cred manifest.
-#
-# TODO(S1): once S1 enumerates exactly which files login writes, add any further
-# non-secret provisioned state here (e.g. ``.gemini/config/mcp_config.json`` if
-# login-provisioned). The conversation/session state under
-# ``.gemini/antigravity/`` (transcript.jsonl, artifacts/) is deliberately
-# EXCLUDED — the seed engine's contract is "no conversation/session data".
+# strict superset of the cred manifest. Consume rekeys trustedWorkspaces.
 ANTIGRAVITY_SEED_MANIFEST = seeds.SeedManifest(
     home_subdir="home",
     include=[
         *ANTIGRAVITY_CRED_MANIFEST.include,
-        _ACCOUNT_REGISTRATION_RELPATH,
         _SETTINGS_RELPATH,
+        _ONBOARDING_RELPATH,
+        _CONFIG_DIR_RELPATH,
     ],
     version=ANTIGRAVITY_SEED_MANIFEST_VERSION,
-    consume_transform=None,  # no cwd-rekey (likely-outcome; TODO(S1))
+    consume_transform=_rekey_trusted_workspaces,
 )
 
 
 def token_capture_is_valid(raw: bytes | None) -> bool:
     """Whether a captured token-store blob holds a usable credential.
 
-    Gates seed CAPTURE and in-session save-back: a creds-only capture must be
-    rejected unless the token store actually carries a non-empty OAuth refresh
-    token. An absent / empty / unparseable / logged-out store would otherwise
-    poison the seed (or an existing seed's blob) with a dead identity — the
-    antigravity analog of grok's ``cred_fingerprint`` / ``capture_gate_ok`` gate.
+    Gates seed CAPTURE and in-session save-back: reject unless the store carries
+    a non-empty OAuth ``refresh_token``. An absent / empty / unparseable /
+    logged-out store would otherwise poison the seed with a dead identity.
 
-    TODO(S1): reconcile the store format with the real login spike. The
-    likely-outcome (§2 option 1) is a JSON object carrying a Google OAuth token
-    with a ``refresh_token`` field; if S1 finds a keyring-export blob or a
-    different schema, update the parse/field check here (the *reject-empty*
-    contract is invariant regardless).
+    agy's real store (S1): ``{"auth_method": ..., "token": {"refresh_token":
+    "...", "access_token": ..., "expiry": ...}}`` — the refresh token is NESTED
+    under ``token``. Accept a top-level ``refresh_token`` too, defensively, in
+    case a future agy build flattens it.
     """
     if not raw:
         return False
@@ -119,6 +140,9 @@ def token_capture_is_valid(raw: bytes | None) -> bool:
         return False
     if not isinstance(data, dict) or not data:
         return False
+    token = data.get("token")
+    if isinstance(token, dict) and token.get("refresh_token"):
+        return True
     return bool(data.get("refresh_token"))
 
 
