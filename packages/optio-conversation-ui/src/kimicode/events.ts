@@ -82,6 +82,18 @@ function appendThinking(items: ChatItem[], seq: number, text: string): ChatItem[
   return [...items, { kind: 'thinking', text, seq }];
 }
 
+// Harness-injected messages (resume notices, upload notices) go through the same
+// send() path, so kimi echoes them back as user_message_chunk too; they carry
+// this prefix and render as muted activity rows, never user bubbles.
+const HARNESS_PREFIX = 'System: ';
+
+// On a file upload the view prepends one `System: upload received, stored in
+// <path>` line per file to the prompt; strip them from the wire echo so the user
+// bubble shows only the real request (and dedupes against the optimistic echo).
+function stripUploadNotice(text: string): string {
+  return text.replace(/^(?:System: upload received, stored in [^\n]*\n)+\n?/, '');
+}
+
 export function reduceKimiCodeEvent(state: ChatState, ev: any, seq: number): ChatState {
   return reduce(state as KimiCodeChatState, ev, seq);
 }
@@ -196,11 +208,37 @@ function reduce(st: KimiCodeChatState, ev: any, seq: number): KimiCodeChatState 
       };
     }
 
-    // plan / available_commands_update / user_message_chunk — no dedicated
-    // rendering yet; passed through as no-ops. config_option_update is folded
-    // via the synthetic x-optio-control-update the engine re-projects from it
-    // (see conversation.py:_emit_control_update), so the raw notification here
-    // is a no-op too.
+    if (kind === 'user_message_chunk') {
+      // kimi emits the operator's prompt as user_message_chunk — live (echoing a
+      // sent turn) and, crucially, during a session/load REPLAY where it is the
+      // ONLY per-turn delimiter (no session/prompt turn-end arrives then). So
+      // each one BOTH renders the prompt AND opens a new turn: finalize the prior
+      // answer bubble and bump the turn id so the next agent_message_chunk starts
+      // a fresh bubble instead of coalescing every historic answer into one giant
+      // agent bubble (the reported resume bug — merged answers, no prompts).
+      const text = stripUploadNotice(update.content?.text ?? '');
+      if (text === '') return st;
+      const items0 = finalizePending(dropTools(st.items));
+      const turn = (st.turn ?? 0) + 1;
+      // Harness System: notices render as muted activity rows, never user bubbles.
+      if (text.startsWith(HARNESS_PREFIX)) {
+        return { ...st, items: [...items0, { kind: 'activity', text, seq }], turn };
+      }
+      // Dedup the optimistic local echo (x-optio-local-user): confirm it in place
+      // rather than adding a second bubble for the same prompt.
+      const idx = items0.findIndex((i) => i.kind === 'user' && i.local && i.text === text);
+      if (idx !== -1) {
+        const cur = items0[idx] as Extract<ChatItem, { kind: 'user' }>;
+        const items = [...items0.slice(0, idx), { ...cur, local: false }, ...items0.slice(idx + 1)];
+        return { ...st, items, turn };
+      }
+      return { ...st, items: [...items0, { kind: 'user', text, seq }], turn };
+    }
+
+    // plan / available_commands_update — no dedicated rendering; passed through
+    // as no-ops. config_option_update is folded via the synthetic
+    // x-optio-control-update the engine re-projects from it (see
+    // conversation.py:_emit_control_update), so the raw notification is a no-op.
     return st;
   }
 

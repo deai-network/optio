@@ -28,8 +28,51 @@ const thought = (text: string) => ({
 const turnEnd = (id: number, stopReason = 'end_turn') => ({
   jsonrpc: '2.0', id, result: { stopReason },
 });
+const userChunk = (text: string) => ({
+  jsonrpc: '2.0',
+  method: 'session/update',
+  params: { sessionId: 's1', update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text } } },
+});
 
 describe('kimicode ACP event reducer', () => {
+  it('a replayed user_message_chunk renders a user bubble', () => {
+    const s = play([userChunk('my prior question')]);
+    const u = s.items.find((i) => i.kind === 'user');
+    expect(u && u.kind === 'user' && u.text).toBe('my prior question');
+    expect(u && u.kind === 'user' && u.local).toBeFalsy();
+  });
+
+  it('replayed turns (session/load has NO turn-end) stay in SEPARATE bubbles, each with its prompt', () => {
+    // session/load replays user_message_chunk + agent_message_chunk per turn but
+    // no session/prompt turn-end, so the user prompt must delimit turns — else
+    // every answer coalesces into one giant agent bubble and the prompts vanish
+    // (the reported resume bug).
+    const s = play([
+      userChunk('q1'), chunk('answer one'),
+      userChunk('q2'), chunk('answer two'),
+    ]);
+    expect(s.items.filter((i) => i.kind === 'user').map((u) => (u as any).text)).toEqual(['q1', 'q2']);
+    expect(s.items.filter((i) => i.kind === 'assistant').map((a) => (a as any).text))
+      .toEqual(['answer one', 'answer two']);
+  });
+
+  it('a harness System: user_message_chunk renders as an activity row, not a user bubble', () => {
+    const s = play([userChunk('System: you have been resumed')]);
+    expect(s.items.some((i) => i.kind === 'user')).toBe(false);
+    const a = s.items.find((i) => i.kind === 'activity');
+    expect(a && a.kind === 'activity' && a.text).toBe('System: you have been resumed');
+  });
+
+  it('a live user_message_chunk echo confirms the optimistic bubble, no duplicate', () => {
+    const s = play([
+      { type: 'x-optio-local-user', text: 'say PONG' },
+      userChunk('say PONG'),
+    ]);
+    const users = s.items.filter((i) => i.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0].kind === 'user' && users[0].local).toBeFalsy();
+  });
+
   it('agent_message_chunk deltas accumulate into one pending bubble', () => {
     const s = play([chunk('PO'), chunk('NG')]);
     const b = s.items.find((i) => i.kind === 'assistant');
