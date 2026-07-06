@@ -634,6 +634,24 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                         "cursor resume: no prior session found; starting fresh",
                     )
 
+                # Replay→live boundary: the resume notice is sent as a LIVE turn
+                # below, and cursor echoes user turns as user_message_chunk ONLY
+                # during a session/load replay, never live (wire-confirmed). So
+                # inject the user_message_chunk the shared reducer's boundary
+                # branch consumes — AFTER replay (a pending last-replayed bubble
+                # exists to finalize) and BEFORE the send below. It finalizes the
+                # pending bubble (un-merge), bumps the turn (resume answer opens a
+                # fresh bubble) and renders the notice as a muted activity row.
+                conversation.emit_event({
+                    "jsonrpc": "2.0", "method": "session/update",
+                    "params": {"sessionId": loaded, "update": {
+                        "sessionUpdate": "user_message_chunk",
+                        "content": {
+                            "type": "text",
+                            "text": f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}",
+                        }}},
+                })
+
         # Start the in-session credential watcher for a seeded session: it
         # saves back the rotated auth.json, and (when the seed is leased)
         # renews the lease and aborts the session on lease loss.

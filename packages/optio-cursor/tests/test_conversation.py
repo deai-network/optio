@@ -79,6 +79,30 @@ def convo():
 
 
 @pytest.mark.asyncio
+async def test_emit_event_reaches_on_event_subscribers(convo):
+    """The synthetic resume-notice injected at the replay->live boundary reaches
+    on_event through the same queue+dispatch path as routed wire events."""
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)
+    events: list = []
+    c.on_event(events.append)
+    c.emit_event({
+        "jsonrpc": "2.0", "method": "session/update",
+        "params": {"update": {
+            "sessionUpdate": "user_message_chunk",
+            "content": {"type": "text", "text": "System: you have been resumed"}}},
+    })
+    await _wait_for(lambda: any(
+        (e.get("params") or {}).get("update", {}).get("sessionUpdate")
+        == "user_message_chunk"
+        for e in events
+    ))
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
 async def test_send_receive_and_on_event_transparent(convo):
     c, handle = convo
     reader = asyncio.create_task(c.run_reader())

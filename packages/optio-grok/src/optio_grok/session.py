@@ -518,6 +518,25 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                     "grok resume: no persisted session id; starting fresh session",
                 )
 
+            # Replay→live boundary: the resume notice is sent as a LIVE turn
+            # below, and grok echoes user turns as user_message_chunk ONLY during
+            # a session/load replay, never live. So inject the user_message_chunk
+            # the shared reducer's boundary branch consumes — AFTER replay (a
+            # pending last-replayed bubble exists to finalize) and BEFORE the send
+            # below. It finalizes the pending bubble (un-merge), bumps the turn
+            # (resume answer opens a fresh bubble) and renders the notice as a
+            # muted activity row.
+            if resuming:
+                conversation.emit_event({
+                    "jsonrpc": "2.0", "method": "session/update",
+                    "params": {"sessionId": resume_session_id, "update": {
+                        "sessionUpdate": "user_message_chunk",
+                        "content": {
+                            "type": "text",
+                            "text": f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}",
+                        }}},
+                })
+
         # Kickoff prompt as the first turn (headless: no positional prompt path).
         # On resume, push a System: resume notice instead so the resumed session
         # notices promptly (parity with claudecode/opencode; resume.log stays the

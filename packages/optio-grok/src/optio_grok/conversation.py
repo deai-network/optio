@@ -355,6 +355,20 @@ class GrokConversation:
         self._event_handlers.append(handler)
         return lambda: self._event_handlers.remove(handler)
 
+    def emit_event(self, obj: dict) -> None:
+        """Inject a SYNTHETIC event into the on_event fan-out — the same queue +
+        dispatch path routed wire events take, so it reaches every on_event
+        subscriber (the ConversationListener) and the reducer.
+
+        Used at the replay→live boundary on resume: the resume notice is sent as
+        a LIVE turn, but grok echoes user turns as ``user_message_chunk`` only
+        during a ``session/load`` replay, never live — so without an injected
+        event the last replayed answer stays pending, the resume answer merges
+        into it, and the notice never renders. Emitting the ``user_message_chunk``
+        the reducer's boundary branch consumes finalizes the pending bubble,
+        bumps the turn and renders the notice as an activity row."""
+        self._event_queue.put_nowait(obj)
+
     def on_message(self, handler):
         self._message_handlers.append(handler)
         return lambda: self._message_handlers.remove(handler)
