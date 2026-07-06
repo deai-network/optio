@@ -1,21 +1,17 @@
-// Layer-3 (design §5, plan Task S3) DEFERRED opt-in: replay a REAL captured
-// antigravity transcript through the production reducer.
+// Layer-3 (design §5, plan Task S3): replay a REAL captured antigravity
+// transcript through the production reducer.
 //
-// The antigravity-events.test.ts suite drives the reducer with HAND-WRITTEN
-// transcript shapes (fake_agy.py's documented minimal schema). This file
-// replays a transcript.jsonl captured from a real `agy -p` turn (real tool
-// calls, any reasoning rows, the coalesced final answer) through the exact
+// The antigravity-events.test.ts suite drives the reducer with hand-written
+// lines shaped like the real schema. This file replays an actual multi-turn
+// transcript.jsonl captured from the real `agy -p` binary (real tool calls,
+// real reasoning, the coalesced final answer) through the exact
 // `reduceAntigravityEvent` the listener feeds over SSE — proving the reducer
-// yields ONE coalesced, finalized answer bubble and clears `busy` at turn end
-// on the real wire, not just the fake one.
+// yields a human-correct ChatState on the real wire, not just the synthetic one.
 //
-// The fixture is captured by the S3 spike (plan Task S3) — it needs a real
-// Google-authed `agy`, which this environment lacks — so it is NOT committed
-// yet. Until it exists this test SKIPS cleanly (it.skipIf), so the harness never
-// fakes a pass on a capture it does not have. To produce it: run one real turn
-// under a PTY (`script -qec 'agy -p --dangerously-skip-permissions "read README
-// and reply DONE"' /dev/null`) and copy each JSON line of
-// ~/.gemini/antigravity/transcript.jsonl into the JSON array at the path below.
+// The fixture is one committed capture: two `agy -p` turns of a "reply PONG,
+// then list files" conversation (12 transcript lines). To re-capture it: run a
+// real Google-authed `agy` turn and copy each JSON line of
+// ~/.gemini/antigravity/transcript.jsonl into the .jsonl file below.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -25,39 +21,64 @@ import { initialChatState, type ChatItem, type ChatState } from '../chat.js';
 import { reduceAntigravityEvent } from '../antigravity/events.js';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const FIXTURE = path.join(HERE, 'fixtures', 'antigravity-transcript.json');
-const HAVE_FIXTURE = fs.existsSync(FIXTURE);
+const FIXTURE = path.join(HERE, 'fixtures', 'antigravity-real-transcript.jsonl');
+
+function loadFixture(): any[] {
+  return fs
+    .readFileSync(FIXTURE, 'utf-8')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l !== '')
+    .map((l) => JSON.parse(l));
+}
 
 function play(events: any[], from: ChatState = initialChatState): ChatState {
   return events.reduce((s, ev, i) => reduceAntigravityEvent(s, ev, i), from);
 }
 
 describe('antigravity real transcript → reducer (capture-replay)', () => {
-  it.skipIf(!HAVE_FIXTURE)(
-    'coalesces a real turn into one finalized answer bubble, tool rows preserved, busy cleared',
-    () => {
-      const events: any[] = JSON.parse(fs.readFileSync(FIXTURE, 'utf-8'));
-      expect(events.length).toBeGreaterThan(0);
+  it('reduces the real multi-turn `agy -p` capture into a human-correct ChatState', () => {
+    const events = loadFixture();
+    expect(events.length).toBeGreaterThan(0);
 
-      const state = play(events);
+    const state = play(events);
 
-      // Exactly one coalesced, finalized assistant answer bubble for the turn.
-      const answers = state.items.filter(
-        (i): i is Extract<ChatItem, { kind: 'assistant' }> => i.kind === 'assistant',
-      );
-      expect(answers).toHaveLength(1);
-      expect(answers[0].text.length).toBeGreaterThan(0);
-      expect(answers[0].pending).toBe(false);
+    const users = state.items.filter(
+      (i): i is Extract<ChatItem, { kind: 'user' }> => i.kind === 'user',
+    );
+    const answers = state.items.filter(
+      (i): i is Extract<ChatItem, { kind: 'assistant' }> => i.kind === 'assistant',
+    );
+    const tools = state.items.filter(
+      (i): i is Extract<ChatItem, { kind: 'tool' }> => i.kind === 'tool',
+    );
 
-      // The turn ended (the assistant line is the turn end) → not busy.
-      expect(state.busy).toBe(false);
+    // Two user turns, each unwrapped to its request text (no <USER_REQUEST> tags,
+    // no ADDITIONAL_METADATA / USER_SETTINGS_CHANGE noise).
+    expect(users.map((u) => u.text)).toEqual([
+      'Reply with exactly the word PONG, then use a tool to list files in the current directory.',
+      'What single word did I ask you to reply with in my previous message?',
+    ]);
+    for (const u of users) {
+      expect(u.text).not.toContain('<USER_REQUEST>');
+      expect(u.text).not.toContain('ADDITIONAL_METADATA');
+    }
 
-      // If the real turn made tool calls, they survive as durable transcript
-      // rows (history), not dropped by the answer bubble.
-      const hadTool = events.some((e) => e?.type === 'tool');
-      if (hadTool) {
-        expect(state.items.some((i) => i.kind === 'tool')).toBe(true);
-      }
-    },
-  );
+    // One coalesced "PONG" answer per turn — NOT fragmented into one bubble per
+    // PLANNER_RESPONSE content line (turn 1 emits "PONG" twice around its tools).
+    expect(answers).toHaveLength(2);
+    expect(answers.map((a) => a.text)).toEqual(['PONG', 'PONG']);
+    for (const a of answers) expect(a.pending).toBe(false);
+
+    // The real tool calls survive as durable transcript rows.
+    const toolNames = tools.map((t) => t.name);
+    expect(toolNames).toContain('list_dir');
+    expect(toolNames).toContain('list_permissions');
+
+    // The model's reasoning is present as a distinct reasoning row.
+    expect(state.items.some((i) => i.kind === 'thinking')).toBe(true);
+
+    // The last PLANNER_RESPONSE landed the answer → the turn ended, not busy.
+    expect(state.busy).toBe(false);
+  });
 });

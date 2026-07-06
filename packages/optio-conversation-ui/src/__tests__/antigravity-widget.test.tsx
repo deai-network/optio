@@ -52,13 +52,13 @@ describe('AntigravityView (transcript wire over the listener)', () => {
     seq = 0;
   });
 
-  it('renders a turn: a user + assistant transcript pair shows the coalesced answer', () => {
+  it('renders a turn: a USER_INPUT + PLANNER_RESPONSE transcript pair shows the coalesced answer', () => {
     render(<ConversationWidget {...makeProps({ protocol: 'antigravity' })} />);
     // The view must have opened the listener SSE.
     expect(MockEventSource.last).toBeTruthy();
     expect(MockEventSource.last!.url).toBe('/api/widget/db/gm/p1/events');
-    fire({ type: 'user', conversationId: 'c1', text: 'say PONG' });
-    fire({ type: 'assistant', conversationId: 'c1', text: 'PONG' });
+    fire({ source: 'USER_EXPLICIT', type: 'USER_INPUT', content: '<USER_REQUEST>\nsay PONG\n</USER_REQUEST>' });
+    fire({ source: 'MODEL', type: 'PLANNER_RESPONSE', content: 'PONG' });
     expect(screen.getByText('PONG')).toBeTruthy();
   });
 
@@ -80,12 +80,16 @@ describe('AntigravityView (transcript wire over the listener)', () => {
     expect(screen.getByText('hello agy')).toBeTruthy();
   });
 
-  it('verbose tool verbosity renders the transcript tool input as a key-value table', () => {
+  it('verbose tool verbosity renders a PLANNER_RESPONSE tool_call args as a key-value table', () => {
     render(<ConversationWidget {...makeProps({ protocol: 'antigravity', toolVerbosity: 'verbose' })} />);
-    fire({ type: 'tool', conversationId: 'c1', name: 'shell', input: { command: 'ls -la', cwd: '/w' } });
-    expect(screen.getByText('command')).toBeTruthy();
-    expect(screen.getByText('ls -la')).toBeTruthy();
-    expect(screen.getByText('cwd')).toBeTruthy();
+    fire({
+      source: 'MODEL',
+      type: 'PLANNER_RESPONSE',
+      tool_calls: [{ name: 'list_dir', args: { DirectoryPath: '/w', toolAction: 'Listing' } }],
+    });
+    expect(screen.getByText('DirectoryPath')).toBeTruthy();
+    expect(screen.getByText('/w')).toBeTruthy();
+    expect(screen.getByText('toolAction')).toBeTruthy();
   });
 
   it('an optio-file: link in the answer fetches /download and triggers a blob save', async () => {
@@ -97,7 +101,7 @@ describe('AntigravityView (transcript wire over the listener)', () => {
     const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
 
     render(<ConversationWidget {...makeProps({ protocol: 'antigravity', fileDownload: true })} />);
-    fire({ type: 'assistant', conversationId: 'c1', text: 'Here: [report](optio-file:out/r.md)' });
+    fire({ source: 'MODEL', type: 'PLANNER_RESPONSE', content: 'Here: [report](optio-file:out/r.md)' });
 
     const link = await screen.findByText(/report/);
     await act(async () => {

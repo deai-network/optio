@@ -7,21 +7,37 @@
 // HTTP. A "conversation" is SYNTHESISED from repeated one-shot `agy -p` turns
 // plus the structured transcript file `~/.gemini/antigravity/transcript.jsonl`
 // (optio-antigravity conversation.py). The listener tails that file and fans
-// each new line out over SSE as a raw dict. Consequences pinned by design §7:
-//   * NO token streaming — one `assistant` transcript line carries the whole
-//     coalesced answer for a turn (there are no deltas to accumulate).
-//   * NO separate turn-end frame — the assistant line IS the turn end, so it
-//     lands finalized (pending=false) and clears `busy` on arrival.
+// each new line out over SSE as the raw dict, unmodified.
+//
+// REAL transcript schema (captured from the real `agy` binary; fixture
+// src/__tests__/fixtures/antigravity-real-transcript.jsonl). Each line is one
+// JSON object; the load-bearing fields are `type` + `source`:
+//   * USER_INPUT   (source USER_EXPLICIT) — the operator's message. `content`
+//     is wrapped: "<USER_REQUEST>\n{text}\n</USER_REQUEST>\n<ADDITIONAL_META…".
+//     We render ONLY the text between the USER_REQUEST tags (metadata dropped).
+//   * PLANNER_RESPONSE (source MODEL) — the assistant. `content` is the answer
+//     text (ABSENT/null when the step is only a tool call), `thinking` is the
+//     reasoning string (optional), `tool_calls` is [{name, args}] (optional).
+//     A turn emits its answer across SEVERAL PLANNER_RESPONSE lines (the real
+//     "PONG" turn repeats the word before/after its tool calls), so the answer
+//     COALESCES into a single per-turn bubble — the bubble text is the LAST
+//     PLANNER_RESPONSE content of the turn (design §7: no token streaming, so a
+//     content line is a whole statement, not a delta, and the last one wins).
+//   * Tool-result lines (e.g. LIST_DIRECTORY, source MODEL, `content` = result)
+//     fold their result into the preceding tool call's row (durable history).
+//   * CHECKPOINT / CONVERSATION_HISTORY / GENERIC / SYSTEM_MESSAGE — bookkeeping
+//     the operator does not need; ignored (and, crucially, they do NOT break the
+//     per-turn answer coalescing above).
+//
+// Consequences pinned by design §7:
+//   * NO token streaming — the coalesced PLANNER_RESPONSE content carries the
+//     whole answer for a turn (there are no deltas to accumulate).
+//   * `busy` clears when the model's answer lands (a PLANNER_RESPONSE with
+//     non-empty content) and is re-armed by the next USER_INPUT / local echo.
 //   * NO live permissions — turns run --dangerously-skip-permissions, so the
 //     x-optio-permission-answered case is a parity seam that never fires.
 // Tool calls are part of the durable transcript record (history), NOT ephemeral
 // progress rows: the answer bubble does NOT drop them.
-//
-// Transcript line shapes ({user,assistant,tool} + conversationId) track
-// fake_agy.py's documented minimal schema.
-// TODO(S3): reconcile field names + multi-line-per-turn coalescing with the
-// real captured transcript fixture once the S3 spike runs (the reducer is
-// deliberately defensive about tool field names in the meantime).
 
 import type { ChatItem, ChatState } from '../chat.js';
 import { foldControlUpdate } from '../chat.js';
@@ -30,31 +46,62 @@ export { initialChatState } from '../chat.js';
 // Tool rows persist as transcript history, so — unlike the streaming engines —
 // the answer bubble must NOT strip them. There is no withoutTools() here.
 
-// A completed answer line coalesces with the immediately-preceding assistant
-// bubble (defends against a real transcript splitting one turn's answer across
-// several `assistant` lines — TODO(S3)); a `user`/`tool` row in between opens a
-// fresh bubble for the next turn. Every assistant line lands finalized.
-function appendAnswer(items: ChatItem[], seq: number, text: string): ChatItem[] {
-  const last = items[items.length - 1];
-  if (last && last.kind === 'assistant') {
-    const next: ChatItem = { ...last, text: last.text + text, pending: false };
-    return [...items.slice(0, -1), next];
+// Pull the operator's actual request out of a USER_INPUT `content` blob. The
+// real transcript wraps it as "<USER_REQUEST>\n{text}\n</USER_REQUEST>\n<…meta>";
+// we show only {text}. Absent tags (defensive) → the raw content, trimmed.
+function extractUserRequest(content: unknown): string {
+  if (typeof content !== 'string') return '';
+  const m = content.match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/);
+  return (m ? m[1] : content).trim();
+}
+
+// Coalesce a turn's answer into ONE assistant bubble. A turn is delimited by the
+// most recent `user` row; within it there is at most one assistant bubble, whose
+// text is REPLACED by each new PLANNER_RESPONSE content (last content wins — the
+// design pins no streaming, so a content line is a whole statement). Tool rows
+// emitted between two content lines of the same turn do not fragment the answer.
+function upsertTurnAnswer(items: ChatItem[], seq: number, text: string): ChatItem[] {
+  let boundary = -1;
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i].kind === 'user') {
+      boundary = i;
+      break;
+    }
+  }
+  for (let i = items.length - 1; i > boundary; i--) {
+    if (items[i].kind === 'assistant') {
+      const next: ChatItem = { ...items[i], text, pending: false } as ChatItem;
+      const copy = [...items];
+      copy[i] = next;
+      return copy;
+    }
   }
   return [...items, { kind: 'assistant', text, pending: false, seq, msgId: null }];
 }
 
-function toolName(ev: any): string {
-  return String(ev.name ?? ev.tool ?? ev.toolName ?? 'tool');
-}
-
-function toolInput(ev: any): unknown {
-  return ev.input ?? ev.args ?? ev.arguments ?? ev.parameters ?? {};
+// A tool-result line (source MODEL, a type other than PLANNER_RESPONSE/GENERIC/
+// CHECKPOINT — e.g. LIST_DIRECTORY) folds its output into the preceding tool
+// call's row so a call + its result read as one durable history entry. With no
+// preceding tool row it lands as a standalone result row.
+function foldToolResult(state: ChatState, seq: number, type: unknown, content: string): ChatState {
+  const last = state.items[state.items.length - 1];
+  if (last && last.kind === 'tool') {
+    const base =
+      last.input && typeof last.input === 'object' && !Array.isArray(last.input)
+        ? (last.input as Record<string, unknown>)
+        : {};
+    const next: ChatItem = { ...last, input: { ...base, result: content } };
+    return { ...state, items: [...state.items.slice(0, -1), next] };
+  }
+  const name = typeof type === 'string' ? type.toLowerCase() : 'result';
+  return { ...state, items: [...state.items, { kind: 'tool', name, input: { result: content }, seq }] };
 }
 
 export function reduceAntigravityEvent(state: ChatState, ev: any, seq: number): ChatState {
-  switch (ev?.type) {
+  const type = ev?.type;
+  switch (type) {
     // Synthetic, widget-emitted: render the operator's own message the moment
-    // the listener accepts it, before the transcript replays its `user` line.
+    // the listener accepts it, before the transcript replays its USER_INPUT line.
     case 'x-optio-local-user': {
       const text = typeof ev.text === 'string' ? ev.text : '';
       if (text === '') return state;
@@ -65,12 +112,14 @@ export function reduceAntigravityEvent(state: ChatState, ev: any, seq: number): 
       };
     }
 
-    case 'user': {
-      const text = typeof ev.text === 'string' ? ev.text : '';
+    case 'USER_INPUT': {
+      const text = extractUserRequest(ev.content);
       if (text === '') return state;
       // Wire echo of an optimistically-rendered local message: confirm the
       // local bubble in place instead of inserting a duplicate. FIFO by text —
-      // sends are echoed in transcript order.
+      // sends are echoed in transcript order. (The local echo carries the raw
+      // typed text; USER_INPUT carries the same text wrapped in USER_REQUEST,
+      // which extractUserRequest unwraps back to it.)
       const localIdx = state.items.findIndex(
         (i) => i.kind === 'user' && i.local === true && i.text === text,
       );
@@ -81,27 +130,43 @@ export function reduceAntigravityEvent(state: ChatState, ev: any, seq: number): 
         items[localIdx] = confirmed;
         return { ...state, items, busy: true };
       }
-      // A user line the operator did not type through this widget (e.g. a resume
-      // notice, or a replay of history) opens the turn: append + busy.
+      // A user line the operator did not type through this widget (e.g. a replay
+      // of history) opens the turn: append + busy.
       return { ...state, items: [...state.items, { kind: 'user', text, seq }], busy: true };
     }
 
-    case 'assistant': {
-      const text = typeof ev.text === 'string' ? ev.text : '';
-      // One assistant line = the whole turn's answer AND the turn end (no
-      // streaming, no turn-end frame): land it finalized and clear busy.
-      const items = text === '' ? state.items : appendAnswer(state.items, seq, text);
-      return { ...state, items, busy: false };
+    case 'PLANNER_RESPONSE': {
+      let items = state.items;
+      // Reasoning first (the model thinks, then answers/acts). Its own kind so
+      // the view can style it distinctly and gate it on thinkingVerbosity.
+      if (typeof ev.thinking === 'string' && ev.thinking.trim() !== '') {
+        items = [...items, { kind: 'thinking', text: ev.thinking, seq }];
+      }
+      // Answer content coalesces into the turn's single bubble (last wins).
+      let busy = state.busy;
+      if (typeof ev.content === 'string' && ev.content !== '') {
+        items = upsertTurnAnswer(items, seq, ev.content);
+        // The answer landing IS the turn end (no streaming, no turn-end frame).
+        busy = false;
+      }
+      // Each tool call is durable transcript history — a KV-renderable row that
+      // survives the answer bubble (the transcript is the source of truth).
+      if (Array.isArray(ev.tool_calls)) {
+        for (const tc of ev.tool_calls) {
+          const name = String(tc?.name ?? 'tool');
+          items = [...items, { kind: 'tool', name, input: tc?.args ?? {}, seq }];
+        }
+      }
+      return items === state.items && busy === state.busy ? state : { ...state, items, busy };
     }
 
-    case 'tool': {
-      // Durable transcript history — a KV-renderable row that survives the
-      // answer bubble (design: the transcript is the source of truth).
-      return {
-        ...state,
-        items: [...state.items, { kind: 'tool', name: toolName(ev), input: toolInput(ev), seq }],
-      };
-    }
+    // Bookkeeping lines the operator does not need. Ignored so they never
+    // fragment the per-turn answer coalescing (design §7).
+    case 'CONVERSATION_HISTORY':
+    case 'CHECKPOINT':
+    case 'GENERIC':
+    case 'SYSTEM_MESSAGE':
+      return state;
 
     case 'x-optio-control-update':
       // Session-control value change (the model picker). agy has no inline
@@ -132,7 +197,13 @@ export function reduceAntigravityEvent(state: ChatState, ev: any, seq: number): 
     }
 
     default:
-      // x-optio-unparseable, unknown transcript line types, etc.
+      // A tool-result line (source MODEL, a non-PLANNER_RESPONSE/GENERIC/
+      // CHECKPOINT type, e.g. LIST_DIRECTORY) folds its output into the
+      // preceding tool call. Everything else (x-optio-unparseable, unknown
+      // types) is a forward-compat no-op.
+      if (ev?.source === 'MODEL' && typeof ev?.content === 'string' && ev.content !== '') {
+        return foldToolResult(state, seq, type, ev.content);
+      }
       return state;
   }
 }
