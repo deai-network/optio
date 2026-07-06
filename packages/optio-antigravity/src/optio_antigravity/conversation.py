@@ -73,6 +73,19 @@ _LOG = logging.getLogger(__name__)
 # caught immediately; only a genuinely idle interrupt pays this bound.
 _INTERRUPT_HANDLE_WAIT = 3.0
 
+# How often the live tail polls the transcript for newly-appended lines while an
+# ``agy -p`` turn runs. Small enough to feel live, large enough to be cheap.
+_TAIL_POLL_S = 0.4
+
+
+@dataclass
+class _TurnAccum:
+    """Mutable per-turn tail state: the byte offset consumed so far, the running
+    final-answer text, and the raw events seen (for the on_message payload)."""
+    offset: int
+    answer: str = ""
+    events: list = field(default_factory=list)
+
 _USER_REQUEST_RE = re.compile(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", re.DOTALL)
 
 
@@ -183,6 +196,19 @@ class AntigravityConversation:
         self._current_handle = handle
         self._pending += 1
         self._handle_ready.set()
+        # LIVE tailing: agy appends the transcript incrementally as it thinks and
+        # calls tools (verified — the file grows line-by-line during a turn), so
+        # we tail it CONCURRENTLY with the process instead of reading it all at
+        # the end. Each reasoning/tool/answer line fans out to on_event the moment
+        # it lands, so the widget shows the agent working step-by-step.
+        accum = _TurnAccum(offset=pre_offset)
+        stop_tail = asyncio.Event()
+        # Snapshot existing conversation dirs so the tail can spot the NEW one agy
+        # mints for this turn (turn-1 live uuid discovery — see _tail_loop).
+        brain_baseline = self._brain_dirs()
+        tail_task = asyncio.create_task(
+            self._tail_loop(accum, stop_tail, brain_baseline)
+        )
         try:
             # Draining stdout to EOF is the turn-end signal (the process closed
             # its stdout). We do not parse stdout for the answer — the #76
@@ -195,6 +221,11 @@ class AntigravityConversation:
             self._current_handle = None
             self._handle_ready.clear()
             self._pending = max(0, self._pending - 1)
+            stop_tail.set()
+            try:
+                await tail_task
+            except Exception:  # noqa: BLE001 — a tail bug must not mask the turn result
+                _LOG.exception("antigravity conversation: tail loop raised")
 
         if self._interrupted:
             self._interrupted = False
@@ -203,12 +234,18 @@ class AntigravityConversation:
             raise RuntimeError(f"agy -p turn exited with code {rc}")
 
         # Turn 1 minted a fresh conversation; discover its uuid from
-        # last_conversations.json now that the process has flushed it, so the
-        # transcript path resolves and later turns can resume via --conversation.
+        # last_conversations.json now that the process has flushed it (the tail
+        # may already have found it mid-turn), so later turns resume via
+        # --conversation and the final drain resolves the transcript path.
         if not self._conversation_id:
             self._conversation_id = self._discover_conversation_id()
 
-        await self._consume_turn(pre_offset)
+        # Final drain: catch any lines written after the last poll (and, if
+        # turn 1's uuid only resolved at the very end, the whole turn). Reads to
+        # EOF (a possibly newline-less last line the bounded tail would skip).
+        await self._emit_events(self._read_new_events(accum.offset), accum)
+        message = TurnMessage(text=accum.answer, events=tuple(accum.events))
+        await self._emit(self._message_handlers, message, "on_message")
 
     def on_event(self, handler):
         self._event_handlers.append(handler)
@@ -400,23 +437,94 @@ class AntigravityConversation:
                 events.append({"type": "x-optio-unparseable", "line": line})
         return events
 
-    async def _consume_turn(self, pre_offset: int) -> None:
-        """Fan the turn's new transcript events out to on_event (raw dicts,
-        unmodified), then emit the one coalesced on_message answer.
+    def _brain_dirs(self) -> "set[str]":
+        """The conversation uuids currently under ``antigravity-cli/brain`` (each
+        a per-conversation dir). Used to spot the one agy mints for THIS turn."""
+        try:
+            return set(os.listdir(os.path.join(self._agy_cli_dir(), "brain")))
+        except OSError:
+            return set()
 
-        The answer is the ``content`` of the LAST ``PLANNER_RESPONSE`` with
-        non-empty content in this turn's newly-appended lines (a PLANNER_RESPONSE
-        that is only a tool call has null/absent content and is skipped)."""
-        events = self._read_new_events(pre_offset)
-        final_answer = ""
+    def _discover_new_brain_uuid(self, baseline: "set[str]") -> "str | None":
+        """Live turn-1 uuid discovery: the newest ``brain/<uuid>`` dir that did
+        NOT exist before the turn started. agy creates it (with the transcript)
+        early — seconds in — whereas ``last_conversations.json`` is only written
+        at turn end, so this is what lets turn 1 stream. The HOME is per-task, so
+        a new brain dir can only be this conversation's."""
+        brain = os.path.join(self._agy_cli_dir(), "brain")
+        try:
+            fresh = [d for d in os.listdir(brain) if d not in baseline]
+        except OSError:
+            return None
+        if not fresh:
+            return None
+        fresh.sort(key=lambda d: os.path.getmtime(os.path.join(brain, d)), reverse=True)
+        return fresh[0]
+
+    def _read_complete_events(self, offset: int) -> "tuple[list[dict], int]":
+        """Like :meth:`_read_new_events` but only up to the last COMPLETE line
+        (a trailing partial line agy is mid-writing is left for the next poll).
+        Returns ``(events, new_offset)``; ``new_offset`` advances only past the
+        bytes consumed. ``([], offset)`` before the transcript path/uuid exists."""
+        path = self._transcript_path()
+        if not path:
+            return [], offset
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(offset)
+                data = fh.read()
+        except OSError:
+            return [], offset
+        nl = data.rfind(b"\n")
+        if nl < 0:
+            return [], offset  # no complete line appended yet
+        complete = data[: nl + 1]
+        events: list[dict] = []
+        for line in complete.decode("utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                events.append(json.loads(line))
+            except ValueError:
+                _LOG.warning(
+                    "antigravity conversation: unparseable transcript line: %.200s",
+                    line,
+                )
+                events.append({"type": "x-optio-unparseable", "line": line})
+        return events, offset + len(complete)
+
+    async def _emit_events(self, events: "list[dict]", accum: "_TurnAccum") -> None:
+        """Fan each raw transcript line out to on_event (unmodified) and track the
+        running answer — the ``content`` of the LAST ``PLANNER_RESPONSE`` with
+        non-empty content (a tool-only PLANNER_RESPONSE has null content)."""
         for ev in events:
             if ev.get("type") == "PLANNER_RESPONSE":
                 content = ev.get("content")
                 if content:
-                    final_answer = content
+                    accum.answer = content
+            accum.events.append(ev)
             await self._emit(self._event_handlers, ev, "on_event")
-        message = TurnMessage(text=final_answer, events=tuple(events))
-        await self._emit(self._message_handlers, message, "on_message")
+
+    async def _tail_loop(
+        self, accum: "_TurnAccum", stop: asyncio.Event, brain_baseline: "set[str]",
+    ) -> None:
+        """Poll the transcript for new complete lines while the turn runs, fanning
+        them out live. On turn 1 the uuid isn't known yet — resolve it from a NEW
+        ``brain/<uuid>`` dir (created seconds in) so the turn streams, falling back
+        to last_conversations.json."""
+        while not stop.is_set():
+            if not self._conversation_id:
+                self._conversation_id = (
+                    self._discover_new_brain_uuid(brain_baseline)
+                    or self._discover_conversation_id()
+                )
+            events, accum.offset = self._read_complete_events(accum.offset)
+            await self._emit_events(events, accum)
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=_TAIL_POLL_S)
+            except asyncio.TimeoutError:
+                pass
 
     async def _emit(self, handlers, arg, label: str) -> None:
         for handler in list(handlers):

@@ -19,6 +19,8 @@ import pytest
 from optio_antigravity.conversation import (
     AntigravityConversation,
     ConversationClosed,
+    TurnMessage,
+    _TurnAccum,
     unwrap_user_request,
 )
 
@@ -112,7 +114,15 @@ async def test_driver_parses_real_agy_fixture(tmp_path):
     conv.on_event(events.append)
     msgs = []
     conv.on_message(msgs.append)
-    await conv._consume_turn(0)
+    # Parse the fixture as one turn's worth of transcript via the incremental
+    # drain (the live-tail path), then emit the coalesced message like send().
+    accum = _TurnAccum(offset=0)
+    await conv._emit_events(conv._read_new_events(0), accum)
+    await conv._emit(
+        conv._message_handlers,
+        TurnMessage(text=accum.answer, events=tuple(accum.events)),
+        "on_message",
+    )
 
     # Raw lines, unmodified (the real schema keys are present).
     assert len(events) == 12
@@ -169,3 +179,27 @@ def test_build_argv_prompt_is_print_value_with_flags_before():
     j = argv2.index("-p")
     assert argv2[j + 1] == "q"
     assert argv2.index("--conversation") < j and argv2.index("--model") < j
+
+
+def test_read_complete_events_leaves_partial_line_for_next_poll(tmp_path):
+    # Live tailing must not consume a half-written line. _read_complete_events
+    # reads only up to the last newline; the trailing partial waits for the next
+    # poll (when agy finishes writing it).
+    conv = AntigravityConversation(
+        host=None, agy_path="agy", cwd=str(tmp_path / "w"), home=str(tmp_path / "home"),
+    )
+    conv._conversation_id = "cid"
+    t = pathlib.Path(conv._transcript_path())
+    t.parent.mkdir(parents=True)
+    line1 = '{"type":"USER_INPUT","content":"hi"}\n'
+    line2 = '{"type":"PLANNER_RESPONSE","content":"PONG"}\n'
+    # write line1 fully + a PARTIAL line2 (no trailing newline yet)
+    t.write_bytes((line1 + line2.rstrip("\n")).encode())
+    events, off = conv._read_complete_events(0)
+    assert [e.get("type") for e in events] == ["USER_INPUT"]   # only the complete line
+    assert off == len(line1.encode())                          # advanced past line1 only
+    # agy finishes line2 → next poll from the returned offset picks it up once.
+    t.write_bytes((line1 + line2).encode())
+    events2, off2 = conv._read_complete_events(off)
+    assert [e.get("type") for e in events2] == ["PLANNER_RESPONSE"]
+    assert off2 == len((line1 + line2).encode())
