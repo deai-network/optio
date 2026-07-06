@@ -116,7 +116,10 @@ export function IframeInputWidget(props: WidgetProps) {
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Message Claude…  (Enter to send, Shift+Enter for newline; empty box: arrows/Enter/Esc drive the TUI)"
+          placeholder={
+            ((props.process as any).widgetData?.inputPlaceholder as string | undefined) ??
+            'Message the agent…  (Enter to send, Shift+Enter for newline; empty box: arrows/Enter/Esc drive the TUI)'
+          }
           rows={2}
           style={{ flex: 1, resize: 'vertical' }}
         />
