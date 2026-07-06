@@ -83,6 +83,51 @@ def convo():
 
 
 @pytest.mark.asyncio
+async def test_emit_event_reaches_on_event_subscribers(convo):
+    """A SYNTHETIC event (the resume-notice injected at the replay->live
+    boundary) reaches on_event through the same queue+dispatch path as routed
+    wire events, so the listener buffers it."""
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)
+
+    events: list = []
+    c.on_event(events.append)
+    c.emit_event({
+        "jsonrpc": "2.0", "method": "session/update",
+        "params": {"update": {
+            "sessionUpdate": "user_message_chunk",
+            "content": {"type": "text", "text": "System: you have been resumed"}}},
+    })
+    await _wait_for(lambda: any(
+        (e.get("params") or {}).get("update", {}).get("sessionUpdate")
+        == "user_message_chunk"
+        for e in events
+    ))
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_drain_waits_for_all_events_dispatched(convo):
+    """drain() blocks until every queued event has reached on_event — so the
+    resume replay window can close only after all replayed/injected events are
+    delivered (no leak into the live ring)."""
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)
+
+    seen: list = []
+    c.on_event(seen.append)
+    for i in range(6):
+        c.emit_event({"synthetic": i})
+    await c.drain()
+    assert [e.get("synthetic") for e in seen if "synthetic" in e] == [0, 1, 2, 3, 4, 5]
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
 async def test_send_receive_and_on_event_transparent(convo):
     c, handle = convo
     reader = asyncio.create_task(c.run_reader())

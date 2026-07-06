@@ -596,8 +596,36 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             # resuming + a recovered id; replay_history falls back to the
             # session/new session (logging, never raising) when session/load fails —
             # resume then shows no history but stays fully usable.
-            if resuming and preserved_session_id:
-                await conversation.replay_history(preserved_session_id)
+            # Resume backfill window. Everything emitted between begin/end_replay
+            # lands in the listener's DURABLE tier (never evicted by the live
+            # thought-chunk flood), so a late-reconnecting viewer still sees the
+            # full prior conversation. The window wraps BOTH the session/load
+            # replay AND the injected resume notice; drain() flushes the async
+            # on_event dispatch so none of them leak into the live ring.
+            if resuming and config.supports_resume:
+                conv_listener.begin_replay()
+                if preserved_session_id:
+                    await conversation.replay_history(preserved_session_id)
+                # Replay→live boundary: the resume notice is sent as a LIVE turn
+                # below, and kimi echoes user turns as user_message_chunk ONLY
+                # during a session/load replay, never live. So inject the
+                # user_message_chunk the reducer's boundary branch already
+                # consumes — AFTER replay (a pending last-replayed bubble exists
+                # to finalize) and BEFORE the send below (delimits before the
+                # resume answer streams). It finalizes the pending bubble
+                # (un-merge), bumps the turn (resume answer opens a fresh bubble)
+                # and renders the notice as a muted activity row.
+                conversation.emit_event({
+                    "jsonrpc": "2.0", "method": "session/update",
+                    "params": {"sessionId": preserved_session_id, "update": {
+                        "sessionUpdate": "user_message_chunk",
+                        "content": {
+                            "type": "text",
+                            "text": f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}",
+                        }}},
+                })
+                await conversation.drain()
+                conv_listener.end_replay()
 
         # Start the in-session credential watcher for a seeded conversation: it
         # saves back the rotated kimi-code.json, and (when the seed is leased)

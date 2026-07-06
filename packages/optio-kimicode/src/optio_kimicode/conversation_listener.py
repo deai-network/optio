@@ -64,6 +64,17 @@ class ConversationListener:
         self._max_upload_bytes = max_upload_bytes
         self._download_reader = download_reader
         self._max_download_bytes = max_download_bytes
+        # Two-tier replay buffer. The DURABLE tier holds the session/load resume
+        # backfill (marked by begin_replay/end_replay) — a conversation's history
+        # is finite, so it is unbounded and NEVER evicted. The BOUNDED ring holds
+        # live events; kimi's reasoning models stream thousands of
+        # agent_thought_chunk per turn, which would otherwise evict the replayed
+        # history (emitted first) and leave a LATE-reconnecting viewer with no
+        # prior conversation. A late /events serves the durable tier first, then
+        # the live ring — monotonic seq across both, so Last-Event-ID resumes
+        # correctly across the boundary.
+        self._replay: list[tuple[int, dict]] = []
+        self._replay_active = False
         self._buffer: deque[tuple[int, dict]] = deque(maxlen=BUFFER_MAXLEN)
         self._seq = 0
         self._subscribers: set[asyncio.Queue] = set()
@@ -77,12 +88,24 @@ class ConversationListener:
     def _broadcast(self, event: dict) -> None:
         self._seq += 1
         item = (self._seq, event)
-        self._buffer.append(item)
+        # Resume backfill goes to the durable tier (never evicted); live events
+        # to the bounded ring. Live subscribers get every event either way.
+        (self._replay if self._replay_active else self._buffer).append(item)
         for q in list(self._subscribers):
             q.put_nowait(item)
 
     def _on_event(self, event: dict) -> None:
         self._broadcast(event)
+
+    def begin_replay(self) -> None:
+        """Route subsequent broadcasts to the DURABLE replay tier. The session
+        calls this before ``replay_history()`` so the session/load backfill (and
+        the injected resume notice) survive the live thought-chunk flood."""
+        self._replay_active = True
+
+    def end_replay(self) -> None:
+        """Resume routing broadcasts to the bounded live ring."""
+        self._replay_active = False
 
     # -- permission gate -----------------------------------------------------
 
@@ -143,7 +166,12 @@ class ConversationListener:
         self._subscribers.add(queue)
         try:
             sent_through = last_id
-            for seq, event in list(self._buffer):
+            # Durable replay tier FIRST (lower seqs, never evicted), then the
+            # bounded live ring. Both are seq-filtered by sent_through, and a
+            # replay event that is also still in the live ring is skipped by the
+            # seq check — so Last-Event-ID resumes correctly across the boundary
+            # with no duplicate.
+            for seq, event in [*self._replay, *self._buffer]:
                 if seq > sent_through:
                     await send_item(seq, event)
                     sent_through = seq

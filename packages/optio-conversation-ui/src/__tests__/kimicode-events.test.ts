@@ -63,6 +63,30 @@ describe('kimicode ACP event reducer', () => {
     expect(a && a.kind === 'activity' && a.text).toBe('System: you have been resumed');
   });
 
+  it('the injected resume-notice user_message_chunk un-merges the boundary and shows the notice', () => {
+    // Models the replay→live boundary: replayed turn leaves a PENDING answer;
+    // the engine injects a System: user_message_chunk before the live resume
+    // answer streams. The last replayed answer and the resume answer must be
+    // SEPARATE bubbles, with an activity row for the notice between them.
+    const s = play([
+      userChunk('prior question'), chunk('prior answer'),  // replayed turn (pending)
+      userChunk('System: you have been resumed'),          // injected boundary
+      chunk('sure, I remember'),                            // live resume answer
+    ]);
+    expect(s.items.filter((i) => i.kind === 'assistant').map((a) => (a as any).text))
+      .toEqual(['prior answer', 'sure, I remember']);       // NOT merged
+    expect(s.items.some((i) => i.kind === 'activity'
+      && (i as any).text === 'System: you have been resumed')).toBe(true);
+  });
+
+  it('a duplicate System: user_message_chunk does not double-render the activity row', () => {
+    const s = play([
+      userChunk('System: you have been resumed'),
+      userChunk('System: you have been resumed'),
+    ]);
+    expect(s.items.filter((i) => i.kind === 'activity').length).toBe(1);
+  });
+
   it('a live user_message_chunk echo confirms the optimistic bubble, no duplicate', () => {
     const s = play([
       { type: 'x-optio-local-user', text: 'say PONG' },

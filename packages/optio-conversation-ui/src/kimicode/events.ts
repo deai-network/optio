@@ -222,6 +222,11 @@ function reduce(st: KimiCodeChatState, ev: any, seq: number): KimiCodeChatState 
       const turn = (st.turn ?? 0) + 1;
       // Harness System: notices render as muted activity rows, never user bubbles.
       if (text.startsWith(HARNESS_PREFIX)) {
+        // Dedup: the resume notice is injected engine-side as a synthetic
+        // user_message_chunk; if kimi ever ALSO echoes it live, don't render a
+        // second identical activity row (or bump the turn again).
+        const last = items0[items0.length - 1];
+        if (last && last.kind === 'activity' && last.text === text) return st;
         return { ...st, items: [...items0, { kind: 'activity', text, seq }], turn };
       }
       // Dedup the optimistic local echo (x-optio-local-user): confirm it in place
