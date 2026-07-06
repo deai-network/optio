@@ -12,6 +12,7 @@ stages (which re-open this module).
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import mimetypes
 import os
@@ -51,6 +52,13 @@ from optio_antigravity.types import AntigravityTaskConfig
 _LOG = logging.getLogger(__name__)
 
 READY_TIMEOUT_S = 30.0
+
+
+async def _call_maybe_async(fn, *args) -> None:
+    """Invoke a callback that may be sync or async."""
+    result = fn(*args)
+    if inspect.isawaitable(result):
+        await result
 
 
 def _teardown_aggressive(*, cancelled: bool, seeded: bool) -> bool:
@@ -637,6 +645,37 @@ async def run_antigravity_session(
                 )
             except Exception:
                 _LOG.exception("lease release failed (TTL will reclaim)")
+
+        # Seed capture (fresh login session only): store this session's agy
+        # identity as a reusable seed so a later fresh task starts already-authed.
+        # Reached-live gate (launched_handle assigned strictly after a successful
+        # launch) + a token-present/valid gate (capture_gate_ok) — never seed a
+        # login-less identity. Skipped on resume; ``on_seed_saved`` being set is
+        # what marks a capture (seed-setup) task vs a normal run.
+        if (
+            not resuming
+            and config.on_seed_saved is not None
+            and launched_handle is not None
+        ):
+            try:
+                if not await cred_watcher.capture_gate_ok(host):
+                    _LOG.warning(
+                        "seed capture skipped: agy token store absent or invalid "
+                        "(login-less session)",
+                    )
+                else:
+                    seed_id = await _seeds.capture_seed(
+                        ctx, host,
+                        manifest=ANTIGRAVITY_SEED_MANIFEST,
+                        suffix=ANTIGRAVITY_SEED_SUFFIX,
+                        encrypt=None,
+                    )
+                    # 2nd arg (account summary) is resolved in a later stage.
+                    await _call_maybe_async(config.on_seed_saved, seed_id, None)
+            except Exception:
+                _LOG.exception(
+                    "seed capture failed; callback not fired, teardown continues",
+                )
 
         # Reached-live gate: only capture if agy actually came up
         # (launched_handle is assigned strictly after a successful ttyd/agy
