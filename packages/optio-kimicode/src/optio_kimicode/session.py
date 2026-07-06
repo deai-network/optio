@@ -40,7 +40,7 @@ from optio_agents.protocol.session import _SessionFailed, run_log_protocol_sessi
 from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
 from optio_host.paths import task_dir
 
-from optio_kimicode import cred_watcher, host_actions
+from optio_kimicode import cred_watcher, host_actions, verify
 from optio_kimicode import models as kimi_models
 from optio_kimicode.conversation import KimiCodeConversation
 from optio_kimicode.conversation_listener import ConversationListener
@@ -94,6 +94,50 @@ def _build_host(config: KimiCodeTaskConfig, process_id: str) -> Host:
         ssh=config.ssh, process_id=process_id, consumer_name="optio-kimicode",
     )
     return host_actions.build_host(config.ssh, taskdir)
+
+
+async def _merge_seed_with_refresh(
+    ctx: ProcessContext, host: Host, config: KimiCodeTaskConfig, *, seed_id: str,
+) -> None:
+    """Refresh the seed's rotating kimi token host-free, THEN merge it.
+
+    kimi's access token is short-lived (~15 min), so a stored seed's
+    ``credentials/kimi-code.json`` is almost always EXPIRED by launch time.
+    Merging it as-is leaves kimi unauthenticated: ``session/new`` then ships an
+    empty model picker (no model → every turn fails silently) or is rejected
+    outright with "Authentication required". So first run the host-free
+    ``verify_and_refresh_seed`` — a no-op when the token is still fresh, a
+    ``refresh_token`` grant (rotating the single-use token in place) when it is
+    within kimi's refresh threshold — so the merge below plants a LIVE token.
+
+    Never blocks the launch: a ``False`` result (dead lineage, or a transient
+    refresh failure) or a raised refresh is logged, and the existing credential
+    is merged anyway — there is no better one to plant, and ``session/new`` will
+    surface the auth error. Only the model/refresh network call is made here; no
+    kimi process, no inference."""
+    try:
+        alive = await verify.verify_and_refresh_seed(
+            ctx._db,
+            prefix=ctx._prefix,
+            seed_id=seed_id,
+            encrypt=config.session_blob_encrypt,
+            decrypt=config.session_blob_decrypt,
+        )
+        if not alive:
+            _LOG.warning(
+                "kimi seed %s could not be refreshed before launch; the merged "
+                "credential may be expired (kimi will report an auth error)",
+                seed_id,
+            )
+    except Exception:  # noqa: BLE001 — a refresh failure must never block launch
+        _LOG.exception("kimi seed %s pre-merge refresh failed", seed_id)
+    await _seeds.merge_seed(
+        ctx, host,
+        seed_id=seed_id,
+        manifest=KIMI_SEED_MANIFEST,
+        suffix=KIMI_SEED_SUFFIX,
+        decrypt=config.session_blob_decrypt,
+    )
 
 
 async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) -> None:
@@ -207,12 +251,11 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                     lease_holder = ctx.process_id
                 else:
                     resolved_seed_id = config.seed_id
-                await _seeds.merge_seed(
-                    ctx, host,
-                    seed_id=resolved_seed_id,
-                    manifest=KIMI_SEED_MANIFEST,
-                    suffix=KIMI_SEED_SUFFIX,
-                    decrypt=config.session_blob_decrypt,
+                # Refresh the seed's short-lived access token host-free BEFORE
+                # merging, so kimi launches already-authed instead of with an
+                # expired token (empty model picker / "Authentication required").
+                await _merge_seed_with_refresh(
+                    ctx, host, config, seed_id=resolved_seed_id,
                 )
                 # Baseline the merged kimi-code.json so the in-session watcher
                 # and the teardown backstop only save back a genuinely rotated
