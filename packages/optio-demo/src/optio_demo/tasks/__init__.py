@@ -15,6 +15,7 @@ from optio_demo.tasks.grok import get_tasks as grok_tasks
 from optio_demo.tasks.codex import get_tasks as codex_tasks
 from optio_demo.tasks.cursor import get_tasks as cursor_tasks
 from optio_demo.tasks.kimicode import get_tasks as kimicode_tasks
+from optio_demo.tasks.antigravity import get_tasks as antigravity_tasks
 
 
 async def get_task_definitions(
@@ -35,4 +36,5 @@ async def get_task_definitions(
         *await codex_tasks(services),
         *await cursor_tasks(services),
         *await kimicode_tasks(services),
+        *await antigravity_tasks(services),
     ]
