@@ -19,6 +19,7 @@ import os
 import re
 import secrets
 import shlex
+import time as _time
 from typing import AsyncIterator
 
 from optio_core.context import ProcessContext
@@ -48,6 +49,19 @@ from optio_grok.types import GrokTaskConfig
 
 
 _LOG = logging.getLogger(__name__)
+
+# Cancel/capture step tracing — shares the optio_core.cancel_trace logger and
+# the OPTIO_CANCEL_TRACE env gate so its lines interleave with the executor's
+# and host's cancel trace into one monotonic-timestamped teardown timeline (run
+# with OPTIO_CANCEL_TRACE=1). Diagnostic only; no behavioral effect.
+_trace_logger = logging.getLogger("optio_core.cancel_trace")
+_CANCEL_TRACE = os.environ.get("OPTIO_CANCEL_TRACE", "0").lower() in ("1", "true", "yes")
+
+
+def _trace(fmt: str, *args: object) -> None:
+    if _CANCEL_TRACE:
+        _trace_logger.warning("[%.3f] optio-grok " + fmt, _time.monotonic(), *args)
+
 
 READY_TIMEOUT_S = 30.0
 
@@ -615,6 +629,11 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
     finally:
         if not ctx.should_continue():
             cancelled = True
+        _trace(
+            "finally: ENTER cancelled=%s resuming=%s seeded=%s conversation=%s",
+            cancelled, resuming, resolved_seed_id is not None,
+            config.mode == "conversation",
+        )
         # Grok authenticates with a SINGLE-USE rotating refresh token. If grok
         # rotated it this session, that new auth.json must reach the seed via the
         # backstop below — but an aggressive SIGKILL can beat grok's flush,
@@ -629,17 +648,23 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
         # Stop the conversation listener first so its long-lived SSE loops are
         # woken (bounded shutdown) before the subprocess teardown below.
         if conv_listener is not None:
+            _trace("finally: conv_listener.stop START")
             try:
                 await conv_listener.stop()
             except Exception:
                 _LOG.exception("conversation listener cleanup failed")
+            _trace("finally: conv_listener.stop DONE")
         # Conversation mode has no tmux/ttyd tree — terminate the grok agent
         # subprocess directly. Its EOF drives the conversation to closed.
         if config.mode == "conversation" and launched_handle is not None:
+            _trace(
+                "finally: terminate_subprocess START aggressive=%s", grok_aggressive,
+            )
             try:
                 await host.terminate_subprocess(launched_handle, aggressive=grok_aggressive)
             except Exception:
                 _LOG.exception("terminate grok conversation subprocess failed")
+            _trace("finally: terminate_subprocess DONE")
         if (
             launched_handle is not None
             and tmux_path is not None
@@ -647,6 +672,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             and tmux_session is not None
             and grok_path
         ):
+            _trace("finally: teardown_session_tree START aggressive=%s", grok_aggressive)
             try:
                 await host_actions.teardown_session_tree(
                     host,
@@ -659,6 +685,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                 )
             except Exception:
                 _LOG.exception("teardown_session_tree failed")
+            _trace("finally: teardown_session_tree DONE")
 
         # Tear down the iframe-input listener + clear its control upstream.
         if input_runner is not None:
@@ -685,6 +712,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
         # consumed the old refresh token; a rotation in the last poll window is
         # persisted ONLY here. Runs after grok terminated so auth.json is final.
         if resolved_seed_id is not None:
+            _trace("finally: save_back_if_changed START")
             try:
                 cred_baseline = await cred_watcher.save_back_if_changed(
                     ctx, host,
@@ -695,6 +723,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                 )
             except Exception:
                 _LOG.exception("final credential save-back failed")
+            _trace("finally: save_back_if_changed DONE")
 
         # Release the lease AFTER the final save-back (opencode's deliberate
         # ordering): a new acquirer must never merge the pre-save-back blob.
@@ -719,11 +748,13 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
         ):
             try:
                 if not await cred_watcher.capture_gate_ok(host):
+                    _trace("finally: capture_seed SKIPPED (no auth.json)")
                     _LOG.warning(
                         "seed capture skipped: home/.grok/auth.json absent or "
                         "invalid (login-less session)",
                     )
                 else:
+                    _trace("finally: capture_seed START")
                     seed_id = await _seeds.capture_seed(
                         ctx, host,
                         manifest=GROK_SEED_MANIFEST,
@@ -733,7 +764,9 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                     # 2nd arg (account summary) is resolved in a later stage;
                     # None in Stage 3.
                     await _call_maybe_async(config.on_seed_saved, seed_id, None)
+                    _trace("finally: capture_seed DONE id=%s", seed_id)
             except Exception:
+                _trace("finally: capture_seed RAISED")
                 _LOG.exception(
                     "seed capture failed; callback not fired, teardown continues",
                 )
@@ -743,6 +776,8 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
         # launch). An interrupt before launch leaves it None — skip capture so
         # any prior good snapshot survives and hasSavedState is untouched.
         if config.supports_resume and launched_handle is not None:
+            _trace("finally: capture_snapshot START end_state=%s",
+                   "cancelled" if cancelled else "done")
             try:
                 await _capture_snapshot(
                     ctx, host,
@@ -756,19 +791,24 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                         conversation.session_id if conversation is not None else None
                     ),
                 )
+                _trace("finally: capture_snapshot DONE")
             except Exception:
+                _trace("finally: capture_snapshot RAISED")
                 _LOG.exception(
                     "snapshot capture failed; proceeding with workdir wipe",
                 )
 
+        _trace("finally: cleanup_taskdir START aggressive=%s", cancelled)
         try:
             await host.cleanup_taskdir(aggressive=cancelled)
         except Exception:
             _LOG.exception("cleanup_taskdir failed")
+        _trace("finally: cleanup_taskdir DONE")
         try:
             await host.disconnect()
         except Exception:
             _LOG.exception("host.disconnect failed")
+        _trace("finally: EXIT (teardown complete)")
 
 
 async def _stream_blob(ctx: ProcessContext, blob_id) -> "AsyncIterator[bytes]":
