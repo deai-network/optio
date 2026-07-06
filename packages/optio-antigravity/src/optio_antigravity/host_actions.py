@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
 from optio_agents import claustrum
+from optio_agents import tmux_input as _tmux_input
 from optio_host.host import proc_wait
 
 if TYPE_CHECKING:
@@ -1159,28 +1160,21 @@ async def send_text_to_agy(
 ) -> None:
     """Fake-type a message into the agy TUI and submit it.
 
-    Uses ``set-buffer`` + ``paste-buffer`` (robust for arbitrary text incl.
-    spaces), then — after a brief settle — a single ``Enter`` to submit. The
-    settle is essential: an ``Enter`` sent in the same burst as the paste lands
-    while the TUI is still settling the (bracketed) paste, so the CR is consumed
-    as a literal newline inside the input box rather than a submit. Raises on a
-    tmux failure."""
-    s = shlex.quote(tmux_socket)
-    sess = shlex.quote(tmux_session)
-    tp = shlex.quote(tmux_path)
-    buf = "optio-feedback"
-    cmd = (
-        f"{tp} -S {s} set-buffer -b {buf} -- {shlex.quote(text)} && "
-        f"{tp} -S {s} paste-buffer -d -b {buf} -t {sess} && "
-        f"sleep {_SUBMIT_SETTLE_S} && "
-        f"{tp} -S {s} send-keys -t {sess} Enter"
+    Thin wrapper over the shared
+    :func:`optio_agents.tmux_input.send_text_to_tmux`, pinned to agy's buffer name
+    (``optio-feedback``) and settle (``_SUBMIT_SETTLE_S``)."""
+    await _tmux_input.send_text_to_tmux(
+        host, tmux_path, tmux_socket, tmux_session, text,
+        buffer="optio-feedback", submit_settle=_SUBMIT_SETTLE_S,
     )
-    result = await host.run_command(cmd)
-    if result.exit_code != 0:
-        raise RuntimeError(
-            f"send_text_to_agy: tmux injection failed "
-            f"(exit {result.exit_code}): {result.stderr!r}"
-        )
+
+
+async def send_key_to_agy(
+    host: "Host", tmux_path: str, tmux_socket: str, tmux_session: str, key: str,
+) -> None:
+    """Send a single navigation keystroke into the agy TUI (iframe-input empty-box
+    TUI nav). Thin wrapper over :func:`optio_agents.tmux_input.send_key_to_tmux`."""
+    await _tmux_input.send_key_to_tmux(host, tmux_path, tmux_socket, tmux_session, key)
 
 
 # --- resume bookkeeping (adapted from optio-grok/opencode) ------------------
