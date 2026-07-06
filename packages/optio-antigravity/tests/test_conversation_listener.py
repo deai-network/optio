@@ -122,13 +122,20 @@ async def test_last_event_id_resume(listener):
             assert events[0]["n"] == 2  # seq 1 skipped
 
 
-async def test_send_forwards_to_conversation(listener):
+async def test_send_fires_turn_in_background(listener):
     conv, lst, url = listener
     async with aiohttp.ClientSession() as s:
+        # /send acks immediately (202) and runs the turn in the background — it
+        # must NOT block for the whole one-shot agy -p turn.
         r = await s.post(f"{url}/send", json={"text": "hi"}, headers=_auth("pw"))
-        assert r.status == 200 and conv.sent == ["hi"]
+        assert r.status == 202
+        # Let the background turn complete, then verify it forwarded.
+        if lst._turn_task is not None:
+            await lst._turn_task
+        assert conv.sent == ["hi"]
         r = await s.post(f"{url}/interrupt", json={}, headers=_auth("pw"))
         assert r.status == 200 and conv.interrupts == 1
+        # A send while closed is rejected.
         conv.closed = True
         r = await s.post(f"{url}/send", json={"text": "x"}, headers=_auth("pw"))
         assert r.status == 409

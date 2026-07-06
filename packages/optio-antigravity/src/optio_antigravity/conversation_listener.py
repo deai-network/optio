@@ -68,6 +68,13 @@ class ConversationListener:
         self._buffer: deque[tuple[int, dict]] = deque(maxlen=BUFFER_MAXLEN)
         self._seq = 0
         self._subscribers: set[asyncio.Queue] = set()
+        # The in-flight turn. antigravity's send() runs a whole one-shot `agy -p`
+        # turn (no streaming), so /send fires it in the BACKGROUND and acks
+        # immediately — otherwise the POST blocks the entire turn and the widget
+        # shows no echo/spinner until the answer lands. Events reach the widget
+        # via the SSE /events stream; a concurrent /send is rejected while a turn
+        # is live.
+        self._turn_task: "asyncio.Task | None" = None
         self._pending_permissions: dict[str, asyncio.Future] = {}
         self._runner: web.AppRunner | None = None
         self._unsubscribe = conversation.on_event(self._on_event)
@@ -179,11 +186,25 @@ class ConversationListener:
         text = payload.get("text")
         if not isinstance(text, str) or not text:
             return web.json_response({"ok": False, "reason": "bad-text"}, status=400)
-        try:
-            await self._conversation.send(text)
-        except ConversationClosed:
+        if self._conversation.closed:
             return web.json_response({"ok": False, "reason": "closed"}, status=409)
-        return web.json_response({"ok": True})
+        if self._turn_task is not None and not self._turn_task.done():
+            # A turn is still running — one-shot agy has no concurrent turns.
+            return web.json_response({"ok": False, "reason": "busy"}, status=409)
+
+        async def _run() -> None:
+            try:
+                await self._conversation.send(text)
+            except ConversationClosed:
+                pass
+            except Exception:  # noqa: BLE001 — surface via logs; SSE carries events
+                _LOG.exception("antigravity conversation turn failed")
+
+        # Fire-and-ack: the turn runs in the background; its transcript events
+        # stream to the widget over /events. Do NOT await it here (that would
+        # block the POST for the whole turn — no echo/spinner until the answer).
+        self._turn_task = asyncio.create_task(_run())
+        return web.json_response({"ok": True}, status=202)
 
     async def _handle_interrupt(self, request: web.Request) -> web.Response:
         if not self._authorized(request):
@@ -310,6 +331,13 @@ class ConversationListener:
         unsubscribe = self._unsubscribe
         self._unsubscribe = lambda: None
         unsubscribe()
+        # Cancel a background turn still in flight (fire-and-ack /send).
+        if self._turn_task is not None and not self._turn_task.done():
+            self._turn_task.cancel()
+            try:
+                await self._turn_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         for fut in self._pending_permissions.values():
             if not fut.done():
                 fut.set_result(PermissionDecision(
