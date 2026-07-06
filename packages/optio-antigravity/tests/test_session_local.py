@@ -38,6 +38,10 @@ async def test_local_reaches_done_and_tears_down(
             consumer_instructions="do the thing",
             agy_install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
+            # Stage-0 launch mechanics: fs-isolation is exercised in
+            # test_fs_allowlist.py + the opt-in enforce tests, and the fake agy
+            # can't run under a real claustrum here.
+            fs_isolation=False,
         ),
     )
     # Clean return == DONE observed in optio.log + teardown ran without error.
@@ -71,6 +75,10 @@ async def test_local_deliverable_callback_fired(
             consumer_instructions="hand back a file",
             agy_install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
+            # Stage-0 launch mechanics: fs-isolation is exercised in
+            # test_fs_allowlist.py + the opt-in enforce tests, and the fake agy
+            # can't run under a real claustrum here.
+            fs_isolation=False,
             on_deliverable=on_deliverable,
         ),
     )
@@ -94,6 +102,10 @@ async def test_local_error_raises(
             consumer_instructions="fail",
             agy_install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
+            # Stage-0 launch mechanics: fs-isolation is exercised in
+            # test_fs_allowlist.py + the opt-in enforce tests, and the fake agy
+            # can't run under a real claustrum here.
+            fs_isolation=False,
         ),
     )
     with pytest.raises(RuntimeError):

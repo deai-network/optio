@@ -71,6 +71,9 @@ def _cfg(shim_install_dir: pathlib.Path) -> AntigravityTaskConfig:
         agy_install_dir=str(shim_install_dir),
         ttyd_install_dir=str(shim_install_dir),
         supports_resume=True,
+        # Resume mechanics only — fs-isolation has its own suite, and the fake
+        # agy can't run under a real claustrum here.
+        fs_isolation=False,
     )
 
 

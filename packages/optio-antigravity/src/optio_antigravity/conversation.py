@@ -82,6 +82,7 @@ class AntigravityConversation:
         model: str | None = None,
         skip_permissions: bool = True,
         pty: bool = True,
+        claustrum_wrap: list[str] | None = None,
     ) -> None:
         self._host = host
         self._agy_path = agy_path
@@ -89,6 +90,10 @@ class AntigravityConversation:
         self._transcript_path = transcript_path
         self._env = dict(env or {})
         self._model = model
+        # Stage 8 fs-isolation: claustrum argv prefix prepended to each turn so
+        # ``agy -p`` runs Landlock-confined (None → unconfined). Set once at
+        # construction from host_actions._build_claustrum_wrap.
+        self._claustrum_wrap = list(claustrum_wrap) if claustrum_wrap else None
         # -p turns are non-interactive, so permissions must be skipped
         # (design §7). Kept configurable for a future turn-level gate.
         self._skip_permissions = skip_permissions
@@ -237,7 +242,10 @@ class AntigravityConversation:
     # -- internals -----------------------------------------------------------
 
     def _build_argv(self, text: str) -> list[str]:
-        argv = [self._agy_path, "-p"]
+        # Stage 8: when fs-isolation is on, the claustrum wrap goes AHEAD of agy
+        # so claustrum (under the PTY) applies Landlock then execve's ``agy -p``;
+        # agy + its tool subprocesses inherit the confinement.
+        argv = [*(self._claustrum_wrap or []), self._agy_path, "-p"]
         if self._conversation_id:
             argv += ["--conversation", self._conversation_id]
         else:

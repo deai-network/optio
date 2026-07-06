@@ -76,6 +76,10 @@ async def run_antigravity_session(
     tmux_session: str | None = None
     agy_path: str | None = None
     ttyd_path: str | None = None
+    # Stage 8: the on-host claustrum binary for the fs-isolation wrap. Resolved
+    # in _prepare when config.fs_isolation (fail-closed: provisioning raises
+    # rather than launching unconfined); stays None when isolation is off.
+    claustrum_path: str | None = None
     cancelled = False
     # Whether a snapshot was restored this run (drives --continue + the resume
     # notice + auto-start suppression). Set by _prepare, read by the body + the
@@ -95,7 +99,7 @@ async def run_antigravity_session(
         DONE/ERROR, and AGENTS.md is (re)planted AFTER the restore so it is not
         wiped by it.
         """
-        nonlocal agy_path, ttyd_path, resuming, pass_continue
+        nonlocal agy_path, ttyd_path, resuming, pass_continue, claustrum_path
         agy_path = await host_actions.ensure_antigravity_installed(
             hook_ctx,
             install_if_missing=config.install_if_missing,
@@ -141,6 +145,18 @@ async def run_antigravity_session(
             # HOME lives inside the restored workdir at the same absolute path
             # (deterministic taskdir), so the workspace-keyed lookup matches.
             pass_continue = True
+
+        # Stage 8 filesystem isolation: provision claustrum (cross-compiled on
+        # the engine, cached by (tag, arch), placed on the target host, and
+        # FUNCTIONALLY validated). Fail-closed — any provisioning failure raises,
+        # so an fs-isolated session never launches unconfined. Resolved once (the
+        # binary lives in the cache OUTSIDE the workdir, so it survives a resume
+        # restore and is shared across tasks). Shared by the iframe + conversation
+        # launch paths via host_actions._build_claustrum_wrap.
+        if config.fs_isolation:
+            claustrum_path = await host_actions.ensure_claustrum_installed(
+                hook_ctx, install_dir=config.agy_install_dir,
+            )
 
         # Disable agy's background self-update for this task (best-effort settings
         # key) on every launch path — fresh and resume alike — so the pinned
@@ -193,6 +209,12 @@ async def run_antigravity_session(
             **(config.env or {}),
             **(hook_ctx.browser_launch_env or {}),
         }
+        # Stage 8: confine the agy invocation inside the tmux pane with the
+        # claustrum wrap (None when fs_isolation is off → agy runs unconfined).
+        # tmux + ttyd themselves stay unconfined (infrastructure).
+        claustrum_wrap = await host_actions._build_claustrum_wrap(
+            host, config, claustrum_path,
+        )
         ctx.report_progress(None, "Launching Antigravity…")
         handle, ttyd_port, tmux_socket, tmux_session = await host_actions.launch_ttyd_with_agy(
             host,
@@ -203,6 +225,7 @@ async def run_antigravity_session(
             agy_flags=agy_flags,
             ready_timeout_s=READY_TIMEOUT_S,
             env_remove=config.scrub_env,
+            claustrum_wrap=claustrum_wrap,
         )
         launched_handle = handle
         tmux_path = await host_actions._require_tmux(host)
@@ -249,6 +272,11 @@ async def run_antigravity_session(
         transcript_path = (
             f"{launch_env['HOME']}/.gemini/antigravity/transcript.jsonl"
         )
+        # Stage 8: each ``agy -p`` turn runs Landlock-confined via the claustrum
+        # wrap prepended to its argv (None when fs_isolation is off).
+        claustrum_wrap = await host_actions._build_claustrum_wrap(
+            host, config, claustrum_path,
+        )
         conversation = AntigravityConversation(
             host=host,
             agy_path=agy_path,
@@ -256,6 +284,7 @@ async def run_antigravity_session(
             transcript_path=transcript_path,
             env=launch_env,
             model=config.model,
+            claustrum_wrap=claustrum_wrap,
         )
         ctx.publish_result(conversation)
         ctx.report_progress(None, "Antigravity conversation is live")

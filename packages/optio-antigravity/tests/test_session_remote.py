@@ -112,6 +112,9 @@ async def test_remote_deliverable_callback_fired(sshd, ctx_and_captures):
         ttyd_install_dir="/usr/local/bin",
         install_if_missing=False,
         install_ttyd_if_missing=False,
+        # Remote launch mechanics only — fs-isolation has its own suite; the
+        # sshd container has no claustrum toolchain.
+        fs_isolation=False,
         on_deliverable=on_deliverable,
         # Remote agy can't inherit the test process env — the scenario must
         # travel in the launch env.

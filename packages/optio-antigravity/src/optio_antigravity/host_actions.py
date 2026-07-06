@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
+from optio_agents import claustrum
 from optio_host.host import proc_wait
 
 if TYPE_CHECKING:
@@ -687,6 +688,7 @@ def _build_agy_shell_command(
     workdir: str,
     extra_env: dict[str, str] | None,
     agy_flags: list[str],
+    claustrum_wrap: list[str] | None = None,
 ) -> tuple[list[str], str]:
     """Return (env_assignments, shell_command).
 
@@ -696,12 +698,21 @@ def _build_agy_shell_command(
     HOME-isolation and appends DONE/ERROR to optio.log when agy exits. Consumed by
     build_tmux_session_argv (agy runs inside the detached tmux session, not as a
     direct ttyd child).
+
+    ``claustrum_wrap`` (Stage 8): when fs-isolation is on, the claustrum argv
+    prefix from :func:`_build_claustrum_wrap` is prepended AHEAD of the agy
+    invocation, so ``bash -c`` execs claustrum, which applies the Landlock
+    allowlist then execve's agy — agy + every tool subprocess it spawns inherit
+    the confinement. ``rc=$?`` still captures agy's real exit code (claustrum
+    exits with its child's). None when fs-isolation is off (agy runs unconfined).
     """
     workdir_clean = workdir.rstrip("/")
     env_map = build_launch_env(workdir_clean, extra_env)
     env_assignments: list[str] = [f"{k}={v}" for k, v in env_map.items()]
 
-    agy_argv = " ".join(shlex.quote(c) for c in [agy_path, *agy_flags])
+    agy_argv = " ".join(
+        shlex.quote(c) for c in [*(claustrum_wrap or []), agy_path, *agy_flags]
+    )
     log_path = f"{workdir_clean}/optio.log"
 
     bash_payload = (
@@ -799,6 +810,7 @@ def build_tmux_session_argv(
     session_name: str,
     extra_env: dict[str, str] | None,
     agy_flags: list[str],
+    claustrum_wrap: list[str] | None = None,
 ) -> list[str]:
     """Argv for the detached ``tmux new-session`` that starts agy.
 
@@ -806,12 +818,17 @@ def build_tmux_session_argv(
     is a single trailing shell-string element. The private socket
     (``-S socket_path``) isolates this task's tmux server. ``-x/-y`` give the
     detached pane a sane initial size before any viewer attaches.
+
+    ``claustrum_wrap`` (Stage 8) confines the agy invocation inside the tmux
+    pane; tmux + ttyd themselves stay unconfined (infrastructure). None → agy
+    runs unconfined.
     """
     _, shell_command = _build_agy_shell_command(
         agy_path=agy_path,
         workdir=workdir,
         extra_env=extra_env,
         agy_flags=agy_flags,
+        claustrum_wrap=claustrum_wrap,
     )
     return [
         tmux_path, "-S", socket_path, "new-session", "-d",
@@ -913,12 +930,16 @@ async def launch_ttyd_with_agy(
     ready_timeout_s: float = 30.0,
     env_remove: list[str] | None = None,
     session_name: str = "optio",
+    claustrum_wrap: list[str] | None = None,
 ) -> "tuple[ProcessHandle, int, str, str]":
     """Start agy in a detached tmux session, then ttyd attaching to it.
 
     Returns ``(ttyd_handle, port, socket_path, session_name)``. agy runs in the
     tmux session independent of ttyd; the caller awaits tmux-session liveness
     for completion and tears down BOTH the tmux session and ttyd.
+
+    ``claustrum_wrap`` (Stage 8) confines the agy invocation inside the tmux
+    pane (fail-closed fs-isolation); None → agy runs unconfined.
     """
     tmux_path = await _require_tmux(host)
     socket_path = _tmux_socket_path(host)
@@ -933,6 +954,7 @@ async def launch_ttyd_with_agy(
         session_name=session_name,
         extra_env=extra_env,
         agy_flags=agy_flags,
+        claustrum_wrap=claustrum_wrap,
     )
     session_cmd = " ".join(shlex.quote(a) for a in session_argv)
     await _launch_detached_checked(
@@ -1187,3 +1209,103 @@ async def _append_resume_log_entry(
             f"failed to append to resume.log: exit {result.exit_code}: "
             f"{result.stderr!r}"
         )
+
+
+# --- Stage 8: claustrum filesystem isolation --------------------------------
+#
+# Ported from optio_kimicode.host_actions (claudecode → kimicode → antigravity).
+# claustrum is a standalone Landlock sandbox CLI: it applies a fs allowlist to
+# itself, then execve's the wrapped target, so agy + every tool subprocess it
+# spawns inherit the confinement. Default-on, fail-closed (provisioning raises
+# rather than launching unconfined), local and remote (Host primitives only).
+#
+# Design §8: agy has a NATIVE ``--sandbox`` too, but it is unverifiable without a
+# real Google login and is a fail-OPEN "terminal restriction", so claustrum is
+# the enforced kernel jail here; combining with ``--sandbox`` is a future opt-in.
+
+
+async def ensure_claustrum_installed(
+    hook_ctx: "HookContextProtocol",
+    *,
+    install_dir: str | None = None,
+) -> str:
+    """Ensure a claustrum binary (pinned tag, host arch) is on the host.
+
+    Thin wrapper-specific shim over :func:`optio_agents.claustrum.ensure_claustrum_installed`
+    (the shared provisioner: detect arch, cross-compile on the engine cached by
+    (tag, arch), place on the target host, and FUNCTIONALLY validate). This layer
+    only resolves the two wrapper-specific paths:
+
+    - the TARGET-host cache dir (:func:`_resolve_antigravity_cache_dir`), beside
+      the agy binary cache and outside every task workdir; and
+    - the ENGINE-local build cache root ``~/.cache/optio-antigravity`` (a
+      parameter of the shared function, never hardcoded inside it, so tests
+      isolate it — a test build must never touch the operator's real cache).
+
+    Returns the claustrum path on the target host. Any failure RAISES
+    (fail-closed): an fs-isolated session never launches unconfined.
+    """
+    host = hook_ctx._host
+    cache_dir = await _resolve_antigravity_cache_dir(host, install_dir)
+    return await claustrum.ensure_claustrum_installed(
+        host,
+        cache_dir=cache_dir,
+        engine_cache_dir=os.path.expanduser("~/.cache/optio-antigravity"),
+        report_progress=hook_ctx.report_progress,
+    )
+
+
+async def _build_claustrum_wrap(
+    host: "Host", config: "AntigravityTaskConfig", claustrum_path: str | None,
+) -> list[str] | None:
+    """claustrum argv prefix for an fs-isolated launch, or None when
+    ``fs_isolation`` is off. Shared by the iframe (ttyd/tmux) and conversation
+    (``agy -p`` under a PTY) launch paths. Host-type agnostic (workdir + generic
+    primitives only), so the wrap is identical local and remote."""
+    if not config.fs_isolation:
+        return None
+    from . import fs_allowlist
+
+    cache_dir = await _resolve_antigravity_cache_dir(host, config.agy_install_dir)
+    # ``~/`` caller extras expand against the REAL host home (the agy process
+    # runs under an isolated $HOME, and grants reach claustrum verbatim).
+    host_home = (
+        await host.resolve_host_home() if config.extra_allowed_dirs else None
+    )
+    grants = fs_allowlist.build_grant_flags(
+        workdir=host.workdir,
+        agy_cache_dir=cache_dir,
+        extra_allowed_dirs=config.extra_allowed_dirs,
+        host_home=host_home,
+    )
+    return [claustrum_path, "--best-effort", "--abi-min", "1", *grants, "--"]
+
+
+async def claustrum_newer_tag() -> str | None:
+    """Return the newest claustrum tag if it is newer than the pinned one, else None.
+
+    Engine-side egress only. Best-effort: network failure returns None.
+    """
+    try:
+        p = await asyncio.create_subprocess_exec(
+            "git", "ls-remote", "--tags", "--refs", claustrum.CLAUSTRUM_REPO,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await p.communicate()
+        if p.returncode != 0:
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    tags = []
+    for line in out.decode().splitlines():
+        ref = line.rsplit("/", 1)[-1].strip()
+        if ref.startswith("v"):
+            tags.append(ref)
+
+    def key(t: str) -> tuple:
+        return tuple(int(x) for x in t.lstrip("v").split(".") if x.isdigit())
+
+    if not tags:
+        return None
+    newest = max(tags, key=key)
+    return newest if key(newest) > key(claustrum.CLAUSTRUM_PINNED_TAG) else None
