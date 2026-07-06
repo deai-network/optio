@@ -226,6 +226,7 @@ async def test_conversation_ui_session_lifecycle(shim_install_dir, task_root, mo
             "toolVerbosity": "description-only",
             "thinkingVerbosity": "hidden",
             "showSessionControls": False,
+            "nativeSpinner": False,
             "controls": [{
                 "id": "model",
                 "kind": "select",

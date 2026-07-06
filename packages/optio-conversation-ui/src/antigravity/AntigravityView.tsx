@@ -5,6 +5,7 @@ import { initialChatState, reduceAntigravityEvent } from './events.js';
 import { type Attachment } from '../attachments.js';
 import { blobDownload } from '../FileDownloadContext.js';
 import { ConversationView } from '../ConversationView.js';
+import { NativeSpinner } from '../spinners/NativeSpinner.js';
 
 // Conversation view for antigravity tasks. Antigravity has NO live transport
 // (design §1) — a conversation is SYNTHESISED from repeated one-shot `agy -p`
@@ -38,6 +39,7 @@ export function AntigravityView(props: WidgetProps) {
   const toolVerbosity = (wd.toolVerbosity ?? 'description-only') as
     'silent' | 'description-only' | 'verbose';
   const thinkingVerbosity = (wd.thinkingVerbosity ?? 'hidden') as 'hidden' | 'visible';
+  const nativeSpinner = Boolean(wd.nativeSpinner);
   // Seed the reducer's controls from widgetData so the session-controls bar
   // renders the model selector from the first paint; live updates fold in via
   // the reducer's x-optio-control-update case.
@@ -121,6 +123,7 @@ export function AntigravityView(props: WidgetProps) {
       busy={busy}
       toolVerbosity={toolVerbosity}
       thinkingVerbosity={thinkingVerbosity}
+      nativeSpinner={nativeSpinner ? <NativeSpinner engine="antigravity" /> : undefined}
       showFileUpload={showFileUpload}
       maxUploadBytes={maxUploadBytes}
       fileDownload={fileDownload}
