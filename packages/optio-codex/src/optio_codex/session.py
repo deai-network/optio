@@ -455,6 +455,29 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             })
             ctx.report_progress(None, "Conversation UI is live")
 
+            # Resume history backfill: the resumed thread already carried its
+            # prior conversation inline in the thread/resume response
+            # (thread.turns[].items[]), which bootstrap stashed — but the
+            # listener's replay buffer starts empty and only accrues LIVE turns,
+            # so a viewer attaching after resume would see none of the prior
+            # conversation. Now that ConversationListener above has subscribed to
+            # conversation.on_event (in its constructor), re-emit every stored
+            # item as the item/completed the live stream would have sent, through
+            # the SAME on_event fan-out, so the whole prior history lands in the
+            # replay buffer; a late viewer then reconstructs it exactly like live
+            # turns. ORDERING is load-bearing: strictly AFTER the listener
+            # subscribes (else the buffer misses the history) and BEFORE the
+            # resume-notice send below (else that new turn would interleave ahead
+            # of the history). Gated on resuming — a fresh thread/start carries no
+            # prior turns.
+            if resuming:
+                replayed = await conversation.replay_history()
+                if replayed:
+                    _LOG.info(
+                        "codex conversation resume: replayed %d prior events",
+                        replayed,
+                    )
+
         # Kickoff prompt as the first turn (headless: no positional prompt
         # path). Suppressed on resume — re-kicking would duplicate the task.
         # On resume, PUSH a System: resume notice instead so the resumed thread

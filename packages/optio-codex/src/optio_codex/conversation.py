@@ -135,6 +135,11 @@ class CodexConversation:
         # With the gate on codex must ask (on-request); without it, never.
         self._approval_policy = "on-request" if permission_gate else "never"
         self._resume_thread_id = resume_thread_id
+        # Prior conversation captured at bootstrap when resuming: thread/resume
+        # returns the whole thing inline as thread.turns[].items[] (verified
+        # live). Stashed here (bootstrap runs before any listener subscribes) so
+        # replay_history can backfill it into on_event once the listener is up.
+        self._resume_turns: list = []
         self._handle = None
         # Captured at bootstrap; Plan B's snapshot sessionId seam reads
         # thread_id at capture time.
@@ -240,6 +245,57 @@ class CodexConversation:
                 f"codex {method} returned no thread id: {result!r}"
             )
         self.current_model_id = result.get("model") or self._model
+        # thread/resume returns the FULL prior conversation inline as
+        # thread.turns[].items[] (verified live); stash it for replay_history to
+        # backfill into on_event after the listener subscribes. thread/start has
+        # no prior turns → [].
+        self._resume_turns = thread.get("turns") or []
+
+    async def replay_history(self) -> int:
+        """Backfill on_event with the RESUMED thread's prior turns.
+
+        On resume, thread/resume returned the whole prior conversation inline as
+        result.thread.turns[].items[], which bootstrap stashed — but the
+        listener's replay buffer starts empty and only accrues LIVE turns, so a
+        viewer attaching after a resume would see none of the prior conversation.
+        So re-emit each stored item as the ``item/completed`` notification the
+        live stream would have sent for it, plus a ``turn/completed`` after each
+        turn, through the SAME on_event fan-out live items use — landing them in
+        the listener's buffer so a late viewer reconstructs the full prior
+        history, each item rendered identically to a live one (the UI reducer
+        treats a replayed item/completed exactly like a streamed one — its
+        untracked-completion branch IS the replay-gap path; the per-turn
+        turn/completed closes each turn's answer bubble and opens the next).
+
+        Drives ONLY on_event — no answer accumulation, no on_message: a resume
+        must not synthesise a phantom answer turn (mirrors optio-antigravity's
+        replay_history). Safe with no history (thread/start, or a resume with no
+        prior turns): emits nothing, returns 0. Returns the number of events
+        emitted.
+        """
+        count = 0
+        for turn in self._resume_turns:
+            turn_id = turn.get("id")
+            for item in turn.get("items") or []:
+                await self._emit_event({"method": "item/completed", "params": {
+                    "threadId": self.thread_id, "turnId": turn_id, "item": item}})
+                count += 1
+            # Close this historic turn's bubble and open the next's — a live
+            # multi-turn stream ends every turn with turn/completed, so replay
+            # must too (else the reducer coalesces all turns into one bubble).
+            await self._emit_event({"method": "turn/completed", "params": {
+                "threadId": self.thread_id,
+                "turn": {"id": turn_id, "status": "completed"}}})
+            count += 1
+        return count
+
+    async def _emit_event(self, obj: dict) -> None:
+        """Fan one event out to on_event subscribers directly — the tail of the
+        live _event_queue -> _dispatch_loop -> _event_handlers path, reused by
+        the resume-history backfill (which must NOT touch turn/answer state, so
+        it bypasses _route/_on_notification and the on_message coalescer)."""
+        for handler in list(self._event_handlers):
+            await self._call_handler(handler, obj, "on_event")
 
     async def run_reader(self) -> None:
         """Drain stdout until EOF; route JSON-RPC messages. Owned by the

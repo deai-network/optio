@@ -134,6 +134,52 @@ def _cmd_approval(req_id: int, command="echo hi"):
                        "startedAtMs": 0}}
 
 
+# Stored prior conversation the real thread/resume returns inline as
+# result.thread.turns[].items[] (verified live against a real codex rollout):
+# two completed turns — user+agent messages and a tool call — each item shaped
+# like a live item/completed's `item` (type, id, + type-specific fields).
+_RESUME_TURNS = [
+    {"id": "turn-h1", "items": [
+        {"type": "userMessage", "id": "u1", "text": "prior question"},
+        {"type": "agentMessage", "id": "a1", "text": "prior answer one"},
+    ]},
+    {"id": "turn-h2", "items": [
+        {"type": "userMessage", "id": "u2", "text": "second question"},
+        {"type": "commandExecution", "id": "c1", "command": "ls",
+         "cwd": "/w", "status": "completed", "exitCode": 0},
+        {"type": "agentMessage", "id": "a2", "text": "prior answer two"},
+    ]},
+]
+
+
+async def _bootstrap_resume(c, handle, thread_id="t9", turns=None):
+    """Drive the handshake, answering thread/resume with a result that carries
+    the prior conversation inline (result.thread.turns[].items[]) — the live
+    shape backfill parses."""
+    boot = asyncio.create_task(c.bootstrap())
+    req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert req["method"] == "initialize"
+    handle.stdout.feed({"id": req["id"], "result": {
+        "userAgent": "codex/0.142.5-fake", "codexHome": "/h",
+        "platformFamily": "fake", "platformOs": "fake"}})
+    assert await asyncio.wait_for(handle.stdin.lines.get(), 1) == {"method": "initialized"}
+    req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert req["method"] == "account/read"
+    handle.stdout.feed({"id": req["id"], "result": {
+        "account": {"type": "apikey"}, "requiresOpenaiAuth": False}})
+    req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert req["method"] == "model/list"
+    handle.stdout.feed({"id": req["id"], "result": MODEL_LIST})
+    req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert req["method"] == "thread/resume"
+    thread = {"id": thread_id}
+    if turns is not None:
+        thread["turns"] = turns
+    handle.stdout.feed({"id": req["id"], "result": {
+        "thread": thread, "model": "gpt-5.5"}})
+    await asyncio.wait_for(boot, 1)
+
+
 @pytest.fixture
 def convo():
     handle = _FakeHandle()
@@ -456,6 +502,71 @@ async def test_bootstrap_resume_uses_thread_resume():
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle, thread_id="t9", resume=True)
     assert c.thread_id == "t9"
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_resume_replay_history_emits_stored_items_in_order():
+    # thread/resume returns the prior conversation inline as thread.turns[].
+    # items[]; bootstrap stashes it and replay_history re-emits each stored item
+    # as the item/completed the live stream would have sent, plus a
+    # turn/completed per turn, through on_event — so a late viewer reconstructs
+    # the prior history exactly like live turns (the reducer renders a replayed
+    # item/completed identically to a streamed one). It is buffer backfill, NOT a
+    # turn: on_message never fires (no phantom answer synthesised).
+    handle = _FakeHandle()
+    c = CodexConversation(cwd="/w", resume_thread_id="t9")
+    c.attach(handle)
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap_resume(c, handle, thread_id="t9", turns=_RESUME_TURNS)
+
+    events, texts = [], []
+    c.on_event(events.append)
+    c.on_message(texts.append)
+
+    n = await c.replay_history()
+    assert n == 7  # 5 items + one turn/completed per turn
+
+    # Filter to the backfill events (a stray handshake response may ride the
+    # event queue; backfill is the only source of item/completed + turn/completed
+    # here). Order is load-bearing — the reducer coalesces each turn's answer.
+    backfill = [e for e in events if e.get("method") in ("item/completed", "turn/completed")]
+    assert [e["method"] for e in backfill] == [
+        "item/completed", "item/completed", "turn/completed",
+        "item/completed", "item/completed", "item/completed", "turn/completed",
+    ]
+    # Each stored item is wrapped faithfully into item/completed's `item`.
+    items = [e["params"]["item"] for e in backfill if e["method"] == "item/completed"]
+    assert [it["type"] for it in items] == [
+        "userMessage", "agentMessage",
+        "userMessage", "commandExecution", "agentMessage",
+    ]
+    assert items[1]["text"] == "prior answer one"
+    assert items[3]["command"] == "ls"
+    # turn/completed carries the historic turn id (so the reducer closes that
+    # turn's bubble and opens the next turn's).
+    tc = [e for e in backfill if e["method"] == "turn/completed"]
+    assert tc[0]["params"]["turn"] == {"id": "turn-h1", "status": "completed"}
+    assert tc[0]["params"]["threadId"] == "t9"
+    # Backfill drives ONLY on_event — never a coalesced on_message.
+    assert texts == []
+
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_replay_history_no_prior_turns_is_noop(convo):
+    # A fresh thread/start (or a resume with no prior turns) carries no history:
+    # replay_history emits nothing and returns 0, never raises.
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)  # thread/start — no turns
+    events = []
+    c.on_event(events.append)
+    assert await c.replay_history() == 0
+    assert [e for e in events if e.get("method") in ("item/completed", "turn/completed")] == []
     handle.stdout.eof()
     await reader
 

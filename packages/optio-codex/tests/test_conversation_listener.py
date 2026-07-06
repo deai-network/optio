@@ -25,6 +25,9 @@ class FakeConversation:
         self.interrupts = 0
         self.control_changes = []
         self.closed = False
+        # Prior turns' item/* events the driver backfills on resume
+        # (replay_history), re-emitted through the SAME on_event fan-out.
+        self.history = []
 
     def on_event(self, h):
         self.handlers.append(h)
@@ -52,6 +55,15 @@ class FakeConversation:
     def fire(self, event):
         for h in list(self.handlers):
             h(event)
+
+    async def replay_history(self):
+        # Resume backfill: re-emit the restored PRIOR turns' item/* events
+        # through the SAME on_event fan-out live turns use (what
+        # CodexConversation does), so the historic events land in the listener's
+        # replay buffer before any viewer attaches.
+        for e in list(self.history):
+            self.fire(e)
+        return len(self.history)
 
 
 def _auth(pw):
@@ -110,6 +122,31 @@ async def test_replay_to_late_subscriber(listener):
                 "delta": "more"}})
             live = await _read_events(resp, 1)
             assert live[0]["params"]["delta"] == "more"
+
+
+async def test_replay_history_backfills_buffer_for_late_subscriber(listener):
+    # Resume backfill: the driver's replay_history re-emits the resumed thread's
+    # prior turns through on_event AFTER the listener has subscribed (its
+    # constructor), landing them in the replay buffer BEFORE any viewer attaches.
+    # A viewer that connects post-resume then sees the full prior history, not
+    # just new turns — the crux of the resume-history fix. Mirrors how session.py
+    # wires replay_history after ConversationListener(...) is constructed.
+    conv, lst, url = listener
+    conv.history = [
+        {"method": "item/completed", "params": {
+            "threadId": "t1", "turnId": "turn-h1",
+            "item": {"type": "agentMessage", "id": "a1", "text": "prior-a"}}},
+        {"method": "turn/completed", "params": {
+            "threadId": "t1", "turn": {"id": "turn-h1", "status": "completed"}}},
+    ]
+    n = await conv.replay_history()
+    assert n == 2
+    async with aiohttp.ClientSession() as s:
+        async with s.get(f"{url}/events", headers=_auth("pw")) as resp:
+            assert resp.status == 200
+            replay = await _read_events(resp, 2)
+            assert replay[0]["params"]["item"]["text"] == "prior-a"
+            assert replay[1]["method"] == "turn/completed"
 
 
 async def test_last_event_id_resume(listener):
