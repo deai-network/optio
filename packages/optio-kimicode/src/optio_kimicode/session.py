@@ -305,6 +305,9 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             # fragment; the proxy's prefix-strip script preserves location.search,
             # so the flag survives the rewrite.
             "iframeSrc": f"{{widgetProxyUrl}}sessions/{session_id}?embed=1{fragment}",
+            # kimi-web is a client-routed SPA: opt into the proxy prefix-strip so
+            # its router sees the app URL space. (ttyd widgets omit this.)
+            "stripProxyPrefix": True,
         })
         ctx.report_progress(None, "Kimi Code is live")
 

@@ -377,6 +377,10 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             )
             await ctx.set_widget_data({
                 "iframeSrc": f"{{widgetProxyUrl}}{_workdir_b64}/session/{session_id}",
+                # opencode is a client-routed SPA loaded at a deep sub-route: the
+                # proxy must strip its prefix from location.pathname so the SPA
+                # router sees the app URL space. (ttyd widgets omit this.)
+                "stripProxyPrefix": True,
                 "localStorageOverrides": {
                     "opencode.settings.dat:defaultServerUrl": "{widgetProxyUrl}",
                     # Start with the review/diff panel collapsed. opencode defaults

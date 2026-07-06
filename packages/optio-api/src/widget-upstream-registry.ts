@@ -1,6 +1,10 @@
 export interface WidgetUpstreamValue {
   url: string;
   innerAuth: InnerAuthDoc | null;
+  // When true, the proxy injects the location.pathname prefix-strip shim (for
+  // client-routed SPAs: opencode/kimicode). Off/absent for ttyd widgets, whose
+  // client derives backend URLs from location.pathname and must keep the prefix.
+  stripProxyPrefix?: boolean;
 }
 
 export type InnerAuthDoc =

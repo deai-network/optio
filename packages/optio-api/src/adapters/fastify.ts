@@ -81,50 +81,62 @@ function widgetProxyPrefix(database: string, prefix: string, processId: string):
 
 interface HtmlInjection {
   html: string;
-  stripScriptSha256: string; // base64-encoded SHA-256 of the inline script body (for CSP)
+  // base64-encoded SHA-256 of the injected inline script (for CSP), or null when
+  // no inline script was injected (base-href-only path — the ttyd contract).
+  stripScriptSha256: string | null;
 }
 
-function injectBaseHref(html: string, proxyPrefix: string): HtmlInjection {
-  // Inject two things right after <head>:
+function injectBaseHref(
+  html: string,
+  proxyPrefix: string,
+  stripPrefix: boolean,
+): HtmlInjection {
+  // Always inject:
   //
-  // 1. <base href="<proxyPrefix>"> — forces relative URLs in the page to
-  //    resolve against the proxy root regardless of how deep the current
-  //    document URL is.  Required for SPAs (like opencode) whose HTML uses
-  //    relative asset paths ("./assets/x.js") but are loaded via a routing-
-  //    deep URL like /api/widget/<db>/<prefix>/<pid>/<workdir>/session/.
-  //    Without it, assets resolve to `.../workdir/session/assets/x.js` and
-  //    hit the upstream's SPA fallback with wrong MIME types.
+  //   <base href="<proxyPrefix>"> — forces relative URLs in the page to resolve
+  //   against the proxy root regardless of how deep the current document URL is.
+  //   Required for SPAs (like opencode) whose HTML uses relative asset paths
+  //   ("./assets/x.js") but are loaded via a routing-deep URL like
+  //   /api/widget/<db>/<prefix>/<pid>/<workdir>/session/. Harmless for ttyd.
   //
-  // 2. An inline <script> that runs before the SPA bundle and strips the
-  //    proxy prefix from `location.pathname` via history.replaceState.
-  //    This makes the SPA's client-side router (e.g. @solidjs/router, react
-  //    -router) see the application's intended URL space (`/:dir/session/`
-  //    in opencode's case) rather than the proxy-nested one
-  //    (`/api/widget/<db>/<prefix>/<pid>/:dir/session/`).  `<base href>` is
-  //    unaffected, so asset loading continues to work.
+  // Inject ONLY when `stripPrefix` (widgetData.stripProxyPrefix):
   //
-  // Because the inline script violates `script-src 'self'` CSPs, we also
-  // return its SHA-256 so the caller can append `'sha256-…'` to the
-  // outgoing CSP's script-src directive.
+  //   An inline <script> that runs before the page bundle and strips the proxy
+  //   prefix from `location.pathname` via history.replaceState, so a client-side
+  //   SPA router (opencode, kimicode) sees its intended URL space (`/:dir/session/`)
+  //   rather than the proxy-nested one.
+  //
+  //   This MUST NOT run for ttyd-based widgets (claudecode/grok/antigravity):
+  //   ttyd derives its /token and /ws endpoints from `location.pathname` at
+  //   runtime, so stripping the prefix to '/' makes ttyd request them at the
+  //   origin root and escape the proxy (regression from commit 2accedb: the
+  //   strip used to crash benignly on the '//' path, leaving pathname intact;
+  //   once it stopped crashing it began breaking ttyd). Default off = ttyd-safe.
+  //
+  //   The inline script violates `script-src 'self'` CSPs, so we return its
+  //   SHA-256 for the caller to allowlist. base-href-only needs no CSP change.
   const baseTag = `<base href="${proxyPrefix}">`;
-  // Escape regex-meta characters in the prefix for the runtime match.
-  const prefixLiteralForRegex = proxyPrefix
-    .replace(/\/$/, '') // the script uses the stripped form without trailing slash
-    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // Collapse any leading slashes in the stripped remainder before re-forming the
-  // path. The remainder can begin with a stray '/' (e.g. an iframe src that joined
-  // a trailing-slash base with a leading-slash route -> '<prefix>//sessions/...').
-  // Left as-is that would yield a protocol-relative '//sessions/...' URL, and
-  // history.replaceState would throw a cross-origin SecurityError.
-  const scriptBody =
-    `(function(){var r=new RegExp('^' + ${JSON.stringify(prefixLiteralForRegex)});` +
-    `var p=location.pathname;var m=p.match(r);` +
-    `if(m){var rest='/'+p.slice(m[0].length).replace(/^\\/+/,'');` +
-    `history.replaceState(null,'',rest+location.search+location.hash);}` +
-    `})();`;
-  const stripScriptSha256 = createHash('sha256').update(scriptBody, 'utf-8').digest('base64');
-  const stripScript = `<script>${scriptBody}</script>`;
-  const injection = `${baseTag}${stripScript}`;
+  let injection = baseTag;
+  let stripScriptSha256: string | null = null;
+  if (stripPrefix) {
+    // Escape regex-meta characters in the prefix for the runtime match.
+    const prefixLiteralForRegex = proxyPrefix
+      .replace(/\/$/, '') // the script uses the stripped form without trailing slash
+      .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Collapse any leading slashes in the stripped remainder before re-forming the
+    // path. The remainder can begin with a stray '/' (e.g. an iframe src that joined
+    // a trailing-slash base with a leading-slash route -> '<prefix>//sessions/...').
+    // Left as-is that would yield a protocol-relative '//sessions/...' URL, and
+    // history.replaceState would throw a cross-origin SecurityError.
+    const scriptBody =
+      `(function(){var r=new RegExp('^' + ${JSON.stringify(prefixLiteralForRegex)});` +
+      `var p=location.pathname;var m=p.match(r);` +
+      `if(m){var rest='/'+p.slice(m[0].length).replace(/^\\/+/,'');` +
+      `history.replaceState(null,'',rest+location.search+location.hash);}` +
+      `})();`;
+    stripScriptSha256 = createHash('sha256').update(scriptBody, 'utf-8').digest('base64');
+    injection = `${baseTag}<script>${scriptBody}</script>`;
+  }
   const m = html.match(/<head(\s[^>]*)?>/i);
   const transformed = m
     ? html.replace(m[0], `${m[0]}${injection}`)
@@ -323,13 +335,17 @@ function registerWidgetProxy(app: FastifyInstance, opts: WidgetProxyInternalOpti
 
         const widget = (request.raw as any).__optioWidget;
         const proxyPrefix: string = widget?.proxyPrefix ?? '/';
+        // Opt-in prefix-strip: only client-routed SPAs (opencode/kimicode) set
+        // widgetData.stripProxyPrefix. ttyd widgets leave it off so their
+        // location.pathname is preserved (see injectBaseHref).
+        const stripPrefix: boolean = widget?.upstream?.stripProxyPrefix === true;
         const chunks: Buffer[] = [];
         stream.on('data', (c: Buffer) => {
           chunks.push(c);
         });
         stream.on('end', () => {
           const html = Buffer.concat(chunks).toString('utf-8');
-          const { html: transformed, stripScriptSha256 } = injectBaseHref(html, proxyPrefix);
+          const { html: transformed, stripScriptSha256 } = injectBaseHref(html, proxyPrefix, stripPrefix);
           const body = Buffer.from(transformed, 'utf-8');
           // Rebuild headers: copy upstream, then override transform-affected ones.
           const outHeaders: Record<string, any> = rewriteResponseHeaders(incomingHeaders);
@@ -338,10 +354,11 @@ function registerWidgetProxy(app: FastifyInstance, opts: WidgetProxyInternalOpti
           // (We also strip Accept-Encoding on the way out in preHandler so in
           // practice upstream should send identity, but belt-and-braces.)
           delete outHeaders['content-encoding'];
-          // If a CSP is present, allowlist our injected inline script by hash
-          // so it isn't blocked by `script-src 'self'`.
+          // If a CSP is present AND we injected an inline script, allowlist it by
+          // hash so it isn't blocked by `script-src 'self'`. base-href-only
+          // (stripScriptSha256 === null) needs no CSP change.
           const csp = outHeaders['content-security-policy'];
-          if (typeof csp === 'string' && csp.length > 0) {
+          if (stripScriptSha256 !== null && typeof csp === 'string' && csp.length > 0) {
             outHeaders['content-security-policy'] = appendScriptHashToCsp(csp, stripScriptSha256);
           }
           rawRes.writeHead(statusCode, outHeaders as any);

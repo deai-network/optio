@@ -26,9 +26,16 @@ export async function resolveWidgetUpstream(
 
   const doc = await db.collection(`${prefix}_processes`).findOne(
     { _id: oid },
-    { projection: { widgetUpstream: 1 } },
+    { projection: { widgetUpstream: 1, 'widgetData.stripProxyPrefix': 1 } },
   );
-  const upstream = (doc?.widgetUpstream ?? null) as WidgetUpstreamValue | null;
+  const rawUpstream = (doc?.widgetUpstream ?? null) as WidgetUpstreamValue | null;
+  // Fold the widget's opt-in prefix-strip flag (widgetData.stripProxyPrefix,
+  // set by client-routed SPA engines) into the cached upstream value so the
+  // HTML-injection path can read it without a second lookup.
+  const upstream: WidgetUpstreamValue | null =
+    rawUpstream === null
+      ? null
+      : { ...rawUpstream, stripProxyPrefix: doc?.widgetData?.stripProxyPrefix === true };
   // Only cache positive lookups.  A null (no widgetUpstream registered yet
   // or just cleared at teardown) must NOT stick in the cache: when the
   // worker subsequently calls set_widget_upstream, the dashboard's first

@@ -70,7 +70,7 @@ describe('registerWidgetProxy — HTTP path', () => {
     return app;
   }
 
-  async function insertProcess(upstreamConfig?: any): Promise<ObjectId> {
+  async function insertProcess(upstreamConfig?: any, widgetData?: any): Promise<ObjectId> {
     const oid = new ObjectId();
     await db.collection(`${PREFIX}_processes`).insertOne({
       _id: oid, processId: 'p', name: 'P',
@@ -80,6 +80,7 @@ describe('registerWidgetProxy — HTTP path', () => {
       progress: { percent: null }, log: [],
       cancellable: true,
       widgetUpstream: upstreamConfig ?? null,
+      widgetData: widgetData ?? null,
     });
     return oid;
   }
@@ -252,7 +253,12 @@ describe('registerWidgetProxy — HTTP path', () => {
     await app.close();
   });
 
-  it('injects a history.replaceState script that strips the widget-proxy prefix from location.pathname', async () => {
+  it('does NOT inject the prefix-strip script by default (ttyd contract: location.pathname must be left intact so ttyd builds token/ws under the proxy)', async () => {
+    // ttyd (claudecode/grok/antigravity) derives its /token and /ws endpoints
+    // from window.location.pathname. If the proxy strips the prefix to '/', ttyd
+    // requests them at the origin root and escapes the proxy. So with no
+    // stripProxyPrefix flag, the <base href> is injected but the replaceState
+    // strip script MUST be absent.
     upstreamResponder = (_req, res, _body) => {
       res.statusCode = 200;
       res.setHeader('content-type', 'text/html; charset=utf-8');
@@ -260,6 +266,25 @@ describe('registerWidgetProxy — HTTP path', () => {
     };
     const app = await makeApp();
     const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+    const res = await app.inject({ method: 'GET', url: widgetUrl(oid, '/') });
+    expect(res.statusCode).toBe(200);
+    const expectedBase = `<base href="/api/widget/${encodeURIComponent(DB_NAME)}/${encodeURIComponent(PREFIX)}/${oid}/">`;
+    expect(res.body).toContain(expectedBase);       // base still injected
+    expect(res.body).not.toContain('history.replaceState');  // strip shim absent
+    await app.close();
+  });
+
+  it('injects the prefix-strip script only when widgetData.stripProxyPrefix is set (SPA contract: opencode/kimicode client routers)', async () => {
+    upstreamResponder = (_req, res, _body) => {
+      res.statusCode = 200;
+      res.setHeader('content-type', 'text/html; charset=utf-8');
+      res.end('<!doctype html>\n<html><head></head><body></body></html>');
+    };
+    const app = await makeApp();
+    const oid = await insertProcess(
+      { url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null },
+      { stripProxyPrefix: true },
+    );
     const res = await app.inject({ method: 'GET', url: widgetUrl(oid, '/foo/bar') });
     expect(res.statusCode).toBe(200);
     // The injected script references the proxy prefix (without trailing slash)
@@ -279,7 +304,10 @@ describe('registerWidgetProxy — HTTP path', () => {
       res.end('<!doctype html>\n<html><head></head><body></body></html>');
     };
     const app = await makeApp();
-    const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+    const oid = await insertProcess(
+      { url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null },
+      { stripProxyPrefix: true },
+    );
     const res = await app.inject({ method: 'GET', url: widgetUrl(oid, '/foo/bar') });
     const scriptBody = res.body.match(/<script>([\s\S]*?)<\/script>/)![1];
     const prefix = `/api/widget/${encodeURIComponent(DB_NAME)}/${encodeURIComponent(PREFIX)}/${oid}`;
@@ -318,7 +346,12 @@ describe('registerWidgetProxy — HTTP path', () => {
       res.end('<!doctype html>\n<html><head></head><body></body></html>');
     };
     const app = await makeApp();
-    const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+    // CSP allowlisting only applies when the inline strip script is injected —
+    // i.e. a stripProxyPrefix (SPA) widget.
+    const oid = await insertProcess(
+      { url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null },
+      { stripProxyPrefix: true },
+    );
     const res = await app.inject({ method: 'GET', url: widgetUrl(oid, '/') });
     expect(res.statusCode).toBe(200);
 
@@ -463,7 +496,7 @@ describe('registerWidgetProxy — WebSocket path', () => {
     }
   });
 
-  async function insertProcess(upstreamConfig?: any): Promise<ObjectId> {
+  async function insertProcess(upstreamConfig?: any, widgetData?: any): Promise<ObjectId> {
     const oid = new ObjectId();
     await db.collection(`${PREFIX}_processes`).insertOne({
       _id: oid, processId: 'p', name: 'P',
@@ -473,6 +506,7 @@ describe('registerWidgetProxy — WebSocket path', () => {
       progress: { percent: null }, log: [],
       cancellable: true,
       widgetUpstream: upstreamConfig ?? null,
+      widgetData: widgetData ?? null,
     });
     return oid;
   }
