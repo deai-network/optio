@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
 import os
+import re
 import secrets
 import shlex
 from typing import AsyncIterator
@@ -265,8 +267,37 @@ async def run_antigravity_session(
             listener_password = secrets.token_urlsafe(32)
             bind_addr = os.environ.get("OPTIO_WIDGET_TUNNEL_BIND", "127.0.0.1")
             upstream_host = os.environ.get("OPTIO_WIDGET_TUNNEL_HOST", "127.0.0.1")
+            # File upload: bytes land under <workdir>/uploads with a sanitized
+            # name; the view injects a System: path reference so agy reads them
+            # with its own tools (a synthetic -p turn has no inline ingest).
+            uploads_dir = f"{host.workdir}/uploads"
+
+            async def _write_upload(name: str, data: bytes) -> str:
+                safe = re.sub(r"[^A-Za-z0-9._-]", "_", (name.split("/")[-1] or "file"))[:200] or "file"
+                await host.put_file_to_host(data, f"{uploads_dir}/{safe}")
+                return f"uploads/{safe}"
+
+            # File download: serve workdir-confined bytes for the optio-file:
+            # sentinel links agy emits. agy's deliverables/artifacts land under
+            # <workdir>/home/.gemini/antigravity/artifacts/ (inside the per-task
+            # HOME, so already under the workdir); realpath guards against ../.
+            async def _read_download(relpath: str) -> tuple[bytes, str]:
+                workdir = host.workdir.rstrip("/")
+                real = os.path.realpath(os.path.join(workdir, relpath))
+                if real != workdir and not real.startswith(workdir + os.sep):
+                    raise ValueError("forbidden")           # outside the workdir
+                data = await host.fetch_bytes_from_host(real)
+                if len(data) > config.max_download_bytes:
+                    raise ValueError("too-large")
+                mime = mimetypes.guess_type(real)[0] or "application/octet-stream"
+                return data, mime
+
             conv_listener = ConversationListener(
                 conversation, password=listener_password,
+                upload_writer=_write_upload,
+                max_upload_bytes=config.max_upload_bytes,
+                download_reader=_read_download,
+                max_download_bytes=config.max_download_bytes,
             )
             # The listener is an in-process aiohttp app (not a remote-host
             # process like ttyd), so it binds directly to the widget-tunnel

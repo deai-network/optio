@@ -271,6 +271,70 @@ async def test_conversation_ui_session_lifecycle(shim_install_dir, task_root, mo
         await optio.shutdown(grace_seconds=1.0)
 
 
+@pytest.mark.asyncio
+async def test_conversation_ui_file_upload_download(shim_install_dir, task_root, mongo_db):
+    """conversation_ui with show_file_upload + file_download wires the listener's
+    upload_writer/download_reader (Task 7.2): an uploaded file lands under
+    <workdir>/uploads and is then downloadable through the workdir-confined
+    reader; a ``../`` escape is refused with 403."""
+    optio = await _make_optio(mongo_db, "agconv5")
+    try:
+        task = create_antigravity_task(
+            process_id="ag-conv-files",
+            name="Conversation files",
+            config=_conversation_config(
+                shim_install_dir, conversation_ui=True,
+                show_file_upload=True, file_download=True,
+            ),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result(
+            "ag-conv-files", session_id=None, timeout=60,
+        )
+        proc = await _wait_widget_upstream(optio, "ag-conv-files")
+        upstream = proc["widgetUpstream"]
+        # widgetData advertises the file features to the widget.
+        assert proc["widgetData"]["showFileUpload"] is True
+        assert proc["widgetData"]["fileDownload"] is True
+        inner = upstream["innerAuth"]
+        token = base64.b64encode(f"optio:{inner['password']}".encode()).decode()
+        headers = {"Authorization": f"Basic {token}"}
+        async with aiohttp.ClientSession() as session:
+            # Upload: the writer sanitizes the name and lands it under uploads/.
+            form = aiohttp.FormData()
+            form.add_field(
+                "file", b"hello-bytes", filename="note.txt",
+                content_type="text/plain",
+            )
+            async with session.post(
+                f"{upstream['url']}/upload", data=form, headers=headers,
+            ) as r:
+                assert r.status == 200
+                body = await r.json()
+            assert body["ok"] is True
+            rel = body["files"][0]["path"]
+            assert rel == "uploads/note.txt"
+            # Download the just-uploaded file back through the confined reader.
+            async with session.get(
+                f"{upstream['url']}/download", params={"path": rel}, headers=headers,
+            ) as r:
+                assert r.status == 200
+                data = await r.read()
+            assert data == b"hello-bytes"
+            # A workdir escape is refused.
+            async with session.get(
+                f"{upstream['url']}/download",
+                params={"path": "../../etc/passwd"}, headers=headers,
+            ) as r:
+                assert r.status == 403
+
+        await conv.close()
+        proc = await _wait_terminal(optio, "ag-conv-files")
+        assert proc["status"]["state"] == "done"
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
 def test_ui_widget_per_mode():
     """Conversation tasks carry no widget unless conversation_ui; iframe tasks
     keep 'iframe'."""
