@@ -2,6 +2,14 @@
 
 import logging as _logging
 
+from optio_antigravity.seed_manifest import (
+    ANTIGRAVITY_CRED_MANIFEST,
+    ANTIGRAVITY_SEED_MANIFEST,
+    ANTIGRAVITY_SEED_SUFFIX,
+    delete_seed,
+    list_seeds,
+    purge_seed,
+)
 from optio_antigravity.session import (
     create_antigravity_task,
     run_antigravity_session,
@@ -18,4 +26,10 @@ __all__ = [
     "create_antigravity_task",
     "run_antigravity_session",
     "AntigravityTaskConfig",
+    "ANTIGRAVITY_SEED_MANIFEST",
+    "ANTIGRAVITY_CRED_MANIFEST",
+    "ANTIGRAVITY_SEED_SUFFIX",
+    "delete_seed",
+    "list_seeds",
+    "purge_seed",
 ]
