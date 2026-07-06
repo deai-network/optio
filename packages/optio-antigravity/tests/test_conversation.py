@@ -205,6 +205,56 @@ def test_read_complete_events_leaves_partial_line_for_next_poll(tmp_path):
     assert off2 == len((line1 + line2).encode())
 
 
+async def test_replay_history_backfills_prior_events(tmp_path):
+    # On resume the restored workdir carries the PRIOR conversation's whole
+    # transcript, but the live on_event fan-out (and hence any listener's replay
+    # buffer) starts empty — a viewer attaching post-resume would see only new
+    # turns. replay_history reads the restored transcript end-to-end (offset 0)
+    # and re-emits every raw line through the SAME on_event path live turns use,
+    # so the historic events land in the buffer. It is buffer history, NOT a new
+    # turn: on_message must NEVER fire (no coalesced answer is synthesised).
+    conv = AntigravityConversation(
+        host=None, agy_path="agy", cwd=str(tmp_path / "w"), home=str(tmp_path / "home"),
+    )
+    conv._conversation_id = "restored-uuid"
+    dest = pathlib.Path(conv._transcript_path())
+    dest.parent.mkdir(parents=True)
+    dest.write_bytes(_FIXTURE.read_bytes())
+
+    events: list[dict] = []
+    conv.on_event(events.append)
+    msgs = []
+    conv.on_message(msgs.append)
+
+    n = await conv.replay_history()
+    # Every historic line was emitted once, in order — the raw fixture events.
+    assert n == 12
+    assert len(events) == 12
+    assert events[0]["type"] == "USER_INPUT"
+    assert events[0]["source"] == "USER_EXPLICIT"
+    assert events[-1]["type"] == "PLANNER_RESPONSE"
+    # History backfill drives only on_event — never a coalesced turn message.
+    assert msgs == []
+
+
+async def test_replay_history_no_transcript_is_noop(tmp_path):
+    # Safe when the resume has no prior conversation for this cwd: no adopted
+    # uuid (or a uuid whose transcript file is missing) → returns 0, emits
+    # nothing, never raises.
+    conv = AntigravityConversation(
+        host=None, agy_path="agy", cwd=str(tmp_path / "w"), home=str(tmp_path / "home"),
+    )
+    events: list[dict] = []
+    conv.on_event(events.append)
+    # No uuid adopted → no transcript path at all.
+    assert await conv.replay_history() == 0
+    assert events == []
+    # A uuid but a missing transcript file is likewise a no-op 0.
+    conv._conversation_id = "uuid-with-no-file"
+    assert await conv.replay_history() == 0
+    assert events == []
+
+
 def test_resume_from_disk_adopts_prior_conversation(tmp_path):
     # On resume the restored workdir carries last_conversations.json (cwd->uuid);
     # resume_from_disk preloads it so the first turn CONTINUES via --conversation

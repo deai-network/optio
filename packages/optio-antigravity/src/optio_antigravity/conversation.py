@@ -340,6 +340,38 @@ class AntigravityConversation:
         self._conversation_id = self._discover_conversation_id()
         return self._conversation_id
 
+    async def replay_history(self) -> int:
+        """Backfill the event stream with the RESTORED conversation's prior turns.
+
+        On resume ``resume_from_disk`` adopted the prior conversation's uuid but
+        did NOT read its transcript, so the live ``on_event`` fan-out — and hence
+        any listener's replay buffer — starts empty: a viewer attaching after a
+        resume would see only NEW turns, never the prior conversation. So read
+        the ENTIRE restored transcript (from offset 0) and re-emit every historic
+        line through the SAME ``on_event`` path live turns use (``_emit_events``),
+        landing them in the listener's replay buffer; a late viewer then
+        reconstructs the full prior history exactly like live turns (the TS
+        reducer parses the identical raw shape).
+
+        This is history BACKFILL for the event buffer, NOT a completed turn: it
+        drives only the ``on_event`` side. The throwaway ``_TurnAccum`` collects
+        the coalesced answer that ``_emit_events`` tracks, but we discard it and
+        never emit ``on_message`` — a resume must not synthesise a phantom answer
+        turn. ``send()`` recomputes its offset from the current transcript size at
+        send time, so replaying the whole file here does NOT make the first new
+        turn re-emit this history. Safe when there is no prior conversation for
+        this cwd (no uuid → no transcript path, or a missing/empty file):
+        ``_read_new_events`` returns ``[]``, so this returns 0 without emitting.
+        Returns the number of events emitted."""
+        events = self._read_new_events(0)
+        if not events:
+            return 0
+        # Throwaway accum: _emit_events fans each raw line to on_event (what we
+        # want) and tracks a running answer on the accum — which we drop, so the
+        # backfill coalesces no on_message.
+        await self._emit_events(events, _TurnAccum(offset=0))
+        return len(events)
+
     def last_argv_contains(self, substring: str) -> bool:
         """True if the most recent turn's argv (space-joined) contains
         ``substring`` (test/debug helper)."""

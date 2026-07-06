@@ -500,6 +500,27 @@ async def run_antigravity_session(
             })
             ctx.report_progress(None, "Conversation UI is live")
 
+            # Resume history backfill: the restored workdir carries agy's PRIOR
+            # transcript, but the listener's replay buffer starts empty and only
+            # accumulates LIVE turns — a viewer attaching after resume would see
+            # none of the prior conversation. Now that ConversationListener above
+            # has subscribed to conversation.on_event (in its constructor), replay
+            # the whole restored transcript through the SAME on_event fan-out so
+            # every historic turn lands in the replay buffer; a late viewer then
+            # reconstructs the full history exactly like live turns. ORDERING is
+            # load-bearing: strictly AFTER the listener subscribes (else the
+            # buffer misses the history) and BEFORE the resume-notice send below
+            # (else that turn's new lines would be re-emitted by this whole-file
+            # replay). Gated on resuming — a fresh conversation has no prior
+            # transcript to backfill.
+            if resuming:
+                replayed = await conversation.replay_history()
+                if replayed:
+                    _LOG.info(
+                        "antigravity conversation resume: replayed %d prior events",
+                        replayed,
+                    )
+
         # Kickoff prompt as the first turn (unattended runs). On resume, push a
         # System: resume notice instead so the resumed conversation notices
         # promptly (resume.log stays the pull-based backstop).
