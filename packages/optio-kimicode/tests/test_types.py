@@ -127,6 +127,13 @@ def test_show_session_controls_requires_conversation_ui():
         )
 
 
+def test_native_spinner_requires_conversation_ui():
+    with pytest.raises(ValueError, match="native_spinner"):
+        KimiCodeTaskConfig(
+            consumer_instructions="x", mode="conversation", native_spinner=True
+        )
+
+
 def test_show_file_upload_requires_conversation_ui():
     with pytest.raises(ValueError, match="show_file_upload"):
         KimiCodeTaskConfig(

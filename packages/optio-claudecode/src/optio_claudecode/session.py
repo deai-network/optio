@@ -545,6 +545,7 @@ async def run_claudecode_session(
                 "toolVerbosity": config.tool_verbosity,
                 "thinkingVerbosity": config.thinking_verbosity,
                 "showSessionControls": config.show_session_controls,
+                "nativeSpinner": config.native_spinner,
                 "controls": [control.to_dict()],
                 "showFileUpload": config.show_file_upload,
                 "maxUploadBytes": config.max_upload_bytes,

@@ -228,6 +228,7 @@ async def test_conversation_ui_publishes_widget(shim_install_dir, task_root, mon
         assert wd.get("protocol") == "codex"
         assert wd.get("toolVerbosity") == "verbose"
         assert wd.get("showSessionControls") is True
+        assert wd.get("nativeSpinner") is False
         # The model picker is now the generic id="model" SessionControl.
         controls = wd.get("controls", [])
         model_ctrl = next((c for c in controls if c.get("id") == "model"), None)

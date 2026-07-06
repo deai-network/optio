@@ -5,6 +5,7 @@ import { initialChatState, reduceCursorEvent } from './events.js';
 import { type Attachment } from '../attachments.js';
 import { blobDownload } from '../FileDownloadContext.js';
 import { ConversationView } from '../ConversationView.js';
+import { NativeSpinner } from '../spinners/NativeSpinner.js';
 
 // Conversation view for cursor tasks: speaks ACP (JSON-RPC 2.0) through the
 // per-task conversation listener (SSE from `{widgetProxyUrl}events`), reduces
@@ -29,6 +30,7 @@ export function CursorView(props: WidgetProps) {
   const toolVerbosity = (wd.toolVerbosity ?? 'description-only') as
     'silent' | 'description-only' | 'verbose';
   const thinkingVerbosity = (wd.thinkingVerbosity ?? 'hidden') as 'hidden' | 'visible';
+  const nativeSpinner = Boolean(wd.nativeSpinner);
   // Seed the reducer with the engine-neutral session controls (the model
   // picker) from widgetData; live changes fold through the shared ACP reducer.
   const initialControls = (wd.controls ?? []) as SessionControl[];
@@ -115,6 +117,7 @@ export function CursorView(props: WidgetProps) {
       showFileUpload={showFileUpload}
       maxUploadBytes={maxUploadBytes}
       fileDownload={fileDownload}
+      nativeSpinner={nativeSpinner ? <NativeSpinner engine="cursor" /> : undefined}
       onSend={async (body, attachments) => {
         // With attachments, upload first, then bundle one System: notice per
         // stored file into the prompt so cursor reads them from the workdir

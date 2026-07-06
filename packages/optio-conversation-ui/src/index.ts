@@ -13,3 +13,5 @@ export { KimiCodeView } from './kimicode/KimiCodeView.js';
 export { initialChatState, foldControlUpdate } from './chat.js';
 export type { ChatItem, ChatState, SessionControl, ControlOption } from './chat.js';
 export { AnswerBlock } from './AnswerBlock.js';
+export { NativeSpinner } from './spinners/NativeSpinner.js';
+export type { SpinnerEngine } from './spinners/NativeSpinner.js';

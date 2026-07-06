@@ -213,6 +213,10 @@ class KimiCodeTaskConfig:
     # for the model, session/set_config_option for thinking/mode — no process
     # restart). Requires mode="conversation" and conversation_ui=True.
     show_session_controls: bool = False
+    # Replace the generic working-spinner with kimicode's on-brand native
+    # spinner in the conversation widget. Requires mode="conversation" and
+    # conversation_ui=True.
+    native_spinner: bool = False
     # Show the file-upload control. Uploaded bytes are written under
     # <workdir>/uploads and referenced to kimi via a System: path line so it
     # reads them with its own tools. Requires mode="conversation" and
@@ -305,6 +309,11 @@ class KimiCodeTaskConfig:
         if self.show_session_controls and not conv_ui:
             raise ValueError(
                 "KimiCodeTaskConfig: show_session_controls=True requires "
+                "mode='conversation' and conversation_ui=True."
+            )
+        if self.native_spinner and not conv_ui:
+            raise ValueError(
+                "KimiCodeTaskConfig: native_spinner=True requires "
                 "mode='conversation' and conversation_ui=True."
             )
         if self.show_file_upload and not conv_ui:

@@ -11,6 +11,7 @@ import {
 import { type Attachment, readAsDataUrl } from '../attachments.js';
 import { blobDownload } from '../FileDownloadContext.js';
 import { ConversationView } from '../ConversationView.js';
+import { NativeSpinner } from '../spinners/NativeSpinner.js';
 
 // Build the generic model SessionControl from opencode's provider catalog.
 // opencode's provider options are GROUPED per provider; the engine-neutral
@@ -79,6 +80,7 @@ function OpencodeChat(
   const showFileUpload = Boolean((props.process.widgetData as any)?.showFileUpload);
   const maxUploadBytes = Number((props.process.widgetData as any)?.maxUploadBytes ?? 10_000_000);
   const fileDownload = Boolean((props.process.widgetData as any)?.fileDownload);
+  const nativeSpinner = Boolean((props.process.widgetData as any)?.nativeSpinner);
   // opencode routes resolve their project instance from the request's
   // location context — every session-scoped call carries ?directory=.
   const q = `?directory=${encodeURIComponent(directory)}`;
@@ -255,6 +257,7 @@ function OpencodeChat(
       showFileUpload={showFileUpload}
       maxUploadBytes={maxUploadBytes}
       fileDownload={fileDownload}
+      nativeSpinner={nativeSpinner ? <NativeSpinner engine="opencode" /> : undefined}
       onSend={onSend}
       onInterrupt={onInterrupt}
       onPermission={onPermission}

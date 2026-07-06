@@ -25,6 +25,10 @@ export interface ConversationViewProps {
   showFileUpload: boolean;
   maxUploadBytes: number;
   fileDownload: boolean;
+  // On-brand "working" indicator, supplied by the engine view when the task
+  // sets the native_spinner option (conversation mode only). When absent, the
+  // generic antd <Spin> is used. The view passes its engine's NativeSpinner.
+  nativeSpinner?: React.ReactNode;
   onSend: (text: string, attachments: Attachment[]) => Promise<boolean>; // returns ok
   onInterrupt: () => void;
   onPermission: (requestId: string, behavior: 'allow' | 'deny') => void;
@@ -233,6 +237,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     showFileUpload,
     maxUploadBytes,
     fileDownload,
+    nativeSpinner,
     onSend,
     onInterrupt,
     onPermission,
@@ -625,7 +630,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               maxWidth: wide ? '100%' : 880, margin: '0 auto', width: '100%',
               display: 'flex', alignItems: 'center', gap: 8, color: token.colorTextTertiary,
             }}>
-              <Spin size="small" /> working…
+              {nativeSpinner ?? <Spin size="small" />} working…
             </div>
           )}
         </div>

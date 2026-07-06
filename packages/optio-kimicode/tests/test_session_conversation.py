@@ -378,6 +378,7 @@ async def test_conversation_ui_widget_data_defaults_when_ungated(
 
         wd = await _wait_widget_data(optio, "kk-conv-wd-def")
         assert wd["showSessionControls"] is False
+        assert wd["nativeSpinner"] is False
         assert wd["showFileUpload"] is False
         assert wd["fileDownload"] is False
         assert wd["toolVerbosity"] == "description-only"

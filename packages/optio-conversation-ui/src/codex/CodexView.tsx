@@ -5,6 +5,7 @@ import { initialChatState, reduceCodexEvent } from './events.js';
 import { type Attachment } from '../attachments.js';
 import { blobDownload } from '../FileDownloadContext.js';
 import { ConversationView } from '../ConversationView.js';
+import { NativeSpinner } from '../spinners/NativeSpinner.js';
 
 // Conversation view for codex tasks: speaks the codex app-server stream
 // (JSON-RPC 2.0 over stdio, threads/turns/items) through the per-task
@@ -30,6 +31,7 @@ export function CodexView(props: WidgetProps) {
   const toolVerbosity = (wd.toolVerbosity ?? 'description-only') as
     'silent' | 'description-only' | 'verbose';
   const thinkingVerbosity = (wd.thinkingVerbosity ?? 'hidden') as 'hidden' | 'visible';
+  const nativeSpinner = Boolean(wd.nativeSpinner);
   // Seed the reducer's controls from widgetData (the id="model" SessionControl
   // codex emits); live value changes fold in via x-optio-control-update.
   const initialControls = (wd.controls ?? []) as SessionControl[];
@@ -114,6 +116,7 @@ export function CodexView(props: WidgetProps) {
       showFileUpload={showFileUpload}
       maxUploadBytes={maxUploadBytes}
       fileDownload={fileDownload}
+      nativeSpinner={nativeSpinner ? <NativeSpinner engine="codex" /> : undefined}
       onSend={async (body, attachments) => {
         // With attachments, upload first, then bundle one System: notice per
         // stored file into the prompt so codex reads them from the workdir with

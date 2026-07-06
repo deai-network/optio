@@ -5,6 +5,7 @@ import { initialChatState, reduceGrokEvent } from './events.js';
 import { type Attachment } from '../attachments.js';
 import { blobDownload } from '../FileDownloadContext.js';
 import { ConversationView } from '../ConversationView.js';
+import { NativeSpinner } from '../spinners/NativeSpinner.js';
 
 // Conversation view for grok tasks: speaks Grok's ACP (JSON-RPC 2.0) stream
 // through the per-task conversation listener (SSE from `{widgetProxyUrl}events`),
@@ -28,6 +29,7 @@ export function GrokView(props: WidgetProps) {
   const toolVerbosity = (wd.toolVerbosity ?? 'description-only') as
     'silent' | 'description-only' | 'verbose';
   const thinkingVerbosity = (wd.thinkingVerbosity ?? 'hidden') as 'hidden' | 'visible';
+  const nativeSpinner = Boolean(wd.nativeSpinner);
   // Seed the reducer's controls from widgetData so the session-controls bar
   // renders the model selector from the first paint; live updates fold in via
   // the shared ACP reducer's x-optio-control-update case.
@@ -111,6 +113,7 @@ export function GrokView(props: WidgetProps) {
       busy={busy}
       toolVerbosity={toolVerbosity}
       thinkingVerbosity={thinkingVerbosity}
+      nativeSpinner={nativeSpinner ? <NativeSpinner engine="grok" /> : undefined}
       showFileUpload={showFileUpload}
       maxUploadBytes={maxUploadBytes}
       fileDownload={fileDownload}

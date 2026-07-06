@@ -48,6 +48,19 @@ def test_show_session_controls_ok_in_conversation_ui():
     assert cfg.show_session_controls is True
 
 
+def test_native_spinner_requires_conversation_ui():
+    # A valid conversation permission setup (permission_gate=True) gets us past
+    # the unrelated conversation-mode validation so the native_spinner check is
+    # the one that fires.
+    with pytest.raises(ValueError, match="native_spinner"):
+        _cfg(
+            mode="conversation",
+            permission_gate=True,
+            conversation_ui=False,
+            native_spinner=True,
+        )
+
+
 def test_parse_models_maps_id_and_label():
     out = parse_models({"data": [
         {"id": "claude-opus-4-8", "display_name": "Claude Opus 4.8"},

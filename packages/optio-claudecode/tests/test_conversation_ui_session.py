@@ -250,6 +250,7 @@ async def test_conversation_ui_session_lifecycle(
             "toolVerbosity": "description-only",
             "thinkingVerbosity": "hidden",
             "showSessionControls": False,
+            "nativeSpinner": False,
             "controls": [
                 {
                     "id": "model",
@@ -257,6 +258,7 @@ async def test_conversation_ui_session_lifecycle(
                     "label": "Model",
                     "category": "model",
                     "value": "",
+                    "disabled": False,
                     "options": [
                         {"value": "claude-opus-4-8", "label": "Claude Opus 4.8", "disabled": False},
                         {"value": "claude-sonnet-4-6", "label": "Claude Sonnet 4.6", "disabled": False},

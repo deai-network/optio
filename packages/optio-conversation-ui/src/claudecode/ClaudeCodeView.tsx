@@ -5,6 +5,7 @@ import { initialChatState, reduceEvent } from './events.js';
 import { type Attachment } from '../attachments.js';
 import { blobDownload } from '../FileDownloadContext.js';
 import { ConversationView } from '../ConversationView.js';
+import { NativeSpinner } from '../spinners/NativeSpinner.js';
 
 interface ChatAction {
   ev: unknown;
@@ -27,6 +28,7 @@ export function ClaudeCodeView(props: WidgetProps) {
   const showFileUpload = Boolean((props.process.widgetData as any)?.showFileUpload);
   const maxUploadBytes = Number((props.process.widgetData as any)?.maxUploadBytes ?? 10_000_000);
   const fileDownload = Boolean((props.process.widgetData as any)?.fileDownload);
+  const nativeSpinner = Boolean((props.process.widgetData as any)?.nativeSpinner);
 
   const { widgetProxyUrl } = props; // ends with '/' — trailing slash is load-bearing
 
@@ -104,6 +106,7 @@ export function ClaudeCodeView(props: WidgetProps) {
       showFileUpload={showFileUpload}
       maxUploadBytes={maxUploadBytes}
       fileDownload={fileDownload}
+      nativeSpinner={nativeSpinner ? <NativeSpinner engine="claudecode" /> : undefined}
       onSend={async (body, attachments) => {
         // When files are attached, upload them first, then bundle one `System:`
         // notice line per stored file into the prompt so the agent can Read them

@@ -144,6 +144,10 @@ class OpencodeTaskConfig:
     # Show the model picker in the conversation widget. Requires
     # conversation_ui=True.
     show_session_controls: bool = False
+    # Replace the generic working-spinner with opencode's on-brand native
+    # spinner in the conversation widget. Requires mode='conversation' and
+    # conversation_ui=True.
+    native_spinner: bool = False
     # Show the file-attach control in the conversation widget. Requires
     # conversation_ui=True. Files ride inline as data-URL `file` parts.
     show_file_upload: bool = False
@@ -184,6 +188,11 @@ class OpencodeTaskConfig:
             raise ValueError(
                 "OpencodeTaskConfig: show_session_controls=True requires "
                 "conversation_ui=True."
+            )
+        if self.native_spinner and not self.conversation_ui:
+            raise ValueError(
+                "OpencodeTaskConfig: native_spinner=True requires "
+                "mode='conversation' and conversation_ui=True."
             )
         if self.show_file_upload and not self.conversation_ui:
             raise ValueError(

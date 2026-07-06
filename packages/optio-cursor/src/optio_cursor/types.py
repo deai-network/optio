@@ -218,6 +218,10 @@ class CursorTaskConfig:
     # runtime-unverified, see models.py) — no process restart. Requires
     # mode="conversation" and conversation_ui=True.
     show_session_controls: bool = False
+    # Replace the generic working-spinner with cursor's on-brand native spinner
+    # in the conversation widget. Requires mode='conversation' and
+    # conversation_ui=True.
+    native_spinner: bool = False
     # Show the file-upload control. Uploaded bytes are written under
     # <workdir>/uploads and referenced to cursor via a System: path line so it
     # reads them with its own tools (headless cursor has no inline ingest).
@@ -282,6 +286,11 @@ class CursorTaskConfig:
         if self.show_session_controls and not conv_ui:
             raise ValueError(
                 "CursorTaskConfig: show_session_controls=True requires "
+                "mode='conversation' and conversation_ui=True."
+            )
+        if self.native_spinner and not conv_ui:
+            raise ValueError(
+                "CursorTaskConfig: native_spinner=True requires "
                 "mode='conversation' and conversation_ui=True."
             )
         if self.show_file_upload and not conv_ui:

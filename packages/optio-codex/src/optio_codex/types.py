@@ -195,6 +195,10 @@ class CodexTaskConfig:
     # Codex switches the model INLINE: the chosen model rides the next
     # turn/start and sticks — no process restart.
     show_session_controls: bool = False
+    # Replace the generic working-spinner with codex's on-brand native
+    # spinner in the conversation widget. Requires mode="conversation" and
+    # conversation_ui=True.
+    native_spinner: bool = False
     # Show the file-upload control. Uploaded bytes land under
     # <workdir>/uploads and are referenced to codex via a System: path line.
     show_file_upload: bool = False
@@ -267,6 +271,11 @@ class CodexTaskConfig:
         if self.show_session_controls and not conv_ui:
             raise ValueError(
                 "CodexTaskConfig: show_session_controls=True requires "
+                "mode='conversation' and conversation_ui=True."
+            )
+        if self.native_spinner and not conv_ui:
+            raise ValueError(
+                "CodexTaskConfig: native_spinner=True requires "
                 "mode='conversation' and conversation_ui=True."
             )
         if self.show_file_upload and not conv_ui:

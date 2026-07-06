@@ -5,6 +5,7 @@ import { initialChatState, reduceKimiCodeEvent } from './events.js';
 import { type Attachment } from '../attachments.js';
 import { blobDownload } from '../FileDownloadContext.js';
 import { ConversationView } from '../ConversationView.js';
+import { NativeSpinner } from '../spinners/NativeSpinner.js';
 
 // Conversation view for kimi tasks: speaks kimi's ACP (JSON-RPC 2.0) stream
 // through the per-task conversation listener (SSE from `{widgetProxyUrl}events`),
@@ -31,6 +32,7 @@ export function KimiCodeView(props: WidgetProps) {
   const toolVerbosity = (wd.toolVerbosity ?? 'description-only') as
     'silent' | 'description-only' | 'verbose';
   const thinkingVerbosity = (wd.thinkingVerbosity ?? 'hidden') as 'hidden' | 'visible';
+  const nativeSpinner = Boolean(wd.nativeSpinner);
   // Seed the reducer's controls from widgetData so the engine-neutral
   // session-controls bar (model + thinking + mode) renders immediately, before
   // any live config_option_update arrives.
@@ -117,6 +119,7 @@ export function KimiCodeView(props: WidgetProps) {
       showFileUpload={showFileUpload}
       maxUploadBytes={maxUploadBytes}
       fileDownload={fileDownload}
+      nativeSpinner={nativeSpinner ? <NativeSpinner engine="kimicode" /> : undefined}
       onSend={async (body, attachments) => {
         // With attachments, upload first, then bundle one System: notice per
         // stored file into the prompt so kimi reads them from the workdir with

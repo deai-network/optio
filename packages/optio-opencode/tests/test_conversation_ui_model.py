@@ -34,6 +34,16 @@ def test_show_session_controls_requires_conversation_ui():
         )
 
 
+def test_native_spinner_requires_conversation_ui():
+    with pytest.raises(ValueError, match="conversation_ui=True"):
+        OpencodeTaskConfig(
+            consumer_instructions="task",
+            mode="conversation",
+            conversation_ui=False,
+            native_spinner=True,
+        )
+
+
 def test_default_model_requires_conversation_ui():
     with pytest.raises(ValueError, match="conversation_ui=True"):
         OpencodeTaskConfig(
@@ -61,6 +71,7 @@ def test_widget_data_carries_model_fields():
         "toolVerbosity": "verbose",
         "thinkingVerbosity": "hidden",
         "showSessionControls": True,
+        "nativeSpinner": False,
         "defaultModel": "opencode/big-pickle",
         "showFileUpload": False,
         "maxUploadBytes": 10_000_000,
@@ -75,4 +86,5 @@ def test_widget_data_defaults():
     )
     wd = conversation_widget_data(cfg, session_id="s1", directory="/wd")
     assert wd["showSessionControls"] is False
+    assert wd["nativeSpinner"] is False
     assert wd["defaultModel"] is None

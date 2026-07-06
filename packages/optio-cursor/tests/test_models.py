@@ -158,6 +158,16 @@ def test_show_session_controls_ok_in_conversation_ui():
     assert cfg.show_session_controls is True
 
 
+def test_native_spinner_requires_conversation_ui():
+    with pytest.raises(ValueError, match="native_spinner"):
+        _cfg(mode="conversation", conversation_ui=False, native_spinner=True)
+
+
+def test_native_spinner_ok_in_conversation_ui():
+    cfg = _cfg(mode="conversation", conversation_ui=True, native_spinner=True)
+    assert cfg.native_spinner is True
+
+
 def test_default_model_requires_conversation_ui():
     with pytest.raises(ValueError, match="default_model"):
         _cfg(mode="conversation", conversation_ui=False, default_model="gpt-5")

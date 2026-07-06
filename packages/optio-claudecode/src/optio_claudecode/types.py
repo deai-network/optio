@@ -214,6 +214,10 @@ class ClaudeCodeTaskConfig:
     # conversation_ui=True. The default model is config.model (no separate
     # field).
     show_session_controls: bool = False
+    # Replace the generic working-spinner with claudecode's on-brand native
+    # spinner in the conversation widget. Requires mode="conversation" and
+    # conversation_ui=True.
+    native_spinner: bool = False
     # Show the file-upload control in the conversation widget. Requires
     # mode="conversation" and conversation_ui=True. Uploaded files are written
     # under <workdir>/uploads on the host; carried to the widget via widgetData.
@@ -304,6 +308,11 @@ class ClaudeCodeTaskConfig:
         if self.show_session_controls and not (self.mode == "conversation" and self.conversation_ui):
             raise ValueError(
                 "ClaudeCodeTaskConfig: show_session_controls=True requires "
+                "mode='conversation' and conversation_ui=True."
+            )
+        if self.native_spinner and not (self.mode == "conversation" and self.conversation_ui):
+            raise ValueError(
+                "ClaudeCodeTaskConfig: native_spinner=True requires "
                 "mode='conversation' and conversation_ui=True."
             )
         if self.show_file_upload and not (self.mode == "conversation" and self.conversation_ui):
