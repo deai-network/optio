@@ -203,3 +203,25 @@ def test_read_complete_events_leaves_partial_line_for_next_poll(tmp_path):
     events2, off2 = conv._read_complete_events(off)
     assert [e.get("type") for e in events2] == ["PLANNER_RESPONSE"]
     assert off2 == len((line1 + line2).encode())
+
+
+def test_resume_from_disk_adopts_prior_conversation(tmp_path):
+    # On resume the restored workdir carries last_conversations.json (cwd->uuid);
+    # resume_from_disk preloads it so the first turn CONTINUES via --conversation
+    # instead of minting a new conversation.
+    import json as _json
+    conv = AntigravityConversation(
+        host=None, agy_path="agy", cwd=str(tmp_path / "w"), home=str(tmp_path / "home"),
+    )
+    cache = pathlib.Path(conv._cache_path())
+    cache.parent.mkdir(parents=True)
+    cache.write_text(_json.dumps({conv._cwd: "restored-uuid"}))
+
+    assert conv.conversation_id is None
+    assert conv.resume_from_disk() == "restored-uuid"
+    assert conv.conversation_id == "restored-uuid"
+    # The next turn continues the restored conversation.
+    argv = conv._build_argv("hi")
+    j = argv.index("-p")
+    assert "--conversation" in argv and "restored-uuid" in argv
+    assert argv.index("--conversation") < j          # flag before -p (value semantics)

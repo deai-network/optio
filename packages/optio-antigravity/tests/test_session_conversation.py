@@ -363,3 +363,36 @@ def test_ui_widget_per_mode():
         config=AntigravityTaskConfig(consumer_instructions="x"),
     )
     assert iframe_task.ui_widget == "iframe-input"
+
+
+@pytest.mark.asyncio
+async def test_conversation_supports_resume_captures_snapshot(
+    shim_install_dir, task_root, mongo_db,
+):
+    """A conversation-mode task with supports_resume captures a snapshot on
+    teardown — its reached-live gate is a PUBLISHED conversation, not a ttyd
+    launched_handle (conversation mode has no persistent process) — so the
+    dashboard can mark it resumable (hasSavedState)."""
+    from optio_antigravity.snapshots import load_latest_snapshot
+    optio = await _make_optio(mongo_db, "agconvsnap")
+    try:
+        task = create_antigravity_task(
+            process_id="ag-conv-snap",
+            name="Conversation snapshot",
+            config=_conversation_config(shim_install_dir, supports_resume=True),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result(
+            "ag-conv-snap", session_id=None, timeout=60,
+        )
+        await conv.send("say hi")   # a turn writes the transcript into the workdir
+        await conv.close()
+        proc = await _wait_terminal(optio, "ag-conv-snap")
+        assert proc["status"]["state"] == "done"
+        # Reached-live via the published conversation → a snapshot was captured.
+        snap = await load_latest_snapshot(mongo_db, "agconvsnap", "ag-conv-snap")
+        assert snap is not None, "conversation-mode session captured no snapshot"
+        fresh = await mongo_db["agconvsnap_processes"].find_one({"processId": "ag-conv-snap"})
+        assert fresh["hasSavedState"] is True
+    finally:
+        await optio.shutdown(grace_seconds=1.0)

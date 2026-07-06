@@ -327,6 +327,19 @@ class AntigravityConversation:
     def conversation_id(self) -> str | None:
         return self._conversation_id
 
+    def resume_from_disk(self) -> "str | None":
+        """Adopt the conversation the (restored) workdir already carries.
+
+        On resume the workdir tar restored agy's prior conversation
+        (``brain/<uuid>/`` + ``last_conversations.json`` keyed by this cwd), so
+        preload that uuid — the next ``send`` then continues it via
+        ``--conversation <uuid>`` instead of minting a fresh conversation. (Each
+        ``send`` recomputes ``pre_offset`` from the current transcript size, so a
+        resumed turn already streams only its NEW lines.) Returns the uuid (or
+        ``None`` if the restored state has no conversation for this cwd)."""
+        self._conversation_id = self._discover_conversation_id()
+        return self._conversation_id
+
     def last_argv_contains(self, substring: str) -> bool:
         """True if the most recent turn's argv (space-joined) contains
         ``substring`` (test/debug helper)."""

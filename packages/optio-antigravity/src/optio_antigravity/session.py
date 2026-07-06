@@ -412,6 +412,14 @@ async def run_antigravity_session(
             model=config.model,
             claustrum_wrap=claustrum_wrap,
         )
+        if resuming:
+            # Resume: the restored workdir already carries agy's prior
+            # conversation (brain/<uuid>/ + last_conversations.json). Adopt its
+            # uuid so the first turn continues it via --conversation instead of
+            # minting a fresh one.
+            resumed = conversation.resume_from_disk()
+            if resumed:
+                _LOG.info("antigravity conversation resume: continuing %s", resumed)
         ctx.publish_result(conversation)
         ctx.report_progress(None, "Antigravity conversation is live")
 
@@ -677,11 +685,18 @@ async def run_antigravity_session(
                     "seed capture failed; callback not fired, teardown continues",
                 )
 
-        # Reached-live gate: only capture if agy actually came up
-        # (launched_handle is assigned strictly after a successful ttyd/agy
-        # launch). An interrupt before launch leaves it None — skip capture so
-        # any prior good snapshot survives and hasSavedState is untouched.
-        if config.supports_resume and launched_handle is not None:
+        # Reached-live gate: only capture if the session actually came up. For
+        # the iframe surface that is ``launched_handle`` (assigned strictly after
+        # a successful ttyd/agy launch); conversation mode has NO persistent
+        # process (synthetic -p turns), so its reached-live signal is a published
+        # ``conversation``. An interrupt before either leaves both None — skip
+        # capture so any prior good snapshot survives and hasSavedState is
+        # untouched. The workdir tar carries agy's conversation state
+        # (home/.gemini/antigravity-cli/brain + last_conversations.json), which
+        # a resumed conversation adopts (AntigravityConversation.resume_from_disk).
+        if config.supports_resume and (
+            launched_handle is not None or conversation is not None
+        ):
             try:
                 await _capture_snapshot(
                     ctx, host,
