@@ -44,7 +44,11 @@ def _looks_logged_in() -> bool:
     return (_GEMINI_DIR / "antigravity-cli" / "settings.json").exists()
 
 
-pytestmark = pytest.mark.skipif(
+# The logged-in-session gate (real agy on PATH + a logged-in ~/.gemini). Applied
+# per-test rather than module-wide so the Stage-5 install gate below — which
+# needs the OPPOSITE (a network, NOT a pre-installed/logged-in agy) — can carry
+# its own, incompatible skip condition.
+_real_session_gate = pytest.mark.skipif(
     os.environ.get("OPTIO_ANTIGRAVITY_REAL_SESSION_TEST") != "1"
     or shutil.which("agy") is None
     or shutil.which("tmux") is None
@@ -53,7 +57,18 @@ pytestmark = pytest.mark.skipif(
     "agy+tmux on PATH, a logged-in ~/.gemini). Runs in Task S1 / Stage 10.",
 )
 
+# The Stage-5 Tier-2 install gate: exercises the real manifest+tarball+sha512
+# provisioning against the antigravity auto-updater host. Needs network but NO
+# Google login (install is unauthenticated), so it is opt-in on its own env flag
+# and deliberately does NOT require a pre-existing agy — that is the whole point.
+_real_install_gate = pytest.mark.skipif(
+    os.environ.get("OPTIO_ANTIGRAVITY_REAL_INSTALL_TEST") != "1",
+    reason="opt-in real Tier-2 install gate (network to the antigravity "
+    "auto-updater; no login needed). Runs in Stage 5 / Stage 10.",
+)
 
+
+@_real_session_gate
 @pytest.mark.asyncio
 async def test_iframe_reaches_done(ctx_and_captures, task_root):
     """Drive the real ``agy`` TUI (under ttyd) to agent-emitted ``DONE``.
@@ -93,6 +108,54 @@ async def test_iframe_reaches_done(ctx_and_captures, task_root):
     assert any("Antigravity is live" == m for _, m in captures.progress)
 
 
+@_real_install_gate
+@pytest.mark.asyncio
+async def test_bare_worker_installs(tmp_path):
+    """Stage 5 Tier-2: a bare worker with NO ``agy`` provisions one itself.
+
+    Points the cache at a fresh empty dir and forces the no-host-agy path, so
+    ``ensure_antigravity_installed`` must fetch the platform manifest, download
+    the tarball, SHA512-verify it, and extract a real ``antigravity`` binary that
+    passes the functional identity gate — proving the reproduced install.sh logic
+    works end-to-end against the real auto-updater. No login is touched.
+    """
+    import asyncio
+
+    from optio_host.host import LocalHost
+
+    from optio_antigravity import host_actions
+
+    host = LocalHost(taskdir=str(tmp_path / "task"))
+    await host.setup_workdir()
+    cache = tmp_path / "cache"
+
+    # Engine-free download over the host (no hook_ctx child task available here).
+    class _HostCtx:
+        def __init__(self, host):
+            self._host = host
+
+        def report_progress(self, percent, message=None):
+            pass
+
+        async def download_file(self, url, dest):
+            r = await host.run_command(
+                f"curl -fsSL {url!r} -o {dest!r}",
+            )
+            if r.exit_code != 0:
+                raise RuntimeError(f"curl failed: {r.stderr!r}")
+
+    await asyncio.wait_for(
+        host_actions._install_antigravity_into_cache(
+            _HostCtx(host), host,
+            cache_dir=str(cache), cached=str(cache / "agy"),
+        ),
+        timeout=180,
+    )
+    assert (cache / "agy").exists()
+    assert await host_actions._is_agy(host, str(cache / "agy"))
+
+
+@_real_session_gate
 @pytest.mark.asyncio
 async def test_resume_picks_up_prior(mongo_db, task_root):
     """A relaunch of a terminated real ``agy`` task resumes the prior workspace.

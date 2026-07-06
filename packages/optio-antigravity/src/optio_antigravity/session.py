@@ -131,6 +131,13 @@ async def run_antigravity_session(
             # (deterministic taskdir), so the workspace-keyed lookup matches.
             pass_continue = True
 
+        # Disable agy's background self-update for this task (best-effort settings
+        # key) on every launch path — fresh and resume alike — so the pinned
+        # cached binary is never fought by a background update or stalled on the
+        # updater probe. Runs after any resume restore so it re-asserts on the
+        # restored settings.json. TODO(S2): reconcile with the self-update spike.
+        await host_actions.disable_agy_self_update(host, host.workdir)
+
         await host.write_text(
             "AGENTS.md",
             compose_agents_md(

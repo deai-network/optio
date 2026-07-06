@@ -15,6 +15,7 @@ their own stages.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -57,6 +58,28 @@ _TTYD_RELEASE_BASE = (
 
 # ttyd installs into the worker home's ``.local/bin``.
 _DEFAULT_INSTALL_SUBDIR = ".local/bin"
+
+# The optio-owned agy binary cache lives on the WORKER, outside every task
+# workdir and never the operator's autoupdating ``~/.gemini``/``~/.local/bin``.
+# Default: ``${XDG_CACHE_HOME:-$HOME/.cache}/optio-antigravity/bin``;
+# ``ANTIGRAVITY_CACHE_DIR`` overrides. Resolved via a shell echo so RemoteHost
+# gets the remote location, and so the cache stays shared + evictable (never
+# snapshotted — it lives outside the workdir the resume tar captures).
+_ANTIGRAVITY_CACHE_DIR_SHELL_DEFAULT = (
+    "${ANTIGRAVITY_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/optio-antigravity/bin}"
+)
+
+# Antigravity's two-tier install source (Global Constraints / design §3). The
+# public install.sh downloads a per-platform manifest from the auto-updater
+# Cloud Run host, SHA512-verifies, and extracts a single Go binary named
+# ``antigravity`` which it installs as ``agy``. optio reproduces that logic
+# directly (manifest -> tarball -> sha512 -> extract) into the persistent cache.
+_ANTIGRAVITY_INSTALL_URL = "https://antigravity.google/cli/install.sh"
+_ANTIGRAVITY_UPDATER_BASE = (
+    "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app"
+)
+# The executable's name INSIDE the tarball (installed under the ``agy`` alias).
+_ANTIGRAVITY_TARBALL_BINARY = "antigravity"
 
 
 async def _resolve_install_dir(host: "Host", install_dir: str | None) -> str:
@@ -111,6 +134,262 @@ async def resolve_agy(
     )
 
 
+async def _resolve_antigravity_cache_dir(host: "Host", override: str | None) -> str:
+    """Resolve the optio-owned agy binary-cache dir as an absolute worker path.
+
+    ``override`` (``config.agy_install_dir``) wins. Otherwise the worker's real
+    env decides via a shell echo: ``ANTIGRAVITY_CACHE_DIR`` else
+    ``${XDG_CACHE_HOME:-$HOME/.cache}/optio-antigravity/bin`` — resolved on the
+    host so RemoteHost gets the remote location. Mirrors grok's
+    ``_resolve_grok_cache_dir``. The result lives OUTSIDE any task workdir, so
+    the binary it points at is never captured by the resume snapshot."""
+    if override is not None:
+        return override.rstrip("/")
+    r = await host.run_command(f'printf %s "{_ANTIGRAVITY_CACHE_DIR_SHELL_DEFAULT}"')
+    path = (r.stdout or "").strip()
+    if r.exit_code != 0 or not path:
+        raise RuntimeError(
+            f"failed to resolve agy cache dir on host "
+            f"(exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
+        )
+    return path.rstrip("/")
+
+
+async def _is_agy(host: "Host", path: str) -> bool:
+    """True iff the binary at ``path`` is functionally the Antigravity ``agy``.
+
+    A cache HIT (or a Tier-1 host binary) is adopted only after this functional
+    identity gate, so a name-colliding or poisoned binary is rejected rather than
+    launched (design §3: "verify identity functionally, not ``--version``
+    alone"). ``agy --help`` is local (no auth, no network), exits promptly, and
+    prints a banner naming the tool; a wrong binary neither matches nor is an
+    ``agy``. Bounded with ``timeout`` so a binary that HANGS on the probe is a
+    clean False rather than a hang. stderr is merged so version-dependent banner
+    routing does not matter.
+
+    TODO(S2): the real-binary spike may prefer a stronger probe (e.g. ``agy
+    models`` returning the sign-in error string vs. "unknown command"); revisit
+    once the real ``agy`` help/subcommand output is captured."""
+    probe = await host.run_command(
+        f"timeout 10 {shlex.quote(path)} --help 2>&1 || true"
+    )
+    blob = ((probe.stdout or "") + (probe.stderr or "")).lower()
+    return "antigravity" in blob or "agy" in blob
+
+
+def _manifest_url(platform: str) -> str:
+    """The per-platform manifest URL on the auto-updater host."""
+    return f"{_ANTIGRAVITY_UPDATER_BASE}/manifests/{platform}.json"
+
+
+async def _antigravity_platform(host: "Host") -> str:
+    """Return the updater manifest's platform slug for the host's OS/arch.
+
+    TODO(S2): reconcile with the real ``install.sh``. The exact slug strings the
+    manifest host serves were not captured in the profiling spike; this uses the
+    conventional Go ``GOOS-GOARCH`` shape (the binary is a Go executable). The
+    Stage-5 spike / first real fetch pins the authoritative mapping."""
+    r_os = await host.run_command("uname -s")
+    r_arch = await host.run_command("uname -m")
+    if r_os.exit_code != 0 or r_arch.exit_code != 0:
+        raise RuntimeError(
+            f"uname failed on host (os exit {r_os.exit_code}, arch exit "
+            f"{r_arch.exit_code}) — cannot resolve the agy manifest platform."
+        )
+    os_name = r_os.stdout.strip().lower()
+    arch = r_arch.stdout.strip()
+    goos = {"linux": "linux", "darwin": "darwin"}.get(os_name)
+    goarch = {
+        "x86_64": "amd64", "amd64": "amd64",
+        "aarch64": "arm64", "arm64": "arm64",
+    }.get(arch)
+    if goos is None or goarch is None:
+        raise RuntimeError(
+            f"unsupported host platform for agy auto-install "
+            f"(uname -s={os_name!r}, uname -m={arch!r})."
+        )
+    return f"{goos}-{goarch}"
+
+
+async def _install_antigravity_into_cache(
+    hook_ctx: "HookContextProtocol",
+    host: "Host",
+    *,
+    cache_dir: str,
+    cached: str,
+) -> None:
+    """Tier-2 vendor install: fetch the platform manifest, download the tarball,
+    SHA512-verify it, extract the ``antigravity`` binary into ``<cached>``.
+
+    Reproduces ``install.sh``'s logic directly (manifest → tarball → sha512 →
+    extract) rather than piping a remote script to a shell, so the pinned binary
+    is verified and lands in the persistent cache OUTSIDE any workdir. Fetches go
+    through ``hook_ctx.download_file`` (a child download task with byte-progress
+    in the dashboard). Cleans up the tempdir in ``finally``; raises (leaving no
+    ``<cached>``) on any manifest/checksum/extract failure."""
+    platform = await _antigravity_platform(host)
+    manifest_url = _manifest_url(platform)
+
+    r = await host.run_command("mktemp -d -t optio-antigravity-XXXXXX")
+    if r.exit_code != 0:
+        raise RuntimeError(
+            f"mktemp -d failed (exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
+        )
+    tmpdir = r.stdout.strip()
+    try:
+        hook_ctx.report_progress(None, "Fetching Antigravity manifest…")
+        manifest_dest = f"{tmpdir}/manifest.json"
+        await hook_ctx.download_file(manifest_url, manifest_dest)
+        raw = (await host.fetch_bytes_from_host(manifest_dest)).decode("utf-8")
+        try:
+            manifest = json.loads(raw)
+            version = manifest["version"]
+            url = manifest["url"]
+            expected_sha = str(manifest["sha512"]).strip().lower()
+        except (ValueError, KeyError) as exc:
+            raise RuntimeError(
+                f"agy manifest at {manifest_url!r} is malformed "
+                f"({exc!r}): {raw[:200]!r}"
+            ) from exc
+
+        hook_ctx.report_progress(None, f"Downloading Antigravity {version}…")
+        tarball = f"{tmpdir}/antigravity.tar.gz"
+        await hook_ctx.download_file(url, tarball)
+
+        # SHA512-verify the downloaded tarball against the manifest before trust.
+        sha_r = await host.run_command(f"sha512sum {shlex.quote(tarball)}")
+        if sha_r.exit_code != 0:
+            raise RuntimeError(
+                f"sha512sum failed (exit {sha_r.exit_code}): "
+                f"{(sha_r.stderr or '').strip()[:200]}"
+            )
+        actual_sha = (sha_r.stdout or "").split()[0].strip().lower()
+        if actual_sha != expected_sha:
+            raise RuntimeError(
+                f"agy tarball SHA512 mismatch (manifest {expected_sha!r} != "
+                f"downloaded {actual_sha!r}) — refusing to install {url!r}."
+            )
+
+        # Extract and locate the ``antigravity`` binary (installed as ``agy``).
+        ex = await host.run_command(
+            f"tar -xzf {shlex.quote(tarball)} -C {shlex.quote(tmpdir)}"
+        )
+        if ex.exit_code != 0:
+            raise RuntimeError(
+                f"extracting agy tarball failed (exit {ex.exit_code}): "
+                f"{(ex.stderr or '').strip()[:200]}"
+            )
+        find = await host.run_command(
+            f"find {shlex.quote(tmpdir)} -type f -name "
+            f"{shlex.quote(_ANTIGRAVITY_TARBALL_BINARY)} | head -1"
+        )
+        src = (find.stdout or "").strip()
+        if not src:
+            raise RuntimeError(
+                f"agy tarball {url!r} did not contain a "
+                f"{_ANTIGRAVITY_TARBALL_BINARY!r} binary."
+            )
+        mk = await host.run_command(f"mkdir -p {shlex.quote(cache_dir)}")
+        if mk.exit_code != 0:
+            raise RuntimeError(
+                f"mkdir -p {cache_dir!r} failed (exit {mk.exit_code}): "
+                f"{(mk.stderr or '').strip()[:200]}"
+            )
+        mv = await host.run_command(
+            f"mv -f {shlex.quote(src)} {shlex.quote(cached)} && "
+            f"chmod +x {shlex.quote(cached)}"
+        )
+        if mv.exit_code != 0:
+            raise RuntimeError(
+                f"installing agy into cache ({src!r} -> {cached!r}) failed "
+                f"(exit {mv.exit_code}): {(mv.stderr or '').strip()[:200]}"
+            )
+        if not await _is_agy(host, cached):
+            await host.run_command(f"rm -f {shlex.quote(cached)}")
+            raise RuntimeError(
+                f"agy Tier-2 install completed but {cached!r} failed the "
+                f"functional identity check (not an agy). Cache left empty."
+            )
+        _LOG.info(
+            "ensure_antigravity_installed: Tier-2 vendor-installed %s (%s)",
+            cached, version,
+        )
+    finally:
+        # Best-effort cleanup; don't mask a primary exception.
+        await host.run_command(f"rm -rf {shlex.quote(tmpdir)}")
+
+
+async def _populate_antigravity_cache(
+    hook_ctx: "HookContextProtocol",
+    host: "Host",
+    *,
+    cache_dir: str,
+    cached: str,
+) -> None:
+    """Fill an empty/poisoned cache: prefer seeding from a pre-existing host
+    ``agy`` (Tier-1, fast, no download); fall back to the Tier-2 vendor install
+    (manifest+tarball) when the worker has none. Leaves a functional
+    ``<cache_dir>/agy`` on success; raises otherwise."""
+    # Tier-1 — an agy already on the worker (login-shell PATH), functionally
+    # validated so a name-colliding binary is never seeded.
+    source: "str | None"
+    try:
+        source = await resolve_agy(host, install_dir=None, install_if_missing=False)
+    except RuntimeError:
+        source = None
+    if source is not None and not await _is_agy(host, source):
+        source = None
+
+    if source is None:
+        await _install_antigravity_into_cache(
+            hook_ctx, host, cache_dir=cache_dir, cached=cached,
+        )
+        return
+
+    hook_ctx.report_progress(None, "Seeding Antigravity cache…")
+    # ``-L`` dereferences: a symlinked host agy becomes a real, stable copy in
+    # the cache (independent of the host binary the operator may autoupdate).
+    r = await host.run_command(
+        f"mkdir -p {shlex.quote(cache_dir)} && "
+        f"cp -L {shlex.quote(source)} {shlex.quote(cached)} && "
+        f"chmod +x {shlex.quote(cached)}"
+    )
+    if r.exit_code != 0:
+        raise RuntimeError(
+            f"seeding agy cache (cp {source!r} -> {cached!r}) failed "
+            f"(exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
+        )
+    if not await _is_agy(host, cached):
+        raise RuntimeError(
+            f"agy cache seed from {source!r} produced a non-functional "
+            f"{cached!r} (identity check failed)."
+        )
+    _LOG.info("ensure_antigravity_installed: Tier-1 seeded from host %s", source)
+
+
+async def _link_antigravity_into_task(host: "Host", cached: str) -> str:
+    """Symlink the cached agy binary into the task's isolated home launch dir.
+
+    The cache lives OUTSIDE the workdir (persists across task teardown); the
+    launch path ``<workdir>/home/.local/bin/agy`` is a per-task symlink to it,
+    ahead on the launch PATH (:func:`build_launch_env`). Returns that task path.
+    ``ln -sfn`` is idempotent — a resume re-call just refreshes the symlink on the
+    restored tree. Mirrors grok's ``_link_grok_into_task``."""
+    workdir = host.workdir.rstrip("/")
+    bin_dir = f"{workdir}/home/.local/bin"
+    task_agy = f"{bin_dir}/agy"
+    r = await host.run_command(
+        f"mkdir -p {shlex.quote(bin_dir)} && "
+        f"ln -sfn {shlex.quote(cached)} {shlex.quote(task_agy)}"
+    )
+    if r.exit_code != 0:
+        raise RuntimeError(
+            f"linking agy into the task path ({task_agy!r} -> {cached!r}) "
+            f"failed (exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
+        )
+    return task_agy
+
+
 async def ensure_antigravity_installed(
     hook_ctx: "HookContextProtocol",
     *,
@@ -118,20 +397,61 @@ async def ensure_antigravity_installed(
     install_dir: str | None = None,
     progress_label: str = "Preparing Antigravity…",
 ) -> str:
-    """Provision ``agy`` for this task and return its launch path.
+    """Provision ``agy`` for this task from the optio-owned binary cache and
+    return its per-task launch path.
 
-    Stage-0 stub: resolves an ``agy`` already on the worker (Tier-1 — an
-    operator/CI-installed binary at ``install_dir`` or on the login-shell PATH)
-    and returns it. The real two-tier evictable cache with vendor auto-install
-    (Tier-2, the ``https://antigravity.google/cli/install.sh`` manifest+tarball
-    path with self-update disabled) lands in Stage 5, which replaces this
-    resolver body. Uses only generic Host primitives.
+    The cache dir (:func:`_resolve_antigravity_cache_dir`) lives on the worker
+    OUTSIDE any task workdir and never the operator's autoupdating ``~/.gemini``
+    — so it stays shared, evictable, and unsnapshotted (it survives task
+    teardown). The cache is the single stable home of the binary; the value
+    RETURNED is the per-task launch symlink ``<workdir>/home/.local/bin/agy``,
+    ahead on the launch PATH (mirrors grok's ``home/.local/bin/grok``).
+
+    Cache population (only on a miss/poison, and only when ``install_if_missing``):
+
+    - **Tier-1 seed** — an ``agy`` already on the worker (login-shell PATH) that
+      passes the functional identity gate is copied (deref) into the cache.
+    - **Tier-2 vendor install** — otherwise fetch the platform manifest + tarball
+      from the auto-updater host, SHA512-verify, and extract the ``antigravity``
+      binary into the cache.
+
+    A cache HIT is adopted only after :func:`_is_agy` (functional identity), so a
+    poisoned/name-colliding cached binary is invalidated and repopulated. Uses
+    only generic Host primitives. Idempotent on a re-call (hit → it just re-links
+    the task path), which is how resume re-establishes the launch symlink after
+    ``restore_workdir`` wipes it. Raises only when the cache needs populating AND
+    ``install_if_missing=False``.
     """
     host = hook_ctx._host
     hook_ctx.report_progress(None, progress_label)
-    return await resolve_agy(
-        host, install_dir=install_dir, install_if_missing=install_if_missing,
+
+    cache_dir = await _resolve_antigravity_cache_dir(host, install_dir)
+    cached = f"{cache_dir}/agy"
+
+    probe = await host.run_command(
+        f"[ -x {shlex.quote(cached)} ] && echo OK || true"
     )
+    executable = "OK" in (probe.stdout or "")
+    if executable and await _is_agy(host, cached):
+        _LOG.info("ensure_antigravity_installed: cache HIT (%s)", cached)
+    elif not install_if_missing:
+        raise RuntimeError(
+            f"agy not present (or not functional) in cache at {cached!r} and "
+            f"install_if_missing=False; nothing to do."
+        )
+    else:
+        if executable:
+            # Poisoned: an executable that is NOT an agy — evict before refill.
+            _LOG.warning(
+                "ensure_antigravity_installed: poisoned cache at %s "
+                "(fails identity check) — invalidating", cached,
+            )
+            await host.run_command(f"rm -f {shlex.quote(cached)}")
+        await _populate_antigravity_cache(
+            hook_ctx, host, cache_dir=cache_dir, cached=cached,
+        )
+
+    return await _link_antigravity_into_task(host, cached)
 
 
 def build_host(ssh, taskdir: str) -> "Host":
@@ -278,6 +598,89 @@ async def ensure_ttyd_installed(
 # --- launch env + DONE/ERROR wrapper ---------------------------------------
 
 
+def build_launch_env(
+    workdir: str, extra_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Full environment for an agy launch: the per-task isolation identity
+    (:func:`_isolation_env`) + ``PATH`` (the per-task ``home/.local/bin``
+    prepended ahead of the worker PATH) + caller extras.
+
+    Single source of truth for the launch environment across every launch path
+    so isolation is identical. ``PATH`` is layered here (not in the isolation
+    SSOT) so the per-task ``agy`` symlink resolves first. A caller ``extra_env``
+    ``PATH`` becomes the BASE the per-task bin is prepended to; all other extras
+    override the isolation defaults.
+
+    Self-update disable is NOT an env value here: the confirmed mechanism is the
+    ``settings.json`` ``AutoUpdate:false`` key written by
+    :func:`disable_agy_self_update` on every launch path. TODO(S2): the
+    self-update-disable spike may surface an env flag — it would be added to this
+    map so it, too, applies uniformly across launch paths."""
+    iso = _isolation_env(workdir.rstrip("/"))
+    home_local_bin = f"{iso['HOME']}/.local/bin"
+    extra = dict(extra_env or {})
+    base_path = extra.pop("PATH", None) or os.environ.get(
+        "PATH", "/usr/local/bin:/usr/bin:/bin",
+    )
+    return {
+        **iso,
+        "PATH": f"{home_local_bin}:{base_path}",
+        **extra,
+    }
+
+
+async def disable_agy_self_update(host: "Host", workdir: str) -> None:
+    """Best-effort disable of agy's background self-update for this task.
+
+    Writes ``AutoUpdate:false`` into the task's isolated
+    ``<workdir>/home/.gemini/antigravity-cli/settings.json`` as a parsed-JSON
+    mutation (never a blind append — config-injection discipline): the existing
+    document is loaded, the key set, and the whole document re-serialized so
+    other settings (model, color scheme, trusted paths) are preserved. A managed
+    wrapper pins the binary itself (Tier-1/Tier-2 cache), so a background
+    self-update would fight our version control and can stall a launch on a
+    network probe.
+
+    A missing settings file is created; a corrupt one is reset to a minimal
+    ``{AutoUpdate:false}`` (agy rewrites its own settings on start anyway).
+    Host-primitive only (uniform Local/Remote). Called on EVERY launch path.
+
+    TODO(S2): reconcile with the self-update-disable spike. ``AutoUpdate`` is the
+    design's leading candidate (§3) but is not yet empirically confirmed to fully
+    suppress the updater probe; the spike may add an env flag or endpoint block."""
+    home = f"{workdir.rstrip('/')}/home"
+    settings_dir = f"{home}/.gemini/antigravity-cli"
+    settings = f"{settings_dir}/settings.json"
+
+    try:
+        raw = (await host.fetch_bytes_from_host(settings)).decode("utf-8")
+    except FileNotFoundError:
+        raw = ""
+    doc: dict[str, object] = {}
+    if raw.strip():
+        try:
+            loaded = json.loads(raw)
+            if isinstance(loaded, dict):
+                doc = loaded
+        except ValueError:
+            _LOG.warning(
+                "disable_agy_self_update: settings.json at %s is not valid JSON "
+                "— resetting to {AutoUpdate:false}", settings,
+            )
+    doc["AutoUpdate"] = False  # TODO(S2): confirm this suppresses the updater.
+
+    payload = json.dumps(doc, indent=2)
+    r = await host.run_command(
+        f"mkdir -p {shlex.quote(settings_dir)} && "
+        f"printf '%s' {shlex.quote(payload)} > {shlex.quote(settings)}"
+    )
+    if r.exit_code != 0:
+        raise RuntimeError(
+            f"writing agy settings.json (AutoUpdate:false) failed "
+            f"(exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
+        )
+
+
 def _build_agy_shell_command(
     *,
     agy_path: str,
@@ -288,30 +691,15 @@ def _build_agy_shell_command(
     """Return (env_assignments, shell_command).
 
     ``env_assignments`` is the list of ``KEY=VALUE`` strings (HOME, PATH, XDG_*,
-    extras). ``shell_command`` is the full ``env <assignments> bash -c <payload>``
-    string that runs agy under HOME-isolation and appends DONE/ERROR to optio.log
-    when agy exits. Consumed by build_tmux_session_argv (agy runs inside the
-    detached tmux session, not as a direct ttyd child).
+    extras) from :func:`build_launch_env` — the launch-env SSOT. ``shell_command``
+    is the full ``env <assignments> bash -c <payload>`` string that runs agy under
+    HOME-isolation and appends DONE/ERROR to optio.log when agy exits. Consumed by
+    build_tmux_session_argv (agy runs inside the detached tmux session, not as a
+    direct ttyd child).
     """
     workdir_clean = workdir.rstrip("/")
-    iso = _isolation_env(workdir_clean)
-    home_dir = iso["HOME"]
-    home_local_bin = f"{home_dir}/.local/bin"
-
-    extra = dict(extra_env or {})
-    base_path = extra.pop("PATH", None) or os.environ.get(
-        "PATH", "/usr/local/bin:/usr/bin:/bin",
-    )
-    # HOME + PATH first (PATH prepends the per-task .local/bin), then the rest of
-    # the isolation identity (XDG_*) from the SSOT.
-    env_map = {
-        "HOME": home_dir,
-        "PATH": f"{home_local_bin}:{base_path}",
-        **{k: v for k, v in iso.items() if k != "HOME"},
-    }
+    env_map = build_launch_env(workdir_clean, extra_env)
     env_assignments: list[str] = [f"{k}={v}" for k, v in env_map.items()]
-    for k, v in extra.items():
-        env_assignments.append(f"{k}={v}")
 
     agy_argv = " ".join(shlex.quote(c) for c in [agy_path, *agy_flags])
     log_path = f"{workdir_clean}/optio.log"
