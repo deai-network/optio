@@ -30,7 +30,7 @@ from optio_agents.session_controls import model_control
 from optio_host.host import Host, LocalHost, ProcessHandle
 from optio_host.paths import task_dir
 
-from optio_antigravity import cred_watcher, host_actions
+from optio_antigravity import auth_scrape, cred_watcher, host_actions
 from optio_antigravity import models as antigravity_models
 from optio_antigravity.conversation import AntigravityConversation
 from optio_antigravity.conversation_listener import ConversationListener
@@ -116,6 +116,7 @@ async def run_antigravity_session(
     lease_holder: str | None = None
     cred_baseline: str | None = None
     cred_watch_task: "asyncio.Task | None" = None
+    auth_scrape_task: "asyncio.Task | None" = None
 
     await host.connect()
 
@@ -240,7 +241,7 @@ async def run_antigravity_session(
 
     async def _agy_body(host: Host, hook_ctx: HookContext) -> None:
         nonlocal launched_handle, tmux_path, tmux_socket, tmux_session
-        nonlocal cred_watch_task
+        nonlocal cred_watch_task, auth_scrape_task
 
         # Network binding (same env handling as grok/claudecode for
         # multi-container deploys).
@@ -295,6 +296,20 @@ async def run_antigravity_session(
             "iframeSrc": "{widgetProxyUrl}/",
         })
         ctx.report_progress(None, "Antigravity is live")
+
+        # agy's login prints the Google OAuth URL into the TUI (no browser open —
+        # the redirect shims never fire) and HARD-wraps it, so ttyd linkifies only
+        # the first line. Scrape the pane, reassemble the URL, and surface it as a
+        # BROWSER: marker (a clean, copyable link in the dashboard). Runs for every
+        # iframe session (login can occur with no seed yet, e.g. seed-setup).
+        auth_scrape_task = asyncio.create_task(
+            auth_scrape.run_auth_url_scraper(
+                host,
+                tmux_path=tmux_path,
+                socket_path=tmux_socket,
+                session_name=tmux_session,
+            )
+        )
 
         # Start the in-session credential watcher for a seeded session: it saves
         # back the rotated token store as agy refreshes its OAuth token, and
@@ -534,6 +549,14 @@ async def run_antigravity_session(
                 )
             except Exception:
                 _LOG.exception("teardown_session_tree failed")
+
+        # Stop the auth-URL pane scraper (best-effort background poller).
+        if auth_scrape_task is not None:
+            auth_scrape_task.cancel()
+            try:
+                await auth_scrape_task
+            except asyncio.CancelledError:
+                pass
 
         # Stop the credential watcher before the final save-back so the two
         # never race on the same seed blob.
