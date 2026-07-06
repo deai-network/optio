@@ -183,13 +183,41 @@ def _manifest_url(platform: str) -> str:
     return f"{_ANTIGRAVITY_UPDATER_BASE}/manifests/{platform}.json"
 
 
-async def _antigravity_platform(host: "Host") -> str:
-    """Return the updater manifest's platform slug for the host's OS/arch.
+def _platform_slug(uname_s: str, uname_m: str, *, is_musl: bool) -> str:
+    """Manifest platform slug for a ``uname -s`` / ``uname -m`` pair.
 
-    TODO(S2): reconcile with the real ``install.sh``. The exact slug strings the
-    manifest host serves were not captured in the profiling spike; this uses the
-    conventional Go ``GOOS-GOARCH`` shape (the binary is a Go executable). The
-    Stage-5 spike / first real fetch pins the authoritative mapping."""
+    Mirrors the auto-updater's ``install.sh`` EXACTLY (verified against the live
+    manifest host): ``<os>_<arch>`` with an UNDERSCORE (not the Go ``GOOS-GOARCH``
+    hyphen), and a ``_musl`` suffix on Linux against musl libc. e.g.
+    ``linux_amd64`` / ``linux_arm64_musl`` / ``darwin_arm64``. A wrong separator
+    404s the manifest fetch."""
+    os_name = {"linux": "linux", "darwin": "darwin"}.get(uname_s.strip().lower())
+    arch = {
+        "x86_64": "amd64", "amd64": "amd64",
+        "aarch64": "arm64", "arm64": "arm64",
+    }.get(uname_m.strip())
+    if os_name is None or arch is None:
+        raise RuntimeError(
+            f"unsupported host platform for agy auto-install "
+            f"(uname -s={uname_s!r}, uname -m={uname_m!r})."
+        )
+    if os_name == "linux" and is_musl:
+        return f"linux_{arch}_musl"
+    return f"{os_name}_{arch}"
+
+
+async def _host_is_musl(host: "Host") -> bool:
+    """Detect a musl-libc Linux host, mirroring install.sh's probe."""
+    r = await host.run_command(
+        "[ -f /lib/libc.musl-x86_64.so.1 ] || "
+        "[ -f /lib/libc.musl-aarch64.so.1 ] || "
+        "ldd /bin/ls 2>&1 | grep -q musl"
+    )
+    return r.exit_code == 0
+
+
+async def _antigravity_platform(host: "Host") -> str:
+    """Return the updater manifest's platform slug for the host's OS/arch."""
     r_os = await host.run_command("uname -s")
     r_arch = await host.run_command("uname -m")
     if r_os.exit_code != 0 or r_arch.exit_code != 0:
@@ -197,19 +225,8 @@ async def _antigravity_platform(host: "Host") -> str:
             f"uname failed on host (os exit {r_os.exit_code}, arch exit "
             f"{r_arch.exit_code}) — cannot resolve the agy manifest platform."
         )
-    os_name = r_os.stdout.strip().lower()
-    arch = r_arch.stdout.strip()
-    goos = {"linux": "linux", "darwin": "darwin"}.get(os_name)
-    goarch = {
-        "x86_64": "amd64", "amd64": "amd64",
-        "aarch64": "arm64", "arm64": "arm64",
-    }.get(arch)
-    if goos is None or goarch is None:
-        raise RuntimeError(
-            f"unsupported host platform for agy auto-install "
-            f"(uname -s={os_name!r}, uname -m={arch!r})."
-        )
-    return f"{goos}-{goarch}"
+    is_musl = await _host_is_musl(host)
+    return _platform_slug(r_os.stdout, r_arch.stdout, is_musl=is_musl)
 
 
 async def _install_antigravity_into_cache(

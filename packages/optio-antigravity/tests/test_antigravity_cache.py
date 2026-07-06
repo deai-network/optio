@@ -337,3 +337,19 @@ async def test_disable_agy_self_update_creates_settings_when_absent(tmp_path: pa
 
     settings = pathlib.Path(workdir) / "home" / ".gemini" / "antigravity-cli" / "settings.json"
     assert json.loads(settings.read_text())["AutoUpdate"] is False
+
+
+# --- Regression: manifest platform slug must match the real updater host ------
+# The auto-updater serves `linux_amd64.json` (underscore, musl-aware), NOT the
+# Go `linux-amd64` (hyphen). A wrong slug 404s the manifest fetch — a bug the
+# fake-download harness could not catch (it routes by extension, not URL).
+def test_platform_slug_matches_install_sh():
+    slug = host_actions._platform_slug
+    assert slug("Linux", "x86_64", is_musl=False) == "linux_amd64"
+    assert slug("Linux", "amd64", is_musl=False) == "linux_amd64"
+    assert slug("Linux", "aarch64", is_musl=False) == "linux_arm64"
+    assert slug("Linux", "x86_64", is_musl=True) == "linux_amd64_musl"
+    assert slug("Linux", "aarch64", is_musl=True) == "linux_arm64_musl"
+    # non-linux never gets a musl suffix
+    assert slug("Darwin", "arm64", is_musl=False) == "darwin_arm64"
+    assert slug("Darwin", "x86_64", is_musl=False) == "darwin_amd64"
