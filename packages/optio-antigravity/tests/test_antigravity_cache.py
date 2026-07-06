@@ -300,6 +300,17 @@ def test_build_launch_env_isolation_and_path():
     assert env["PATH"].startswith("/w/task/home/.local/bin:")
 
 
+def test_build_launch_env_disables_self_update():
+    # The confirmed self-update-disable mechanism (S2) is the binary's own env
+    # flag AGY_CLI_DISABLE_AUTO_UPDATE — applied on every launch path via the env
+    # SSOT so a managed (pinned) agy never fights our version control.
+    env = host_actions.build_launch_env("/w/task")
+    assert env["AGY_CLI_DISABLE_AUTO_UPDATE"] == "1"
+    # A caller cannot silently clobber it via extra_env PATH handling.
+    env2 = host_actions.build_launch_env("/w/task", {"FOO": "bar"})
+    assert env2["AGY_CLI_DISABLE_AUTO_UPDATE"] == "1"
+
+
 def test_build_launch_env_extra_env_overrides_and_path_base():
     env = host_actions.build_launch_env(
         "/w/task", {"PATH": "/custom/bin", "FOO": "bar"},

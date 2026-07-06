@@ -629,11 +629,14 @@ def build_launch_env(
     ``PATH`` becomes the BASE the per-task bin is prepended to; all other extras
     override the isolation defaults.
 
-    Self-update disable is NOT an env value here: the confirmed mechanism is the
-    ``settings.json`` ``AutoUpdate:false`` key written by
-    :func:`disable_agy_self_update` on every launch path. TODO(S2): the
-    self-update-disable spike may surface an env flag — it would be added to this
-    map so it, too, applies uniformly across launch paths."""
+    Self-update disable is applied here as ``AGY_CLI_DISABLE_AUTO_UPDATE=1`` — the
+    agy binary's own env flag (confirmed by probing the real binary), so a managed
+    (Tier-1/Tier-2 pinned) agy never fights our version control nor stalls a launch
+    on a background update probe. Layered into the env SSOT so it applies
+    uniformly across every launch path (iframe/tmux + conversation/PTY).
+    :func:`disable_agy_self_update` additionally writes the ``settings.json``
+    ``AutoUpdate:false`` key as belt-and-suspenders. A caller ``extra_env`` MAY
+    override the flag (last-wins) if it ever needs the updater on."""
     iso = _isolation_env(workdir.rstrip("/"))
     home_local_bin = f"{iso['HOME']}/.local/bin"
     extra = dict(extra_env or {})
@@ -643,6 +646,8 @@ def build_launch_env(
     return {
         **iso,
         "PATH": f"{home_local_bin}:{base_path}",
+        # agy's own no-auto-update flag — the confirmed S2 mechanism.
+        "AGY_CLI_DISABLE_AUTO_UPDATE": "1",
         **extra,
     }
 
@@ -663,9 +668,10 @@ async def disable_agy_self_update(host: "Host", workdir: str) -> None:
     ``{AutoUpdate:false}`` (agy rewrites its own settings on start anyway).
     Host-primitive only (uniform Local/Remote). Called on EVERY launch path.
 
-    TODO(S2): reconcile with the self-update-disable spike. ``AutoUpdate`` is the
-    design's leading candidate (§3) but is not yet empirically confirmed to fully
-    suppress the updater probe; the spike may add an env flag or endpoint block."""
+    S2 resolved: the PRIMARY disable is the ``AGY_CLI_DISABLE_AUTO_UPDATE=1`` env
+    flag layered into :func:`build_launch_env` (the agy binary's own no-auto-update
+    switch, confirmed by probing the real binary). This settings write is a
+    secondary belt-and-suspenders and is kept for defence in depth."""
     home = f"{workdir.rstrip('/')}/home"
     settings_dir = f"{home}/.gemini/antigravity-cli"
     settings = f"{settings_dir}/settings.json"
