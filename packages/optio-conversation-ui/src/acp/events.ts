@@ -78,6 +78,18 @@ function appendThinking(items: ChatItem[], seq: number, text: string): ChatItem[
   return [...items, { kind: 'thinking', text, seq }];
 }
 
+// Harness-injected messages (resume notices, upload notices) go through the same
+// send() path, so the agent echoes them back as user_message_chunk too; they
+// carry this prefix and render as muted activity rows, never user bubbles.
+const HARNESS_PREFIX = 'System: ';
+
+// On a file upload the view prepends one `System: upload received, stored in
+// <path>` line per file to the prompt; strip them from the wire echo so the user
+// bubble shows only the real request (and dedupes against the optimistic echo).
+function stripUploadNotice(text: string): string {
+  return text.replace(/^(?:System: upload received, stored in [^\n]*\n)+\n?/, '');
+}
+
 export function reduceAcpEvent(state: ChatState, ev: any, seq: number): ChatState {
   return reduce(state as AcpChatState, ev, seq);
 }
@@ -189,8 +201,40 @@ function reduce(st: AcpChatState, ev: any, seq: number): AcpChatState {
       };
     }
 
-    // plan / available_commands_update / user_message_chunk / _x.ai/* — no
-    // dedicated rendering yet; passed through as no-ops.
+    if (kind === 'user_message_chunk') {
+      // The agent emits the operator's prompt as user_message_chunk — during a
+      // session/load REPLAY it is the ONLY per-turn delimiter (no session/prompt
+      // turn-end arrives then). So each one BOTH renders the prompt AND opens a
+      // new turn: finalize the prior answer bubble and bump the turn id so the
+      // next agent_message_chunk starts a fresh bubble instead of coalescing
+      // every replayed answer into one giant agent bubble (the resume bug —
+      // merged answers, no prompts).
+      const text = stripUploadNotice(update.content?.text ?? '');
+      if (text === '') return st;
+      const items0 = finalizePending(dropTools(st.items));
+      const turn = (st.turn ?? 0) + 1;
+      // Harness System: notices render as muted activity rows, never user bubbles.
+      if (text.startsWith(HARNESS_PREFIX)) {
+        // Dedup: the resume notice is injected engine-side as a synthetic
+        // user_message_chunk; if the agent ever ALSO echoes it live, don't render
+        // a second identical activity row (or bump the turn again).
+        const last = items0[items0.length - 1];
+        if (last && last.kind === 'activity' && last.text === text) return st;
+        return { ...st, items: [...items0, { kind: 'activity', text, seq }], turn };
+      }
+      // Dedup the optimistic local echo (x-optio-local-user): confirm it in place
+      // rather than adding a second bubble for the same prompt.
+      const idx = items0.findIndex((i) => i.kind === 'user' && i.local && i.text === text);
+      if (idx !== -1) {
+        const cur = items0[idx] as Extract<ChatItem, { kind: 'user' }>;
+        const items = [...items0.slice(0, idx), { ...cur, local: false }, ...items0.slice(idx + 1)];
+        return { ...st, items, turn };
+      }
+      return { ...st, items: [...items0, { kind: 'user', text, seq }], turn };
+    }
+
+    // plan / available_commands_update / _x.ai/* — no dedicated rendering yet;
+    // passed through as no-ops.
     return st;
   }
 

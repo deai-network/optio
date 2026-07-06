@@ -24,6 +24,68 @@ const thought = (text: string) => ({
 const turnEnd = (id: number, stopReason = 'end_turn') => ({
   jsonrpc: '2.0', id, result: { stopReason },
 });
+const userChunk = (text: string) => ({
+  jsonrpc: '2.0',
+  method: 'session/update',
+  params: { sessionId: 's1', update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text } } },
+});
+
+describe('grok/cursor shared ACP reducer — resume replay rendering', () => {
+  it('a replayed user_message_chunk renders a user bubble (was dropped)', () => {
+    const s = play([userChunk('my prior question')]);
+    const u = s.items.find((i) => i.kind === 'user');
+    expect(u && u.kind === 'user' && u.text).toBe('my prior question');
+    expect(u && u.kind === 'user' && u.local).toBeFalsy();
+  });
+
+  it('replayed turns (session/load has NO turn-end) stay SEPARATE, each with its prompt', () => {
+    // Live-confirmed on cursor: session/load replays user_message_chunk +
+    // agent_message_chunk per turn but no session/prompt turn-end, so the user
+    // prompt must delimit turns — else every answer coalesces into one bubble
+    // and the prompts vanish (the reported resume bug).
+    const s = play([
+      userChunk('q1'), chunk('answer one'),
+      userChunk('q2'), chunk('answer two'),
+    ]);
+    expect(s.items.filter((i) => i.kind === 'user').map((u) => (u as any).text)).toEqual(['q1', 'q2']);
+    expect(s.items.filter((i) => i.kind === 'assistant').map((a) => (a as any).text))
+      .toEqual(['answer one', 'answer two']);
+  });
+
+  it('a harness System: user_message_chunk renders as an activity row, not a user bubble', () => {
+    const s = play([userChunk('System: you have been resumed')]);
+    expect(s.items.some((i) => i.kind === 'user')).toBe(false);
+    const a = s.items.find((i) => i.kind === 'activity');
+    expect(a && a.kind === 'activity' && a.text).toBe('System: you have been resumed');
+  });
+
+  it('a live user_message_chunk echo confirms the optimistic bubble, no duplicate', () => {
+    const s = play([{ type: 'x-optio-local-user', text: 'say PONG' }, userChunk('say PONG')]);
+    const users = s.items.filter((i) => i.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0].kind === 'user' && users[0].local).toBeFalsy();
+  });
+
+  it('an injected resume-notice user_message_chunk un-merges the boundary + shows the notice', () => {
+    const s = play([
+      userChunk('prior question'), chunk('prior answer'),  // replayed turn (pending)
+      userChunk('System: you have been resumed'),          // injected boundary
+      chunk('sure, I remember'),                            // live resume answer
+    ]);
+    expect(s.items.filter((i) => i.kind === 'assistant').map((a) => (a as any).text))
+      .toEqual(['prior answer', 'sure, I remember']);       // NOT merged
+    expect(s.items.some((i) => i.kind === 'activity'
+      && (i as any).text === 'System: you have been resumed')).toBe(true);
+  });
+
+  it('a duplicate System: user_message_chunk does not double-render the activity row', () => {
+    const s = play([
+      userChunk('System: you have been resumed'),
+      userChunk('System: you have been resumed'),
+    ]);
+    expect(s.items.filter((i) => i.kind === 'activity').length).toBe(1);
+  });
+});
 
 describe('grok ACP event reducer', () => {
   it('agent_message_chunk deltas accumulate into one pending bubble', () => {
