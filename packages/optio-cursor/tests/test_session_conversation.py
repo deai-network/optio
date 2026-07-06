@@ -241,7 +241,7 @@ async def test_model_probe_disables_gated_models(
 
 
 def test_ui_widget_per_mode():
-    """Conversation tasks carry no widget; iframe tasks keep 'iframe'."""
+    """Conversation tasks carry no widget; iframe tasks use 'iframe-input'."""
     conv_task = create_cursor_task(
         process_id="cu-widget-conv",
         name="Widget conv",
@@ -254,7 +254,7 @@ def test_ui_widget_per_mode():
         name="Widget iframe",
         config=CursorTaskConfig(consumer_instructions="x"),
     )
-    assert iframe_task.ui_widget == "iframe"
+    assert iframe_task.ui_widget == "iframe-input"
 
 
 def test_config_validation_conversation_fields():
