@@ -212,6 +212,23 @@ function reduce(st: KimiCodeChatState, ev: any, seq: number): KimiCodeChatState 
       const msg = explainApiError(String(ev.error?.message ?? JSON.stringify(ev.error)), null);
       return { ...st, busy: false, items: [...dropTools(st.items), { kind: 'error', text: msg, seq }] };
     }
+    // session/new returns the unified configOptions. An EMPTY model picker means
+    // kimi-code has no LLM configured (not logged in / stale credential): every
+    // turn then fails SILENTLY — kimi-code reports model.not_configured as a
+    // plain stopReason:"end_turn" with no content and no wire error, so without
+    // this the operator sends a prompt and sees nothing at all. Surface it once
+    // so the cause (no model / login) is visible.
+    const configOptions = ev.result?.configOptions;
+    if (Array.isArray(configOptions)) {
+      const model = configOptions.find((o: any) => o?.category === 'model' || o?.id === 'model');
+      if (model && Array.isArray(model.options) && model.options.length === 0) {
+        const text =
+          'No model is available — Kimi Code is not logged in (its credential may be missing or expired). ' +
+          'Prompts will not be answered until the login is refreshed.';
+        if (st.items.some((i) => i.kind === 'error' && i.text === text)) return st;
+        return { ...st, items: [...st.items, { kind: 'error', text, seq }] };
+      }
+    }
     if (ev.result && ev.result.stopReason !== undefined) {
       // Turn complete — finalize the answer bubble, drop lingering tool rows,
       // and open the next turn's bubble id.

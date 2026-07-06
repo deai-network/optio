@@ -182,6 +182,29 @@ describe('kimicode ACP event reducer', () => {
     expect(s.busy).toBe(false);
   });
 
+  it('an empty model list on the session/new response warns that no model is available', () => {
+    // session/new returns the unified configOptions. An empty model picker means
+    // kimi-code has no LLM configured (not logged in), so every turn fails
+    // SILENTLY — it reports model.not_configured as a plain end_turn with no
+    // content. Surface it so the operator isn't left staring at silence.
+    const s = play([{ jsonrpc: '2.0', id: 2, result: { sessionId: 's1', configOptions: [
+      { type: 'select', id: 'model', name: 'Model', category: 'model', currentValue: '', options: [] },
+      { type: 'select', id: 'mode', name: 'Mode', category: 'mode', currentValue: 'default',
+        options: [{ id: 'default', label: 'Default' }] },
+    ] } }]);
+    const e = s.items.find((i) => i.kind === 'error');
+    expect(e && e.kind === 'error').toBeTruthy();
+    expect(e && e.kind === 'error' && e.text.toLowerCase()).toMatch(/model|log/);
+  });
+
+  it('a populated model list on session/new renders no warning', () => {
+    const s = play([{ jsonrpc: '2.0', id: 2, result: { sessionId: 's1', configOptions: [
+      { type: 'select', id: 'model', name: 'Model', category: 'model', currentValue: 'kimi-k2',
+        options: [{ id: 'kimi-k2', label: 'Kimi K2' }] },
+    ] } }]);
+    expect(s.items.some((i) => i.kind === 'error')).toBe(false);
+  });
+
   it('plan / config_option_update notifications are no-ops (no rendered row)', () => {
     // kimi passes plan / available_commands_update / config_option_update /
     // user_message_chunk through untouched — the reducer renders nothing yet.
