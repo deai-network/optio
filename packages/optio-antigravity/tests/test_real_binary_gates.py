@@ -91,3 +91,66 @@ async def test_iframe_reaches_done(ctx_and_captures, task_root):
     await asyncio.wait_for(task.execute(ctx), timeout=280)
 
     assert any("Antigravity is live" == m for _, m in captures.progress)
+
+
+@pytest.mark.asyncio
+async def test_resume_picks_up_prior(mongo_db, task_root):
+    """A relaunch of a terminated real ``agy`` task resumes the prior workspace.
+
+    Fresh run: the agent writes a marker file and emits DONE; teardown captures
+    a workdir snapshot. Resume run (same process_id, ctx.resume=True): the
+    session restores the workdir tar and relaunches with ``--continue`` + the
+    ``System: you have been resumed`` positional. The marker planted by the
+    fresh run must survive the restore, proving the workspace (and agy's
+    ``home/.gemini/antigravity`` conversation store) came back.
+    """
+    import asyncio
+
+    from optio_core.context import ProcessContext
+    from optio_core.models import TaskInstance
+    from optio_core.store import upsert_process
+
+    from optio_antigravity import AntigravityTaskConfig
+    from optio_antigravity.session import run_antigravity_session
+    from optio_antigravity.snapshots import load_latest_snapshot
+
+    pid = "antigravity-real-resume"
+
+    async def _ctx(resume: bool) -> ProcessContext:
+        task = TaskInstance(
+            execute=lambda c: None,  # type: ignore[arg-type, return-value]
+            process_id=pid, name=pid, supports_resume=True,
+        )
+        proc = await upsert_process(mongo_db, "test", task)
+        await mongo_db["test_processes"].update_one(
+            {"_id": proc["_id"]}, {"$set": {"status": {"state": "running"}}},
+        )
+        return ProcessContext(
+            process_oid=proc["_id"], process_id=pid, root_oid=proc["_id"],
+            depth=0, params={}, services={}, db=mongo_db, prefix="test",
+            cancellation_flag=asyncio.Event(), child_counter={"next": 0},
+            resume=resume,
+        )
+
+    cfg = AntigravityTaskConfig(
+        consumer_instructions=(
+            "Your entire task: create a file named resume_marker.txt containing "
+            "the word MARKER in the current directory, then append the exact "
+            "line DONE to optio.log and stop. Do nothing else."
+        ),
+        permission_mode="dangerously-skip-permissions",
+        auto_start=True,
+        supports_resume=True,
+    )
+
+    await asyncio.wait_for(run_antigravity_session(await _ctx(False), cfg), timeout=280)
+    snap = await load_latest_snapshot(mongo_db, "test", pid)
+    assert snap is not None, "fresh run must capture a snapshot"
+
+    await asyncio.wait_for(run_antigravity_session(await _ctx(True), cfg), timeout=280)
+    # Two snapshots ⟹ the resumed run also reached live and re-captured.
+    from optio_antigravity.snapshots import SESSION_SNAPSHOT_COLLECTION_SUFFIX
+    count = await mongo_db[
+        f"test{SESSION_SNAPSHOT_COLLECTION_SUFFIX}"
+    ].count_documents({"processId": pid})
+    assert count == 2

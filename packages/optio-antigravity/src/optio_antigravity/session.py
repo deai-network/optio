@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from typing import AsyncIterator
 
 from optio_core.context import ProcessContext
 from optio_core.models import TaskInstance
@@ -25,6 +26,11 @@ from optio_host.paths import task_dir
 
 from optio_antigravity import host_actions
 from optio_antigravity.prompt import compose_agents_md
+from optio_antigravity.snapshots import (
+    insert_snapshot,
+    load_latest_snapshot,
+    prune_snapshots,
+)
 from optio_antigravity.types import AntigravityTaskConfig
 
 
@@ -63,17 +69,25 @@ async def run_antigravity_session(
     agy_path: str | None = None
     ttyd_path: str | None = None
     cancelled = False
+    # Whether a snapshot was restored this run (drives --continue + the resume
+    # notice + auto-start suppression). Set by _prepare, read by the body + the
+    # snapshot-capture skip in teardown.
+    resuming = False
+    pass_continue = False
 
     await host.connect()
 
     async def _prepare(host: Host, hook_ctx: HookContext) -> None:
-        """Resolve agy + ttyd and plant AGENTS.md.
+        """Resolve agy + ttyd, restore a resume snapshot, and plant AGENTS.md.
 
         Handed to run_log_protocol_session, which runs it AFTER
         host.setup_workdir() has wiped the workdir and BEFORE it subscribes the
-        optio.log tail.
+        optio.log tail. That ordering is why restore belongs here: the restored
+        optio.log is rotated away below before the tail can replay its stale
+        DONE/ERROR, and AGENTS.md is (re)planted AFTER the restore so it is not
+        wiped by it.
         """
-        nonlocal agy_path, ttyd_path
+        nonlocal agy_path, ttyd_path, resuming, pass_continue
         agy_path = await host_actions.ensure_antigravity_installed(
             hook_ctx,
             install_if_missing=config.install_if_missing,
@@ -84,6 +98,39 @@ async def run_antigravity_session(
             install_if_missing=config.install_ttyd_if_missing,
             install_dir=config.ttyd_install_dir,
         )
+
+        resume_requested = bool(getattr(ctx, "resume", False))
+        snapshot = None
+        if resume_requested:
+            snapshot = await load_latest_snapshot(
+                ctx._db, ctx._prefix, ctx.process_id,
+            )
+        resuming = snapshot is not None
+        if resuming:
+            # Restore the workdir tar (carries home/.gemini/antigravity, i.e.
+            # agy's conversation/transcript/settings store). A present snapshot
+            # that fails to restore is fatal — the restore call is intentionally
+            # outside any except so it surfaces to the caller (no silent
+            # fresh-start).
+            await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
+            # The agy launch symlink (home/.local/bin/agy) lives INSIDE the
+            # workdir and was wiped by the restore; re-establish it against the
+            # cache (which lives OUTSIDE the workdir and survives). Idempotent:
+            # cache hit → just relinks, no reinstall/redownload. ttyd survives
+            # untouched (real host home, outside the workdir).
+            agy_path = await host_actions.ensure_antigravity_installed(
+                hook_ctx,
+                install_if_missing=config.install_if_missing,
+                install_dir=config.agy_install_dir,
+                progress_label="Restoring Antigravity runtime…",
+            )
+            await host_actions._rotate_optio_log(host)
+            # A restored snapshot means agy persisted a conversation for this
+            # workspace; --continue resumes the most recent one. The per-task
+            # HOME lives inside the restored workdir at the same absolute path
+            # (deterministic taskdir), so the workspace-keyed lookup matches.
+            pass_continue = True
+
         await host.write_text(
             "AGENTS.md",
             compose_agents_md(
@@ -94,6 +141,8 @@ async def run_antigravity_session(
                 file_download=config.file_download,
             ),
         )
+        if config.supports_resume:
+            await host_actions._append_resume_log_entry(host)
         if config.before_execute is not None:
             await config.before_execute(hook_ctx)
 
@@ -109,10 +158,18 @@ async def run_antigravity_session(
         agy_flags = host_actions.build_agy_flags(
             permission_mode=config.permission_mode,
             model=config.model,
+            resuming=pass_continue,
         )
         agy_flags = [
             *agy_flags,
-            *host_actions.build_auto_start_args(auto_start=config.auto_start),
+            *host_actions.build_auto_start_args(
+                auto_start=config.auto_start, resuming=resuming,
+            ),
+            # PUSH resume awareness: a System: notice appended after --continue so
+            # the resumed TUI session gets a "you have been resumed" turn (mutually
+            # exclusive with the fresh-launch kickoff above). resume.log stays the
+            # pull-based backstop.
+            *host_actions.build_resume_notice_args(resuming=resuming),
         ]
         launch_env = {
             **(config.env or {}),
@@ -190,6 +247,22 @@ async def run_antigravity_session(
             except Exception:
                 _LOG.exception("teardown_session_tree failed")
 
+        # Reached-live gate: only capture if agy actually came up
+        # (launched_handle is assigned strictly after a successful ttyd/agy
+        # launch). An interrupt before launch leaves it None — skip capture so
+        # any prior good snapshot survives and hasSavedState is untouched.
+        if config.supports_resume and launched_handle is not None:
+            try:
+                await _capture_snapshot(
+                    ctx, host,
+                    end_state="cancelled" if cancelled else "done",
+                    workdir_exclude=config.workdir_exclude,
+                )
+            except Exception:
+                _LOG.exception(
+                    "snapshot capture failed; proceeding with workdir wipe",
+                )
+
         try:
             await host.cleanup_taskdir(aggressive=cancelled)
         except Exception:
@@ -198,6 +271,52 @@ async def run_antigravity_session(
             await host.disconnect()
         except Exception:
             _LOG.exception("host.disconnect failed")
+
+
+async def _stream_blob(ctx: ProcessContext, blob_id) -> "AsyncIterator[bytes]":
+    async with ctx.load_blob(blob_id) as reader:
+        while True:
+            chunk = await reader.read(1 << 20)
+            if not chunk:
+                break
+            yield chunk
+
+
+async def _capture_snapshot(
+    ctx: ProcessContext,
+    host: Host,
+    *,
+    end_state: str,
+    workdir_exclude: list[str] | None,
+) -> None:
+    """Capture a single-blob resume snapshot of the (now static) workdir.
+
+    ``agy``'s conversation state lives under ``home/.gemini/antigravity`` INSIDE
+    the workdir, so one plaintext workdir tar carries everything ``--continue`` /
+    ``--conversation <id>`` needs — no separate session blob. Streams the tar
+    into GridFS, records the snapshot row, prunes to the retention limit
+    (deleting stale blobs), and surfaces the Resume affordance.
+    """
+    async with ctx.store_blob("workdir") as wwriter:
+        async for chunk in host.archive_workdir(workdir_exclude):
+            await wwriter.write(chunk)
+        workdir_blob_id = wwriter.file_id
+
+    await insert_snapshot(
+        ctx._db, ctx._prefix,
+        process_id=ctx.process_id,
+        end_state=end_state,
+        workdir_blob_id=workdir_blob_id,
+    )
+
+    stale = await prune_snapshots(ctx._db, ctx._prefix, ctx.process_id)
+    for blob_id in stale:
+        try:
+            await ctx.delete_blob(blob_id)
+        except Exception:
+            _LOG.exception("delete_blob(workdir) failed")
+
+    await ctx.mark_has_saved_state()
 
 
 def create_antigravity_task(

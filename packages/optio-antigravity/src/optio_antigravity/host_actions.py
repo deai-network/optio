@@ -19,8 +19,10 @@ import logging
 import os
 import re
 import shlex
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
 from optio_host.host import proc_wait
 
 if TYPE_CHECKING:
@@ -380,6 +382,23 @@ def build_auto_start_args(
     return [prompt] if (auto_start and not resuming) else []
 
 
+def build_resume_notice_args(*, resuming: bool) -> list[str]:
+    """Trailing positional that notifies a resumed agy TUI session.
+
+    Returns ``[f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}"]`` on resume (agy
+    continues with ``--continue``, so a trailing positional is processed as a new
+    turn in the continued conversation — mirrors claudecode's
+    ``claude --continue '<text>'`` and grok's ``grok -c '<text>'``). Empty on a
+    fresh launch. This is the PUSH half of resume awareness — it makes the agent
+    notice the resume promptly; ``resume.log`` remains the pull-based source of
+    truth. In iframe mode ``host_protocol`` is always on, so the optio.log
+    keyword docs teach the ``System:`` convention and no host_protocol gate is
+    needed here. Mutually exclusive with :func:`build_auto_start_args`
+    (auto_start only fires on a FRESH launch).
+    """
+    return [f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}"] if resuming else []
+
+
 # --- tmux / ttyd machinery (adapted verbatim from optio-grok) ---------------
 
 
@@ -728,4 +747,55 @@ async def send_text_to_agy(
         raise RuntimeError(
             f"send_text_to_agy: tmux injection failed "
             f"(exit {result.exit_code}): {result.stderr!r}"
+        )
+
+
+# --- resume bookkeeping (adapted from optio-grok/opencode) ------------------
+
+
+async def _rotate_optio_log(host: "Host") -> None:
+    """Append the restored optio.log to optio.log.old, then truncate it.
+
+    Preserves historical log content across consecutive resumes while ensuring
+    the tail driver only sees fresh lines from the resumed run (a stale DONE/
+    ERROR carried in the restored log would otherwise be replayed and end the
+    session immediately).
+    """
+    workdir = host.workdir.rstrip("/")
+    log_abs = f"{workdir}/optio.log"
+    old_abs = f"{workdir}/optio.log.old"
+    try:
+        current = (await host.fetch_bytes_from_host(log_abs)).decode("utf-8")
+    except FileNotFoundError:
+        current = ""
+    if not current:
+        await host.write_text("optio.log", "")
+        return
+    try:
+        existing_old = (await host.fetch_bytes_from_host(old_abs)).decode("utf-8")
+    except FileNotFoundError:
+        existing_old = ""
+    await host.write_text("optio.log.old", existing_old + current)
+    await host.write_text("optio.log", "")
+
+
+async def _append_resume_log_entry(
+    host: "Host", *, refreshed: list[str] | None = None,
+) -> None:
+    """Append one line to ``<workdir>/resume.log``.
+
+    Line format: ``<ISO 8601 UTC timestamp>[ REFRESHED:<comma-separated names>]``.
+    The first line is the original launch; each later line marks a resume. The
+    caller gates this on ``config.supports_resume``.
+    """
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    line = f"{ts} REFRESHED:{','.join(refreshed)}" if refreshed else ts
+    target = f"{host.workdir.rstrip('/')}/resume.log"
+    result = await host.run_command(
+        f"echo {shlex.quote(line)} >> {shlex.quote(target)}"
+    )
+    if result.exit_code != 0:
+        raise RuntimeError(
+            f"failed to append to resume.log: exit {result.exit_code}: "
+            f"{result.stderr!r}"
         )
