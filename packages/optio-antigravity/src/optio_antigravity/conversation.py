@@ -301,7 +301,13 @@ class AntigravityConversation:
         # Stage 8: when fs-isolation is on, the claustrum wrap goes AHEAD of agy
         # so claustrum (under the PTY) applies Landlock then execve's ``agy -p``;
         # agy + its tool subprocesses inherit the confinement.
-        argv = [*(self._claustrum_wrap or []), self._agy_path, "-p"]
+        # CRITICAL: agy's --print/-p TAKES THE PROMPT AS ITS VALUE (verified:
+        # `agy -p` with no value → "flag needs an argument: -p"). So `-p <text>`
+        # must be the LAST pair with the prompt immediately after -p; every bool
+        # flag goes BEFORE it. Otherwise -p swallows the next flag as the prompt
+        # and the real text leaks as a stray positional (agy then treated
+        # `--dangerously-skip-permissions` itself as a user message).
+        argv = [*(self._claustrum_wrap or []), self._agy_path]
         if self._conversation_id:
             argv += ["--conversation", self._conversation_id]
         # Turn 1 passes NO --conversation: a fresh workdir has no prior
@@ -310,7 +316,7 @@ class AntigravityConversation:
             argv += ["--model", self._model]
         if self._skip_permissions:
             argv += ["--dangerously-skip-permissions"]
-        argv.append(text)
+        argv += ["-p", text]
         return argv
 
     def _wrap_command(self, argv: list[str]) -> str:

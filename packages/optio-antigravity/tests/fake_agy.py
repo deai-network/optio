@@ -330,7 +330,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--help", action="store_true")
     parser.add_argument("--version", action="store_true")
-    parser.add_argument("-p", "--print", dest="print_mode", action="store_true")
+    # --print/-p takes the PROMPT as its value (real agy), not a bool flag.
+    parser.add_argument("-p", "--print", dest="prompt", default=None)
+    # -i/--prompt-interactive likewise takes a value (auto-start kickoff).
+    parser.add_argument("-i", "--prompt-interactive", dest="kickoff", default=None)
     parser.add_argument("--conversation", default=None)
     parser.add_argument("-c", "--continue", dest="cont", action="store_true")
     parser.add_argument("--model", default=None)
@@ -349,9 +352,9 @@ def main() -> int:
         print("agy 1.0.16 (fake)")
         return 0
 
-    if args.print_mode:
+    if args.prompt is not None:
         _record_launch()
-        prompt = unknown[0] if unknown else ""
+        prompt = args.prompt
         slow = os.environ.get("FAKE_AGY_SLOW", "").strip() not in ("", "0")
         return _print_turn(args.conversation, prompt, slow)
 

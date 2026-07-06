@@ -145,3 +145,27 @@ async def test_driver_parses_real_agy_fixture(tmp_path):
 
     # Reasoning (thinking) is present on at least one assistant line.
     assert any(e.get("thinking") for e in events)
+
+
+def test_build_argv_prompt_is_print_value_with_flags_before():
+    # REGRESSION: agy's --print/-p TAKES the prompt as its VALUE (real binary:
+    # `agy -p` with no arg → "flag needs an argument: -p"). So the text must
+    # immediately follow -p and every bool flag must precede it — otherwise -p
+    # swallowed `--dangerously-skip-permissions` as the prompt and the real text
+    # leaked as a second user message.
+    from optio_antigravity.conversation import AntigravityConversation
+    conv = AntigravityConversation(
+        host=None, agy_path="/x/agy", cwd="/w", home="/w/home", skip_permissions=True,
+    )
+    argv = conv._build_argv("hello world")
+    i = argv.index("-p")
+    assert argv[i + 1] == "hello world"                         # text is -p's value
+    assert argv.index("--dangerously-skip-permissions") < i     # flag BEFORE -p
+    assert argv.count("hello world") == 1                       # no stray positional
+
+    conv._conversation_id = "uuid-1"
+    conv._model = "gemini-3"
+    argv2 = conv._build_argv("q")
+    j = argv2.index("-p")
+    assert argv2[j + 1] == "q"
+    assert argv2.index("--conversation") < j and argv2.index("--model") < j
