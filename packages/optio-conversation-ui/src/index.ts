@@ -10,6 +10,8 @@ export { reduceCursorEvent } from './cursor/events.js';
 export { CursorView } from './cursor/CursorView.js';
 export { reduceKimiCodeEvent } from './kimicode/events.js';
 export { KimiCodeView } from './kimicode/KimiCodeView.js';
+export { reduceAntigravityEvent } from './antigravity/events.js';
+export { AntigravityView } from './antigravity/AntigravityView.js';
 export { initialChatState, foldControlUpdate } from './chat.js';
 export type { ChatItem, ChatState, SessionControl, ControlOption } from './chat.js';
 export { AnswerBlock } from './AnswerBlock.js';

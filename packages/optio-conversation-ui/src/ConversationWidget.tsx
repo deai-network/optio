@@ -7,6 +7,7 @@ import { GrokView } from './grok/GrokView.js';
 import { CodexView } from './codex/CodexView.js';
 import { CursorView } from './cursor/CursorView.js';
 import { KimiCodeView } from './kimicode/KimiCodeView.js';
+import { AntigravityView } from './antigravity/AntigravityView.js';
 
 const THEME_KEY = 'optio-conversation:theme';
 
@@ -30,6 +31,7 @@ export function ConversationWidget({ ownTheme, ...props }: ConversationWidgetPro
     if (protocol === 'codex') return <CodexView {...viewProps} />;
     if (protocol === 'cursor') return <CursorView {...viewProps} />;
     if (protocol === 'kimicode') return <KimiCodeView {...viewProps} />;
+    if (protocol === 'antigravity') return <AntigravityView {...viewProps} />;
     return <ClaudeCodeView {...viewProps} />;
   };
 
