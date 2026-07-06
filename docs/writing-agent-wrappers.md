@@ -89,6 +89,17 @@ every later decision.
    token dies after first use)? If yes, you need credential save-back (Stage 4).
 7. **Model selection?** Can the model be chosen at launch, switched mid-session, or
    only via restart? This shapes the model-switching adapter (Stage 7).
+8. **Process lifecycle & exit semantics?** How does the agent *terminate*, and what
+   does it persist *when* it does? Does it exit on SIGTERM — and how fast — or ignore
+   it until SIGKILL? Does closing stdin (EOF) trigger a clean shutdown? Does it flush
+   its conversation/session store to disk on exit, and on *which* exit path (clean vs
+   killed)? These answers set your teardown strategy (graceful SIGTERM-wait vs
+   stdin-EOF vs aggressive kill), your cancel-grace budget, and — the trap — whether a
+   snapshot taken immediately after termination actually contains a *complete,
+   restorable* session store. **You cannot read these off docs; you must probe the
+   real binary** ([Part 4 — Process lifecycle & teardown](#process-lifecycle--teardown-probe-the-real-binary-early)).
+   Answering them live, one production failure at a time, is the exact failure this
+   guide exists to prevent.
 
 ### Decision: mode selection
 
@@ -265,7 +276,13 @@ AND the pushed `System: you have been resumed` notice on relaunch (Part 2D), in
 in either wrapper; the resume section in `prompt.py`; `build_resume_notice_args`
 (iframe positional) and the conversation-body `RESUME_NOTICE` send. **Done when.**
 Relaunch by process id restores the session AND the agent receives the resume
-notice; decrypt failure fails loud (never silent fresh-start).
+notice; decrypt failure fails loud (never silent fresh-start). **Verified against the
+real binary, not just the fake**: a captured→restored session actually replays its
+*prior conversation history* — not merely "a session exists" — which requires the
+store to be fully flushed *before* capture (the snapshot-flush race in
+[Part 4 — Process lifecycle & teardown](#process-lifecycle--teardown-probe-the-real-binary-early)).
+A relaunch that reaches `running` but shows an empty conversation is a resume
+*failure*, not a pass.
 
 ### Stage 3 — Seeds
 **Goal.** Start a *fresh* session that is already logged-in/configured — the axis
@@ -585,6 +602,58 @@ Default to fail-closed. Keep auth passwords off the argv (pass via file/env).
 Provide multi-container tunnel-bind knobs where deployments split the worker and the
 dashboard. Prefer conversation-mode + claustrum for the tightest posture.
 
+### Process lifecycle & teardown: probe the real binary early
+
+A wrapper's teardown, cancel, and snapshot code all encode assumptions about how the
+agent process *ends* and what it writes when it does. These assumptions are invisible
+in a fake (a shim exits however you coded it), and each wrong guess is a
+production-only failure: a cancel that misses its grace window, a snapshot that
+captures an un-flushed session store, a resume that comes back empty. **Run these
+experiments against the real binary during initial implementation — the same session
+you first get it authenticated — not after a user hits the bug.** Each bullet below
+is a real wrapper outage that a green fake suite reported as "done."
+
+Probe, and record the answers in the wrapper's own teardown docstrings so the next
+maintainer inherits the facts instead of re-deriving them from an outage:
+
+- **SIGTERM.** Send it. Does the process exit? In how long? Many agents *ignore*
+  SIGTERM and run until SIGKILL — turning a "graceful" wait into pure dead time that
+  eats your whole cancel-grace budget (one agent burned the full 5s every cancel, then
+  got SIGKILLed anyway; the "graceful" wait bought nothing and starved the snapshot,
+  which forced the task to `failed`). Time it — don't assume.
+- **stdin EOF.** Close stdin. A stdio-protocol agent often treats EOF as a clean
+  shutdown and exits *fast and flushed* (one measured rc=0 in ~21ms on EOF vs
+  5s-then-SIGKILL on SIGTERM). Where true, EOF-then-instant-SIGKILL-backstop is a
+  strictly better teardown than a graceful SIGTERM wait — faster *and* a cleaner state
+  flush.
+- **On-exit flush → the snapshot-flush race.** Determine which exit path flushes the
+  conversation/session store (which may live in the workdir tar *or* a separate session
+  blob), and whether that flush has *completed* before you capture it. A teardown fast
+  enough to beat the store write captures *incomplete* state, so the resumed session's
+  `session/load` (or equivalent) finds nothing and comes back with **no history** —
+  silent data loss that a green fake suite AND a naive "relaunch reaches `running`"
+  check both miss. Speeding up teardown (e.g. adopting the EOF exit above) can
+  *introduce* this race. Teardown must **await the store settling** (file present and
+  stable) before capture, on every exit path including cancel.
+- **Session selection on restore.** Even a fully-captured store resumes *empty* if the
+  wrapper reloads the *wrong* session. Agents accumulate throwaway sessions — an empty
+  one per `session/new` bootstrap, one per stray or resume-notice prompt — so a
+  `find | head -n1`-style pick returns a filesystem-arbitrary (often empty) session and
+  the resume replays nothing, *nondeterministically* (it worsens as empties pile up).
+  Select the *actual prior conversation* — most-recently-updated with real turns,
+  excluding the just-minted bootstrap session and any resume-notice-only session — and
+  verify against the real store, which holds more sessions than you expect. (This, not
+  a flush race, was the real cause of one wrapper's empty-on-resume bug.)
+- **Live-send echo.** Does the agent echo an operator prompt back on the wire during a
+  *live* turn, or only during a `session/load` replay? The conversation reducer's
+  turn-delimiting may depend on that echo; a replay-only echo leaves the
+  replay→first-live-turn seam undelimited (merged answer bubbles, an unrendered resume
+  notice). Capture the wire for both a live send and a replay and diff them.
+
+These are per-engine divergences — see [Appendix C](#appendix-c--engine-divergence-table).
+Answer them for your agent before Stage 2 (resume) and the teardown half of Stage 6
+can be called done.
+
 ### Testing: fakes for logic, the real binary for truth
 Two layers, **both required**.
 
@@ -724,7 +793,8 @@ A finished wrapper covers this surface. `req` = expected for any wrapper;
 | 4 | `optio.log` keyword protocol | req | driver + `prompt.py` |
 | 5 | local + remote(SSH) | req | `host_actions.build_host` |
 | 6 | readiness detection + monitoring + teardown | req | `session.py` |
-| 7 | resume / snapshots | opt | `snapshots.py`, `_capture_snapshot` |
+| 6b | process-lifecycle probe vs real binary (SIGTERM/EOF exit + timing, on-exit flush); teardown awaits the store flush before snapshot | req | [Part 4 — Process lifecycle](#process-lifecycle--teardown-probe-the-real-binary-early); `_capture_snapshot` |
+| 7 | resume / snapshots — real round-trip replays *prior history*, not just reaches `running` | opt | `snapshots.py`, `_capture_snapshot` |
 | 7b | resume awareness: `resume.log` doc (pull) **+** pushed `RESUME_NOTICE` on relaunch, every mode | req if resume | `prompt.py`; `build_resume_notice_args` + conversation `RESUME_NOTICE` send |
 | 8 | at-rest encryption of session blob | opt | `session_blob_encrypt`/`decrypt` |
 | 9 | crash-orphan rescue | opt | claudecode `_rescue_orphan_if_present` |
@@ -791,6 +861,24 @@ Same capability, different mechanism — the range of valid implementations.
 | filesystem isolation | claustrum / Landlock | not yet |
 | browser mode | redirect (surface login URL) | suppress |
 
+**Process lifecycle is a first-class divergence axis — record yours here.** This
+table predates the ttyd/ACP wrappers, but the sharpest per-engine differences are in
+*how the agent process ends and persists state* ([Part 4 — Process lifecycle](#process-lifecycle--teardown-probe-the-real-binary-early)) —
+and those decide teardown strategy, cancel-grace budget, and whether a snapshot is
+restorable. They are not optional trivia; probe them and fill them in. Worked example
+(kimi, fully probed): **SIGTERM** → ignored, runs the full grace then SIGKILL (≈5s
+wasted, starved the snapshot until the task went `failed`); **stdin EOF** → clean exit
+rc=0 in ≈21ms (the teardown of choice); **store capture** → the session store lives in
+a *separate* snapshot blob (not the workdir tar) and restores complete — so the
+empty-resume bug was NOT a flush race but **session selection**: the restore picked an
+arbitrary session (`find | head -n1`) from a store that accumulates empty `session/new`
+and resume-notice sessions, so `session/load` nondeterministically replayed nothing;
+**live-send echo** → prompts echo as `user_message_chunk` during a `session/load`
+replay but NOT on a live turn, so the replay→first-live-turn seam needs an explicit
+turn-boundary event. Other engines persist differently — opencode moves history via
+explicit session-DB export/import, claudecode via `--continue` self-resolving from its
+HOME — each with its *own* capture/flush timing to establish the same way.
+
 ## Appendix D — Task configuration surface
 
 Every wrapper's `TaskConfig` (a dataclass in its `types.py`) is what a caller sets
@@ -814,7 +902,7 @@ out-of-range enums, and cross-field constraints — e.g. `conversation_ui` requi
 | Parameter | Meaning |
 |---|---|
 | `seed_id` | Replant a logged-in identity (str, or a lease-acquiring `SeedProvider`). |
-| `supports_resume` | Allow relaunch to pick up the prior session (snapshots). |
+| `supports_resume` | Allow relaunch to pick up the prior session (snapshots). "Pick up" means the resumed session **replays its prior history**, not just that a live session exists — hinges on the store being flushed before capture (the snapshot-flush race, [Part 4](#process-lifecycle--teardown-probe-the-real-binary-early)). |
 | `ssh` | Remote host config; `None` = local. |
 
 **Conversation-ui rendering** (only meaningful with `conversation_ui=True`)
