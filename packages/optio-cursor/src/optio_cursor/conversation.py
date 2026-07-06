@@ -41,6 +41,15 @@ Client -> agent REQUESTS (have `id`, expect a `result`):
     **THIS RESPONSE IS THE TURN-END SIGNAL**: {stopReason:"end_turn" |
     "cancelled" | …}. A denied/aborted turn returns stopReason:"cancelled".
     [grok-pinned, cursor runtime-unverified]
+  * ``session/list`` {} -> {sessions:[{sessionId, cwd?, <ts fields>?}, …]}.
+    Enumerates cursor's restored on-disk sessions on RESUME (capability
+    ``sessionCapabilities.list`` [cursor-verified]). Response shape + ordering
+    are runtime-unverified (no authed login on this host — see replay_history);
+    parsed tolerantly.
+  * ``session/load`` {sessionId, cwd, mcpServers} -> {} AFTER cursor REPLAYS the
+    loaded conversation as a burst of ``session/update`` notifications (the
+    ``loadSession`` capability [cursor-verified]). Drives the resume-history
+    backfill (replay_history). [ACP-spec-derived, cursor runtime-unverified]
 
 Agent -> client NOTIFICATIONS (no `id`): ``session/update`` with
 ``params.update.sessionUpdate`` ∈:   [grok-pinned, cursor runtime-unverified]
@@ -216,6 +225,136 @@ class CursorConversation:
                 self.session_models = models
                 self.current_model_id = models.get("currentModelId")
         return old if (old and old != self._session_id) else None
+
+    async def replay_history(self) -> str | None:
+        """Backfill the event stream with the RESTORED conversation's prior turns.
+
+        On resume the workdir tar restored cursor-agent's on-disk ACP session(s)
+        under $HOME, but this run's ``bootstrap`` minted a FRESH ``session/new``,
+        so the live ``on_event`` fan-out — and hence any listener's replay buffer
+        — starts empty: a viewer attaching after a resume would see only NEW
+        turns, never the prior conversation. cursor advertises the ``loadSession``
+        capability plus ``sessionCapabilities.list`` [cursor-verified], so:
+
+          1. ``session/list`` enumerates the restored sessions;
+          2. we pick the prior conversation's id (skipping the fresh session
+             bootstrap just minted — see ``_select_prior_session_id``);
+          3. ``session/load(id)`` makes cursor **replay** that conversation via
+             ``session/update`` notifications, then return. Those notifications
+             flow through the SAME ``_route`` → ``on_event`` path live turns use,
+             landing in the listener's replay buffer automatically — so a late
+             viewer reconstructs the full prior history exactly like live turns.
+
+        On success the loaded session is ADOPTED (``self._session_id``) so the
+        next prompt continues the prior thread, and any ``agent_message_chunk``
+        text the replay accumulated is DROPPED — a replay is history, not a live
+        turn, so it must not leak into the first real turn's ``on_message`` (a
+        replay never fires ``on_message`` at all: ``session/load`` is a request,
+        not a ``session/prompt``, so no turn-end handling runs).
+
+        MANDATORY graceful fallback: if ``session/list`` returns nothing loadable
+        OR either call errors, keep the fresh ``session/new`` session and return
+        ``None`` — resume must never break; it just shows no history in that case.
+        Returns the loaded session id, or ``None`` when the fresh session is kept.
+
+        ORDERING is load-bearing (the caller's responsibility): this runs
+        strictly AFTER ConversationListener subscribed to ``on_event`` (its
+        constructor) — else the replayed events dispatch to nobody and the buffer
+        misses the history — and BEFORE the resume-notice send (which continues
+        the now-loaded thread). See session.py's ``if resuming:`` call site.
+
+        NOTE [cursor runtime-unverified]: the ``session/list`` response shape and
+        the id-selection heuristic could NOT be pinned without a live
+        authenticated cursor login (the host is "Not logged in"). We parse
+        tolerantly and pick most-recent; confirmation is deferred to the live
+        auth spike — see the design doc's runtime-unverified note.
+        """
+        if self._closed.is_set():
+            return None
+        try:
+            listed = await self._request("session/list", {})
+        except Exception:  # noqa: BLE001 — a resume backfill must never break resume
+            _LOG.exception("cursor conversation: session/list failed; starting fresh")
+            return None
+        if not listed or listed.get("error"):
+            _LOG.info(
+                "cursor conversation: session/list unavailable (%s); starting fresh",
+                (listed or {}).get("error"),
+            )
+            return None
+        prior_id = self._select_prior_session_id(listed.get("result") or {})
+        if not prior_id:
+            return None
+        try:
+            loaded = await self._request("session/load", {
+                "sessionId": prior_id,
+                "cwd": self._cwd,
+                "mcpServers": self._mcp_servers,
+            })
+        except Exception:  # noqa: BLE001 — see above
+            _LOG.exception(
+                "cursor conversation: session/load(%s) failed; starting fresh",
+                prior_id,
+            )
+            return None
+        if not loaded or loaded.get("error"):
+            _LOG.info(
+                "cursor conversation: session/load(%s) errored (%s); starting fresh",
+                prior_id, (loaded or {}).get("error"),
+            )
+            return None
+        # Adopt the loaded session so the next prompt continues the prior thread,
+        # and drop the replay's accumulated agent_message_chunk text (history, not
+        # a live turn — it must not prepend to the first real turn's answer).
+        self._session_id = prior_id
+        self._answer_parts = []
+        return prior_id
+
+    def _select_prior_session_id(self, result: dict) -> str | None:
+        """Pick the prior conversation's session id from a ``session/list``
+        result, or ``None`` when there is nothing to load.
+
+        Tolerant of the (runtime-unverified) response shape: sessions live under
+        ``result["sessions"]`` (ACP's ListSessionsResponse), each an object
+        carrying its id as ``sessionId`` (or ``id``) and optionally its ``cwd``.
+        The fresh session ``bootstrap`` just minted (``self._session_id``) is
+        skipped — loading it would replay nothing. Among the rest, prefer
+        sessions rooted at THIS workspace when the entries carry a ``cwd``, then
+        take the most-recent: by a timestamp field when all candidates carry one,
+        else the LAST entry — a DOCUMENTED assumption that ``session/list``
+        returns sessions oldest→newest, pending the live auth spike."""
+        sessions = result.get("sessions")
+        if not isinstance(sessions, list):
+            return None
+        entries = []
+        for s in sessions:
+            if not isinstance(s, dict):
+                continue
+            sid = s.get("sessionId") or s.get("id")
+            if not sid or sid == self._session_id:
+                continue      # skip non-ids and the fresh bootstrap session
+            entries.append(s)
+        if not entries:
+            return None
+        cwd = (self._cwd or "").rstrip("/")
+        cwd_matches = [s for s in entries if (s.get("cwd") or "").rstrip("/") == cwd]
+        pool = cwd_matches or entries
+
+        def _ts(s):
+            for key in ("updatedAt", "modifiedAt", "lastActiveAt", "createdAt", "timestamp"):
+                if s.get(key) is not None:
+                    return s[key]
+            return None
+
+        stamps = [_ts(s) for s in pool]
+        best = pool[-1]
+        if all(t is not None for t in stamps):
+            try:
+                # key on the stamp only (never compares the dicts on ties).
+                best = max(zip(stamps, pool), key=lambda p: p[0])[1]
+            except TypeError:
+                best = pool[-1]   # non-comparable stamps → chronological fallback
+        return best.get("sessionId") or best.get("id")
 
     async def run_reader(self) -> None:
         """Drain stdout until EOF; route JSON-RPC messages. Owned by the

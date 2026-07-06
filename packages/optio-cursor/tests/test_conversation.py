@@ -7,12 +7,15 @@ features — model switching — are deferred, so those tests are absent).
 """
 
 import asyncio
+import base64
 import json
 
+import aiohttp
 import pytest
 
 from optio_agents.conversation import ConversationClosed, PermissionDecision
 from optio_cursor.conversation import CursorConversation
+from optio_cursor.conversation_listener import ConversationListener
 
 
 class _FakeStdin:
@@ -349,7 +352,218 @@ async def test_set_control_model_after_close_raises(convo):
         await c.set_control("model", "gpt-5")
 
 
+# --- resume: conversation-history replay via session/list + session/load -----
+
+
+@pytest.mark.asyncio
+async def test_resume_lists_then_loads_prior_session(convo):
+    # On resume the wrapper enumerates the restored on-disk ACP sessions
+    # (session/list), skips the fresh session/new it just minted, picks the
+    # prior conversation, and session/load's it — cursor then replays that
+    # conversation via session/update notifications (which reach on_event) and
+    # the driver adopts the loaded session so the next prompt continues the
+    # prior thread.
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle, session_id="fresh-sess")
+    events = []
+    c.on_event(events.append)
+
+    replay = asyncio.create_task(c.replay_history())
+    listing = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert listing["method"] == "session/list"
+    handle.stdout.feed({"jsonrpc": "2.0", "id": listing["id"], "result": {
+        "sessions": [
+            {"sessionId": "fresh-sess", "cwd": "/w"},   # the one bootstrap minted
+            {"sessionId": "prior-sess", "cwd": "/w"},   # the restored prior chat
+        ]}})
+    load = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert load["method"] == "session/load"
+    assert load["params"]["sessionId"] == "prior-sess"
+    # Replay notifications arrive BEFORE the load response (wire order).
+    for kind, text in (("user_message_chunk", "prior question"),
+                       ("agent_message_chunk", "prior answer")):
+        handle.stdout.feed({"jsonrpc": "2.0", "method": "session/update",
+                            "params": {"sessionId": "prior-sess", "update": {
+                                "sessionUpdate": kind,
+                                "content": {"type": "text", "text": text}}}})
+    handle.stdout.feed({"jsonrpc": "2.0", "id": load["id"], "result": {}})
+
+    assert await asyncio.wait_for(replay, 2) == "prior-sess"
+    # The replayed session/update events reached on_event.
+    await _wait_for(lambda: sum(
+        1 for e in events if e.get("method") == "session/update") >= 2)
+
+    # The replayed agent_message_chunk must NOT leak into the first live turn's
+    # answer: adopt the loaded session and drop the replay's accumulated text.
+    msgs = []
+    c.on_message(msgs.append)
+    assert msgs == []                       # replay synthesised no turn message
+    await c.send("continue please")
+    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert prompt["params"]["sessionId"] == "prior-sess"   # continues prior thread
+    handle.stdout.feed({"jsonrpc": "2.0", "method": "session/update",
+                        "params": {"sessionId": "prior-sess", "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": "NEW"}}}})
+    handle.stdout.feed({"jsonrpc": "2.0", "id": prompt["id"],
+                        "result": {"stopReason": "end_turn"}})
+    reply = await asyncio.wait_for(_first(msgs), 2)
+    assert reply == "NEW"                    # NOT "prior answerNEW"
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_resume_replays_prior_history_to_late_subscriber(convo):
+    # End-to-end resume backfill: with the ConversationListener subscribed to
+    # on_event (its constructor — the subscribe-before-replay ordering session.py
+    # guarantees), replay_history drives session/list + session/load and cursor's
+    # replay notifications flow through the SAME on_event fan-out into the replay
+    # buffer. A viewer attaching AFTER the replay then reconstructs the full prior
+    # history — the crux of the resume-history fix.
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle, session_id="fresh-sess")
+    listener = ConversationListener(c, password="pw")
+    port = await listener.start("127.0.0.1")
+    try:
+        replay = asyncio.create_task(c.replay_history())
+        listing = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+        assert listing["method"] == "session/list"
+        handle.stdout.feed({"jsonrpc": "2.0", "id": listing["id"], "result": {
+            "sessions": [{"sessionId": "prior-sess", "cwd": "/w"}]}})
+        load = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+        assert load["method"] == "session/load"
+        for text in ("prior-q", "prior-a"):
+            handle.stdout.feed({"jsonrpc": "2.0", "method": "session/update",
+                                "params": {"sessionId": "prior-sess", "update": {
+                                    "sessionUpdate": "agent_message_chunk",
+                                    "content": {"type": "text", "text": text}}}})
+        handle.stdout.feed({"jsonrpc": "2.0", "id": load["id"], "result": {}})
+        assert await asyncio.wait_for(replay, 2) == "prior-sess"
+
+        async with aiohttp.ClientSession() as s:
+            async with s.get(f"http://127.0.0.1:{port}/events",
+                             headers=_auth("pw")) as resp:
+                assert resp.status == 200
+                texts = await _collect_update_texts(resp, 2)
+                assert texts == ["prior-q", "prior-a"]
+    finally:
+        await listener.stop()
+        handle.stdout.eof()
+        await reader
+
+
+@pytest.mark.asyncio
+async def test_resume_empty_session_list_falls_back_to_new(convo):
+    # Graceful fallback: session/list yields nothing loadable (only the fresh
+    # session we just minted) → no session/load, replay_history returns None,
+    # and the conversation still works on the fresh session (resume never breaks;
+    # it just shows no history).
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle, session_id="fresh-sess")
+    replay = asyncio.create_task(c.replay_history())
+    listing = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert listing["method"] == "session/list"
+    handle.stdout.feed({"jsonrpc": "2.0", "id": listing["id"], "result": {
+        "sessions": [{"sessionId": "fresh-sess", "cwd": "/w"}]}})
+    assert await asyncio.wait_for(replay, 2) is None
+    assert handle.stdin.lines.empty()       # no session/load attempted
+    await c.send("hello")
+    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert prompt["method"] == "session/prompt"
+    assert prompt["params"]["sessionId"] == "fresh-sess"
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_resume_session_load_error_falls_back_to_new(convo):
+    # Graceful fallback: a prior session is found but session/load errors →
+    # replay_history returns None and the conversation keeps the fresh session,
+    # so a subsequent send still works and no exception escapes.
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle, session_id="fresh-sess")
+    replay = asyncio.create_task(c.replay_history())
+    listing = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    handle.stdout.feed({"jsonrpc": "2.0", "id": listing["id"], "result": {
+        "sessions": [{"sessionId": "prior-sess", "cwd": "/w"}]}})
+    load = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert load["method"] == "session/load"
+    handle.stdout.feed({"jsonrpc": "2.0", "id": load["id"],
+                        "error": {"code": -32000, "message": "cannot load"}})
+    assert await asyncio.wait_for(replay, 2) is None
+    await c.send("hello")
+    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert prompt["params"]["sessionId"] == "fresh-sess"
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_fresh_start_never_lists_or_loads(convo):
+    # A fresh (non-resume) conversation bootstraps with session/new and sends
+    # via session/prompt — it must NEVER touch session/list or session/load
+    # (those are the resume-only backfill path; session.py gates replay_history
+    # on resuming). Locks bootstrap unchanged.
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    boot = asyncio.create_task(c.bootstrap())
+    methods = []
+    req1 = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    methods.append(req1["method"])
+    handle.stdout.feed({"jsonrpc": "2.0", "id": req1["id"],
+                        "result": {"protocolVersion": 1, "agentCapabilities": {}}})
+    req2 = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    methods.append(req2["method"])
+    handle.stdout.feed({"jsonrpc": "2.0", "id": req2["id"],
+                        "result": {"sessionId": "s1"}})
+    await asyncio.wait_for(boot, 1)
+    await c.send("hi")
+    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    methods.append(prompt["method"])
+    assert methods == ["initialize", "session/new", "session/prompt"]
+    handle.stdout.eof()
+    await reader
+
+
 # --- tiny polling helpers ---------------------------------------------------
+
+
+def _auth(pw):
+    token = base64.b64encode(f"optio:{pw}".encode()).decode()
+    return {"Authorization": f"Basic {token}"}
+
+
+async def _collect_update_texts(resp, n, timeout=5):
+    """Read SSE data frames and collect the text of the first n session/update
+    events (ignoring the request-response objects the driver also broadcasts)."""
+    out, buf = [], b""
+
+    async def _go():
+        nonlocal buf
+        while len(out) < n:
+            chunk = await resp.content.read(1024)
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n\n" in buf:
+                frame, buf = buf.split(b"\n\n", 1)
+                data = [l[5:] for l in frame.split(b"\n") if l.startswith(b"data:")]
+                if not data:
+                    continue
+                ev = json.loads(b"".join(data).strip())
+                if ev.get("method") == "session/update":
+                    text = (((ev.get("params") or {}).get("update") or {})
+                            .get("content") or {}).get("text")
+                    if text is not None:
+                        out.append(text)
+
+    await asyncio.wait_for(_go(), timeout)
+    return out
 
 async def _first(bucket: list, timeout: float = 2.0):
     end = asyncio.get_event_loop().time() + timeout

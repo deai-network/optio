@@ -607,6 +607,33 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             })
             ctx.report_progress(None, "Conversation UI is live")
 
+            # Resume history backfill: the restored workdir carried cursor's
+            # PRIOR on-disk ACP session, but this run's bootstrap minted a FRESH
+            # session/new, so the listener's replay buffer starts empty — a viewer
+            # attaching post-resume would see only new turns. Now that
+            # ConversationListener above has subscribed to conversation.on_event
+            # (in its constructor), enumerate the restored sessions (session/list),
+            # pick the prior one, and session/load it: cursor replays that
+            # conversation via session/update notifications, which flow through the
+            # SAME on_event fan-out into the replay buffer; a late viewer then
+            # reconstructs the full prior history. ORDERING is load-bearing:
+            # strictly AFTER the listener subscribes (else the buffer misses the
+            # replay) and BEFORE the resume-notice send below (which continues the
+            # now-loaded thread). Gated on resuming — a fresh session has no prior
+            # conversation to backfill. Graceful: an empty list or a load error
+            # keeps the fresh session, so resume never breaks (just no history).
+            if resuming:
+                loaded = await conversation.replay_history()
+                if loaded:
+                    _LOG.info(
+                        "cursor resume: session/load replayed prior history "
+                        "(via session/list)",
+                    )
+                else:
+                    _LOG.info(
+                        "cursor resume: no prior session found; starting fresh",
+                    )
+
         # Start the in-session credential watcher for a seeded session: it
         # saves back the rotated auth.json, and (when the seed is leased)
         # renews the lease and aborts the session on lease loss.
