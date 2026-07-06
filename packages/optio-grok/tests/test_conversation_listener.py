@@ -26,6 +26,9 @@ class FakeConversation:
         self.interrupts = 0
         self.controls = []
         self.closed = False
+        # Prior conversation grok would replay on resume via session/load
+        # (replay_history re-emits it through on_event).
+        self.history = []
 
     def on_event(self, h):
         self.handlers.append(h)
@@ -53,6 +56,14 @@ class FakeConversation:
     def fire(self, event):
         for h in list(self.handlers):
             h(event)
+
+    async def replay_history(self, session_id):
+        # Resume backfill: session/load makes grok re-emit the prior conversation
+        # as session/update notifications through the SAME on_event fan-out live
+        # turns use, so the historic events land in the listener's replay buffer.
+        for e in list(self.history):
+            self.fire(e)
+        return (True, "")
 
 
 def _auth(pw):
@@ -112,6 +123,30 @@ async def test_replay_to_late_subscriber(listener):
                 "content": {"type": "text", "text": "more"}}}})
             live = await _read_events(resp, 1)
             assert live[0]["params"]["update"]["content"]["text"] == "more"
+
+
+async def test_replay_history_backfills_buffer_for_late_subscriber(listener):
+    # Resume backfill: replay_history (driven by session/load) re-emits the prior
+    # conversation through on_event AFTER the listener subscribed (its
+    # constructor), landing it in the replay buffer BEFORE any viewer attaches. A
+    # viewer connecting post-resume then sees the full prior history, not just new
+    # turns — the crux of the resume-history fix. Mirrors how session.py calls
+    # replay_history after ConversationListener(...) is constructed.
+    conv, lst, url = listener
+    conv.history = [
+        {"method": "session/update", "params": {"update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": "prior-q"}}}},
+        {"jsonrpc": "2.0", "id": 1, "result": {"stopReason": "end_turn"}},
+    ]
+    ok, _ = await conv.replay_history("old-session")
+    assert ok is True
+    async with aiohttp.ClientSession() as s:
+        async with s.get(f"{url}/events", headers=_auth("pw")) as resp:
+            assert resp.status == 200
+            replay = await _read_events(resp, 2)
+            assert replay[0]["params"]["update"]["content"]["text"] == "prior-q"
+            assert replay[1]["result"]["stopReason"] == "end_turn"
 
 
 async def test_last_event_id_resume(listener):

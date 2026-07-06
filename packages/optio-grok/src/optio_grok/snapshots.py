@@ -8,14 +8,24 @@ One document per terminal run per process_id. Layout:
       capturedAt:    datetime,
       endState:      str,          # "done" | "cancelled" | "rescued"
       workdirBlobId: ObjectId,     # GridFS — tar.gz of the whole workdir
+      sessionId:     str | None,   # grok ACP session id at capture (conversation)
     }
 
 Single-blob, unlike optio-claudecode: grok persists its session history under
 ``<GROK_HOME>/sessions`` (``<workdir>/home/.grok/sessions``), which lives
 inside the workdir tar. So there is no separate encrypted session blob — the
-workdir blob carries everything grok needs to ``--continue``. There is also no
-``sessionId``: grok resolves its own most-recent session for the cwd via
-``--continue``, so optio neither records nor replays a session UUID.
+workdir blob carries everything grok needs to resume.
+
+The recorded ``sessionId`` is grok's ACP session id (from the ``session/new``
+response), captured for CONVERSATION mode only: on resume the wrapper replays
+the prior conversation by calling ACP ``session/load(sessionId)`` against the
+restored session store (grok advertises ``agentCapabilities.loadSession`` and
+does NOT advertise ``sessionCapabilities.list``, so there is no list-based
+rediscovery — optio must persist the id itself). Field name mirrors
+optio-codex for cross-engine consistency. ``sessionId`` is ``None`` for the
+iframe (ttyd) mode, where resume is a plain workdir restore + ``grok
+--continue`` (grok resolves its own most-recent session for the cwd) and no id
+is needed.
 
 Retention: keep the latest ``SNAPSHOT_RETENTION`` per processId. Older rows
 are deleted by ``prune_snapshots``, which returns their workdir GridFS blob ids
@@ -53,14 +63,20 @@ async def insert_snapshot(
     process_id: str,
     end_state: str,
     workdir_blob_id: ObjectId,
+    session_id: str | None = None,
 ) -> dict:
-    """Insert one snapshot row and return the stored document (with ``_id``)."""
+    """Insert one snapshot row and return the stored document (with ``_id``).
+
+    ``session_id`` is grok's ACP session id (conversation mode) so resume can
+    replay history via ``session/load``; ``None`` for iframe mode (defaults to
+    ``None`` so the non-conversation callers stay unchanged)."""
     await ensure_indexes(db, prefix)
     doc = {
         "processId": process_id,
         "capturedAt": datetime.now(timezone.utc),
         "endState": end_state,
         "workdirBlobId": workdir_blob_id,
+        "sessionId": session_id,
     }
     result = await _collection(db, prefix).insert_one(doc)
     doc["_id"] = result.inserted_id

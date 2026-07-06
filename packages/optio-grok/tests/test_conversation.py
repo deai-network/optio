@@ -348,6 +348,75 @@ async def test_bootstrap_captures_session_models(convo):
 # set_control("model", …) surface — see test_conversation_controls.py.
 
 
+@pytest.mark.asyncio
+async def test_replay_history_loads_session_and_emits_updates(convo):
+    """On resume replay_history issues ``session/load(id)``; grok re-emits the
+    prior conversation as ``session/update`` notifications (reaching on_event, so
+    a listener's replay buffer backfills) and the loaded id is adopted so
+    subsequent turns continue the prior thread."""
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)   # fresh session/new -> s1
+
+    events: list = []
+    c.on_event(events.append)
+
+    replay = asyncio.create_task(c.replay_history("old-session"))
+    load = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert load["method"] == "session/load"
+    assert load["params"]["sessionId"] == "old-session"
+
+    # grok replays the prior turn's update, THEN answers the load request.
+    handle.stdout.feed({"jsonrpc": "2.0", "method": "session/update",
+                        "params": {"sessionId": "old-session", "update": {
+                            "sessionUpdate": "agent_message_chunk",
+                            "content": {"type": "text", "text": "prior-answer"}}}})
+    handle.stdout.feed({"jsonrpc": "2.0", "id": load["id"], "result": {}})
+
+    ok, detail = await asyncio.wait_for(replay, 2)
+    assert ok is True
+    assert detail == ""
+    # The loaded session is adopted so subsequent turns continue the prior thread.
+    assert c.session_id == "old-session"
+    # The replayed update reached the on_event fan-out (listener replay buffer).
+    await _wait_for(lambda: any(
+        e.get("params", {}).get("update", {}).get("sessionUpdate")
+        == "agent_message_chunk"
+        for e in events if e.get("method") == "session/update"
+    ))
+
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_replay_history_error_falls_back_keeping_fresh_session(convo):
+    """If session/load fails (unknown id / no loadable store after restore),
+    replay_history returns ``(False, reason)`` and KEEPS the fresh bootstrap
+    session so resume degrades to no-history — it never breaks the conversation."""
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)   # fresh session/new -> s1
+
+    replay = asyncio.create_task(c.replay_history("gone"))
+    load = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert load["method"] == "session/load"
+    handle.stdout.feed({"jsonrpc": "2.0", "id": load["id"],
+                        "error": {"code": -32000, "message": "no such session"}})
+
+    ok, detail = await asyncio.wait_for(replay, 2)
+    assert ok is False
+    assert "no such session" in detail
+    # Fresh session preserved -> the conversation is still usable.
+    assert c.session_id == "s1"
+    await c.send("still works")
+    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert prompt["params"]["sessionId"] == "s1"
+
+    handle.stdout.eof()
+    await reader
+
+
 # --- tiny polling helpers ---------------------------------------------------
 
 async def _first(bucket: list, timeout: float = 2.0):

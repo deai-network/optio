@@ -193,6 +193,126 @@ async def test_auto_start_sends_kickoff_first(shim_install_dir, task_root, mongo
         await optio.shutdown(grace_seconds=1.0)
 
 
+@pytest.mark.asyncio
+async def test_conversation_resume_snapshot_records_session_id(
+    shim_install_dir, task_root, mongo_db,
+):
+    """A conversation-mode task with supports_resume captures a snapshot whose
+    sessionId is the live ACP session id — the seam resume reads back to call
+    session/load and replay the prior conversation. (The fake ACP grok's
+    session/new returns the fixed id ``fake-grok-session``.)"""
+    from optio_grok.snapshots import load_latest_snapshot
+    optio = await _make_optio(mongo_db, "gkconvsid")
+    try:
+        task = create_grok_task(
+            process_id="gk-conv-sid",
+            name="Conversation session-id snapshot",
+            config=_conversation_config(shim_install_dir, supports_resume=True),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result(
+            "gk-conv-sid", session_id=None, timeout=60,
+        )
+        await conv.send("hello")
+        await conv.close()
+        proc = await _wait_terminal(optio, "gk-conv-sid")
+        assert proc["status"]["state"] == "done"
+        snap = await load_latest_snapshot(mongo_db, "gkconvsid", "gk-conv-sid")
+        assert snap is not None, "conversation-mode session captured no snapshot"
+        assert snap["sessionId"] == "fake-grok-session"
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
+@pytest.mark.asyncio
+async def test_conversation_ui_resume_replays_prior_history(
+    shim_install_dir, task_root, mongo_db, tmp_path, monkeypatch,
+):
+    """conversation_ui resume: the fresh run records its ACP sessionId in the
+    snapshot; the resumed run reads it back and calls ``session/load`` with it
+    (AFTER the listener subscribes) so grok replays the prior conversation. The
+    fake grok records every session/load id to a durable path outside the wiped
+    workdir, so we assert the resumed run loaded the persisted id."""
+    import json as _json
+    record = tmp_path / "grok_acp_load.jsonl"
+    monkeypatch.setenv("FAKE_GROK_ACP_RECORD", str(record))
+    optio = await _make_optio(mongo_db, "gkconvreplay")
+    try:
+        task = create_grok_task(
+            process_id="gk-conv-replay",
+            name="Conversation resume replay",
+            config=_conversation_config(
+                shim_install_dir, conversation_ui=True, supports_resume=True,
+            ),
+        )
+        await optio.adhoc_define(task)
+
+        # Fresh run: one turn writes the session store; teardown snapshots the
+        # ACP sessionId (fake session/new returns "fake-grok-session").
+        conv = await optio.launch_and_await_result(
+            "gk-conv-replay", session_id=None, timeout=60,
+        )
+        await conv.send("hello")
+        await conv.close()
+        proc = await _wait_terminal(optio, "gk-conv-replay")
+        assert proc["status"]["state"] == "done"
+
+        # Resumed run: restores the workdir, reads the persisted sessionId, and
+        # (conversation_ui + resuming) calls session/load to replay history.
+        conv2 = await optio.launch_and_await_result(
+            "gk-conv-replay", resume=True, session_id=None, timeout=60,
+        )
+        await conv2.close()
+        await _wait_terminal(optio, "gk-conv-replay")
+
+        lines = [l for l in record.read_text().splitlines() if l.strip()]
+        loads = [_json.loads(l)["session_load"] for l in lines]
+        assert "fake-grok-session" in loads, f"session/load not called on resume: {loads}"
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
+@pytest.mark.asyncio
+async def test_conversation_ui_resume_session_load_reject_falls_back(
+    shim_install_dir, task_root, mongo_db, tmp_path, monkeypatch,
+):
+    """Graceful fallback: when grok rejects session/load on resume (unknown id /
+    no loadable store after restore), the wrapper keeps the fresh session/new
+    session — no exception escapes, and the resumed run still reaches 'done'."""
+    monkeypatch.setenv("FAKE_GROK_ACP_LOAD", "reject")
+    optio = await _make_optio(mongo_db, "gkconvreject")
+    try:
+        task = create_grok_task(
+            process_id="gk-conv-reject",
+            name="Conversation resume reject",
+            config=_conversation_config(
+                shim_install_dir, conversation_ui=True, supports_resume=True,
+            ),
+        )
+        await optio.adhoc_define(task)
+
+        conv = await optio.launch_and_await_result(
+            "gk-conv-reject", session_id=None, timeout=60,
+        )
+        await conv.send("hello")
+        await conv.close()
+        assert (await _wait_terminal(optio, "gk-conv-reject"))["status"]["state"] == "done"
+
+        # Resume: session/load is rejected -> fall back to the fresh session; the
+        # conversation is still usable (a turn round-trips) and the run completes.
+        conv2 = await optio.launch_and_await_result(
+            "gk-conv-reject", resume=True, session_id=None, timeout=60,
+        )
+        msgs: asyncio.Queue[str] = asyncio.Queue()
+        conv2.on_message(msgs.put_nowait)
+        await conv2.send("still working after fallback")
+        assert await asyncio.wait_for(msgs.get(), 10)  # a reply arrives
+        await conv2.close()
+        assert (await _wait_terminal(optio, "gk-conv-reject"))["status"]["state"] == "done"
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
 def test_ui_widget_per_mode():
     """Conversation tasks carry no widget; iframe tasks use 'iframe-input'."""
     conv_task = create_grok_task(

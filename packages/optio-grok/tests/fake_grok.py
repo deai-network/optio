@@ -222,6 +222,20 @@ def _scenario_probe(prompt: str) -> int:
     return 3 if mode == "alive_badexit" else 0
 
 
+def _record_acp_load(session_id) -> None:
+    """Durably record a ``session/load``'s sessionId (resume history replay).
+
+    The workdir is wiped/restored on resume, so ``FAKE_GROK_ACP_RECORD`` (a path
+    OUTSIDE the workdir) is how the resume test asserts the wrapper called
+    ``session/load`` with the persisted id."""
+    dest = os.environ.get("FAKE_GROK_ACP_RECORD")
+    if not dest:
+        return
+    with open(dest, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"session_load": session_id}) + "\n")
+        fh.flush()
+
+
 def _acp_send(obj: dict) -> None:
     sys.stdout.write(json.dumps(obj) + "\n")
     sys.stdout.flush()
@@ -273,8 +287,31 @@ def _run_acp_stdio() -> int:
             _acp_send({"jsonrpc": "2.0", "id": mid, "result": {
                 "protocolVersion": 1, "agentCapabilities": {}, "authMethods": []}})
         elif method == "session/new":
+            # Real grok returns a populated ACP model block here; mirror that so
+            # the wrapper's model picker uses it (an empty list would force the
+            # `grok models` CLI fallback, which the scenario fake can't answer).
             _acp_send({"jsonrpc": "2.0", "id": mid, "result": {
-                "sessionId": session_id, "models": []}})
+                "sessionId": session_id, "models": {
+                    "currentModelId": "grok-fake",
+                    "availableModels": [{"modelId": "grok-fake", "name": "Grok Fake"}],
+                }}})
+        elif method == "session/load":
+            # Resume: grok advertises loadSession, so the wrapper replays prior
+            # history by loading the persisted session. Model the ACP contract —
+            # re-emit the prior conversation as session/update notifications,
+            # THEN answer the load request. ``FAKE_GROK_ACP_LOAD=reject`` models
+            # an unknown/unloadable id so the wrapper's graceful fallback (keep
+            # the fresh session/new session) can be exercised.
+            sid = (msg.get("params") or {}).get("sessionId")
+            _record_acp_load(sid)
+            if os.environ.get("FAKE_GROK_ACP_LOAD", "ok").strip() == "reject":
+                _acp_send({"jsonrpc": "2.0", "id": mid,
+                           "error": {"code": -32000, "message": "unknown session"}})
+            else:
+                _acp_notify_update(sid, {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "replayed-history"}})
+                _acp_send({"jsonrpc": "2.0", "id": mid, "result": {}})
         elif method == "session/prompt":
             turn += 1
             prompt = (msg.get("params") or {}).get("prompt") or []

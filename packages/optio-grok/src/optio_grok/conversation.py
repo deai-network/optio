@@ -414,6 +414,61 @@ class GrokConversation:
     def closed(self) -> bool:
         return self._closed.is_set()
 
+    @property
+    def session_id(self) -> str | None:
+        """The live ACP session id. After bootstrap() this is the ``session/new``
+        id; after a successful ``replay_history`` it is the ADOPTED prior id.
+        Persisted in the resume snapshot so the next resume can ``session/load``
+        it."""
+        return self._session_id
+
+    async def replay_history(self, session_id: str) -> tuple[bool, str]:
+        """Resume-history replay: load a PRIOR ACP session so grok re-emits it.
+
+        On resume the workdir tar restored grok's ACP session store
+        (``home/.grok/sessions``, inside the workdir) and bootstrap() minted a
+        FRESH session via ``session/new`` whose event stream — and thus any
+        listener's replay buffer — starts empty: a viewer attaching after the
+        resume would see only NEW turns. grok advertises
+        ``agentCapabilities.loadSession``, so ``session/load(id)`` makes it
+        re-emit the whole prior conversation as ``session/update`` notifications;
+        those flow through the SAME ``on_event`` fan-out live turns use (via
+        ``run_reader`` → ``_route``), landing in the listener's replay buffer, and
+        a late viewer then reconstructs the full history exactly like live turns.
+        On success the loaded id is ADOPTED as the live session so subsequent
+        ``send``s continue the prior thread (grok gets its context back too), and
+        the fresh ``session/new`` session is abandoned.
+
+        ORDERING is load-bearing: the pre-subscribe event queue is drained by
+        ``_dispatch_loop`` and fanned to whatever handlers exist AT THAT MOMENT
+        (nothing is retained for late handlers), so a replay before the listener
+        subscribes would be dropped. Hence this is deferred out of bootstrap()
+        into session.py, called strictly AFTER ConversationListener subscribes.
+
+        Graceful-fallback contract: on ANY failure (unknown id, no loadable
+        store after restore, capability mismatch, closed conversation) the fresh
+        bootstrap session is KEPT and ``(False, reason)`` is returned — resume
+        must never break, it just shows no history. On success returns
+        ``(True, "")``."""
+        if self._closed.is_set():
+            return (False, self._close_reason or "conversation closed")
+        try:
+            resp = await self._request("session/load", {
+                "sessionId": session_id,
+                "cwd": self._cwd,
+                "mcpServers": self._mcp_servers,
+            })
+        except Exception as exc:  # noqa: BLE001 — never let resume break the session
+            _LOG.exception("grok conversation: session/load raised")
+            return (False, str(exc) or exc.__class__.__name__)
+        err = (resp or {}).get("error")
+        if err is not None:
+            return (False, str(err.get("message") or err))
+        # Adopt the loaded session for subsequent turns (continue the prior
+        # thread); the fresh session/new session is left abandoned.
+        self._session_id = session_id
+        return (True, "")
+
     # -- internals -----------------------------------------------------------
 
     async def _request(self, method: str, params: dict) -> dict:

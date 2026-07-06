@@ -46,6 +46,30 @@ async def test_insert_and_load_latest_returns_newest(mongo_db):
     assert "sessionBlobId" not in latest
 
 
+async def test_insert_records_session_id_and_load_returns_it(mongo_db):
+    """The ACP sessionId captured at snapshot time round-trips through load — the
+    seam ``session/load`` reads on resume to replay the prior conversation."""
+    pid = "proc_sid"
+    await insert_snapshot(
+        mongo_db, "opt", process_id=pid, end_state="done",
+        workdir_blob_id=ObjectId(), session_id="fake-grok-session",
+    )
+    latest = await load_latest_snapshot(mongo_db, "opt", pid)
+    assert latest["sessionId"] == "fake-grok-session"
+
+
+async def test_insert_allows_none_session_id(mongo_db):
+    """sessionId stays optional: an iframe-mode (non-ACP) capture has no session
+    id, and resume then degrades to a plain workdir + ``--continue`` restore."""
+    pid = "proc_no_sid"
+    await insert_snapshot(
+        mongo_db, "opt", process_id=pid, end_state="done",
+        workdir_blob_id=ObjectId(), session_id=None,
+    )
+    latest = await load_latest_snapshot(mongo_db, "opt", pid)
+    assert latest["sessionId"] is None
+
+
 async def test_load_latest_none_when_empty(mongo_db):
     assert await load_latest_snapshot(mongo_db, "opt", "nope") is None
 

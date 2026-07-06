@@ -107,6 +107,10 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
     # auto-start suppression). Set by _prepare, read by the body + teardown.
     resuming = False
     pass_continue = False
+    # Persisted ACP session id restored from the resume snapshot (conversation
+    # mode). Threaded into the deferred session/load replay below; None when not
+    # resuming, in iframe mode, or when the prior snapshot recorded no id.
+    resume_session_id: str | None = None
     # Resolved seed id for a fresh, seeded launch (Stage 3). Set by _prepare
     # (str seed_id → itself; SeedProvider callable → awaited). Stays None on
     # resume and when no seed_id is configured.
@@ -137,7 +141,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
         so it is not wiped by it.
         """
         nonlocal grok_path, ttyd_path, resuming, pass_continue, resolved_seed_id
-        nonlocal lease_holder, cred_baseline
+        nonlocal lease_holder, cred_baseline, resume_session_id
         grok_path = await host_actions.ensure_grok_installed(
             hook_ctx,
             install_if_missing=config.install_if_missing,
@@ -181,6 +185,11 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             # restored workdir at the same absolute path (deterministic taskdir),
             # so the cwd-keyed session lookup matches.
             pass_continue = True
+            # Conversation mode: the ACP session id the fresh grok stored last
+            # run (None for iframe snapshots or pre-seam rows). Handed to the
+            # deferred session/load replay in _conversation_body so grok re-emits
+            # the prior conversation into the listener's replay buffer.
+            resume_session_id = snapshot.get("sessionId")
 
         if not resuming and config.seed_id is not None:
             # Seeded FRESH start: resolve the seed id (str → itself; a
@@ -477,6 +486,38 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             })
             ctx.report_progress(None, "Conversation UI is live")
 
+            # Resume history replay: bootstrap() minted a FRESH session via
+            # session/new, so the listener's replay buffer starts empty — a
+            # viewer attaching after resume would see only NEW turns. grok
+            # advertises loadSession (and does NOT advertise sessionCapabilities
+            # .list, so there is no list-based rediscovery — we persist the id
+            # ourselves), so now that ConversationListener above has subscribed
+            # to conversation.on_event (in its constructor), load the PRIOR ACP
+            # session by its persisted id: grok re-emits the whole conversation
+            # as session/update notifications through the SAME on_event fan-out
+            # so every historic turn lands in the replay buffer, AND adopts that
+            # session so new turns continue the prior thread. ORDERING is
+            # load-bearing: strictly AFTER the listener subscribes (else the
+            # replayed updates are dropped — the dispatcher fans to zero
+            # handlers) and BEFORE the resume-notice send below (which then goes
+            # to the loaded session). Gated on resuming + a persisted id; on ANY
+            # failure (unknown id, no loadable store after restore, capability
+            # mismatch) the fresh session/new session is kept — resume must
+            # never break, it just shows no history.
+            if resuming and resume_session_id:
+                ok, detail = await conversation.replay_history(resume_session_id)
+                if ok:
+                    _LOG.info("grok resume: session/load replayed prior history")
+                else:
+                    _LOG.info(
+                        "grok resume: session/load unavailable (%s); starting "
+                        "fresh session", detail,
+                    )
+            elif resuming:
+                _LOG.info(
+                    "grok resume: no persisted session id; starting fresh session",
+                )
+
         # Kickoff prompt as the first turn (headless: no positional prompt path).
         # On resume, push a System: resume notice instead so the resumed session
         # notices promptly (parity with claudecode/opencode; resume.log stays the
@@ -688,6 +729,13 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                     ctx, host,
                     end_state="cancelled" if cancelled else "done",
                     workdir_exclude=config.workdir_exclude,
+                    # Conversation mode: persist the live ACP session id (the
+                    # adopted-prior id after a replay, else the fresh session/new
+                    # id) so the next resume can session/load + replay it. iframe
+                    # mode has no conversation → None (plain --continue restore).
+                    session_id=(
+                        conversation.session_id if conversation is not None else None
+                    ),
                 )
             except Exception:
                 _LOG.exception(
@@ -719,6 +767,7 @@ async def _capture_snapshot(
     *,
     end_state: str,
     workdir_exclude: list[str] | None,
+    session_id: str | None = None,
 ) -> None:
     """Capture a single-blob resume snapshot of the (now static) workdir.
 
@@ -727,6 +776,10 @@ async def _capture_snapshot(
     session blob (unlike optio-claudecode) and no defensive home wipe. Streams
     the tar into GridFS, records the snapshot row, prunes to the retention
     limit (deleting stale blobs), and surfaces the Resume affordance.
+
+    ``session_id`` is grok's live ACP session id (conversation mode); it rides
+    the snapshot row so a later resume can ``session/load`` it to replay prior
+    history. ``None`` for iframe mode.
     """
     async with ctx.store_blob("workdir") as wwriter:
         async for chunk in host.archive_workdir(workdir_exclude):
@@ -738,6 +791,7 @@ async def _capture_snapshot(
         process_id=ctx.process_id,
         end_state=end_state,
         workdir_blob_id=workdir_blob_id,
+        session_id=session_id,
     )
 
     stale = await prune_snapshots(ctx._db, ctx._prefix, ctx.process_id)
