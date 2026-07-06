@@ -79,6 +79,52 @@ async def mongo_db():
     client.close()
 
 
+async def _make_fake_conv(tmp_path, shim_install_dir, *, slow: bool):
+    """Build an ``AntigravityConversation`` driving the fake ``agy`` binary.
+
+    A ``LocalHost`` runs each ``agy -p`` turn; ``HOME`` points at a per-task
+    home so the fake writes its transcript to
+    ``<home>/.gemini/antigravity/transcript.jsonl`` — the real path the driver
+    tails. ``slow`` sets ``FAKE_AGY_SLOW`` so a turn parks long enough for an
+    ``interrupt()`` test to kill it mid-flight.
+    """
+    from optio_antigravity.conversation import AntigravityConversation
+    from optio_host.host import LocalHost
+
+    taskdir = tmp_path / "task"
+    host = LocalHost(str(taskdir))
+    await host.setup_workdir()
+    home = taskdir / "home"
+    transcript = home / ".gemini" / "antigravity" / "transcript.jsonl"
+    env = {"HOME": str(home)}
+    if slow:
+        env["FAKE_AGY_SLOW"] = "1"
+    conv = AntigravityConversation(
+        host=host,
+        agy_path=str(shim_install_dir / "agy"),
+        cwd=host.workdir,
+        env=env,
+        transcript_path=str(transcript),
+    )
+    return conv
+
+
+@pytest_asyncio.fixture
+async def fake_agy_conv(tmp_path, shim_install_dir):
+    """AntigravityConversation over the fake ``agy`` (fast, canned turns)."""
+    conv = await _make_fake_conv(tmp_path, shim_install_dir, slow=False)
+    yield conv
+    await conv.close()
+
+
+@pytest_asyncio.fixture
+async def fake_agy_slow(tmp_path, shim_install_dir):
+    """AntigravityConversation whose turns park (for interrupt tests)."""
+    conv = await _make_fake_conv(tmp_path, shim_install_dir, slow=True)
+    yield conv
+    await conv.close()
+
+
 @dataclass
 class Captured:
     progress: list[tuple[float | None, str | None]] = field(default_factory=list)
