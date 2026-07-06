@@ -11,7 +11,13 @@ from optio_agents.protocol.features import ProtocolFeatures
 from optio_agents.protocol.parser import BrowserEvent, parse_log_line
 
 
-_SHIM_NAMES = ("xdg-open", "gio", "open", "sensible-browser", "www-browser")
+_SHIM_NAMES = (
+    "xdg-open", "gio", "open", "sensible-browser", "www-browser",
+    "x-www-browser",
+    "chromium", "chromium-browser",
+    "google-chrome", "google-chrome-stable", "google-chrome-beta",
+    "firefox",
+)
 
 
 @pytest.mark.asyncio
@@ -52,6 +58,8 @@ async def test_redirect_captures_browser_marker_end_to_end(tmp_path):
 
     assert env_add["BROWSER"].endswith("/bin/xdg-open")
     assert env_add["PATH"].startswith(f"{host.workdir}/bin:")
+    # A DISPLAY is presented so a graphical-env-gated agent actually opens.
+    assert env_add["DISPLAY"]
 
     subprocess.run([os.path.join(host.workdir, "bin", "xdg-open"),
                     "https://example.com/login"], check=True)
@@ -62,3 +70,10 @@ async def test_redirect_captures_browser_marker_end_to_end(tmp_path):
     assert isinstance(ev, BrowserEvent)
     # Shim quotes the URL for transport; the parser strips them to the bare URL.
     assert ev.url == 'https://example.com/login'
+
+    # A direct browser-binary exec (agent bypassing $BROWSER/xdg-open) is captured too.
+    subprocess.run([os.path.join(host.workdir, "bin", "firefox"),
+                    "https://example.com/direct"], check=True)
+    log2 = open(os.path.join(host.workdir, "optio.log")).read()
+    direct = [ln for ln in log2.splitlines() if 'example.com/direct' in ln]
+    assert len(direct) == 1 and direct[0].startswith("BROWSER:")

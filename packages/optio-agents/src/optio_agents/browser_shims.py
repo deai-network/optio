@@ -12,9 +12,13 @@ happen when its child process tries to open one — encoded as a
 
 ``prepare_browser_shims`` writes the stubs (if any) under
 ``<workdir>/bin`` and returns the env additions to merge into the agent
-launch env (``BROWSER`` + a ``<workdir>/bin`` PATH prepend), or ``None``
-for ``ignore``. Both returned values are absolute, so the stub wins
-regardless of HOME isolation or local-vs-SSH.
+launch env (``BROWSER`` + a ``<workdir>/bin`` PATH prepend + a ``DISPLAY``
+so a graphical-env-gated agent actually tries to open), or ``None`` for
+``ignore``. The stubs shadow both the indirect openers (``xdg-open``,
+``gio``, ``open``, ``sensible-browser``, ``www-browser``, ``x-www-browser``)
+and the direct browser binaries (``chromium``/``google-chrome``/``firefox``
+and variants) an agent may exec itself. All returned values are absolute, so
+the stub wins regardless of HOME isolation or local-vs-SSH.
 """
 
 from __future__ import annotations
@@ -27,7 +31,18 @@ from optio_host.host import Host
 
 BrowserMode = Literal["ignore", "suppress", "redirect"]
 
-_SHIM_NAMES = ("xdg-open", "gio", "open", "sensible-browser", "www-browser")
+# Openers to shadow. The first group is the indirect openers ($BROWSER /
+# desktop helpers); the second is the direct browser binaries an agent may
+# exec itself when the indirect ones are absent (agy carries a
+# google-chrome/chromium/firefox fallback list). Shadowing the direct binaries
+# too means a self-exec of the browser is captured/suppressed as well.
+_SHIM_NAMES = (
+    "xdg-open", "gio", "open", "sensible-browser", "www-browser",
+    "x-www-browser",
+    "chromium", "chromium-browser",
+    "google-chrome", "google-chrome-stable", "google-chrome-beta",
+    "firefox",
+)
 
 _SUPPRESS_BODY = "#!/bin/sh\nexit 0\n"
 
@@ -50,7 +65,16 @@ async def _write_shims(host: Host, body: str) -> dict[str, str]:
     extra_path = workdir_bin + ":" + os.environ.get(
         "PATH", "/usr/local/bin:/usr/bin:/bin",
     )
-    return {"BROWSER": f"{workdir_bin}/xdg-open", "PATH": extra_path}
+    return {
+        "BROWSER": f"{workdir_bin}/xdg-open",
+        "PATH": extra_path,
+        # Present a DISPLAY so an agent that gates browser-opening on "is there a
+        # graphical session?" decides to invoke an opener — which our shim then
+        # captures (redirect) or swallows (suppress). The shim exits immediately
+        # without touching X11, so the (non-existent) server never causes a hang.
+        # A real worker DISPLAY, if any, is preserved.
+        "DISPLAY": os.environ.get("DISPLAY") or ":0",
+    }
 
 
 async def prepare_browser_shims(
