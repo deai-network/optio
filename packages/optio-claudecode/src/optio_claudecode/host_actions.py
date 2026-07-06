@@ -16,6 +16,7 @@ import shlex
 from typing import TYPE_CHECKING, Any
 
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, claustrum
+from optio_agents import tmux_input as _tmux_input
 from optio_host.host import proc_wait
 
 if TYPE_CHECKING:
@@ -1098,32 +1099,14 @@ async def send_text_to_claude(
 ) -> None:
     """Fake-type a message into the claude TUI and submit it.
 
-    Uses ``set-buffer`` + ``paste-buffer`` (robust for arbitrary text incl.
-    spaces, which ``send-keys -l`` would mistreat), then — after a brief
-    settle — a single ``Enter`` to submit. The settle is essential: an
-    ``Enter`` sent in the same burst as the paste lands while claude is still
-    settling the (bracketed) paste, so claude consumes the CR as a literal
-    newline *inside* the input box rather than a submit — the message then
-    sits unsent. Decoupling the Enter by ``_SUBMIT_SETTLE_S`` makes it a
-    distinct keypress that submits. Raises on a tmux failure (the caller
-    treats that as 'agent unreachable', which ``send_to_agent`` converts to
-    False)."""
-    s = shlex.quote(tmux_socket)
-    sess = shlex.quote(tmux_session)
-    tp = shlex.quote(tmux_path)
-    buf = "optio-feedback"
-    cmd = (
-        f"{tp} -S {s} set-buffer -b {buf} -- {shlex.quote(text)} && "
-        f"{tp} -S {s} paste-buffer -d -b {buf} -t {sess} && "
-        f"sleep {_SUBMIT_SETTLE_S} && "
-        f"{tp} -S {s} send-keys -t {sess} Enter"
+    Thin wrapper over the shared :func:`optio_agents.tmux_input.send_text_to_tmux`
+    pinned to claude's historical buffer name (``optio-feedback``) and settle
+    (``_SUBMIT_SETTLE_S``) so behaviour is byte-identical to the pre-extraction
+    implementation."""
+    await _tmux_input.send_text_to_tmux(
+        host, tmux_path, tmux_socket, tmux_session, text,
+        buffer="optio-feedback", submit_settle=_SUBMIT_SETTLE_S,
     )
-    result = await host.run_command(cmd)
-    if result.exit_code != 0:
-        raise RuntimeError(
-            f"send_text_to_claude: tmux injection failed "
-            f"(exit {result.exit_code}): {result.stderr!r}"
-        )
 
 
 async def send_key_to_claude(
@@ -1131,21 +1114,8 @@ async def send_key_to_claude(
 ) -> None:
     """Send a single navigation keystroke into the claude TUI (no paste/settle),
     for driving TUI menus from the iframe-input widget when the input box is
-    empty. ``key`` must be one of ``input_listener.NAV_KEYS`` (a tmux key name);
-    a disallowed key raises rather than reaching ``send-keys``."""
-    from optio_claudecode.input_listener import NAV_KEYS
-
-    if key not in NAV_KEYS:
-        raise ValueError(f"send_key_to_claude: disallowed key {key!r}")
-    s = shlex.quote(tmux_socket)
-    sess = shlex.quote(tmux_session)
-    tp = shlex.quote(tmux_path)
-    result = await host.run_command(f"{tp} -S {s} send-keys -t {sess} {key}")
-    if result.exit_code != 0:
-        raise RuntimeError(
-            f"send_key_to_claude: tmux send-keys {key} failed "
-            f"(exit {result.exit_code}): {result.stderr!r}"
-        )
+    empty. Thin wrapper over :func:`optio_agents.tmux_input.send_key_to_tmux`."""
+    await _tmux_input.send_key_to_tmux(host, tmux_path, tmux_socket, tmux_session, key)
 
 
 def build_focus_mode(
