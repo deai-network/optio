@@ -29,6 +29,7 @@ import os
 import re
 import secrets
 import shlex
+import time as _time
 
 from optio_core.context import ProcessContext
 from optio_core.models import BasicAuth, TaskInstance
@@ -55,6 +56,19 @@ from optio_kimicode.types import KimiCodeTaskConfig
 
 
 _LOG = logging.getLogger(__name__)
+
+# Cancel/capture step tracing — shares the optio_core.cancel_trace logger and
+# the OPTIO_CANCEL_TRACE env gate so its lines interleave with the executor's
+# and host's cancel trace, giving one monotonic-timestamped teardown timeline
+# (run with OPTIO_CANCEL_TRACE=1). Diagnostic only; no behavioral effect.
+_trace_logger = logging.getLogger("optio_core.cancel_trace")
+_CANCEL_TRACE = os.environ.get("OPTIO_CANCEL_TRACE", "0").lower() in ("1", "true", "yes")
+
+
+def _trace(fmt: str, *args: object) -> None:
+    if _CANCEL_TRACE:
+        _trace_logger.warning("[%.3f] optio-kimicode " + fmt, _time.monotonic(), *args)
+
 
 READY_TIMEOUT_S = 30.0
 
@@ -652,6 +666,11 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
     finally:
         if not ctx.should_continue():
             cancelled = True
+        _trace(
+            "finally: ENTER cancelled=%s resuming=%s seeded=%s conversation=%s",
+            cancelled, resuming, resolved_seed_id is not None,
+            config.mode == "conversation",
+        )
         # kimi authenticates with a SINGLE-USE rotating refresh token. If kimi
         # rotated it this session, the new kimi-code.json must reach the seed via
         # the backstop below — but an aggressive SIGKILL can beat kimi's flush,
@@ -667,10 +686,12 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
         # long-lived SSE loops are woken (bounded shutdown) before the
         # subprocess teardown below.
         if conv_listener is not None:
+            _trace("finally: conv_listener.stop START")
             try:
                 await conv_listener.stop()
             except Exception:
                 _LOG.exception("conversation listener cleanup failed")
+            _trace("finally: conv_listener.stop DONE")
         # kimi serves its own SPA (iframe) / speaks ACP over stdio
         # (conversation) — either way there is no tmux/ttyd tree. Terminate the
         # subprocess directly; its EOF drives the conversation to closed. A
@@ -678,21 +699,28 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
         # completion or any seeded session uses SIGTERM so kimi shuts down (and
         # flushes creds) gracefully.
         if launched_handle is not None:
+            _trace(
+                "finally: terminate_subprocess START aggressive=%s (graceful "
+                "SIGTERM waits up to 5s)", kimi_aggressive,
+            )
             try:
                 await host.terminate_subprocess(
                     launched_handle, aggressive=kimi_aggressive,
                 )
             except Exception:
                 _LOG.exception("terminate kimi server subprocess failed")
+            _trace("finally: terminate_subprocess DONE")
 
         # Stop the credential watcher before the final save-back so the two
         # never race on the same seed blob.
         if cred_watch_task is not None:
+            _trace("finally: cred_watch_task cancel START")
             cred_watch_task.cancel()
             try:
                 await cred_watch_task
             except asyncio.CancelledError:
                 pass
+            _trace("finally: cred_watch_task cancel DONE")
 
         # Final backstop save-back — LOAD-BEARING, not defensive: kimi's own
         # credential write is best-effort and the kimi provider has already
@@ -700,6 +728,7 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
         # persisted ONLY here. Runs after kimi terminated so kimi-code.json is
         # final (the graceful teardown above ensured the flush completed).
         if resolved_seed_id is not None:
+            _trace("finally: save_back_if_changed START")
             try:
                 cred_baseline = await cred_watcher.save_back_if_changed(
                     ctx, host,
@@ -710,6 +739,7 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                 )
             except Exception:
                 _LOG.exception("final credential save-back failed")
+            _trace("finally: save_back_if_changed DONE")
 
         # Release the lease AFTER the final save-back (opencode's deliberate
         # ordering): a new acquirer must never merge the pre-save-back blob.
@@ -734,11 +764,13 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
         ):
             try:
                 if not await cred_watcher.capture_gate_ok(host):
+                    _trace("finally: capture_seed SKIPPED (no credentials)")
                     _LOG.warning(
                         "seed capture skipped: home/credentials/kimi-code.json "
                         "absent or invalid (login-less session)",
                     )
                 else:
+                    _trace("finally: capture_seed START")
                     seed_id = await _seeds.capture_seed(
                         ctx, host,
                         manifest=KIMI_SEED_MANIFEST,
@@ -746,7 +778,9 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                         encrypt=config.session_blob_encrypt,
                     )
                     await _call_maybe_async(config.on_seed_saved, seed_id, None)
+                    _trace("finally: capture_seed DONE id=%s", seed_id)
             except Exception:
+                _trace("finally: capture_seed RAISED")
                 _LOG.exception(
                     "seed capture failed; callback not fired, teardown continues",
                 )
@@ -754,6 +788,8 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
         # Capture a resume snapshot of the now-static workdir + session store.
         # Gated on supports_resume + a launched handle (a session actually ran).
         if config.supports_resume and launched_handle is not None:
+            _trace("finally: capture_snapshot START end_state=%s",
+                   "cancelled" if cancelled else "done")
             try:
                 await capture_snapshot(
                     ctx, host,
@@ -761,19 +797,24 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                     session_blob_encrypt=config.session_blob_encrypt,
                     workdir_exclude=config.workdir_exclude,
                 )
+                _trace("finally: capture_snapshot DONE")
             except Exception:
+                _trace("finally: capture_snapshot RAISED")
                 _LOG.exception(
                     "snapshot capture failed; proceeding with workdir wipe",
                 )
 
+        _trace("finally: cleanup_taskdir START aggressive=%s", cancelled)
         try:
             await host.cleanup_taskdir(aggressive=cancelled)
         except Exception:
             _LOG.exception("cleanup_taskdir failed")
+        _trace("finally: cleanup_taskdir DONE")
         try:
             await host.disconnect()
         except Exception:
             _LOG.exception("host.disconnect failed")
+        _trace("finally: EXIT (teardown complete)")
 
 
 # --- kimi REST helpers (session pre-create / prompt push) ------------------
