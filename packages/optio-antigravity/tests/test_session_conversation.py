@@ -4,7 +4,8 @@ Each test bootstraps a real optio engine (Mongo via Docker), defines the task
 via ``adhoc_define``, and obtains the live ``AntigravityConversation`` through
 ``launch_and_await_result``. The shim fixtures point the session at
 ``agy-shim.sh`` → ``fake_agy.py``, whose ``-p`` print mode appends a canned turn
-to ``~/.gemini/antigravity/transcript.jsonl`` (no tmux/ttyd runs in this mode).
+in the real ``agy`` layout under ``~/.gemini/antigravity-cli/brain/<uuid>/…``
+(no tmux/ttyd runs in this mode).
 
 Antigravity has no live transport, so a conversation is synthetic: each
 ``conv.send`` awaits one whole ``agy -p`` turn under a PTY, then emits one
@@ -250,7 +251,7 @@ async def test_conversation_ui_session_lifecycle(shim_install_dir, task_root, mo
 
         # Drive one turn, then hit the listener directly (authenticating with the
         # inner credential the widget proxy would inject); the replay buffer must
-        # carry the turn's assistant transcript event.
+        # carry the turn's raw PLANNER_RESPONSE transcript line (real schema).
         await conv.send("say hi")
         token = base64.b64encode(f"optio:{inner['password']}".encode()).decode()
         headers = {"Authorization": f"Basic {token}"}
@@ -258,9 +259,10 @@ async def test_conversation_ui_session_lifecycle(shim_install_dir, task_root, mo
             async with session.get(f"{upstream['url']}/events", headers=headers) as resp:
                 assert resp.status == 200
                 answer = await _read_until(
-                    resp, lambda e: e.get("type") == "assistant",
+                    resp,
+                    lambda e: e.get("type") == "PLANNER_RESPONSE" and e.get("content"),
                 )
-                assert answer["text"].strip() == "hi"
+                assert answer["content"].strip() == "hi"
 
         await conv.close()
         proc = await _wait_terminal(optio, "ag-conv-ui")

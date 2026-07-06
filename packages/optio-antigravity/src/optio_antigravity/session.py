@@ -393,11 +393,11 @@ async def run_antigravity_session(
             **(config.env or {}),
             **(hook_ctx.browser_launch_env or {}),
         }
-        # The per-task HOME (from _isolation_env) is <workdir>/home, so agy
-        # writes its transcript to <workdir>/home/.gemini/antigravity/....
-        transcript_path = (
-            f"{launch_env['HOME']}/.gemini/antigravity/transcript.jsonl"
-        )
+        # The per-task HOME (from _isolation_env) is <workdir>/home; agy writes
+        # its conversation state under <home>/.gemini/antigravity-cli/ (the
+        # transcript is per-conversation, discovered from last_conversations.json
+        # after turn 1 — so the driver takes the home root, not a fixed path).
+        agy_home = launch_env["HOME"]
         # Stage 8: each ``agy -p`` turn runs Landlock-confined via the claustrum
         # wrap prepended to its argv (None when fs_isolation is off).
         claustrum_wrap = await host_actions._build_claustrum_wrap(
@@ -407,7 +407,7 @@ async def run_antigravity_session(
             host=host,
             agy_path=agy_path,
             cwd=host.workdir,
-            transcript_path=transcript_path,
+            home=agy_home,
             env=launch_env,
             model=config.model,
             claustrum_wrap=claustrum_wrap,

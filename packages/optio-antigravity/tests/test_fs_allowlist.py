@@ -194,7 +194,7 @@ def test_conversation_prepends_claustrum_before_agy():
         host=None,
         agy_path="/wd/home/.local/bin/agy",
         cwd="/wd",
-        transcript_path="/wd/home/.gemini/antigravity/transcript.jsonl",
+        home="/wd/home",
         claustrum_wrap=wrap,
     )
     argv = conv._build_argv("hello")
@@ -210,7 +210,7 @@ def test_conversation_no_wrap_is_unconfined():
         host=None,
         agy_path="/wd/home/.local/bin/agy",
         cwd="/wd",
-        transcript_path="/t",
+        home="/wd/home",
         claustrum_wrap=None,
     )
     argv = conv._build_argv("hello")

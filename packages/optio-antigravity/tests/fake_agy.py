@@ -10,10 +10,14 @@ Two surfaces, matching the two real ``agy`` usages optio drives:
 
 * **Print / conversation mode** — ``agy -p/--print [--conversation <id>]
   [--model <m>] [--dangerously-skip-permissions] <prompt>`` models one
-  synthetic conversation turn (§5 of the design): it appends structured lines
-  to ``$HOME/.gemini/antigravity/transcript.jsonl`` (the real transcript path)
-  and echoes a canned reply (plus the conversation id) on stdout. Turn 1 omits
-  ``--conversation`` and MINTS an id; later turns pass it back.
+  synthetic conversation turn in the REAL ``agy`` layout (captured 2026-07-06):
+  turn 1 (no ``--conversation``) MINTS a uuid, records
+  ``$HOME/.gemini/antigravity-cli/cache/last_conversations.json`` =
+  ``{<workdir>: <uuid>}``, and appends real-schema lines (``USER_INPUT`` +
+  ``PLANNER_RESPONSE``) to
+  ``$HOME/.gemini/antigravity-cli/brain/<uuid>/.system_generated/logs/transcript.jsonl``;
+  a ``--conversation <uuid>`` turn appends to that SAME file. It echoes the
+  canned reply on stdout.
 
 Adapted from optio-grok's ``fake_grok.py``. The real ``agy`` has **no** ACP /
 stream-json surface (design §1), so — unlike fake_grok — there is no JSON-RPC
@@ -205,21 +209,68 @@ def _scenario_seed_rotate() -> None:
     time.sleep(30.0)
 
 
-def _append_transcript(gem: Path, conversation_id: str, prompt: str, reply: str) -> None:
-    """Append one turn's structured events to the transcript.jsonl.
+def _agy_cli_dir() -> Path:
+    """The real ``agy`` state root: ``$HOME/.gemini/antigravity-cli``.
 
-    TODO(S3): reconcile with the real transcript schema spike. This models a
-    minimal line shape (``type`` in {user, assistant} + ``conversationId``);
-    Stage 6's reducer is written against the real captured fixture.
+    (``_gemini_dir`` is ``$HOME/.gemini/antigravity`` — the seed/state dir the
+    seed scenarios use; the conversation transcript + cache live one level over
+    in ``antigravity-cli``, matching the real binary.)
     """
-    gem.mkdir(parents=True, exist_ok=True)
-    transcript = gem / "transcript.jsonl"
+    return _gemini_dir().parent / "antigravity-cli"
+
+
+def _transcript_path(conversation_id: str) -> Path:
+    return (
+        _agy_cli_dir() / "brain" / conversation_id
+        / ".system_generated" / "logs" / "transcript.jsonl"
+    )
+
+
+def _record_last_conversation(conversation_id: str) -> None:
+    """Record ``cache/last_conversations.json`` = ``{<workdir>: <uuid>}`` (the
+    map the driver reads to discover turn 1's minted uuid)."""
+    cache = _agy_cli_dir() / "cache"
+    cache.mkdir(parents=True, exist_ok=True)
+    path = cache / "last_conversations.json"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            data = {}
+    except (FileNotFoundError, ValueError):
+        data = {}
+    data[os.getcwd()] = conversation_id
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _append_transcript(conversation_id: str, prompt: str, reply: str) -> None:
+    """Append one turn's real-schema lines to the per-conversation transcript.
+
+    Models the captured ``agy`` shape: a ``USER_INPUT`` (source USER_EXPLICIT)
+    whose ``content`` wraps the request in ``<USER_REQUEST>…</USER_REQUEST>``,
+    then a ``PLANNER_RESPONSE`` (source MODEL) whose ``content`` is the answer
+    (with a ``thinking`` reasoning string, as the real assistant emits)."""
+    transcript = _transcript_path(conversation_id)
+    transcript.parent.mkdir(parents=True, exist_ok=True)
+    # Continue step_index across turns appending to the same file.
+    step = sum(1 for _ in transcript.open()) if transcript.exists() else 0
     with transcript.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps({
-            "type": "user", "conversationId": conversation_id, "text": prompt,
+            "step_index": step,
+            "source": "USER_EXPLICIT",
+            "type": "USER_INPUT",
+            "status": "DONE",
+            "content": (
+                f"<USER_REQUEST>\n{prompt}\n</USER_REQUEST>\n"
+                "<ADDITIONAL_METADATA>\nfake agy\n</ADDITIONAL_METADATA>"
+            ),
         }) + "\n")
         fh.write(json.dumps({
-            "type": "assistant", "conversationId": conversation_id, "text": reply,
+            "step_index": step + 1,
+            "source": "MODEL",
+            "type": "PLANNER_RESPONSE",
+            "status": "DONE",
+            "content": reply,
+            "thinking": "**Thinking**\nfake agy reasoning about the request.\n",
         }) + "\n")
         fh.flush()
 
@@ -237,18 +288,21 @@ def _reply_for(prompt: str) -> str:
 def _print_turn(conversation_id: str | None, prompt: str, slow: bool) -> int:
     """One synthetic conversation turn (``agy -p``).
 
-    Mints a conversation id on turn 1 (``conversation_id is None``), appends the
-    turn to the transcript, and echoes the reply + id on stdout. ``slow`` (from
+    On turn 1 (``conversation_id is None``) mints a uuid and records it in
+    ``cache/last_conversations.json`` keyed by the workdir (how the real ``agy``
+    lets a caller discover the fresh conversation); appends the turn to the
+    per-conversation transcript and echoes the reply on stdout. ``slow`` (from
     ``FAKE_AGY_SLOW``) sleeps first so an ``interrupt()`` test can kill an
     in-flight turn.
     """
     if slow:
         time.sleep(30.0)
-    cid = conversation_id or f"conv-{uuid.uuid4().hex[:12]}"
+    fresh = conversation_id is None
+    cid = conversation_id or str(uuid.uuid4())
+    if fresh:
+        _record_last_conversation(cid)
     reply = _reply_for(prompt)
-    _append_transcript(_gemini_dir(), cid, prompt, reply)
-    # Echo the conversation id (so a caller can capture it on turn 1) and reply.
-    print(f"conversation: {cid}", flush=True)
+    _append_transcript(cid, prompt, reply)
     print(reply, flush=True)
     return 0
 

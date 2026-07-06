@@ -3,19 +3,40 @@ driven Antigravity conversation.
 
 Antigravity's ``agy`` has **no live transport** — no ACP, no stream-json, no
 HTTP (design §1). A conversation is therefore *synthesised* from ``agy``'s
-one-shot ``-p``/``--print`` mode plus its structured transcript file:
+one-shot ``-p``/``--print`` mode plus the structured transcript file it writes.
+The paths below are the REAL layout captured from the ``agy`` binary
+(2026-07-06); the isolated per-task ``HOME`` is ``<workdir>/home``:
 
-* ``send(text)`` spawns ``agy -p [--conversation <id> | --new-project]
-  [--model <m>] --dangerously-skip-permissions <text>`` **under a PTY**
-  (mandatory — ``--print`` swallows stdout under a non-TTY, design §1) via
-  ``host.launch_subprocess``. Turn 1 omits ``--conversation`` (uses
-  ``--new-project``) and **captures the conversation id** from the transcript
-  for every later turn / resume.
-* Events are read from ``~/.gemini/antigravity/transcript.jsonl`` — NOT stdout
-  (the #76 stdout-swallow bug). Each new transcript line since the turn began
-  is parsed into a raw dict and fanned out to ``on_event`` subscribers,
-  unmodified; synthetic optio events use the ``x-optio-`` type prefix. At turn
-  end the assistant text is coalesced into a single ``on_message``.
+* ``send(text)`` spawns ``agy -p [--conversation <id>] [--model <m>]
+  --dangerously-skip-permissions <text>`` **under a PTY** (mandatory —
+  ``--print`` swallows stdout under a non-TTY, design §1) via
+  ``host.launch_subprocess``. Turn 1 passes **no** ``--conversation`` — a fresh
+  workdir has no prior conversation, so ``agy`` mints one. After the turn-1
+  process exits, the conversation uuid is **discovered** from
+  ``<HOME>/.gemini/antigravity-cli/cache/last_conversations.json`` — a JSON
+  object ``{"<workdir-abs-path>": "<conv-uuid>"}`` keyed by the workdir; every
+  later turn resumes it via ``--conversation <uuid>`` (verified: this appends
+  to the SAME transcript and continues context).
+* Events are read from the per-conversation transcript at
+  ``<HOME>/.gemini/antigravity-cli/brain/<uuid>/.system_generated/logs/transcript.jsonl``
+  — NOT stdout (the #76 stdout-swallow bug). Each new transcript line since the
+  turn began is parsed into a raw dict and fanned out to ``on_event``
+  subscribers **unmodified** (the TS reducer parses this exact shape); synthetic
+  optio events use the ``x-optio-`` type prefix. At turn end the answer text is
+  coalesced into a single ``on_message`` — the ``content`` of the LAST
+  ``PLANNER_RESPONSE`` with non-empty content in that turn's newly-appended
+  lines.
+
+Real transcript line schema (one JSON object per line): common keys ``type``,
+``source`` (USER_EXPLICIT|MODEL|SYSTEM), ``status``, ``step_index``,
+``created_at``. ``USER_INPUT`` (source USER_EXPLICIT) carries ``content`` =
+``"<USER_REQUEST>\n…\n</USER_REQUEST>\n<ADDITIONAL_METADATA>…"``.
+``PLANNER_RESPONSE`` (source MODEL) is the assistant: ``content`` = answer text
+(absent/null when the step is only a tool call), ``thinking`` = reasoning
+(optional), ``tool_calls`` = ``[{name, args}]`` (optional). Tool-result types
+(e.g. ``LIST_DIRECTORY``), ``CHECKPOINT``, ``CONVERSATION_HISTORY``,
+``GENERIC``, ``SYSTEM_MESSAGE`` are system/marker lines. ``unwrap_user_request``
+extracts the bare request text from a ``USER_INPUT`` ``content``.
 
 Parity gaps are inherent to the one-shot transport and named, not hidden
 (design §7): **no live token streaming** (an answer arrives per completed
@@ -36,6 +57,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shlex
 from dataclasses import dataclass, field
 
@@ -50,6 +72,22 @@ _LOG = logging.getLogger(__name__)
 # wait_for returns as soon as the handle appears, so an in-flight turn is
 # caught immediately; only a genuinely idle interrupt pays this bound.
 _INTERRUPT_HANDLE_WAIT = 3.0
+
+_USER_REQUEST_RE = re.compile(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", re.DOTALL)
+
+
+def unwrap_user_request(content: str | None) -> str | None:
+    """Extract the bare request from a ``USER_INPUT`` line's ``content``.
+
+    Real ``USER_INPUT`` content wraps the request as
+    ``"<USER_REQUEST>\n<the request>\n</USER_REQUEST>\n<ADDITIONAL_METADATA>…"``;
+    this returns just ``<the request>`` (stripped), or ``None`` when the
+    envelope is absent.
+    """
+    if not content:
+        return None
+    m = _USER_REQUEST_RE.search(content)
+    return m.group(1).strip() if m else None
 
 
 @dataclass(frozen=True)
@@ -68,7 +106,8 @@ class AntigravityConversation:
     """Implements optio_agents.conversation.Conversation for Antigravity.
 
     Synthetic + transcript-driven: each ``send`` runs one ``agy -p`` turn under
-    a PTY on ``host`` and reads the events it appended to ``transcript_path``.
+    a PTY on ``host`` and reads the events ``agy`` appended to the
+    per-conversation transcript under the isolated ``home``.
     """
 
     def __init__(
@@ -77,7 +116,7 @@ class AntigravityConversation:
         host,
         agy_path: str,
         cwd: str,
-        transcript_path: str,
+        home: str,
         env: dict[str, str] | None = None,
         model: str | None = None,
         skip_permissions: bool = True,
@@ -87,7 +126,11 @@ class AntigravityConversation:
         self._host = host
         self._agy_path = agy_path
         self._cwd = cwd
-        self._transcript_path = transcript_path
+        # The isolated per-task HOME (``<workdir>/home``). The real ``agy``
+        # writes its conversation state under ``<home>/.gemini/antigravity-cli``
+        # (the transcript is per-conversation, discovered from last_conversations
+        # after turn 1 — hence a home root, not a fixed transcript path).
+        self._home = home
         self._env = dict(env or {})
         self._model = model
         # Stage 8 fs-isolation: claustrum argv prefix prepended to each turn so
@@ -101,8 +144,8 @@ class AntigravityConversation:
         # ``agy`` (§1 non-TTY stdout-swallow bug).
         self._pty = pty
 
-        # Captured on turn 1 from the transcript's conversationId; every later
-        # turn resumes it via --conversation.
+        # Discovered after turn 1 from last_conversations.json (keyed by the
+        # workdir); every later turn resumes it via --conversation.
         self._conversation_id: str | None = None
         self._pending = 0                     # turns whose process is live
         self._closed = False
@@ -158,6 +201,12 @@ class AntigravityConversation:
             raise RuntimeError("agy -p turn interrupted")
         if rc != 0:
             raise RuntimeError(f"agy -p turn exited with code {rc}")
+
+        # Turn 1 minted a fresh conversation; discover its uuid from
+        # last_conversations.json now that the process has flushed it, so the
+        # transcript path resolves and later turns can resume via --conversation.
+        if not self._conversation_id:
+            self._conversation_id = self._discover_conversation_id()
 
         await self._consume_turn(pre_offset)
 
@@ -255,9 +304,8 @@ class AntigravityConversation:
         argv = [*(self._claustrum_wrap or []), self._agy_path, "-p"]
         if self._conversation_id:
             argv += ["--conversation", self._conversation_id]
-        else:
-            # Turn 1 mints a fresh conversation.
-            argv += ["--new-project"]
+        # Turn 1 passes NO --conversation: a fresh workdir has no prior
+        # conversation, so ``agy`` mints one (verified against the real binary).
         if self._model:
             argv += ["--model", self._model]
         if self._skip_permissions:
@@ -273,16 +321,60 @@ class AntigravityConversation:
         # propagating the child's exit code and discarding the typescript.
         return f"script -qec {shlex.quote(inner)} /dev/null"
 
-    def _transcript_size(self) -> int:
+    def _agy_cli_dir(self) -> str:
+        """The real ``agy`` state root: ``<home>/.gemini/antigravity-cli``."""
+        return os.path.join(self._home, ".gemini", "antigravity-cli")
+
+    def _cache_path(self) -> str:
+        """``<agy-cli>/cache/last_conversations.json`` — ``{workdir: uuid}``."""
+        return os.path.join(self._agy_cli_dir(), "cache", "last_conversations.json")
+
+    def _transcript_path(self) -> str | None:
+        """Per-conversation transcript path, or ``None`` before the uuid is
+        known (turn 1, pre-discovery)."""
+        if not self._conversation_id:
+            return None
+        return os.path.join(
+            self._agy_cli_dir(), "brain", self._conversation_id,
+            ".system_generated", "logs", "transcript.jsonl",
+        )
+
+    def _discover_conversation_id(self) -> str | None:
+        """Read the workdir→uuid map ``agy`` wrote to last_conversations.json
+        and return this workdir's conversation uuid (``None`` if unresolved)."""
         try:
-            return os.path.getsize(self._transcript_path)
+            with open(self._cache_path(), "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        # The key is the workdir's absolute path; try it raw then realpath'd
+        # (agy records the resolved cwd), finally fall back to the sole entry.
+        for key in (self._cwd, os.path.realpath(self._cwd)):
+            uuid = data.get(key)
+            if uuid:
+                return uuid
+        if len(data) == 1:
+            return next(iter(data.values()))
+        return None
+
+    def _transcript_size(self) -> int:
+        path = self._transcript_path()
+        if not path:
+            return 0
+        try:
+            return os.path.getsize(path)
         except OSError:
             return 0
 
     def _read_new_events(self, offset: int) -> list[dict]:
         """Parse every transcript line appended since ``offset`` (bytes)."""
+        path = self._transcript_path()
+        if not path:
+            return []
         try:
-            with open(self._transcript_path, "rb") as fh:
+            with open(path, "rb") as fh:
                 fh.seek(offset)
                 data = fh.read()
         except OSError:
@@ -303,20 +395,21 @@ class AntigravityConversation:
         return events
 
     async def _consume_turn(self, pre_offset: int) -> None:
-        """Fan the turn's new transcript events out to on_event, then emit the
-        one coalesced on_message answer."""
+        """Fan the turn's new transcript events out to on_event (raw dicts,
+        unmodified), then emit the one coalesced on_message answer.
+
+        The answer is the ``content`` of the LAST ``PLANNER_RESPONSE`` with
+        non-empty content in this turn's newly-appended lines (a PLANNER_RESPONSE
+        that is only a tool call has null/absent content and is skipped)."""
         events = self._read_new_events(pre_offset)
-        answer_parts: list[str] = []
+        final_answer = ""
         for ev in events:
-            cid = ev.get("conversationId")
-            if cid and not self._conversation_id:
-                self._conversation_id = cid
-            if ev.get("type") == "assistant":
-                text = ev.get("text")
-                if text:
-                    answer_parts.append(text)
+            if ev.get("type") == "PLANNER_RESPONSE":
+                content = ev.get("content")
+                if content:
+                    final_answer = content
             await self._emit(self._event_handlers, ev, "on_event")
-        message = TurnMessage(text="".join(answer_parts), events=tuple(events))
+        message = TurnMessage(text=final_answer, events=tuple(events))
         await self._emit(self._message_handlers, message, "on_message")
 
     async def _emit(self, handlers, arg, label: str) -> None:

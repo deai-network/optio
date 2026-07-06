@@ -83,9 +83,10 @@ async def _make_fake_conv(tmp_path, shim_install_dir, *, slow: bool):
     """Build an ``AntigravityConversation`` driving the fake ``agy`` binary.
 
     A ``LocalHost`` runs each ``agy -p`` turn; ``HOME`` points at a per-task
-    home so the fake writes its transcript to
-    ``<home>/.gemini/antigravity/transcript.jsonl`` — the real path the driver
-    tails. ``slow`` sets ``FAKE_AGY_SLOW`` so a turn parks long enough for an
+    home so the fake writes its per-conversation transcript under
+    ``<home>/.gemini/antigravity-cli/brain/<uuid>/.system_generated/logs/`` and
+    records ``cache/last_conversations.json`` — the real layout the driver
+    resolves. ``slow`` sets ``FAKE_AGY_SLOW`` so a turn parks long enough for an
     ``interrupt()`` test to kill it mid-flight.
     """
     from optio_antigravity.conversation import AntigravityConversation
@@ -95,7 +96,6 @@ async def _make_fake_conv(tmp_path, shim_install_dir, *, slow: bool):
     host = LocalHost(str(taskdir))
     await host.setup_workdir()
     home = taskdir / "home"
-    transcript = home / ".gemini" / "antigravity" / "transcript.jsonl"
     env = {"HOME": str(home)}
     if slow:
         env["FAKE_AGY_SLOW"] = "1"
@@ -104,7 +104,7 @@ async def _make_fake_conv(tmp_path, shim_install_dir, *, slow: bool):
         agy_path=str(shim_install_dir / "agy"),
         cwd=host.workdir,
         env=env,
-        transcript_path=str(transcript),
+        home=str(home),
     )
     return conv
 
