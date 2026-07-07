@@ -110,14 +110,29 @@ def test_host_protocol_false_ok_in_conversation_mode():
     assert cfg.host_protocol is False
 
 
-# --- frontend-parity flags require conversation UI -------------------------
+# --- single model field (C3: default_model dropped) ------------------------
 
 
-def test_default_model_requires_conversation_ui():
-    with pytest.raises(ValueError, match="default_model"):
-        KimiCodeTaskConfig(
-            consumer_instructions="x", mode="conversation", default_model="kimi-k2"
+def test_no_default_model_field():
+    # C3: default_model was dropped; `model` is the single model field and is
+    # valid in every mode (the conversation picker sources its initial value
+    # from it — no separate conversation_ui gate).
+    import dataclasses
+
+    names = {f.name for f in dataclasses.fields(KimiCodeTaskConfig)}
+    assert "default_model" not in names
+    assert "model" in names
+
+
+def test_model_valid_in_any_mode():
+    for mode in ("iframe", "conversation"):
+        cfg = KimiCodeTaskConfig(
+            consumer_instructions="x", mode=mode, model="kimi-k2"
         )
+        assert cfg.model == "kimi-k2"
+
+
+# --- frontend-parity flags require conversation UI -------------------------
 
 
 def test_show_session_controls_requires_conversation_ui():
@@ -153,7 +168,7 @@ def test_frontend_parity_flags_ok_with_conversation_ui():
         consumer_instructions="x",
         mode="conversation",
         conversation_ui=True,
-        default_model="kimi-k2",
+        model="kimi-k2",
         show_session_controls=True,
         show_file_upload=True,
         file_download=True,
@@ -183,16 +198,21 @@ def test_allowed_dir_bad_mode_rejected():
 
 
 def test_allowed_dir_valid_modes():
-    for m in ("ro", "rw"):
+    # Shared 4-value superset (kimi is Landlock-only; rox≡ro, rwx≡rw).
+    for m in ("ro", "rw", "rox", "rwx"):
         assert AllowedDir(path="/data", mode=m).mode == m
 
 
 def test_extra_allowed_dirs_accepted():
     cfg = KimiCodeTaskConfig(
         consumer_instructions="x",
-        extra_allowed_dirs=[AllowedDir(path="/opt/tools", mode="ro")],
+        extra_allowed_dirs=[
+            AllowedDir(path="/opt/tools", mode="ro"),
+            AllowedDir(path="/opt/venv", mode="rox"),
+        ],
     )
     assert cfg.extra_allowed_dirs[0].path == "/opt/tools"
+    assert cfg.extra_allowed_dirs[1].mode == "rox"
 
 
 # --- at-rest session-blob cipher (both-or-none) ----------------------------
@@ -228,14 +248,71 @@ def test_session_blob_decrypt_without_encrypt_rejected():
         KimiCodeTaskConfig(consumer_instructions="x", session_blob_decrypt=_cipher)
 
 
-# --- install-dir override must be absolute ---------------------------------
+# --- install-dir override must be absolute (C2: renamed from kimi_install_dir)
 
 
-def test_kimi_install_dir_must_be_absolute():
-    with pytest.raises(ValueError, match="kimi_install_dir"):
-        KimiCodeTaskConfig(consumer_instructions="x", kimi_install_dir="relative/path")
+def test_install_dir_must_be_absolute():
+    with pytest.raises(ValueError, match="install_dir"):
+        KimiCodeTaskConfig(consumer_instructions="x", install_dir="relative/path")
 
 
-def test_kimi_install_dir_absolute_ok():
-    cfg = KimiCodeTaskConfig(consumer_instructions="x", kimi_install_dir="/opt/kimi")
-    assert cfg.kimi_install_dir == "/opt/kimi"
+def test_install_dir_absolute_ok():
+    cfg = KimiCodeTaskConfig(consumer_instructions="x", install_dir="/opt/kimi")
+    assert cfg.install_dir == "/opt/kimi"
+
+
+# --- C1: shared config vocabulary re-exported from types.py ----------------
+
+
+def test_shared_aliases_reexported():
+    # C1: the engine-neutral vocabulary is owned by optio_agents and re-exported
+    # here so `from optio_kimicode.types import ...` sites keep working, and it
+    # is the SAME object as the top-level optio_agents export.
+    import optio_agents
+    from optio_kimicode import types as kt
+
+    assert kt.AllowedDir is optio_agents.AllowedDir
+    assert kt.SeedProvider is optio_agents.SeedProvider
+    assert kt.SeedUnavailableError is optio_agents.SeedUnavailableError
+    assert kt.ConversationMode is optio_agents.ConversationMode
+    assert kt.ToolVerbosity is optio_agents.ToolVerbosity
+    assert kt.ThinkingVerbosity is optio_agents.ThinkingVerbosity
+
+
+# --- P3: caller-message channel --------------------------------------------
+
+
+def test_caller_message_fields_default_off():
+    cfg = KimiCodeTaskConfig(consumer_instructions="x")
+    assert cfg.use_client_messages is False
+    assert cfg.on_caller_message is None
+
+
+def test_caller_message_fields_settable():
+    async def _cb(hook_ctx, message):  # pragma: no cover - identity callback
+        return None
+
+    cfg = KimiCodeTaskConfig(
+        consumer_instructions="x",
+        use_client_messages=True,
+        on_caller_message=_cb,
+    )
+    assert cfg.use_client_messages is True
+    assert cfg.on_caller_message is _cb
+
+
+# --- P2: resume-refresh hook -----------------------------------------------
+
+
+def test_on_resume_refresh_defaults_to_identity():
+    from optio_kimicode.types import _identity_resume_refresh
+
+    cfg = KimiCodeTaskConfig(consumer_instructions="x")
+    assert cfg.on_resume_refresh is _identity_resume_refresh
+    # identity returns the same config unchanged
+    assert cfg.on_resume_refresh(cfg) is cfg
+
+
+def test_on_resume_refresh_can_be_disabled():
+    cfg = KimiCodeTaskConfig(consumer_instructions="x", on_resume_refresh=None)
+    assert cfg.on_resume_refresh is None

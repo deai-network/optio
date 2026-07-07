@@ -200,7 +200,13 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
     # ``redirect``: kimi's first-login device-code URL is surfaced to the
     # operator (no browser interception needed — kimi prints the URL). Parity
     # with grok's protocol wiring; Stage 0 has no auth yet, so this is inert.
-    protocol = get_protocol(browser="redirect")
+    # ``client_messages`` / ``caller_messages`` enable the CLIENT_MESSAGE /
+    # CALLER_MESSAGE keyword channels when the task opts in.
+    protocol = get_protocol(
+        browser="redirect",
+        client_messages=config.use_client_messages,
+        caller_messages=config.on_caller_message is not None,
+    )
     launched_handle: ProcessHandle | None = None
     cancelled = False
     kimi_path: str | None = None
@@ -251,7 +257,7 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             host,
             download=hook_ctx.download_file,
             report_progress=hook_ctx.report_progress,
-            install_dir=config.kimi_install_dir,
+            install_dir=config.install_dir,
             install_if_missing=config.install_if_missing,
         )
 
@@ -262,7 +268,7 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
         # binary lives OUTSIDE the workdir and survives resume's restore).
         if config.fs_isolation:
             claustrum_path = await host_actions.ensure_claustrum_installed(
-                hook_ctx, install_dir=config.kimi_install_dir,
+                hook_ctx, install_dir=config.install_dir,
             )
 
         snapshot = None
@@ -284,7 +290,7 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             # Idempotent: cache hit → just relinks, no reinstall/redownload.
             kimi_path = await host_actions.ensure_kimicode_installed(
                 host,
-                install_dir=config.kimi_install_dir,
+                install_dir=config.install_dir,
                 install_if_missing=config.install_if_missing,
             )
             await host_actions.rotate_optio_log(host)
@@ -318,7 +324,8 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             cred_baseline = await cred_watcher.cred_fingerprint(host)
 
         # Fresh: plant the AGENTS.md the agent consumes. On resume the
-        # snapshot-restored AGENTS.md is kept.
+        # snapshot-restored AGENTS.md is kept — but on_resume_refresh may
+        # recompose it from the (possibly updated) config below.
         if not resuming:
             await host.write_text(
                 "AGENTS.md",
@@ -331,16 +338,31 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                 ),
             )
 
-        # Permission mode (e.g. "yolo" = blanket auto-approve): written into the
-        # task's config.toml so the daemon applies it to every session it creates
-        # (iframe + conversation). Runs after seed-merge / resume-restore so it is
-        # not wiped; no-op when permission_mode is None.
+        # Permission surface: default_permission_mode (e.g. "yolo" = blanket
+        # auto-approve) + per-tool [[permission.rules]] deny/allow, written into
+        # the task's config.toml so the daemon applies them to every session it
+        # creates (iframe + conversation). Runs after seed-merge / resume-restore
+        # so it is not wiped; no-op when none of the three are set.
         await host_actions.write_kimi_config(
-            host, host.workdir, permission_mode=config.permission_mode,
+            host, host.workdir,
+            permission_mode=config.permission_mode,
+            allowed_tools=config.allowed_tools,
+            disallowed_tools=config.disallowed_tools,
         )
 
+        # Resume-refresh: on resume, re-render AGENTS.md from the (optionally
+        # mutated) config and rewrite it when it differs from the snapshot copy,
+        # so instruction/template changes reach a resumed session. The rewritten
+        # filenames tag the resume.log line (REFRESHED:AGENTS.md) so the agent
+        # re-reads. Fresh start: nothing to refresh.
+        refreshed_files: list[str] = []
+        if resuming:
+            refreshed_files = await _maybe_refresh_on_resume(host, hook_ctx, config)
+
         if config.supports_resume:
-            await host_actions.append_resume_log_entry(host)
+            await host_actions.append_resume_log_entry(
+                host, refreshed=refreshed_files,
+            )
 
         if config.before_execute is not None:
             await config.before_execute(hook_ctx)
@@ -563,11 +585,11 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             # at bootstrap (authed; exact ids the ACP setters accept): model
             # (select) + thinking (segmented off/on) + mode (select). kimi is
             # the one engine that surfaces more than just the model control.
-            # default_model overrides the model control's initial value;
+            # config.model overrides the model control's initial value;
             # otherwise the live current values are shown.
             controls = kimi_models.parse_all_controls(
                 conversation.session_config_options,
-                default_model=config.default_model,
+                default_model=config.model,
             )
             # widgetData.uploadUrl token; see optio_agents.uploads.upload_url_token.
             upload_url = upload_url_token(ctx._db.name, ctx._prefix, ctx.process_id)
@@ -712,6 +734,7 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             body=body,
             prepare=_prepare,
             on_deliverable=config.on_deliverable,
+            on_caller_message=config.on_caller_message,
             after_execute=config.after_execute,
             protocol=protocol,
             agent_sender=_agent_sender,
@@ -1051,6 +1074,48 @@ async def _recover_session_id(host: Host) -> str | None:
             # .../sessions/<workDirKey>/<sessionId>/state.json → <sessionId>.
             best_id, best_updated = os.path.basename(os.path.dirname(path)), updated
     return best_id
+
+
+async def _maybe_refresh_on_resume(
+    host: Host, hook_ctx: HookContext, config: KimiCodeTaskConfig,
+) -> list[str]:
+    """Run ``on_resume_refresh`` (if any) and rewrite AGENTS.md when changed.
+
+    Returns the list of filenames rewritten (currently at most ``["AGENTS.md"]``)
+    so the caller can tag the resume.log line. A hook that raises is logged and
+    ignored (the snapshot-restored AGENTS.md is kept). Mirrors optio-claudecode's
+    ``_maybe_refresh_on_resume`` (CLAUDE.md → AGENTS.md; same compose kwargs as
+    the fresh-start plant above).
+    """
+    if config.on_resume_refresh is None:
+        return []
+    try:
+        new_config = config.on_resume_refresh(config)
+    except Exception:
+        _LOG.exception(
+            "on_resume_refresh raised; keeping existing AGENTS.md from snapshot",
+        )
+        return []
+    new_agents_md = compose_agents_md(
+        new_config.consumer_instructions,
+        host_protocol=new_config.host_protocol,
+        workdir_exclude=new_config.workdir_exclude,
+        supports_resume=new_config.supports_resume,
+        file_download=new_config.file_download,
+    )
+    try:
+        existing = await hook_ctx.read_text_from_host("AGENTS.md", silent=True)
+    except FileNotFoundError:
+        existing = None
+    except Exception:
+        _LOG.exception(
+            "failed to read existing AGENTS.md on resume; rewriting unconditionally",
+        )
+        existing = None
+    if existing == new_agents_md:
+        return []
+    await host.write_text("AGENTS.md", new_agents_md)
+    return ["AGENTS.md"]
 
 
 def create_kimicode_task(

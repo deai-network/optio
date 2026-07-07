@@ -71,7 +71,7 @@ async def test_remote_deliverable_callback_fired(sshd, ctx_and_captures):
             host=sshd["host"], user=sshd["user"],
             key_path=sshd["key_path"], port=sshd["port"],
         ),
-        kimi_install_dir="/usr/local/bin",
+        install_dir="/usr/local/bin",
         install_if_missing=False,
         on_deliverable=on_deliverable,
         # Stage-0 surfaces only: resume (Stage 2) and fs-isolation (Stage 8)

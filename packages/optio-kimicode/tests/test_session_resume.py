@@ -94,7 +94,7 @@ async def _run_cycle(
     ctx = await _make_ctx(mongo_db, process_id, resume=resume)
     cfg = KimiCodeTaskConfig(
         consumer_instructions=f"do the thing ({process_id})",
-        kimi_install_dir=str(shim_install_dir),
+        install_dir=str(shim_install_dir),
         fs_isolation=False,
         supports_resume=True,
         auto_start=auto_start,

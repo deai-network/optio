@@ -111,6 +111,70 @@ async def test_write_kimi_config_replaces_not_duplicates(tmp_path):
     assert 'default_model = "kimi-code/kimi-for-coding"' in body
 
 
+async def test_write_kimi_config_permission_rules_roundtrip(tmp_path):
+    """allowed_tools/disallowed_tools land as [[permission.rules]] tables with
+    {decision, pattern}; deny rules precede allow rules; parses as valid TOML."""
+    import tomllib
+    from optio_kimicode.host_actions import build_host, write_kimi_config
+
+    host = build_host(None, str(tmp_path / "t"))
+    await write_kimi_config(
+        host, host.workdir,
+        permission_mode="manual",
+        allowed_tools=["Read", "Grep"],
+        disallowed_tools=["Bash"],
+    )
+    cfg = os.path.join(host.workdir, "home", "config.toml")
+    data = tomllib.loads(open(cfg).read())
+    assert data["default_permission_mode"] == "manual"      # ROOT key
+    rules = data["permission"]["rules"]
+    assert {"decision": "deny", "pattern": "Bash"} in rules
+    assert {"decision": "allow", "pattern": "Read"} in rules
+    assert {"decision": "allow", "pattern": "Grep"} in rules
+    # Deny precedes allow (explicit denial wins on conflict).
+    assert rules[0] == {"decision": "deny", "pattern": "Bash"}
+
+
+async def test_write_kimi_config_rules_without_permission_mode(tmp_path):
+    """Rules alone (permission_mode=None) still write config.toml — the no-op
+    guard only fires when ALL THREE knobs are empty."""
+    import tomllib
+    from optio_kimicode.host_actions import build_host, write_kimi_config
+
+    host = build_host(None, str(tmp_path / "t"))
+    await write_kimi_config(
+        host, host.workdir, permission_mode=None, disallowed_tools=["Bash"],
+    )
+    cfg = os.path.join(host.workdir, "home", "config.toml")
+    data = tomllib.loads(open(cfg).read())
+    assert "default_permission_mode" not in data
+    assert data["permission"]["rules"] == [{"decision": "deny", "pattern": "Bash"}]
+
+
+async def test_write_kimi_config_rules_are_idempotent_on_rerun(tmp_path):
+    """A second write (as on resume from a restored config.toml) replaces the
+    managed rules block instead of accumulating duplicates, and preserves other
+    config lines."""
+    import tomllib
+    from optio_kimicode.host_actions import build_host, write_kimi_config
+
+    host = build_host(None, str(tmp_path / "t"))
+    home = os.path.join(host.workdir, "home")
+    os.makedirs(home, exist_ok=True)
+    cfg = os.path.join(home, "config.toml")
+    with open(cfg, "w") as f:
+        f.write('default_model = "kimi-code/kimi-for-coding"\n')
+    await write_kimi_config(host, host.workdir, permission_mode="yolo", disallowed_tools=["Bash"])
+    await write_kimi_config(host, host.workdir, permission_mode="yolo", disallowed_tools=["Bash"])
+    body = open(cfg).read()
+    data = tomllib.loads(body)
+    # Exactly one rule survived (no duplication across the two writes).
+    assert data["permission"]["rules"] == [{"decision": "deny", "pattern": "Bash"}]
+    assert data["default_permission_mode"] == "yolo"
+    assert data["default_model"] == "kimi-code/kimi-for-coding"
+    assert body.count("[[permission.rules]]") == 1
+
+
 async def test_write_kimi_config_root_scoped_even_with_tables(tmp_path):
     """Regression (the config #4 'manual' bug): a config.toml with [table] sections
     (as a seed-captured one has) must still get default_permission_mode as a ROOT

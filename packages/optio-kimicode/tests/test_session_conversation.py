@@ -99,7 +99,7 @@ def _conversation_config(shim_install_dir: pathlib.Path, **kw) -> KimiCodeTaskCo
     base = dict(
         consumer_instructions="Converse with the test.",
         mode="conversation",
-        kimi_install_dir=str(shim_install_dir),
+        install_dir=str(shim_install_dir),
         auto_start=False,
         supports_resume=False,
         # fs-isolation (claustrum wrap) lands in a later task; keep it off so the
@@ -315,8 +315,8 @@ async def test_conversation_ui_forwards_frontend_parity_widget_data(
     task publishes widgetData with camelCase keys the shared ConversationView
     reads, gated by config: the model picker sources its options from the ACP
     configOptions surface (fake_kimi advertises kimi-k2 / kimi-k2-thinking),
-    default_model overrides the initial value, and tool/thinking verbosity +
-    file transfer bounds are mirrored through."""
+    config.model overrides the picker's initial value, and tool/thinking
+    verbosity + file transfer bounds are mirrored through."""
     optio = await _make_optio(mongo_db, "kkconv6")
     try:
         task = create_kimicode_task(
@@ -326,7 +326,7 @@ async def test_conversation_ui_forwards_frontend_parity_widget_data(
                 shim_install_dir,
                 conversation_ui=True,
                 show_session_controls=True,
-                default_model="kimi-k2-thinking",
+                model="kimi-k2-thinking",
                 tool_verbosity="verbose",
                 thinking_verbosity="visible",
                 show_file_upload=True,
@@ -354,7 +354,7 @@ async def test_conversation_ui_forwards_frontend_parity_widget_data(
             f"{mongo_db.name}/kkconv6/kk-conv-wd"
         )
         # The model picker is now the id="model" SessionControl; its options
-        # come from the live ACP configOptions surface and default_model
+        # come from the live ACP configOptions surface and config.model
         # overrides the control's initial value.
         model = next(c for c in wd["controls"] if c["id"] == "model")
         assert model["kind"] == "select" and model["value"] == "kimi-k2-thinking"
@@ -389,7 +389,7 @@ async def test_conversation_ui_widget_data_defaults_when_ungated(
         assert wd["fileDownload"] is False
         assert wd["toolVerbosity"] == "description-only"
         assert wd["thinkingVerbosity"] == "hidden"
-        # No default_model override → the model control shows the live ACP current model.
+        # No config.model override → the model control shows the live ACP current model.
         model = next(c for c in wd["controls"] if c["id"] == "model")
         assert model["value"] == "kimi-k2"
     finally:

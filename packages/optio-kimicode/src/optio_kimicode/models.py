@@ -129,9 +129,9 @@ def parse_all_controls(session_config_options, default_model=None):
       * ``mode``     -> ``select``    (category ``mode``) — the 4-mode taxonomy.
 
     Unknown option ids fall back to a generic ``boolean``/``select`` by their
-    ACP ``type``. ``default_model`` overrides the model control's initial value
-    (``config.default_model`` precedence); otherwise the live ``currentValue``
-    is shown. Missing/malformed input yields an empty list.
+    ACP ``type``. The ``default_model`` argument (fed from ``config.model``)
+    overrides the model control's initial value; otherwise the live
+    ``currentValue`` is shown. Missing/malformed input yields an empty list.
     """
     from optio_agents.session_controls import (
         SINGLE_OPTION_REASON,

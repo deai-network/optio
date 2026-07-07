@@ -52,7 +52,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def _real_install_dir() -> str:
-    """The directory holding the real kimi binary (used as kimi_install_dir → a
+    """The directory holding the real kimi binary (used as install_dir → a
     cache HIT that links the real kimi into the task launch path)."""
     kimi = resolve_real_kimi()
     assert kimi is not None  # guaranteed by the module gate
@@ -61,7 +61,7 @@ def _real_install_dir() -> str:
 
 def _cfg(**overrides) -> KimiCodeTaskConfig:
     base = dict(
-        kimi_install_dir=_real_install_dir(),
+        install_dir=_real_install_dir(),
         fs_isolation=False,        # fs-iso covered by the sandbox_enforce tests
         supports_resume=False,
         auto_start=True,           # drive the first turn unattended
@@ -243,7 +243,7 @@ async def test_real_remote_ssh_one_surface(ctx_and_captures, task_root, tmp_path
             ssh=ssh,
             # remote worker resolves its own kimi (login-shell PATH / vendor
             # install), so do not pin a local install dir.
-            kimi_install_dir=None,
+            install_dir=None,
             consumer_instructions=_DONE_INSTRUCTION,
         ),
     )

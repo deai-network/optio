@@ -4,7 +4,7 @@ Fixtures:
 
 * ``shim_install_dir`` — a tmp_path subdir containing a symlink named
   ``kimi`` pointing at the package-shipped shim script. Pass this as
-  ``kimi_install_dir`` in ``KimiCodeTaskConfig`` to bypass real binary
+  ``install_dir`` in ``KimiCodeTaskConfig`` to bypass real binary
   detection. (Unlike grok there is no ttyd shim: kimi serves its own web SPA.)
 * ``task_root`` — points ``OPTIO_KIMICODE_TASK_ROOT`` at a short temp dir so a
   session's taskdir lives outside the operator's real home.
@@ -41,7 +41,7 @@ TESTS_DIR = pathlib.Path(__file__).parent
 
 @pytest.fixture(autouse=True)
 def _stub_smart_install(monkeypatch):
-    """Integration tests ship a kimi shim via ``kimi_install_dir``; default the
+    """Integration tests ship a kimi shim via ``install_dir``; default the
     fork smart-install resolver to "ok" so ``ensure_kimicode_installed`` just
     links the shim into the task path — no network, no child-download task in the
     fake ctx. Tests that exercise the resolver/download paths override this with

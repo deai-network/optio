@@ -189,42 +189,111 @@ def build_launch_env(
     }
 
 
+# Sentinels bracketing the optio-managed ``[[permission.rules]]`` block, so a
+# re-run (resume / re-merge) can strip the prior block and re-emit it without
+# accumulating duplicate rules or disturbing operator-authored config.
+_RULES_BEGIN = "# >>> optio-managed permission rules (do not edit)"
+_RULES_END = "# <<< optio-managed permission rules"
+
+
+def _render_permission_rules(
+    allowed_tools: "list[str] | None", disallowed_tools: "list[str] | None",
+) -> str:
+    """Render the optio-managed ``[[permission.rules]]`` block, or ``""`` when no
+    allow/deny tools are configured.
+
+    Each tool becomes one ``[[permission.rules]]`` array-of-tables entry
+    (``{decision, pattern}``; a bare tool name matches that tool). Deny rules are
+    emitted first so an explicit denial takes precedence over an allow.
+    """
+    if not allowed_tools and not disallowed_tools:
+        return ""
+    out: list[str] = [_RULES_BEGIN]
+    for tool in disallowed_tools or []:
+        out.append("[[permission.rules]]")
+        out.append('decision = "deny"')
+        out.append(f'pattern = "{tool}"')
+    for tool in allowed_tools or []:
+        out.append("[[permission.rules]]")
+        out.append('decision = "allow"')
+        out.append(f'pattern = "{tool}"')
+    out.append(_RULES_END)
+    return "\n".join(out)
+
+
 async def write_kimi_config(
-    host: "Host", workdir: str, *, permission_mode: str | None,
+    host: "Host",
+    workdir: str,
+    *,
+    permission_mode: str | None,
+    allowed_tools: "list[str] | None" = None,
+    disallowed_tools: "list[str] | None" = None,
 ) -> None:
-    """Set ``default_permission_mode`` in the task's ``$KIMI_CODE_HOME/config.toml``.
+    """Write kimi's permission surface into ``$KIMI_CODE_HOME/config.toml``.
 
-    The daemon applies this to EVERY session it creates — the iframe pre-created
-    session and the ACP conversation session alike (kimi-code core-impl
-    ``createSession``: ``options.permission ?? config.defaultPermissionMode``), so
-    one config key gives blanket/permission control across both surfaces without a
-    per-session REST call. ``"yolo"`` auto-approves every action.
+    Two knobs land here, both applied by the daemon to EVERY session it creates —
+    the iframe pre-created session and the ACP conversation session alike
+    (kimi-code core-impl ``createSession``: ``options.permission ??
+    config.defaultPermissionMode``):
 
-    No-op when ``permission_mode`` is None. Merge-safe: replaces the key if already
-    present (e.g. a resume-restored / seeded config.toml), appends it otherwise,
-    creates the file when absent — never clobbering other config."""
-    if permission_mode is None:
+    * ``default_permission_mode`` (from ``permission_mode``) — a ROOT-table key.
+      ``"yolo"`` auto-approves every action.
+    * ``[[permission.rules]]`` array-of-tables (from ``disallowed_tools`` /
+      ``allowed_tools``) — one ``{decision, pattern}`` entry per tool (deny first,
+      so a denial wins). kimi matches a bare tool name against ``pattern``.
+
+    No-op only when ALL THREE are None/empty. Merge-safe: the existing config
+    (e.g. a resume-restored / seeded config.toml with ``[providers…]`` tables) is
+    preserved verbatim except our own managed content, which is stripped and
+    re-emitted so a re-run does not accumulate duplicates. The ROOT key is placed
+    FIRST (before any ``[table]`` header — a bare ``key = val`` after a table
+    would be parsed INTO that table and ignored), and the rules block LAST (a new
+    array-of-tables at the end is always valid). Creates the file when absent."""
+    if permission_mode is None and not allowed_tools and not disallowed_tools:
         return
     home = f"{workdir.rstrip('/')}/home"
     cfg = f"{home}/config.toml"
-    tmp = f"{cfg}.optio-tmp"
-    line = f'default_permission_mode = "{permission_mode}"'
-    # PREPEND as a root-table key (before any ``[table]`` header), dropping any
-    # prior occurrence. A bare ``key = val`` APPENDED after a ``[table]`` section
-    # (e.g. the seed's ``[providers."managed:kimi-code"]`` / ``[services...]``)
-    # would be parsed as a member of THAT table, not a top-level default — kimi
-    # then ignores it and permission stays ``manual``. Keys before the first
-    # table live in the root table, so prepending is the only correct placement.
+    try:
+        existing = (await host.fetch_bytes_from_host(cfg)).decode("utf-8")
+    except FileNotFoundError:
+        existing = ""
+    # Strip prior optio-managed content: the ``default_permission_mode`` root
+    # line and any previously-written rules block (idempotent on resume/re-merge).
+    kept: list[str] = []
+    in_rules = False
+    for raw in existing.splitlines():
+        s = raw.strip()
+        if s == _RULES_BEGIN:
+            in_rules = True
+            continue
+        if s == _RULES_END:
+            in_rules = False
+            continue
+        if in_rules:
+            continue
+        if raw.startswith("default_permission_mode"):
+            continue
+        kept.append(raw)
+    body = "\n".join(kept).strip("\n")
+
+    parts: list[str] = []
+    if permission_mode is not None:
+        parts.append(f'default_permission_mode = "{permission_mode}"')
+    if body:
+        parts.append(body)
+    rules_block = _render_permission_rules(allowed_tools, disallowed_tools)
+    if rules_block:
+        parts.append(rules_block)
+    content = "\n".join(parts).rstrip("\n") + "\n"
+
     cmd = (
-        f"mkdir -p {shlex.quote(home)} && touch {shlex.quote(cfg)} && "
-        f"{{ printf '%s\\n' {shlex.quote(line)}; "
-        f"grep -v '^default_permission_mode' {shlex.quote(cfg)} 2>/dev/null || true; }} "
-        f"> {shlex.quote(tmp)} && mv {shlex.quote(tmp)} {shlex.quote(cfg)}"
+        f"mkdir -p {shlex.quote(home)} && "
+        f"printf '%s' {shlex.quote(content)} > {shlex.quote(cfg)}"
     )
     r = await host.run_command(cmd)
     if r.exit_code != 0:
         raise RuntimeError(
-            f"writing kimi config.toml (default_permission_mode) failed "
+            f"writing kimi config.toml (permission surface) failed "
             f"(exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
         )
 
@@ -394,7 +463,7 @@ async def append_resume_log_entry(
 async def _resolve_kimicode_cache_dir(host: "Host", override: str | None) -> str:
     """Resolve the optio-owned kimi binary-cache dir as an absolute worker path.
 
-    ``override`` (``config.kimi_install_dir``) wins. Otherwise the worker's real
+    ``override`` (``config.install_dir``) wins. Otherwise the worker's real
     env decides via a shell echo: ``OPTIO_KIMICODE_CACHE_DIR`` else
     ``${XDG_CACHE_HOME:-$HOME/.cache}/optio-kimicode/bin`` — resolved on the host
     so RemoteHost gets the remote location. Deliberately mirrors grok's
@@ -715,7 +784,7 @@ async def _build_claustrum_wrap(
         return None
     from . import fs_allowlist
 
-    cache_dir = await _resolve_kimicode_cache_dir(host, config.kimi_install_dir)
+    cache_dir = await _resolve_kimicode_cache_dir(host, config.install_dir)
     # ``~/`` caller extras expand against the REAL host home (the kimi process
     # runs under an isolated $HOME, and grants reach claustrum verbatim).
     host_home = (

@@ -8,6 +8,15 @@ re-exports them alongside the package-specific ``KimiCodeTaskConfig``.
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Literal
 
+from optio_agents import (
+    AllowedDir,
+    CallerMessageCallback,
+    ConversationMode,
+    SeedProvider,
+    SeedUnavailableError,
+    ThinkingVerbosity,
+    ToolVerbosity,
+)
 from optio_agents.protocol.session import (
     DeliverableCallback,
     HookCallback,
@@ -16,10 +25,19 @@ from optio_agents.uploads import UploadCallback
 from optio_host.types import SSHConfig
 
 
+# The engine-neutral config vocabulary (``ConversationMode``/``ToolVerbosity``/
+# ``ThinkingVerbosity``/``SeedProvider``/``SeedUnavailableError``/``AllowedDir``)
+# is owned by ``optio_agents.config_types`` and imported above. It is re-exported
+# here (kept in ``__all__``) so existing ``from optio_kimicode.types import
+# ConversationMode, AllowedDir, …`` sites keep working unchanged. ``AllowedDir``
+# now carries the 4-value superset mode (``ro``/``rw``/``rox``/``rwx``); kimi is
+# Landlock-only (claustrum), so ``rox``≡``ro`` and ``rwx``≡``rw`` (claustrum's
+# ``--rox``/``--rwx`` flags express the execute bit natively when supplied).
 __all__ = [
     "DeliverableCallback",
     "HookCallback",
     "UploadCallback",
+    "CallerMessageCallback",
     "SSHConfig",
     "KimiCodeTaskConfig",
     "PermissionMode",
@@ -33,42 +51,11 @@ __all__ = [
 ]
 
 
-@dataclass
-class AllowedDir:
-    """A caller-supplied extra path grant for filesystem isolation (Stage 8).
-
-    ``mode`` is one of ``"ro"`` (read-only) or ``"rw"`` (read-write). Grants
-    are additive: callers may widen the sandbox allowlist but never mask the
-    security baseline (the workdir + temp dirs are always writable).
-
-    kimi is confined via the claustrum Landlock sandbox (Task 5.5), which
-    covers execution under its read/write grants, so there is no separate
-    execute bit here. A leading ``~/`` in ``path`` is expanded against the
-    REAL host home at launch time (the kimi process runs under an isolated
-    ``$KIMI_CODE_HOME``/``$HOME``, so grants cannot rely on its shell
-    expansion).
-    """
-
-    path: str
-    mode: Literal["ro", "rw"]
-
-    def __post_init__(self) -> None:
-        if self.mode not in ("ro", "rw"):
-            raise ValueError(
-                f"AllowedDir.mode={self.mode!r} must be one of 'ro', 'rw' "
-                f"(path={self.path!r})."
-            )
-
-
-# A seed provider resolves a usable seed_id at launch time (e.g. leasing one
-# from a pool). Mirrors optio-claudecode's SeedProvider; the callable/lease
-# path is exercised in Stage 4 — Stage 3 only needs a static string seed_id.
-SeedProvider = Callable[[str], Awaitable[str]]
-
-
-class SeedUnavailableError(Exception):
-    """Raised by a seed provider when no usable seed is available; the message
-    is surfaced as the process failure."""
+def _identity_resume_refresh(config: "KimiCodeTaskConfig") -> "KimiCodeTaskConfig":
+    """Default ``on_resume_refresh``: recompose AGENTS.md from the unchanged
+    config on resume, so a resumed session picks up instruction/template changes
+    instead of freezing at first launch (no config mutation)."""
+    return config
 
 
 # kimi's own permission modes (``PermissionModeSchema`` in kimi-code:
@@ -80,25 +67,20 @@ class SeedUnavailableError(Exception):
 PermissionMode = Literal["manual", "auto", "yolo"]
 _VALID_PERMISSION_MODES = {"manual", "auto", "yolo"}
 
-# "iframe" = the native ``kimi web`` SPA (``kimi server run``) in the browser
-# (Stages 0-5). "conversation" = a headless ``kimi acp`` (ACP over stdio)
-# session; the task publishes a live KimiCodeConversation via
-# ctx.publish_result (Stage 6).
-ConversationMode = Literal["iframe", "conversation"]
+# ``ConversationMode`` ("iframe" = the native ``kimi web`` SPA, Stages 0-5;
+# "conversation" = a headless ``kimi acp`` ACP-over-stdio session that publishes
+# a live KimiCodeConversation, Stage 6) is imported from optio_agents; validated
+# inline in __post_init__ against the literal tuple.
 
 # Reasoning effort passed through as ``--effort``. kimi exposes a fixed enum
 # (unlike a free-form vendor string); ``model`` stays an unvalidated alias.
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
 _VALID_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 
-# Verbosity of tool-call rendering in the conversation widget (conversation_ui
-# only). Mirrors optio-claudecode; consumed by the dashboard reducer.
-ToolVerbosity = Literal["silent", "description-only", "verbose"]
+# ``ToolVerbosity`` (tool-call rendering detail) and ``ThinkingVerbosity``
+# (reasoning-trace visibility) are imported from optio_agents; the validation
+# sets stay local (consumed by __post_init__).
 _VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
-
-# Visibility of reasoning/thinking traces (kimi's ACP reasoning) in the
-# conversation widget. Task-level, mirrors ToolVerbosity; the UI never decides.
-ThinkingVerbosity = Literal["hidden", "visible"]
 _VALID_THINKING_VERBOSITY = {"hidden", "visible"}
 
 
@@ -119,12 +101,19 @@ class KimiCodeTaskConfig:
     scrub_env: list[str] | None = None
 
     permission_mode: PermissionMode | None = None
+    # Per-tool allow/deny, wired to kimi's native permission grammar: each name
+    # is emitted as a ``[[permission.rules]]`` table in the task's config.toml
+    # (``{decision="deny"/"allow", pattern="<tool>"}``) by
+    # ``host_actions.write_kimi_config``. A bare tool name matches that tool;
+    # deny rules take precedence. None → no rules (permission falls to
+    # ``permission_mode`` / kimi's default).
     allowed_tools: list[str] | None = None
     disallowed_tools: list[str] | None = None
-    # ``model`` is a kimi model ALIAS (not a raw id) passed through as
-    # ``-m``; it is not enum-validated (the alias catalog changes). ``effort``
-    # is passed through as ``--effort`` and IS validated against the fixed
-    # low..max enum.
+    # ``model`` is a kimi model ALIAS (not a raw id); it is not enum-validated
+    # (the alias catalog changes). It is the single model field: it seeds the
+    # conversation widget's model-picker initial value (conversation_ui), falling
+    # back to the live ACP current model when None. ``effort`` is passed through
+    # as ``--effort`` and IS validated against the fixed low..max enum.
     model: str | None = None
     effort: Effort | None = None
 
@@ -132,7 +121,7 @@ class KimiCodeTaskConfig:
 
     install_if_missing: bool = True
     # Override for where the ``kimi`` binary is resolved/cached on the host.
-    kimi_install_dir: str | None = None
+    install_dir: str | None = None
 
     # When True, a fresh launch kicks off the first turn itself — iframe mode
     # types a trailing positional prompt, conversation mode sends the
@@ -146,6 +135,15 @@ class KimiCodeTaskConfig:
     before_execute: HookCallback | None = None
     after_execute: HookCallback | None = None
     on_deliverable: DeliverableCallback | None = None
+
+    # Enable the CLIENT_MESSAGE keyword: agent-pushed messages routed to the
+    # originating browser session's frontend (stored as sessionEvents, surfaced
+    # via optio-ui's onClientMessage). Off by default.
+    use_client_messages: bool = False
+    # Enable the CALLER_MESSAGE keyword: agent-pushed messages routed to this
+    # callback in the embedding application. A non-None return value is sent
+    # back to the agent as feedback. Off (None) by default.
+    on_caller_message: CallerMessageCallback | None = None
 
     # Optional pair of synchronous bytes->bytes transforms wrapping the kimi
     # session subtree tar at GridFS write/read (the two-blob snapshot's
@@ -178,6 +176,14 @@ class KimiCodeTaskConfig:
     # None → the framework defaults (see optio_host.archive). Keep the kimi
     # session state that --continue needs IN the snapshot.
     workdir_exclude: list[str] | None = None
+    # Hook fired on resume only (never on fresh start). Receives the original
+    # config; returns a (possibly mutated) config. The harness re-renders
+    # AGENTS.md from the returned config and writes it back only when it differs
+    # from the file on disk, tagging the next resume.log line with
+    # ``REFRESHED:AGENTS.md`` so the agent re-reads. Default = identity
+    # (recompose from the same config, so instruction/template changes reach a
+    # resumed session instead of freezing at first launch). Pass None to disable.
+    on_resume_refresh: "Callable[[KimiCodeTaskConfig], KimiCodeTaskConfig] | None" = _identity_resume_refresh
 
     # "iframe" = native kimi web SPA (Stages 0-5). "conversation" = headless
     # ACP (kimi acp stdio); the task publishes a live KimiCodeConversation
@@ -205,11 +211,6 @@ class KimiCodeTaskConfig:
     thinking_verbosity: ThinkingVerbosity = "hidden"
 
     # --- conversation frontend parity (Stage 7) -------------------------
-    # Model preselected in the widget's model picker. Requires
-    # mode="conversation" and conversation_ui=True. Defaults to the live ACP
-    # current model when unset. (config.model still drives the launch -m flag;
-    # this only controls the picker's initial value.)
-    default_model: str | None = None
     # Show the engine-neutral session-controls bar (model + thinking + mode) in
     # the conversation widget. kimi switches inline over ACP (session/set_model
     # for the model, session/set_config_option for thinking/mode — no process
@@ -309,11 +310,6 @@ class KimiCodeTaskConfig:
         # Frontend-parity features are opt-in flags that only make sense with
         # the conversation UI wired (mirrors optio-claudecode).
         conv_ui = self.mode == "conversation" and self.conversation_ui
-        if self.default_model is not None and not conv_ui:
-            raise ValueError(
-                "KimiCodeTaskConfig: default_model requires mode='conversation' "
-                "and conversation_ui=True."
-            )
         if self.show_session_controls and not conv_ui:
             raise ValueError(
                 "KimiCodeTaskConfig: show_session_controls=True requires "
@@ -334,13 +330,11 @@ class KimiCodeTaskConfig:
                 "KimiCodeTaskConfig: file_download=True requires "
                 "mode='conversation' and conversation_ui=True."
             )
-        for ad in self.extra_allowed_dirs or []:
-            if ad.mode not in ("ro", "rw"):
-                raise ValueError(
-                    f"KimiCodeTaskConfig.extra_allowed_dirs: mode={ad.mode!r} "
-                    f"must be one of 'ro', 'rw' (path={ad.path!r})."
-                )
-        for field_name in ("kimi_install_dir",):
+        # extra_allowed_dirs entries are already validated at construction by
+        # the shared AllowedDir.__post_init__ (ro/rw/rox/rwx superset); kimi is
+        # Landlock-only, so rox≡ro and rwx≡rw (claustrum expresses the execute
+        # bit natively). No further per-entry mode check is needed here.
+        for field_name in ("install_dir",):
             val = getattr(self, field_name)
             if val is not None and not val.startswith("/") and not val.startswith("~"):
                 raise ValueError(

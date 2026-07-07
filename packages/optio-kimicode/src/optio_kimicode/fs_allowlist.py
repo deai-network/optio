@@ -14,10 +14,12 @@ Output is the ordered list of claustrum grant flags, e.g.
 ``["--rox", "/usr", ..., "--rwx", "/wd", "--rox", "/cache", "--ro", "/data"]``.
 Non-existent paths are harmless: claustrum ignores missing paths.
 
-``AllowedDir.mode`` is the 2-value ``ro``/``rw`` enum (Task 1.2): extras map to
-``--ro`` / ``--rw`` (both valid claustrum flags). The execute-bearing grants
-(``--rwx`` workdir, ``--rox`` cache) are the wrapper's own fixed grants, not
-caller-driven, so claustrum does not need the claudecode 4-value enum here.
+``AllowedDir.mode`` is the shared 4-value superset ``ro``/``rw``/``rox``/``rwx``
+(``optio_agents.config_types``): extras map to ``--ro`` / ``--rw`` / ``--rox`` /
+``--rwx`` (all valid claustrum flags). kimi is Landlock-only, so ``rox``≡``ro``
+and ``rwx``≡``rw`` conceptually, but claustrum expresses the execute bit
+natively when supplied. The wrapper's own fixed grants (``--rwx`` workdir,
+``--rox`` cache) are not caller-driven.
 """
 
 from __future__ import annotations

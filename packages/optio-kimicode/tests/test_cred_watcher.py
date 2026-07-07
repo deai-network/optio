@@ -355,7 +355,7 @@ def test_teardown_aggressive_gate():
 def _seed_cfg(shim_install_dir: pathlib.Path, seed_id: str, **kw) -> KimiCodeTaskConfig:
     base = dict(
         consumer_instructions="do the thing",
-        kimi_install_dir=str(shim_install_dir),
+        install_dir=str(shim_install_dir),
         fs_isolation=False,
         supports_resume=False,
         seed_id=seed_id,

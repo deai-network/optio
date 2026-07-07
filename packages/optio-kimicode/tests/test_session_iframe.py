@@ -43,7 +43,7 @@ async def test_iframe_reaches_done_and_registers_token_widget(
     task = create_kimicode_task(
         process_id="kimi-iframe-happy",
         name="i",
-        config=_stage0_config(kimi_install_dir=str(shim_install_dir)),
+        config=_stage0_config(install_dir=str(shim_install_dir)),
     )
 
     # Reaches DONE and returns (no premature-exit / no failure).
@@ -87,7 +87,7 @@ async def test_iframe_deliverable_callback_fired(
         process_id="kimi-iframe-deliverable",
         name="d",
         config=_stage0_config(
-            kimi_install_dir=str(shim_install_dir),
+            install_dir=str(shim_install_dir),
             on_deliverable=on_deliverable,
         ),
     )
@@ -109,7 +109,7 @@ async def test_iframe_error_raises(
     task = create_kimicode_task(
         process_id="kimi-iframe-error",
         name="e",
-        config=_stage0_config(kimi_install_dir=str(shim_install_dir)),
+        config=_stage0_config(install_dir=str(shim_install_dir)),
     )
     with pytest.raises(RuntimeError):
         await task.execute(ctx)
