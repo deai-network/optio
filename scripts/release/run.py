@@ -36,7 +36,7 @@ from sibling_pins import update_pyproject  # noqa: E402
 
 # All publishable packages.
 TS_PUBLISHABLE = ["filtrum-core", "filtrum-mongo", "optio-contracts", "optio-ui", "optio-api", "optio-conversation-ui", "optio-dashboard"]
-PY_PUBLISHABLE = ["optio-core", "optio-host", "optio-agents", "optio-opencode", "optio-claudecode", "optio-grok", "optio-codex", "optio-cursor", "optio-kimicode", "optio-antigravity", "optio-demo"]
+PY_PUBLISHABLE = ["optio-core", "optio-host", "optio-agents", "optio-opencode", "optio-claudecode", "optio-grok", "optio-codex", "optio-cursor", "optio-kimicode", "optio-antigravity", "optio-agents-all", "optio-demo"]
 # Packages locked in wire-version step.
 WIRE_LOCKED = {"optio-contracts", "optio-core"}
 

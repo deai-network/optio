@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "optio-agents-all"
+version = "0.1.0"
+description = "Meta-factory over all wrapped optio agent engines: create_task dispatched by a tagged TaskConfig union."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+authors = [
+    { name = "Kristof Csillag", email = "kristof.csillag@deai-labs.com" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Code Generators",
+    "Framework :: AsyncIO",
+]
+dependencies = [
+    "optio-agents>=0.3,<0.4",
+    "optio-opencode>=0.2,<0.3",
+    "optio-claudecode>=0.3,<0.4",
+    "optio-grok>=0.1,<0.2",
+    "optio-codex>=0.1,<0.2",
+    "optio-cursor>=0.1,<0.2",
+    "optio-kimicode>=0.1,<0.2",
+    "optio-antigravity>=0.1,<0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-xdist>=3.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/deai-network/optio"
+Repository = "https://github.com/deai-network/optio"
+Issues = "https://github.com/deai-network/optio/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "serial: spawn-heavy, timing-fragile test that must run in a final non-parallel phase",
+]
