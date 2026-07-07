@@ -5,6 +5,14 @@ Owns the optio.log keyword protocol (parser + session driver), the
 truth for the LLM-facing keyword-protocol documentation.
 """
 
+from optio_agents.config_types import (
+    AllowedDir,
+    ConversationMode,
+    SeedProvider,
+    SeedUnavailableError,
+    ThinkingVerbosity,
+    ToolVerbosity,
+)
 from optio_agents.context import HookContext, HookContextProtocol, SYSTEM_MESSAGE_PREFIX
 from optio_agents.conversation import (
     Conversation,
@@ -49,6 +57,12 @@ from optio_agents.input_listener import serialized, start_input_listener
 from optio_agents.tmux_input import NAV_KEYS, send_key_to_tmux, send_text_to_tmux
 
 __all__ = [
+    "AllowedDir",
+    "ConversationMode",
+    "SeedProvider",
+    "SeedUnavailableError",
+    "ThinkingVerbosity",
+    "ToolVerbosity",
     "input_listener",
     "tmux_input",
     "serialized",
