@@ -88,7 +88,7 @@ async def _resolve_install_dir(host: "Host", install_dir: str | None) -> str:
 async def _resolve_cursor_cache_dir(host: "Host", override: str | None) -> str:
     """Resolve the optio-owned cursor binary-cache dir as an absolute worker path.
 
-    ``override`` (``config.cursor_install_dir``) wins. Otherwise the worker's
+    ``override`` (``config.install_dir``) wins. Otherwise the worker's
     REAL env decides via a shell echo: ``CURSOR_CACHE_DIR`` else
     ``${XDG_CACHE_HOME:-$HOME/.cache}/optio-cursor`` — resolved on the host so
     RemoteHost gets the remote location. Never under a task workdir (so it is
@@ -172,7 +172,7 @@ async def resolve_cursor(
             return candidate
         raise RuntimeError(
             f"cursor-agent not present at {candidate!r} on host "
-            f"(cursor_install_dir={install_dir!r})."
+            f"(install_dir={install_dir!r})."
         )
 
     result = await host.run_command("bash -lc 'command -v cursor-agent'")
@@ -189,7 +189,7 @@ async def resolve_cursor(
         "cursor-agent not found on the worker (looked via 'command -v "
         "cursor-agent'). Install cursor-agent manually (e.g. `curl "
         "https://cursor.com/install -fsS | bash` puts it in ~/.local/bin) "
-        "or pass cursor_install_dir."
+        "or pass install_dir."
     )
 
 
@@ -381,7 +381,7 @@ async def ensure_cursor_installed(
             f"({_CURSOR_INSTALL_URL}) did not produce a binary and no host "
             f"cursor-agent is on the worker PATH. Install cursor-agent on "
             f"the worker (`curl {_CURSOR_INSTALL_URL} -fsS | bash`) or pass "
-            f"cursor_install_dir at a pre-populated cache."
+            f"install_dir at a pre-populated cache."
         ) from exc
 
     hook_ctx.report_progress(None, "Seeding cursor-agent cache from host install…")

@@ -41,7 +41,7 @@ async def test_local_deliverable_callback_fired(
         name="d",
         config=CursorTaskConfig(
             consumer_instructions="hand back a file",
-            cursor_install_dir=str(shim_install_dir),
+            install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
             on_deliverable=on_deliverable,
         ),
@@ -64,7 +64,7 @@ async def test_local_error_raises(
         name="e",
         config=CursorTaskConfig(
             consumer_instructions="fail",
-            cursor_install_dir=str(shim_install_dir),
+            install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
         ),
     )

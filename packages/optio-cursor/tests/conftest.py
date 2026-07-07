@@ -4,7 +4,7 @@ Fixtures:
 
 * ``shim_install_dir`` — a tmp_path subdir containing symlinks named
   ``cursor-agent`` and ``ttyd`` pointing at the package-shipped shim scripts.
-  Pass this as both ``cursor_install_dir`` and ``ttyd_install_dir`` in
+  Pass this as both ``install_dir`` and ``ttyd_install_dir`` in
   ``CursorTaskConfig`` to bypass real binary detection.
 * ``mongo_db`` — a per-test isolated Mongo db.
 * ``ctx_and_captures`` — a ``ProcessContext`` backed by ``mongo_db`` with

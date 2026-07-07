@@ -7,7 +7,7 @@ that cache (``<workdir>/home/.local/bin/cursor-agent``):
 
 * cache HIT — ``<cache>/cursor-agent`` already executable → linked into the
   task path, no copy (this is also the Stage-0 session-test path: those tests
-  pass ``cursor_install_dir=<shim dir>``, which is now the cache dir with the
+  pass ``install_dir=<shim dir>``, which is now the cache dir with the
   shim).
 * cache MISS — the vendor installer is tried first (guarded: NEVER hit by
   these tests — its shell-command construction is unit-tested instead), then

@@ -20,7 +20,7 @@ import mimetypes
 import os
 import secrets
 import shlex
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 
 from optio_core.context import ProcessContext
 from optio_core.models import BasicAuth, TaskInstance
@@ -102,7 +102,7 @@ async def _build_claustrum_wrap(
         return None
     from . import fs_allowlist
     cache_dir = await host_actions._resolve_cursor_cache_dir(
-        host, config.cursor_install_dir,
+        host, config.install_dir,
     )
     host_home = (
         await host.resolve_host_home() if config.extra_allowed_dirs else None
@@ -196,7 +196,11 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
     # xdg-open with a capture shim that surfaces the URL to the operator on a
     # BROWSER: line (NO_OPEN_BROWSER is intentionally NOT set — see
     # host_actions._isolation_env).
-    protocol = get_protocol(browser="redirect")
+    protocol = get_protocol(
+        browser="redirect",
+        client_messages=config.use_client_messages,
+        caller_messages=config.on_caller_message is not None,
+    )
     launched_handle: ProcessHandle | None = None
     tmux_path: str | None = None
     tmux_socket: str | None = None
@@ -253,7 +257,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
         cursor_path = await host_actions.ensure_cursor_installed(
             hook_ctx,
             install_if_missing=config.install_if_missing,
-            install_dir=config.cursor_install_dir,
+            install_dir=config.install_dir,
         )
         # Conversation mode is headless (cursor-agent acp) — no ttyd needed.
         if config.mode != "conversation":
@@ -269,7 +273,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
         # off. Placed onto the same optio-cursor cache tree as cursor-agent.
         if config.fs_isolation:
             claustrum_path = await host_actions.ensure_claustrum_installed(
-                hook_ctx, install_dir=config.cursor_install_dir,
+                hook_ctx, install_dir=config.install_dir,
             )
 
         resume_requested = bool(getattr(ctx, "resume", False))
@@ -284,7 +288,19 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             # chat store). A present snapshot that fails to restore is fatal —
             # the restore call is intentionally outside any except so it
             # surfaces to the caller (no silent fresh-start).
-            await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
+            #
+            # P1: when the tar was encrypted at capture (session_blob_decrypt
+            # set), read the whole blob and decrypt before restore; decrypt
+            # failure (tampering / key rotation) is propagated, never a silent
+            # fresh-start. Otherwise stream it straight through unchanged.
+            if config.session_blob_decrypt is not None:
+                payload = await _read_blob_bytes(ctx, snapshot["workdirBlobId"])
+                plain = config.session_blob_decrypt(payload)
+                await host.restore_workdir(_single_chunk(plain))
+            else:
+                await host.restore_workdir(
+                    _stream_blob(ctx, snapshot["workdirBlobId"])
+                )
             # The cursor-agent launch symlink (home/.local/bin/cursor-agent)
             # lives INSIDE the workdir and was wiped by the restore;
             # re-establish it against the cache (which lives OUTSIDE the workdir
@@ -294,7 +310,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             cursor_path = await host_actions.ensure_cursor_installed(
                 hook_ctx,
                 install_if_missing=config.install_if_missing,
-                install_dir=config.cursor_install_dir,
+                install_dir=config.install_dir,
                 progress_label="Restoring cursor-agent runtime…",
             )
             await host_actions._rotate_optio_log(host)
@@ -377,8 +393,18 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                 file_download=config.file_download,
             ),
         )
+        # Resume-refresh (P2): on resume, run on_resume_refresh and rewrite
+        # AGENTS.md from the (possibly mutated) config when it changed, tagging
+        # the resume.log line so the resumed agent re-reads it. The identity
+        # default recomposes from the same config (a no-op vs. the write above),
+        # so instruction/template changes still reach a resumed session.
+        refreshed_files: list[str] = []
+        if resuming:
+            refreshed_files = await _maybe_refresh_on_resume(host, hook_ctx, config)
         if config.supports_resume:
-            await host_actions._append_resume_log_entry(host)
+            await host_actions._append_resume_log_entry(
+                host, refreshed=refreshed_files,
+            )
         if config.before_execute is not None:
             await config.before_execute(hook_ctx)
 
@@ -614,10 +640,11 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                 f"http://{upstream_host}:{listener_port}",
                 inner_auth=BasicAuth(username="optio", password=listener_password),
             )
-            # default_model overrides the picker's initial value; otherwise
-            # the live current model is shown (model_list was built + probed
-            # above, before the listener started).
-            current_model = config.default_model or model_list.get("default")
+            # The picker's initial value: config.model (the same value that
+            # drives the launch --model flag) when set, otherwise the live
+            # current model (model_list was built + probed above, before the
+            # listener started).
+            current_model = config.model or model_list.get("default")
             # The model picker is now the engine-neutral id="model" session
             # control (probed catalogue → disabled ControlOptions carry
             # whyDisabled for plan-gated ids). Serialized camelCase for the UI.
@@ -781,6 +808,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             body=body,
             prepare=_prepare,
             on_deliverable=config.on_deliverable,
+            on_caller_message=config.on_caller_message,
             after_execute=config.after_execute,
             protocol=protocol,
             agent_sender=_agent_sender,
@@ -942,6 +970,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                     session_id=(
                         conversation.session_id if conversation is not None else None
                     ),
+                    session_blob_encrypt=config.session_blob_encrypt,
                 )
             except Exception:
                 _LOG.exception(
@@ -975,6 +1004,63 @@ async def _stream_blob(ctx: ProcessContext, blob_id) -> "AsyncIterator[bytes]":
             yield chunk
 
 
+async def _read_blob_bytes(ctx: ProcessContext, blob_id) -> bytes:
+    """Read an entire GridFS blob into memory (for a decrypt-then-restore)."""
+    out = bytearray()
+    async with ctx.load_blob(blob_id) as reader:
+        while True:
+            chunk = await reader.read(1 << 20)
+            if not chunk:
+                break
+            out.extend(chunk)
+    return bytes(out)
+
+
+async def _single_chunk(data: bytes) -> "AsyncIterator[bytes]":
+    """Yield ``data`` as a one-shot async stream for ``host.restore_workdir``."""
+    yield data
+
+
+async def _maybe_refresh_on_resume(
+    host: Host, hook_ctx: HookContext, config: CursorTaskConfig,
+) -> list[str]:
+    """Run ``on_resume_refresh`` (if any) and rewrite AGENTS.md when changed.
+
+    Returns the list of filenames rewritten (currently at most
+    ``["AGENTS.md"]``). A hook that raises is logged and ignored. Mirrors
+    optio-claudecode's ``_maybe_refresh_on_resume`` (CLAUDE.md → AGENTS.md).
+    """
+    if config.on_resume_refresh is None:
+        return []
+    try:
+        new_config = config.on_resume_refresh(config)
+    except Exception:
+        _LOG.exception(
+            "on_resume_refresh raised; keeping existing AGENTS.md from snapshot",
+        )
+        return []
+    new_agents_md = compose_agents_md(
+        new_config.consumer_instructions,
+        host_protocol=new_config.host_protocol,
+        workdir_exclude=new_config.workdir_exclude,
+        supports_resume=new_config.supports_resume,
+        file_download=new_config.file_download,
+    )
+    try:
+        existing = await hook_ctx.read_text_from_host("AGENTS.md", silent=True)
+    except FileNotFoundError:
+        existing = None
+    except Exception:
+        _LOG.exception(
+            "failed to read existing AGENTS.md on resume; rewriting unconditionally",
+        )
+        existing = None
+    if existing == new_agents_md:
+        return []
+    await host.write_text("AGENTS.md", new_agents_md)
+    return ["AGENTS.md"]
+
+
 async def _capture_snapshot(
     ctx: ProcessContext,
     host: Host,
@@ -982,25 +1068,37 @@ async def _capture_snapshot(
     end_state: str,
     workdir_exclude: list[str] | None,
     session_id: str | None = None,
+    session_blob_encrypt: "Callable[[bytes], bytes] | None" = None,
 ) -> None:
     """Capture a single-blob resume snapshot of the (now static) workdir.
 
     Cursor's chat store lives under ``home/.cursor`` INSIDE the workdir, so
-    one plaintext workdir tar carries everything ``--continue`` needs — no
-    separate session blob (unlike optio-claudecode) and no defensive home
-    wipe. Streams the tar into GridFS, records the snapshot row, prunes to
-    the retention limit (deleting stale blobs), and surfaces the Resume
-    affordance.
+    one workdir tar carries everything ``--continue`` needs — no separate
+    session blob (unlike optio-claudecode) and no defensive home wipe. Records
+    the snapshot row, prunes to the retention limit (deleting stale blobs), and
+    surfaces the Resume affordance.
+
+    ``session_blob_encrypt`` (P1): when set, the whole workdir tar is buffered
+    and encrypted before the GridFS write (the restore path decrypts via
+    ``config.session_blob_decrypt``). When None (default) the tar streams
+    straight through — no in-memory buffering — so the common, unencrypted path
+    keeps its streaming behaviour (cursor's workdir tar can be large; unlike
+    claudecode's small home/.claude session blob, it is not buffered by default).
 
     ``session_id`` is cursor's live ACP session id (conversation mode); it rides
     the snapshot row so a later resume can ``session/load`` it directly to replay
     prior history. ``None`` for iframe mode.
     """
+    archive = host.archive_workdir(effective_workdir_exclude(workdir_exclude))
     async with ctx.store_blob("workdir") as wwriter:
-        async for chunk in host.archive_workdir(
-            effective_workdir_exclude(workdir_exclude)
-        ):
-            await wwriter.write(chunk)
+        if session_blob_encrypt is None:
+            async for chunk in archive:
+                await wwriter.write(chunk)
+        else:
+            buf = bytearray()
+            async for chunk in archive:
+                buf.extend(chunk)
+            await wwriter.write(session_blob_encrypt(bytes(buf)))
         workdir_blob_id = wwriter.file_id
 
     await insert_snapshot(

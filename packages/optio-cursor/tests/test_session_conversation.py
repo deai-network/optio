@@ -65,7 +65,7 @@ def _conversation_config(shim_install_dir: pathlib.Path, **kw) -> CursorTaskConf
     base = dict(
         consumer_instructions="Converse with the test.",
         mode="conversation",
-        cursor_install_dir=str(shim_install_dir),
+        install_dir=str(shim_install_dir),
         ttyd_install_dir=str(shim_install_dir),
         auto_start=False,
         supports_resume=False,

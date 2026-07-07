@@ -56,7 +56,7 @@ async def _make_ctx(mongo_db, process_id: str, *, resume: bool = False) -> Proce
 def _cfg(shim_install_dir: pathlib.Path, **kw) -> CursorTaskConfig:
     return CursorTaskConfig(
         consumer_instructions="do the thing",
-        cursor_install_dir=str(shim_install_dir),
+        install_dir=str(shim_install_dir),
         ttyd_install_dir=str(shim_install_dir),
         **kw,
     )

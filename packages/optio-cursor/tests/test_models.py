@@ -5,7 +5,8 @@ a live cursor:
   * models.py parse helpers (ACP session block + `cursor-agent models` CLI
     text — CLI format runtime-unverified, see models.py header);
   * fetch_available_models source precedence (ACP → CLI → fallback);
-  * CursorTaskConfig.show_session_controls / default_model validation.
+  * CursorTaskConfig.show_session_controls validation + the single `model`
+    field (harmonization C3 dropped the separate default_model).
 
 The inline model-switch mechanism itself (session/set_model over ACP,
 [grok-pinned, cursor runtime-unverified]) is covered at the conversation level
@@ -168,11 +169,13 @@ def test_native_spinner_ok_in_conversation_ui():
     assert cfg.native_spinner is True
 
 
-def test_default_model_requires_conversation_ui():
-    with pytest.raises(ValueError, match="default_model"):
-        _cfg(mode="conversation", conversation_ui=False, default_model="gpt-5")
-
-
-def test_default_model_ok_in_conversation_ui():
-    cfg = _cfg(mode="conversation", conversation_ui=True, default_model="gpt-5")
-    assert cfg.default_model == "gpt-5"
+def test_model_is_ungated_single_field():
+    # Harmonization C3: the separate default_model field is gone. `model` is
+    # the single source both for the launch --model flag and the conversation
+    # picker's initial value, and it is valid in ALL modes (no conversation_ui
+    # gate — the old default_model gate was removed).
+    assert not hasattr(CursorTaskConfig(consumer_instructions="x"), "default_model")
+    cfg_iframe = _cfg(model="gpt-5")
+    assert cfg_iframe.model == "gpt-5"
+    cfg_conv = _cfg(mode="conversation", conversation_ui=True, model="gpt-5")
+    assert cfg_conv.model == "gpt-5"

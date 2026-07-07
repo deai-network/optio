@@ -45,7 +45,7 @@ async def test_iframe_default_on_wraps_argv_and_disables_native_sandbox(
         name="fs",
         config=CursorTaskConfig(
             consumer_instructions="do it",
-            cursor_install_dir=str(shim_install_dir),
+            install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
             # fs_isolation defaults True — no opt-in.
         ),
@@ -90,7 +90,7 @@ async def test_conversation_launch_is_claustrum_wrapped(
         consumer_instructions="chat",
         mode="conversation",
         host_protocol=False,
-        cursor_install_dir=str(shim_install_dir),
+        install_dir=str(shim_install_dir),
         ttyd_install_dir=str(shim_install_dir),
         # fs_isolation defaults True.
     )
@@ -130,7 +130,7 @@ async def test_fs_isolation_is_fail_closed(
         name="fc",
         config=CursorTaskConfig(
             consumer_instructions="do it",
-            cursor_install_dir=str(shim_install_dir),
+            install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
         ),
     )

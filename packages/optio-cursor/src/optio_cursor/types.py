@@ -8,7 +8,16 @@ re-exports them alongside the package-specific ``CursorTaskConfig``.
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Literal
 
+from optio_agents import (
+    AllowedDir,
+    ConversationMode,
+    SeedProvider,
+    SeedUnavailableError,
+    ThinkingVerbosity,
+    ToolVerbosity,
+)
 from optio_agents.protocol.session import (
+    CallerMessageCallback,
     DeliverableCallback,
     HookCallback,
 )
@@ -17,6 +26,7 @@ from optio_host.types import SSHConfig
 
 
 __all__ = [
+    "CallerMessageCallback",
     "DeliverableCallback",
     "HookCallback",
     "UploadCallback",
@@ -32,61 +42,23 @@ __all__ = [
 ]
 
 
-@dataclass
-class AllowedDir:
-    """A caller-supplied extra path grant for filesystem isolation.
-
-    ``mode`` is one of ``"ro"`` (read-only), ``"rw"`` (read-write),
-    ``"rox"`` (read+execute — tool venvs, binaries), or ``"rwx"``
-    (read-write+execute). Grants are additive: callers may widen the
-    allowlist but never mask the security baseline.
-
-    A leading ``~/`` in ``path`` is expanded against the REAL host home at
-    launch time (the cursor-agent process itself runs under an isolated
-    $HOME, so grants cannot rely on its shell expansion).
-    """
-
-    path: str
-    mode: Literal["ro", "rw", "rox", "rwx"]
-
-    def __post_init__(self) -> None:
-        if self.mode not in ("ro", "rw", "rox", "rwx"):
-            raise ValueError(
-                f"AllowedDir.mode={self.mode!r} must be one of 'ro', 'rw', "
-                f"'rox', 'rwx' (path={self.path!r})."
-            )
-
-
-# A seed provider resolves a usable seed_id at launch time (e.g. leasing one
-# from a pool). Mirrors optio-grok's SeedProvider; the callable/lease path is
-# exercised in Stage 4 — Stage 3 only needs a static string seed_id.
-SeedProvider = Callable[[str], Awaitable[str]]
-
-
-class SeedUnavailableError(Exception):
-    """Raised by a seed provider when no usable seed is available; the message
-    is surfaced as the process failure."""
-
-
 # Passed through as ``--sandbox``. cursor-agent's own filesystem sandbox
-# toggle; None omits the flag (cursor's default applies).
+# toggle; None omits the flag (cursor's default applies). Engine-native — kept
+# local (not part of the shared config vocabulary).
 SandboxMode = Literal["enabled", "disabled"]
 _VALID_SANDBOX_MODES = {"enabled", "disabled"}
 
-# "iframe" = ttyd TUI in the browser (Stages 0-5). "conversation" = a headless
-# ``cursor-agent acp`` (ACP) session; the task publishes a live
-# CursorConversation via ctx.publish_result (Stage 6).
-ConversationMode = Literal["iframe", "conversation"]
-
-# Verbosity of tool-call rendering in the conversation widget (conversation_ui
-# only). Mirrors optio-grok/claudecode; consumed by the dashboard reducer.
-ToolVerbosity = Literal["silent", "description-only", "verbose"]
+# Validation sets for the shared ToolVerbosity/ThinkingVerbosity Literals,
+# used by ``__post_init__`` (the aliases themselves come from optio_agents).
 _VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
-
-# Visibility of reasoning/thinking traces (cursor's agent_thought_chunk) in the
-# conversation widget. Task-level, mirrors ToolVerbosity; the UI never decides.
-ThinkingVerbosity = Literal["hidden", "visible"]
 _VALID_THINKING_VERBOSITY = {"hidden", "visible"}
+
+
+def _identity_resume_refresh(config: "CursorTaskConfig") -> "CursorTaskConfig":
+    """Default ``on_resume_refresh``: recompose AGENTS.md from the unchanged
+    config on resume, so a resumed session picks up instruction/template
+    changes instead of freezing at first launch (no config mutation)."""
+    return config
 
 
 @dataclass
@@ -143,7 +115,7 @@ class CursorTaskConfig:
     install_if_missing: bool = True
     install_ttyd_if_missing: bool = True
     # Override for where the ``cursor-agent`` binary is resolved on the host.
-    cursor_install_dir: str | None = None
+    install_dir: str | None = None
     ttyd_install_dir: str | None = None
 
     # When True, a fresh launch passes a trailing positional prompt
@@ -158,6 +130,14 @@ class CursorTaskConfig:
     before_execute: HookCallback | None = None
     after_execute: HookCallback | None = None
     on_deliverable: DeliverableCallback | None = None
+    # Enable the CLIENT_MESSAGE keyword: agent-pushed messages routed to the
+    # originating browser session's frontend (stored as sessionEvents,
+    # surfaced via optio-ui's onClientMessage). Off by default.
+    use_client_messages: bool = False
+    # Enable the CALLER_MESSAGE keyword: agent-pushed messages routed to this
+    # callback in the embedding application. A non-None return value is sent
+    # back to the agent as feedback. Off (None) by default.
+    on_caller_message: CallerMessageCallback | None = None
 
     # --- seed surface (start fresh from a stored environment) -----------
     # Consumed (default/fallback): merge this seed's environment (cursor
@@ -182,6 +162,21 @@ class CursorTaskConfig:
     # None → the framework defaults (see optio_host.archive). Keep home/.cursor
     # OUT of this list: it carries the cursor chat state --continue needs.
     workdir_exclude: list[str] | None = None
+    # Optional pair of synchronous bytes->bytes transforms wrapping the resume
+    # snapshot's workdir tar at GridFS write/read (cursor persists its whole
+    # session — including home/.cursor chat state — in that single tar). Both
+    # set → encrypted at rest; both None (default) → plaintext. Setting only one
+    # is a config error (asymmetric usage is always a mistake).
+    session_blob_encrypt: Callable[[bytes], bytes] | None = None
+    session_blob_decrypt: Callable[[bytes], bytes] | None = None
+    # Hook fired on resume only (never on fresh start). Receives the original
+    # config; returns a (possibly mutated) config. The harness re-renders
+    # AGENTS.md from the returned config and writes it back only when it differs
+    # from the file on disk, tagging the next resume.log line with
+    # ``REFRESHED:AGENTS.md`` so the agent re-reads. Default = identity
+    # (recompose from the same config, so instruction/template changes reach a
+    # resumed session instead of freezing at first launch). Pass None to disable.
+    on_resume_refresh: "Callable[[CursorTaskConfig], CursorTaskConfig] | None" = _identity_resume_refresh
 
     # "iframe" = ttyd TUI (Stages 0-5). "conversation" = headless ACP
     # (cursor-agent acp); the task publishes a live CursorConversation
@@ -209,11 +204,6 @@ class CursorTaskConfig:
     thinking_verbosity: ThinkingVerbosity = "hidden"
 
     # --- conversation frontend parity (Stage 7) -------------------------
-    # Model preselected in the widget's model picker. Requires
-    # mode="conversation" and conversation_ui=True. Defaults to the live ACP
-    # current model when unset. (config.model still drives the launch --model
-    # flag; this only controls the picker's initial value.)
-    default_model: str | None = None
     # Show the engine-neutral session controls (the model picker) in the
     # conversation widget. Cursor switches model inline over ACP
     # (session/set_model — grok's live-pinned mechanism; cursor
@@ -285,11 +275,6 @@ class CursorTaskConfig:
         # Frontend-parity features are opt-in flags that only make sense with
         # the conversation UI wired (mirrors optio-grok/claudecode).
         conv_ui = self.mode == "conversation" and self.conversation_ui
-        if self.default_model is not None and not conv_ui:
-            raise ValueError(
-                "CursorTaskConfig: default_model requires mode='conversation' "
-                "and conversation_ui=True."
-            )
         if self.show_session_controls and not conv_ui:
             raise ValueError(
                 "CursorTaskConfig: show_session_controls=True requires "
@@ -310,13 +295,21 @@ class CursorTaskConfig:
                 "CursorTaskConfig: file_download=True requires "
                 "mode='conversation' and conversation_ui=True."
             )
-        for field_name in ("cursor_install_dir", "ttyd_install_dir"):
+        for field_name in ("install_dir", "ttyd_install_dir"):
             val = getattr(self, field_name)
             if val is not None and not val.startswith("/") and not val.startswith("~"):
                 raise ValueError(
                     f"CursorTaskConfig.{field_name}={val!r} must be an "
                     f"absolute path (start with '/' or '~')."
                 )
+        e = self.session_blob_encrypt is not None
+        d = self.session_blob_decrypt is not None
+        if e != d:
+            raise ValueError(
+                "CursorTaskConfig: session_blob_encrypt and "
+                "session_blob_decrypt must be set together (both callables) "
+                "or both left as None; one without the other is a config error."
+            )
         for ad in self.extra_allowed_dirs or []:
             if ad.mode not in ("ro", "rw", "rox", "rwx"):
                 raise ValueError(
