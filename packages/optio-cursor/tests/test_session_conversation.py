@@ -50,6 +50,17 @@ async def _wait_for(predicate, timeout: float = 10.0) -> None:
     raise AssertionError(f"condition not met within {timeout}s")
 
 
+async def _wait_widget_data(optio: Optio, process_id: str, timeout: float = 10.0) -> dict:
+    """Poll the process doc until widgetData is set; return the widgetData dict."""
+    end = _time.monotonic() + timeout
+    while _time.monotonic() < end:
+        proc = await optio.get_process(process_id)
+        if proc is not None and proc.get("widgetData"):
+            return proc["widgetData"]
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"{process_id} never set widgetData in {timeout}s")
+
+
 def _conversation_config(shim_install_dir: pathlib.Path, **kw) -> CursorTaskConfig:
     base = dict(
         consumer_instructions="Converse with the test.",
@@ -388,6 +399,60 @@ async def test_conversation_ui_resume_session_load_reject_falls_back(
         assert await asyncio.wait_for(msgs.get(), 10)  # a reply arrives
         await conv2.close()
         assert (await _wait_terminal(optio, "cu-conv-reject"))["status"]["state"] == "done"
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
+@pytest.mark.asyncio
+async def test_conversation_ui_file_upload_materialize(
+    shim_install_dir, task_root, mongo_db, monkeypatch,
+):
+    """conversation_ui migrates file upload to the generic materialize path: the
+    session registers an in-process upload writer (resolved by
+    ``Optio.materialize_upload``) that lands the bytes under ``<workdir>/uploads``
+    and fires ``on_upload`` with that relpath; widgetData advertises the generic
+    ``uploadUrl``."""
+    # Populate the ACP session/new models block so the conversation_ui model
+    # picker reads it directly instead of falling back to the `cursor-agent
+    # models` CLI (which the shim does not answer).
+    monkeypatch.setenv("FAKE_CURSOR_ACP_MODELS", "m1")
+    seen: list[str] = []
+    landed: dict[str, bytes] = {}
+
+    async def _on_upload(hook_ctx, path):
+        seen.append(path)
+        landed[path] = await hook_ctx.read_from_host(path)
+
+    optio = await _make_optio(mongo_db, "cuconvupload")
+    try:
+        task = create_cursor_task(
+            process_id="cu-conv-files",
+            name="Conversation upload",
+            config=_conversation_config(
+                shim_install_dir, conversation_ui=True,
+                show_file_upload=True, on_upload=_on_upload,
+            ),
+        )
+        await optio.adhoc_define(task)
+        await optio.launch_and_await_result(
+            "cu-conv-files", session_id=None, timeout=60,
+        )
+
+        wd = await _wait_widget_data(optio, "cu-conv-files")
+        assert wd["showFileUpload"] is True
+        assert wd["uploadUrl"] == (
+            "{widgetProxyUrl}../../../../widget-upload/"
+            f"{mongo_db.name}/cuconvupload/cu-conv-files"
+        )
+        # Upload flows through the generic materialize path (NOT the listener):
+        # Optio.materialize_upload resolves the registered writer, which lands
+        # the bytes under uploads/ and fires on_upload with the same relpath.
+        rel = await optio.materialize_upload(
+            "cu-conv-files", b"hello-bytes", "note.txt",
+        )
+        assert rel == "uploads/note.txt"
+        assert seen == ["uploads/note.txt"]
+        assert landed["uploads/note.txt"] == b"hello-bytes"
     finally:
         await optio.shutdown(grace_seconds=1.0)
 
