@@ -48,6 +48,11 @@ async def _make_resume_ctx(mongo_db, process_id: str) -> ProcessContext:
     )
 
 
+# Exercises the shared ~/.local/share/optio-claudecode runtime cache dir; runs
+# in the final non-parallel phase to avoid cross-test races on that path.
+pytestmark = pytest.mark.serial
+
+
 @pytest.mark.asyncio
 async def test_cache_hit_reuses_without_install(
     shim_install_dir: pathlib.Path,

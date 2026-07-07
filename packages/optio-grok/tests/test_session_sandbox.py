@@ -26,6 +26,11 @@ def _read_record(path: pathlib.Path) -> dict:
     return json.loads(lines[-1])
 
 
+# Spawns grok and touches shared sandbox/home paths; unsafe under concurrency.
+# Run in the final non-parallel phase.
+pytestmark = pytest.mark.serial
+
+
 @pytest.mark.asyncio
 async def test_iframe_sandbox_wired_and_profile_planted(
     shim_install_dir: pathlib.Path,

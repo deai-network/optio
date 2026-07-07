@@ -73,6 +73,11 @@ def _conversation_config(shim_install_dir: pathlib.Path, **kw) -> GrokTaskConfig
     return GrokTaskConfig(**base)
 
 
+# Spawn-heavy conversation tests, timing-fragile under concurrent load. Run in
+# the final non-parallel phase.
+pytestmark = pytest.mark.serial
+
+
 @pytest.mark.asyncio
 async def test_publish_send_receive_and_pending(shim_install_dir, task_root, mongo_db):
     """launch_and_await_result hands out the live conversation; one full

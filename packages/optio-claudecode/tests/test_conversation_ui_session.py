@@ -40,6 +40,12 @@ _TERMINAL = {"done", "failed", "cancelled"}
 # --- 1. validation matrix (pure unit) ------------------------------------
 
 
+# Some tests here drive a live conversation session and share fixed home/cache
+# paths under ~/.local/share/optio-claudecode; run this module in the final
+# non-parallel phase.
+pytestmark = pytest.mark.serial
+
+
 def test_conversation_ui_requires_conversation_mode():
     with pytest.raises(ValueError, match="conversation_ui"):
         ClaudeCodeTaskConfig(

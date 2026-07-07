@@ -9,6 +9,11 @@ import pytest
 from optio_claudecode import ClaudeCodeTaskConfig, create_claudecode_task
 
 
+# Plants files into the shared home dir and drives a session; run serially in
+# the final phase to avoid concurrent home-dir races.
+pytestmark = pytest.mark.serial
+
+
 @pytest.mark.asyncio
 async def test_before_execute_called_after_home_files_planted(
     shim_install_dir: pathlib.Path,

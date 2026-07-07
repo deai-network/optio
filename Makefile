@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help install check-tooling install-demo run-demo run-demo-dashboard build build-dashboard run-dashboard-api run-dashboard-dev codegen test test-interop lint lint-no-direct-writes clean clean-codegen clean-deep
 
-PY_PACKAGES := optio-core optio-host optio-agents optio-opencode optio-codex optio-cursor
+PY_PACKAGES := optio-core optio-host optio-agents optio-opencode optio-codex optio-cursor optio-claudecode optio-grok optio-antigravity optio-kimicode
 
 # Test parallelism (pytest-xdist). Tests marked `serial` (spawn-heavy or
 # timing-fragile — real subprocess servers, docker containers, sub-second

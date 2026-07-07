@@ -19,6 +19,11 @@ from optio_claudecode import (
 )
 
 
+# Spawns a real claude session against the shared home dir; run in the final
+# non-parallel phase.
+pytestmark = pytest.mark.serial
+
+
 @pytest.mark.asyncio
 async def test_local_happy_path_writes_agents_md_and_home_files(
     shim_install_dir: pathlib.Path,

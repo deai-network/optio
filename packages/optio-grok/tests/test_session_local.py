@@ -16,6 +16,11 @@ from optio_grok import (
 )
 
 
+# Spawns grok in a real tmux/ttyd session; fixed session name + shared workdir
+# state make it unsafe under concurrency. Run in the final non-parallel phase.
+pytestmark = pytest.mark.serial
+
+
 @pytest.mark.asyncio
 async def test_local_deliverable_callback_fired(
     shim_install_dir: pathlib.Path,
