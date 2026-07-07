@@ -125,7 +125,10 @@ async def test_fetch_falls_back_to_cursor_models_cli():
 @pytest.mark.asyncio
 async def test_fetch_falls_back_to_static_list_without_source():
     out = await fetch_available_models(None)
-    assert out == FALLBACK_MODELS
+    assert {m["id"] for m in out["models"]} == {
+        m["id"] for m in FALLBACK_MODELS["models"]
+    }
+    assert out["default"] == FALLBACK_MODELS["default"]
 
 
 @pytest.mark.asyncio
@@ -134,7 +137,10 @@ async def test_fetch_falls_back_when_cli_fails():
     # on a logged-out host) — a failing CLI must yield the static fallback.
     host = _FakeHost("Error: Authentication required.", exit_code=1)
     out = await fetch_available_models(None, host=host, cursor_path="/bin/cursor-agent")
-    assert out == FALLBACK_MODELS
+    assert {m["id"] for m in out["models"]} == {
+        m["id"] for m in FALLBACK_MODELS["models"]
+    }
+    assert out["default"] == FALLBACK_MODELS["default"]
 
 
 @pytest.mark.asyncio
@@ -143,7 +149,22 @@ async def test_fetch_falls_back_when_cli_output_unparseable():
     # unparseable output (no model list) must also yield the static fallback.
     host = _FakeHost("Error: Authentication required.", exit_code=0)
     out = await fetch_available_models(None, host=host, cursor_path="/bin/cursor-agent")
-    assert out == FALLBACK_MODELS
+    assert {m["id"] for m in out["models"]} == {
+        m["id"] for m in FALLBACK_MODELS["models"]
+    }
+    assert out["default"] == FALLBACK_MODELS["default"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_sorts_models_alphabetically_by_label():
+    # Every cursor source emits models in an arbitrary order; the picker list is
+    # sorted alphabetically by label (case-insensitive).
+    out = await fetch_available_models(None)  # static fallback
+    labels = [m["label"] for m in out["models"]]
+    assert labels == sorted(labels, key=str.lower)
+    # concrete: "Opus 4.5" sorts before "Sonnet 4.5" though it is last in source.
+    ids = [m["id"] for m in out["models"]]
+    assert ids.index("opus-4.5") < ids.index("sonnet-4.5")
 
 
 # --- config validation -----------------------------------------------------

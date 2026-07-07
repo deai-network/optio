@@ -134,20 +134,31 @@ async def fetch_available_models(
     static fallback list.
     """
     if isinstance(session_models, dict) and session_models.get("availableModels"):
-        return parse_acp_models(session_models)
+        return _sorted_models(parse_acp_models(session_models))
     if host is not None and cursor_path:
         try:
             result = await host.run_command(f"{shlex.quote(cursor_path)} models")
             if getattr(result, "exit_code", 1) == 0:
                 parsed = parse_cursor_models_text(getattr(result, "stdout", "") or "")
                 if parsed["models"]:
-                    return parsed
+                    return _sorted_models(parsed)
         except Exception:  # noqa: BLE001 — best-effort; fall through to fallback
             _LOG.info(
                 "cursor model list: `cursor-agent models` failed; using fallback",
                 exc_info=True,
             )
-    return _copy_fallback()
+    return _sorted_models(_copy_fallback())
+
+
+def _sorted_models(result: dict) -> dict:
+    """Order the picker list alphabetically by label (case-insensitive); every
+    cursor source emits models in an arbitrary order. ``default`` is a separate
+    field and is unaffected by the reorder."""
+    result["models"] = sorted(
+        result["models"],
+        key=lambda m: (m.get("label") or m.get("id") or "").lower(),
+    )
+    return result
 
 
 def _copy_fallback() -> dict:
