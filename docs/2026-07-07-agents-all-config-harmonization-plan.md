@@ -188,7 +188,13 @@ def test_aliases_importable_from_top_level():
   - NOT REACHABLE → kimi/antigravity **remove** the dead field; codex/opencode **do not add** it. Record as a native gap in the engine's `types.py` docstring.
 - [ ] **Step 4:** Write the verdict table into this plan (edit the "T2 verdict" block below) so the Wave-2 tasks are unambiguous. No commit (no code).
 
-**T2 verdict (fill in during execution):** kimi=… · antigravity=… · codex=… · opencode=…
+**T2 verdict (resolved):**
+- **kimi = REACHABLE** — config.toml `[[permission.rules]]` (`{decision, pattern}`; bare tool name matches). Extend `write_kimi_config` (`host_actions.py:193`) to emit one deny rule per `disallowed_tools`, one allow rule per `allowed_tools`. → **WIRE** (do not remove).
+- **opencode = REACHABLE** — `opencode.json` `permission` map (tool→`allow`/`deny`), written via the existing `opencode_config` passthrough (`session.py:248`). → **ADD + WIRE** convenience fields that fold into `permission`.
+- **antigravity = NOT REACHABLE** — only `--dangerously-skip-permissions`; no per-tool grammar. → **REMOVE** the dead fields.
+- **codex = NOT REACHABLE** — permission profiles cover fs/network only; `[tools]` are boolean capability toggles, not an allow/deny list. → **DO NOT ADD**; record the native gap in `types.py` docstring.
+
+`allowed_tools`/`disallowed_tools` therefore stays OUT of `CORE` (reachable on 5/7: kimi/grok/cursor/claude/opencode).
 
 ---
 
@@ -206,7 +212,7 @@ Every Wave-2 task shares this **common checklist** (C1–C3), then applies its *
 - [ ] **P2** on_resume_refresh — add + wire (kimi lacks it). Instruction file = `AGENTS.md`.
 - [ ] **P3** caller-message — add `use_client_messages`/`on_caller_message` + wire (`session.py:203` get_protocol).
 - [ ] session-blob encryption: **already present** — no change.
-- [ ] `allowed_tools`/`disallowed_tools`: per **T2 verdict** — wire if reachable, else **remove the dead field**.
+- [ ] `allowed_tools`/`disallowed_tools`: **REACHABLE (T2) → WIRE.** Extend `write_kimi_config` (`host_actions.py:193`) to emit `[[permission.rules]]` tables — `{decision="deny", pattern="<tool>"}` per `disallowed_tools`, `{decision="allow", pattern="<tool>"}` per `allowed_tools` — alongside the existing `default_permission_mode`. Add a round-trip test asserting the rules land in config.toml. Do NOT remove the fields.
 - [ ] `effort`: **leave in place** (Spec B repurposes it). Do not remove.
 - [ ] Tests: encrypt already tested; add a resume-refresh unit test + a caller-message pairing test (xdist-safe with fakes; mirror claudecode's tests). Update `test_types.py` for the renamed/dropped fields.
 - [ ] Demo `tasks/kimicode.py`: re-verify (no renamed field used).
@@ -243,7 +249,7 @@ Every Wave-2 task shares this **common checklist** (C1–C3), then applies its *
 ### Task 7: codex
 - [ ] C1, C2 (`codex_install_dir`→`install_dir`), C3 (drop `default_model`).
 - [ ] **P1**, **P2** (`AGENTS.md`), **P3** (`session.py:85`) — add + wire all three.
-- [ ] `allowed_tools`/`disallowed_tools`: **absent** — per **T2 verdict**, add+wire if reachable, else do not add (record native gap).
+- [ ] `allowed_tools`/`disallowed_tools`: **NOT REACHABLE (T2) → DO NOT ADD.** Record the native gap in a `types.py` docstring note (codex permission profiles cover fs/network only; `[tools]` are boolean capability toggles, not an allow/deny list).
 - [ ] Native kept: `ask_for_approval`/`sandbox`/`network_access`/ttyd.
 - [ ] Tests: three round-trips + `test_config.py` update.
 - [ ] Commit `refactor(optio-codex): harmonize config surface (+session-encrypt/resume-refresh/caller-message)`.
@@ -253,7 +259,7 @@ Every Wave-2 task shares this **common checklist** (C1–C3), then applies its *
 - [ ] C3 — `default_model`→`model` (opencode has only `default_model`; rename it to `model`; `model` maps to opencode's server `defaultModel` config + seeded `opencode.json` path; drop the conversation_ui gate so `model` is valid in all modes). Update `session.py:92` (`"defaultModel": config.default_model` → `config.model`) and the seeded-config path.
 - [ ] session-blob / on_resume_refresh / caller-message: **all already present** — no change.
 - [ ] **fs_isolation + extra_allowed_dirs (inert, change 6):** add `fs_isolation: bool = True` and `extra_allowed_dirs: list[AllowedDir] | None = None` (shared `AllowedDir`). Since opencode has no claustrum yet, this is a **known no-op**: (a) a field docstring stating "NOT YET ENFORCED — claustrum port pending"; (b) a **runtime warning on the server console** at launch when `fs_isolation` is True (e.g. `_LOG.warning("opencode fs_isolation requested but not yet enforced (claustrum pending)")` in the launch path).
-- [ ] `allowed_tools`/`disallowed_tools`: **absent** — per **T2 verdict**.
+- [ ] `allowed_tools`/`disallowed_tools`: **REACHABLE (T2) → ADD + WIRE.** Add the two `list[str] | None = None` fields; fold into the seeded `opencode.json` `permission` map (`session.py:248` `opencode_config` path) — `permission[<tool>]="deny"` per `disallowed_tools`, `"allow"` per `allowed_tools`; **merge**, don't clobber operator-supplied `opencode_config["permission"]`. Round-trip test.
 - [ ] Native kept: `opencode_config`.
 - [ ] Tests: `test_types.py` update (rename, new fs fields); a test asserting the not-enforced warning fires when `fs_isolation=True`.
 - [ ] Commit `refactor(optio-opencode): harmonize config surface (model rename, inert fs_isolation)`.
@@ -261,7 +267,7 @@ Every Wave-2 task shares this **common checklist** (C1–C3), then applies its *
 ### Task 9: antigravity
 - [ ] C1, C2 (`agy_install_dir`→`install_dir`), C3 (drop `default_model`).
 - [ ] **P1**, **P2** (`AGENTS.md`), **P3** (`session.py:98`) — add + wire all three.
-- [ ] `allowed_tools`/`disallowed_tools`: **dead field** — per **T2 verdict**, wire if reachable, else **remove**.
+- [ ] `allowed_tools`/`disallowed_tools`: **NOT REACHABLE (T2) → REMOVE the dead fields** (agy has only `--dangerously-skip-permissions`; no per-tool grammar).
 - [ ] **Remove dead `effort` + `reasoning_effort`** (unreachable — agy bakes thinking into the model id). Update `build_agy_flags` call sites (they don't read effort anyway) + `test_types.py`.
 - [ ] Native kept: permission_mode/ttyd.
 - [ ] Tests: three round-trips + `test_types.py` update (removed effort, renamed install_dir).
