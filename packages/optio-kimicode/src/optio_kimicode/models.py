@@ -119,19 +119,30 @@ def parse_all_controls(session_config_options, default_model=None, default_effor
 
       * ``model``    -> ``select`` (category ``model``) — the model picker.
       * ``thinking`` -> ``slider`` (id ``reasoning_effort``, category
-        ``thought_level``) — the GRADED reasoning-effort control. **Requires
-        the fork ``kimi-code >= 0.23.1-csillag.2`` / ``csillag/acp-graded-thinking``**,
-        which upgrades the former 2-entry ``off``/``on`` thinking toggle into an
-        ordered effort list. Two wire shapes:
-          - ``options = [off, <graded…>]`` (``off`` present) → an ENABLED slider
-            whose ordered levels ARE the option values, so the chosen level
-            round-trips unchanged to ``session/set_config_option`` (configId
-            ``thinking``; see conversation.py, which maps the ``reasoning_effort``
-            control id back to configId ``thinking``).
-          - ``options`` WITHOUT ``off`` → an always-thinking model (the runtime
-            cannot disable reasoning) → a DISABLED slider + ``ALWAYS_THINKING_REASON``.
-        Note the projected control ``id`` is ``reasoning_effort`` while the ACP
-        ``configId`` stays ``thinking`` — the two are bridged in set_control.
+        ``thought_level``) — the reasoning-effort control. **Requires the fork
+        ``kimi-code >= 0.23.1-csillag.2`` / ``csillag/acp-graded-thinking``**, which
+        exposes a per-model ``thinking`` picker whose granularity mirrors the
+        model's actual capability — the wire is NOT always graded and NOT always
+        2-entry off/on. The slider's ordered levels ARE the option values
+        verbatim, so whatever the wire advertises round-trips 1:1 to
+        ``session/set_config_option`` (configId ``thinking``; see conversation.py,
+        which maps the ``reasoning_effort`` control id back to configId
+        ``thinking``). Three observed wire shapes:
+          - GRADED model (advertises ``support_efforts``): ``options = [off,
+            low, medium, high, xhigh (Extra High), max]`` → an ENABLED multi-level
+            effort slider.
+          - BOOLEAN-thinking model (thinking-capable but NO ``support_efforts`` —
+            e.g. the account model ``kimi-for-coding``): ``options = [off, on]`` →
+            an ENABLED 2-level off/on slider (CONFIRMED against a live
+            ``session/new`` on fork 0.23.1-csillag.2).
+          - ALWAYS-thinking model (no ``off`` level; the runtime cannot disable
+            reasoning): ``options`` WITHOUT ``off`` → a DISABLED slider +
+            ``ALWAYS_THINKING_REASON``.
+        The projection is shape-agnostic: ``levels = [o.value for o in options]``,
+        so a 2-entry off/on list yields a 2-level slider and a graded list yields
+        a graded slider — no per-shape branching. Note the projected control
+        ``id`` is ``reasoning_effort`` while the ACP ``configId`` stays
+        ``thinking`` — the two are bridged in set_control.
       * ``mode``     -> ``select`` (category ``mode``) — the 4-mode taxonomy.
 
     Unknown option ids fall back to a generic ``boolean``/``select`` by their

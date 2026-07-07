@@ -288,6 +288,35 @@ def test_parse_all_controls_always_thinking_disables_effort_slider():
     assert by_id["model"].disabled is False
 
 
+def test_parse_all_controls_boolean_thinking_yields_off_on_slider():
+    # REAL wire shape captured from a live `session/new` on the graded fork
+    # (kimi 0.23.1-csillag.2): the account model `kimi-for-coding` is
+    # thinking-capable but BOOLEAN (no `support_efforts`), so its `thinking`
+    # configOption advertises exactly [off, on] — NOT a graded effort list.
+    # parse_all_controls must project this into a 2-level off/on slider
+    # (shape-agnostic: levels ARE the option values), enabled because `off`
+    # is present.
+    config_options = [
+        {"type": "select", "id": "model", "name": "Model", "category": "model",
+         "currentValue": "kimi-for-coding",
+         "options": [{"value": "kimi-for-coding", "name": "Kimi for Coding"}]},
+        {"type": "select", "id": "thinking", "name": "Thinking",
+         "category": "thought_level", "currentValue": "on",
+         "options": [{"value": "off", "name": "Off"},
+                     {"value": "on", "name": "On"}]},
+    ]
+    by_id = {c.id: c for c in parse_all_controls(config_options)}
+    eff = by_id["reasoning_effort"]
+    assert eff.kind == "slider"
+    # a 2-level off/on slider, NOT a graded list
+    assert eff.levels == ["off", "on"]
+    assert eff.value == "on"
+    # `off` is present -> reasoning can be turned off -> slider is enabled
+    assert eff.disabled is False
+    assert eff.to_dict()["kind"] == "slider"
+    assert eff.to_dict()["levels"] == ["off", "on"]
+
+
 def test_parse_all_controls_empty_and_malformed():
     assert parse_all_controls(None) == []
     assert parse_all_controls([]) == []
