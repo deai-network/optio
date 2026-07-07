@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-ControlKind = Literal["select", "boolean", "segmented"]
+ControlKind = Literal["select", "boolean", "segmented", "slider"]
 
 # A select/segmented control that collapses to a single choice is inherently
 # unchangeable — engines mark it disabled with this reason so the UI grays it
@@ -93,4 +93,13 @@ def model_control(
         value=current or "", options=options,
         disabled=locked,
         why_disabled=SINGLE_OPTION_REASON if locked else None,
+    )
+
+
+def effort_control(*, levels, current, disabled=False, why_disabled=None, label="Effort"):
+    """Build the id="reasoning_effort" slider from ordered effort levels."""
+    return SessionControl(
+        id="reasoning_effort", kind="slider", label=label, category="thought_level",
+        value=(current or (levels[0] if levels else "")), levels=list(levels),
+        disabled=disabled, why_disabled=why_disabled,
     )

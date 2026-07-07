@@ -33,13 +33,13 @@ export interface ControlOption {
 
 export interface SessionControl {
   id: string;
-  kind: 'select' | 'boolean' | 'segmented';
+  kind: 'select' | 'boolean' | 'segmented' | 'slider';
   label: string;
   value: string | boolean;
   category?: string;
   description?: string;
   options?: ControlOption[]; // kind === 'select'
-  levels?: string[]; // kind === 'segmented'
+  levels?: string[]; // kind === 'segmented' | 'slider'
   disabled?: boolean; // whole control unchangeable (e.g. single option)
   whyDisabled?: string; // hover explanation when disabled
 }

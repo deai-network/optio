@@ -2,6 +2,7 @@ from optio_agents.session_controls import (
     SINGLE_OPTION_REASON,
     ControlOption,
     SessionControl,
+    effort_control,
     model_control,
 )
 
@@ -62,3 +63,29 @@ def test_model_control_single_option_auto_locks():
     two = model_control(models=[{"id": "a", "label": "A"}, {"id": "b", "label": "B"}],
                         current="a")
     assert two.disabled is False and two.why_disabled is None
+
+
+def test_effort_control_builds_slider():
+    c = effort_control(levels=["low", "medium", "high"], current="high")
+    assert c.id == "reasoning_effort" and c.kind == "slider"
+    assert c.category == "thought_level" and c.value == "high"
+    d = c.to_dict()
+    assert d["kind"] == "slider"
+    assert d["levels"] == ["low", "medium", "high"]
+    assert d["value"] == "high"
+    assert "options" not in d
+
+
+def test_effort_control_defaults_current_to_first_level():
+    c = effort_control(levels=["low", "medium", "high"], current=None)
+    assert c.value == "low"
+    # empty levels degrade to an empty-string value rather than raising
+    empty = effort_control(levels=[], current=None)
+    assert empty.value == "" and empty.to_dict()["levels"] == []
+
+
+def test_effort_control_disabled_locks():
+    c = effort_control(levels=["high"], current="high",
+                       disabled=True, why_disabled="always on")
+    d = c.to_dict()
+    assert d["disabled"] is True and d["whyDisabled"] == "always on"

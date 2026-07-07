@@ -42,6 +42,39 @@ describe('SessionControls renderer', () => {
     expect(opt?.getAttribute('title')).toBe('plan-gated');
   });
 
+  it('renders a slider control with a control-reasoning_effort testid', () => {
+    const sliderControls: SessionControl[] = [
+      { id: 'reasoning_effort', kind: 'slider', label: 'Effort', value: 'low',
+        levels: ['low', 'medium', 'high'] },
+    ];
+    render(<ConversationView {...{ ...base(vi.fn()), controls: sliderControls }} />);
+    expect(screen.getByTestId('control-reasoning_effort')).toBeTruthy();
+  });
+
+  it('slider change fires onControlChange(id, level)', () => {
+    const cb = vi.fn();
+    const sliderControls: SessionControl[] = [
+      { id: 'reasoning_effort', kind: 'slider', label: 'Effort', value: 'low',
+        levels: ['low', 'medium', 'high'] },
+    ];
+    render(<ConversationView {...{ ...base(cb), controls: sliderControls }} />);
+    // The handle carries role="slider"; ArrowRight advances to the next mark,
+    // standing in for a drag — the branch maps the new index back to its level.
+    fireEvent.keyDown(screen.getByRole('slider'), { key: 'ArrowRight' });
+    expect(cb).toHaveBeenCalledWith('reasoning_effort', 'medium');
+  });
+
+  it('a single-level / disabled slider is locked and hover explains why', async () => {
+    const locked: SessionControl[] = [
+      { id: 'reasoning_effort', kind: 'slider', label: 'Effort', value: 'high',
+        levels: ['high'], disabled: true, whyDisabled: 'always on' },
+    ];
+    render(<ConversationView {...{ ...base(vi.fn()), controls: locked }} />);
+    expect(screen.getByTestId('control-reasoning_effort').className).toContain('ant-slider-disabled');
+    fireEvent.mouseEnter(screen.getByText('Effort'));
+    await waitFor(() => expect(screen.getByText('always on')).toBeTruthy());
+  });
+
   it('a control-level disabled flag grays the control and hover explains why', async () => {
     const locked: SessionControl[] = [
       { id: 'thinking', kind: 'segmented', label: 'Thinking', value: 'on',

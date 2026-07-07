@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Input, Segmented, Select, Spin, Switch, Tooltip, theme } from 'antd';
+import { Alert, Button, Input, Segmented, Select, Slider, Spin, Switch, Tooltip, theme } from 'antd';
 import type { GlobalToken } from 'antd';
 import type { TextAreaRef } from 'antd/es/input/TextArea';
 import type { ChatItem, ChatState, SessionControl } from './chat.js';
@@ -140,10 +140,15 @@ function toolSummary(input: unknown): string {
   return '';
 }
 
+// Capitalize a level label ("high" -> "High") for the segmented/slider marks.
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
 // Generic renderer for engine-neutral session controls. Each control renders by
-// kind: boolean -> <Switch>, segmented -> <Segmented>, select -> <Select>
-// (disabled options greyed with a whyDisabled tooltip title). Every control
-// carries a `control-<id>` data-testid.
+// kind: boolean -> <Switch>, segmented -> <Segmented>, slider -> <Slider>,
+// select -> <Select> (disabled options greyed with a whyDisabled tooltip
+// title). Every control carries a `control-<id>` data-testid.
 function SessionControls({
   controls, disabled, onChange,
 }: {
@@ -181,6 +186,19 @@ function SessionControls({
                 value: l,
               }))}
               onChange={(v) => onChange(c.id, String(v))}
+            />
+          );
+        } else if (c.kind === 'slider') {
+          const levels = c.levels ?? [];
+          const idx = Math.max(0, levels.indexOf(String(c.value)));
+          node = (
+            <Slider
+              data-testid={`control-${c.id}`}
+              style={{ minWidth: 160, alignSelf: 'center' }}
+              min={0} max={Math.max(0, levels.length - 1)} step={null}
+              marks={Object.fromEntries(levels.map((l, i) => [i, capitalize(l)]))}
+              value={idx} disabled={dis}
+              onChange={(v: number) => onChange(c.id, levels[v])}
             />
           );
         } else {
