@@ -120,7 +120,7 @@ means implementing the behavior, not just declaring it.**
 | At-rest session-blob encryption | `session_blob_encrypt` / `session_blob_decrypt` (paired; asymmetric → ValueError) | kimi, claude, opencode | grok, cursor, codex, antigravity — apply the encrypt/decrypt callables in each engine's snapshot capture/restore path |
 | Resume-refresh hook | `on_resume_refresh` (default: identity callable, matching claude/opencode) | claude, opencode | kimi, grok, cursor, codex, antigravity — fire the hook on resume |
 | Caller-message channel | `use_client_messages` (bool) + `on_caller_message` (callback) | claude, opencode | kimi, grok, cursor, codex, antigravity — port the `CLIENT_MESSAGE`/`CALLER_MESSAGE` keyword channel (log-protocol level) |
-| Tool allow/deny | `allowed_tools` / `disallowed_tools` | kimi, grok, cursor, claude, antigravity | **codex, opencode — RESEARCH FIRST** (see Open research) then wire to the native mechanism, or accept-inert-with-doc if none exists |
+| Tool allow/deny | `allowed_tools` / `disallowed_tools` | **wired** in claude (`--allowed-tools`/`--disallowed-tools`), grok (`--allow`×N + `--disallowed-tools`), cursor (plants `.cursor/cli-config.json`) | **kimi + antigravity fields are DEAD** (declared, never consumed); **codex + opencode absent.** All four are **RESEARCH-GATED** (see Open research): wire to the engine's native tool-gating where one exists, else remove the dead field (kimi/antigravity) / don't add (codex/opencode) and record as a native gap. Do NOT ship an inert allow/deny field — a security control that silently does nothing is worse than absent (the antigravity-effort mistake). |
 
 Defaults for the added fields match the reference engines
 (`session_blob_*`=None, `on_resume_refresh`=identity, `use_client_messages`=False,
@@ -168,13 +168,19 @@ flag/config/env lever). Remove both. (Kimi's `effort` stays — reachable via
 
 ## Open research (resolve in the plan phase)
 
-**codex / opencode tool allow-deny (change 5, tool row).** Verify whether the
-codex app-server and the opencode HTTP API expose a native tool allow/deny
-mechanism the wrapper can drive (e.g. codex config `tools`, opencode
-`opencode.json` permissions). If yes, wire `allowed_tools`/`disallowed_tools` to
-it; if no native mechanism exists, either accept the fields inert (documented,
-like opencode fs_isolation) or leave tool-gating as a native delta for those two
-— decide from the research finding.
+**Tool allow-deny reachability for FOUR engines (change 5, tool row):** kimi,
+antigravity (fields declared but dead), codex, opencode (fields absent). For
+each, verify whether the agent exposes a native per-tool allow/deny mechanism
+the wrapper can drive (kimi's `config.toml` only has `default_permission_mode`;
+antigravity only `--dangerously-skip-permissions`; codex app-server config;
+opencode `opencode.json` permissions). **If reachable:** wire it (flags like
+grok/claude, or a planted config like cursor) + a round-trip test. **If not
+reachable:** remove the dead field (kimi/antigravity) and leave it unset
+(codex/opencode) — record tool allow/deny as a native gap for those engines,
+matching how antigravity effort was removed. Unlike opencode's inert
+`fs_isolation` (a deferred-but-planned feature), a tool allow/deny that does
+nothing is a **security-misleading no-op** and must not ship — remove rather
+than accept-inert.
 
 ## Testing
 
