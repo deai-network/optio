@@ -555,7 +555,10 @@ async def run_claudecode_session(
                 # current model may be None (no --model): the view sniffs the
                 # runtime model from system/init and folds it into the value.
                 ctrls = [model_control(models=model_list["models"], current=model)]
-                levels, default = cc_models.model_effort(model) if model else (None, None)
+                levels, default = (
+                    cc_models.model_effort(model, model_list["models"])
+                    if model else (None, None)
+                )
                 if levels:
                     ctrls.append(effort_control(levels=levels, current=effort or default))
                 return [c.to_dict() for c in ctrls]
@@ -606,13 +609,32 @@ async def run_claudecode_session(
                 close_task = asyncio.create_task(conversation.close_requested.wait())
                 model_task = asyncio.create_task(conversation.model_change_requested.wait())
                 effort_task = asyncio.create_task(conversation.effort_change_requested.wait())
+                init_task = asyncio.create_task(conversation.runtime_model_observed.wait())
                 done, _ = await asyncio.wait(
-                    {wait_task, close_task, model_task, effort_task},
+                    {wait_task, close_task, model_task, effort_task, init_task},
                     return_when=asyncio.FIRST_COMPLETED,
                 )
-                for t in (wait_task, close_task, model_task, effort_task):
+                for t in (wait_task, close_task, model_task, effort_task, init_task):
                     if t not in done:
                         t.cancel()
+
+                if init_task in done and close_task not in done and wait_task not in done:
+                    # --- runtime model observed from the stream's system/init:
+                    # adopt the REAL running model (a default-model session has
+                    # config.model None, but the stream names it, e.g.
+                    # "claude-opus-4-8[1m]") and re-emit the controls snapshot so
+                    # the reasoning_effort slider appears for the actual model.
+                    # Presence-only; NOT a relaunch. Strip the [..] variant
+                    # suffix before the catalog lookup. ---
+                    conversation.runtime_model_observed.clear()
+                    if build_controls is not None:
+                        base = (conversation.runtime_model or "").split("[", 1)[0]
+                        if base and base != current_model:
+                            current_model = base
+                            conversation.emit_control_update(
+                                build_controls(current_model, current_effort)
+                            )
+                    continue
 
                 relaunch = model_task in done or effort_task in done
                 if relaunch and close_task not in done and wait_task not in done:

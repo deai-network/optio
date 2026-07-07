@@ -34,32 +34,54 @@ KNOWN_GOOD_FAMILIES = {"opus", "sonnet", "haiku"}
 
 # Graded reasoning-effort levels (ordered low→max) claude's `--effort` flag
 # accepts. The live control (id="reasoning_effort") is a slider over these.
+# This is the canonical *universe* of tiers; each model advertises which of
+# them it actually supports (see _effort_tiers / parse_models).
 EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"]
-
-# Families whose current models expose graded reasoning effort. GET /v1/models
-# carries no effort-capability field, so this is a static per-family table
-# (mirroring how Claude Code's own /model dialog knows which models grade
-# effort). A family absent here → no effort control for that model (the slider
-# is omitted, not disabled). haiku has no graded effort.
-_EFFORT_FAMILIES = {"opus", "sonnet"}
 
 # Default effort preselected on the slider when the caller sets no
 # reasoning_effort (mid-high, matching Claude Code's own default posture).
 DEFAULT_EFFORT = "high"
 
 
-def model_effort(model_id: str) -> tuple[list[str] | None, str | None]:
-    """Graded reasoning-effort capability for a model id.
+def _effort_tiers(capabilities: dict) -> list[str] | None:
+    """Ordered supported effort tiers from a model's ``capabilities.effort``.
 
-    Returns ``(levels, default)`` when the model's family supports graded
-    effort (levels is a fresh copy of ``EFFORT_LEVELS``), else ``(None, None)``
-    so the caller omits the effort control. Robust to runtime/variant ids
-    (e.g. ``claude-opus-4-8[1m]``): ``_parse_id`` ignores a trailing suffix it
-    cannot match by falling back to the family token."""
-    family, _, _ = _parse_id(model_id.split("[", 1)[0])
-    if family in _EFFORT_FAMILIES:
-        return (list(EFFORT_LEVELS), DEFAULT_EFFORT)
-    return (None, None)
+    GET /v1/models carries per-model effort capability under
+    ``capabilities.effort = {supported: bool, <tier>: {supported: bool}, ...}``.
+    ``effort.supported`` false (or the field being absent) means the model has
+    no graded effort → return ``None``; otherwise return the ``EFFORT_LEVELS``-
+    ordered subset whose per-tier ``supported`` flag is true (a tier with
+    ``supported: false`` is unavailable, e.g. sonnet-4-6 lacks ``xhigh``)."""
+    effort = (capabilities or {}).get("effort")
+    if not isinstance(effort, dict) or not effort.get("supported"):
+        return None
+    tiers = [
+        lvl for lvl in EFFORT_LEVELS
+        if isinstance(effort.get(lvl), dict) and effort[lvl].get("supported")
+    ]
+    return tiers or None
+
+
+def model_effort(
+    model_id: str, catalog: list[dict],
+) -> tuple[list[str] | None, str | None]:
+    """Graded reasoning-effort capability for a model id, read from the fetched
+    catalog (``parse_models`` captured ``capabilities.effort`` per model).
+
+    Returns ``(levels, default)`` — ``levels`` a fresh copy of the model's
+    supported tiers, ``default`` the preselected slider value — when the model's
+    catalog entry advertises supported effort tiers, else ``(None, None)`` so the
+    caller omits the effort control. Robust to runtime/variant ids (e.g.
+    ``claude-opus-4-8[1m]``): the trailing ``[..]`` suffix is stripped before the
+    catalog lookup. A model absent from the catalog (or without captured effort)
+    yields ``(None, None)``."""
+    base = model_id.split("[", 1)[0]
+    entry = next((m for m in catalog if m.get("id") == base), None)
+    tiers = (entry or {}).get("effort")
+    if not tiers:
+        return (None, None)
+    default = DEFAULT_EFFORT if DEFAULT_EFFORT in tiers else tiers[-1]
+    return (list(tiers), default)
 
 # Common aliases shown when the live fetch fails (offline, no creds, API change).
 _FALLBACK_LIST: list[dict] = [
@@ -103,13 +125,23 @@ def declutter(models: list[dict]) -> list[dict]:
 
 
 def parse_models(api_json: dict) -> dict:
-    """Map GET /v1/models ({data:[{id, display_name}]}) to a decluttered
-    {models:[{id,label}], default} shape (no availability yet)."""
+    """Map GET /v1/models to a decluttered ``{models:[{id,label,effort?}], default}``
+    shape (no availability yet).
+
+    Each ``data`` entry carries ``{id, display_name, capabilities:{effort,...}}``;
+    we capture the per-model supported effort tiers (``_effort_tiers``) onto the
+    ``effort`` key when present, so ``model_effort`` can grade the reasoning
+    slider from real capability data rather than a family guess. The key is
+    omitted entirely for models with no graded effort."""
     out = []
     for m in api_json.get("data", []):
         mid = m.get("id")
         if isinstance(mid, str) and mid:
-            out.append({"id": mid, "label": m.get("display_name") or mid})
+            entry = {"id": mid, "label": m.get("display_name") or mid}
+            tiers = _effort_tiers(m.get("capabilities") or {})
+            if tiers is not None:
+                entry["effort"] = tiers
+            out.append(entry)
     out = declutter(out)
     if not out:
         return {"models": list(_FALLBACK_LIST), "default": None}

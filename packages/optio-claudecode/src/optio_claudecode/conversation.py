@@ -56,6 +56,15 @@ class ClaudeCodeConversation:
         # path as a model change); requested_effort holds the picked level.
         self.effort_change_requested: asyncio.Event = asyncio.Event()
         self.requested_effort: str | None = None
+        # Runtime model announced by the stream's system/init event (the REAL
+        # running model, e.g. "claude-opus-4-8[1m]" — carries a [variant]
+        # suffix and is populated even for a default-model session where
+        # config.model is None). Captured in _route the moment it is seen so
+        # the owning body can re-derive the reasoning_effort control's presence
+        # for the actual model; the Event stays set, so the body never races
+        # the reader for it.
+        self.runtime_model: str | None = None
+        self.runtime_model_observed: asyncio.Event = asyncio.Event()
         self._write_lock = asyncio.Lock()
         self._event_queue: asyncio.Queue[dict] = asyncio.Queue()
         self._event_handlers: list = []
@@ -133,6 +142,14 @@ class ClaudeCodeConversation:
                     "conversation: unhandled control_request subtype %r",
                     req.get("subtype"),
                 )
+        elif t == "system" and obj.get("subtype") == "init":
+            # The stream announces the REAL running model here; capture it (raw,
+            # incl. any [variant] suffix) so the body can fold it into the
+            # effort control's presence. Set on every launch (incl. relaunch).
+            model = obj.get("model")
+            if isinstance(model, str) and model:
+                self.runtime_model = model
+                self.runtime_model_observed.set()
         self._event_queue.put_nowait(obj)
 
     # -- event fan-out -----------------------------------------------------
