@@ -15,7 +15,7 @@ def test_demo_is_async_services_factory_with_resume():
     assert list(inspect.signature(get_tasks).parameters) == ["services"]
 
     src = inspect.getsource(inspect.getmodule(get_tasks))
-    assert "create_claudecode_task" in src
+    assert "create_task" in src
     assert 'process_id="claudecode-seed-setup"' in src
     # seed-launched demo tasks opt into resume
     assert "supports_resume=True" in src

@@ -54,7 +54,7 @@ def test_get_tasks_is_async_services_factory():
 
     src = inspect.getsource(inspect.getmodule(get_tasks))
     assert 'process_id="cursor-seed-setup"' in src
-    assert "create_cursor_task" in src
+    assert "create_task" in src
     # seed-launched demo tasks opt into resume
     assert "supports_resume=True" in src
 

@@ -18,7 +18,7 @@ def test_get_tasks_is_async_services_factory():
     # the static tasks the factory always emits
     assert 'process_id="opencode-demo"' in src
     assert 'process_id="opencode-seed-setup"' in src
-    assert "create_opencode_task" in src
+    assert "create_task" in src
 
 
 def test_demo_does_not_use_wrapper_execute_pattern():
