@@ -82,3 +82,52 @@ describe('opencode event reducer (recorded fixtures)', () => {
     expect(items.some((i) => i.kind === 'assistant')).toBe(true);
   });
 });
+
+describe('opencode harness-message mute', () => {
+  it('renders a System:-prefixed user message as an activity row, not a user bubble (live path)', () => {
+    const s = play([
+      { type: 'message.updated', properties: { info: { id: 'mu1', sessionID: SID, role: 'user' } } },
+      { type: 'message.part.updated', properties: { part: { id: 'up1', messageID: 'mu1', sessionID: SID, type: 'text', text: 'System: you have been resumed' } } },
+    ]);
+    expect(s.items.some((i) => i.kind === 'user')).toBe(false);
+    const act = s.items.find((i) => i.kind === 'activity');
+    expect(act && act.kind === 'activity' && act.text).toBe('System: you have been resumed');
+  });
+
+  it('still renders a normal user message as a user bubble (live path)', () => {
+    const s = play([
+      { type: 'message.updated', properties: { info: { id: 'mu9', sessionID: SID, role: 'user' } } },
+      { type: 'message.part.updated', properties: { part: { id: 'up9', messageID: 'mu9', sessionID: SID, type: 'text', text: 'what is 2+2?' } } },
+    ]);
+    expect(s.items.some((i) => i.kind === 'activity')).toBe(false);
+    const u = s.items.find((i) => i.kind === 'user');
+    expect(u && u.kind === 'user' && u.text).toBe('what is 2+2?');
+  });
+
+  it('maps a System:-prefixed user message to an activity row (history path)', () => {
+    const items = historyToChatItems([
+      { info: { id: 'mu1', sessionID: SID, role: 'user' }, parts: [{ type: 'text', text: 'System: you have been resumed' }] },
+    ], SID);
+    expect(items.some((i) => i.kind === 'user')).toBe(false);
+    expect(items.some((i) => i.kind === 'activity' && i.text === 'System: you have been resumed')).toBe(true);
+  });
+
+  it('strips a System: upload received notice line from the user bubble (live path)', () => {
+    const s = play([
+      { type: 'message.updated', properties: { info: { id: 'mu2', sessionID: SID, role: 'user' } } },
+      { type: 'message.part.updated', properties: { part: { id: 'up2', messageID: 'mu2', sessionID: SID, type: 'text', text: 'System: upload received, stored in uploads/doc.md\n\nplease review' } } },
+    ]);
+    const u = s.items.find((i) => i.kind === 'user');
+    expect(u && u.kind === 'user' && u.text).toBe('please review');
+    expect(s.items.some((i) => i.kind === 'activity')).toBe(false);
+  });
+
+  it('strips a System: upload received notice line from the user bubble (history path)', () => {
+    const items = historyToChatItems([
+      { info: { id: 'mu3', sessionID: SID, role: 'user' }, parts: [{ type: 'text', text: 'System: upload received, stored in uploads/doc.md\n\nplease review' }] },
+    ], SID);
+    const u = items.find((i) => i.kind === 'user');
+    expect(u && u.kind === 'user' && u.text).toBe('please review');
+    expect(items.some((i) => i.kind === 'activity')).toBe(false);
+  });
+});

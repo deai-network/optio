@@ -45,6 +45,19 @@ function upsertAssistant(
 
 const dropTools = (items: ChatItem[]) => items.filter((i) => i.kind !== 'tool');
 
+// Harness-injected messages (resume notices, auto-start prompt) go through the
+// same prompt path, so opencode records them as user-role messages carrying this
+// prefix; they render as muted activity rows, never user bubbles (mirrors
+// antigravity's HARNESS_PREFIX and the shared acp reducer's user_message_chunk).
+const HARNESS_PREFIX = 'System: ';
+
+// On a file upload the workdir-write path prepends one `System: upload received,
+// stored in <path>` line per file to the prompt; strip them so the user bubble
+// shows only the real request (mirrors antigravity/acp stripUploadNotice).
+function stripUploadNotice(text: string): string {
+  return text.replace(/^(?:System: upload received, stored in [^\n]*\n)+\n?/, '');
+}
+
 export function reduceOpencodeEvent(
   state: ChatState, ev: any, seq: number, sessionID: string,
 ): ChatState {
@@ -100,18 +113,29 @@ function reduce(
       : st.partTypes;
     if (part.type === 'text') {
       if (st.roles?.[msgId] === 'user') {
-        // The user prompt's own text part: fill the already-rendered bubble
+        // Strip upload-notice lines, then mute harness `System:` messages: they
+        // ride the same user-role path but must render as activity rows, never
+        // user bubbles (a resume notice as a user bubble is the live bug).
+        const text = stripUploadNotice(part.text ?? '');
+        const harness = text.startsWith(HARNESS_PREFIX);
+        // The user prompt's own text part: fill the already-rendered row
         // (optimistic echo or an earlier part event) in place, else append.
         const at = st.userSeqs?.[msgId];
-        const idx = at === undefined ? -1 : st.items.findIndex((i) => i.kind === 'user' && i.seq === at);
+        const idx = at === undefined ? -1 : st.items.findIndex((i) => (i.kind === 'user' || i.kind === 'activity') && i.seq === at);
         if (idx !== -1) {
           const items = [...st.items];
-          items[idx] = { ...(items[idx] as Extract<ChatItem, { kind: 'user' }>), text: part.text ?? '' };
+          const existing = items[idx];
+          items[idx] = existing.kind === 'activity'
+            ? { ...existing, text }
+            : { ...(existing as Extract<ChatItem, { kind: 'user' }>), text };
           return { ...st, partTypes, items };
         }
+        const row: ChatItem = harness
+          ? { kind: 'activity', text, seq }
+          : { kind: 'user', text, seq };
         return {
           ...st, partTypes,
-          items: [...st.items, { kind: 'user', text: part.text ?? '', seq }],
+          items: [...st.items, row],
           userSeqs: { ...st.userSeqs, [msgId]: seq },
         };
       }
@@ -203,8 +227,16 @@ export function historyToChatItems(history: any[], sessionID: string): ChatItem[
     if (info.sessionID !== undefined && info.sessionID !== sessionID) continue;
     const parts = entry?.parts ?? [];
     if (info.role === 'user') {
-      const text = parts.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('\n');
-      if (text) items.push({ kind: 'user', text, seq: seq++ });
+      const raw = parts.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('\n');
+      // Same muting as the live path: strip upload notices, render harness
+      // `System:` messages as activity rows so resume/history replays them the
+      // way the live reducer does (never as user bubbles).
+      const text = stripUploadNotice(raw);
+      if (text) {
+        items.push(text.startsWith(HARNESS_PREFIX)
+          ? { kind: 'activity', text, seq: seq++ }
+          : { kind: 'user', text, seq: seq++ });
+      }
       continue;
     }
     if (info.role === 'assistant') {
