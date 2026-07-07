@@ -7,6 +7,7 @@ claudecode ``_handle_upload``/``_write_upload`` so all engines share one copy.
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import TYPE_CHECKING, Awaitable, Callable
 
@@ -16,6 +17,8 @@ if TYPE_CHECKING:
 UploadCallback = Callable[["HookContext", str], Awaitable[None]]
 
 _UPLOADS_DIR = "uploads"
+
+_LOG = logging.getLogger("optio_agents.uploads")
 
 
 def safe_upload_relpath(filename: str) -> str:
@@ -32,4 +35,22 @@ def safe_upload_relpath(filename: str) -> str:
     # Defense in depth: the normalized path must stay directly under uploads/.
     if os.path.normpath(rel) != rel or "/" in base:
         raise ValueError(f"unsafe upload filename: {filename!r}")
+    return rel
+
+
+async def materialize(host, workdir, filename, data, hook_ctx=None, on_upload=None):
+    """Write an uploaded blob into <workdir>/uploads/<name> and fire on_upload.
+
+    Runs in the task's own process (only it holds the live Host, which may be a
+    remote SFTP connection). Returns the workdir-relative path. on_upload is
+    additive to the System: LLM announce the caller emits separately.
+    """
+    rel = safe_upload_relpath(filename)
+    abs_path = f"{workdir.rstrip('/')}/{rel}"
+    await host.put_file_to_host(data, abs_path)
+    if on_upload is not None:
+        try:
+            await on_upload(hook_ctx, rel)
+        except Exception:
+            _LOG.exception("on_upload callback raised for %s", rel)
     return rel
