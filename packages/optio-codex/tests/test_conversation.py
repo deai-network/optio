@@ -622,7 +622,13 @@ _GRADED_MODEL_LIST = {
         {"id": "gpt-5.5", "displayName": "GPT-5.5", "hidden": False,
          "isDefault": True, "model": "gpt-5.5",
          "defaultReasoningEffort": "medium",
-         "supportedReasoningEfforts": ["low", "medium", "high", "xhigh"]},
+         # REAL app-server shape: list of OBJECTS, not bare strings.
+         "supportedReasoningEfforts": [
+             {"reasoningEffort": "low", "description": "low reasoning"},
+             {"reasoningEffort": "medium", "description": "medium reasoning"},
+             {"reasoningEffort": "high", "description": "high reasoning"},
+             {"reasoningEffort": "xhigh", "description": "xhigh reasoning"},
+         ]},
         {"id": "gpt-5.4-mini", "displayName": "GPT-5.4 Mini", "hidden": False,
          "isDefault": False, "model": "gpt-5.4-mini",
          "defaultReasoningEffort": "medium", "supportedReasoningEfforts": []},

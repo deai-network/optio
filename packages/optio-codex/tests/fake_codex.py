@@ -384,15 +384,24 @@ def _run_app_server() -> int:
             _as_send({"id": mid, "result": {
                 "account": {"type": "apikey"}, "requiresOpenaiAuth": False}})
         elif method == "model/list":
+            # REAL app-server model/list shape (codex 0.142.5 live capture):
+            # supportedReasoningEfforts is a LIST OF OBJECTS ordered
+            # low/medium/high/xhigh; both live models are graded-capable.
+            _efforts = [
+                {"reasoningEffort": "low", "description": "low reasoning"},
+                {"reasoningEffort": "medium", "description": "medium reasoning"},
+                {"reasoningEffort": "high", "description": "high reasoning"},
+                {"reasoningEffort": "xhigh", "description": "xhigh reasoning"},
+            ]
             _as_send({"id": mid, "result": {"data": [
                 {"id": "gpt-5.5", "displayName": "GPT-5.5", "description": "",
                  "hidden": False, "isDefault": True, "model": "gpt-5.5",
                  "defaultReasoningEffort": "medium",
-                 "supportedReasoningEfforts": []},
+                 "supportedReasoningEfforts": _efforts},
                 {"id": "gpt-5.4-mini", "displayName": "GPT-5.4 Mini",
                  "description": "", "hidden": False, "isDefault": False,
                  "model": "gpt-5.4-mini", "defaultReasoningEffort": "medium",
-                 "supportedReasoningEfforts": []},
+                 "supportedReasoningEfforts": _efforts},
             ], "nextCursor": None}})
         elif method in ("thread/start", "thread/resume"):
             params = msg.get("params") or {}

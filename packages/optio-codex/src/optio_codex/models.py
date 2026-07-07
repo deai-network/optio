@@ -72,8 +72,10 @@ def parse_model_list(result: "dict | None") -> dict:
             "id": mid,
             "label": m.get("displayName") or mid,
             "disabled": False,
-            "efforts": [e for e in efforts if isinstance(e, str)]
-            if isinstance(efforts, list) else [],
+            "efforts": [
+                e["reasoningEffort"] for e in efforts
+                if isinstance(e, dict) and isinstance(e.get("reasoningEffort"), str)
+            ] if isinstance(efforts, list) else [],
             "defaultEffort": m.get("defaultReasoningEffort"),
         })
         if m.get("isDefault"):

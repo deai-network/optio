@@ -18,11 +18,18 @@ from optio_codex.models import (
 def _entry(mid, name, *, default=False, hidden=False,
            efforts=None, default_effort="medium"):
     # Only the fields the parser reads + the schema-required discriminators.
+    # ``supportedReasoningEfforts`` is the REAL app-server wire shape (codex
+    # 0.142.5 model/list): a LIST OF OBJECTS ``[{"reasoningEffort": "low",
+    # "description": ...}, ...]`` — NOT a list of bare strings. ``efforts`` is
+    # given here as convenient level names and expanded to that object shape.
     return {
         "id": mid, "displayName": name, "description": "",
         "hidden": hidden, "isDefault": default, "model": mid,
         "defaultReasoningEffort": default_effort,
-        "supportedReasoningEfforts": efforts if efforts is not None else [],
+        "supportedReasoningEfforts": [
+            {"reasoningEffort": lvl, "description": f"{lvl} reasoning"}
+            for lvl in (efforts if efforts is not None else [])
+        ],
     }
 
 
