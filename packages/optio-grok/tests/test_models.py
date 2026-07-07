@@ -161,49 +161,40 @@ def test_model_preselects_picker_with_no_conversation_ui_gate():
     assert cfg2.model == "grok-composer-2.5-fast"
 
 
-# --- graded reasoning-effort capability (Spec B) ---------------------------
+# --- per-model _meta carries NO reasoning-effort capability ----------------
 
-_ACP_EFFORT = {
-    "currentModelId": "grok-build",
+# REAL captured shape of a session/new model block (authed `grok agent stdio`,
+# grok 0.2.81). Each model's ``_meta`` carries ONLY {totalContextTokens,
+# agentType} — there is no supportsReasoningEffort / reasoningEfforts field in
+# ANY casing, so no live effort capability can be derived from ACP. (Real
+# per-model capability lives only in ~/.grok/models_cache.json as snake_case
+# ``supports_reasoning_effort``, currently false for every model.)
+_ACP_REAL_META = {
+    "currentModelId": "grok-composer-2.5-fast",
     "availableModels": [
-        # No effort metadata → plain entry, no effort keys.
-        {"modelId": "grok-composer-2.5-fast", "name": "Composer 2.5"},
-        # Graded effort advertised via _meta.
+        {
+            "modelId": "grok-composer-2.5-fast",
+            "name": "Composer 2.5",
+            "_meta": {"totalContextTokens": 256000, "agentType": "grok-composer-2.5-fast"},
+        },
         {
             "modelId": "grok-build",
             "name": "Grok Build",
-            "_meta": {
-                "supportsReasoningEffort": True,
-                "reasoningEfforts": ["low", "medium", "high", "xhigh"],
-            },
+            "_meta": {"totalContextTokens": 256000, "agentType": "grok-build"},
         },
     ],
 }
 
 
-def test_parse_acp_models_captures_graded_effort():
-    out = parse_acp_models(_ACP_EFFORT)
-    by_id = {m["id"]: m for m in out["models"]}
-    # Effort-capable model carries the capability + ordered levels.
-    build = by_id["grok-build"]
-    assert build["supportsReasoningEffort"] is True
-    assert build["reasoningEfforts"] == ["low", "medium", "high", "xhigh"]
-    # A model with no _meta stays a plain entry (no effort keys leak in).
-    composer = by_id["grok-composer-2.5-fast"]
-    assert "supportsReasoningEffort" not in composer
-    assert "reasoningEfforts" not in composer
-
-
-def test_parse_acp_models_empty_efforts_omits_capability():
-    # supportsReasoningEffort with an empty/malformed level list → no levels key
-    # (session.py gates the slider on non-empty levels).
-    out = parse_acp_models({
-        "currentModelId": "m",
-        "availableModels": [
-            {"modelId": "m", "_meta": {"supportsReasoningEffort": True,
-                                       "reasoningEfforts": []}},
-        ],
-    })
-    entry = out["models"][0]
-    assert entry.get("supportsReasoningEffort") is True
-    assert "reasoningEfforts" not in entry
+def test_parse_acp_models_real_meta_surfaces_no_effort_capability():
+    # grok's real _meta ({totalContextTokens, agentType}) advertises no reasoning
+    # capability, so entries are plain {id,label,disabled} — no effort keys.
+    out = parse_acp_models(_ACP_REAL_META)
+    assert out["default"] == "grok-composer-2.5-fast"
+    assert out["models"] == [
+        {"id": "grok-composer-2.5-fast", "label": "Composer 2.5", "disabled": False},
+        {"id": "grok-build", "label": "Grok Build", "disabled": False},
+    ]
+    for entry in out["models"]:
+        assert "reasoningEfforts" not in entry
+        assert "supportsReasoningEffort" not in entry

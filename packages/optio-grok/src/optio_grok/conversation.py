@@ -90,7 +90,6 @@ class GrokConversation:
         agent_label: str = "grok",
         permission_gate: bool = False,
         mcp_servers: list | None = None,
-        reasoning_effort: str | None = None,
     ) -> None:
         self._cwd = cwd
         self._agent_label = agent_label
@@ -105,16 +104,13 @@ class GrokConversation:
         # `grok models` subprocess.
         self.session_models: dict | None = None
         self.current_model_id: str | None = None
-        # Live graded reasoning-effort level (id="reasoning_effort" slider).
-        # Initialized from the launch --reasoning-effort, updated optimistically
-        # by set_control("reasoning_effort", …). None when the current model
-        # advertises no graded effort.
-        self.current_effort: str | None = reasoning_effort
         # Optional callback (installed by session.py) that re-derives the full
-        # session-controls list for a given current model id. Called after a
-        # model change so the reasoning_effort control's presence/levels follow
-        # the model (its capability is per-model). Returns a list of
-        # SessionControl dicts; None disables the re-emit.
+        # session-controls list for a given current model id, re-emitted after a
+        # model change. grok exposes no per-model live controls (no reasoning
+        # slider — its ACP advertises no per-model effort capability; see
+        # models.parse_acp_models), so today the snapshot is just the id="model"
+        # select. Returns a list of SessionControl dicts; None disables the
+        # re-emit.
         self._controls_builder = None
         self._pending = 0                    # user turns awaiting their result
         self._closed = asyncio.Event()
@@ -429,65 +425,35 @@ class GrokConversation:
     def set_controls_builder(self, builder) -> None:
         """Install the session-controls re-derivation callback (session.py owns
         it — it holds the model catalog + config defaults). Called after a model
-        change so the reasoning_effort control's presence/levels follow the new
-        model. ``builder(current_model_id) -> list[dict]``."""
+        change to re-emit the control snapshot. ``builder(current_model_id) ->
+        list[dict]``."""
         self._controls_builder = builder
 
     async def set_control(self, control_id: str, value) -> None:
         """Push a session-control value change to grok's native transport
         (the generic replacement for the bespoke model selector). grok exposes
-        two INLINE controls, both switched over ACP with ``session/set_model``
-        (no process restart — Stage-7 Task-0 pinned the model round-trip; see
-        models.py):
+        a single INLINE control, the ``model`` select, switched over ACP with
+        ``session/set_model`` {sessionId, modelId} (no process restart —
+        Stage-7 Task-0 pinned the model round-trip; see models.py).
 
-          * ``model``            — {sessionId, modelId}.
-          * ``reasoning_effort`` — re-send set_model for the CURRENT model with
-            the effort carried in the request ``_meta`` (see below).
+        There is NO live ``reasoning_effort`` control: grok's ACP does not
+        advertise per-model reasoning-effort capability (the session/new model
+        block's per-model ``_meta`` carries only {totalContextTokens,
+        agentType}; see models.parse_acp_models), so no effort slider is
+        surfaced. reasoning_effort is a launch-only knob applied via
+        ``--reasoning-effort`` (host_actions.build_conversation_argv).
 
         Unknown control ids are ignored. The new value is applied optimistically
-        (current_model_id / current_effort) before the round-trip is awaited. On
-        a model change the controls are re-derived + re-emitted (the effort
-        control's capability is per-model)."""
-        if control_id not in ("model", "reasoning_effort"):
-            return  # grok exposes only the model + reasoning_effort controls
+        (current_model_id) before the round-trip is awaited; on a model change
+        the controls are re-derived + re-emitted."""
+        if control_id != "model":
+            return  # grok exposes only the model control
         if self._closed.is_set():
             raise ConversationClosed(self._close_reason or "conversation closed")
         if self._session_id is None:
             raise RuntimeError(
                 "GrokConversation.set_control before bootstrap() completed"
             )
-        if control_id == "reasoning_effort":
-            self.current_effort = value
-            # ============================================================
-            # LIVE-PROBE ITEM — the exact set_model effort payload shape.
-            # ============================================================
-            # There is no dedicated ACP method for reasoning effort; grok graded
-            # effort rides the SAME session/set_model request that switches the
-            # model. We re-send set_model for the CURRENT modelId (unchanged) and
-            # attach the level in the request ``_meta`` — the ACP-idiomatic
-            # extension slot grok already uses for model state in the *response*
-            # (result._meta.model.Ok; see the module docstring).
-            #
-            # EXPECTED shape (implemented below), pending a live probe against a
-            # real authed `grok agent stdio`:
-            #     {sessionId, modelId:<current>, _meta:{reasoningEffort:<level>}}
-            #
-            # FALLBACK CANDIDATES if the probe rejects the above (try in order,
-            # like the original set_model probe in models.py):
-            #   1. top-level field:  {sessionId, modelId, reasoningEffort:<level>}
-            #   2. a distinct method: session/set_reasoning_effort {sessionId, level}
-            #   3. relaunch grok with the launch flag --reasoning-effort <level>
-            #      (grok's documented CLI knob; a process restart like claudecode
-            #      — heaviest, last resort).
-            # The _meta path is expected to work (grok's ACP surface already
-            # speaks _meta), so it ships first and is marked for live-verify.
-            await self._request("session/set_model", {
-                "sessionId": self._session_id,
-                "modelId": self.current_model_id,
-                "_meta": {"reasoningEffort": value},
-            })
-            return
-        # control_id == "model"
         self.current_model_id = value
         await self._request("session/set_model", {
             "sessionId": self._session_id, "modelId": value,

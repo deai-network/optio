@@ -60,17 +60,18 @@ FALLBACK_MODELS: dict = {
 
 def parse_acp_models(session_models: "dict | None") -> dict:
     """Map an ACP ``models`` block ({currentModelId, availableModels:[{modelId,
-    name, _meta}]}) to the widget shape {models:[{id,label,disabled,
-    reasoningEfforts?}], default}.
+    name, _meta}]}) to the widget shape {models:[{id,label,disabled}], default}.
 
-    Graded-effort capability rides each model's ACP ``_meta`` block:
-    ``_meta.supportsReasoningEffort`` (bool) gates the id="reasoning_effort"
-    slider, and ``_meta.reasoningEfforts`` (ordered list, low→high) supplies its
-    levels. Both are surfaced only when present — a model that advertises
-    neither leaves the slider off (the current-model check lives in session.py).
-    The exact ``_meta`` field names are a LIVE-PROBE item (see the set_control
-    docstring in conversation.py for the effort round-trip probe); if the real
-    grok build spells them differently, adjust here + the launch flag together.
+    NO live reasoning-effort capability is derived here. grok's ACP per-model
+    ``_meta`` block carries ONLY {totalContextTokens, agentType} (verified
+    against a live authed ``grok agent stdio`` session) — it advertises no
+    ``supportsReasoningEffort`` / ``reasoningEfforts`` in any casing, so there
+    is no reachable per-model reasoning-capability source and no live effort
+    slider is surfaced. (Real per-model capability lives only in
+    ``~/.grok/models_cache.json`` as snake_case ``supports_reasoning_effort``,
+    which is currently false for every model on the account.) ``reasoning_effort``
+    remains a LAUNCH-ONLY knob applied via ``--reasoning-effort`` (see
+    types.GrokTaskConfig / host_actions.build_conversation_argv).
 
     Missing / malformed input returns the static fallback (never falsely
     empties the picker)."""
@@ -85,17 +86,7 @@ def parse_acp_models(session_models: "dict | None") -> dict:
             continue
         mid = m.get("modelId")
         if isinstance(mid, str) and mid:
-            entry: dict = {"id": mid, "label": m.get("name") or mid, "disabled": False}
-            meta = m.get("_meta")
-            if isinstance(meta, dict):
-                efforts = meta.get("reasoningEfforts")
-                if isinstance(efforts, list):
-                    levels = [e for e in efforts if isinstance(e, str) and e]
-                    if levels:
-                        entry["reasoningEfforts"] = levels
-                if meta.get("supportsReasoningEffort"):
-                    entry["supportsReasoningEffort"] = True
-            out.append(entry)
+            out.append({"id": mid, "label": m.get("name") or mid, "disabled": False})
     if not out:
         return _copy_fallback()
     return {"models": out, "default": session_models.get("currentModelId")}

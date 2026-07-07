@@ -96,8 +96,8 @@ async def test_set_control_model_sends_set_model(convo):
 
 @pytest.mark.asyncio
 async def test_set_control_unknown_id_is_noop(convo):
-    # grok exposes only the model + reasoning_effort controls; any other id is
-    # silently ignored (no ACP request written, model unchanged).
+    # grok exposes only the model control; any other id is silently ignored
+    # (no ACP request written, model unchanged).
     c, handle = convo
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle)
@@ -110,44 +110,32 @@ async def test_set_control_unknown_id_is_noop(convo):
 
 
 @pytest.mark.asyncio
-async def test_set_control_reasoning_effort_resends_set_model_with_meta(convo):
-    # set_control("reasoning_effort", …) re-sends session/set_model for the
-    # CURRENT modelId (unchanged) with the level in the request _meta, and
-    # updates current_effort optimistically. The model is NOT changed.
+async def test_set_control_reasoning_effort_is_noop(convo):
+    # There is NO live reasoning_effort control (grok's ACP advertises no
+    # per-model reasoning-effort capability; reasoning_effort is launch-only).
+    # An unknown "reasoning_effort" id is silently ignored — no ACP request.
     c, handle = convo
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle)
     c.current_model_id = "grok-build"
-    ctrl = asyncio.create_task(c.set_control("reasoning_effort", "high"))
-    msg = await asyncio.wait_for(handle.stdin.lines.get(), 1)
-    assert msg["method"] == "session/set_model"
-    assert msg["params"]["sessionId"] == "s1"
-    # Same model — only the effort changes.
-    assert msg["params"]["modelId"] == "grok-build"
-    assert msg["params"]["_meta"] == {"reasoningEffort": "high"}
-    assert c.current_effort == "high"          # optimistic
+    await c.set_control("reasoning_effort", "high")
+    assert handle.stdin.lines.empty()          # no set_model round-trip
     assert c.current_model_id == "grok-build"  # unchanged
-    handle.stdout.feed({"jsonrpc": "2.0", "id": msg["id"], "result": {}})
-    await asyncio.wait_for(ctrl, 1)
     handle.stdout.eof()
     await reader
 
 
 @pytest.mark.asyncio
 async def test_set_control_model_reemits_controls_snapshot(convo):
-    # A model change re-derives + re-emits the full controls snapshot (the
-    # effort control's capability is per-model) as an x-optio-control-update
-    # the shared reducer folds. The builder is session.py's; here we stub it.
+    # A model change re-derives + re-emits the full controls snapshot as an
+    # x-optio-control-update the shared reducer folds. The builder is
+    # session.py's (just the model select — grok surfaces no per-model live
+    # controls); here we stub it.
     c, handle = convo
     seen: list[dict] = []
     c.on_event(lambda obj: seen.append(obj))
-    # Stub builder: effort control present only for grok-build.
     def _builder(model_id):
-        controls = [{"id": "model", "kind": "select", "value": model_id}]
-        if model_id == "grok-build":
-            controls.append({"id": "reasoning_effort", "kind": "slider",
-                             "levels": ["low", "high"], "value": "low"})
-        return controls
+        return [{"id": "model", "kind": "select", "value": model_id}]
     c.set_controls_builder(_builder)
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle)
@@ -162,7 +150,7 @@ async def test_set_control_model_reemits_controls_snapshot(convo):
     assert updates, "expected a control-update snapshot after model change"
     controls = updates[-1]["controls"]
     ids = {c2["id"] for c2 in controls}
-    assert ids == {"model", "reasoning_effort"}
+    assert ids == {"model"}
 
 
 @pytest.mark.asyncio

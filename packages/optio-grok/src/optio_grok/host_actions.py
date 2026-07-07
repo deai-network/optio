@@ -815,9 +815,10 @@ def build_conversation_argv(
     (auto-approve every tool — used when no permission gate is wired). No
     tmux/ttyd: the subprocess IS the agent.
 
-    ``--reasoning-effort`` (when set) seeds the INITIAL graded effort at launch,
-    mirroring ``--model``; it is then switched live over ACP by
-    ``set_control("reasoning_effort", …)``. LIVE-VERIFY: the iframe launch
+    ``--reasoning-effort`` (when set) seeds the graded effort at launch,
+    mirroring ``--model``. It is launch-only — grok's ACP advertises no
+    per-model reasoning-effort capability, so there is no live mid-session
+    effort control (see conversation.set_control). LIVE-VERIFY: the iframe launch
     (:func:`build_grok_flags`) accepts ``--reasoning-effort`` at the top level;
     the ``grok agent`` subcommand's acceptance of it is a real-binary probe item
     (fold the flag in only if ``grok agent --help`` lists it). Omitted when None,

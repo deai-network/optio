@@ -55,11 +55,13 @@ _VALID_PERMISSION_MODES = {
     "default", "acceptEdits", "auto", "dontAsk", "bypassPermissions", "plan"
 }
 
-# Graded reasoning-effort levels grok exposes as a live slider control (ordered
-# low→high). Unlike the free-form ``effort`` passthrough, this is the engine's
-# per-model reasoning budget surfaced as the id="reasoning_effort" control and
-# validated at construction time (the level set is stable across vendor
-# releases; a bad value is a caller bug, not a vendor drift).
+# Graded reasoning-effort levels grok accepts at launch (ordered low→high).
+# Unlike the free-form ``effort`` passthrough, this is the engine's per-model
+# reasoning budget, validated at construction time (the level set is stable
+# across vendor releases; a bad value is a caller bug, not a vendor drift).
+# NOTE: launch-only. grok's ACP does not advertise per-model reasoning-effort
+# capability, so no live id="reasoning_effort" slider is surfaced (see
+# models.parse_acp_models / conversation.set_control).
 GrokReasoningEffort = Literal["low", "medium", "high", "xhigh"]
 _VALID_REASONING_EFFORT = {"low", "medium", "high", "xhigh"}
 
@@ -103,9 +105,10 @@ class GrokTaskConfig:
     model: str | None = None
     effort: str | None = None
     # Graded reasoning budget (low/medium/high/xhigh). Applied at launch as the
-    # initial effort (``--reasoning-effort``, like ``--model``) AND surfaced as
-    # the live id="reasoning_effort" slider control, switched mid-session over
-    # ACP (see conversation.set_control). Validated against the Literal below.
+    # initial effort (``--reasoning-effort``, like ``--model``). Launch-only:
+    # grok's ACP advertises no per-model reasoning-effort capability, so there
+    # is no live mid-session slider (see conversation.set_control /
+    # models.parse_acp_models). Validated against the Literal below.
     reasoning_effort: GrokReasoningEffort | None = None
 
     ssh: SSHConfig | None = None
