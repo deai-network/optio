@@ -198,12 +198,17 @@ function SessionControls({
           node = (
             <span
               data-testid={`control-${c.id}`}
-              style={{ display: 'inline-flex', minWidth: 160, alignSelf: 'center' }}
+              style={{ display: 'inline-flex', minWidth: 160, alignSelf: 'center', marginLeft: 10 }}
             >
               <Slider
                 style={{ flex: 1 }}
                 min={0} max={Math.max(0, levels.length - 1)} step={null}
-                marks={Object.fromEntries(levels.map((l, i) => [i, capitalize(l)]))}
+                marks={Object.fromEntries(
+                  levels.map((l, i) => [
+                    i,
+                    { style: { fontSize: 10, whiteSpace: 'nowrap' }, label: capitalize(l) },
+                  ]),
+                )}
                 value={idx} disabled={dis}
                 onChange={(v: number) => onChange(c.id, levels[v])}
               />
