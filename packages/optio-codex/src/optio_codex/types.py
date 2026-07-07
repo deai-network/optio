@@ -75,6 +75,13 @@ _VALID_APPROVAL_POLICIES = {"untrusted", "on-failure", "on-request", "never"}
 SandboxMode = Literal["read-only", "workspace-write", "danger-full-access"]
 _VALID_SANDBOX_MODES = {"read-only", "workspace-write", "danger-full-access"}
 
+# Graded reasoning effort levels codex accepts on ``turn/start.effort`` (the
+# per-turn override; app-server contract). The concrete set a given model
+# supports is advertised live in its ``model/list`` entry's
+# ``supportedReasoningEfforts`` — this Literal is the validation superset.
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh"]
+_VALID_REASONING_EFFORTS = {"none", "minimal", "low", "medium", "high", "xhigh"}
+
 
 def _identity_resume_refresh(config: "CodexTaskConfig") -> "CodexTaskConfig":
     """Default ``on_resume_refresh``: recompose AGENTS.md from the unchanged
@@ -102,6 +109,14 @@ class CodexTaskConfig:
     # model picker's initial selection (falling back to the live thread model
     # when unset); codex switches the model INLINE on the next turn/start.
     model: str | None = None
+    # Initial graded reasoning effort applied at launch (like ``model``): rides
+    # the first ``turn/start`` as ``effort`` and sticks until the operator moves
+    # the reasoning_effort slider (INLINE, per-turn; the app-server has no
+    # dedicated set-effort request). None (default) → codex uses each model's
+    # ``defaultReasoningEffort``. Only meaningful for models that advertise
+    # ``supportedReasoningEfforts`` in conversation mode; validated against the
+    # ReasoningEffort superset (the live per-model set is the true gate).
+    reasoning_effort: "ReasoningEffort | None" = None
     # IFRAME-ONLY. Interactive iframe defaults: unattended launch in ttyd
     # (mirrors claudecode bypassPermissions for embedded sessions nobody is
     # watching). In conversation mode the thread's approvalPolicy is derived
@@ -314,6 +329,14 @@ class CodexTaskConfig:
             raise ValueError(
                 f"CodexTaskConfig.sandbox={self.sandbox!r} "
                 f"is not one of {sorted(_VALID_SANDBOX_MODES)}"
+            )
+        if (
+            self.reasoning_effort is not None
+            and self.reasoning_effort not in _VALID_REASONING_EFFORTS
+        ):
+            raise ValueError(
+                f"CodexTaskConfig.reasoning_effort={self.reasoning_effort!r} "
+                f"is not one of {sorted(_VALID_REASONING_EFFORTS)}"
             )
         if self.fs_isolation and self.effective_sandbox_mode == "danger-full-access":
             raise ValueError(

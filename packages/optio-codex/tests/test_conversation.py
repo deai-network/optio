@@ -613,6 +613,103 @@ async def test_set_control_after_close_raises(convo):
         await c.set_control("model", "gpt-5.4-mini")
 
 
+# --- reasoning-effort (Spec-B) -------------------------------------------
+
+# A model/list where the default model advertises graded reasoning and the
+# other does not — exercises model-dependent effort presence.
+_GRADED_MODEL_LIST = {
+    "data": [
+        {"id": "gpt-5.5", "displayName": "GPT-5.5", "hidden": False,
+         "isDefault": True, "model": "gpt-5.5",
+         "defaultReasoningEffort": "medium",
+         "supportedReasoningEfforts": ["low", "medium", "high", "xhigh"]},
+        {"id": "gpt-5.4-mini", "displayName": "GPT-5.4 Mini", "hidden": False,
+         "isDefault": False, "model": "gpt-5.4-mini",
+         "defaultReasoningEffort": "medium", "supportedReasoningEfforts": []},
+    ],
+    "nextCursor": None,
+}
+
+
+@pytest.mark.asyncio
+async def test_set_control_reasoning_effort_rides_next_turn(convo):
+    # INLINE, no wire write: set_control arms `effort` for the next turn/start.
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)
+    await c.set_control("reasoning_effort", "high")
+    assert handle.stdin.lines.empty()              # nothing on the wire yet
+    await c.send("hello")
+    turn_req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert turn_req["method"] == "turn/start"
+    assert turn_req["params"]["effort"] == "high"
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_initial_reasoning_effort_rides_first_turn():
+    # config.reasoning_effort seeds the driver → the FIRST turn carries it.
+    handle = _FakeHandle()
+    c = CodexConversation(cwd="/w", reasoning_effort="low")
+    c.attach(handle)
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)
+    await c.send("hello")
+    turn_req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert turn_req["params"]["effort"] == "low"
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_no_effort_key_when_unset(convo):
+    # Default (no config effort, no set_control): turn/start omits `effort`.
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)
+    await c.send("hello")
+    turn_req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert "effort" not in turn_req["params"]
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_set_control_model_reemits_controls_for_graded_model():
+    # Switching to a graded model re-derives + re-emits the control set with a
+    # reasoning_effort slider (model-dependent presence).
+    c = CodexConversation(cwd="/w")
+    c.thread_id = "t1"                         # past the bootstrap guard
+    c.model_list = _GRADED_MODEL_LIST
+    events: list = []
+    c.on_event(events.append)
+    await c.set_control("model", "gpt-5.5")
+    update = next(e for e in events if e.get("type") == "x-optio-control-update")
+    ids = [ctl["id"] for ctl in update["controls"]]
+    assert ids == ["model", "reasoning_effort"]
+    effort = update["controls"][1]
+    assert effort["kind"] == "slider"
+    assert effort["levels"] == ["low", "medium", "high", "xhigh"]
+    assert update["controls"][0]["value"] == "gpt-5.5"   # new model pinned
+
+
+@pytest.mark.asyncio
+async def test_set_control_model_drops_effort_for_non_graded_model():
+    # Switching from a graded model (armed effort) to a non-graded one drops the
+    # slider AND disarms the stale effort so it won't ride the next turn.
+    c = CodexConversation(cwd="/w")
+    c.thread_id = "t1"
+    c.model_list = _GRADED_MODEL_LIST
+    c._requested_effort = "high"               # armed from a prior graded model
+    events: list = []
+    c.on_event(events.append)
+    await c.set_control("model", "gpt-5.4-mini")   # no graded reasoning
+    update = next(e for e in events if e.get("type") == "x-optio-control-update")
+    assert [ctl["id"] for ctl in update["controls"]] == ["model"]
+    assert c._requested_effort is None             # disarmed
+
+
 @pytest.mark.asyncio
 async def test_turn_start_error_response_unwinds_pending(convo):
     c, handle = convo

@@ -19,7 +19,6 @@ from optio_agents import seeds as _seeds
 from optio_agents.input_listener import serialized, start_input_listener
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_agents.uploads import materialize, upload_url_token
-from optio_agents.session_controls import model_control
 from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
 from optio_host.paths import task_dir
 
@@ -367,6 +366,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             cwd=host.workdir,
             permission_gate=config.permission_gate,
             model=config.model,
+            reasoning_effort=config.reasoning_effort,
             sandbox=sandbox_settings.mode,
             # Plan B: on resume, continue the stored thread (thread/resume)
             # instead of starting a fresh one. resume_session_id is the codex
@@ -453,10 +453,14 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                 or conversation.current_model_id
                 or model_list.get("default")
             )
-            # The model picker is now the generic id="model" SessionControl;
-            # codex exposes only this one (INLINE switch via set_control).
-            control = model_control(
-                models=model_list["models"], current=current_model,
+            # Session controls for the current model: the id="model" picker
+            # plus, when this model advertises graded reasoning, the
+            # id="reasoning_effort" slider (build_controls omits it otherwise).
+            # Both switch INLINE via set_control; the effort control is
+            # re-derived + re-emitted whenever the model changes (see
+            # CodexConversation.set_control).
+            controls = codex_models.build_controls(
+                model_list, current_model, config.reasoning_effort,
             )
             # widgetData.uploadUrl token; see optio_agents.uploads.upload_url_token.
             upload_url = upload_url_token(ctx._db.name, ctx._prefix, ctx.process_id)
@@ -466,7 +470,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                 "thinkingVerbosity": config.thinking_verbosity,
                 "showSessionControls": config.show_session_controls,
                 "nativeSpinner": config.native_spinner,
-                "controls": [control.to_dict()],
+                "controls": [c.to_dict() for c in controls],
                 "showFileUpload": config.show_file_upload,
                 "maxUploadBytes": config.max_upload_bytes,
                 "fileDownload": config.file_download,

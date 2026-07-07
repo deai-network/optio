@@ -100,6 +100,7 @@ from optio_agents.conversation import (
     PermissionDecision,
     PermissionRequest,
 )
+from optio_codex import models as codex_models
 
 _LOG = logging.getLogger(__name__)
 
@@ -122,6 +123,7 @@ class CodexConversation:
         agent_label: str = "codex",
         permission_gate: bool = False,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         sandbox: str = "workspace-write",
         resume_thread_id: str | None = None,
     ) -> None:
@@ -152,6 +154,12 @@ class CodexConversation:
         self.model_list: dict | None = None
         self.current_model_id: str | None = None
         self._requested_model: str | None = None
+        # Graded reasoning effort armed for the next turn/start (codex's
+        # per-turn `effort` override; None → codex uses the model default).
+        # Seeded from config at launch (initial effort, like model), updated
+        # INLINE by set_control("reasoning_effort", …), and reconciled to a
+        # valid value / dropped when the model changes.
+        self._requested_effort: str | None = reasoning_effort
         self._pending = 0                    # user turns awaiting turn/completed
         self._closed = asyncio.Event()
         self._close_reason: str | None = None
@@ -488,6 +496,11 @@ class CodexConversation:
             # Inline model switch: the override becomes the thread default
             # for subsequent turns (app-server contract).
             params["model"] = self._requested_model
+        if self._requested_effort is not None:
+            # Inline graded-reasoning override: `effort` rides each turn/start
+            # (the app-server has no dedicated set-effort request). Seeded from
+            # config at launch, then moved by the reasoning_effort slider.
+            params["effort"] = self._requested_effort
         try:
             await self._write_json({
                 "id": rid, "method": "turn/start", "params": params,
@@ -540,21 +553,49 @@ class CodexConversation:
 
     async def set_control(self, control_id: str, value) -> None:
         """Push a session-control value change to the native transport
-        (generalizes model selection). Codex exposes only the ``model``
-        control, switched INLINE — with NO wire write: a ``model`` override on
-        the next ``turn/start`` becomes the thread's default for subsequent
-        turns (app-server contract; see models.py). Unknown control ids are
-        ignored (no-op)."""
-        if control_id != "model":
-            return  # codex exposes only the model control
+        (generalizes model selection). Codex exposes two controls, both
+        switched INLINE with NO dedicated wire write — a ``model`` / ``effort``
+        override on the next ``turn/start`` becomes the thread default for
+        subsequent turns (app-server contract; see models.py):
+
+        * ``model`` — pins the model on the next turn. Because graded-reasoning
+          support is model-dependent, a model switch RE-DERIVES the control set
+          for the new model and re-emits it as an ``x-optio-control-update`` so
+          the effort slider appears / disappears / relevels to follow the model
+          (reconciling the armed effort to a value the new model supports, or
+          dropping it when the new model has no graded reasoning).
+        * ``reasoning_effort`` — arms ``effort`` for the next turn (the client
+          folds the slider value optimistically; no re-emit needed).
+
+        Unknown control ids are ignored (no-op)."""
+        if control_id not in ("model", "reasoning_effort"):
+            return  # codex exposes only the model + reasoning_effort controls
         if self._closed.is_set():
             raise ConversationClosed(self._close_reason or "conversation closed")
         if self.thread_id is None:
             raise RuntimeError(
                 "CodexConversation.set_control before bootstrap() completed"
             )
+        if control_id == "reasoning_effort":
+            self._requested_effort = value  # armed for the next turn/start
+            return
+        # control_id == "model": inline switch + reconcile effort to the new
+        # model, then re-emit the re-derived control set.
         self._requested_model = value
         self.current_model_id = value  # optimistic; the next turn pins it
+        model_list = codex_models.parse_model_list(self.model_list)
+        levels, default = codex_models.effort_for_model(model_list, value)
+        if self._requested_effort is not None and self._requested_effort not in levels:
+            # The armed effort is invalid for the new model: fall back to the
+            # new model's default (still graded) or drop it (no graded effort).
+            self._requested_effort = default if levels else None
+        controls = codex_models.build_controls(
+            model_list, value, self._requested_effort,
+        )
+        await self._emit_event({
+            "type": "x-optio-control-update",
+            "controls": [c.to_dict() for c in controls],
+        })
 
     async def close(self) -> None:
         self.close_requested.set()

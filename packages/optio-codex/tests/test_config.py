@@ -114,6 +114,15 @@ def test_model_is_ungated_single_field():
     assert not hasattr(_cfg(), "default_model")
 
 
+def test_reasoning_effort_defaults_none_and_validates():
+    # Spec-B: optional graded reasoning effort, applied at launch like `model`.
+    assert _cfg().reasoning_effort is None
+    for level in ("none", "minimal", "low", "medium", "high", "xhigh"):
+        assert _cfg(reasoning_effort=level).reasoning_effort == level
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        _cfg(reasoning_effort="bogus")
+
+
 def test_upload_download_byte_limits_default():
     cfg = _cfg(mode="conversation", conversation_ui=True,
                show_file_upload=True, file_download=True)

@@ -20,13 +20,23 @@ tier (unlike grok) — live result → static fallback, nothing in between.
 """
 from __future__ import annotations
 
+from optio_agents.session_controls import (
+    SessionControl,
+    effort_control,
+    model_control,
+)
+
 # Shown when the live model/list is unavailable (fake agents, offline, error
 # response). Version-sensitive vendor strings; update alongside the pinned
-# codex-cli version.
+# codex-cli version. ``efforts`` (per-model graded reasoning levels) is empty
+# in the fallback — the effort control only appears once the live model/list
+# advertises ``supportedReasoningEfforts``.
 FALLBACK_MODELS: dict = {
     "models": [
-        {"id": "gpt-5.5", "label": "GPT-5.5", "disabled": False},
-        {"id": "gpt-5.4-mini", "label": "GPT-5.4 Mini", "disabled": False},
+        {"id": "gpt-5.5", "label": "GPT-5.5", "disabled": False,
+         "efforts": [], "defaultEffort": None},
+        {"id": "gpt-5.4-mini", "label": "GPT-5.4 Mini", "disabled": False,
+         "efforts": [], "defaultEffort": None},
     ],
     "default": "gpt-5.5",
 }
@@ -34,11 +44,15 @@ FALLBACK_MODELS: dict = {
 
 def parse_model_list(result: "dict | None") -> dict:
     """Map a raw ``model/list`` result to the widget shape
-    ``{models:[{id,label,disabled}], default}``.
+    ``{models:[{id,label,disabled,efforts,defaultEffort}], default}``.
 
     Hidden models are omitted; ``default`` is the ``isDefault`` entry's id
-    (None when absent). Missing / malformed input returns the static
-    fallback (never raises, never falsely empties the picker).
+    (None when absent). Each model also carries its graded reasoning capability
+    read from the app-server ``Model`` schema: ``efforts`` =
+    ``supportedReasoningEfforts`` (ordered; empty ⇒ no graded effort for that
+    model) and ``defaultEffort`` = ``defaultReasoningEffort``. Missing /
+    malformed input returns the static fallback (never raises, never falsely
+    empties the picker).
     """
     if not isinstance(result, dict):
         return _copy_fallback()
@@ -53,12 +67,54 @@ def parse_model_list(result: "dict | None") -> dict:
         mid = m.get("id")
         if not isinstance(mid, str) or not mid or m.get("hidden"):
             continue
-        out.append({"id": mid, "label": m.get("displayName") or mid, "disabled": False})
+        efforts = m.get("supportedReasoningEfforts")
+        out.append({
+            "id": mid,
+            "label": m.get("displayName") or mid,
+            "disabled": False,
+            "efforts": [e for e in efforts if isinstance(e, str)]
+            if isinstance(efforts, list) else [],
+            "defaultEffort": m.get("defaultReasoningEffort"),
+        })
         if m.get("isDefault"):
             default = mid
     if not out:
         return _copy_fallback()
     return {"models": out, "default": default}
+
+
+def effort_for_model(
+    model_list: dict, model_id: "str | None"
+) -> "tuple[list[str], str | None]":
+    """Return ``(levels, default)`` graded-reasoning capability for
+    ``model_id`` from a ``parse_model_list`` result. ``([], None)`` when the
+    model is unknown or advertises no ``supportedReasoningEfforts``."""
+    for m in model_list.get("models", []):
+        if m.get("id") == model_id:
+            return list(m.get("efforts") or []), m.get("defaultEffort")
+    return [], None
+
+
+def build_controls(
+    model_list: dict,
+    current_model: "str | None",
+    requested_effort: "str | None",
+) -> "list[SessionControl]":
+    """Build codex's session-control set for the current model: the
+    ``id="model"`` picker plus, WHEN the current model supports graded
+    reasoning, the ``id="reasoning_effort"`` slider. An unsupported model
+    yields no effort control (Spec-B model-dependent presence). The slider's
+    current value is the requested effort when it is valid for the model, else
+    the model's default. Re-derived on every model change so effort presence /
+    levels follow the model."""
+    controls: list[SessionControl] = [
+        model_control(models=model_list["models"], current=current_model),
+    ]
+    levels, default = effort_for_model(model_list, current_model)
+    if levels:
+        current = requested_effort if requested_effort in levels else default
+        controls.append(effort_control(levels=levels, current=current))
+    return controls
 
 
 def _copy_fallback() -> dict:
