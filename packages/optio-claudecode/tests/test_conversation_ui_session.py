@@ -270,6 +270,10 @@ async def test_conversation_ui_session_lifecycle(
             "maxUploadBytes": 10_000_000,
             "fileDownload": False,
             "maxDownloadBytes": 10_000_000,
+            "uploadUrl": (
+                "{widgetProxyUrl}../../../../widget-upload/"
+                f"{mongo_db.name}/ccui1/cc-conv-ui"
+            ),
         }
         assert proc["uiWidget"] == "conversation"
 

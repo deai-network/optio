@@ -15,6 +15,7 @@ from optio_agents.protocol.session import (
     DeliverableCallback,
     HookCallback,
 )
+from optio_agents.uploads import UploadCallback
 from optio_host.types import SSHConfig
 
 
@@ -40,6 +41,7 @@ __all__ = [
     "CallerMessageCallback",
     "DeliverableCallback",
     "HookCallback",
+    "UploadCallback",
     "SSHConfig",
     "ClaudeCodeTaskConfig",
     "ConversationMode",
@@ -222,8 +224,13 @@ class ClaudeCodeTaskConfig:
     # mode="conversation" and conversation_ui=True. Uploaded files are written
     # under <workdir>/uploads on the host; carried to the widget via widgetData.
     show_file_upload: bool = False
-    # Upper bound (bytes) on a single uploaded file; the listener rejects
-    # anything larger with HTTP 413. Mirrored to the widget via widgetData.
+    # Optional per-task callback fired AFTER an uploaded file lands in
+    # <workdir>/uploads/<name>, with (hook_ctx, relpath). Additive to the
+    # System: LLM announce; a raising callback is logged, never fatal. Mirrors
+    # on_deliverable minus the text arg.
+    on_upload: UploadCallback | None = None
+    # Upper bound (bytes) on a single uploaded file; the widget refuses to POST
+    # anything larger. Mirrored to the widget via widgetData.
     max_upload_bytes: int = 10_000_000
     # Offer download links for files Claude marks as deliverables in the
     # conversation widget. Requires mode="conversation" and conversation_ui=True.
