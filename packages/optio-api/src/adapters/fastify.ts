@@ -35,6 +35,14 @@ import {
 } from '../sse-options.js';
 import { createOptioContext, type OptioContext } from '../context.js';
 import { forwardAgentInput } from '../agent-input.js';
+import { forwardUpload } from '../upload-forward.js';
+import { resolveOptioEngine } from '../resolve.js';
+import { GridFSBucket } from 'mongodb';
+import fastifyMultipart from '@fastify/multipart';
+
+// Cap a single staged upload at 100 MiB. The bytes stream straight into GridFS
+// (never buffered whole, never over Redis); this only bounds pathological posts.
+const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 
 const WIDGET_CACHE_TTL_MS = 5000;
 
@@ -438,6 +446,11 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
     }
   });
 
+  // multipart/form-data support for the generic widget-upload route below.
+  // Registered here (not app-wide behaviour beyond parsing) so `request.file()`
+  // is available; every other route continues to use JSON body parsing.
+  app.register(fastifyMultipart, { limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 } });
+
   // Widget reverse-proxy lives under /api/widget/<database>/<prefix>/<processId>/…
   // and is registered as an internal part of the Optio API surface so consumers
   // only need one init call.
@@ -539,6 +552,45 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
         return;
       }
       const result = await forwardAgentInput(db, prefix, processId, payload);
+      reply.code(result.status).send(result.body);
+    },
+  );
+
+  // Generic file upload: the widget POSTs a multipart file here; we stream the
+  // bytes into GridFS (never over Redis) and hand the blob id to the engine's
+  // materializeUpload RPC, which lands it in the running task's workdir.
+  app.post(
+    '/api/widget-upload/:database/:prefix/:processId',
+    async (request: any, reply: any) => {
+      const { database, prefix, processId } = request.params as {
+        database: string; prefix: string; processId: string;
+      };
+      let part;
+      try {
+        part = await request.file();
+      } catch {
+        reply.code(400).send({ message: 'expected multipart/form-data with a file part' });
+        return;
+      }
+      if (!part) {
+        reply.code(400).send({ message: 'no file part in request' });
+        return;
+      }
+      let db;
+      try {
+        ({ db } = resolveDb(dbOpts, { database, prefix }));
+      } catch {
+        reply.code(404).send({ message: 'session not running' });
+        return;
+      }
+      const bucket = new GridFSBucket(db);
+      const engine = resolveOptioEngine(ctx, { database, prefix });
+      // An oversize part errors its stream (throwFileSizeLimit defaults true),
+      // which rejects forwardUpload's pipeline → 502 + staged-blob cleanup, so
+      // a truncated file is never materialized into the workdir.
+      const result = await forwardUpload(
+        { bucket, engine }, processId, part.filename, part.file,
+      );
       reply.code(result.status).send(result.body);
     },
   );
