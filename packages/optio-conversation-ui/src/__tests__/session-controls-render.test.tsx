@@ -60,7 +60,8 @@ describe('SessionControls renderer', () => {
     render(<ConversationView {...{ ...base(cb), controls: sliderControls }} />);
     // The handle carries role="slider"; ArrowRight advances to the next mark,
     // standing in for a drag — the branch maps the new index back to its level.
-    fireEvent.keyDown(screen.getByRole('slider'), { key: 'ArrowRight' });
+    // rc-slider's key handler reads event.keyCode, so pass it for jsdom.
+    fireEvent.keyDown(screen.getByRole('slider'), { key: 'ArrowRight', keyCode: 39 });
     expect(cb).toHaveBeenCalledWith('reasoning_effort', 'medium');
   });
 
@@ -70,7 +71,10 @@ describe('SessionControls renderer', () => {
         levels: ['high'], disabled: true, whyDisabled: 'always on' },
     ];
     render(<ConversationView {...{ ...base(vi.fn()), controls: locked }} />);
-    expect(screen.getByTestId('control-reasoning_effort').className).toContain('ant-slider-disabled');
+    // The testid rides a wrapping span; the disabled state lives on the
+    // .ant-slider inside it.
+    expect(screen.getByTestId('control-reasoning_effort').querySelector('.ant-slider')!.className)
+      .toContain('ant-slider-disabled');
     fireEvent.mouseEnter(screen.getByText('Effort'));
     await waitFor(() => expect(screen.getByText('always on')).toBeTruthy());
   });

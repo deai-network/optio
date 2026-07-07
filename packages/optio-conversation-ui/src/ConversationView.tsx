@@ -191,15 +191,23 @@ function SessionControls({
         } else if (c.kind === 'slider') {
           const levels = c.levels ?? [];
           const idx = Math.max(0, levels.indexOf(String(c.value)));
+          // antd's Slider (rc-slider) swallows data-testid rather than placing
+          // it on the rendered root, so hang the control-<id> testid on a
+          // wrapping span; the slider's disabled/handle state lives on the
+          // .ant-slider inside it.
           node = (
-            <Slider
+            <span
               data-testid={`control-${c.id}`}
-              style={{ minWidth: 160, alignSelf: 'center' }}
-              min={0} max={Math.max(0, levels.length - 1)} step={null}
-              marks={Object.fromEntries(levels.map((l, i) => [i, capitalize(l)]))}
-              value={idx} disabled={dis}
-              onChange={(v: number) => onChange(c.id, levels[v])}
-            />
+              style={{ display: 'inline-flex', minWidth: 160, alignSelf: 'center' }}
+            >
+              <Slider
+                style={{ flex: 1 }}
+                min={0} max={Math.max(0, levels.length - 1)} step={null}
+                marks={Object.fromEntries(levels.map((l, i) => [i, capitalize(l)]))}
+                value={idx} disabled={dis}
+                onChange={(v: number) => onChange(c.id, levels[v])}
+              />
+            </span>
           );
         } else {
           node = (
