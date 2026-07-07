@@ -27,7 +27,11 @@ from optio_core.models import BasicAuth, TaskInstance
 from optio_agents import HookContext, RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
 from optio_agents import seeds as _seeds
 from optio_agents.input_listener import serialized, start_input_listener
-from optio_agents.session_controls import model_control
+from optio_agents.session_controls import (
+    SINGLE_OPTION_REASON,
+    effort_control,
+    model_control,
+)
 from optio_agents.uploads import materialize, upload_url_token
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
@@ -403,6 +407,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
     if config.mode == "conversation":
         conversation = GrokConversation(
             cwd=host.workdir, permission_gate=config.permission_gate,
+            reasoning_effort=config.reasoning_effort,
         )
     # Per-task conversation listener (conversation_ui only). Started in the
     # body after publish_result, torn down in the finally block.
@@ -419,6 +424,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
         argv = host_actions.build_conversation_argv(
             grok_path,
             model=config.model,
+            reasoning_effort=config.reasoning_effort,
             no_leader=config.no_leader,
             always_approve=not config.permission_gate,
             fs_isolation=config.fs_isolation,
@@ -514,12 +520,49 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                 conversation.session_models, host=host, grok_path=grok_path,
             )
             current_model = config.model or model_list.get("default")
-            # The former bespoke model selector is now the id="model" entry of
-            # the engine-neutral session-controls list; grok exposes only this
-            # one control (switched inline over ACP via set_control).
-            control = model_control(
-                models=model_list["models"], current=current_model,
-            )
+
+            def _model_entry(model_id: "str | None") -> "dict | None":
+                for m in model_list["models"]:
+                    if m["id"] == model_id:
+                        return m
+                return None
+
+            def _build_controls(model_id: "str | None") -> list[dict]:
+                """Derive the engine-neutral session-controls list for a given
+                current model. Always the id="model" select; PLUS the
+                id="reasoning_effort" slider WHEN that model advertises graded
+                effort (``_meta.supportsReasoningEffort`` + non-empty
+                ``reasoningEfforts``; see models.parse_acp_models). A single-level
+                model locks the slider (disabled + why_disabled). Re-invoked on a
+                model change (conversation.set_control) so the effort control's
+                presence/levels follow the model."""
+                out = [
+                    model_control(
+                        models=model_list["models"], current=model_id,
+                    ).to_dict()
+                ]
+                entry = _model_entry(model_id) or {}
+                levels = entry.get("reasoningEfforts") or []
+                if entry.get("supportsReasoningEffort") and levels:
+                    current_effort = (
+                        conversation.current_effort
+                        or config.reasoning_effort
+                        or levels[0]
+                    )
+                    locked = len(levels) <= 1
+                    out.append(
+                        effort_control(
+                            levels=levels,
+                            current=current_effort,
+                            disabled=locked,
+                            why_disabled=SINGLE_OPTION_REASON if locked else None,
+                        ).to_dict()
+                    )
+                return out
+
+            # session/set_model re-derives + re-emits the control set for the new
+            # model (the effort control's capability is per-model).
+            conversation.set_controls_builder(_build_controls)
             # widgetData.uploadUrl token; see optio_agents.uploads.upload_url_token.
             upload_url = upload_url_token(ctx._db.name, ctx._prefix, ctx.process_id)
             await ctx.set_widget_data({
@@ -528,7 +571,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                 "thinkingVerbosity": config.thinking_verbosity,
                 "showSessionControls": config.show_session_controls,
                 "nativeSpinner": config.native_spinner,
-                "controls": [control.to_dict()],
+                "controls": _build_controls(current_model),
                 "showFileUpload": config.show_file_upload,
                 "maxUploadBytes": config.max_upload_bytes,
                 "fileDownload": config.file_download,

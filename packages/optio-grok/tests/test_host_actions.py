@@ -109,3 +109,15 @@ def test_build_conversation_argv_sandbox_off():
     # No sandbox → no controlling-tty wrap; grok is invoked directly.
     assert argv[0] == "/x/grok"
     assert "TIOCSCTTY" not in " ".join(argv)
+
+
+def test_build_conversation_argv_reasoning_effort():
+    # The initial graded effort rides --reasoning-effort at launch (mirrors
+    # --model), between `agent` and `stdio`.
+    argv = build_conversation_argv(
+        "/x/grok", model="grok-build", reasoning_effort="high",
+    )
+    assert argv[argv.index("--reasoning-effort") + 1] == "high"
+    assert argv.index("--reasoning-effort") < argv.index("stdio")
+    # Omitted when unset (no probe-mismatch risk on the common path).
+    assert "--reasoning-effort" not in build_conversation_argv("/x/grok")

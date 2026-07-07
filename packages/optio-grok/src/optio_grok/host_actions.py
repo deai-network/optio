@@ -799,6 +799,7 @@ def build_conversation_argv(
     grok_path: str,
     *,
     model: str | None = None,
+    reasoning_effort: str | None = None,
     no_leader: bool = True,
     always_approve: bool = False,
     fs_isolation: bool = False,
@@ -814,6 +815,14 @@ def build_conversation_argv(
     (auto-approve every tool — used when no permission gate is wired). No
     tmux/ttyd: the subprocess IS the agent.
 
+    ``--reasoning-effort`` (when set) seeds the INITIAL graded effort at launch,
+    mirroring ``--model``; it is then switched live over ACP by
+    ``set_control("reasoning_effort", …)``. LIVE-VERIFY: the iframe launch
+    (:func:`build_grok_flags`) accepts ``--reasoning-effort`` at the top level;
+    the ``grok agent`` subcommand's acceptance of it is a real-binary probe item
+    (fold the flag in only if ``grok agent --help`` lists it). Omitted when None,
+    so a probe mismatch is a no-op for the common (unset) path.
+
     When ``fs_isolation`` is set, the whole command is wrapped in the
     controlling-tty helper (:data:`_CTTY_WRAP_HELPER`) — grok's fail-closed
     sandbox needs a ``/dev/tty`` that the piped, session-detached conversation
@@ -826,6 +835,8 @@ def build_conversation_argv(
     argv += ["agent"]
     if model:
         argv += ["--model", model]
+    if reasoning_effort:
+        argv += ["--reasoning-effort", reasoning_effort]
     if always_approve:
         argv += ["--always-approve"]
     if no_leader:

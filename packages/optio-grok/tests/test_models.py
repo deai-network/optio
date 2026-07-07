@@ -159,3 +159,51 @@ def test_model_preselects_picker_with_no_conversation_ui_gate():
     # No gate: a model is accepted in plain iframe mode too.
     cfg2 = _cfg(mode="iframe", model="grok-composer-2.5-fast")
     assert cfg2.model == "grok-composer-2.5-fast"
+
+
+# --- graded reasoning-effort capability (Spec B) ---------------------------
+
+_ACP_EFFORT = {
+    "currentModelId": "grok-build",
+    "availableModels": [
+        # No effort metadata → plain entry, no effort keys.
+        {"modelId": "grok-composer-2.5-fast", "name": "Composer 2.5"},
+        # Graded effort advertised via _meta.
+        {
+            "modelId": "grok-build",
+            "name": "Grok Build",
+            "_meta": {
+                "supportsReasoningEffort": True,
+                "reasoningEfforts": ["low", "medium", "high", "xhigh"],
+            },
+        },
+    ],
+}
+
+
+def test_parse_acp_models_captures_graded_effort():
+    out = parse_acp_models(_ACP_EFFORT)
+    by_id = {m["id"]: m for m in out["models"]}
+    # Effort-capable model carries the capability + ordered levels.
+    build = by_id["grok-build"]
+    assert build["supportsReasoningEffort"] is True
+    assert build["reasoningEfforts"] == ["low", "medium", "high", "xhigh"]
+    # A model with no _meta stays a plain entry (no effort keys leak in).
+    composer = by_id["grok-composer-2.5-fast"]
+    assert "supportsReasoningEffort" not in composer
+    assert "reasoningEfforts" not in composer
+
+
+def test_parse_acp_models_empty_efforts_omits_capability():
+    # supportsReasoningEffort with an empty/malformed level list → no levels key
+    # (session.py gates the slider on non-empty levels).
+    out = parse_acp_models({
+        "currentModelId": "m",
+        "availableModels": [
+            {"modelId": "m", "_meta": {"supportsReasoningEffort": True,
+                                       "reasoningEfforts": []}},
+        ],
+    })
+    entry = out["models"][0]
+    assert entry.get("supportsReasoningEffort") is True
+    assert "reasoningEfforts" not in entry

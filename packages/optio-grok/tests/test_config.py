@@ -10,8 +10,24 @@ from optio_grok import GrokTaskConfig
 def test_defaults_and_validation():
     c = GrokTaskConfig(consumer_instructions="do it")
     assert c.mode == "iframe" and c.no_leader is True and c.host_protocol is True
+    assert c.reasoning_effort is None
     with pytest.raises(ValueError):
         GrokTaskConfig(consumer_instructions="x", permission_mode="nope")
+
+
+def test_reasoning_effort_validation():
+    # Graded reasoning-effort is a validated Literal (unlike the free-form
+    # ``effort`` passthrough, which stays unvalidated).
+    for level in ("low", "medium", "high", "xhigh"):
+        assert GrokTaskConfig(
+            consumer_instructions="x", reasoning_effort=level,
+        ).reasoning_effort == level
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        GrokTaskConfig(consumer_instructions="x", reasoning_effort="ludicrous")
+    # The free-form ``effort`` field remains unvalidated (untouched by Spec B).
+    assert GrokTaskConfig(
+        consumer_instructions="x", effort="whatever",
+    ).effort == "whatever"
 
 
 # --- C1: shared config vocabulary is re-exported from optio_grok.types -------

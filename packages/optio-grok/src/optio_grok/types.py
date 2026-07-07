@@ -38,6 +38,7 @@ __all__ = [
     "SSHConfig",
     "GrokTaskConfig",
     "PermissionMode",
+    "GrokReasoningEffort",
     "ConversationMode",
     "ToolVerbosity",
     "ThinkingVerbosity",
@@ -53,6 +54,14 @@ PermissionMode = Literal[
 _VALID_PERMISSION_MODES = {
     "default", "acceptEdits", "auto", "dontAsk", "bypassPermissions", "plan"
 }
+
+# Graded reasoning-effort levels grok exposes as a live slider control (ordered
+# low→high). Unlike the free-form ``effort`` passthrough, this is the engine's
+# per-model reasoning budget surfaced as the id="reasoning_effort" control and
+# validated at construction time (the level set is stable across vendor
+# releases; a bad value is a caller bug, not a vendor drift).
+GrokReasoningEffort = Literal["low", "medium", "high", "xhigh"]
+_VALID_REASONING_EFFORT = {"low", "medium", "high", "xhigh"}
 
 # Local validation sets derived from the shared ``ToolVerbosity`` /
 # ``ThinkingVerbosity`` Literals (imported from optio_agents), kept for the
@@ -87,11 +96,15 @@ class GrokTaskConfig:
     permission_mode: PermissionMode | None = None
     allowed_tools: list[str] | None = None
     disallowed_tools: list[str] | None = None
-    # Passed through as ``--model``/``--effort``/``--reasoning-effort``.
-    # Not validated — vendor strings change.
+    # Passed through as ``--model``/``--effort``. Not validated — vendor strings
+    # change.
     model: str | None = None
     effort: str | None = None
-    reasoning_effort: str | None = None
+    # Graded reasoning budget (low/medium/high/xhigh). Applied at launch as the
+    # initial effort (``--reasoning-effort``, like ``--model``) AND surfaced as
+    # the live id="reasoning_effort" slider control, switched mid-session over
+    # ACP (see conversation.set_control). Validated against the Literal below.
+    reasoning_effort: GrokReasoningEffort | None = None
 
     ssh: SSHConfig | None = None
 
@@ -243,6 +256,14 @@ class GrokTaskConfig:
             raise ValueError(
                 f"GrokTaskConfig.permission_mode={self.permission_mode!r} "
                 f"is not one of {sorted(_VALID_PERMISSION_MODES)}"
+            )
+        if (
+            self.reasoning_effort is not None
+            and self.reasoning_effort not in _VALID_REASONING_EFFORT
+        ):
+            raise ValueError(
+                f"GrokTaskConfig.reasoning_effort={self.reasoning_effort!r} "
+                f"is not one of {sorted(_VALID_REASONING_EFFORT)}"
             )
         if self.mode not in ("iframe", "conversation"):
             raise ValueError(

@@ -60,7 +60,17 @@ FALLBACK_MODELS: dict = {
 
 def parse_acp_models(session_models: "dict | None") -> dict:
     """Map an ACP ``models`` block ({currentModelId, availableModels:[{modelId,
-    name}]}) to the widget shape {models:[{id,label,disabled}], default}.
+    name, _meta}]}) to the widget shape {models:[{id,label,disabled,
+    reasoningEfforts?}], default}.
+
+    Graded-effort capability rides each model's ACP ``_meta`` block:
+    ``_meta.supportsReasoningEffort`` (bool) gates the id="reasoning_effort"
+    slider, and ``_meta.reasoningEfforts`` (ordered list, low→high) supplies its
+    levels. Both are surfaced only when present — a model that advertises
+    neither leaves the slider off (the current-model check lives in session.py).
+    The exact ``_meta`` field names are a LIVE-PROBE item (see the set_control
+    docstring in conversation.py for the effort round-trip probe); if the real
+    grok build spells them differently, adjust here + the launch flag together.
 
     Missing / malformed input returns the static fallback (never falsely
     empties the picker)."""
@@ -75,7 +85,17 @@ def parse_acp_models(session_models: "dict | None") -> dict:
             continue
         mid = m.get("modelId")
         if isinstance(mid, str) and mid:
-            out.append({"id": mid, "label": m.get("name") or mid, "disabled": False})
+            entry: dict = {"id": mid, "label": m.get("name") or mid, "disabled": False}
+            meta = m.get("_meta")
+            if isinstance(meta, dict):
+                efforts = meta.get("reasoningEfforts")
+                if isinstance(efforts, list):
+                    levels = [e for e in efforts if isinstance(e, str) and e]
+                    if levels:
+                        entry["reasoningEfforts"] = levels
+                if meta.get("supportsReasoningEffort"):
+                    entry["supportsReasoningEffort"] = True
+            out.append(entry)
     if not out:
         return _copy_fallback()
     return {"models": out, "default": session_models.get("currentModelId")}
