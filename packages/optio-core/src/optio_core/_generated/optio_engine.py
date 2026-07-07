@@ -460,6 +460,37 @@ class LaunchResult(RootModel[LaunchResult1 | LaunchResult2]):
     root: LaunchResult1 | LaunchResult2
 
 
+class MaterializeUploadParams(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    process_id: str = Field(..., alias="processId", min_length=1)
+    blob_id: str = Field(..., alias="blobId")
+    filename: str
+
+
+class MaterializeUploadResult1(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    ok: Literal[True]
+    path: str
+
+
+class MaterializeUploadResult2(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    ok: Literal[False]
+    reason: str
+
+
+class MaterializeUploadResult(
+    RootModel[MaterializeUploadResult1 | MaterializeUploadResult2]
+):
+    root: MaterializeUploadResult1 | MaterializeUploadResult2
+
+
 class MetadataFilter8(LaunchFilter):
     pass
 
@@ -555,6 +586,10 @@ class OptioEngineClient:
         raw = await self._client.call("optio-engine", "launch", params.model_dump(mode='json', by_alias=True), timeout_ms=timeout_ms)
         return LaunchResult.model_validate(raw)
 
+    async def materialize_upload(self, params: MaterializeUploadParams, *, timeout_ms: int | None = None) -> MaterializeUploadResult:
+        raw = await self._client.call("optio-engine", "materializeUpload", params.model_dump(mode='json', by_alias=True), timeout_ms=timeout_ms)
+        return MaterializeUploadResult.model_validate(raw)
+
     async def resync(self, params: ResyncParams) -> None:
         await self._client.notify("optio-engine", "resync", params.model_dump(mode='json', by_alias=True))
 
@@ -583,6 +618,9 @@ class OptioEngineService(ABC):
     async def launch(self, params: LaunchParams) -> LaunchResult: ...
 
     @abstractmethod
+    async def materialize_upload(self, params: MaterializeUploadParams) -> MaterializeUploadResult: ...
+
+    @abstractmethod
     async def resync(self, params: ResyncParams) -> None: ...
 
     @abstractmethod
@@ -596,6 +634,7 @@ METHODS = {
     "groupCancel": MethodEntry(params_model=GroupCancelParams, result_model=GroupCancelResult, handler_attr="group_cancel"),
     "groupCancelAndWait": MethodEntry(params_model=GroupCancelAndWaitParams, result_model=GroupCancelAndWaitResult, handler_attr="group_cancel_and_wait"),
     "launch": MethodEntry(params_model=LaunchParams, result_model=LaunchResult, handler_attr="launch"),
+    "materializeUpload": MethodEntry(params_model=MaterializeUploadParams, result_model=MaterializeUploadResult, handler_attr="materialize_upload"),
     "resync": MethodEntry(params_model=ResyncParams, result_model=None, handler_attr="resync"),
     "unblockLaunches": MethodEntry(params_model=UnblockLaunchesParams, result_model=UnblockLaunchesResult, handler_attr="unblock_launches"),
 }

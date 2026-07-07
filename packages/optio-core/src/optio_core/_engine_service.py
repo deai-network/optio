@@ -16,6 +16,7 @@ from optio_core._generated.optio_engine import (
     GroupCancelAndWaitParams, GroupCancelAndWaitResult,
     BlockLaunchesParams, BlockLaunchesResult,
     UnblockLaunchesParams, UnblockLaunchesResult,
+    MaterializeUploadParams, MaterializeUploadResult,
     ResyncParams,
 )
 
@@ -163,3 +164,27 @@ class OptioEngineService(OptioEngineServiceBase):
     ) -> UnblockLaunchesResult:
         removed = await self._optio.unblock_launches(params.launch_filter)
         return UnblockLaunchesResult(removed=removed)
+
+    # --------------------------------------------------------- materialize_upload
+    async def materialize_upload(
+        self, params: MaterializeUploadParams
+    ) -> MaterializeUploadResult:
+        """Read the GridFS-staged upload blob and hand it to the task's writer.
+
+        The API streamed the file into GridFS (bytes never crossed Redis) and
+        passes only the ``blobId``. We read those bytes and call
+        ``Optio.materialize_upload``, which resolves the process's in-process
+        writer and writes into its workdir. Any failure (unknown process, no
+        registered writer, write error) is returned as ``ok=False`` with a
+        reason rather than raised over the wire.
+        """
+        try:
+            data = await self._optio.read_blob_bytes(ObjectId(params.blob_id))
+            path = await self._optio.materialize_upload(
+                params.process_id, data, params.filename,
+            )
+            return MaterializeUploadResult.model_validate({"ok": True, "path": path})
+        except Exception as exc:
+            return MaterializeUploadResult.model_validate(
+                {"ok": False, "reason": repr(exc)}
+            )

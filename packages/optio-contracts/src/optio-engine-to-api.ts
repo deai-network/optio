@@ -45,6 +45,11 @@ const unblockLaunchesResult = z.object({
   removed: z.number().int().nonnegative(),
 });
 
+const materializeUploadResult = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), path: z.string() }),
+  z.object({ ok: z.literal(false), reason: z.string() }),
+]);
+
 export const optioEngineContract = defineContract('optio-engine', {
   launch: defineMethod({
     params: z.object({
@@ -95,6 +100,14 @@ export const optioEngineContract = defineContract('optio-engine', {
   unblockLaunches: defineMethod({
     params: z.object({ launchFilter: ProcessMetadataFilterSchema }),
     result: unblockLaunchesResult,
+  }),
+  materializeUpload: defineMethod({
+    params: z.object({
+      processId: ProcessIdParam,
+      blobId: z.string(),
+      filename: z.string(),
+    }),
+    result: materializeUploadResult,
   }),
   resync: defineNotification({
     params: z.object({

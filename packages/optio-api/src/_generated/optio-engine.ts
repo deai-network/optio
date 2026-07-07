@@ -16,6 +16,8 @@ export type GroupCancelAndWaitParams = z.infer<typeof optioEngineContract.method
 export type GroupCancelAndWaitResult = z.infer<typeof optioEngineContract.methods.groupCancelAndWait.result>;
 export type LaunchParams = z.infer<typeof optioEngineContract.methods.launch.params>;
 export type LaunchResult = z.infer<typeof optioEngineContract.methods.launch.result>;
+export type MaterializeUploadParams = z.infer<typeof optioEngineContract.methods.materializeUpload.params>;
+export type MaterializeUploadResult = z.infer<typeof optioEngineContract.methods.materializeUpload.result>;
 export type ResyncParams = z.infer<typeof optioEngineContract.methods.resync.params>;
 export type UnblockLaunchesParams = z.infer<typeof optioEngineContract.methods.unblockLaunches.params>;
 export type UnblockLaunchesResult = z.infer<typeof optioEngineContract.methods.unblockLaunches.result>;
@@ -40,6 +42,9 @@ export class OptioEngineClient {
   launch(params: LaunchParams, opts?: { timeoutMs?: number }): Promise<LaunchResult> {
     return this.client.call('optio-engine', 'launch', params, opts);
   }
+  materializeUpload(params: MaterializeUploadParams, opts?: { timeoutMs?: number }): Promise<MaterializeUploadResult> {
+    return this.client.call('optio-engine', 'materializeUpload', params, opts);
+  }
   resync(params: ResyncParams): Promise<void> {
     return this.client.notify('optio-engine', 'resync', params);
   }
@@ -55,6 +60,7 @@ export interface OptioEngineService {
   groupCancel(params: GroupCancelParams, opts?: { timeoutMs?: number }): Promise<GroupCancelResult>;
   groupCancelAndWait(params: GroupCancelAndWaitParams, opts?: { timeoutMs?: number }): Promise<GroupCancelAndWaitResult>;
   launch(params: LaunchParams, opts?: { timeoutMs?: number }): Promise<LaunchResult>;
+  materializeUpload(params: MaterializeUploadParams, opts?: { timeoutMs?: number }): Promise<MaterializeUploadResult>;
   resync(params: ResyncParams): Promise<void>;
   unblockLaunches(params: UnblockLaunchesParams, opts?: { timeoutMs?: number }): Promise<UnblockLaunchesResult>;
 }
