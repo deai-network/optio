@@ -192,6 +192,11 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                 install_if_missing=config.install_if_missing,
                 install_dir=config.grok_install_dir,
                 progress_label="Restoring Grok Build runtime…",
+                # The ensure_grok_installed call at the top of _prepare already
+                # ran the version-check/refresh for this resume; skip the second
+                # network probe — this call only needs to re-link the symlink the
+                # restore wiped.
+                check_update=False,
             )
             await host_actions._rotate_optio_log(host)
             # A restored snapshot means grok persisted a session for this cwd;

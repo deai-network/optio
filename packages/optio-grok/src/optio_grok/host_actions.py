@@ -153,6 +153,7 @@ async def ensure_grok_installed(
     install_if_missing: bool = True,
     install_dir: str | None = None,
     progress_label: str = "Preparing Grok Build…",
+    check_update: bool = True,
 ) -> str:
     """Provision ``grok`` for this task from the optio-owned binary cache.
 
@@ -171,6 +172,14 @@ async def ensure_grok_installed(
     - **vendor auto-install** — otherwise run grok's official installer
       (:data:`_GROK_INSTALL_URL`) into the persistent cache, so a fresh or remote
       worker with no host grok still bootstraps itself.
+
+    On a cache HIT the cached binary is version-checked (``grok update --check
+    --json``) and, when stale, refreshed to the latest release BEFORE it is
+    linked — keeping the cache current so grok never self-downloads a fresh
+    binary into the workdir at runtime. ``check_update=False`` skips that probe:
+    the resume flow calls this twice (once up front, once to re-link after
+    ``restore_workdir`` wipes the symlink), and the second call passes it so a
+    resume runs the network probe once, not twice.
 
     Uses only generic Host primitives. Raises only when the cache is empty AND
     ``install_if_missing=False``. Idempotent on a re-call (cache hit → it just
@@ -196,7 +205,7 @@ async def ensure_grok_installed(
         # Best-effort + gated on install_if_missing (an offline/pinned worker
         # keeps the binary it has; the update probe never blocks a launch).
         target = None
-        if install_if_missing:
+        if check_update and install_if_missing:
             target = await _grok_update_target(host, cached, cache_dir=cache_dir)
         if target:
             hook_ctx.report_progress(None, f"Updating Grok Build to {target}…")

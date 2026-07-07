@@ -296,6 +296,33 @@ async def test_cache_hit_stale_refreshes_to_latest(tmp_path: pathlib.Path, monke
 
 
 @pytest.mark.asyncio
+async def test_cache_hit_skips_update_probe_when_check_update_false(
+    tmp_path: pathlib.Path, monkeypatch,
+):
+    """check_update=False (the resume re-link call) re-links the cache WITHOUT the
+    network update probe: the earlier ensure_grok_installed on the same resume
+    already validated/refreshed the cache, so a resume runs one probe, not two."""
+    cache = tmp_path / "cache"
+    _write_exe(cache / "grok")
+
+    async def _no_probe(*a, **k):  # noqa: ANN002, ANN003
+        raise AssertionError("update probe must be skipped when check_update=False")
+
+    async def _boom(*a, **k):  # noqa: ANN002, ANN003
+        raise AssertionError("must not refresh when check_update=False")
+
+    monkeypatch.setattr(host_actions, "_grok_update_target", _no_probe)
+    monkeypatch.setattr(host_actions, "_install_grok_into_cache", _boom)
+    ctx = await _local_ctx(tmp_path)
+
+    result = await host_actions.ensure_grok_installed(
+        ctx, install_dir=str(cache), check_update=False,
+    )
+    assert result == _task_path(ctx)
+    assert os.path.realpath(result) == str((cache / "grok").resolve())
+
+
+@pytest.mark.asyncio
 async def test_cache_hit_current_does_not_refresh(tmp_path: pathlib.Path, monkeypatch):
     cache = tmp_path / "cache"
     _write_exe(cache / "grok")
