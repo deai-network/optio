@@ -12,12 +12,14 @@ from optio_agents.protocol.session import (
     DeliverableCallback,
     HookCallback,
 )
+from optio_agents.uploads import UploadCallback
 from optio_host.types import SSHConfig
 
 
 __all__ = [
     "DeliverableCallback",
     "HookCallback",
+    "UploadCallback",
     "SSHConfig",
     "GrokTaskConfig",
     "PermissionMode",
@@ -209,6 +211,11 @@ class GrokTaskConfig:
     # reads them with its own tools. Requires mode="conversation" and
     # conversation_ui=True.
     show_file_upload: bool = False
+    # Per-task upload hook, fired (additively to the System: path line) after an
+    # uploaded file lands under <workdir>/uploads. Mirrors on_deliverable minus
+    # the text arg: ``async on_upload(hook_ctx, "uploads/<name>")``. Optional;
+    # the workdir write + System: reference happen whether or not it is set.
+    on_upload: UploadCallback | None = None
     # Upper bound (bytes) on a single uploaded file; the listener rejects
     # anything larger with HTTP 413. Mirrored to the widget via widgetData.
     max_upload_bytes: int = 10_000_000
