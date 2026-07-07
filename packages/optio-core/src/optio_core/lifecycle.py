@@ -123,6 +123,10 @@ class Optio:
         ] | None = None,
         cancel_grace_seconds: float = 5.0,
         auto_resume_delay_seconds: float = 300.0,
+        cancel_wait_ceiling_margin_seconds: float = 25.0,
+        shutdown_drain_margin_seconds: float = 5.0,
+        terminal_poll_interval_seconds: float = 0.1,
+        force_cancel_shield_seconds: float = 2.0,
     ) -> None:
         """Initialize optio.
 
@@ -160,6 +164,10 @@ class Optio:
             get_task_definitions=get_task_definitions,
             cancel_grace_seconds=cancel_grace_seconds,
             auto_resume_delay_seconds=auto_resume_delay_seconds,
+            cancel_wait_ceiling_margin_seconds=cancel_wait_ceiling_margin_seconds,
+            shutdown_drain_margin_seconds=shutdown_drain_margin_seconds,
+            terminal_poll_interval_seconds=terminal_poll_interval_seconds,
+            force_cancel_shield_seconds=force_cancel_shield_seconds,
         )
 
         # Connect to Redis (if configured)
@@ -717,7 +725,10 @@ class Optio:
         oid_str = str(proc["_id"])
         await self.cancel(oid_str)
 
-        ceiling = self._config.cancel_grace_seconds + 25.0
+        ceiling = (
+            self._config.cancel_grace_seconds
+            + self._config.cancel_wait_ceiling_margin_seconds
+        )
         deadline = time.monotonic() + ceiling
         while True:
             proc = await get_process_by_process_id(
@@ -732,7 +743,7 @@ class Optio:
                 raise asyncio.TimeoutError(
                     f"Process {process_id} did not reach terminal state within {ceiling}s"
                 )
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(self._config.terminal_poll_interval_seconds)
 
     async def _group_cancel_issue(
         self,
@@ -861,7 +872,10 @@ class Optio:
             if not pending:
                 return 0
 
-            ceiling = self._config.cancel_grace_seconds + 25.0
+            ceiling = (
+            self._config.cancel_grace_seconds
+            + self._config.cancel_wait_ceiling_margin_seconds
+        )
             deadline = time.monotonic() + ceiling
             i = 0
             while i < len(pending):
@@ -876,7 +890,7 @@ class Optio:
                         f"did not reach a terminal state within {ceiling}s "
                         f"(filter={metadata_filter})"
                     )
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(self._config.terminal_poll_interval_seconds)
             if purge_records:
                 await purge_processes(
                     self._config.mongo_db, self._config.prefix, metadata_filter,
@@ -1117,9 +1131,12 @@ class Optio:
                         entry.deadline = now_mono + grace
 
                 # Wait for entries to drain. The supervisor handles force-cancel.
-                ceiling = time.monotonic() + grace + 5.0
+                ceiling = (
+                    time.monotonic() + grace
+                    + self._config.shutdown_drain_margin_seconds
+                )
                 while self._executor._cancellation_flags and time.monotonic() < ceiling:
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(self._config.terminal_poll_interval_seconds)
 
                 # Belt and braces: anything still left, force-cancel directly.
                 # (Handles the case where the supervisor was slow or already stopped.)
@@ -1303,7 +1320,7 @@ class Optio:
                 state = doc["status"]["state"]
                 if state in ("done", "failed", "cancelled"):
                     return True
-                await asyncio.sleep(0.05)
+                await asyncio.sleep(self._config.terminal_poll_interval_seconds)
             return False
 
         results = await asyncio.gather(

@@ -179,6 +179,21 @@ class OptioConfig:
     # processes. The wait lets the environment settle (dev-mode code edits
     # cause rapid restart bursts) so we don't thrash re-launches.
     auto_resume_delay_seconds: float = 300.0
+    # Timing knobs for the cancel/wait machinery. Defaults reproduce the
+    # historical hard-coded behaviour; tests inject tiny values so the
+    # deadline/cancel/shutdown suites don't spend real wall-clock seconds
+    # (which also makes them safe to run under pytest-xdist).
+    #
+    # Extra budget added on top of cancel_grace_seconds before *_and_wait
+    # gives up and raises TimeoutError (the internal ceiling).
+    cancel_wait_ceiling_margin_seconds: float = 25.0
+    # Extra budget on top of the cancel grace during shutdown drain.
+    shutdown_drain_margin_seconds: float = 5.0
+    # Poll interval while waiting for a process to reach a terminal state.
+    terminal_poll_interval_seconds: float = 0.1
+    # How long force_cancel shields the task after issuing Task.cancel()
+    # before giving up on a clean unwind.
+    force_cancel_shield_seconds: float = 2.0
 
 
 @dataclass(frozen=True)

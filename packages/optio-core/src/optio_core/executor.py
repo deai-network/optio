@@ -493,7 +493,10 @@ class Executor:
             _trace("force_cancel oid=%s: calling task.cancel() + 2s shield wait", oid)
             task.cancel()
             try:
-                await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+                await asyncio.wait_for(
+                    asyncio.shield(task),
+                    timeout=self._optio._config.force_cancel_shield_seconds,
+                )
                 _trace("force_cancel oid=%s: task unwound within shield window", oid)
             except asyncio.TimeoutError:
                 _trace("force_cancel oid=%s: 2s shield TIMEOUT — task still running", oid)
