@@ -87,6 +87,42 @@ def parse_model_ids(providers_json) -> list[str]:
     return ids
 
 
+def parse_model_variants(providers_json) -> dict[str, list[str]]:
+    """Map ``"providerID/modelID" -> [ordered variant keys]`` for every model
+    that declares a non-empty ``variants`` map in a ``GET /config/providers``
+    response. opencode's per-model ``variants`` are named reasoning-effort
+    presets (e.g. ``{"low": …, "medium": …, "high": …}``); their KEYS are the
+    graded effort levels the widget builds its effort slider from.
+
+    ``parse_model_ids`` (the probe's id enumeration) discards ``variants``; this
+    sibling reads the keys the probe throws away. Models with no ``variants``
+    map are omitted entirely — an unsupported model ⇒ no effort control."""
+    if not isinstance(providers_json, dict):
+        return {}
+    providers = providers_json.get("providers")
+    if not isinstance(providers, list):
+        return {}
+    out: dict[str, list[str]] = {}
+    for p in providers:
+        if not isinstance(p, dict):
+            continue
+        pid = p.get("id")
+        models = p.get("models")
+        if not isinstance(models, dict):
+            continue
+        for m in models.values():
+            m = m if isinstance(m, dict) else {}
+            prov = m.get("providerID") or pid
+            mod = m.get("id")
+            variants = m.get("variants")
+            if not (prov and mod and isinstance(variants, dict) and variants):
+                continue
+            keys = [str(k) for k in variants.keys()]
+            if keys:
+                out[f"{prov}/{mod}"] = keys
+    return out
+
+
 def disabled_map(usable: dict[str, bool]) -> dict[str, str]:
     """``{model_id: DISABLED_REASON}`` for every unusable id — published in
     widgetData so OpencodeView greys those models in its client-fetched picker."""

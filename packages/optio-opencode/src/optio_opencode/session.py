@@ -129,6 +129,11 @@ def conversation_widget_data(config: "OpencodeTaskConfig", *, session_id: str, d
         "showSessionControls": config.show_session_controls,
         "nativeSpinner": config.native_spinner,
         "defaultModel": config.model,
+        # Initial effort ("thought level") the widget seeds its effort slider
+        # from — client-side, like defaultModel. None ⇒ opencode's per-model
+        # default. The per-model variant menu itself rides ``modelVariants``
+        # (added below, after the live /config/providers fetch).
+        "defaultEffort": config.reasoning_effort,
         "showFileUpload": config.show_file_upload,
         "maxUploadBytes": config.max_upload_bytes,
         "fileDownload": config.file_download,
@@ -502,6 +507,23 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             widget_data["uploadUrl"] = upload_url
             if disabled_models:
                 widget_data["disabledModels"] = disabled_models
+            # Per-model reasoning-effort variants: opencode's /config/providers
+            # exposes each model's named ``variants`` (graded effort presets);
+            # their keys become the effort slider's levels. Only surfaced when
+            # the session-controls picker is shown (the effort control lives
+            # beside the model picker). Best-effort — a failed/empty fetch just
+            # omits the effort control (client-side reactive on modelVariants).
+            if config.show_session_controls:
+                try:
+                    model_variants = await _fetch_opencode_model_variants(
+                        worker_port, password, host.workdir,
+                    )
+                    if model_variants:
+                        widget_data["modelVariants"] = model_variants
+                except Exception:  # noqa: BLE001
+                    _LOG.exception(
+                        "model-variant fetch failed; effort control omitted",
+                    )
             await ctx.set_widget_data(widget_data)
 
         if resolved_seed_id is not None:
@@ -1178,6 +1200,45 @@ async def _fetch_opencode_models(port: int, password: str, directory: str) -> li
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None, _fetch_opencode_models_sync, port, password, directory
+    )
+
+
+def _fetch_opencode_model_variants_sync(
+    port: int, password: str, directory: str,
+) -> dict[str, list[str]]:
+    """GET opencode's ``/config/providers`` and read each model's named
+    ``variants`` (the graded reasoning-effort presets) as
+    ``{"providerID/modelID": [variant keys]}``. Server-side peer of the client's
+    own provider fetch; surfaced in widgetData so OpencodeView builds the effort
+    slider from the current model's variant keys. Returns {} on any
+    transport/parse error — the effort control is then simply omitted."""
+    import base64 as _b64
+    import urllib.parse
+    import urllib.request
+    from urllib.error import URLError
+
+    auth_token = _b64.b64encode(f"opencode:{password}".encode("utf-8")).decode("ascii")
+    url = (
+        f"http://127.0.0.1:{port}/config/providers"
+        f"?directory={urllib.parse.quote(directory, safe='')}"
+    )
+    req = urllib.request.Request(
+        url, method="GET", headers={"authorization": f"Basic {auth_token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (URLError, ConnectionError, OSError, ValueError):
+        return {}
+    return model_probe.parse_model_variants(data)
+
+
+async def _fetch_opencode_model_variants(
+    port: int, password: str, directory: str,
+) -> dict[str, list[str]]:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None, _fetch_opencode_model_variants_sync, port, password, directory
     )
 
 

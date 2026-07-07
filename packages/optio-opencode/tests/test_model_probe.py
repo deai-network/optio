@@ -112,6 +112,37 @@ def test_parse_model_ids_malformed():
     assert model_probe.parse_model_ids(None) == []
 
 
+def test_parse_model_variants_reads_variant_keys():
+    providers = {
+        "providers": [
+            {"id": "opencode", "name": "OpenCode Zen",
+             "models": {
+                 # graded: variant keys become the effort levels (order kept)
+                 "big-pickle": {
+                     "id": "big-pickle", "providerID": "opencode",
+                     "variants": {"low": {}, "medium": {}, "high": {}},
+                 },
+                 # no variants → omitted (no effort control for this model)
+                 "deepseek-v4-flash": {
+                     "id": "deepseek-v4-flash", "providerID": "opencode",
+                 },
+                 # empty variants map → omitted
+                 "grok-5": {
+                     "id": "grok-5", "providerID": "opencode", "variants": {},
+                 },
+             }},
+        ],
+    }
+    v = model_probe.parse_model_variants(providers)
+    assert v == {"opencode/big-pickle": ["low", "medium", "high"]}
+
+
+def test_parse_model_variants_malformed():
+    assert model_probe.parse_model_variants({}) == {}
+    assert model_probe.parse_model_variants(None) == {}
+    assert model_probe.parse_model_variants({"providers": "nope"}) == {}
+
+
 def test_disabled_map_uses_opencode_reason():
     m = model_probe.disabled_map({"a": True, "b": False})
     assert m == {"b": model_probe.DISABLED_REASON}

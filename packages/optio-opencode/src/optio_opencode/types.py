@@ -7,7 +7,7 @@ is owned by ``optio-host``. This module re-exports them so existing
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
 
 from optio_agents import (
     AllowedDir,
@@ -34,6 +34,17 @@ from optio_host.types import SSHConfig
 _VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
 _VALID_THINKING_VERBOSITY = {"hidden", "visible"}
 
+# opencode grades reasoning effort per-prompt via a model's named ``variant``
+# (attached to prompt_async, client-side — see OpencodeView). This Literal is the
+# config-level vocabulary (the superset across models); the actual levels offered
+# for a given model are that model's own variant keys, discovered live.
+OpencodeReasoningEffort = Literal[
+    "none", "minimal", "low", "medium", "high", "xhigh", "max"
+]
+_VALID_REASONING_EFFORT = {
+    "none", "minimal", "low", "medium", "high", "xhigh", "max",
+}
+
 
 __all__ = [
     "CallerMessageCallback",
@@ -47,6 +58,7 @@ __all__ = [
     "ToolVerbosity",
     "ThinkingVerbosity",
     "AllowedDir",
+    "OpencodeReasoningEffort",
     "OpencodeTaskConfig",
 ]
 
@@ -150,6 +162,14 @@ class OpencodeTaskConfig:
     # opencode's first-provider fallback. An explicit
     # ``opencode_config["model"]`` (operator raw override) wins over it.
     model: str | None = None
+    # Initial reasoning effort ("thought level"). opencode grades effort
+    # per-prompt via a model's named ``variant`` (client-side, attached to
+    # prompt_async beside the model — see OpencodeView), so this is the initial
+    # slider value: the conversation widget seeds its effort control from it when
+    # the current model supports variants and this level is one of them. The
+    # effort control only appears for a variant-capable model (re-derived on
+    # model change). None leaves opencode's per-model default in place.
+    reasoning_effort: "OpencodeReasoningEffort | None" = None
     # Show the model picker in the conversation widget. Requires
     # conversation_ui=True.
     show_session_controls: bool = False
@@ -249,4 +269,12 @@ class OpencodeTaskConfig:
             raise ValueError(
                 f"OpencodeTaskConfig.thinking_verbosity={self.thinking_verbosity!r} "
                 f"is not one of {sorted(_VALID_THINKING_VERBOSITY)}"
+            )
+        if (
+            self.reasoning_effort is not None
+            and self.reasoning_effort not in _VALID_REASONING_EFFORT
+        ):
+            raise ValueError(
+                f"OpencodeTaskConfig.reasoning_effort={self.reasoning_effort!r} "
+                f"is not one of {sorted(_VALID_REASONING_EFFORT)}"
             )

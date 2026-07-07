@@ -64,6 +64,7 @@ def test_widget_data_carries_model_fields():
         model="opencode/big-pickle",
         show_session_controls=True,
         tool_verbosity="verbose",
+        reasoning_effort="high",
     )
     wd = conversation_widget_data(cfg, session_id="s1", directory="/wd")
     assert wd == {
@@ -75,6 +76,7 @@ def test_widget_data_carries_model_fields():
         "showSessionControls": True,
         "nativeSpinner": False,
         "defaultModel": "opencode/big-pickle",
+        "defaultEffort": "high",
         "showFileUpload": False,
         "maxUploadBytes": 10_000_000,
         "fileDownload": False,
@@ -90,3 +92,33 @@ def test_widget_data_defaults():
     assert wd["showSessionControls"] is False
     assert wd["nativeSpinner"] is False
     assert wd["defaultModel"] is None
+    # No effort configured ⇒ the widget seeds nothing (opencode's per-model
+    # default stands).
+    assert wd["defaultEffort"] is None
+
+
+def test_reasoning_effort_accepted():
+    cfg = OpencodeTaskConfig(
+        consumer_instructions="task",
+        mode="conversation",
+        conversation_ui=True,
+        reasoning_effort="medium",
+    )
+    assert cfg.reasoning_effort == "medium"
+
+
+def test_reasoning_effort_defaults_none():
+    cfg = OpencodeTaskConfig(
+        consumer_instructions="task", mode="conversation", conversation_ui=True
+    )
+    assert cfg.reasoning_effort is None
+
+
+def test_reasoning_effort_rejects_bad_value():
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        OpencodeTaskConfig(
+            consumer_instructions="task",
+            mode="conversation",
+            conversation_ui=True,
+            reasoning_effort="turbo",
+        )

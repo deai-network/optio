@@ -50,6 +50,50 @@ function modelControlFromGroups(
   };
 }
 
+// The reasoning-effort SessionControl ("thought level"). opencode grades effort
+// per-prompt via a model's named `variant` (attached to prompt_async, client-
+// side, exactly like the model). Its levels are the current model's variant
+// keys; the slider value is the chosen level (defaults to the first). Only built
+// when the model actually has variants — an unsupported model has no control.
+function effortControlFromVariants(levels: string[], current: string | null): SessionControl {
+  return {
+    id: 'reasoning_effort', kind: 'slider', label: 'Effort', category: 'thought_level',
+    value: current && levels.includes(current) ? current : (levels[0] ?? ''),
+    levels,
+  };
+}
+
+// The control snapshot for a given model: always the model select, plus the
+// effort slider WHEN the current model exposes variants (re-derived on model
+// change so effort presence/levels follow the model — the reactive path the
+// x-optio-control-update snapshot drives through the shared reducer).
+function buildControls(
+  groups: ModelGroup[], current: OpencodeModel | null,
+  disabledModels: Record<string, string>,
+  modelVariants: Record<string, string[]>,
+  currentEffort: string | null,
+): SessionControl[] {
+  const controls: SessionControl[] = [modelControlFromGroups(groups, current, disabledModels)];
+  const key = current ? `${current.providerID}/${current.modelID}` : '';
+  const levels = modelVariants[key];
+  if (levels && levels.length > 0) {
+    controls.push(effortControlFromVariants(levels, currentEffort));
+  }
+  return controls;
+}
+
+// The effort level to apply for a model + chosen level: the chosen level if the
+// model offers it, else the model's first variant, else null (no variants).
+function effortForModel(
+  current: OpencodeModel | null, modelVariants: Record<string, string[]>,
+  chosen: string | null,
+): string | null {
+  const key = current ? `${current.providerID}/${current.modelID}` : '';
+  const levels = modelVariants[key] ?? [];
+  if (levels.length === 0) return null;
+  return chosen && levels.includes(chosen) ? chosen : levels[0];
+}
+
 // Conversation view for opencode tasks: speaks opencode's native HTTP+SSE API
 // through the widget proxy (exactly like iframe mode does), reduces the wire
 // events into the shared ChatState, and hands all rendering + local UI to the
@@ -65,6 +109,13 @@ interface OpencodeWidgetData {
   // Models the server-side startup probe found unusable, id → reason. The
   // picker greys these with the reason as a tooltip.
   disabledModels?: Record<string, string>;
+  // Per-model reasoning-effort variants ("providerID/modelID" → ordered
+  // variant keys). The effort slider is built from the CURRENT model's entry;
+  // a model absent here (or with an empty list) gets no effort control.
+  modelVariants?: Record<string, string[]>;
+  // Initial effort ("thought level") — the effort slider seeds from it when the
+  // current model offers it as a variant (client-side, like defaultModel).
+  defaultEffort?: string;
 }
 
 type ChatAction = { kind: 'bootstrap'; items: ChatItem[] } | { ev: unknown; seq: number };
@@ -84,14 +135,18 @@ export function OpencodeView(props: WidgetProps) {
       showSessionControls={widgetData.showSessionControls ?? false}
       defaultModel={widgetData.defaultModel}
       disabledModels={widgetData.disabledModels}
+      modelVariants={widgetData.modelVariants}
+      defaultEffort={widgetData.defaultEffort}
     />
   );
 }
 
 function OpencodeChat(
-  props: WidgetProps & { sessionID: string; directory: string; showSessionControls: boolean; defaultModel?: string; disabledModels?: Record<string, string> },
+  props: WidgetProps & { sessionID: string; directory: string; showSessionControls: boolean; defaultModel?: string; disabledModels?: Record<string, string>; modelVariants?: Record<string, string[]>; defaultEffort?: string },
 ) {
-  const { sessionID, directory, widgetProxyUrl, showSessionControls, defaultModel, disabledModels } = props; // widgetProxyUrl ends with '/' — trailing slash is load-bearing
+  const { sessionID, directory, widgetProxyUrl, showSessionControls, defaultModel, disabledModels, modelVariants, defaultEffort } = props; // widgetProxyUrl ends with '/' — trailing slash is load-bearing
+  const variants = modelVariants ?? {};
+  const disabled = disabledModels ?? {};
   const toolVerbosity = ((props.process.widgetData as any)?.toolVerbosity ?? 'description-only') as
     'silent' | 'description-only' | 'verbose';
   const thinkingVerbosity = ((props.process.widgetData as any)?.thinkingVerbosity ?? 'hidden') as
@@ -120,6 +175,14 @@ function OpencodeChat(
   // prompt_async); the equivalent select value also lives in state.controls for
   // display. onControlChange keeps the two in sync (UI-local, no round-trip).
   const [currentModel, setCurrentModel] = useState<OpencodeModel | null>(null);
+  // currentEffort is the send-path source of truth for the reasoning `variant`
+  // (attached inline to prompt_async, beside `model`); the equivalent slider
+  // value also lives in state.controls for display. null ⇒ no variant attached
+  // (the current model has none, or none chosen). groupsRef stashes the resolved
+  // provider catalog so onControlChange can rebuild the control snapshot (and
+  // re-derive effort presence) when the model changes.
+  const [currentEffort, setCurrentEffort] = useState<string | null>(null);
+  const groupsRef = useRef<ModelGroup[]>([]);
 
   // "Session ended": the opencode server (and the proxy route to it) dies with
   // the task process, so closed derives from the process document's terminal
@@ -188,25 +251,50 @@ function OpencodeChat(
       }
       if (!resolved) resolved = parsed.defaultModel;
       setCurrentModel(resolved);
-      // Seed the model control into state.controls (snapshot). The shared
-      // ConversationView renders it generically; it only surfaces to the user
-      // when showSessionControls gates the prop pass-through below.
+      groupsRef.current = parsed.groups;
+      // Seed the initial effort for the resolved model: defaultEffort if it is
+      // one of that model's variants, else the model's first variant, else null
+      // (no variants → no effort control).
+      const eff = effortForModel(resolved, variants, defaultEffort ?? null);
+      setCurrentEffort(eff);
+      // Seed the model (+ effort, when the model supports it) controls into
+      // state.controls (snapshot). The shared ConversationView renders them
+      // generically; they only surface to the user when showSessionControls
+      // gates the prop pass-through below.
       dispatch({
-        ev: { type: 'x-optio-control-update', controls: [modelControlFromGroups(parsed.groups, resolved, disabledModels)] },
+        ev: { type: 'x-optio-control-update', controls: buildControls(parsed.groups, resolved, disabled, variants, eff) },
         seq: localSeqRef.current--,
       });
     })();
     return () => { cancelled = true; };
   }, [widgetProxyUrl, sessionID]);
 
-  // Model change is UI-local: opencode applies the selection inline on the next
-  // prompt_async (no /control listener, no POST). Update the send-path source
-  // and fold a value patch so the select reflects the choice immediately.
+  // Control changes are UI-local: opencode applies both the model and the
+  // reasoning `variant` inline on the next prompt_async (no /control listener,
+  // no POST). Update the send-path source and fold the change so the controls
+  // reflect the choice immediately.
   function onControlChange(id: string, value: string | boolean) {
-    if (id !== 'model' || typeof value !== 'string') return;
-    const [providerID, modelID] = value.split('/');
-    setCurrentModel({ providerID, modelID });
-    dispatch({ ev: { type: 'x-optio-control-update', id, value }, seq: localSeqRef.current-- });
+    if (typeof value !== 'string') return;
+    if (id === 'model') {
+      const [providerID, modelID] = value.split('/');
+      const next = { providerID, modelID };
+      setCurrentModel(next);
+      // Re-derive effort for the NEW model (its variants may differ / vanish):
+      // keep the chosen level if the new model offers it, else its first
+      // variant, else drop the control. A fresh control snapshot rebuilds both
+      // the model select and the effort slider (presence follows the model).
+      const eff = effortForModel(next, variants, currentEffort);
+      setCurrentEffort(eff);
+      dispatch({
+        ev: { type: 'x-optio-control-update', controls: buildControls(groupsRef.current, next, disabled, variants, eff) },
+        seq: localSeqRef.current--,
+      });
+      return;
+    }
+    if (id === 'reasoning_effort') {
+      setCurrentEffort(value);
+      dispatch({ ev: { type: 'x-optio-control-update', id, value }, seq: localSeqRef.current-- });
+    }
   }
 
   async function post(path: string, body: unknown): Promise<boolean> {
@@ -242,6 +330,12 @@ function OpencodeChat(
     }
     const promptBody: any = { parts: [{ type: 'text', text: prompt }] };
     if (currentModel) promptBody.model = currentModel;
+    // Attach the chosen reasoning variant (effort) beside the model — only when
+    // the current model actually offers it (client-side, no round-trip).
+    if (currentModel && currentEffort) {
+      const key = `${currentModel.providerID}/${currentModel.modelID}`;
+      if ((variants[key] ?? []).includes(currentEffort)) promptBody.variant = currentEffort;
+    }
     const ok = await post(`session/${sessionID}/prompt_async${q}`, promptBody);
     if (ok) {
       // Optimistic local echo: show the message now; the wire echo
