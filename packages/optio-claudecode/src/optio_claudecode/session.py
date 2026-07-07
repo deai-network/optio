@@ -492,10 +492,84 @@ async def run_claudecode_session(
             reader = asyncio.create_task(conversation.run_reader())
             return handle, reader
 
+        async def _probe_default_model(env) -> str | None:
+            """Best-effort warm-up: run a throwaway claude turn and read
+            ``system/init`` to learn the account-default model, so a no-kickoff
+            conversation's model dropdown (and effort slider) populate before the
+            operator's first prompt instead of staying empty. `claude -p`
+            reveals the runtime model only in ``system/init`` at turn start, and
+            ``/v1/models`` carries no default flag — hence the probe.
+
+            The probe process is killed the instant ``system/init`` arrives,
+            which precedes any assistant token (inference), so it is cheap. It
+            runs under the SAME claustrum fs-isolation as the real session — the
+            agent binary is untrusted regardless of how short the turn is.
+            Returns the base model id (variant suffix stripped) or None on any
+            failure — the caller then falls back to today's empty-until-first-
+            turn behaviour."""
+            flags = host_actions.build_claude_flags(
+                permission_mode=config.permission_mode,
+                allowed_tools=None, disallowed_tools=None, model=None,
+            )
+            argv = host_actions.build_conversation_argv(
+                claude_path, claude_flags=flags, permission_gate=False,
+            )
+            wrap = await _build_claustrum_wrap(host, config, claustrum_path)
+            if wrap:
+                argv = [*wrap, *argv]
+            cmd = " ".join(shlex.quote(a) for a in argv)
+            handle = None
+            try:
+                handle = await host.launch_subprocess(
+                    cmd, env=env, cwd=host.workdir,
+                    env_remove=config.scrub_env, stdin=True,
+                )
+                handle.stdin.write(
+                    (json.dumps({"type": "user", "message": {"role": "user",
+                     "content": [{"type": "text", "text": "hi"}]}}) + "\n").encode()
+                )
+                drain = getattr(handle.stdin, "drain", None)
+                if drain is not None:
+                    await drain()
+                async with asyncio.timeout(30):
+                    async for raw in handle.stdout:
+                        try:
+                            ev = json.loads(raw)
+                        except Exception:
+                            continue
+                        if ev.get("type") == "system" and ev.get("subtype") == "init":
+                            m = ev.get("model")
+                            return (m.split("[", 1)[0]
+                                    if isinstance(m, str) and m else None)
+            except Exception:
+                _LOG.exception(
+                    "claude default-model probe failed; model dropdown stays "
+                    "empty until the first turn")
+            finally:
+                if handle is not None:
+                    try:
+                        await host.terminate_subprocess(handle, aggressive=True)
+                    except Exception:
+                        pass
+            return None
+
         env = host_actions.conversation_launch_env(
             host.workdir,
             {**(config.env or {}), **focus_env, **(hook_ctx.browser_launch_env or {})},
         )
+        # No-kickoff warm-up: a conversation with no auto-start prompt and no
+        # resume never fires a turn until the operator types, so `system/init`
+        # (the only place `claude -p` reveals the runtime model) never arrives
+        # and the model dropdown/effort slider stay empty. Probe the default
+        # model up front so the controls populate immediately. Skipped when a
+        # kickoff will reveal the model anyway (auto_start), on resume (prior
+        # model is known), or when the model is pinned by config.
+        if (config.conversation_ui and not resuming and not config.auto_start
+                and current_model is None):
+            ctx.report_progress(None, "Detecting default model…")
+            probed = await _probe_default_model(env)
+            if probed:
+                current_model = probed
         ctx.report_progress(None, "Launching Claude Code (conversation)…")
         handle, reader_task = await _spawn(current_model, do_continue=pass_continue)
         launched_handle = handle
