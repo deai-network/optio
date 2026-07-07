@@ -38,11 +38,10 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
+from optio_agents_all import ClaudeCodeTaskConfig, create_task
 from optio_claudecode import (
-    ClaudeCodeTaskConfig,
     HookContext,
     SSHConfig,
-    create_claudecode_task,
 )
 from optio_core.models import TaskInstance
 
@@ -164,7 +163,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
 
     tasks: list[TaskInstance] = [
         # The seed setup task: vanilla (no seed_id), on_seed_saved wired.
-        create_claudecode_task(
+        create_task(
             process_id="claudecode-seed-setup",
             name="Setup Claude Code seed",
             description=(
@@ -195,7 +194,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         seed_id = rec["seedId"]
         name = rec.get("name", seed_id)
         tasks.append(
-            create_claudecode_task(
+            create_task(
                 process_id=f"claudecode-demo-seed-{seed_id}",
                 name=f"Claude Code demo — {name}",
                 description=(
@@ -222,7 +221,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
             )
         )
         tasks.append(
-            create_claudecode_task(
+            create_task(
                 process_id=f"claudecode-conversation-seed-{seed_id}",
                 name=f"Claude Code conversation — {name}",
                 description=(
@@ -248,7 +247,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
             )
         )
         tasks.append(
-            create_claudecode_task(
+            create_task(
                 process_id=f"claudecode-conversation-task-seed-{seed_id}",
                 name=f"Claude Code conversation+task — {name}",
                 description=(

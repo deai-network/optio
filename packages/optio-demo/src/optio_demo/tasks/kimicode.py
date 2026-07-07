@@ -46,12 +46,11 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
+from optio_agents_all import KimiCodeTaskConfig, create_task
 from optio_core.models import TaskInstance
 from optio_kimicode import (
     HookContext,
-    KimiCodeTaskConfig,
     SSHConfig,
-    create_kimicode_task,
     list_seeds,
 )
 
@@ -182,7 +181,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
 
     tasks: list[TaskInstance] = [
         # The seed setup task: vanilla (no seed_id), on_seed_saved wired.
-        create_kimicode_task(
+        create_task(
             process_id="kimicode-seed-setup",
             name="Setup Kimi Code seed",
             description=(
@@ -212,7 +211,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         seed_id = rec["seedId"]
         name = names.get(seed_id, seed_id)
         tasks.append(
-            create_kimicode_task(
+            create_task(
                 process_id=f"kimicode-demo-seed-{seed_id}",
                 name=f"Kimi Code demo — {name}",
                 description=(
@@ -239,7 +238,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
             )
         )
         tasks.append(
-            create_kimicode_task(
+            create_task(
                 process_id=f"kimicode-conversation-seed-{seed_id}",
                 name=f"Kimi Code conversation — {name}",
                 description=(

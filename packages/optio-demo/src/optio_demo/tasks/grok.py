@@ -43,12 +43,11 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
+from optio_agents_all import GrokTaskConfig, create_task
 from optio_core.models import TaskInstance
 from optio_grok import (
-    GrokTaskConfig,
     HookContext,
     SSHConfig,
-    create_grok_task,
     list_seeds,
 )
 
@@ -178,7 +177,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
 
     tasks: list[TaskInstance] = [
         # The seed setup task: vanilla (no seed_id), on_seed_saved wired.
-        create_grok_task(
+        create_task(
             process_id="grok-seed-setup",
             name="Setup Grok seed",
             description=(
@@ -208,7 +207,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         seed_id = rec["seedId"]
         name = names.get(seed_id, seed_id)
         tasks.append(
-            create_grok_task(
+            create_task(
                 process_id=f"grok-demo-seed-{seed_id}",
                 name=f"Grok demo — {name}",
                 description=(
@@ -232,7 +231,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
             )
         )
         tasks.append(
-            create_grok_task(
+            create_task(
                 process_id=f"grok-conversation-seed-{seed_id}",
                 name=f"Grok conversation — {name}",
                 description=(

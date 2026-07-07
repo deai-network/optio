@@ -44,12 +44,11 @@ import os
 from datetime import datetime, timezone
 
 from optio_agents import HookContext
+from optio_agents_all import AntigravityTaskConfig, create_task
 from optio_core.models import TaskInstance
 from optio_host import SSHConfig
 
 from optio_antigravity import (
-    AntigravityTaskConfig,
-    create_antigravity_task,
     list_seeds,
 )
 
@@ -181,7 +180,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
 
     tasks: list[TaskInstance] = [
         # The seed setup task: vanilla (no seed_id), on_seed_saved wired.
-        create_antigravity_task(
+        create_task(
             process_id="antigravity-seed-setup",
             name="Setup Antigravity seed",
             description=(
@@ -212,7 +211,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         seed_id = rec["seedId"]
         name = names.get(seed_id, seed_id)
         tasks.append(
-            create_antigravity_task(
+            create_task(
                 process_id=f"antigravity-demo-seed-{seed_id}",
                 name=f"Antigravity demo — {name}",
                 description=(
@@ -240,7 +239,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
             )
         )
         tasks.append(
-            create_antigravity_task(
+            create_task(
                 process_id=f"antigravity-conversation-seed-{seed_id}",
                 name=f"Antigravity conversation — {name}",
                 description=(

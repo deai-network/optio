@@ -41,11 +41,10 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
+from optio_agents_all import CodexTaskConfig, create_task
 from optio_codex import (
-    CodexTaskConfig,
     HookContext,
     SSHConfig,
-    create_codex_task,
     list_seeds,
 )
 from optio_core.models import TaskInstance
@@ -182,7 +181,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
 
     tasks: list[TaskInstance] = [
         # The seed setup task: vanilla (no seed_id), on_seed_saved wired.
-        create_codex_task(
+        create_task(
             process_id="codex-seed-setup",
             name="Setup Codex seed",
             description=(
@@ -213,7 +212,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         seed_id = rec["seedId"]
         name = names.get(seed_id, seed_id)
         tasks.append(
-            create_codex_task(
+            create_task(
                 process_id=f"codex-demo-seed-{seed_id}",
                 name=f"Codex demo — {name}",
                 description=(
@@ -239,7 +238,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
             )
         )
         tasks.append(
-            create_codex_task(
+            create_task(
                 process_id=f"codex-conversation-seed-{seed_id}",
                 name=f"Codex conversation — {name}",
                 description=(

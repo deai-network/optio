@@ -39,12 +39,11 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
+from optio_agents_all import OpencodeTaskConfig, create_task
 from optio_core.models import TaskInstance
 from optio_opencode import (
     HookContext,
-    OpencodeTaskConfig,
     SSHConfig,
-    create_opencode_task,
 )
 
 from optio_demo.tasks._feedback import make_feedback_on_deliverable
@@ -166,7 +165,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
 
     tasks: list[TaskInstance] = [
         # The original, additive demo task (no seed; vanilla session).
-        create_opencode_task(
+        create_task(
             process_id="opencode-demo",
             name="Opencode demo",
             description=(
@@ -188,7 +187,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         # The seed setup task: vanilla (no seed_id), on_seed_saved wired.
         # The login browser stays suppressed (the opencode launch default);
         # no redirect/OAuth handling is built here.
-        create_opencode_task(
+        create_task(
             process_id="opencode-seed-setup",
             name="Setup opencode seed",
             description=(
@@ -213,7 +212,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         seed_id = rec["seedId"]
         name = rec.get("name", seed_id)
         tasks.append(
-            create_opencode_task(
+            create_task(
                 process_id=f"opencode-demo-seed-{seed_id}",
                 name=f"opencode demo — {name}",
                 description=(
@@ -236,7 +235,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
             )
         )
         tasks.append(
-            create_opencode_task(
+            create_task(
                 process_id=f"opencode-conversation-seed-{seed_id}",
                 name=f"opencode conversation — {name}",
                 description=(
