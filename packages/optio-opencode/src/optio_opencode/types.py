@@ -115,6 +115,9 @@ class OpencodeTaskConfig:
     # (POST /api/session/<id>/prompt "Read AGENTS.md and execute the task it
     # describes"); suppressed on resume.
     auto_start: bool = False
+    # Extra env vars injected into the opencode subprocess (parity with the
+    # other engines). Applied under browser shims (shims win on conflict).
+    env: dict[str, str] | None = None
     # Glob patterns (fnmatch) of env var NAMES to strip from the opencode
     # subprocess, so inherited provider creds don't override the seed. e.g.
     # ["*_API_KEY", "*_TOKEN"].

@@ -393,7 +393,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             ready_timeout_s=READY_TIMEOUT_S,
             opencode_executable=opencode_exec,
             hostname=opencode_hostname,
-            extra_env=hook_ctx.browser_launch_env,
+            extra_env={**(config.env or {}), **hook_ctx.browser_launch_env},
             env_remove=config.scrub_env,
         )
         launched_handle = handle
