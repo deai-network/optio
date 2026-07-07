@@ -13,6 +13,7 @@ from optio_agents.conversation import (
     PermissionDecision,
 )
 from optio_opencode.conversation import OpencodeConversation
+from optio_opencode import model_probe, session as sess
 
 SID = "ses_test"
 
@@ -24,6 +25,14 @@ class FakeServer:
         self.journal: list[tuple[str, dict]] = []
         self.events: asyncio.Queue = asyncio.Queue()
         self.pending_permissions: list[dict] = []
+        # Opt-in probe scripting: when answer_probes is set, each prompt drives a
+        # turn — models in `errored` end in a session.error, all others answer.
+        self.answer_probes = False
+        self.errored: set[str] = set()
+        # Force /global/event to fail with this status (so the reader never
+        # connects and never marks the conversation ready).
+        self.event_status = 200
+        self._turn = 0
         self.app = web.Application()
         self.app.router.add_get("/global/event", self._event)
         self.app.router.add_post("/session/{sid}/prompt_async", self._prompt)
@@ -56,6 +65,8 @@ class FakeServer:
         })
 
     async def _event(self, request):
+        if self.event_status != 200:
+            return web.Response(status=self.event_status)
         resp = web.StreamResponse(headers={"content-type": "text/event-stream"})
         await resp.prepare(request)
         await resp.write(b'data: {"payload":{"id":"evt_0","type":"server.connected","properties":{}}}\n\n')
@@ -67,8 +78,29 @@ class FakeServer:
             return resp
 
     async def _prompt(self, request):
-        self.journal.append(("prompt", await request.json()))
+        body = await request.json()
+        self.journal.append(("prompt", body))
+        if self.answer_probes:
+            model = body.get("model") or {}
+            mid = f"{model.get('providerID')}/{model.get('modelID')}" if model else None
+            self._answer_turn(mid)
         return web.Response(status=204)
+
+    def _answer_turn(self, mid):
+        """Emit one scripted turn over SSE: a session.error for a model in
+        `errored`, otherwise a completed assistant answer."""
+        self._turn += 1
+        m = f"m{self._turn}"
+        if mid in self.errored:
+            self.emit("session.error",
+                      {"sessionID": SID, "error": {"message": "not supported"}})
+            return
+        self.emit("message.part.updated",
+                  {"part": {"id": f"p{self._turn}", "messageID": m, "sessionID": SID,
+                            "type": "text", "text": "Budapest is the capital."}})
+        self.emit("message.updated",
+                  {"info": {"id": m, "sessionID": SID, "role": "assistant",
+                            "time": {"created": 1, "completed": 2}}})
 
     async def _abort(self, request):
         self.journal.append(("abort", {}))
@@ -316,3 +348,65 @@ async def test_driver_against_fake_opencode_subprocess(fake_proc):
     journal = (workdir / "conv_journal.jsonl").read_text().splitlines()
     kinds = [json.loads(l)["kind"] for l in journal]
     assert "prompt_async" in kinds and "abort" in kinds
+
+
+# --- startup-race guard: probe must wait for the reader to be connected -------
+
+
+async def test_send_before_reader_raises_conversation_closed():
+    # A freshly-constructed conversation has no aiohttp session yet (run_reader
+    # creates it). Sending before the reader started must fail loudly with
+    # ConversationClosed — NOT an opaque AttributeError on `self._http is None`,
+    # which the probe's per-model except would silently swallow as "unusable".
+    c = OpencodeConversation(port=1, password="x", session_id=SID, directory="/w")
+    with pytest.raises(ConversationClosed):
+        await c.send("hi")
+
+
+async def test_probe_flow_gates_on_ready_and_returns_mix(server):
+    # Reproduce the _run_model_probe timing (start the reader, THEN probe), but
+    # gate on the readiness Event first. With the gate, turns are sent only once
+    # the SSE stream is live, so probe_models distinguishes a good model (answers)
+    # from a bad one (session.error) — a MIX, not the all-False startup-race bug.
+    server.answer_probes = True
+    server.errored = {"prov/bad"}
+    c = OpencodeConversation(
+        port=server.port, password="pw", session_id=SID, directory="/work",
+    )
+    reader = asyncio.create_task(c.run_reader())
+    await asyncio.wait_for(c._ready.wait(), timeout=5.0)
+    try:
+        usable = await model_probe.probe_models(
+            c, ["prov/good", "prov/bad"], per_model_timeout=2.0,
+        )
+    finally:
+        reader.cancel()
+        try:
+            await reader
+        except asyncio.CancelledError:
+            pass
+    assert usable == {"prov/good": True, "prov/bad": False}
+
+
+async def test_run_model_probe_returns_empty_when_reader_never_connects(
+    server, monkeypatch,
+):
+    # If the reader never connects (here: /global/event errors), the readiness
+    # gate times out and _run_model_probe returns {} (unfiltered picker) rather
+    # than probing against a dead stream and marking every model unusable.
+    server.event_status = 503
+
+    async def _fake_create(port, password, directory):
+        return "probe_sid"
+
+    async def _fake_delete(port, password, session_id, directory):
+        return None
+
+    monkeypatch.setattr(sess, "_create_opencode_session", _fake_create)
+    monkeypatch.setattr(sess, "_delete_opencode_session", _fake_delete)
+    monkeypatch.setattr(sess, "_PROBE_READY_TIMEOUT", 0.3)
+
+    result = await sess._run_model_probe(
+        server.port, "pw", "/work", ["prov/good", "prov/bad"], report=None,
+    )
+    assert result == {}

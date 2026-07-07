@@ -1165,6 +1165,12 @@ async def _delete_opencode_session(
     )
 
 
+# How long to wait for the throwaway probe conversation's reader to connect its
+# /global/event stream before giving up. Until it is ready, send() has no aiohttp
+# session and no event stream, so probing would mark every model unusable.
+_PROBE_READY_TIMEOUT = 20.0
+
+
 async def _run_model_probe(
     port: int, password: str, directory: str, model_ids: list[str], report,
 ) -> dict[str, bool]:
@@ -1177,6 +1183,18 @@ async def _run_model_probe(
     )
     reader = asyncio.create_task(conv.run_reader())
     try:
+        # Wait for the reader to own an aiohttp session AND connect the event
+        # stream before sending any probe turn. Without this gate the first
+        # send() runs while conv._http is still None (the loop never got to run
+        # run_reader), the turn errors, and EVERY model is marked unusable.
+        try:
+            await asyncio.wait_for(conv._ready.wait(), timeout=_PROBE_READY_TIMEOUT)
+        except asyncio.TimeoutError:
+            _LOG.warning(
+                "model probe: throwaway conversation never became ready in %ss; "
+                "skipping probe (unfiltered picker)", _PROBE_READY_TIMEOUT,
+            )
+            return {}
         return await model_probe.probe_models(conv, model_ids, report=report)
     finally:
         await conv.close()

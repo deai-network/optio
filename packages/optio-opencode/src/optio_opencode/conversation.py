@@ -79,6 +79,12 @@ class OpencodeConversation:
         self._part_texts: dict[str, dict[str, str]] = {}
         self._dispatcher_task: asyncio.Task | None = None
         self._http: aiohttp.ClientSession | None = None
+        # Set once the reader owns an aiohttp session AND the /global/event
+        # stream is connected — i.e. it is safe to send() and expect the answer/
+        # error events back. The model probe waits on this before its first turn
+        # (otherwise it would send() while _http is still None and mark every
+        # model unusable — a startup race).
+        self._ready = asyncio.Event()
 
     # -- wiring ------------------------------------------------------------
 
@@ -117,6 +123,10 @@ class OpencodeConversation:
             self._url("/global/event"), timeout=timeout,
         ) as resp:
             resp.raise_for_status()
+            # The stream is live and _http exists: sends will now reach the
+            # server and their answer/error events will arrive. On a reconnect
+            # this is already set (harmless).
+            self._ready.set()
             # A (re)connect can postdate permission.asked events we never saw.
             await self._sweep_permissions()
             data_lines: list[str] = []
@@ -286,6 +296,10 @@ class OpencodeConversation:
     async def send(self, text: str) -> None:
         if self._closed.is_set():
             raise ConversationClosed(self._close_reason or "conversation closed")
+        if self._http is None:
+            # The reader hasn't created the aiohttp session yet (or was never
+            # started). Fail loudly instead of an opaque AttributeError.
+            raise ConversationClosed("conversation not started")
         self._pending = True
         body: dict = {"parts": [{"type": "text", "text": text}]}
         if self.current_model_id:
