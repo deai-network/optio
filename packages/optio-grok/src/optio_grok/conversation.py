@@ -166,6 +166,13 @@ class GrokConversation:
         result = (resp or {}).get("result") or {}
         self._session_id = result.get("sessionId")
         if not self._session_id:
+            err = (resp or {}).get("error")
+            if err:
+                # grok returns {"error":{code,message}} — most often
+                # "Authentication required" when the isolated GROK_HOME has no
+                # valid login/seed. Surface it instead of the bare empty result.
+                raise RuntimeError(f"grok ACP session/new failed: {err!r} "
+                                   "(likely unauthenticated — needs a valid grok seed)")
             raise RuntimeError(
                 f"grok ACP session/new returned no sessionId: {result!r}"
             )
