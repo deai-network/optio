@@ -347,6 +347,12 @@ async def test_conversation_ui_forwards_frontend_parity_widget_data(
         assert wd["maxUploadBytes"] == 4242
         assert wd["fileDownload"] is True
         assert wd["maxDownloadBytes"] == 8484
+        # widgetData advertises the generic upload route (resolved relative to
+        # {widgetProxyUrl} by the client) with this task's db/prefix/pid.
+        assert wd["uploadUrl"] == (
+            "{widgetProxyUrl}../../../../widget-upload/"
+            f"{mongo_db.name}/kkconv6/kk-conv-wd"
+        )
         # The model picker is now the id="model" SessionControl; its options
         # come from the live ACP configOptions surface and default_model
         # overrides the control's initial value.
@@ -386,6 +392,56 @@ async def test_conversation_ui_widget_data_defaults_when_ungated(
         # No default_model override → the model control shows the live ACP current model.
         model = next(c for c in wd["controls"] if c["id"] == "model")
         assert model["value"] == "kimi-k2"
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
+@pytest.mark.asyncio
+async def test_conversation_ui_file_upload_materialize(
+    shim_install_dir, task_root, mongo_db,
+):
+    """conversation_ui migrates file upload to the generic materialize path: the
+    session registers an in-process upload writer (resolved by
+    ``Optio.materialize_upload``) that lands the bytes under ``<workdir>/uploads``
+    and fires ``on_upload`` with that relpath; widgetData advertises the generic
+    ``uploadUrl``."""
+    seen: list[str] = []
+    landed: dict[str, bytes] = {}
+
+    async def _on_upload(hook_ctx, path):
+        seen.append(path)
+        landed[path] = await hook_ctx.read_from_host(path)
+
+    optio = await _make_optio(mongo_db, "kkconv8")
+    try:
+        task = create_kimicode_task(
+            process_id="kk-conv-files",
+            name="Conversation upload",
+            config=_conversation_config(
+                shim_install_dir, conversation_ui=True,
+                show_file_upload=True, on_upload=_on_upload,
+            ),
+        )
+        await optio.adhoc_define(task)
+        await optio.launch_and_await_result(
+            "kk-conv-files", session_id=None, timeout=60,
+        )
+
+        wd = await _wait_widget_data(optio, "kk-conv-files")
+        assert wd["showFileUpload"] is True
+        assert wd["uploadUrl"] == (
+            "{widgetProxyUrl}../../../../widget-upload/"
+            f"{mongo_db.name}/kkconv8/kk-conv-files"
+        )
+        # Upload flows through the generic materialize path (NOT the listener):
+        # Optio.materialize_upload resolves the registered writer, which lands
+        # the bytes under uploads/ and fires on_upload with the same relpath.
+        rel = await optio.materialize_upload(
+            "kk-conv-files", b"hello-bytes", "note.txt",
+        )
+        assert rel == "uploads/note.txt"
+        assert seen == ["uploads/note.txt"]
+        assert landed["uploads/note.txt"] == b"hello-bytes"
     finally:
         await optio.shutdown(grace_seconds=1.0)
 
