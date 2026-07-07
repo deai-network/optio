@@ -75,7 +75,7 @@ def _conversation_config(
         consumer_instructions="Converse with the test.",
         mode="conversation",
         permission_mode="bypassPermissions",
-        claude_install_dir=str(claude_cache_dir),
+        install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         fs_isolation=False,
     )

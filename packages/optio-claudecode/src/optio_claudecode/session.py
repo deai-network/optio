@@ -116,7 +116,7 @@ async def _build_claustrum_wrap(
     if not config.fs_isolation:
         return None
     from . import fs_allowlist
-    cache_dir = await host_actions._resolve_cache_dir(host, config.claude_install_dir)
+    cache_dir = await host_actions._resolve_cache_dir(host, config.install_dir)
     # `~/` caller extras expand against the REAL host home (the claude process
     # runs under an isolated $HOME, and grants reach claustrum verbatim).
     host_home = (
@@ -193,7 +193,7 @@ async def run_claudecode_session(
         claude_path = await host_actions.ensure_claude_installed(
             hook_ctx,
             install_if_missing=config.install_if_missing,
-            install_dir=config.claude_install_dir,
+            install_dir=config.install_dir,
         )
         # ttyd serves the TUI in iframe mode only; conversation mode is headless
         # (no tmux/ttyd), so skip the install check/download entirely there.
@@ -208,7 +208,7 @@ async def run_claudecode_session(
         claustrum_newer = None
         if config.fs_isolation:
             claustrum_path = await host_actions.ensure_claustrum_installed(
-                hook_ctx, install_dir=config.claude_install_dir,
+                hook_ctx, install_dir=config.install_dir,
             )
             claustrum_newer = await host_actions.claustrum_newer_tag()
 
@@ -245,7 +245,7 @@ async def run_claudecode_session(
             await host_actions.ensure_claude_installed(
                 hook_ctx,
                 install_if_missing=config.install_if_missing,
-                install_dir=config.claude_install_dir,
+                install_dir=config.install_dir,
                 progress_label="Restoring Claude Code runtime…",
             )
             payload = await _read_blob_bytes(ctx, snapshot["sessionBlobId"])

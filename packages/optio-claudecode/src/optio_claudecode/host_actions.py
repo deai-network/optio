@@ -112,7 +112,7 @@ async def _resolve_install_dir(host: "Host", install_dir: str | None) -> str:
 async def _resolve_cache_dir(host: "Host", override: str | None) -> str:
     """Resolve the claude version-cache dir as an absolute path on the worker.
 
-    ``override`` (``config.claude_install_dir``) wins. Otherwise the worker's
+    ``override`` (``config.install_dir``) wins. Otherwise the worker's
     ``OPTIO_CLAUDECODE_CACHE_DIR`` / ``XDG_CACHE_HOME`` / ``$HOME`` decide it —
     resolved via a shell echo so RemoteHost gets the remote location.
     """
@@ -231,7 +231,7 @@ async def ensure_claude_installed(
       (no reinstall).
     - cache miss + install disabled → raise.
 
-    ``install_dir`` is the cache-dir override (config.claude_install_dir).
+    ``install_dir`` is the cache-dir override (config.install_dir).
     Returns the per-task launch path ``<workdir>/home/.local/bin/claude``.
     """
     host = hook_ctx._host

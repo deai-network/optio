@@ -99,7 +99,7 @@ def _flow_config(shim_install_dir, claude_cache_dir, **kw):
         consumer_instructions="Converse with the test.",
         mode="conversation",
         permission_mode="bypassPermissions",
-        claude_install_dir=str(claude_cache_dir),
+        install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         supports_resume=False,
         fs_isolation=False,

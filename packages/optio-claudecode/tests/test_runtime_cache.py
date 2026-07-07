@@ -79,7 +79,7 @@ async def test_cache_hit_reuses_without_install(
             consumer_instructions="hi",
             fs_isolation=False,
             permission_mode="bypassPermissions",
-            claude_install_dir=str(claude_cache_dir),  # cache override
+            install_dir=str(claude_cache_dir),  # cache override
             ttyd_install_dir=str(shim_install_dir),
             supports_resume=False,
             before_execute=probe,
@@ -111,7 +111,7 @@ async def test_snapshot_excludes_claude_binary(
             consumer_instructions="hi",
             fs_isolation=False,
             permission_mode="bypassPermissions",
-            claude_install_dir=str(claude_cache_dir),
+            install_dir=str(claude_cache_dir),
             ttyd_install_dir=str(shim_install_dir),
             supports_resume=True,
             # Configured (logged-in) session: creds on disk so the snapshot

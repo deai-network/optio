@@ -48,7 +48,7 @@ async def test_unknown_seed_id_raises(mongo_db, task_root, shim_install_dir, cla
     cfg = ClaudeCodeTaskConfig(
         consumer_instructions="(bad seed)",
         fs_isolation=False,
-        claude_install_dir=str(claude_cache_dir),
+        install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         permission_mode="bypassPermissions",
         supports_resume=False,

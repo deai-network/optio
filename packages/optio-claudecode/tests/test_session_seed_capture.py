@@ -68,7 +68,7 @@ async def test_capture_fires_callback_and_stores_env_only_seed(
     cfg = ClaudeCodeTaskConfig(
         consumer_instructions="(seed setup)",
         fs_isolation=False,
-        claude_install_dir=str(claude_cache_dir),
+        install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         permission_mode="bypassPermissions",
         supports_resume=False,
@@ -120,7 +120,7 @@ async def test_capture_skipped_when_no_credentials(
     cfg = ClaudeCodeTaskConfig(
         consumer_instructions="(login that never completed)",
         fs_isolation=False,
-        claude_install_dir=str(claude_cache_dir),
+        install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         permission_mode="bypassPermissions",
         supports_resume=False,

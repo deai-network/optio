@@ -169,7 +169,7 @@ async def test_upload_writer_lands_file_and_fires_on_upload(
                 fs_isolation=False,
                 show_file_upload=True,
                 on_upload=_on_upload,
-                claude_install_dir=str(claude_cache_dir),
+                install_dir=str(claude_cache_dir),
                 ttyd_install_dir=str(shim_install_dir),
             ),
         )

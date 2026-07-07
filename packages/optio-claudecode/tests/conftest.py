@@ -4,7 +4,7 @@ Fixtures:
 
 * ``shim_install_dir`` — a tmp_path subdir containing symlinks named
   ``claude`` and ``ttyd`` pointing at the package-shipped shim scripts.
-  Pass this as both ``claude_install_dir`` and ``ttyd_install_dir`` in
+  Pass this as both ``install_dir`` and ``ttyd_install_dir`` in
   ``ClaudeCodeTaskConfig`` to bypass real binary detection.
 * ``mongo_db`` — a per-test isolated Mongo db (matches opencode's
   conftest verbatim).
@@ -167,7 +167,7 @@ def claude_cache_dir(tmp_path: pathlib.Path) -> pathlib.Path:
     Contains a single version file ``9.9.9`` symlinked to the claude shim, so
     ``ensure_claude_installed`` takes the cache-hit path (points
     home/.local/bin/claude at it) and never runs the real install.sh. Pass as
-    ``claude_install_dir`` in ClaudeCodeTaskConfig.
+    ``install_dir`` in ClaudeCodeTaskConfig.
     """
     cache = tmp_path / "claude-cache"
     cache.mkdir()

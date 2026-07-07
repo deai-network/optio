@@ -19,7 +19,7 @@ def test_minimal_config_uses_defaults():
     assert cfg.ssh is None
     assert cfg.install_if_missing is True
     assert cfg.install_ttyd_if_missing is True
-    assert cfg.claude_install_dir is None
+    assert cfg.install_dir is None
     assert cfg.ttyd_install_dir is None
     assert cfg.before_execute is None
     assert cfg.after_execute is None
@@ -47,7 +47,7 @@ def test_install_dir_must_be_absolute_when_set():
     with pytest.raises(ValueError) as exc_info:
         ClaudeCodeTaskConfig(
             consumer_instructions="hi",
-            claude_install_dir="relative/path",
+            install_dir="relative/path",
         )
     assert "absolute" in str(exc_info.value).lower()
 
@@ -61,11 +61,11 @@ def test_install_dir_must_be_absolute_when_set():
 def test_install_dir_accepts_absolute():
     cfg = ClaudeCodeTaskConfig(
         consumer_instructions="hi",
-        claude_install_dir="/opt/claude",
+        install_dir="/opt/claude",
         ttyd_install_dir="/opt/ttyd",
         fs_isolation=False,
     )
-    assert cfg.claude_install_dir == "/opt/claude"
+    assert cfg.install_dir == "/opt/claude"
     assert cfg.ttyd_install_dir == "/opt/ttyd"
 
 
@@ -130,3 +130,35 @@ def test_extra_allowed_dirs_ok():
     )
     assert cfg.extra_allowed_dirs[0].path == "/data"
     assert cfg.extra_allowed_dirs[2].mode == "rox"
+
+
+# --- C1: shared config vocabulary (optio_agents) ------------------------
+
+
+def test_alloweddir_validates_at_construction():
+    """The shared AllowedDir rejects a bad mode at construction time (stricter
+    than the old local dataclass, which only validated inside the config loop)."""
+    with pytest.raises(ValueError, match="mode"):
+        AllowedDir(path="/data", mode="exec")  # not ro/rw/rox/rwx
+
+
+def test_types_reexports_are_the_shared_optio_agents_objects():
+    """C1: types.py imports the shared vocabulary and re-exports it, so the
+    re-exported names are identical objects to optio_agents'."""
+    import optio_agents
+    from optio_claudecode import types as cc_types
+
+    assert cc_types.AllowedDir is optio_agents.AllowedDir
+    assert cc_types.ConversationMode is optio_agents.ConversationMode
+    assert cc_types.ToolVerbosity is optio_agents.ToolVerbosity
+    assert cc_types.ThinkingVerbosity is optio_agents.ThinkingVerbosity
+    assert cc_types.SeedProvider is optio_agents.SeedProvider
+    assert cc_types.SeedUnavailableError is optio_agents.SeedUnavailableError
+
+
+def test_all_widened_with_tool_and_thinking_verbosity():
+    """C1 parity: ToolVerbosity/ThinkingVerbosity are now in __all__."""
+    from optio_claudecode import types as cc_types
+
+    assert "ToolVerbosity" in cc_types.__all__
+    assert "ThinkingVerbosity" in cc_types.__all__

@@ -58,7 +58,7 @@ async def test_session_saves_rotated_credentials_back_to_seed(
     await run_claudecode_session(ctx1, ClaudeCodeTaskConfig(
         consumer_instructions="(seed setup)",
         fs_isolation=False,
-        claude_install_dir=str(claude_cache_dir),
+        install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         permission_mode="bypassPermissions",
         supports_resume=False,
@@ -80,7 +80,7 @@ async def test_session_saves_rotated_credentials_back_to_seed(
     await run_claudecode_session(ctx2, ClaudeCodeTaskConfig(
         consumer_instructions="(seeded run)",
         fs_isolation=False,
-        claude_install_dir=str(claude_cache_dir),
+        install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         permission_mode="bypassPermissions",
         supports_resume=False,

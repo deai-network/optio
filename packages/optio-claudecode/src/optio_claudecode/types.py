@@ -10,6 +10,14 @@ from typing import Any, Awaitable, Callable, Literal
 
 from bson import ObjectId
 
+from optio_agents import (
+    AllowedDir,
+    ConversationMode,
+    SeedProvider,
+    SeedUnavailableError,
+    ThinkingVerbosity,
+    ToolVerbosity,
+)
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -18,23 +26,15 @@ from optio_agents.protocol.session import (
 from optio_agents.uploads import UploadCallback
 from optio_host.types import SSHConfig
 
-
-@dataclass
-class AllowedDir:
-    """A caller-supplied extra path grant for filesystem isolation.
-
-    ``mode`` is one of ``"ro"`` (read-only), ``"rw"`` (read-write),
-    ``"rox"`` (read+execute — tool venvs, binaries), or ``"rwx"``
-    (read-write+execute). Grants are additive: callers may widen the
-    allowlist but never mask the security baseline.
-
-    A leading ``~/`` in ``path`` is expanded against the REAL host home at
-    launch time (the claude process itself runs under an isolated $HOME, so
-    grants cannot rely on its shell expansion).
-    """
-
-    path: str
-    mode: Literal["ro", "rw", "rox", "rwx"]
+# AllowedDir, ConversationMode, ToolVerbosity, ThinkingVerbosity, SeedProvider
+# and SeedUnavailableError are the shared vocabulary owned by optio_agents; they
+# are imported above and re-exported here (see __all__) so existing
+# ``from optio_claudecode.types import AllowedDir, …`` sites keep working. The
+# shared AllowedDir validates ``mode`` at construction (rox/rwx superset;
+# Landlock-only claustrum treats rox==ro, rwx==rw). A leading ``~/`` in an
+# AllowedDir.path is expanded against the REAL host home at launch time (the
+# claude process runs under an isolated $HOME, so grants cannot rely on its
+# shell expansion).
 
 
 __all__ = [
@@ -48,31 +48,21 @@ __all__ = [
     "PermissionMode",
     "SeedProvider",
     "SeedUnavailableError",
+    "ToolVerbosity",
+    "ThinkingVerbosity",
     "AllowedDir",
 ]
-
-
-SeedProvider = Callable[[str], Awaitable[str]]
-
-
-class SeedUnavailableError(Exception):
-    """Raised by a seed provider when no usable seed is available; the message
-    is surfaced as the process failure."""
 
 
 PermissionMode = Literal["default", "plan", "acceptEdits", "bypassPermissions", "dontAsk"]
 _VALID_PERMISSION_MODES = {"default", "plan", "acceptEdits", "bypassPermissions", "dontAsk"}
 _HEADLESS_SAFE_PERMISSION_MODES = {"acceptEdits", "bypassPermissions", "dontAsk"}
 
-ConversationMode = Literal["iframe", "conversation"]
-
-ToolVerbosity = Literal["silent", "description-only", "verbose"]
 _VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
 
 # Visibility of reasoning/thinking traces in the conversation widget. Task-level,
 # mirrors ToolVerbosity; the UI never decides. (Claude reasoning is not yet wired
 # to a distinct thinking row, but the option ships for cross-engine parity.)
-ThinkingVerbosity = Literal["hidden", "visible"]
 _VALID_THINKING_VERBOSITY = {"hidden", "visible"}
 
 
@@ -136,7 +126,7 @@ class ClaudeCodeTaskConfig:
     # per-task home/.local/share/claude/versions symlink). None → the worker's
     # ``OPTIO_CLAUDECODE_CACHE_DIR`` or ``${XDG_CACHE_HOME:-$HOME/.cache}/
     # optio-claudecode/versions``. Never the host user's ~/.local/~/.claude.
-    claude_install_dir: str | None = None
+    install_dir: str | None = None
     ttyd_install_dir: str | None = None
 
     before_execute: HookCallback | None = None
@@ -262,7 +252,7 @@ class ClaudeCodeTaskConfig:
                 f"ClaudeCodeTaskConfig.permission_mode={self.permission_mode!r} "
                 f"is not one of {sorted(_VALID_PERMISSION_MODES)}"
             )
-        for field_name in ("claude_install_dir", "ttyd_install_dir"):
+        for field_name in ("install_dir", "ttyd_install_dir"):
             val = getattr(self, field_name)
             if val is not None and not val.startswith("/") and not val.startswith("~"):
                 raise ValueError(

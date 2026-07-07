@@ -213,7 +213,7 @@ def _ui_config(
         conversation_ui=True,
         permission_mode="bypassPermissions",
         fs_isolation=False,
-        claude_install_dir=str(claude_cache_dir),
+        install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
     )
     base.update(kw)

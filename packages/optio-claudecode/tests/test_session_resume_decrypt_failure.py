@@ -58,7 +58,7 @@ async def test_decrypt_failure_propagates_and_no_fresh_start(
     cfg1 = ClaudeCodeTaskConfig(
         consumer_instructions="x",
         fs_isolation=False,
-        claude_install_dir=str(claude_cache_dir),
+        install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         supports_resume=True,
         # Configured (logged-in) session: creds on disk so the snapshot
@@ -76,7 +76,7 @@ async def test_decrypt_failure_propagates_and_no_fresh_start(
     cfg2 = ClaudeCodeTaskConfig(
         consumer_instructions="x",
         fs_isolation=False,
-        claude_install_dir=str(claude_cache_dir),
+        install_dir=str(claude_cache_dir),
         ttyd_install_dir=str(shim_install_dir),
         supports_resume=True,
         session_blob_encrypt=lambda b: b,

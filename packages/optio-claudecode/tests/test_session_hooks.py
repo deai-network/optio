@@ -40,7 +40,7 @@ async def test_before_execute_called_after_home_files_planted(
             consumer_instructions="Hi.",
             fs_isolation=False,
             credentials_json={"a": 1},
-            claude_install_dir=str(claude_cache_dir),
+            install_dir=str(claude_cache_dir),
             ttyd_install_dir=str(shim_install_dir),
             before_execute=before,
         ),
@@ -73,7 +73,7 @@ async def test_after_execute_called_on_success(
         config=ClaudeCodeTaskConfig(
             consumer_instructions="Hi.",
             fs_isolation=False,
-            claude_install_dir=str(claude_cache_dir),
+            install_dir=str(claude_cache_dir),
             ttyd_install_dir=str(shim_install_dir),
             after_execute=after,
         ),
@@ -102,7 +102,7 @@ async def test_after_execute_called_on_error(
         config=ClaudeCodeTaskConfig(
             consumer_instructions="Hi.",
             fs_isolation=False,
-            claude_install_dir=str(claude_cache_dir),
+            install_dir=str(claude_cache_dir),
             ttyd_install_dir=str(shim_install_dir),
             after_execute=after,
         ),
