@@ -195,16 +195,17 @@ async def ensure_grok_installed(
         # the task force-fails. Keeping the cache current removes that impulse.
         # Best-effort + gated on install_if_missing (an offline/pinned worker
         # keeps the binary it has; the update probe never blocks a launch).
-        if install_if_missing and await _grok_update_available(
-            host, cached, cache_dir=cache_dir,
-        ):
-            hook_ctx.report_progress(None, "Updating Grok Build to latest…")
+        target = None
+        if install_if_missing:
+            target = await _grok_update_target(host, cached, cache_dir=cache_dir)
+        if target:
+            hook_ctx.report_progress(None, f"Updating Grok Build to {target}…")
             await _install_grok_into_cache(
                 hook_ctx, host, cache_dir=cache_dir, cached=cached,
             )
             _LOG.info(
-                "ensure_grok_installed: cache stale -> refreshed to latest (%s)",
-                cached,
+                "ensure_grok_installed: cache stale -> refreshed to %s (%s)",
+                target, cached,
             )
     elif not install_if_missing:
         raise RuntimeError(
@@ -217,19 +218,21 @@ async def ensure_grok_installed(
     return await _link_grok_into_task(host, cached)
 
 
-async def _grok_update_available(
+async def _grok_update_target(
     host: "Host", cached: str, *, cache_dir: str,
-) -> bool:
-    """Best-effort: True iff ``grok update --check --json`` reports a newer
-    release for the cached binary.
+) -> str | None:
+    """Best-effort: the version to upgrade the cached binary to, or ``None``.
 
     Runs the CACHED binary's own updater in ``--check`` mode (a version compare,
     NO download) under ``HOME`` = the cache ROOT so it never touches the
     operator's ``~/.grok``. The CLI prints a one-line JSON object, e.g.
     ``{"currentVersion":"0.2.82","latestVersion":"0.2.87","updateAvailable":true}``.
-    A non-zero exit (offline) or unparseable output → ``False``: the probe must
-    never block a launch — a stale-but-working cache is preferable to a failed
-    start.
+
+    Returns the ``latestVersion`` string when ``updateAvailable`` (so the caller
+    can NAME the target in its progress label), falling back to ``"latest"`` if
+    the CLI omits the version. Returns ``None`` when the cache is current, or on
+    a non-zero exit (offline) / unparseable output — the probe must never block a
+    launch, and a stale-but-working cache is preferable to a failed start.
     """
     cache_root = os.path.dirname(cache_dir.rstrip("/")) or "/"
     r = await host.run_command(
@@ -241,7 +244,7 @@ async def _grok_update_available(
             "grok update --check failed (exit %s); keeping cached binary: %s",
             r.exit_code, (r.stderr or "").strip()[:200],
         )
-        return False
+        return None
     try:
         data = json.loads((r.stdout or "").strip())
     except (ValueError, TypeError):
@@ -249,8 +252,10 @@ async def _grok_update_available(
             "grok update --check returned unparseable output; keeping cache: %r",
             (r.stdout or "")[:200],
         )
-        return False
-    return bool(data.get("updateAvailable"))
+        return None
+    if not data.get("updateAvailable"):
+        return None
+    return str(data.get("latestVersion") or "").strip() or "latest"
 
 
 async def _populate_grok_cache(

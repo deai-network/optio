@@ -187,9 +187,10 @@ async def test_no_install_raises_on_miss(tmp_path: pathlib.Path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_grok_update_available_parses_json(tmp_path: pathlib.Path):
-    """_grok_update_available returns the CLI's `updateAvailable`, running the
-    check under HOME = the cache ROOT (never the operator's ~/.grok)."""
+async def test_grok_update_target_returns_latest_version(tmp_path: pathlib.Path):
+    """_grok_update_target returns the CLI's `latestVersion` when an update is
+    available (so the caller can name it), running the check under HOME = the
+    cache ROOT (never the operator's ~/.grok)."""
     recorded: list[str] = []
 
     class _H:
@@ -202,10 +203,10 @@ async def test_grok_update_available_parses_json(tmp_path: pathlib.Path):
                 stderr="",
             )
 
-    avail = await host_actions._grok_update_available(
+    target = await host_actions._grok_update_target(
         _H(), "/cache/bin/grok", cache_dir="/cache/bin",
     )
-    assert avail is True
+    assert target == "0.2.87"
     cmd = recorded[0]
     assert "update --check --json" in cmd
     assert "/cache/bin/grok" in cmd
@@ -214,21 +215,38 @@ async def test_grok_update_available_parses_json(tmp_path: pathlib.Path):
 
 
 @pytest.mark.asyncio
-async def test_grok_update_available_false_when_current():
+async def test_grok_update_target_falls_back_when_version_missing():
+    """updateAvailable but no latestVersion → a truthy 'latest' sentinel so the
+    refresh still fires and the label degrades gracefully."""
     class _H:
         async def run_command(self, cmd: str):  # noqa: ANN001
             return SimpleNamespace(
-                exit_code=0, stdout='{"updateAvailable":false}', stderr="",
+                exit_code=0, stdout='{"updateAvailable":true}', stderr="",
             )
 
-    assert await host_actions._grok_update_available(
+    assert await host_actions._grok_update_target(
         _H(), "/c/grok", cache_dir="/c",
-    ) is False
+    ) == "latest"
 
 
 @pytest.mark.asyncio
-async def test_grok_update_available_best_effort_on_failure():
-    """A non-zero exit (network down) or unparseable output → False: the update
+async def test_grok_update_target_none_when_current():
+    class _H:
+        async def run_command(self, cmd: str):  # noqa: ANN001
+            return SimpleNamespace(
+                exit_code=0,
+                stdout='{"latestVersion":"0.2.87","updateAvailable":false}',
+                stderr="",
+            )
+
+    assert await host_actions._grok_update_target(
+        _H(), "/c/grok", cache_dir="/c",
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_grok_update_target_best_effort_on_failure():
+    """A non-zero exit (network down) or unparseable output → None: the update
     probe must never block a launch."""
     class _Fail:
         async def run_command(self, cmd: str):  # noqa: ANN001
@@ -238,12 +256,12 @@ async def test_grok_update_available_best_effort_on_failure():
         async def run_command(self, cmd: str):  # noqa: ANN001
             return SimpleNamespace(exit_code=0, stdout="not json", stderr="")
 
-    assert await host_actions._grok_update_available(
+    assert await host_actions._grok_update_target(
         _Fail(), "/c/grok", cache_dir="/c",
-    ) is False
-    assert await host_actions._grok_update_available(
+    ) is None
+    assert await host_actions._grok_update_target(
         _Garbage(), "/c/grok", cache_dir="/c",
-    ) is False
+    ) is None
 
 
 @pytest.mark.asyncio
@@ -255,7 +273,7 @@ async def test_cache_hit_stale_refreshes_to_latest(tmp_path: pathlib.Path, monke
     _write_exe(cache / "grok")
 
     async def _stale(host, cached, *, cache_dir):  # noqa: ANN001
-        return True
+        return "0.2.87"
 
     refreshed: dict[str, str] = {}
 
@@ -266,7 +284,7 @@ async def test_cache_hit_stale_refreshes_to_latest(tmp_path: pathlib.Path, monke
     async def _no_seed(*a, **k):  # noqa: ANN002, ANN003
         raise AssertionError("must not seed from host grok on a cache hit")
 
-    monkeypatch.setattr(host_actions, "_grok_update_available", _stale)
+    monkeypatch.setattr(host_actions, "_grok_update_target", _stale)
     monkeypatch.setattr(host_actions, "_install_grok_into_cache", _fake_install)
     monkeypatch.setattr(host_actions, "resolve_grok", _no_seed)
     ctx = await _local_ctx(tmp_path)
@@ -283,12 +301,12 @@ async def test_cache_hit_current_does_not_refresh(tmp_path: pathlib.Path, monkey
     _write_exe(cache / "grok")
 
     async def _current(host, cached, *, cache_dir):  # noqa: ANN001
-        return False
+        return None
 
     async def _boom(*a, **k):  # noqa: ANN002, ANN003
         raise AssertionError("must not refresh a current cache")
 
-    monkeypatch.setattr(host_actions, "_grok_update_available", _current)
+    monkeypatch.setattr(host_actions, "_grok_update_target", _current)
     monkeypatch.setattr(host_actions, "_install_grok_into_cache", _boom)
     ctx = await _local_ctx(tmp_path)
 
@@ -311,7 +329,7 @@ async def test_cache_hit_stale_not_refreshed_when_install_disabled(
     async def _boom(*a, **k):  # noqa: ANN002, ANN003
         raise AssertionError("must not install when install_if_missing=False")
 
-    monkeypatch.setattr(host_actions, "_grok_update_available", _no_check)
+    monkeypatch.setattr(host_actions, "_grok_update_target", _no_check)
     monkeypatch.setattr(host_actions, "_install_grok_into_cache", _boom)
     ctx = await _local_ctx(tmp_path)
 
