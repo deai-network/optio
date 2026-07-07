@@ -634,7 +634,14 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             # now-loaded thread). Gated on resuming — a fresh session has no prior
             # conversation to backfill. Graceful: an empty list or a load error
             # keeps the fresh session, so resume never breaks (just no history).
+            # Resume backfill window. Everything emitted between begin/end_replay
+            # lands in the listener's DURABLE tier (never evicted by the live
+            # agent_thought_chunk flood), so a late-reconnecting viewer still sees
+            # the full prior conversation. The window wraps BOTH the session/load
+            # replay AND the injected resume notice; drain() flushes the async
+            # on_event dispatch so none of them leak into the live ring.
             if resuming:
+                conv_listener.begin_replay()
                 loaded = await conversation.replay_history(resume_session_id)
                 if loaded:
                     _LOG.info(
@@ -663,6 +670,11 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                             "text": f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}",
                         }}},
                 })
+                # Flush the async on_event dispatch of both the replay and the
+                # injected notice before closing the window, so none leaks into
+                # the live ring (which would lose it to the thought-chunk flood).
+                await conversation.drain()
+                conv_listener.end_replay()
 
         # Start the in-session credential watcher for a seeded session: it
         # saves back the rotated auth.json, and (when the seed is leased)

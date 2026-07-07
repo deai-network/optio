@@ -91,6 +91,52 @@ async def _read_events(resp, n, timeout=5):
     return out
 
 
+def _u(kind, text):
+    return {"method": "session/update", "params": {"update": {
+        "sessionUpdate": kind, "content": {"type": "text", "text": text}}}}
+
+
+async def test_durable_replay_survives_live_flood_for_late_subscriber(listener):
+    # The resume backfill (durable tier) must NOT be evicted by a live
+    # thought-chunk flood — a late-reconnecting viewer still sees full history.
+    # cursor floods the bounded ring with agent_thought_chunk, which would
+    # otherwise evict the replayed session/load history (emitted first).
+    from optio_cursor.conversation_listener import BUFFER_MAXLEN
+    conv, lst, url = listener
+    lst.begin_replay()
+    conv.fire(_u("user_message_chunk", "prior-q"))
+    conv.fire(_u("agent_message_chunk", "prior-a"))
+    lst.end_replay()
+    for i in range(BUFFER_MAXLEN + 50):  # flood the bounded live ring
+        conv.fire(_u("agent_thought_chunk", f"t{i}"))
+
+    async with aiohttp.ClientSession() as s:
+        async with s.get(f"{url}/events", headers=_auth("pw")) as resp:
+            got = await _read_events(resp, 3)
+    # Full replay served FIRST (survived eviction), in order, then recent live.
+    assert got[0]["params"]["update"]["content"]["text"] == "prior-q"
+    assert got[1]["params"]["update"]["content"]["text"] == "prior-a"
+    assert got[2]["params"]["update"]["sessionUpdate"] == "agent_thought_chunk"
+
+
+async def test_last_event_id_resumes_past_durable_replay_no_dup(listener):
+    conv, lst, url = listener
+    lst.begin_replay()
+    conv.fire(_u("user_message_chunk", "prior-q"))   # seq 1
+    conv.fire(_u("agent_message_chunk", "prior-a"))   # seq 2
+    lst.end_replay()
+    conv.fire(_u("agent_message_chunk", "live-1"))     # seq 3
+    conv.fire(_u("agent_message_chunk", "live-2"))     # seq 4
+
+    # A reconnect that already saw through the replay (seq 2) gets ONLY live —
+    # the durable tier is not re-sent.
+    async with aiohttp.ClientSession() as s:
+        headers = {**_auth("pw"), "Last-Event-ID": "2"}
+        async with s.get(f"{url}/events", headers=headers) as resp:
+            got = await _read_events(resp, 2)
+    assert [g["params"]["update"]["content"]["text"] for g in got] == ["live-1", "live-2"]
+
+
 async def test_replay_to_late_subscriber(listener):
     # A viewer that attaches AFTER events were fired still sees the buffered
     # history (the replay buffer), in order.

@@ -249,8 +249,21 @@ class GrokConversation:
     async def _dispatch_loop(self) -> None:
         while True:
             obj = await self._event_queue.get()
-            for handler in list(self._event_handlers):
-                await self._call_handler(handler, obj, "on_event")
+            try:
+                for handler in list(self._event_handlers):
+                    await self._call_handler(handler, obj, "on_event")
+            finally:
+                self._event_queue.task_done()
+
+    async def drain(self) -> None:
+        """Block until every queued event has been dispatched to on_event.
+
+        The resume replay backfill and the injected resume-notice reach
+        subscribers ASYNCHRONOUSLY via ``_dispatch_loop``. The session awaits
+        this after emitting them and before ``end_replay()`` so the listener's
+        replay window reliably captures them ALL in the durable tier (no race
+        where a late-dispatched replay event lands in the live ring instead)."""
+        await self._event_queue.join()
 
     async def _call_handler(self, handler, arg, label: str) -> None:
         try:
@@ -529,5 +542,8 @@ class GrokConversation:
             self._dispatcher_task = None
         while not self._event_queue.empty():
             obj = self._event_queue.get_nowait()
-            for handler in list(self._event_handlers):
-                await self._call_handler(handler, obj, "on_event")
+            try:
+                for handler in list(self._event_handlers):
+                    await self._call_handler(handler, obj, "on_event")
+            finally:
+                self._event_queue.task_done()

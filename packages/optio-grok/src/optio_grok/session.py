@@ -531,29 +531,36 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             # failure (unknown id, no loadable store after restore, capability
             # mismatch) the fresh session/new session is kept — resume must
             # never break, it just shows no history.
-            if resuming and resume_session_id:
-                ok, detail = await conversation.replay_history(resume_session_id)
-                if ok:
-                    _LOG.info("grok resume: session/load replayed prior history")
+            # Resume backfill window. Everything emitted between begin/end_replay
+            # lands in the listener's DURABLE tier (never evicted by the live
+            # agent_thought_chunk flood), so a late-reconnecting viewer still sees
+            # the full prior conversation. The window wraps BOTH the session/load
+            # replay AND the injected resume notice; drain() flushes the async
+            # on_event dispatch so none of them leak into the live ring.
+            if resuming:
+                conv_listener.begin_replay()
+                if resume_session_id:
+                    ok, detail = await conversation.replay_history(resume_session_id)
+                    if ok:
+                        _LOG.info("grok resume: session/load replayed prior history")
+                    else:
+                        _LOG.info(
+                            "grok resume: session/load unavailable (%s); starting "
+                            "fresh session", detail,
+                        )
                 else:
                     _LOG.info(
-                        "grok resume: session/load unavailable (%s); starting "
-                        "fresh session", detail,
+                        "grok resume: no persisted session id; starting fresh session",
                     )
-            elif resuming:
-                _LOG.info(
-                    "grok resume: no persisted session id; starting fresh session",
-                )
 
-            # Replay→live boundary: the resume notice is sent as a LIVE turn
-            # below, and grok echoes user turns as user_message_chunk ONLY during
-            # a session/load replay, never live. So inject the user_message_chunk
-            # the shared reducer's boundary branch consumes — AFTER replay (a
-            # pending last-replayed bubble exists to finalize) and BEFORE the send
-            # below. It finalizes the pending bubble (un-merge), bumps the turn
-            # (resume answer opens a fresh bubble) and renders the notice as a
-            # muted activity row.
-            if resuming:
+                # Replay→live boundary: the resume notice is sent as a LIVE turn
+                # below, and grok echoes user turns as user_message_chunk ONLY
+                # during a session/load replay, never live. So inject the
+                # user_message_chunk the shared reducer's boundary branch consumes
+                # — AFTER replay (a pending last-replayed bubble exists to
+                # finalize) and BEFORE the send below. It finalizes the pending
+                # bubble (un-merge), bumps the turn (resume answer opens a fresh
+                # bubble) and renders the notice as a muted activity row.
                 conversation.emit_event({
                     "jsonrpc": "2.0", "method": "session/update",
                     "params": {"sessionId": resume_session_id, "update": {
@@ -563,6 +570,11 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                             "text": f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}",
                         }}},
                 })
+                # Flush the async on_event dispatch of both the replay and the
+                # injected notice before closing the window, so none leaks into
+                # the live ring (which would lose it to the thought-chunk flood).
+                await conversation.drain()
+                conv_listener.end_replay()
 
         # Kickoff prompt as the first turn (headless: no positional prompt path).
         # On resume, push a System: resume notice instead so the resumed session

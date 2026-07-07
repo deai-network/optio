@@ -103,6 +103,25 @@ async def test_emit_event_reaches_on_event_subscribers(convo):
 
 
 @pytest.mark.asyncio
+async def test_drain_waits_for_all_events_dispatched(convo):
+    """drain() blocks until every queued event has reached on_event — so the
+    resume replay window can close (end_replay) only after all replayed/injected
+    events are delivered, none leaking into the live ring."""
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)
+
+    seen: list = []
+    c.on_event(seen.append)
+    for i in range(6):
+        c.emit_event({"synthetic": i})
+    await c.drain()
+    assert [e.get("synthetic") for e in seen if "synthetic" in e] == [0, 1, 2, 3, 4, 5]
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
 async def test_send_receive_and_on_event_transparent(convo):
     c, handle = convo
     reader = asyncio.create_task(c.run_reader())
