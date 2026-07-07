@@ -980,6 +980,7 @@ def build_claude_flags(
     disallowed_tools: list[str] | None,
     resuming: bool = False,
     model: str | None = None,
+    effort: str | None = None,
 ) -> list[str]:
     """Translate ClaudeCodeTaskConfig permission knobs to an argv list.
 
@@ -987,6 +988,9 @@ def build_claude_flags(
     When ``resuming`` is True, ``--continue`` is appended so claude picks
     up the most recent conversation in ``home/.claude/projects/<cwd>/``.
     ``model`` emits `--model <value>`; not validated — vendor strings change.
+    ``effort`` emits `--effort <value>` (graded reasoning effort); applied only
+    for effort-capable models, validated as ``reasoning_effort`` in
+    ``ClaudeCodeTaskConfig.__post_init__``.
     Validation of ``permission_mode`` values lives in
     ``ClaudeCodeTaskConfig.__post_init__``.
     """
@@ -1001,6 +1005,8 @@ def build_claude_flags(
         out += ["--continue"]
     if model:
         out += ["--model", model]
+    if effort:
+        out += ["--effort", effort]
     return out
 
 

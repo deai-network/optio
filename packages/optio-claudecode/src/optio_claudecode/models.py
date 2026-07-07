@@ -32,6 +32,35 @@ _LOG = logging.getLogger(__name__)
 # no probe needed (mirrors Claude Code's known-good fast path).
 KNOWN_GOOD_FAMILIES = {"opus", "sonnet", "haiku"}
 
+# Graded reasoning-effort levels (ordered low→max) claude's `--effort` flag
+# accepts. The live control (id="reasoning_effort") is a slider over these.
+EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"]
+
+# Families whose current models expose graded reasoning effort. GET /v1/models
+# carries no effort-capability field, so this is a static per-family table
+# (mirroring how Claude Code's own /model dialog knows which models grade
+# effort). A family absent here → no effort control for that model (the slider
+# is omitted, not disabled). haiku has no graded effort.
+_EFFORT_FAMILIES = {"opus", "sonnet"}
+
+# Default effort preselected on the slider when the caller sets no
+# reasoning_effort (mid-high, matching Claude Code's own default posture).
+DEFAULT_EFFORT = "high"
+
+
+def model_effort(model_id: str) -> tuple[list[str] | None, str | None]:
+    """Graded reasoning-effort capability for a model id.
+
+    Returns ``(levels, default)`` when the model's family supports graded
+    effort (levels is a fresh copy of ``EFFORT_LEVELS``), else ``(None, None)``
+    so the caller omits the effort control. Robust to runtime/variant ids
+    (e.g. ``claude-opus-4-8[1m]``): ``_parse_id`` ignores a trailing suffix it
+    cannot match by falling back to the family token."""
+    family, _, _ = _parse_id(model_id.split("[", 1)[0])
+    if family in _EFFORT_FAMILIES:
+        return (list(EFFORT_LEVELS), DEFAULT_EFFORT)
+    return (None, None)
+
 # Common aliases shown when the live fetch fails (offline, no creds, API change).
 _FALLBACK_LIST: list[dict] = [
     {"id": "claude-opus-4-8", "label": "Claude Opus 4.8"},

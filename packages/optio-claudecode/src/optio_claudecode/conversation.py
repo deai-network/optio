@@ -51,6 +51,11 @@ class ClaudeCodeConversation:
         # conversation body kills and relaunches claude with requested_model.
         self.model_change_requested: asyncio.Event = asyncio.Event()
         self.requested_model: str | None = None
+        # Reasoning-effort-change request towards the owning task body. When
+        # set, the body relaunches claude with the new --effort (same restart
+        # path as a model change); requested_effort holds the picked level.
+        self.effort_change_requested: asyncio.Event = asyncio.Event()
+        self.requested_effort: str | None = None
         self._write_lock = asyncio.Lock()
         self._event_queue: asyncio.Queue[dict] = asyncio.Queue()
         self._event_handlers: list = []
@@ -234,15 +239,30 @@ class ClaudeCodeConversation:
     async def set_control(self, control_id: str, value) -> None:
         """Push a session-control value change to the native transport.
 
-        Claude Code applies a model change by restart: setting
-        ``requested_model`` + firing ``model_change_requested`` makes the
-        session body kill and relaunch claude with the new model (the restart
-        loop is unchanged). ``model`` is the only control claudecode exposes;
-        unknown ids are ignored."""
-        if control_id != "model":
-            return
-        self.requested_model = value
-        self.model_change_requested.set()
+        Claude Code applies both a model change and a reasoning-effort change by
+        restart: it stores the requested value and fires the matching change
+        Event, making the session body kill and relaunch claude with the new
+        ``--model`` / ``--effort`` (the restart loop handles both arms). ``model``
+        and ``reasoning_effort`` are the controls claudecode exposes; unknown ids
+        are ignored."""
+        if control_id == "model":
+            self.requested_model = value
+            self.model_change_requested.set()
+        elif control_id == "reasoning_effort":
+            self.requested_effort = value
+            self.effort_change_requested.set()
+
+    def emit_control_update(self, controls: list[dict]) -> None:
+        """Fan out a synthetic ``x-optio-control-update`` carrying a full
+        controls snapshot so the widget reducer re-projects ``state.controls``.
+
+        Used after a model/effort relaunch to make the reasoning_effort slider's
+        presence and preselected level follow the (possibly new) running model —
+        the same reactive path other engines use on a live control change."""
+        self._event_queue.put_nowait({
+            "type": "x-optio-control-update",
+            "controls": controls,
+        })
 
     def begin_restart(self) -> None:
         """Mark that the current process is about to be killed for a model

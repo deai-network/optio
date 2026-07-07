@@ -16,6 +16,7 @@ from optio_claudecode.types import (
     DeliverableCallback,
     HookCallback,
     PermissionMode,
+    ReasoningEffort,
 )
 from optio_claudecode.seed_manifest import (
     CLAUDE_SEED_MANIFEST,
@@ -39,6 +40,7 @@ __all__ = [
     "DeliverableCallback",
     "HookCallback",
     "PermissionMode",
+    "ReasoningEffort",
     "SSHConfig",
     "HookContext",
     "HookContextProtocol",

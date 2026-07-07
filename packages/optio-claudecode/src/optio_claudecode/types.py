@@ -46,6 +46,7 @@ __all__ = [
     "ClaudeCodeTaskConfig",
     "ConversationMode",
     "PermissionMode",
+    "ReasoningEffort",
     "SeedProvider",
     "SeedUnavailableError",
     "ToolVerbosity",
@@ -57,6 +58,12 @@ __all__ = [
 PermissionMode = Literal["default", "plan", "acceptEdits", "bypassPermissions", "dontAsk"]
 _VALID_PERMISSION_MODES = {"default", "plan", "acceptEdits", "bypassPermissions", "dontAsk"}
 _HEADLESS_SAFE_PERMISSION_MODES = {"acceptEdits", "bypassPermissions", "dontAsk"}
+
+# Graded reasoning-effort levels claude's --effort flag accepts (ordered). The
+# live control (id="reasoning_effort") is a slider over these; only models that
+# advertise graded effort expose it (see models.model_effort).
+ReasoningEffort = Literal["low", "medium", "high", "xhigh", "max"]
+_VALID_REASONING_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 
 _VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
 
@@ -245,12 +252,23 @@ class ClaudeCodeTaskConfig:
     on_session_saved: "Callable[[ObjectId, str], Awaitable[None] | None] | None" = None
     # model: passed through as `--model <value>`. Not validated.
     model: str | None = None
+    # reasoning_effort: initial graded reasoning effort, passed through as
+    # `--effort <value>` at launch (like model). Applied only when the running
+    # model supports graded effort; the live slider control (id=
+    # "reasoning_effort") restarts claude with a new --effort the same way a
+    # model change does. Validated against ReasoningEffort below.
+    reasoning_effort: "ReasoningEffort | None" = None
 
     def __post_init__(self) -> None:
         if self.permission_mode is not None and self.permission_mode not in _VALID_PERMISSION_MODES:
             raise ValueError(
                 f"ClaudeCodeTaskConfig.permission_mode={self.permission_mode!r} "
                 f"is not one of {sorted(_VALID_PERMISSION_MODES)}"
+            )
+        if self.reasoning_effort is not None and self.reasoning_effort not in _VALID_REASONING_EFFORTS:
+            raise ValueError(
+                f"ClaudeCodeTaskConfig.reasoning_effort={self.reasoning_effort!r} "
+                f"is not one of {sorted(_VALID_REASONING_EFFORTS)}"
             )
         for field_name in ("install_dir", "ttyd_install_dir"):
             val = getattr(self, field_name)

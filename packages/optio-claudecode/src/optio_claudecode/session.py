@@ -34,7 +34,7 @@ from optio_host.host import Host, LocalHost, ProcessHandle, RemoteHost, proc_wai
 from optio_host.paths import task_dir
 from optio_agents import seeds as _seeds
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, claustrum, get_protocol
-from optio_agents.session_controls import model_control
+from optio_agents.session_controls import effort_control, model_control
 from optio_agents.uploads import materialize, upload_url_token
 
 from optio_claudecode import cred_watcher
@@ -452,6 +452,15 @@ async def run_claudecode_session(
         cred_baseline = cred_baseline_out
 
         current_model = config.model
+        # Live graded reasoning-effort, applied as `--effort` at (re)launch the
+        # same way current_model drives `--model`. Starts at the configured
+        # value; a reasoning_effort control change updates it and relaunches.
+        current_effort = config.reasoning_effort
+        # Set inside the conversation_ui block once the model catalog is fetched;
+        # (model, effort) -> serialized control list. Reused on every model/
+        # effort relaunch to re-emit the controls snapshot (effort presence and
+        # preselected level follow the running model).
+        build_controls = None
 
         async def _spawn(model: str | None, *, do_continue: bool):
             claude_flags = host_actions.build_claude_flags(
@@ -460,6 +469,7 @@ async def run_claudecode_session(
                 disallowed_tools=config.disallowed_tools,
                 model=model,
                 resuming=do_continue,
+                effort=current_effort,
             )
             argv = host_actions.build_conversation_argv(
                 claude_path, claude_flags=claude_flags,
@@ -537,11 +547,19 @@ async def run_claudecode_session(
                 inner_auth=BasicAuth(username="optio", password=listener_password),
             )
             model_list = await cc_models.fetch_available_models(host, home_dir=f"{host.workdir}/home")
-            # The model is the sole session control claudecode exposes; build it
-            # from the account-available catalog. current may be None (no
-            # --model): the view sniffs the runtime model from system/init and
-            # folds it into the control value.
-            control = model_control(models=model_list["models"], current=current_model)
+
+            def build_controls(model, effort):
+                # The model select is always present; the reasoning_effort
+                # slider is appended only when the running model advertises
+                # graded effort (else omitted — model-dependent presence).
+                # current model may be None (no --model): the view sniffs the
+                # runtime model from system/init and folds it into the value.
+                ctrls = [model_control(models=model_list["models"], current=model)]
+                levels, default = cc_models.model_effort(model) if model else (None, None)
+                if levels:
+                    ctrls.append(effort_control(levels=levels, current=effort or default))
+                return [c.to_dict() for c in ctrls]
+
             # widgetData.uploadUrl token; see optio_agents.uploads.upload_url_token.
             upload_url = upload_url_token(ctx._db.name, ctx._prefix, ctx.process_id)
             await ctx.set_widget_data({
@@ -550,7 +568,7 @@ async def run_claudecode_session(
                 "thinkingVerbosity": config.thinking_verbosity,
                 "showSessionControls": config.show_session_controls,
                 "nativeSpinner": config.native_spinner,
-                "controls": [control.to_dict()],
+                "controls": build_controls(current_model, current_effort),
                 "showFileUpload": config.show_file_upload,
                 "maxUploadBytes": config.max_upload_bytes,
                 "fileDownload": config.file_download,
@@ -587,19 +605,33 @@ async def run_claudecode_session(
                 wait_task = asyncio.create_task(proc_wait(handle))
                 close_task = asyncio.create_task(conversation.close_requested.wait())
                 model_task = asyncio.create_task(conversation.model_change_requested.wait())
+                effort_task = asyncio.create_task(conversation.effort_change_requested.wait())
                 done, _ = await asyncio.wait(
-                    {wait_task, close_task, model_task},
+                    {wait_task, close_task, model_task, effort_task},
                     return_when=asyncio.FIRST_COMPLETED,
                 )
-                for t in (wait_task, close_task, model_task):
+                for t in (wait_task, close_task, model_task, effort_task):
                     if t not in done:
                         t.cancel()
 
-                if model_task in done and close_task not in done and wait_task not in done:
-                    # --- model swap: relaunch in place, keep the task alive ---
-                    new_model = conversation.requested_model or current_model
-                    conversation.model_change_requested.clear()
-                    ctx.report_progress(None, f"Switching model to {new_model}…")
+                relaunch = model_task in done or effort_task in done
+                if relaunch and close_task not in done and wait_task not in done:
+                    # --- model / effort swap: relaunch in place, keep the task
+                    # alive. Both a model pick and a reasoning-effort pick
+                    # restart claude with fresh --model/--effort flags and
+                    # --continue; only the fired knob(s) are consumed here so an
+                    # effort-only change leaves current_model untouched. ---
+                    if model_task in done:
+                        current_model = conversation.requested_model or current_model
+                        conversation.model_change_requested.clear()
+                    if effort_task in done:
+                        current_effort = conversation.requested_effort or current_effort
+                        conversation.effort_change_requested.clear()
+                    ctx.report_progress(
+                        None,
+                        f"Switching to model={current_model or 'default'} "
+                        f"effort={current_effort or 'default'}…",
+                    )
                     # Tell the conversation this process EOF is a restart, not a
                     # close — keeps the widget live (no x-optio-closed / grayed
                     # input) and the conversation object open across the swap.
@@ -612,10 +644,18 @@ async def run_claudecode_session(
                         await reader_task
                     except asyncio.CancelledError:
                         pass
-                    current_model = new_model
                     handle, reader_task = await _spawn(current_model, do_continue=True)
                     launched_handle = handle
-                    ctx.report_progress(None, f"Claude Code resumed on {new_model}")
+                    # Re-derive + re-emit the controls for the (possibly new)
+                    # model: the reasoning_effort slider's presence and its
+                    # preselected level follow the running model.
+                    if build_controls is not None:
+                        conversation.emit_control_update(
+                            build_controls(current_model, current_effort)
+                        )
+                    ctx.report_progress(
+                        None, f"Claude Code resumed on {current_model or 'default model'}"
+                    )
                     continue
 
                 if close_task in done and wait_task not in done:
