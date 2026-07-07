@@ -85,6 +85,12 @@ async def ctx_and_captures(mongo_db, monkeypatch):
         return await orig_data(payload)
     ctx.set_widget_data = _data  # type: ignore[method-assign]
 
+    # The real register/clear_upload_writer reach the owning Optio via the
+    # executor back-reference (absent in tests); stub them so the conversation
+    # branch's writer registration doesn't raise.
+    ctx.register_upload_writer = lambda writer: None  # type: ignore[method-assign]
+    ctx.clear_upload_writer = lambda: None  # type: ignore[method-assign]
+
     # Capture published conversation objects. The real publish_result
     # requires an attached executor (absent in tests), so the wrapper
     # only records.

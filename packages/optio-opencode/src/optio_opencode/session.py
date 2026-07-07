@@ -35,6 +35,7 @@ from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
 from optio_host.host import Host, LocalHost, ProcessHandle
 from optio_host.paths import task_dir
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
+from optio_agents.uploads import materialize
 from optio_agents import seeds as _seeds
 from optio_opencode import cred_watcher, host_actions
 from optio_opencode.conversation import OpencodeConversation
@@ -403,12 +404,34 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                 f"http://{upstream_host}:{worker_port}",
                 inner_auth=BasicAuth(username="opencode", password=password),
             )
+            # File uploads flow through the generic optio-api /api/widget-upload
+            # route → materializeUpload RPC → this per-task writer, which runs in
+            # THIS process (only it holds the live Host). The writer lands the
+            # bytes in <workdir>/uploads/<name> and fires config.on_upload.
+            async def _upload_writer(filename: str, data: bytes) -> str:
+                return await materialize(
+                    host, host.workdir, filename, data,
+                    hook_ctx=hook_ctx, on_upload=config.on_upload,
+                )
+            ctx.register_upload_writer(_upload_writer)
+
+            # The client POSTs uploads to the generic optio-api route, resolved
+            # relative to {widgetProxyUrl} (=<base>/api/widget/<db>/<prefix>/<pid>/):
+            # climb to <base>/api/, then descend into the sibling widget-upload
+            # route with the SAME db/prefix/pid. Relative so a base path prefix
+            # or non-origin API host is preserved (see resolveUploadUrl).
+            upload_url = (
+                "{widgetProxyUrl}../../../../widget-upload/"
+                f"{ctx._db.name}/{ctx._prefix}/{ctx.process_id}"
+            )
             # opencode routes resolve their project instance from the request's
             # location context; the widget sends `directory` as the ?directory=
             # query param on every call.
-            await ctx.set_widget_data(
-                conversation_widget_data(config, session_id=session_id, directory=host.workdir)
+            widget_data = conversation_widget_data(
+                config, session_id=session_id, directory=host.workdir,
             )
+            widget_data["uploadUrl"] = upload_url
+            await ctx.set_widget_data(widget_data)
 
         if resolved_seed_id is not None:
             cred_watch_task = asyncio.create_task(cred_watcher.run_credential_watcher(
@@ -532,6 +555,15 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         # cancelled session vs. a clean SIGTERM for a normal exit.
         if not ctx.should_continue():
             cancelled = True
+
+        # Drop the in-process upload writer so a late materializeUpload RPC
+        # can't reach a torn-down Host (raises NoUploadWriter instead).
+        # Idempotent; safe even when no writer was registered.
+        if config.mode == "conversation" and config.conversation_ui:
+            try:
+                ctx.clear_upload_writer()
+            except Exception:  # noqa: BLE001
+                _LOG.exception("clear upload writer failed")
 
         # Resolve the operator's last-used model BEFORE terminating opencode
         # (the query needs the live server). Synthesised into the seed's

@@ -14,6 +14,7 @@ from optio_agents.protocol.session import (
     DeliverableCallback,
     HookCallback,
 )
+from optio_agents.uploads import UploadCallback
 from optio_host.types import SSHConfig
 
 
@@ -40,6 +41,7 @@ __all__ = [
     "CallerMessageCallback",
     "DeliverableCallback",
     "HookCallback",
+    "UploadCallback",
     "SSHConfig",
     "SeedProvider",
     "ConversationMode",
@@ -149,10 +151,15 @@ class OpencodeTaskConfig:
     # conversation_ui=True.
     native_spinner: bool = False
     # Show the file-attach control in the conversation widget. Requires
-    # conversation_ui=True. Files ride inline as data-URL `file` parts.
+    # conversation_ui=True. Uploads flow through the generic optio-api
+    # /api/widget-upload route → materializeUpload RPC → the per-task writer,
+    # which lands each file in <workdir>/uploads/<name>.
     show_file_upload: bool = False
-    # Per-file size cap enforced client-side before the data URL is built.
+    # Per-file size cap enforced client-side before the file is POSTed.
     max_upload_bytes: int = 10_000_000
+    # Optional per-task callback fired after each upload materializes, with
+    # (hook_ctx, "uploads/<name>"). Additive to the System: LLM announce.
+    on_upload: UploadCallback | None = None
     # Let the agent hand produced files to the user as one-click downloads
     # (optio-file: sentinel links). Requires conversation_ui=True. Adds the
     # downloadables instruction to AGENTS.md and the widget download handler.

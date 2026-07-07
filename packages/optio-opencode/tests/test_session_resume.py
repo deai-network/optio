@@ -267,6 +267,12 @@ def _wire_conversation_captures(ctx) -> list:
         ctx.published_results.append(obj)
     ctx.publish_result = _publish  # type: ignore[method-assign]
 
+    # The real register/clear_upload_writer reach the owning Optio via the
+    # executor back-reference (absent in tests); stub them so the conversation
+    # branch's writer registration doesn't raise.
+    ctx.register_upload_writer = lambda writer: None  # type: ignore[method-assign]
+    ctx.clear_upload_writer = lambda: None  # type: ignore[method-assign]
+
     return widget_data
 
 
