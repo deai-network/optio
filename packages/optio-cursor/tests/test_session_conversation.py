@@ -257,6 +257,141 @@ def test_ui_widget_per_mode():
     assert iframe_task.ui_widget == "iframe-input"
 
 
+@pytest.mark.asyncio
+async def test_conversation_resume_snapshot_records_session_id(
+    shim_install_dir, task_root, mongo_db,
+):
+    """A conversation-mode task with supports_resume captures a snapshot whose
+    sessionId is the live ACP session id — the seam resume reads back to call
+    session/load DIRECTLY (skipping the session/list heuristic) and replay the
+    prior conversation. (The fake ACP cursor's session/new returns
+    ``fake-cursor-session-1`` on the first — and only — new session here.)"""
+    from optio_cursor.snapshots import load_latest_snapshot
+    optio = await _make_optio(mongo_db, "cuconvsid")
+    try:
+        task = create_cursor_task(
+            process_id="cu-conv-sid",
+            name="Conversation session-id snapshot",
+            config=_conversation_config(shim_install_dir, supports_resume=True),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result(
+            "cu-conv-sid", session_id=None, timeout=60,
+        )
+        await conv.send("hello")
+        await conv.close()
+        proc = await _wait_terminal(optio, "cu-conv-sid")
+        assert proc["status"]["state"] == "done"
+        snap = await load_latest_snapshot(mongo_db, "cuconvsid", "cu-conv-sid")
+        assert snap is not None, "conversation-mode session captured no snapshot"
+        assert snap["sessionId"] == "fake-cursor-session-1"
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
+@pytest.mark.asyncio
+async def test_conversation_ui_resume_replays_prior_history_via_persisted_id(
+    shim_install_dir, task_root, mongo_db, tmp_path, monkeypatch,
+):
+    """conversation_ui resume: the fresh run records its ACP sessionId in the
+    snapshot; the resumed run reads it back and calls ``session/load`` with THAT
+    persisted id (AFTER the listener subscribes) — directly, never via
+    session/list. The fake cursor records every session/load id to a durable path
+    outside the wiped workdir, so we assert the resumed run loaded the persisted
+    id (not a heuristic pick)."""
+    import json as _json
+    from optio_cursor.snapshots import load_latest_snapshot
+    record = tmp_path / "cursor_acp_load.jsonl"
+    monkeypatch.setenv("FAKE_CURSOR_ACP_RECORD", str(record))
+    # Populate the ACP session/new models block so the conversation_ui model
+    # picker reads it directly (session_models path) instead of falling back to
+    # the `cursor-agent models` CLI (which the shim does not answer). Distinct
+    # from show_session_controls (default off), so no model probe / reset runs —
+    # the fresh session id stays fake-cursor-session-1.
+    monkeypatch.setenv("FAKE_CURSOR_ACP_MODELS", "m1")
+    optio = await _make_optio(mongo_db, "cuconvreplay")
+    try:
+        task = create_cursor_task(
+            process_id="cu-conv-replay",
+            name="Conversation resume replay",
+            config=_conversation_config(
+                shim_install_dir, conversation_ui=True, supports_resume=True,
+            ),
+        )
+        await optio.adhoc_define(task)
+
+        # Fresh run: one turn writes the session store; teardown snapshots the
+        # live ACP sessionId.
+        conv = await optio.launch_and_await_result(
+            "cu-conv-replay", session_id=None, timeout=60,
+        )
+        await conv.send("hello")
+        await conv.close()
+        proc = await _wait_terminal(optio, "cu-conv-replay")
+        assert proc["status"]["state"] == "done"
+        snap = await load_latest_snapshot(mongo_db, "cuconvreplay", "cu-conv-replay")
+        persisted = snap["sessionId"]
+        assert persisted
+
+        # Resumed run: restores the workdir, reads the persisted sessionId, and
+        # (conversation_ui + resuming) calls session/load with it to replay.
+        conv2 = await optio.launch_and_await_result(
+            "cu-conv-replay", resume=True, session_id=None, timeout=60,
+        )
+        await conv2.close()
+        await _wait_terminal(optio, "cu-conv-replay")
+
+        lines = [l for l in record.read_text().splitlines() if l.strip()]
+        loads = [_json.loads(l)["session_load"] for l in lines]
+        assert persisted in loads, f"session/load not called with persisted id: {loads}"
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
+@pytest.mark.asyncio
+async def test_conversation_ui_resume_session_load_reject_falls_back(
+    shim_install_dir, task_root, mongo_db, tmp_path, monkeypatch,
+):
+    """Graceful fallback: when cursor rejects session/load on resume (unknown id /
+    no loadable store after restore), the wrapper keeps the fresh session — no
+    exception escapes, and the resumed run still reaches 'done' and is usable."""
+    monkeypatch.setenv("FAKE_CURSOR_ACP_LOAD", "reject")
+    # See the replay test: populate the ACP models block so the picker skips the
+    # unanswered `cursor-agent models` CLI fallback.
+    monkeypatch.setenv("FAKE_CURSOR_ACP_MODELS", "m1")
+    optio = await _make_optio(mongo_db, "cuconvreject")
+    try:
+        task = create_cursor_task(
+            process_id="cu-conv-reject",
+            name="Conversation resume reject",
+            config=_conversation_config(
+                shim_install_dir, conversation_ui=True, supports_resume=True,
+            ),
+        )
+        await optio.adhoc_define(task)
+
+        conv = await optio.launch_and_await_result(
+            "cu-conv-reject", session_id=None, timeout=60,
+        )
+        await conv.send("hello")
+        await conv.close()
+        assert (await _wait_terminal(optio, "cu-conv-reject"))["status"]["state"] == "done"
+
+        # Resume: session/load is rejected -> fall back to the fresh session; the
+        # conversation is still usable (a turn round-trips) and the run completes.
+        conv2 = await optio.launch_and_await_result(
+            "cu-conv-reject", resume=True, session_id=None, timeout=60,
+        )
+        msgs: asyncio.Queue[str] = asyncio.Queue()
+        conv2.on_message(msgs.put_nowait)
+        await conv2.send("still working after fallback")
+        assert await asyncio.wait_for(msgs.get(), 10)  # a reply arrives
+        await conv2.close()
+        assert (await _wait_terminal(optio, "cu-conv-reject"))["status"]["state"] == "done"
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
 def test_config_validation_conversation_fields():
     """__post_init__ mirrors grok's conversation validations."""
     # permission_gate requires conversation mode

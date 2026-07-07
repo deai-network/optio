@@ -226,24 +226,32 @@ class CursorConversation:
                 self.current_model_id = models.get("currentModelId")
         return old if (old and old != self._session_id) else None
 
-    async def replay_history(self) -> str | None:
+    async def replay_history(self, resume_session_id: str | None = None) -> str | None:
         """Backfill the event stream with the RESTORED conversation's prior turns.
 
         On resume the workdir tar restored cursor-agent's on-disk ACP session(s)
         under $HOME, but this run's ``bootstrap`` minted a FRESH ``session/new``,
         so the live ``on_event`` fan-out — and hence any listener's replay buffer
         — starts empty: a viewer attaching after a resume would see only NEW
-        turns, never the prior conversation. cursor advertises the ``loadSession``
-        capability plus ``sessionCapabilities.list`` [cursor-verified], so:
+        turns, never the prior conversation. ``session/load(id)`` makes cursor
+        **replay** that conversation via ``session/update`` notifications, then
+        return; those flow through the SAME ``_route`` → ``on_event`` path live
+        turns use, landing in the listener's replay buffer automatically — so a
+        late viewer reconstructs the full prior history exactly like live turns.
 
-          1. ``session/list`` enumerates the restored sessions;
-          2. we pick the prior conversation's id (skipping the fresh session
-             bootstrap just minted — see ``_select_prior_session_id``);
-          3. ``session/load(id)`` makes cursor **replay** that conversation via
-             ``session/update`` notifications, then return. Those notifications
-             flow through the SAME ``_route`` → ``on_event`` path live turns use,
-             landing in the listener's replay buffer automatically — so a late
-             viewer reconstructs the full prior history exactly like live turns.
+        WHICH id to load:
+          * ``resume_session_id`` given (the snapshot PERSISTED cursor's ACP
+            session id — the deterministic path): ``session/load`` it DIRECTLY,
+            skipping the ``session/list`` heuristic below. This is the primary
+            path (parity with every other resume engine, which all persist a
+            session id): the heuristic can mispick an EMPTY session as they
+            accumulate, and the persisted id is authoritative.
+          * ``resume_session_id`` is ``None`` (old, pre-seam snapshots that
+            recorded no id, or iframe captures): FALL BACK to the discovery
+            heuristic — cursor advertises ``sessionCapabilities.list``
+            [cursor-verified], so ``session/list`` enumerates the restored
+            sessions and ``_select_prior_session_id`` picks the prior one
+            (skipping the fresh session bootstrap just minted).
 
         On success the loaded session is ADOPTED (``self._session_id``) so the
         next prompt continues the prior thread, and any ``agent_message_chunk``
@@ -252,10 +260,13 @@ class CursorConversation:
         replay never fires ``on_message`` at all: ``session/load`` is a request,
         not a ``session/prompt``, so no turn-end handling runs).
 
-        MANDATORY graceful fallback: if ``session/list`` returns nothing loadable
-        OR either call errors, keep the fresh ``session/new`` session and return
-        ``None`` — resume must never break; it just shows no history in that case.
-        Returns the loaded session id, or ``None`` when the fresh session is kept.
+        MANDATORY graceful fallback: if the persisted-id load errors, or the
+        ``session/list`` path returns nothing loadable, or any call errors, keep
+        the fresh ``session/new`` session and return ``None`` — resume must never
+        break; it just shows no history in that case. A persisted-id load failure
+        does NOT fall back to the list heuristic (the persisted id is
+        authoritative). Returns the loaded session id, or ``None`` when the fresh
+        session is kept.
 
         ORDERING is load-bearing (the caller's responsibility): this runs
         strictly AFTER ConversationListener subscribed to ``on_event`` (its
@@ -265,12 +276,17 @@ class CursorConversation:
 
         NOTE [cursor runtime-unverified]: the ``session/list`` response shape and
         the id-selection heuristic could NOT be pinned without a live
-        authenticated cursor login (the host is "Not logged in"). We parse
-        tolerantly and pick most-recent; confirmation is deferred to the live
-        auth spike — see the design doc's runtime-unverified note.
+        authenticated cursor login (the host is "Not logged in"); it is now only
+        the pre-seam fallback. We parse tolerantly and pick most-recent.
         """
         if self._closed.is_set():
             return None
+        if resume_session_id:
+            # Deterministic fast path: the snapshot persisted the prior ACP
+            # session id, so load it DIRECTLY — no session/list heuristic.
+            return await self._load_and_adopt(resume_session_id)
+        # Fallback (old snapshots recorded no id): discover the prior session via
+        # session/list + the most-recent heuristic, then load it.
         try:
             listed = await self._request("session/list", {})
         except Exception:  # noqa: BLE001 — a resume backfill must never break resume
@@ -285,13 +301,22 @@ class CursorConversation:
         prior_id = self._select_prior_session_id(listed.get("result") or {})
         if not prior_id:
             return None
+        return await self._load_and_adopt(prior_id)
+
+    async def _load_and_adopt(self, prior_id: str) -> str | None:
+        """``session/load(prior_id)`` — make cursor replay the prior conversation,
+        then ADOPT the loaded session (``self._session_id``) so the next prompt
+        continues that thread. Drops the replay's accumulated agent_message_chunk
+        text (history, not a live turn — it must not prepend to the first real
+        turn's answer). Returns the loaded id, or ``None`` on any error (the
+        fresh ``session/new`` session is kept — resume never breaks)."""
         try:
             loaded = await self._request("session/load", {
                 "sessionId": prior_id,
                 "cwd": self._cwd,
                 "mcpServers": self._mcp_servers,
             })
-        except Exception:  # noqa: BLE001 — see above
+        except Exception:  # noqa: BLE001 — a resume backfill must never break resume
             _LOG.exception(
                 "cursor conversation: session/load(%s) failed; starting fresh",
                 prior_id,
@@ -303,9 +328,6 @@ class CursorConversation:
                 prior_id, (loaded or {}).get("error"),
             )
             return None
-        # Adopt the loaded session so the next prompt continues the prior thread,
-        # and drop the replay's accumulated agent_message_chunk text (history, not
-        # a live turn — it must not prepend to the first real turn's answer).
         self._session_id = prior_id
         self._answer_parts = []
         return prior_id
@@ -622,6 +644,14 @@ class CursorConversation:
     @property
     def closed(self) -> bool:
         return self._closed.is_set()
+
+    @property
+    def session_id(self) -> str | None:
+        """The live ACP session id. After ``bootstrap()`` this is the
+        ``session/new`` id; after a successful ``replay_history`` it is the
+        ADOPTED prior id. Persisted in the resume snapshot so the next resume can
+        ``session/load`` it directly (skipping the ``session/list`` heuristic)."""
+        return self._session_id
 
     # -- internals -----------------------------------------------------------
 

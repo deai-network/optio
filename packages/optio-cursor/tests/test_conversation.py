@@ -528,6 +528,80 @@ async def test_resume_session_load_error_falls_back_to_new(convo):
 
 
 @pytest.mark.asyncio
+async def test_session_id_property_reflects_current_working_id(convo):
+    # The session_id property exposes the live ACP session id (the session/new id
+    # on a fresh task, the adopted prior id after a resume) — the seam session.py
+    # threads into the snapshot so the NEXT resume can session/load it directly.
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle, session_id="s1")
+    assert c.session_id == "s1"
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_resume_with_persisted_id_loads_directly_skipping_list(convo):
+    # When the snapshot persisted the prior ACP session id, replay_history loads
+    # it DIRECTLY — NO session/list heuristic (which can mispick an empty session
+    # as they accumulate). cursor replays that conversation via session/update
+    # notifications (reaching on_event) and the loaded id is adopted so the next
+    # prompt continues the prior thread.
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle, session_id="fresh-sess")
+    events = []
+    c.on_event(events.append)
+
+    replay = asyncio.create_task(c.replay_history("persisted-sess"))
+    load = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert load["method"] == "session/load"        # NOT session/list
+    assert load["params"]["sessionId"] == "persisted-sess"
+    for kind, text in (("user_message_chunk", "prior question"),
+                       ("agent_message_chunk", "prior answer")):
+        handle.stdout.feed({"jsonrpc": "2.0", "method": "session/update",
+                            "params": {"sessionId": "persisted-sess", "update": {
+                                "sessionUpdate": kind,
+                                "content": {"type": "text", "text": text}}}})
+    handle.stdout.feed({"jsonrpc": "2.0", "id": load["id"], "result": {}})
+
+    assert await asyncio.wait_for(replay, 2) == "persisted-sess"
+    # The replayed session/update events reached on_event (listener replay buffer).
+    await _wait_for(lambda: sum(
+        1 for e in events if e.get("method") == "session/update") >= 2)
+    # Adopted -> a subsequent send continues the prior thread.
+    assert c.session_id == "persisted-sess"
+    await c.send("continue please")
+    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert prompt["params"]["sessionId"] == "persisted-sess"
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_resume_persisted_id_load_error_keeps_fresh_no_list(convo):
+    # Graceful fallback with a persisted id: session/load errors -> replay_history
+    # returns None and KEEPS the fresh session; it does NOT fall back to the
+    # session/list heuristic (the persisted id is authoritative). Resume never
+    # breaks; a subsequent send still works on the fresh session.
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle, session_id="fresh-sess")
+    replay = asyncio.create_task(c.replay_history("gone-sess"))
+    load = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert load["method"] == "session/load"
+    handle.stdout.feed({"jsonrpc": "2.0", "id": load["id"],
+                        "error": {"code": -32000, "message": "cannot load"}})
+    assert await asyncio.wait_for(replay, 2) is None
+    assert handle.stdin.lines.empty()      # did NOT fall back to session/list
+    await c.send("hello")
+    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert prompt["params"]["sessionId"] == "fresh-sess"
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
 async def test_fresh_start_never_lists_or_loads(convo):
     # A fresh (non-resume) conversation bootstraps with session/new and sends
     # via session/prompt — it must NEVER touch session/list or session/load

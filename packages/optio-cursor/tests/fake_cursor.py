@@ -249,6 +249,20 @@ def _acp_notify_update(session_id: str, update: dict) -> None:
     })
 
 
+def _record_acp_load(session_id) -> None:
+    """Durably record a ``session/load``'s sessionId (resume history replay).
+
+    The workdir is wiped/restored on resume, so ``FAKE_CURSOR_ACP_RECORD`` (a
+    path OUTSIDE the workdir) is how the resume test asserts the wrapper called
+    ``session/load`` with the PERSISTED id (not a session/list heuristic pick)."""
+    dest = os.environ.get("FAKE_CURSOR_ACP_RECORD")
+    if not dest:
+        return
+    with open(dest, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"session_load": session_id}) + "\n")
+        fh.flush()
+
+
 def _run_acp_stdio() -> int:
     """Fake ``cursor-agent … acp`` — a minimal ACP (JSON-RPC 2.0) responder.
 
@@ -319,6 +333,24 @@ def _run_acp_stdio() -> int:
                 }
             _acp_send({"jsonrpc": "2.0", "id": mid, "result": {
                 "sessionId": session_id, "models": models_block}})
+        elif method == "session/load":
+            # Resume: cursor advertises loadSession, so the wrapper replays prior
+            # history by loading the PERSISTED session id directly (no
+            # session/list heuristic). Model the ACP contract — re-emit the prior
+            # conversation as session/update notifications, THEN answer the load
+            # request. ``FAKE_CURSOR_ACP_LOAD=reject`` models an unknown/unloadable
+            # id so the wrapper's graceful fallback (keep the fresh session) can be
+            # exercised.
+            sid = (msg.get("params") or {}).get("sessionId")
+            _record_acp_load(sid)
+            if os.environ.get("FAKE_CURSOR_ACP_LOAD", "ok").strip() == "reject":
+                _acp_send({"jsonrpc": "2.0", "id": mid,
+                           "error": {"code": -32000, "message": "unknown session"}})
+            else:
+                _acp_notify_update(sid, {
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "replayed-history"}})
+                _acp_send({"jsonrpc": "2.0", "id": mid, "result": {}})
         elif method == "session/set_model":
             current_model = (msg.get("params") or {}).get("modelId")
             _acp_send({"jsonrpc": "2.0", "id": mid, "result": {}})

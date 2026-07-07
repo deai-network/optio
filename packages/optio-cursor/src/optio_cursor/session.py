@@ -190,6 +190,11 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
     # auto-start suppression). Set by _prepare, read by the body + teardown.
     resuming = False
     pass_continue = False
+    # Persisted ACP session id restored from the resume snapshot (conversation
+    # mode). Threaded into replay_history below so cursor session/load's it
+    # DIRECTLY (skipping the session/list heuristic); None when not resuming, in
+    # iframe mode, or when the prior snapshot recorded no id (pre-seam rows).
+    resume_session_id: str | None = None
     # Resolved seed id for a fresh, seeded launch (Stage 3). Set by _prepare
     # (str seed_id → itself; SeedProvider callable → awaited). Stays None on
     # resume and when no seed_id is configured.
@@ -226,7 +231,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
         AFTER the restore so they are not wiped by it.
         """
         nonlocal cursor_path, ttyd_path, resuming, pass_continue, resolved_seed_id
-        nonlocal lease_holder, cred_baseline, claustrum_path
+        nonlocal lease_holder, cred_baseline, claustrum_path, resume_session_id
         cursor_path = await host_actions.ensure_cursor_installed(
             hook_ctx,
             install_if_missing=config.install_if_missing,
@@ -280,6 +285,11 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             # restored workdir at the same absolute path (deterministic
             # taskdir), so the cwd-keyed chat lookup matches.
             pass_continue = True
+            # Conversation mode: the ACP session id the fresh cursor stored last
+            # run (None for iframe snapshots or pre-seam rows). Handed to
+            # replay_history below so cursor session/load's the prior conversation
+            # DIRECTLY (skipping the session/list heuristic).
+            resume_session_id = snapshot.get("sessionId")
 
         # Permission rules are config-planted (cursor-agent has no
         # --allow/--deny argv): write cli-config.json under the per-task HOME
@@ -612,22 +622,24 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             # session/new, so the listener's replay buffer starts empty — a viewer
             # attaching post-resume would see only new turns. Now that
             # ConversationListener above has subscribed to conversation.on_event
-            # (in its constructor), enumerate the restored sessions (session/list),
-            # pick the prior one, and session/load it: cursor replays that
-            # conversation via session/update notifications, which flow through the
+            # (in its constructor), session/load the prior conversation: cursor
+            # replays it via session/update notifications, which flow through the
             # SAME on_event fan-out into the replay buffer; a late viewer then
-            # reconstructs the full prior history. ORDERING is load-bearing:
+            # reconstructs the full prior history. When the snapshot persisted the
+            # prior ACP session id (resume_session_id), replay_history loads it
+            # DIRECTLY; otherwise (old pre-seam rows) it falls back to the
+            # session/list + most-recent heuristic. ORDERING is load-bearing:
             # strictly AFTER the listener subscribes (else the buffer misses the
             # replay) and BEFORE the resume-notice send below (which continues the
             # now-loaded thread). Gated on resuming — a fresh session has no prior
             # conversation to backfill. Graceful: an empty list or a load error
             # keeps the fresh session, so resume never breaks (just no history).
             if resuming:
-                loaded = await conversation.replay_history()
+                loaded = await conversation.replay_history(resume_session_id)
                 if loaded:
                     _LOG.info(
-                        "cursor resume: session/load replayed prior history "
-                        "(via session/list)",
+                        "cursor resume: session/load replayed prior history (%s)",
+                        "persisted id" if resume_session_id else "via session/list",
                     )
                 else:
                     _LOG.info(
@@ -880,6 +892,14 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                     ctx, host,
                     end_state="cancelled" if cancelled else "done",
                     workdir_exclude=config.workdir_exclude,
+                    # Conversation mode: persist the live ACP session id (the
+                    # adopted-prior id after a replay, else the fresh session/new
+                    # id) so the next resume can session/load + replay it
+                    # directly. iframe mode has no conversation → None (plain
+                    # --continue restore, session/list heuristic on resume).
+                    session_id=(
+                        conversation.session_id if conversation is not None else None
+                    ),
                 )
             except Exception:
                 _LOG.exception(
@@ -919,6 +939,7 @@ async def _capture_snapshot(
     *,
     end_state: str,
     workdir_exclude: list[str] | None,
+    session_id: str | None = None,
 ) -> None:
     """Capture a single-blob resume snapshot of the (now static) workdir.
 
@@ -928,6 +949,10 @@ async def _capture_snapshot(
     wipe. Streams the tar into GridFS, records the snapshot row, prunes to
     the retention limit (deleting stale blobs), and surfaces the Resume
     affordance.
+
+    ``session_id`` is cursor's live ACP session id (conversation mode); it rides
+    the snapshot row so a later resume can ``session/load`` it directly to replay
+    prior history. ``None`` for iframe mode.
     """
     async with ctx.store_blob("workdir") as wwriter:
         async for chunk in host.archive_workdir(workdir_exclude):
@@ -939,6 +964,7 @@ async def _capture_snapshot(
         process_id=ctx.process_id,
         end_state=end_state,
         workdir_blob_id=workdir_blob_id,
+        session_id=session_id,
     )
 
     stale = await prune_snapshots(ctx._db, ctx._prefix, ctx.process_id)
