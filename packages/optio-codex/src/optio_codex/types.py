@@ -101,6 +101,8 @@ class CodexTaskConfig:
 
     consumer_instructions: str
 
+    agent_type: Literal["codex"] = "codex"
+
     env: dict[str, str] | None = None
     scrub_env: list[str] | None = None
 

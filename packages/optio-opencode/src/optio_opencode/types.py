@@ -74,6 +74,7 @@ def _identity_resume_refresh(config: "OpencodeTaskConfig") -> "OpencodeTaskConfi
 class OpencodeTaskConfig:
     """Configuration for one optio-opencode task instance."""
     consumer_instructions: str
+    agent_type: Literal["opencode"] = "opencode"
     opencode_config: dict[str, Any] = field(default_factory=dict)
     ssh: SSHConfig | None = None
     on_deliverable: DeliverableCallback | None = None

@@ -90,6 +90,8 @@ class ClaudeCodeTaskConfig:
 
     consumer_instructions: str
 
+    agent_type: Literal["claudecode"] = "claudecode"
+
     credentials_json: dict[str, Any] | bytes | str | None = None
     claude_config: dict[str, Any] | None = None
     env: dict[str, str] | None = None

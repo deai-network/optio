@@ -21,6 +21,7 @@ CONFIGS = [
 
 # The harmonized common core: every engine MUST expose these.
 CORE = {
+    "agent_type",
     "consumer_instructions", "env", "scrub_env", "ssh", "install_if_missing",
     "before_execute", "after_execute", "on_deliverable", "seed_id", "on_seed_saved",
     "supports_resume", "workdir_exclude", "mode", "host_protocol", "conversation_ui",

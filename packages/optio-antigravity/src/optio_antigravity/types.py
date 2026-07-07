@@ -98,6 +98,8 @@ class AntigravityTaskConfig:
 
     consumer_instructions: str
 
+    agent_type: Literal["antigravity"] = "antigravity"
+
     env: dict[str, str] | None = None
     # Glob patterns (fnmatch) of env var NAMES to strip from the agy
     # subprocess, so inherited provider creds don't override the task's
