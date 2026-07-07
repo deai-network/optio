@@ -78,6 +78,45 @@ def _build_host(config: OpencodeTaskConfig, process_id: str) -> Host:
     return host_actions.build_host(config.ssh, taskdir)
 
 
+def _fold_tool_permissions(
+    opencode_cfg: dict,
+    *,
+    allowed_tools: list[str] | None,
+    disallowed_tools: list[str] | None,
+) -> dict:
+    """Fold ``allowed_tools``/``disallowed_tools`` into opencode.json's
+    ``permission`` map (tool→"allow"/"deny").
+
+    Merges with — never clobbers — an operator-supplied
+    ``opencode_config["permission"]``: the convenience fields only add/override
+    the specific tools they name. ``deny`` wins over ``allow`` for a tool named
+    in both (deny is applied last). Returns a NEW dict; the input is not
+    mutated. A no-op (returns ``opencode_cfg`` unchanged) when neither list is
+    set."""
+    if not allowed_tools and not disallowed_tools:
+        return opencode_cfg
+    cfg = dict(opencode_cfg)
+    permission = dict(cfg.get("permission") or {})
+    for tool in allowed_tools or []:
+        permission[tool] = "allow"
+    for tool in disallowed_tools or []:
+        permission[tool] = "deny"
+    cfg["permission"] = permission
+    return cfg
+
+
+def _warn_if_fs_isolation_unenforced(config: "OpencodeTaskConfig") -> None:
+    """Emit a runtime warning on the worker console when ``fs_isolation`` is
+    requested. opencode has no claustrum sandbox wired yet, so the flag is
+    INERT (see OpencodeTaskConfig.fs_isolation): honour the operator's signal
+    by making the no-op loud rather than silent."""
+    if config.fs_isolation:
+        _LOG.warning(
+            "opencode fs_isolation requested but not yet enforced "
+            "(claustrum pending); the agent is NOT filesystem-confined."
+        )
+
+
 def conversation_widget_data(config: "OpencodeTaskConfig", *, session_id: str, directory: str) -> dict:
     """The widgetData published for a conversation_ui task. Pure so it can be
     unit-tested without a live session."""
@@ -89,7 +128,7 @@ def conversation_widget_data(config: "OpencodeTaskConfig", *, session_id: str, d
         "thinkingVerbosity": config.thinking_verbosity,
         "showSessionControls": config.show_session_controls,
         "nativeSpinner": config.native_spinner,
-        "defaultModel": config.default_model,
+        "defaultModel": config.model,
         "showFileUpload": config.show_file_upload,
         "maxUploadBytes": config.max_upload_bytes,
         "fileDownload": config.file_download,
@@ -156,7 +195,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             download=hook_ctx.download_file,
             report_progress=hook_ctx.report_progress,
             install_if_missing=config.install_if_missing,
-            install_dir=config.opencode_install_dir,
+            install_dir=config.install_dir,
         )
 
         resume_requested = bool(getattr(ctx, "resume", False))
@@ -246,11 +285,23 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                 ),
             )
             opencode_cfg = dict(config.opencode_config)
+            if config.model is not None and "model" not in opencode_cfg:
+                # The harmonized default-model field takes effect in EVERY
+                # mode via opencode.json's top-level "model" key (opencode's
+                # defaultModel() reads it first), so an unattended/iframe run
+                # uses this model instead of the first-provider fallback. An
+                # explicit opencode_config["model"] (operator raw) wins.
+                opencode_cfg["model"] = config.model
             if config.mode == "conversation":
                 # Questions (multi-choice asks) have no conversation-mode
                 # answering path yet — disable the tool so a session can
                 # never block on one. See design doc "Non-goals".
                 opencode_cfg["tools"] = {**opencode_cfg.get("tools", {}), "question": False}
+            opencode_cfg = _fold_tool_permissions(
+                opencode_cfg,
+                allowed_tools=config.allowed_tools,
+                disallowed_tools=config.disallowed_tools,
+            )
             await host.write_text(
                 "opencode.json", json.dumps(opencode_cfg, indent=2),
             )
@@ -335,6 +386,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         # loopback; the SSH tunnel on the engine side handles exposure.
         opencode_hostname = bind_addr if isinstance(host, LocalHost) else "127.0.0.1"
 
+        _warn_if_fs_isolation_unenforced(config)
         ctx.report_progress(None, f"Launching opencode{version_suffix}…")
         handle, opencode_port = await host_actions.launch_opencode(
             host, password,

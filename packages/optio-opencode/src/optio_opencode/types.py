@@ -7,8 +7,16 @@ is owned by ``optio-host``. This module re-exports them so existing
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Literal
+from typing import Any, Awaitable, Callable
 
+from optio_agents import (
+    AllowedDir,
+    ConversationMode,
+    SeedProvider,
+    SeedUnavailableError,
+    ThinkingVerbosity,
+    ToolVerbosity,
+)
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -18,22 +26,12 @@ from optio_agents.uploads import UploadCallback
 from optio_host.types import SSHConfig
 
 
-# Async resolver used as the callable form of ``seed_id``: receives the
-# process_id, returns the seed to consume. The consuming app's resolver
-# typically acquires a pooled seed lease inside (holder = process_id);
-# the session then renews that lease for the lifetime of the run and
-# releases it at teardown. Mirrors optio-claudecode.
-SeedProvider = Callable[[str], Awaitable[str]]
-
-
-# Conversation-mode vocabulary (mirrors optio-claudecode).
-ConversationMode = Literal["iframe", "conversation"]
-ToolVerbosity = Literal["silent", "description-only", "verbose"]
+# The config vocabulary (ConversationMode/ToolVerbosity/ThinkingVerbosity/
+# SeedProvider/SeedUnavailableError/AllowedDir) is now owned by optio-agents
+# and imported above; re-exported here so existing
+# ``from optio_opencode.types import ConversationMode, AllowedDir, …`` sites
+# keep working unchanged.
 _VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
-# Visibility of reasoning/thinking traces in the conversation widget. Task-level,
-# mirrors ToolVerbosity; the UI never decides. (opencode reasoning is not yet wired
-# to a distinct thinking row, but the option ships for cross-engine parity.)
-ThinkingVerbosity = Literal["hidden", "visible"]
 _VALID_THINKING_VERBOSITY = {"hidden", "visible"}
 
 
@@ -44,9 +42,11 @@ __all__ = [
     "UploadCallback",
     "SSHConfig",
     "SeedProvider",
+    "SeedUnavailableError",
     "ConversationMode",
     "ToolVerbosity",
     "ThinkingVerbosity",
+    "AllowedDir",
     "OpencodeTaskConfig",
 ]
 
@@ -82,7 +82,7 @@ class OpencodeTaskConfig:
     # for smart-install's ``--check`` lookup, and for the post-"ok"
     # ``command -v`` resolution, so an explicit override stays consistent
     # across all three. Must be an absolute path when set.
-    opencode_install_dir: str | None = None
+    install_dir: str | None = None
     workdir_exclude: list[str] | None = None
     supports_resume: bool = True
     before_execute: HookCallback | None = None
@@ -137,12 +137,16 @@ class OpencodeTaskConfig:
     # Whether the conversation widget shows the agent's reasoning/thinking traces.
     # Default hidden — thinking is noisy; opt in per task.
     thinking_verbosity: ThinkingVerbosity = "hidden"
-    # Default model for a fresh conversation session, "providerID/modelID".
-    # Forwarded to the widget, which applies it once at the start of a non-
-    # resumed session (history empty) and only if present in the live model
-    # list. Effective regardless of show_session_controls. Requires
-    # conversation_ui=True.
-    default_model: str | None = None
+    # Default model for the task, "providerID/modelID". Effective in EVERY
+    # mode: (a) in conversation mode it is forwarded to the widget, which
+    # applies it once at the start of a non-resumed session (history empty)
+    # and only if present in the live model list, regardless of
+    # show_session_controls; (b) in every mode it is folded into the launch
+    # opencode.json top-level "model" key (opencode's ``defaultModel()`` reads
+    # it first), so an unattended/iframe session runs this model rather than
+    # opencode's first-provider fallback. An explicit
+    # ``opencode_config["model"]`` (operator raw override) wins over it.
+    model: str | None = None
     # Show the model picker in the conversation widget. Requires
     # conversation_ui=True.
     show_session_controls: bool = False
@@ -165,6 +169,30 @@ class OpencodeTaskConfig:
     # downloadables instruction to AGENTS.md and the widget download handler.
     file_download: bool = False
     max_download_bytes: int = 10_000_000
+
+    # --- filesystem isolation (INERT — claustrum port pending) ---
+    # NOT YET ENFORCED. opencode has no claustrum sandbox wired yet, so these
+    # two fields are a known no-op today: they ship now for cross-engine
+    # config parity (and so consumers can pin the intended policy), but the
+    # launch path only emits a runtime warning when fs_isolation is True — it
+    # does NOT restrict the filesystem. When claustrum lands for opencode,
+    # fs_isolation will confine the agent to the workdir and extra_allowed_dirs
+    # will widen that grant. Until then, treat both as advisory.
+    fs_isolation: bool = True
+    # Extra filesystem grants beyond the workdir (shared AllowedDir; ro/rw/
+    # rox/rwx). INERT until claustrum lands (see fs_isolation above).
+    extra_allowed_dirs: list[AllowedDir] | None = None
+
+    # --- tool allow/deny (folded into opencode.json's ``permission`` map) ---
+    # Convenience fields that fold into opencode.json's per-tool ``permission``
+    # map (tool→"allow"/"deny"). Each name in allowed_tools becomes
+    # ``permission[tool]="allow"``; each in disallowed_tools becomes
+    # ``permission[tool]="deny"``. Merged with — never clobbering — an
+    # operator-supplied ``opencode_config["permission"]`` (deny wins over allow
+    # for a tool named in both). None (default) leaves the permission map
+    # untouched.
+    allowed_tools: list[str] | None = None
+    disallowed_tools: list[str] | None = None
 
     def __post_init__(self) -> None:
         e = self.session_blob_encrypt is not None
@@ -208,10 +236,6 @@ class OpencodeTaskConfig:
         if self.file_download and not self.conversation_ui:
             raise ValueError(
                 "OpencodeTaskConfig: file_download=True requires conversation_ui=True."
-            )
-        if self.default_model is not None and not self.conversation_ui:
-            raise ValueError(
-                "OpencodeTaskConfig: default_model requires conversation_ui=True."
             )
         if self.tool_verbosity not in _VALID_TOOL_VERBOSITY:
             raise ValueError(

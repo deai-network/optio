@@ -14,7 +14,7 @@ binary cache on the worker
 (``OPENCODE_CACHE_DIR`` / ``${XDG_CACHE_HOME:-$HOME/.cache}/optio-opencode/bin``,
 resolved per host — never the host home bin dir) and is overridable via the
 ``install_dir`` keyword argument on the public entry points; consumers
-expose this as ``OpencodeTaskConfig.opencode_install_dir``.
+expose this as ``OpencodeTaskConfig.install_dir``.
 No isinstance branches.
 """
 
@@ -52,7 +52,7 @@ _OPENCODE_CACHE_SHELL_DEFAULT = (
 async def _resolve_install_dir(host: "Host", install_dir: str | None) -> str:
     """Resolve the opencode binary-cache dir as an absolute path on the worker.
 
-    ``install_dir`` (config.opencode_install_dir) overrides. Else the worker's
+    ``install_dir`` (config.install_dir) overrides. Else the worker's
     OPENCODE_CACHE_DIR / XDG_CACHE_HOME / $HOME decide it — resolved via a shell
     echo so RemoteHost gets the remote cache. Resolved from the worker's REAL env
     (this runs before per-task XDG isolation), so the cache stays shared and

@@ -121,3 +121,63 @@ async def test_seed_id_accepts_callable_provider():
 
     cfg = OpencodeTaskConfig(consumer_instructions="x", seed_id=provider)
     assert callable(cfg.seed_id)
+
+
+# --- harmonization: shared aliases, install_dir rename, model, inert fs -------
+
+
+def test_shared_aliases_reexported_from_types():
+    # C1: the config vocabulary now lives in optio_agents; types.py re-exports
+    # it (and AllowedDir/SeedUnavailableError) so .types imports keep working.
+    from optio_agents import AllowedDir as _SharedAllowedDir
+    from optio_opencode.types import (  # noqa: F401
+        AllowedDir,
+        ConversationMode,
+        SeedProvider,
+        SeedUnavailableError,
+        ThinkingVerbosity,
+        ToolVerbosity,
+    )
+
+    assert AllowedDir is _SharedAllowedDir
+    assert issubclass(SeedUnavailableError, Exception)
+
+
+def test_install_dir_field_present_and_default_none():
+    # C2: opencode_install_dir → install_dir.
+    fields = {f for f in OpencodeTaskConfig.__dataclass_fields__}
+    assert "install_dir" in fields
+    assert "opencode_install_dir" not in fields
+    cfg = OpencodeTaskConfig(consumer_instructions="x")
+    assert cfg.install_dir is None
+
+
+def test_no_default_model_field_only_model():
+    # C3: default_model → model (single field).
+    fields = {f for f in OpencodeTaskConfig.__dataclass_fields__}
+    assert "model" in fields
+    assert "default_model" not in fields
+    cfg = OpencodeTaskConfig(consumer_instructions="x")
+    assert cfg.model is None
+
+
+def test_fs_isolation_defaults_true_and_extra_allowed_dirs_none():
+    cfg = OpencodeTaskConfig(consumer_instructions="x")
+    assert cfg.fs_isolation is True
+    assert cfg.extra_allowed_dirs is None
+
+
+def test_extra_allowed_dirs_accepts_shared_alloweddir():
+    from optio_opencode.types import AllowedDir
+
+    cfg = OpencodeTaskConfig(
+        consumer_instructions="x",
+        extra_allowed_dirs=[AllowedDir("/data", "ro"), AllowedDir("/work", "rwx")],
+    )
+    assert [d.mode for d in cfg.extra_allowed_dirs] == ["ro", "rwx"]
+
+
+def test_allowed_disallowed_tools_default_none():
+    cfg = OpencodeTaskConfig(consumer_instructions="x")
+    assert cfg.allowed_tools is None
+    assert cfg.disallowed_tools is None

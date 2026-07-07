@@ -8,7 +8,7 @@ def test_defaults_are_off():
     cfg = OpencodeTaskConfig(
         consumer_instructions="task", mode="conversation", conversation_ui=True
     )
-    assert cfg.default_model is None
+    assert cfg.model is None
     assert cfg.show_session_controls is False
 
 
@@ -17,10 +17,10 @@ def test_fields_accepted_in_conversation_ui():
         consumer_instructions="task",
         mode="conversation",
         conversation_ui=True,
-        default_model="opencode/big-pickle",
+        model="opencode/big-pickle",
         show_session_controls=True,
     )
-    assert cfg.default_model == "opencode/big-pickle"
+    assert cfg.model == "opencode/big-pickle"
     assert cfg.show_session_controls is True
 
 
@@ -44,14 +44,16 @@ def test_native_spinner_requires_conversation_ui():
         )
 
 
-def test_default_model_requires_conversation_ui():
-    with pytest.raises(ValueError, match="conversation_ui=True"):
-        OpencodeTaskConfig(
-            consumer_instructions="task",
-            mode="conversation",
-            conversation_ui=False,
-            default_model="opencode/big-pickle",
-        )
+def test_model_valid_without_conversation_ui():
+    # The conversation_ui gate was dropped: model is now valid in every mode
+    # (it also feeds the launch opencode.json default, not just the widget).
+    cfg = OpencodeTaskConfig(
+        consumer_instructions="task",
+        mode="iframe",
+        conversation_ui=False,
+        model="opencode/big-pickle",
+    )
+    assert cfg.model == "opencode/big-pickle"
 
 
 def test_widget_data_carries_model_fields():
@@ -59,7 +61,7 @@ def test_widget_data_carries_model_fields():
         consumer_instructions="task",
         mode="conversation",
         conversation_ui=True,
-        default_model="opencode/big-pickle",
+        model="opencode/big-pickle",
         show_session_controls=True,
         tool_verbosity="verbose",
     )
