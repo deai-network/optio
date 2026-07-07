@@ -12,10 +12,6 @@ PY_PACKAGES := optio-core optio-host optio-agents optio-opencode optio-codex opt
 PYTEST_WORKERS ?= $(shell n=$$(nproc 2>/dev/null || echo 4); w=$$((n/2)); [ $$w -lt 2 ] && w=2; echo $$w)
 PYTEST_XDIST   := -n $(PYTEST_WORKERS) --dist loadscope
 
-# optio-core is run serially (its lifecycle tests are timing-sensitive); the
-# rest fan out under xdist.
-XDIST_PACKAGES := $(filter-out optio-core,$(PY_PACKAGES))
-
 # Python toolchain — repo-local venv. Override PYTHON to pick a specific interpreter.
 PYTHON ?= python3
 VENV   := $(CURDIR)/.venv
@@ -86,14 +82,12 @@ codegen:  ## Regenerate clamator RPC client/server stubs from optio-contracts so
 test: $(VENV)/bin/python  ## Run all tests (TS + Python; per-package, no docker)
 	pnpm -r test
 	@rc=0; \
-	echo ">> optio-core (serial — its lifecycle tests depend on real wall-clock timing and are unreliable under xdist)"; \
-	(cd packages/optio-core && $(PYTEST)) || rc=1; \
 	echo ">> Python phase 1/2: parallel ($(PYTEST_WORKERS) workers/pkg, -m 'not serial')"; \
-	for pkg in $(XDIST_PACKAGES); do \
+	for pkg in $(PY_PACKAGES); do \
 	  (cd packages/$$pkg && $(PYTEST) $(PYTEST_XDIST) -m "not serial") || rc=1; \
 	done; \
 	echo ">> Python phase 2/2: serial (spawn-heavy / timing-fragile, -m serial)"; \
-	for pkg in $(XDIST_PACKAGES); do \
+	for pkg in $(PY_PACKAGES); do \
 	  (cd packages/$$pkg && $(PYTEST) -m serial); s=$$?; \
 	  [ $$s -eq 0 ] || [ $$s -eq 5 ] || rc=1; \
 	done; \

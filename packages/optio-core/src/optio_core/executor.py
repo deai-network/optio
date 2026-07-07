@@ -408,15 +408,22 @@ class Executor:
         # the ChildProcessFailed raise below communicates the failure to
         # parent's user code, and the parent's terminal state is then
         # determined by whether the user catches+returns or re-raises.
+        #
+        # Await it (rather than fire-and-forget): the callback snapshots the
+        # active children via a live DB query, so it must run *now*, before the
+        # ChildProcessFailed raise resumes the parent's user code. A scheduled
+        # task can otherwise run late — after the parent has caught the failure
+        # and spawned fresh recovery work — and wrongly cancel that new child
+        # (it was never a concurrent sibling of the failed one). The callback
+        # only *requests* cooperative cancels (it does not wait for siblings to
+        # unwind), so awaiting here is cheap.
         if abnormal_failed:
             if self._notify_parent_failure is not None:
                 _trace(
-                    "CANCEL-TRACE %s: failed child %s → scheduling notify_parent_failure(parent=%s)",
+                    "CANCEL-TRACE %s: failed child %s → notify_parent_failure(parent=%s)",
                     process_id, name, parent_ctx.process_id,
                 )
-                asyncio.create_task(
-                    self._notify_parent_failure(parent_ctx.process_id)
-                )
+                await self._notify_parent_failure(parent_ctx.process_id)
 
         # Cancellation breach: cascade upward. Set parent's flag
         # synchronously so subsequent operations in the parent's user

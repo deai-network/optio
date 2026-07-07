@@ -208,7 +208,19 @@ async def test_cancel_shared_deadline_across_subtree(mongo_db):
     await parent_running.wait()
     await child1_running.wait()
     await child2_running.wait()
-    await asyncio.sleep(0.1)
+
+    # The parent sets child*_running immediately after spawning, but each child
+    # only registers its cancellation entry once its execute task actually
+    # starts (executor._execute_process). Wait for all three (parent + c1 + c2)
+    # to be registered before cancelling — otherwise cancel() can propagate the
+    # shared deadline before a child is cancellable and the entry-count assert
+    # races under CPU load (seen as "got 1"/"got 2" instead of 3).
+    for _ in range(1000):
+        if len(optio._executor._cancellation_flags) >= 3:
+            break
+        await asyncio.sleep(0.005)
+    else:
+        raise AssertionError("children never registered in _cancellation_flags")
 
     await optio.cancel("parent")
 
