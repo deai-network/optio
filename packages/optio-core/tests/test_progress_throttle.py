@@ -22,9 +22,7 @@ from optio_core.models import TaskInstance
 from optio_core.store import get_process_by_process_id, upsert_process
 
 
-# The throttle assertions depend on sub-second wall-clock windows and slip
-# under heavy parallel CPU load; `serial` runs them in the final quiet phase.
-pytestmark = [pytest.mark.asyncio, pytest.mark.serial]
+pytestmark = pytest.mark.asyncio
 
 
 async def _dummy(ctx) -> None:  # pragma: no cover - placeholder

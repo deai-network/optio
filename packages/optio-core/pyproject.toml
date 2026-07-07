@@ -38,7 +38,6 @@ redis = ["redis>=5.0.0"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
-    "pytest-xdist>=3.6",
 ]
 
 [project.urls]
@@ -52,6 +51,3 @@ where = ["src"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-markers = [
-    "serial: spawn-heavy, timing-fragile test that must run in a final non-parallel phase",
-]
