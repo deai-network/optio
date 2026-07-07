@@ -12,6 +12,7 @@ installer are copied with only ``claude`` → ``grok`` renames.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -187,6 +188,24 @@ async def ensure_grok_installed(
     )
     if "OK" in (probe.stdout or ""):
         _LOG.info("ensure_grok_installed: cache HIT (%s)", cached)
+        # Refresh a STALE cache to the latest release. A cache left behind the
+        # current grok release makes grok self-download a fresh ~150 MB binary
+        # into home/.grok/downloads at runtime — which bloats the resume
+        # snapshot enough that capture_snapshot overruns the cancel grace and
+        # the task force-fails. Keeping the cache current removes that impulse.
+        # Best-effort + gated on install_if_missing (an offline/pinned worker
+        # keeps the binary it has; the update probe never blocks a launch).
+        if install_if_missing and await _grok_update_available(
+            host, cached, cache_dir=cache_dir,
+        ):
+            hook_ctx.report_progress(None, "Updating Grok Build to latest…")
+            await _install_grok_into_cache(
+                hook_ctx, host, cache_dir=cache_dir, cached=cached,
+            )
+            _LOG.info(
+                "ensure_grok_installed: cache stale -> refreshed to latest (%s)",
+                cached,
+            )
     elif not install_if_missing:
         raise RuntimeError(
             f"grok not present in cache at {cached!r} and "
@@ -196,6 +215,42 @@ async def ensure_grok_installed(
         await _populate_grok_cache(hook_ctx, host, cache_dir=cache_dir, cached=cached)
 
     return await _link_grok_into_task(host, cached)
+
+
+async def _grok_update_available(
+    host: "Host", cached: str, *, cache_dir: str,
+) -> bool:
+    """Best-effort: True iff ``grok update --check --json`` reports a newer
+    release for the cached binary.
+
+    Runs the CACHED binary's own updater in ``--check`` mode (a version compare,
+    NO download) under ``HOME`` = the cache ROOT so it never touches the
+    operator's ``~/.grok``. The CLI prints a one-line JSON object, e.g.
+    ``{"currentVersion":"0.2.82","latestVersion":"0.2.87","updateAvailable":true}``.
+    A non-zero exit (offline) or unparseable output → ``False``: the probe must
+    never block a launch — a stale-but-working cache is preferable to a failed
+    start.
+    """
+    cache_root = os.path.dirname(cache_dir.rstrip("/")) or "/"
+    r = await host.run_command(
+        f"env HOME={shlex.quote(cache_root)} {shlex.quote(cached)} "
+        f"update --check --json"
+    )
+    if r.exit_code != 0:
+        _LOG.warning(
+            "grok update --check failed (exit %s); keeping cached binary: %s",
+            r.exit_code, (r.stderr or "").strip()[:200],
+        )
+        return False
+    try:
+        data = json.loads((r.stdout or "").strip())
+    except (ValueError, TypeError):
+        _LOG.warning(
+            "grok update --check returned unparseable output; keeping cache: %r",
+            (r.stdout or "")[:200],
+        )
+        return False
+    return bool(data.get("updateAvailable"))
 
 
 async def _populate_grok_cache(
@@ -360,6 +415,80 @@ def _isolation_env(workdir: str) -> dict[str, str]:
         "XDG_CACHE_HOME": f"{home}/.cache",
         "CLAUDE_CONFIG_DIR": f"{home}/.claude",
     }
+
+
+# Host-side line editor that forces ``auto_update = false`` inside the ``[cli]``
+# table of a grok config.toml, preserving all other content. Placement is
+# TOML-correct: the key is dropped/re-emitted only WITHIN ``[cli]`` (a bare key
+# appended after a foreign ``[table]`` header would be parsed as a member of
+# that table, so grok would ignore it and keep auto-updating). Runs via the
+# worker's ``python3`` (already a grok-worker dependency — see the ctty wrap).
+_GROK_DISABLE_AUTOUPDATE_PY = (
+    "import sys\n"
+    "p=sys.argv[1]\n"
+    "try:\n"
+    "    lines=open(p).read().splitlines()\n"
+    "except FileNotFoundError:\n"
+    "    lines=[]\n"
+    "out=[]\n"
+    "in_cli=False\n"
+    "done=False\n"
+    "def hdr(l):\n"
+    "    s=l.strip()\n"
+    "    return s.startswith('[') and s.endswith(']')\n"
+    "for l in lines:\n"
+    "    if hdr(l):\n"
+    "        if in_cli and not done:\n"
+    "            out.append('auto_update = false')\n"
+    "            done=True\n"
+    "        in_cli = l.strip()=='[cli]'\n"
+    "        out.append(l)\n"
+    "        continue\n"
+    "    if in_cli and l.strip().replace(' ','').startswith('auto_update='):\n"
+    "        continue\n"
+    "    out.append(l)\n"
+    "if in_cli and not done:\n"
+    "    out.append('auto_update = false')\n"
+    "    done=True\n"
+    "if not done:\n"
+    "    out.append('[cli]')\n"
+    "    out.append('auto_update = false')\n"
+    "open(p,'w').write('\\n'.join(out)+'\\n')\n"
+)
+
+
+async def write_grok_config(host: "Host", workdir: str) -> None:
+    """Force ``[cli] auto_update = false`` in the task's ``$GROK_HOME/config.toml``.
+
+    GROK_HOME is ``<workdir>/home/.grok`` (see :func:`_isolation_env`), so the
+    config lives at ``<workdir>/home/.grok/config.toml``. Grok otherwise
+    self-downloads a fresh ~150 MB versioned binary into ``home/.grok/downloads``
+    at runtime, which inflates the resume snapshot so much that
+    ``capture_snapshot`` overruns the cancel grace and the task force-fails.
+    Setting ``auto_update = false`` (empirically the ONLY switch that stops it —
+    the ``GROK_AUTO_UPDATE`` env var does not) removes that behaviour.
+
+    Merge-safe: replaces an existing ``auto_update`` line inside ``[cli]``, adds
+    the key under an existing ``[cli]`` table, or appends a new ``[cli]`` table —
+    never clobbering other config (auth, seeded keys, other tables) and never
+    leaking the key into a foreign table. Idempotent. Called on every launch
+    (fresh, seeded, resumed) AFTER any restore/seed so it overrides a config.toml
+    those carried. Complements the cache version-check in
+    :func:`ensure_grok_installed`: the check keeps the cache at the latest release
+    (nothing to update to), and this covers a release landing mid-session.
+    """
+    grok_home = f"{workdir.rstrip('/')}/home/.grok"
+    cfg = f"{grok_home}/config.toml"
+    cmd = (
+        f"mkdir -p {shlex.quote(grok_home)} && "
+        f"python3 -c {shlex.quote(_GROK_DISABLE_AUTOUPDATE_PY)} {shlex.quote(cfg)}"
+    )
+    r = await host.run_command(cmd)
+    if r.exit_code != 0:
+        raise RuntimeError(
+            f"disabling grok auto_update in {cfg!r} failed "
+            f"(exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
+        )
 
 
 # --- ttyd install (copied verbatim from optio-claudecode) -------------------

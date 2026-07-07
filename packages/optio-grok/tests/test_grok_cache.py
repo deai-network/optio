@@ -183,6 +183,144 @@ async def test_no_install_raises_on_miss(tmp_path: pathlib.Path, monkeypatch):
         )
 
 
+# --- cache-HIT staleness refresh (version-gated) ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_grok_update_available_parses_json(tmp_path: pathlib.Path):
+    """_grok_update_available returns the CLI's `updateAvailable`, running the
+    check under HOME = the cache ROOT (never the operator's ~/.grok)."""
+    recorded: list[str] = []
+
+    class _H:
+        async def run_command(self, cmd: str):  # noqa: ANN001
+            recorded.append(cmd)
+            return SimpleNamespace(
+                exit_code=0,
+                stdout='{"currentVersion":"0.2.82","latestVersion":"0.2.87",'
+                '"updateAvailable":true,"error":null}',
+                stderr="",
+            )
+
+    avail = await host_actions._grok_update_available(
+        _H(), "/cache/bin/grok", cache_dir="/cache/bin",
+    )
+    assert avail is True
+    cmd = recorded[0]
+    assert "update --check --json" in cmd
+    assert "/cache/bin/grok" in cmd
+    # Runs under HOME = the cache ROOT (dirname of cache_dir), not operator ~.
+    assert "HOME=/cache" in cmd
+
+
+@pytest.mark.asyncio
+async def test_grok_update_available_false_when_current():
+    class _H:
+        async def run_command(self, cmd: str):  # noqa: ANN001
+            return SimpleNamespace(
+                exit_code=0, stdout='{"updateAvailable":false}', stderr="",
+            )
+
+    assert await host_actions._grok_update_available(
+        _H(), "/c/grok", cache_dir="/c",
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_grok_update_available_best_effort_on_failure():
+    """A non-zero exit (network down) or unparseable output → False: the update
+    probe must never block a launch."""
+    class _Fail:
+        async def run_command(self, cmd: str):  # noqa: ANN001
+            return SimpleNamespace(exit_code=1, stdout="", stderr="network down")
+
+    class _Garbage:
+        async def run_command(self, cmd: str):  # noqa: ANN001
+            return SimpleNamespace(exit_code=0, stdout="not json", stderr="")
+
+    assert await host_actions._grok_update_available(
+        _Fail(), "/c/grok", cache_dir="/c",
+    ) is False
+    assert await host_actions._grok_update_available(
+        _Garbage(), "/c/grok", cache_dir="/c",
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_stale_refreshes_to_latest(tmp_path: pathlib.Path, monkeypatch):
+    """A cache HIT whose binary is behind the latest release is refreshed via the
+    vendor installer BEFORE it is linked into the task (keeps grok from feeling
+    the need to self-download a fresh binary into the workdir)."""
+    cache = tmp_path / "cache"
+    _write_exe(cache / "grok")
+
+    async def _stale(host, cached, *, cache_dir):  # noqa: ANN001
+        return True
+
+    refreshed: dict[str, str] = {}
+
+    async def _fake_install(hook_ctx, host, *, cache_dir, cached):  # noqa: ANN001
+        refreshed["cached"] = cached
+        _write_exe(pathlib.Path(cached), body="#!/bin/bash\necho fresh\n")
+
+    async def _no_seed(*a, **k):  # noqa: ANN002, ANN003
+        raise AssertionError("must not seed from host grok on a cache hit")
+
+    monkeypatch.setattr(host_actions, "_grok_update_available", _stale)
+    monkeypatch.setattr(host_actions, "_install_grok_into_cache", _fake_install)
+    monkeypatch.setattr(host_actions, "resolve_grok", _no_seed)
+    ctx = await _local_ctx(tmp_path)
+
+    result = await host_actions.ensure_grok_installed(ctx, install_dir=str(cache))
+    assert refreshed["cached"] == str(cache / "grok")
+    assert result == _task_path(ctx)
+    assert os.path.realpath(result) == str((cache / "grok").resolve())
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_current_does_not_refresh(tmp_path: pathlib.Path, monkeypatch):
+    cache = tmp_path / "cache"
+    _write_exe(cache / "grok")
+
+    async def _current(host, cached, *, cache_dir):  # noqa: ANN001
+        return False
+
+    async def _boom(*a, **k):  # noqa: ANN002, ANN003
+        raise AssertionError("must not refresh a current cache")
+
+    monkeypatch.setattr(host_actions, "_grok_update_available", _current)
+    monkeypatch.setattr(host_actions, "_install_grok_into_cache", _boom)
+    ctx = await _local_ctx(tmp_path)
+
+    result = await host_actions.ensure_grok_installed(ctx, install_dir=str(cache))
+    assert result == _task_path(ctx)
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_stale_not_refreshed_when_install_disabled(
+    tmp_path: pathlib.Path, monkeypatch,
+):
+    """install_if_missing=False: a stale HIT still links the existing cache and
+    never triggers a network update-check or install."""
+    cache = tmp_path / "cache"
+    _write_exe(cache / "grok")
+
+    async def _no_check(*a, **k):  # noqa: ANN002, ANN003
+        raise AssertionError("update-check must be skipped when installs are off")
+
+    async def _boom(*a, **k):  # noqa: ANN002, ANN003
+        raise AssertionError("must not install when install_if_missing=False")
+
+    monkeypatch.setattr(host_actions, "_grok_update_available", _no_check)
+    monkeypatch.setattr(host_actions, "_install_grok_into_cache", _boom)
+    ctx = await _local_ctx(tmp_path)
+
+    result = await host_actions.ensure_grok_installed(
+        ctx, install_dir=str(cache), install_if_missing=False,
+    )
+    assert result == _task_path(ctx)
+
+
 @pytest.mark.asyncio
 async def test_default_cache_dir_from_grok_cache_dir_env(tmp_path: pathlib.Path, monkeypatch):
     """With no override, GROK_CACHE_DIR (worker real env) decides the cache dir —

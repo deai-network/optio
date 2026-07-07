@@ -249,6 +249,14 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                 ),
             )
 
+        # Force `[cli] auto_update = false` in the per-task GROK_HOME config so
+        # grok never self-downloads a fresh ~150 MB binary into
+        # home/.grok/downloads mid-session — that bloats the resume snapshot so
+        # capture_snapshot overruns the cancel grace and the task force-fails.
+        # After any restore/seed so it overrides a config.toml they carried;
+        # runs for fresh, seeded, and resumed launches alike.
+        await host_actions.write_grok_config(host, host.workdir)
+
         await host.write_text(
             "AGENTS.md",
             compose_agents_md(

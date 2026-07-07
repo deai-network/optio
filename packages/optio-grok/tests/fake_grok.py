@@ -372,6 +372,22 @@ def main() -> int:
         _record_launch()
         return _run_acp_stdio()
 
+    # `grok update --check --json`: the wrapper probes this on a cache HIT to
+    # decide whether the cached binary is stale (see host_actions
+    # ._grok_update_available). Model it as a pure, side-effect-free JSON line —
+    # NOT a scenario launch (which would write optio.log and sleep). Default:
+    # up-to-date, so a session test never triggers a cache refresh. Set
+    # FAKE_GROK_UPDATE_AVAILABLE=1 to report a newer release.
+    if "update" in argv and "--check" in argv:
+        avail = os.environ.get("FAKE_GROK_UPDATE_AVAILABLE", "").strip() in {"1", "true"}
+        latest = "9.9.9" if avail else "0.2.77"
+        print(
+            '{"currentVersion":"0.2.77","latestVersion":"%s",'
+            '"updateAvailable":%s,"error":null}'
+            % (latest, "true" if avail else "false")
+        )
+        return 0
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", action="store_true")
     parser.add_argument("-p", "--print", dest="print_mode", action="store_true")
