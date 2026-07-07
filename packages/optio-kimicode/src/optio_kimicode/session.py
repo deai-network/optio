@@ -583,13 +583,15 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             # ConversationViewProps → KimiCodeView). The engine-neutral session
             # controls are projected from the ACP configOptions surface captured
             # at bootstrap (authed; exact ids the ACP setters accept): model
-            # (select) + thinking (segmented off/on) + mode (select). kimi is
-            # the one engine that surfaces more than just the model control.
-            # config.model overrides the model control's initial value;
-            # otherwise the live current values are shown.
+            # (select) + reasoning_effort (graded thinking slider) + mode
+            # (select). kimi is the one engine that surfaces more than just the
+            # model control. config.model / config.reasoning_effort override the
+            # respective control's initial value; otherwise the live current
+            # values are shown.
             controls = kimi_models.parse_all_controls(
                 conversation.session_config_options,
                 default_model=config.model,
+                default_effort=config.reasoning_effort,
             )
             # widgetData.uploadUrl token; see optio_agents.uploads.upload_url_token.
             upload_url = upload_url_token(ctx._db.name, ctx._prefix, ctx.process_id)

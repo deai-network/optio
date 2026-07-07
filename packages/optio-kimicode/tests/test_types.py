@@ -1,8 +1,9 @@
 """Tests for KimiCodeTaskConfig validation (Appendix D surface).
 
 Ported from optio-grok's type tests; kimi deltas: effort is a validated
-enum (low|medium|high|xhigh|max), model stays an unvalidated alias string,
-and there are no ttyd / no_leader / reasoning_effort fields.
+enum (low|medium|high|xhigh|max), reasoning_effort is a separate validated
+enum (off|low|medium|high|xhigh|max) seeding the live graded thinking slider,
+and model stays an unvalidated alias string.
 """
 
 import pytest
@@ -62,6 +63,35 @@ def test_effort_none_ok():
 def test_bad_effort_rejected():
     with pytest.raises(ValueError, match="effort"):
         KimiCodeTaskConfig(consumer_instructions="x", effort="ultra")
+
+
+# --- reasoning_effort enum (live graded thinking slider seed) ---------------
+
+
+@pytest.mark.parametrize(
+    "level", ["off", "low", "medium", "high", "xhigh", "max"]
+)
+def test_valid_reasoning_effort_accepted(level):
+    cfg = KimiCodeTaskConfig(consumer_instructions="x", reasoning_effort=level)
+    assert cfg.reasoning_effort == level
+
+
+def test_reasoning_effort_none_ok():
+    assert KimiCodeTaskConfig(consumer_instructions="x").reasoning_effort is None
+
+
+def test_bad_reasoning_effort_rejected():
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        KimiCodeTaskConfig(consumer_instructions="x", reasoning_effort="ultra")
+
+
+def test_reasoning_effort_independent_of_effort():
+    # the two effort fields are orthogonal: launch --effort has no 'off',
+    # the live slider seed does.
+    cfg = KimiCodeTaskConfig(
+        consumer_instructions="x", effort="high", reasoning_effort="off"
+    )
+    assert cfg.effort == "high" and cfg.reasoning_effort == "off"
 
 
 # --- permission_mode -------------------------------------------------------

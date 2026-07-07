@@ -477,8 +477,13 @@ class KimiCodeConversation:
         Routing:
           * ``model`` -> ``session/set_model`` (the experimental
             ``unstable_setSessionModel {sessionId, modelId}``; LIVE-VERIFIED).
-          * everything else (``thinking``, ``mode``, …) -> the generic
-            ``session/set_config_option``.
+          * ``reasoning_effort`` -> ``session/set_config_option`` with
+            ``configId:"thinking"``. The engine-neutral control id is
+            ``reasoning_effort`` (the graded thinking slider), but the ACP
+            configId the fork dispatches on is ``thinking`` — so the id is
+            remapped here (the graded level string is passed through as-is).
+          * everything else (``mode``, …) -> the generic
+            ``session/set_config_option`` (configId == control_id).
 
         **VERIFIED against the kimi-code fork** (``packages/acp-adapter/src/
         server.ts:setSessionConfigOption`` + ``@agentclientprotocol/sdk`` 0.23.0
@@ -503,8 +508,12 @@ class KimiCodeConversation:
                 "sessionId": self._session_id, "modelId": value,
             })
             return
+        # The graded reasoning-effort slider is projected with control id
+        # ``reasoning_effort``, but the fork's ACP configId is ``thinking``; bridge
+        # the id here so the level string dispatches on the right config option.
+        config_id = "thinking" if control_id == "reasoning_effort" else control_id
         await self._request("session/set_config_option", {
-            "sessionId": self._session_id, "configId": control_id, "value": value,
+            "sessionId": self._session_id, "configId": config_id, "value": value,
         })
 
     async def close(self) -> None:

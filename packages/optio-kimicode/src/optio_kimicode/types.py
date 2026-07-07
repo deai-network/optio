@@ -77,6 +77,17 @@ _VALID_PERMISSION_MODES = {"manual", "auto", "yolo"}
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
 _VALID_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 
+# Live reasoning-effort level for the graded ``thinking`` session control
+# (fork ``kimi-code >= 0.23.1-csillag.2`` / ``csillag/acp-graded-thinking``).
+# Distinct from ``effort`` (the launch flag): this seeds the live
+# ``reasoning_effort`` slider's initial value (projected from the graded
+# ``configOptions`` thinking option) and includes ``off`` — the level the
+# fork exposes when a model can disable thinking entirely. Applied at launch
+# like ``model`` (it overrides the control's initial displayed value; live
+# changes route to ``session/set_config_option {configId:"thinking"}``).
+ReasoningEffort = Literal["off", "low", "medium", "high", "xhigh", "max"]
+_VALID_REASONING_EFFORTS = {"off", "low", "medium", "high", "xhigh", "max"}
+
 # ``ToolVerbosity`` (tool-call rendering detail) and ``ThinkingVerbosity``
 # (reasoning-trace visibility) are imported from optio_agents; the validation
 # sets stay local (consumed by __post_init__).
@@ -116,6 +127,12 @@ class KimiCodeTaskConfig:
     # as ``--effort`` and IS validated against the fixed low..max enum.
     model: str | None = None
     effort: Effort | None = None
+    # Live graded reasoning-effort seed for the ``reasoning_effort`` session
+    # control (the fork's now-graded ``thinking`` configOption). Applied at
+    # launch as the slider's initial value (like ``model``); live changes route
+    # to ``session/set_config_option {configId:"thinking"}``. Validated against
+    # the off..max enum. Independent of ``effort`` (the ``--effort`` launch flag).
+    reasoning_effort: ReasoningEffort | None = None
 
     ssh: SSHConfig | None = None
 
@@ -275,6 +292,14 @@ class KimiCodeTaskConfig:
             raise ValueError(
                 f"KimiCodeTaskConfig.effort={self.effort!r} is not one of "
                 f"{sorted(_VALID_EFFORTS)}"
+            )
+        if (
+            self.reasoning_effort is not None
+            and self.reasoning_effort not in _VALID_REASONING_EFFORTS
+        ):
+            raise ValueError(
+                f"KimiCodeTaskConfig.reasoning_effort={self.reasoning_effort!r} "
+                f"is not one of {sorted(_VALID_REASONING_EFFORTS)}"
             )
         if self.mode not in ("iframe", "conversation"):
             raise ValueError(

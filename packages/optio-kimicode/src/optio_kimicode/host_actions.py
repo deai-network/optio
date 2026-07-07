@@ -67,6 +67,14 @@ _KIMICODE_CACHE_DIR_SHELL_DEFAULT = (
 # ``<cache_dir>/kimi``. Replaces the upstream vendor installer: the fork build
 # (csillag/kimi-code) carries the iframe-embedding fixes and is version-gated, so
 # a stock upstream ``kimi`` on the worker is never adopted.
+#
+# FORK FLOOR: the live graded reasoning-effort control (the ``reasoning_effort``
+# slider projected from the ``thinking`` configOption; see models.parse_all_controls
+# + conversation.set_control) needs ``kimi-code >= 0.23.1-csillag.2``
+# (``csillag/acp-graded-thinking``), which upgraded the former 2-entry off/on
+# thinking toggle into an ordered effort list over ACP. smart-install always
+# resolves the latest fork release, so this floor is satisfied by provisioning;
+# it is recorded here as the capability gate for the graded thinking surface.
 _KIMICODE_SMART_INSTALL_URL = (
     "https://raw.githubusercontent.com/csillag/kimi-code/main/smart-install.sh"
 )

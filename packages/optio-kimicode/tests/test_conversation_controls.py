@@ -13,7 +13,7 @@ contract:
   * a live ``config_option_update`` notification fanned out as a synthetic
     ``x-optio-control-update`` full-snapshot event.
   * ``models.parse_all_controls`` projecting the ACP ``configOptions`` surface
-    into model(select) + thinking(segmented off/on) + mode(select).
+    into model(select) + reasoning_effort(graded thinking slider) + mode(select).
 
 Uses the same in-process fake ACP handle as test_conversation.py for
 deterministic wire assertions.
@@ -108,16 +108,18 @@ async def test_set_control_model_sends_set_model(convo):
 
 
 @pytest.mark.asyncio
-async def test_set_control_thinking_sends_set_config_option(convo):
-    # Non-model controls route through the generic session/set_config_option;
-    # the option key is `configId` (verified), value is the raw string.
+async def test_set_control_reasoning_effort_maps_to_thinking_config_id(convo):
+    # The graded effort slider is projected with control id `reasoning_effort`,
+    # but the ACP configId is `thinking` — set_control bridges the id and passes
+    # the graded level string through unchanged (session/set_config_option;
+    # option key is `configId`, verified against the fork).
     c, handle = convo
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle)
-    task = asyncio.create_task(c.set_control("thinking", "on"))
+    task = asyncio.create_task(c.set_control("reasoning_effort", "high"))
     msg = await asyncio.wait_for(handle.stdin.lines.get(), 1)
     assert msg["method"] == "session/set_config_option"
-    assert msg["params"] == {"sessionId": "s1", "configId": "thinking", "value": "on"}
+    assert msg["params"] == {"sessionId": "s1", "configId": "thinking", "value": "high"}
     handle.stdout.feed({"jsonrpc": "2.0", "id": msg["id"], "result": {}})
     await asyncio.wait_for(task, 1)
     handle.stdout.eof()
@@ -170,9 +172,11 @@ async def test_config_option_update_emits_control_snapshot(convo):
                  "options": [{"value": "kimi-k2", "name": "Kimi K2"},
                              {"value": "kimi-k2-thinking", "name": "Kimi K2 Thinking"}]},
                 {"type": "select", "id": "thinking", "name": "Thinking",
-                 "category": "thought_level", "currentValue": "on",
-                 "options": [{"value": "off", "name": "Thinking Off"},
-                             {"value": "on", "name": "Thinking On"}]},
+                 "category": "thought_level", "currentValue": "high",
+                 "options": [{"value": "off", "name": "Off"},
+                             {"value": "low", "name": "Low"},
+                             {"value": "medium", "name": "Medium"},
+                             {"value": "high", "name": "High"}]},
             ],
         },
     }})
@@ -186,9 +190,12 @@ async def test_config_option_update_emits_control_snapshot(convo):
 
     synthetic = await asyncio.wait_for(_wait_for_synthetic(), 2)
     controls = synthetic["controls"]
-    assert [c["id"] for c in controls] == ["model", "thinking"]
+    # The `thinking` configOption is projected to the `reasoning_effort` slider;
+    # its live currentValue tracks the snapshot (re-emit-on-change path).
+    assert [c["id"] for c in controls] == ["model", "reasoning_effort"]
     assert controls[0]["value"] == "kimi-k2-thinking"
-    assert controls[1]["kind"] == "segmented" and controls[1]["value"] == "on"
+    assert controls[1]["kind"] == "slider" and controls[1]["value"] == "high"
+    assert controls[1]["levels"] == ["off", "low", "medium", "high"]
     # current_model_id tracks the live snapshot.
     assert c.current_model_id == "kimi-k2-thinking"
     handle.stdout.eof()
@@ -198,16 +205,20 @@ async def test_config_option_update_emits_control_snapshot(convo):
 # --- parse_all_controls projection ------------------------------------------
 
 
-def test_parse_all_controls_model_thinking_mode():
+def test_parse_all_controls_model_effort_mode():
+    # The graded `thinking` configOption (fork >= 0.23.1-csillag.2) projects to
+    # a `reasoning_effort` slider whose ordered levels ARE the option values.
     config_options = [
         {"type": "select", "id": "model", "name": "Model", "category": "model",
          "currentValue": "kimi-k2",
          "options": [{"value": "kimi-k2", "name": "Kimi K2"},
                      {"value": "kimi-k2-thinking", "name": "Kimi K2 Thinking"}]},
         {"type": "select", "id": "thinking", "name": "Thinking",
-         "category": "thought_level", "currentValue": "off",
-         "options": [{"value": "off", "name": "Thinking Off"},
-                     {"value": "on", "name": "Thinking On"}]},
+         "category": "thought_level", "currentValue": "medium",
+         "options": [{"value": "off", "name": "Off"},
+                     {"value": "low", "name": "Low"},
+                     {"value": "medium", "name": "Medium"},
+                     {"value": "high", "name": "High"}]},
         {"type": "select", "id": "mode", "name": "Mode", "category": "mode",
          "currentValue": "default",
          "options": [{"value": "default", "name": "Default"},
@@ -215,18 +226,20 @@ def test_parse_all_controls_model_thinking_mode():
     ]
     controls = parse_all_controls(config_options)
     kinds = {c.id: c.kind for c in controls}
-    assert kinds == {"model": "select", "thinking": "segmented", "mode": "select"}
+    # the old id="thinking" control is gone; it is now id="reasoning_effort".
+    assert kinds == {"model": "select", "reasoning_effort": "slider", "mode": "select"}
 
     by_id = {c.id: c for c in controls}
     assert by_id["model"].category == "model" and by_id["model"].value == "kimi-k2"
-    assert by_id["thinking"].levels == ["off", "on"]
-    assert by_id["thinking"].category == "thought_level" and by_id["thinking"].value == "off"
-    # multi-option controls are switchable -> not disabled
-    assert by_id["thinking"].disabled is False and by_id["model"].disabled is False
+    eff = by_id["reasoning_effort"]
+    assert eff.levels == ["off", "low", "medium", "high"]
+    assert eff.category == "thought_level" and eff.value == "medium"
+    # an 'off'-capable graded slider is switchable -> not disabled
+    assert eff.disabled is False and by_id["model"].disabled is False
     assert by_id["mode"].value == "default"
-    # to_dict is camelCase-serializable for widgetData.
-    d = by_id["model"].to_dict()
-    assert d["options"][1] == {"value": "kimi-k2-thinking", "label": "Kimi K2 Thinking", "disabled": False}
+    # slider serializes its ordered levels for widgetData.
+    assert eff.to_dict()["kind"] == "slider"
+    assert eff.to_dict()["levels"] == ["off", "low", "medium", "high"]
 
 
 def test_parse_all_controls_default_model_override():
@@ -238,20 +251,39 @@ def test_parse_all_controls_default_model_override():
     assert controls[0].value == "kimi-k2-thinking"
 
 
-def test_parse_all_controls_always_thinking_locks_single_option():
-    # An always-thinking model advertises thinking as a single 'on' option ->
-    # the control is disabled with a thinking-specific hover reason.
+def test_parse_all_controls_default_effort_override():
+    # config.reasoning_effort overrides the slider's initial value (like model).
+    config_options = [
+        {"type": "select", "id": "thinking", "category": "thought_level",
+         "currentValue": "low",
+         "options": [{"value": "off", "name": "Off"},
+                     {"value": "low", "name": "Low"},
+                     {"value": "high", "name": "High"}]},
+    ]
+    by_id = {c.id: c for c in parse_all_controls(config_options, default_effort="high")}
+    assert by_id["reasoning_effort"].value == "high"
+
+
+def test_parse_all_controls_always_thinking_disables_effort_slider():
+    # An always-thinking model omits the 'off' level (reasoning can't be turned
+    # off) -> the slider is disabled with a thinking-specific hover reason.
     config_options = [
         {"type": "select", "id": "model", "currentValue": "k2t",
          "options": [{"value": "k2t", "name": "K2 Thinking"},
                      {"value": "k2", "name": "K2"}]},
         {"type": "select", "id": "thinking", "category": "thought_level",
-         "currentValue": "on", "options": [{"value": "on", "name": "Thinking On"}]},
+         "currentValue": "high",
+         "options": [{"value": "low", "name": "Low"},
+                     {"value": "medium", "name": "Medium"},
+                     {"value": "high", "name": "High"}]},
     ]
     by_id = {c.id: c for c in parse_all_controls(config_options)}
-    assert by_id["thinking"].disabled is True
-    assert by_id["thinking"].why_disabled == "This model always thinks; thinking can't be turned off."
-    assert by_id["thinking"].to_dict()["whyDisabled"]
+    eff = by_id["reasoning_effort"]
+    assert eff.kind == "slider" and eff.disabled is True
+    assert eff.why_disabled == "This model always thinks; thinking can't be turned off."
+    assert eff.to_dict()["whyDisabled"]
+    # the graded levels are still carried so the locked slider shows the grade.
+    assert eff.levels == ["low", "medium", "high"] and eff.value == "high"
     # a 2-model picker is still switchable
     assert by_id["model"].disabled is False
 

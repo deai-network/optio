@@ -110,37 +110,46 @@ def _copy_fallback() -> dict:
     }
 
 
-def parse_all_controls(session_config_options, default_model=None):
+def parse_all_controls(session_config_options, default_model=None, default_effort=None):
     """Project kimi's ACP ``configOptions`` surface into ``SessionControl[]``.
 
     kimi advertises its live pickers as a unified ``configOptions`` list
     (PLAN D11, kimi-code fork ``packages/acp-adapter/src/config-options.ts``),
     NOT grok/cursor's ``models`` block. Each option is projected by its id:
 
-      * ``model``    -> ``select``    (category ``model``) — the model picker.
-      * ``thinking`` -> ``segmented`` (category ``thought_level``) — a 2-entry
-        ``off`` / ``on`` toggle. **VERIFIED against the fork**
-        (``config-options.ts:buildThinkingOption``): the wire shape is a
-        2-entry SELECT (``off``/``on``), NOT a graded effort list, and the
-        option is present only when the current model is ``thinkingSupported``.
-        Rendered as a 2-level ``segmented`` so its string value round-trips
-        unchanged to ``session/set_config_option`` (the server compares
-        ``value === 'on'``).
-      * ``mode``     -> ``select``    (category ``mode``) — the 4-mode taxonomy.
+      * ``model``    -> ``select`` (category ``model``) — the model picker.
+      * ``thinking`` -> ``slider`` (id ``reasoning_effort``, category
+        ``thought_level``) — the GRADED reasoning-effort control. **Requires
+        the fork ``kimi-code >= 0.23.1-csillag.2`` / ``csillag/acp-graded-thinking``**,
+        which upgrades the former 2-entry ``off``/``on`` thinking toggle into an
+        ordered effort list. Two wire shapes:
+          - ``options = [off, <graded…>]`` (``off`` present) → an ENABLED slider
+            whose ordered levels ARE the option values, so the chosen level
+            round-trips unchanged to ``session/set_config_option`` (configId
+            ``thinking``; see conversation.py, which maps the ``reasoning_effort``
+            control id back to configId ``thinking``).
+          - ``options`` WITHOUT ``off`` → an always-thinking model (the runtime
+            cannot disable reasoning) → a DISABLED slider + ``ALWAYS_THINKING_REASON``.
+        Note the projected control ``id`` is ``reasoning_effort`` while the ACP
+        ``configId`` stays ``thinking`` — the two are bridged in set_control.
+      * ``mode``     -> ``select`` (category ``mode``) — the 4-mode taxonomy.
 
     Unknown option ids fall back to a generic ``boolean``/``select`` by their
     ACP ``type``. The ``default_model`` argument (fed from ``config.model``)
-    overrides the model control's initial value; otherwise the live
-    ``currentValue`` is shown. Missing/malformed input yields an empty list.
+    overrides the model control's initial value; ``default_effort`` (fed from
+    ``config.reasoning_effort``) overrides the reasoning-effort slider's initial
+    value — otherwise each control's live ``currentValue`` is shown.
+    Missing/malformed input yields an empty list.
     """
     from optio_agents.session_controls import (
         SINGLE_OPTION_REASON,
         ControlOption,
         SessionControl,
+        effort_control,
     )
 
-    # An always-thinking model advertises thinking as a single 'on' option (the
-    # runtime cannot disable it); surface that as a disabled control + reason.
+    # An always-thinking model advertises no 'off' level (the runtime cannot
+    # disable reasoning); surface that as a disabled control + reason.
     ALWAYS_THINKING_REASON = "This model always thinks; thinking can't be turned off."
 
     controls: list = []
@@ -167,18 +176,19 @@ def parse_all_controls(session_config_options, default_model=None):
                 why_disabled=SINGLE_OPTION_REASON if locked else None,
             ))
         elif oid == "thinking":
-            # off/on wire (see docstring) -> a 2-level segmented; the levels ARE
-            # the option values so the segmented value maps 1:1 to configId's
-            # accepted string. An always-thinking model collapses this to a
-            # single 'on' -> disabled with a thinking-specific reason.
+            # Graded reasoning-effort slider (fork >= 0.23.1-csillag.2). The
+            # ordered option values ARE the slider levels, so the chosen level
+            # round-trips 1:1 to configId 'thinking'. A model that can disable
+            # reasoning advertises an 'off' level -> enabled slider; an
+            # always-thinking model omits 'off' -> disabled + reason.
             levels = [o.value for o in options]
-            controls.append(SessionControl(
-                id="thinking", kind="segmented", label="Thinking",
-                category="thought_level",
-                value=(cur or (levels[0] if levels else "")),
+            always_thinking = "off" not in levels
+            controls.append(effort_control(
                 levels=levels,
-                disabled=locked,
-                why_disabled=ALWAYS_THINKING_REASON if locked else None,
+                current=(default_effort or cur),
+                disabled=always_thinking,
+                why_disabled=ALWAYS_THINKING_REASON if always_thinking else None,
+                label="Thinking",
             ))
         elif oid == "mode":
             controls.append(SessionControl(
