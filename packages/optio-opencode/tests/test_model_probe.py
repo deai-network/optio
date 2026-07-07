@@ -143,6 +143,118 @@ def test_parse_model_variants_malformed():
     assert model_probe.parse_model_variants({"providers": "nope"}) == {}
 
 
+# A verbatim slice of a real ``GET /config/providers`` response captured from
+# opencode 1.14.45 — two models kept unmodified from the wire:
+#   * opencode/deepseek-v4-flash — reasoning + a populated ``variants`` map whose
+#     keys are the graded effort levels (the effort slider must appear).
+#   * xai/grok-4.20-multi-agent-0309 — reasoning:true but ``variants: {}`` (the
+#     real shape for the 23/94 reasoning models that carry no effort presets;
+#     the whole xai provider has zero variant-bearing models). Must show NO
+#     effort control.
+# This guards the exact wire shape (models is a DICT keyed by modelId; variants
+# live at ``models[<id>].variants``) that a fabricated fixture had gotten wrong.
+_REAL_PROVIDERS_SLICE = {
+    "providers": [
+        {
+            "id": "opencode",
+            "name": "OpenCode Zen",
+            "models": {
+                "deepseek-v4-flash": {
+                    "id": "deepseek-v4-flash",
+                    "providerID": "opencode",
+                    "api": {
+                        "id": "deepseek-v4-flash",
+                        "url": "https://opencode.ai/zen/v1",
+                        "npm": "@ai-sdk/openai-compatible",
+                    },
+                    "name": "DeepSeek V4 Flash",
+                    "family": "deepseek-flash",
+                    "capabilities": {
+                        "temperature": True,
+                        "reasoning": True,
+                        "attachment": False,
+                        "toolcall": True,
+                        "input": {"text": True, "audio": False, "image": False,
+                                  "video": False, "pdf": False},
+                        "output": {"text": True, "audio": False, "image": False,
+                                   "video": False, "pdf": False},
+                        "interleaved": {"field": "reasoning_content"},
+                    },
+                    "cost": {"input": 0.14, "output": 0.28,
+                             "cache": {"read": 0.028, "write": 0}},
+                    "limit": {"context": 1000000, "output": 384000},
+                    "status": "active",
+                    "options": {},
+                    "headers": {},
+                    "release_date": "2026-04-24",
+                    "variants": {
+                        "low": {"reasoningEffort": "low"},
+                        "medium": {"reasoningEffort": "medium"},
+                        "high": {"reasoningEffort": "high"},
+                        "max": {"reasoningEffort": "max"},
+                    },
+                },
+            },
+        },
+        {
+            "id": "xai",
+            "name": "xAI",
+            "models": {
+                "grok-4.20-multi-agent-0309": {
+                    "id": "grok-4.20-multi-agent-0309",
+                    "providerID": "xai",
+                    "api": {"id": "grok-4.20-multi-agent-0309", "url": "",
+                            "npm": "@ai-sdk/xai"},
+                    "name": "Grok 4.20 Multi-Agent",
+                    "family": "grok",
+                    "capabilities": {
+                        "temperature": True,
+                        "reasoning": True,
+                        "attachment": True,
+                        "toolcall": False,
+                        "input": {"text": True, "audio": False, "image": True,
+                                  "video": False, "pdf": True},
+                        "output": {"text": True, "audio": False, "image": False,
+                                   "video": False, "pdf": False},
+                        "interleaved": False,
+                    },
+                    "cost": {"input": 1.25, "output": 2.5,
+                             "cache": {"read": 0.2, "write": 0}},
+                    "limit": {"context": 1000000, "output": 30000},
+                    "status": "active",
+                    "options": {},
+                    "headers": {},
+                    "release_date": "2026-03-09",
+                    "variants": {},
+                },
+            },
+        },
+    ],
+    "default": {},
+}
+
+
+def test_parse_model_variants_real_config_providers_slice():
+    """Against a verbatim opencode 1.14.45 wire slice: the variant-bearing model
+    yields its ordered effort keys; the reasoning-but-``variants:{}`` model is
+    omitted (⇒ no effort control), matching the 23/94 zero-variant reality."""
+    v = model_probe.parse_model_variants(_REAL_PROVIDERS_SLICE)
+    # variant keys read from models[<id>].variants (the real path), order kept
+    assert v == {"opencode/deepseek-v4-flash": ["low", "medium", "high", "max"]}
+    # the reasoning model with an empty variants map contributes nothing
+    assert "xai/grok-4.20-multi-agent-0309" not in v
+
+
+def test_parse_model_ids_real_config_providers_slice():
+    """The id enumeration walks the same DICT-keyed ``models`` map and yields both
+    models (variant presence is irrelevant to id enumeration)."""
+    ids = model_probe.parse_model_ids(_REAL_PROVIDERS_SLICE)
+    assert ids == [
+        "opencode/deepseek-v4-flash",
+        "xai/grok-4.20-multi-agent-0309",
+    ]
+
+
 def test_disabled_map_uses_opencode_reason():
     m = model_probe.disabled_map({"a": True, "b": False})
     assert m == {"b": model_probe.DISABLED_REASON}
