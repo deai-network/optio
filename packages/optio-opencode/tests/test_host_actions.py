@@ -157,6 +157,19 @@ async def test_launch_opencode_env_carries_isolation_and_db():
     assert env["OPENCODE_DB"] == "/td/opencode.db"
 
 
+async def test_launch_opencode_env_disables_in_agent_autoupdate():
+    """The launched opencode server must have its in-agent auto-updater
+    disabled (OPENCODE_DISABLE_AUTOUPDATE=1) so it never self-downloads a new
+    binary mid-session and fights optio's pinned cache. The binary reads this
+    exact var (update fn early-returns on it); optio keeps the cache fresh via
+    smart-install.sh --check instead."""
+    host = _RecordingLaunchHost(workdir="/wd", taskdir="/td")
+    await host_actions.launch_opencode(host, "pw")
+    env = host.launch_env
+    assert env is not None
+    assert env["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
+
+
 async def test_launch_opencode_env_merges_extra_env_on_top():
     host = _RecordingLaunchHost(workdir="/wd", taskdir="/td")
     await host_actions.launch_opencode(

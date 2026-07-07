@@ -488,9 +488,16 @@ async def launch_opencode(
     # The browser-suppression env (PATH prepend + BROWSER) comes from extra_env.
     # The HOME/XDG isolation env (from _isolation_env) points opencode's
     # auth/config/data at <workdir>/home so per-task seeding works.
+    # OPENCODE_DISABLE_AUTOUPDATE=1 disables opencode's in-agent auto-updater
+    # (the binary's update fn early-returns on this var). A managed wrapper pins
+    # the binary via optio's own smart-install.sh --check, so a self-download
+    # would fight our version control and can stall/bloat a session mid-run;
+    # disabling it here is safe because the cache stays fresh independently.
+    # Set as a base default; a caller extra_env may still override.
     env = {
         **_isolation_env(host),
         "OPENCODE_DB": f"{host.taskdir}/opencode.db",
+        "OPENCODE_DISABLE_AUTOUPDATE": "1",
         **(extra_env or {}),
     }
 
