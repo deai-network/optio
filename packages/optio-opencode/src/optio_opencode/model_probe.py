@@ -25,6 +25,7 @@ PROBE_CACHE_TTL = _shared.PROBE_CACHE_TTL
 DISABLED_REASON = "Not usable with this account (the provider rejected it)"
 
 probe_cache_key = _shared.probe_cache_key
+run_probe_child = _shared.run_probe_child
 
 
 def _error_from_event(ev: dict):

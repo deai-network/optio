@@ -138,37 +138,54 @@ async def _probe_or_cached_models(
     if usable is None:
         if resuming:
             # A resumed session never re-probes: the plan was settled on the
-            # fresh run (and a cache miss here must not pay the probe cost).
+            # fresh run (and a cache miss here must not pay the probe cost). No
+            # child is spawned — exactly like the download only spawns when a
+            # download is needed.
             return models
-        # Log the milestone ONCE, then advance the progress bar silently per
-        # model (percent-only calls are coalesced — no per-model log spam).
-        ctx.report_progress(0.0, "Checking available models…")
 
-        def _report(i: int, total: int, _mid: str) -> None:
-            ctx.report_progress(i / total * 100.0)
+        # A fresh probe runs as a CHILD subtask so its "Checking available
+        # models…" progress is its own node in the task tree (like the binary
+        # download), not the parent's. The child drives the OPERATOR conversation
+        # (set_model → probe → restore), saves the cache, and purges the throwaway
+        # probe session — it captures this parent scope (conversation / host / db)
+        # since it is an asyncio task in the same process, and
+        # run_child_task_with_result blocks until it publishes, so the parent
+        # never touches the conversation concurrently.
+        async def _probe(child_ctx):
+            # Log the milestone ONCE, then advance the progress bar silently per
+            # model (percent-only calls are coalesced — no per-model log spam).
+            child_ctx.report_progress(0.0, "Checking available models…")
 
-        try:
-            usable = await model_probe.probe_models(conversation, ids, report=_report)
-        except Exception:  # noqa: BLE001
-            _LOG.exception("model probe failed; showing the unfiltered list")
+            def _report(i: int, total: int, _mid: str) -> None:
+                child_ctx.report_progress(i / total * 100.0)
+
+            probed = await model_probe.probe_models(conversation, ids, report=_report)
+            if seed_id is not None:
+                try:
+                    await model_probe.save_probe_cache(
+                        ctx._db, ctx._prefix, seed_id, probed,
+                    )
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("model-probe cache save failed")
+            # Drop the probe's throwaway turns so they never leak into the
+            # operator's conversation (fresh ACP session; the catalogue is
+            # unchanged), then purge the probe session's on-disk records so a
+            # later resume can't rediscover them (see purge_cursor_session).
+            probe_sid = await conversation.reset_session()
+            if probe_sid:
+                try:
+                    await host_actions.purge_cursor_session(host, probe_sid)
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("purging the probe session failed")
+            return probed
+
+        usable = await model_probe.run_probe_child(
+            ctx, name="Checking available models", description=None, probe=_probe,
+        )
+        if usable is None:
+            # The probe child failed / never published — show the unfiltered
+            # list (best-effort).
             return models
-        if seed_id is not None:
-            try:
-                await model_probe.save_probe_cache(
-                    ctx._db, ctx._prefix, seed_id, usable,
-                )
-            except Exception:  # noqa: BLE001
-                _LOG.exception("model-probe cache save failed")
-        # Drop the probe's throwaway turns so they never leak into the operator's
-        # conversation (fresh ACP session; the catalogue is unchanged), then
-        # purge the probe session's on-disk records so a later resume can't
-        # rediscover them (see host_actions.purge_cursor_session).
-        probe_sid = await conversation.reset_session()
-        if probe_sid:
-            try:
-                await host_actions.purge_cursor_session(host, probe_sid)
-            except Exception:  # noqa: BLE001
-                _LOG.exception("purging the probe session failed")
     return model_probe.apply_probe(models, usable)
 
 

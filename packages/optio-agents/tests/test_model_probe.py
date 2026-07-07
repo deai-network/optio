@@ -9,6 +9,9 @@ error".
 """
 from datetime import datetime, timedelta, timezone
 
+from optio_core.exceptions import ChildProcessFailed, ResultNotPublished
+from optio_core.models import ChildHandle
+
 from optio_agents import model_probe
 
 
@@ -136,6 +139,109 @@ def test_apply_probe_disables_only_unusable_with_reason():
 def test_disabled_map_keys_only_unusable():
     m = model_probe.disabled_map({"a": True, "b": False, "c": False}, "why")
     assert m == {"b": "why", "c": "why"}
+
+
+class _ProbeChildFakeCtx:
+    """ProcessContext stand-in for ``run_probe_child``: records the child
+    TaskInstances handed to ``run_child_task_with_result`` and runs their
+    ``execute`` in-process (this object doubles as the child ctx), returning a
+    ChildHandle carrying whatever the child published. ``raise_on_spawn`` makes
+    the spawn surface a failure instead (a child that failed / never published)."""
+
+    def __init__(self, *, process_id="root.p", raise_on_spawn=None):
+        self.process_id = process_id
+        self._child_counter = {"next": 0}
+        self.spawned = []
+        self.progress = []
+        self._published = None
+        self._did_publish = False
+        self._raise_on_spawn = raise_on_spawn
+
+    def report_progress(self, pct, msg=None):
+        self.progress.append((pct, msg))
+
+    def publish_result(self, obj):
+        self._published = obj
+        self._did_publish = True
+
+    async def run_child_task_with_result(self, task, **kw):
+        self.spawned.append(task)
+        if self._raise_on_spawn is not None:
+            raise self._raise_on_spawn
+        await task.execute(self)
+        if not self._did_publish:
+            raise ResultNotPublished(task.process_id)
+        return ChildHandle(result=self._published, task=None)
+
+
+async def test_run_probe_child_returns_published_result_from_a_child_task():
+    ctx = _ProbeChildFakeCtx(process_id="root.parent")
+    seen = {}
+
+    async def _probe(child_ctx):
+        child_ctx.report_progress(0.0, "Checking available models…")
+        seen["ctx"] = child_ctx
+        return {"m-good": True, "m-bad": False}
+
+    result = await model_probe.run_probe_child(
+        ctx, name="Checking available models", description="probe desc", probe=_probe,
+    )
+    assert result == {"m-good": True, "m-bad": False}
+    # spawned exactly one child, nested under the parent process id
+    assert len(ctx.spawned) == 1
+    task = ctx.spawned[0]
+    assert task.process_id == "root.parent.model-probe-0"
+    assert task.name == "Checking available models"
+    assert task.description == "probe desc"
+    # the probe ran under the CHILD ctx and reported its own progress there
+    assert (0.0, "Checking available models…") in ctx.progress
+    assert seen["ctx"] is ctx
+
+
+async def test_run_probe_child_passes_a_list_result_through_unchanged():
+    """The result type is generic — cursor publishes a gated model LIST."""
+    ctx = _ProbeChildFakeCtx()
+
+    async def _probe(child_ctx):
+        return [{"id": "a"}, {"id": "b", "disabled": True}]
+
+    result = await model_probe.run_probe_child(
+        ctx, name="Checking available models", description=None, probe=_probe,
+    )
+    assert result == [{"id": "a"}, {"id": "b", "disabled": True}]
+
+
+async def test_run_probe_child_returns_none_when_child_never_publishes():
+    """Best-effort: a child that ends without publishing (ResultNotPublished) is
+    swallowed → None so the caller keeps its unfiltered-picker fallback."""
+    ctx = _ProbeChildFakeCtx(
+        raise_on_spawn=ResultNotPublished("root.p.model-probe-0"),
+    )
+
+    async def _probe(child_ctx):
+        return {"x": True}
+
+    result = await model_probe.run_probe_child(
+        ctx, name="Checking available models", description=None, probe=_probe,
+    )
+    assert result is None
+    assert len(ctx.spawned) == 1
+
+
+async def test_run_probe_child_returns_none_when_child_fails():
+    ctx = _ProbeChildFakeCtx(
+        raise_on_spawn=ChildProcessFailed(
+            "probe", "root.p.model-probe-0", RuntimeError("boom"),
+        ),
+    )
+
+    async def _probe(child_ctx):
+        raise RuntimeError("boom")
+
+    result = await model_probe.run_probe_child(
+        ctx, name="Checking available models", description=None, probe=_probe,
+    )
+    assert result is None
 
 
 async def test_probe_cache_roundtrip_and_ttl(mongo_db):

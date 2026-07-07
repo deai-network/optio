@@ -27,6 +27,9 @@ import inspect
 import logging
 from datetime import datetime, timedelta, timezone
 
+from optio_core.exceptions import ResultNotPublished
+from optio_core.models import TaskInstance
+
 _LOG = logging.getLogger(__name__)
 
 PROBE_QUESTION = "What is the capital city of Hungary?"
@@ -71,6 +74,55 @@ async def _probe_turn(conversation, question: str, timeout: float, *, error_from
         unsub_msg()
         if unsub_evt is not None:
             unsub_evt()
+
+
+async def run_probe_child(ctx, *, name: str, description: str | None = None, probe):
+    """Run ``probe`` as a CHILD subtask so the model probe owns its own progress
+    node in the task tree — exactly like the binary download (``download_file`` →
+    ``run_child``), instead of borrowing the parent's "Checking available models…"
+    line.
+
+    ``probe`` is ``async (child_ctx) -> result``: it does the real work
+    (enumerate → ``probe_models`` → cache-save → build the engine result) and
+    reports progress on ``child_ctx`` (the child's ProcessContext). The child
+    publishes whatever ``probe`` returns via ``child_ctx.publish_result`` and this
+    returns that value. Because a child is an asyncio task in the same process, the
+    ``probe`` closure may capture parent-scope objects (the conversation, host, db)
+    and ``run_child_task_with_result`` blocks until the child publishes — so the
+    parent never touches those objects concurrently.
+
+    Best-effort: if the child refuses to spawn / fails / ends without publishing,
+    this logs and returns ``None`` so the caller keeps its unfiltered-picker
+    fallback. The result type is passed through unchanged (cursor: a gated model
+    LIST; opencode: a disabled MAP)."""
+    n = ctx._child_counter.get("next", 0)
+    child_process_id = f"{ctx.process_id}.model-probe-{n}"
+
+    async def _execute(child_ctx):
+        result = await probe(child_ctx)
+        child_ctx.publish_result(result)
+
+    task = TaskInstance(
+        execute=_execute,
+        process_id=child_process_id,
+        name=name,
+        description=description,
+    )
+    try:
+        handle = await ctx.run_child_task_with_result(task)
+    except ResultNotPublished:
+        _LOG.warning(
+            "model-probe child %s ended without publishing; leaving the picker "
+            "unfiltered", child_process_id,
+        )
+        return None
+    except Exception:  # noqa: BLE001 — any child failure just skips the filtering
+        _LOG.exception(
+            "model-probe child %s failed; leaving the picker unfiltered",
+            child_process_id,
+        )
+        return None
+    return handle.result
 
 
 async def probe_models(

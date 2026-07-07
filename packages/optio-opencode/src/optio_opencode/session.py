@@ -1227,31 +1227,46 @@ async def _probe_or_cached_disabled_models(
     if usable is None:
         if resuming:
             # A resumed session never re-probes: the account was settled on the
-            # fresh run (and a cache miss here must not pay the probe cost).
+            # fresh run (and a cache miss here must not pay the probe cost). No
+            # child is spawned — exactly like the download only spawns when a
+            # download is needed.
             return {}
-        model_ids = await _fetch_opencode_models(worker_port, password, directory)
-        if not model_ids:
-            return {}
-        # Log the milestone ONCE, then advance the bar silently per model.
-        ctx.report_progress(0.0, "Checking available models…")
 
-        def _report(i: int, total: int, _mid: str) -> None:
-            ctx.report_progress(i / total * 100.0)
+        # A fresh probe runs as a CHILD subtask so its "Checking available
+        # models…" progress is its own node in the task tree (like the binary
+        # download), not the parent's. The enumeration + probe + cache-save all
+        # run under the child ctx; the child captures this parent scope (port /
+        # password / directory / db) since it is an asyncio task in the same
+        # process.
+        async def _probe(child_ctx):
+            model_ids = await _fetch_opencode_models(worker_port, password, directory)
+            if not model_ids:
+                return {}
+            # Log the milestone ONCE, then advance the bar silently per model.
+            child_ctx.report_progress(0.0, "Checking available models…")
 
-        try:
-            usable = await _run_model_probe(
+            def _report(i: int, total: int, _mid: str) -> None:
+                child_ctx.report_progress(i / total * 100.0)
+
+            probed = await _run_model_probe(
                 worker_port, password, directory, model_ids, _report,
             )
-        except Exception:  # noqa: BLE001
-            _LOG.exception("model probe failed; showing the unfiltered picker")
+            if seed_key is not None:
+                try:
+                    await model_probe.save_probe_cache(
+                        ctx._db, ctx._prefix, seed_key, probed,
+                    )
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("model-probe cache save failed")
+            return probed
+
+        usable = await model_probe.run_probe_child(
+            ctx, name="Checking available models", description=None, probe=_probe,
+        )
+        if usable is None:
+            # The probe child failed / never published — show the unfiltered
+            # picker (best-effort).
             return {}
-        if seed_key is not None:
-            try:
-                await model_probe.save_probe_cache(
-                    ctx._db, ctx._prefix, seed_key, usable,
-                )
-            except Exception:  # noqa: BLE001
-                _LOG.exception("model-probe cache save failed")
     return model_probe.disabled_map(usable)
 
 

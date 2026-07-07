@@ -10,7 +10,7 @@ import pytest_asyncio
 from bson import ObjectId
 
 from optio_core.context import ProcessContext
-from optio_core.models import BasicAuth  # match the import used in session.py
+from optio_core.models import BasicAuth, ChildHandle  # match the import used in session.py
 from optio_opencode import OpencodeTaskConfig, create_opencode_task, model_probe
 from optio_opencode.session import run_opencode_session
 
@@ -98,6 +98,28 @@ async def ctx_and_captures(mongo_db, monkeypatch):
     def _publish(obj):
         ctx.published_results.append(obj)
     ctx.publish_result = _publish  # type: ignore[method-assign]
+
+    # The fresh model probe runs as a CHILD subtask (run_probe_child). This real
+    # ProcessContext has no attached executor, so run the child's execute
+    # in-process on a shim ctx that delegates to `ctx` but captures the child's
+    # publish_result LOCALLY — routing it into ctx.published_results would fool
+    # _launch, which waits for the conversation object to be published.
+    async def _run_child_task_with_result(task, **kw):
+        box: dict = {}
+
+        class _ChildCtx:
+            def report_progress(self, percent, message=None):
+                return ctx.report_progress(percent, message)
+
+            def publish_result(self, obj):
+                box["value"] = obj
+
+            def __getattr__(self, name):
+                return getattr(ctx, name)
+
+        await task.execute(_ChildCtx())
+        return ChildHandle(result=box.get("value"), task=None)
+    ctx.run_child_task_with_result = _run_child_task_with_result  # type: ignore[method-assign]
 
     yield ctx, cap, cancellation_flag
 

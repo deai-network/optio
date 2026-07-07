@@ -31,6 +31,7 @@ PROBE_CACHE_TTL = _shared.PROBE_CACHE_TTL
 DISABLED_REASON = "Not enabled in your Cursor subscription plan"
 
 probe_cache_key = _shared.probe_cache_key
+run_probe_child = _shared.run_probe_child
 
 
 async def probe_models(
