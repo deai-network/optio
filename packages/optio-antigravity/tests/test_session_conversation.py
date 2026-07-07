@@ -59,6 +59,16 @@ async def _wait_widget_upstream(optio: Optio, process_id: str, timeout: float = 
     raise AssertionError(f"{process_id} never set widgetUpstream in {timeout}s")
 
 
+async def _wait_widget_data(optio: Optio, process_id: str, timeout: float = 10.0) -> dict:
+    end = _time.monotonic() + timeout
+    while _time.monotonic() < end:
+        proc = await optio.get_process(process_id)
+        if proc is not None and proc.get("widgetData"):
+            return proc
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"{process_id} never set widgetData in {timeout}s")
+
+
 async def _read_until(resp, predicate, timeout: float = 10.0) -> dict:
     buf = b""
 
@@ -246,6 +256,10 @@ async def test_conversation_ui_session_lifecycle(shim_install_dir, task_root, mo
             "maxUploadBytes": 10_000_000,
             "fileDownload": False,
             "maxDownloadBytes": 10_000_000,
+            "uploadUrl": (
+                "{widgetProxyUrl}../../../../widget-upload/"
+                f"{mongo_db.name}/agconv4/ag-conv-ui"
+            ),
         }
         assert proc["uiWidget"] == "conversation"
 
@@ -276,10 +290,19 @@ async def test_conversation_ui_session_lifecycle(shim_install_dir, task_root, mo
 
 @pytest.mark.asyncio
 async def test_conversation_ui_file_upload_download(shim_install_dir, task_root, mongo_db):
-    """conversation_ui with show_file_upload + file_download wires the listener's
-    upload_writer/download_reader (Task 7.2): an uploaded file lands under
-    <workdir>/uploads and is then downloadable through the workdir-confined
-    reader; a ``../`` escape is refused with 403."""
+    """conversation_ui migrates file upload to the generic materialize path: the
+    session registers an in-process upload writer (resolved by
+    ``Optio.materialize_upload``) that lands the bytes under ``<workdir>/uploads``
+    and fires ``on_upload`` with that relpath; widgetData advertises the generic
+    ``uploadUrl``. file_download still serves the just-uploaded file through the
+    workdir-confined listener reader; a ``../`` escape is refused with 403."""
+    seen: list[str] = []
+    landed: dict[str, bytes] = {}
+
+    async def _on_upload(hook_ctx, path):
+        seen.append(path)
+        landed[path] = await hook_ctx.read_from_host(path)
+
     optio = await _make_optio(mongo_db, "agconv5")
     try:
         task = create_antigravity_task(
@@ -288,35 +311,36 @@ async def test_conversation_ui_file_upload_download(shim_install_dir, task_root,
             config=_conversation_config(
                 shim_install_dir, conversation_ui=True,
                 show_file_upload=True, file_download=True,
+                on_upload=_on_upload,
             ),
         )
         await optio.adhoc_define(task)
         conv = await optio.launch_and_await_result(
             "ag-conv-files", session_id=None, timeout=60,
         )
-        proc = await _wait_widget_upstream(optio, "ag-conv-files")
+        proc = await _wait_widget_data(optio, "ag-conv-files")
         upstream = proc["widgetUpstream"]
-        # widgetData advertises the file features to the widget.
+        # widgetData advertises the file features + the generic upload route.
         assert proc["widgetData"]["showFileUpload"] is True
         assert proc["widgetData"]["fileDownload"] is True
+        assert proc["widgetData"]["uploadUrl"] == (
+            "{widgetProxyUrl}../../../../widget-upload/"
+            f"{mongo_db.name}/agconv5/ag-conv-files"
+        )
+        # Upload flows through the generic materialize path (NOT the listener):
+        # Optio.materialize_upload resolves the registered writer, which lands
+        # the bytes under uploads/ and fires on_upload with the same relpath.
+        rel = await optio.materialize_upload(
+            "ag-conv-files", b"hello-bytes", "note.txt",
+        )
+        assert rel == "uploads/note.txt"
+        assert seen == ["uploads/note.txt"]
+        assert landed["uploads/note.txt"] == b"hello-bytes"
+
         inner = upstream["innerAuth"]
         token = base64.b64encode(f"optio:{inner['password']}".encode()).decode()
         headers = {"Authorization": f"Basic {token}"}
         async with aiohttp.ClientSession() as session:
-            # Upload: the writer sanitizes the name and lands it under uploads/.
-            form = aiohttp.FormData()
-            form.add_field(
-                "file", b"hello-bytes", filename="note.txt",
-                content_type="text/plain",
-            )
-            async with session.post(
-                f"{upstream['url']}/upload", data=form, headers=headers,
-            ) as r:
-                assert r.status == 200
-                body = await r.json()
-            assert body["ok"] is True
-            rel = body["files"][0]["path"]
-            assert rel == "uploads/note.txt"
             # Download the just-uploaded file back through the confined reader.
             async with session.get(
                 f"{upstream['url']}/download", params={"path": rel}, headers=headers,

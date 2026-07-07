@@ -17,12 +17,14 @@ from optio_agents.protocol.session import (
     DeliverableCallback,
     HookCallback,
 )
+from optio_agents.uploads import UploadCallback
 from optio_host.types import SSHConfig
 
 
 __all__ = [
     "DeliverableCallback",
     "HookCallback",
+    "UploadCallback",
     "SSHConfig",
     "AntigravityTaskConfig",
     "PermissionMode",
@@ -220,8 +222,14 @@ class AntigravityTaskConfig:
     # reads them with its own tools. Requires mode="conversation" and
     # conversation_ui=True.
     show_file_upload: bool = False
-    # Upper bound (bytes) on a single uploaded file; the listener rejects
-    # anything larger with HTTP 413. Mirrored to the widget via widgetData.
+    # Optional per-task callback fired AFTER an upload lands under
+    # <workdir>/uploads (additive to the System: path line the view injects).
+    # Mirrors on_deliverable minus the text arg: ``async on_upload(hook_ctx,
+    # "uploads/<name>")``. A raising callback is logged, not fatal.
+    on_upload: UploadCallback | None = None
+    # Upper bound (bytes) on a single uploaded file; the client enforces it and
+    # the generic optio-api upload route rejects oversize. Mirrored to the
+    # widget via widgetData.
     max_upload_bytes: int = 10_000_000
     # Offer download links for files agy marks with the optio-file: sentinel
     # (deliverables also land in ~/.gemini/antigravity/artifacts/). The listener

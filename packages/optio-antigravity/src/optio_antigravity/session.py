@@ -16,7 +16,6 @@ import inspect
 import logging
 import mimetypes
 import os
-import re
 import secrets
 import shlex
 from typing import AsyncIterator
@@ -29,6 +28,7 @@ from optio_agents import seeds as _seeds
 from optio_agents.input_listener import serialized, start_input_listener
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_agents.session_controls import model_control
+from optio_agents.uploads import materialize
 from optio_host.host import Host, LocalHost, ProcessHandle
 from optio_host.paths import task_dir
 
@@ -430,15 +430,18 @@ async def run_antigravity_session(
             listener_password = secrets.token_urlsafe(32)
             bind_addr = os.environ.get("OPTIO_WIDGET_TUNNEL_BIND", "127.0.0.1")
             upstream_host = os.environ.get("OPTIO_WIDGET_TUNNEL_HOST", "127.0.0.1")
-            # File upload: bytes land under <workdir>/uploads with a sanitized
-            # name; the view injects a System: path reference so agy reads them
-            # with its own tools (a synthetic -p turn has no inline ingest).
-            uploads_dir = f"{host.workdir}/uploads"
-
-            async def _write_upload(name: str, data: bytes) -> str:
-                safe = re.sub(r"[^A-Za-z0-9._-]", "_", (name.split("/")[-1] or "file"))[:200] or "file"
-                await host.put_file_to_host(data, f"{uploads_dir}/{safe}")
-                return f"uploads/{safe}"
+            # File upload flows through the generic optio-api /api/widget-upload
+            # route → materializeUpload RPC → this per-task writer, which runs in
+            # THIS process (only it holds the live Host). The writer lands the
+            # bytes under <workdir>/uploads/<name> and fires config.on_upload; the
+            # view injects a System: path reference so agy reads them with its own
+            # tools (a synthetic -p turn has no inline ingest).
+            async def _upload_writer(filename: str, data: bytes) -> str:
+                return await materialize(
+                    host, host.workdir, filename, data,
+                    hook_ctx=hook_ctx, on_upload=config.on_upload,
+                )
+            ctx.register_upload_writer(_upload_writer)
 
             # File download: serve workdir-confined bytes for the optio-file:
             # sentinel links agy emits. agy's deliverables/artifacts land under
@@ -457,8 +460,6 @@ async def run_antigravity_session(
 
             conv_listener = ConversationListener(
                 conversation, password=listener_password,
-                upload_writer=_write_upload,
-                max_upload_bytes=config.max_upload_bytes,
                 download_reader=_read_download,
                 max_download_bytes=config.max_download_bytes,
             )
@@ -486,6 +487,15 @@ async def run_antigravity_session(
             control = model_control(
                 models=model_list["models"], current=current_model,
             )
+            # The client POSTs uploads to the generic optio-api route, resolved
+            # relative to {widgetProxyUrl} (=<base>/api/widget/<db>/<prefix>/<pid>/):
+            # climb to <base>/api/, then descend into the sibling widget-upload
+            # route with the SAME db/prefix/pid. Relative so a base path prefix or
+            # non-origin API host is preserved (see resolveUploadUrl).
+            upload_url = (
+                "{widgetProxyUrl}../../../../widget-upload/"
+                f"{ctx._db.name}/{ctx._prefix}/{ctx.process_id}"
+            )
             await ctx.set_widget_data({
                 "protocol": "antigravity",
                 "toolVerbosity": config.tool_verbosity,
@@ -497,6 +507,7 @@ async def run_antigravity_session(
                 "maxUploadBytes": config.max_upload_bytes,
                 "fileDownload": config.file_download,
                 "maxDownloadBytes": config.max_download_bytes,
+                "uploadUrl": upload_url,
             })
             ctx.report_progress(None, "Conversation UI is live")
 
@@ -583,6 +594,14 @@ async def run_antigravity_session(
         agy_aggressive = _teardown_aggressive(
             cancelled=cancelled, seeded=resolved_seed_id is not None,
         )
+        # Drop the in-process upload writer so a late materializeUpload RPC can't
+        # reach a torn-down Host (raises NoUploadWriter instead). Runs whenever
+        # the conversation-ui branch may have registered one.
+        if conv_listener is not None:
+            try:
+                ctx.clear_upload_writer()
+            except Exception:
+                _LOG.exception("clear upload writer failed")
         # Stop the conversation listener first so its long-lived SSE loops are
         # woken (bounded shutdown) before any subprocess teardown below.
         if conv_listener is not None:
