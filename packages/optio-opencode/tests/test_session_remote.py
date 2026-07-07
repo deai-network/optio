@@ -1,11 +1,6 @@
 """Remote-mode integration test — spins up an SSH container."""
 
 import asyncio
-import os
-import shutil
-import subprocess
-import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -17,59 +12,16 @@ from optio_opencode.session import run_opencode_session
 from optio_opencode.types import OpencodeTaskConfig, SSHConfig
 
 
+from optio_host.testing import have_docker
+
 HERE = Path(__file__).parent
-COMPOSE = HERE / "docker-compose.sshd.yml"
 
-
-def _have_docker() -> bool:
-    return shutil.which("docker") is not None
-
-
+# The isolation-safe ``sshd`` fixture lives in conftest.py. `--dist loadscope`
+# keeps this whole module on one worker, so its per-test rewrites of the shared
+# ``opencode-shim.sh`` never run concurrently.
 pytestmark = pytest.mark.skipif(
-    not _have_docker(), reason="Docker not available"
+    not have_docker(), reason="Docker not available"
 )
-
-
-@pytest_asyncio.fixture(scope="module")
-async def sshd():
-    """Start the SSH container, generate a key pair, wait for port 22222."""
-    keys_dir = HERE / "ssh-keys"
-    keys_dir.mkdir(exist_ok=True)
-    priv = keys_dir / "id_ed25519"
-    if not priv.exists():
-        subprocess.check_call([
-            "ssh-keygen", "-t", "ed25519", "-N", "", "-f", str(priv)
-        ])
-    # Make shim executable.
-    (HERE / "opencode-shim.sh").chmod(0o755)
-
-    subprocess.check_call(["docker", "compose", "-f", str(COMPOSE), "up", "-d"])
-
-    # Wait for port.
-    deadline = time.time() + 30
-    import socket as _s
-    while time.time() < deadline:
-        try:
-            c = _s.create_connection(("127.0.0.1", 22222), timeout=1)
-            c.close()
-            break
-        except OSError:
-            time.sleep(0.5)
-    else:
-        subprocess.call(["docker", "compose", "-f", str(COMPOSE), "down"])
-        pytest.skip("sshd container did not come up")
-
-    # Extra settle time for sshd to accept auth.
-    await asyncio.sleep(2)
-
-    yield {
-        "host": "127.0.0.1",
-        "port": 22222,
-        "user": "optiotest",
-        "key_path": str(priv),
-    }
-
-    subprocess.call(["docker", "compose", "-f", str(COMPOSE), "down"])
 
 
 @pytest_asyncio.fixture

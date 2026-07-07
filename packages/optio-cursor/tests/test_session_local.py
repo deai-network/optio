@@ -16,6 +16,12 @@ from optio_cursor import (
 )
 
 
+# Spawns cursor-agent in a real tmux/ttyd session; the fixed tmux session name
+# and shared workdir state make these unsafe to run concurrently. Marked
+# `serial` so the harness runs them in a final, non-parallel phase.
+pytestmark = pytest.mark.serial
+
+
 @pytest.mark.asyncio
 async def test_local_deliverable_callback_fired(
     shim_install_dir: pathlib.Path,

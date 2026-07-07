@@ -17,6 +17,12 @@ from optio_opencode.types import OpencodeTaskConfig
 
 FAKE_OPENCODE = os.path.join(os.path.dirname(__file__), "fake_opencode.py")
 
+# Each test here spawns a real fake-opencode server subprocess and polls it for
+# streamed events; the timing is fragile under *any* concurrent machine load
+# (other xdist workers, docker builds). Marked `serial` so the harness runs
+# this module in a final, non-parallel phase on a quiet machine.
+pytestmark = pytest.mark.serial
+
 
 @dataclass
 class Captured:

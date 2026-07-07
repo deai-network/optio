@@ -15,4 +15,6 @@ services:
       - ./fake_opencode.py:/usr/local/bin/fake_opencode.py:ro
       - ./opencode-shim.sh:/usr/local/bin/opencode:ro
     ports:
-      - "127.0.0.1:22222:2222"
+      # Ephemeral host port; the test harness reads the assignment back via
+      # `docker compose port sshd 2222` so concurrent containers never collide.
+      - "127.0.0.1::2222"

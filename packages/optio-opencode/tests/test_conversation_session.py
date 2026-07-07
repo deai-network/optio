@@ -18,6 +18,10 @@ from optio_opencode.session import run_opencode_session
 
 FAKE_OPENCODE = os.path.join(os.path.dirname(__file__), "fake_opencode.py")
 
+# See test_session_local: spawn-heavy, timing-fragile under concurrent load.
+# Marked `serial` so the harness runs it in a final, non-parallel phase.
+pytestmark = pytest.mark.serial
+
 
 # ctx_and_captures / _supply_scenario fixtures: same pattern as
 # tests/test_session_local.py (copied, per the repo's no-cross-test-import

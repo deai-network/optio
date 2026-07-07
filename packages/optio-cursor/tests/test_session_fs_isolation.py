@@ -19,6 +19,11 @@ from optio_cursor import host_actions
 from optio_cursor.session import run_cursor_session
 
 
+# Spawns cursor-agent and touches shared home-dir paths; unsafe under
+# concurrency. Marked `serial` for the final non-parallel phase.
+pytestmark = pytest.mark.serial
+
+
 @pytest.mark.asyncio
 async def test_iframe_default_on_wraps_argv_and_disables_native_sandbox(
     shim_install_dir: pathlib.Path,

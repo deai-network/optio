@@ -3,6 +3,15 @@
 
 PY_PACKAGES := optio-core optio-host optio-agents optio-opencode optio-codex optio-cursor
 
+# Test parallelism (pytest-xdist). Tests marked `serial` (spawn-heavy or
+# timing-fragile — real subprocess servers, docker containers, sub-second
+# throttle/cancel windows) run in a final, non-parallel phase; everything else
+# fans out across workers. Worker count defaults to HALF the CPUs on purpose:
+# oversubscribing (e.g. -n auto on a many-core box) starves the subprocess- and
+# timing-heavy tests and makes them flake. Override with `make test PYTEST_WORKERS=N`.
+PYTEST_WORKERS ?= $(shell n=$$(nproc 2>/dev/null || echo 4); w=$$((n/2)); [ $$w -lt 2 ] && w=2; echo $$w)
+PYTEST_XDIST   := -n $(PYTEST_WORKERS) --dist loadscope
+
 # Python toolchain — repo-local venv. Override PYTHON to pick a specific interpreter.
 PYTHON ?= python3
 VENV   := $(CURDIR)/.venv
@@ -72,9 +81,17 @@ codegen:  ## Regenerate clamator RPC client/server stubs from optio-contracts so
 
 test: $(VENV)/bin/python  ## Run all tests (TS + Python; per-package, no docker)
 	pnpm -r test
+	@rc=0; \
+	echo ">> Python phase 1/2: parallel ($(PYTEST_WORKERS) workers/pkg, -m 'not serial')"; \
 	for pkg in $(PY_PACKAGES); do \
-	  (cd packages/$$pkg && $(PYTEST)); \
-	done
+	  (cd packages/$$pkg && $(PYTEST) $(PYTEST_XDIST) -m "not serial") || rc=1; \
+	done; \
+	echo ">> Python phase 2/2: serial (spawn-heavy / timing-fragile, -m serial)"; \
+	for pkg in $(PY_PACKAGES); do \
+	  (cd packages/$$pkg && $(PYTEST) -m serial); s=$$?; \
+	  [ $$s -eq 0 ] || [ $$s -eq 5 ] || rc=1; \
+	done; \
+	exit $$rc
 
 test-interop:  ## End-to-end test: TS clamator client ↔ Py engine over real redis (clamator wire verification). INTEROP_DEBUG=1 enables verbose mode + increased timeouts (slow CI). INTEROP_KEEP=1 skips cleanup on failure for postmortem.
 	timeout 120 bash packages/optio-demo/run-interop.sh

@@ -11,4 +11,5 @@ services:
     volumes:
       - ./ssh-keys:/keys:ro
     ports:
-      - "127.0.0.1:22223:2222"
+      # Ephemeral host port; the harness reads it back via `docker compose port`.
+      - "127.0.0.1::2222"

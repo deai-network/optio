@@ -3,10 +3,31 @@
 import os
 import shutil
 import tempfile
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
+
+from optio_host.testing import sshd_container
+
+_COMPOSE = Path(__file__).parent / "docker-compose.sshd.yml"
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def sshd():
+    """One isolation-safe sshd container shared by every remote module.
+
+    Session-scoped so the three ``*_remote`` modules reuse a single container
+    per xdist worker; :func:`sshd_container` keys the compose project on the
+    worker id and uses an ephemeral host port, so concurrent workers/packages
+    never collide.
+    """
+    # The shim is bind-mounted into the container as the `opencode` binary;
+    # ensure it is executable before the container starts.
+    (_COMPOSE.parent / "opencode-shim.sh").chmod(0o755)
+    async with sshd_container(_COMPOSE, "optio-opencode") as info:
+        yield info
 
 
 @pytest.fixture

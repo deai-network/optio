@@ -11,9 +11,6 @@ rely on for their bidirectional NDJSON sessions.
 from __future__ import annotations
 
 import asyncio
-import shutil
-import subprocess
-import time
 import uuid
 from pathlib import Path
 
@@ -24,53 +21,19 @@ from optio_host.host import RemoteHost
 from optio_host.types import SSHConfig
 
 
+from optio_host.testing import have_docker, sshd_container
+
 HERE = Path(__file__).parent
 COMPOSE = HERE / "docker-compose.sshd.yml"
 
-
-def _have_docker() -> bool:
-    return shutil.which("docker") is not None
+pytestmark = pytest.mark.skipif(not have_docker(), reason="Docker not available")
 
 
-pytestmark = pytest.mark.skipif(not _have_docker(), reason="Docker not available")
-
-
-@pytest_asyncio.fixture(scope="module")
+@pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def sshd():
-    """Start the SSH container, generate a key pair, wait for port 22223."""
-    keys_dir = HERE / "ssh-keys"
-    keys_dir.mkdir(exist_ok=True)
-    priv = keys_dir / "id_ed25519"
-    if not priv.exists():
-        subprocess.check_call([
-            "ssh-keygen", "-t", "ed25519", "-N", "", "-f", str(priv)
-        ])
-
-    subprocess.check_call(["docker", "compose", "-f", str(COMPOSE), "up", "-d"])
-
-    deadline = time.time() + 30
-    import socket as _s
-    while time.time() < deadline:
-        try:
-            c = _s.create_connection(("127.0.0.1", 22223), timeout=1)
-            c.close()
-            break
-        except OSError:
-            time.sleep(0.5)
-    else:
-        subprocess.call(["docker", "compose", "-f", str(COMPOSE), "down"])
-        pytest.skip("sshd container did not come up")
-
-    await asyncio.sleep(2)  # settle time for sshd auth readiness
-
-    yield {
-        "host": "127.0.0.1",
-        "port": 22223,
-        "user": "optiotest",
-        "key_path": str(priv),
-    }
-
-    subprocess.call(["docker", "compose", "-f", str(COMPOSE), "down"])
+    """Isolation-safe sshd container (per-worker project + ephemeral port)."""
+    async with sshd_container(COMPOSE, "optio-host") as info:
+        yield info
 
 
 @pytest_asyncio.fixture
