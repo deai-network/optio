@@ -22,12 +22,26 @@ import { NativeSpinner } from '../spinners/NativeSpinner.js';
 // (YAGNI). The value encodes "providerID/modelID" (what prompt_async wants).
 function modelControlFromGroups(
   groups: ModelGroup[], current: OpencodeModel | null,
+  disabledModels: Record<string, string> = {},
 ): SessionControl {
   const options = groups.flatMap((g) =>
-    g.models.map((m) => ({
-      value: `${m.providerID}/${m.modelID}`,
-      label: groups.length > 1 ? `${g.providerName} / ${m.label}` : m.label,
-    })),
+    g.models.map((m) => {
+      const value = `${m.providerID}/${m.modelID}`;
+      const reason = disabledModels[value];
+      // A model the startup probe found unusable (the account can't run it) is
+      // greyed with the reason as its hover tooltip — the picker won't let it
+      // be selected. The disabled-map rides widgetData (server-side probe).
+      return reason
+        ? {
+            value,
+            label: groups.length > 1 ? `${g.providerName} / ${m.label}` : m.label,
+            disabled: true, whyDisabled: reason,
+          }
+        : {
+            value,
+            label: groups.length > 1 ? `${g.providerName} / ${m.label}` : m.label,
+          };
+    }),
   );
   return {
     id: 'model', kind: 'select', label: 'Model', category: 'model',
@@ -48,6 +62,9 @@ interface OpencodeWidgetData {
   toolVerbosity?: 'silent' | 'description-only' | 'verbose';
   showSessionControls?: boolean;
   defaultModel?: string; // "providerID/modelID"
+  // Models the server-side startup probe found unusable, id → reason. The
+  // picker greys these with the reason as a tooltip.
+  disabledModels?: Record<string, string>;
 }
 
 type ChatAction = { kind: 'bootstrap'; items: ChatItem[] } | { ev: unknown; seq: number };
@@ -66,14 +83,15 @@ export function OpencodeView(props: WidgetProps) {
       directory={widgetData.directory ?? ''}
       showSessionControls={widgetData.showSessionControls ?? false}
       defaultModel={widgetData.defaultModel}
+      disabledModels={widgetData.disabledModels}
     />
   );
 }
 
 function OpencodeChat(
-  props: WidgetProps & { sessionID: string; directory: string; showSessionControls: boolean; defaultModel?: string },
+  props: WidgetProps & { sessionID: string; directory: string; showSessionControls: boolean; defaultModel?: string; disabledModels?: Record<string, string> },
 ) {
-  const { sessionID, directory, widgetProxyUrl, showSessionControls, defaultModel } = props; // widgetProxyUrl ends with '/' — trailing slash is load-bearing
+  const { sessionID, directory, widgetProxyUrl, showSessionControls, defaultModel, disabledModels } = props; // widgetProxyUrl ends with '/' — trailing slash is load-bearing
   const toolVerbosity = ((props.process.widgetData as any)?.toolVerbosity ?? 'description-only') as
     'silent' | 'description-only' | 'verbose';
   const thinkingVerbosity = ((props.process.widgetData as any)?.thinkingVerbosity ?? 'hidden') as
@@ -174,7 +192,7 @@ function OpencodeChat(
       // ConversationView renders it generically; it only surfaces to the user
       // when showSessionControls gates the prop pass-through below.
       dispatch({
-        ev: { type: 'x-optio-control-update', controls: [modelControlFromGroups(parsed.groups, resolved)] },
+        ev: { type: 'x-optio-control-update', controls: [modelControlFromGroups(parsed.groups, resolved, disabledModels)] },
         seq: localSeqRef.current--,
       });
     })();

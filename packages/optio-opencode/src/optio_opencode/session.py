@@ -38,6 +38,7 @@ from optio_agents.protocol.session import _SessionFailed, run_log_protocol_sessi
 from optio_agents.uploads import materialize, upload_url_token
 from optio_agents import seeds as _seeds
 from optio_opencode import cred_watcher, host_actions
+from optio_opencode import model_probe
 from optio_opencode.conversation import OpencodeConversation
 from optio_opencode.prompt import DEFAULT_CONVERSATION_INSTRUCTIONS, compose_agents_md
 from optio_opencode.seed_manifest import (
@@ -420,10 +421,35 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             # opencode routes resolve their project instance from the request's
             # location context; the widget sends `directory` as the ?directory=
             # query param on every call.
+            # Model-availability probe: greys out models this seed's account
+            # cannot use. Runs HERE — after the model list is server-side
+            # resolvable and BEFORE the widget is shown — so its throwaway
+            # "capital of Hungary" turns (on a separate session) never reach the
+            # picker. Gated on show_session_controls (the picker is only visible
+            # then); cached per seed; never re-probes on resume. The disabled-map
+            # rides widgetData → OpencodeView disables those picker options.
+            disabled_models: dict[str, str] = {}
+            if config.show_session_controls:
+                try:
+                    disabled_models = await _probe_or_cached_disabled_models(
+                        ctx, worker_port=worker_port, password=password,
+                        directory=host.workdir,
+                        seed_key=model_probe.probe_cache_key(
+                            resolved_seed_id, config.seed_id,
+                        ),
+                        resuming=resuming,
+                    )
+                except Exception:  # noqa: BLE001
+                    _LOG.exception(
+                        "model-probe orchestration failed; picker left unfiltered",
+                    )
+
             widget_data = conversation_widget_data(
                 config, session_id=session_id, directory=host.workdir,
             )
             widget_data["uploadUrl"] = upload_url
+            if disabled_models:
+                widget_data["disabledModels"] = disabled_models
             await ctx.set_widget_data(widget_data)
 
         if resolved_seed_id is not None:
@@ -1069,6 +1095,146 @@ async def _resolve_session_model(
     return await loop.run_in_executor(
         None, _resolve_session_model_sync, port, password, session_id
     )
+
+
+def _fetch_opencode_models_sync(port: int, password: str, directory: str) -> list[str]:
+    """GET opencode's ``/config/providers`` and enumerate ``"providerID/modelID"``
+    ids (server-side peer of OpencodeView's client-side model fetch). Returns []
+    on any transport/parse error — the probe then simply skips."""
+    import base64 as _b64
+    import urllib.parse
+    import urllib.request
+    from urllib.error import URLError
+
+    auth_token = _b64.b64encode(f"opencode:{password}".encode("utf-8")).decode("ascii")
+    url = (
+        f"http://127.0.0.1:{port}/config/providers"
+        f"?directory={urllib.parse.quote(directory, safe='')}"
+    )
+    req = urllib.request.Request(
+        url, method="GET", headers={"authorization": f"Basic {auth_token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (URLError, ConnectionError, OSError, ValueError):
+        return []
+    return model_probe.parse_model_ids(data)
+
+
+async def _fetch_opencode_models(port: int, password: str, directory: str) -> list[str]:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None, _fetch_opencode_models_sync, port, password, directory
+    )
+
+
+def _delete_opencode_session_sync(
+    port: int, password: str, session_id: str, directory: str,
+) -> None:
+    """Best-effort DELETE of the throwaway probe session so its "capital of
+    Hungary" turns never linger. Silently ignores failure (an idle orphan
+    session is harmless — the operator session is separate and seed/snapshot
+    capture reference only it)."""
+    import base64 as _b64
+    import urllib.parse
+    import urllib.request
+    from urllib.error import URLError
+
+    auth_token = _b64.b64encode(f"opencode:{password}".encode("utf-8")).decode("ascii")
+    url = (
+        f"http://127.0.0.1:{port}/session/{session_id}"
+        f"?directory={urllib.parse.quote(directory, safe='')}"
+    )
+    req = urllib.request.Request(
+        url, method="DELETE", headers={"authorization": f"Basic {auth_token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            resp.read()
+    except (URLError, ConnectionError, OSError):
+        pass
+
+
+async def _delete_opencode_session(
+    port: int, password: str, session_id: str, directory: str,
+) -> None:
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(
+        None, _delete_opencode_session_sync, port, password, session_id, directory
+    )
+
+
+async def _run_model_probe(
+    port: int, password: str, directory: str, model_ids: list[str], report,
+) -> dict[str, bool]:
+    """Probe each model on a THROWAWAY opencode session (so the probe's
+    "capital of Hungary" turns never pollute the operator's session), tear the
+    throwaway session down, and return ``{model_id: usable}``."""
+    probe_sid = await _create_opencode_session(port, password, directory)
+    conv = OpencodeConversation(
+        port=port, password=password, session_id=probe_sid, directory=directory,
+    )
+    reader = asyncio.create_task(conv.run_reader())
+    try:
+        return await model_probe.probe_models(conv, model_ids, report=report)
+    finally:
+        await conv.close()
+        reader.cancel()
+        try:
+            await reader
+        except asyncio.CancelledError:
+            pass
+        await _delete_opencode_session(port, password, probe_sid, directory)
+
+
+async def _probe_or_cached_disabled_models(
+    ctx: ProcessContext, *, worker_port: int, password: str, directory: str,
+    seed_key: str | None, resuming: bool,
+) -> dict[str, str]:
+    """Return ``{model_id: reason}`` for models this seed's account can't use.
+
+    opencode lists its full provider catalogue with no account flag; a model the
+    account cannot run ERRORS the turn. So probe each id once on a FRESH launch
+    (before the widget is shown), cache the result per seed (24h), and reuse it
+    on later launches incl. resumes — see model_probe. Never probes on resume
+    (the account was already determined). Best-effort: any failure yields an
+    empty map (unfiltered picker)."""
+    usable: dict[str, bool] | None = None
+    if seed_key is not None:
+        try:
+            usable = await model_probe.load_probe_cache(ctx._db, ctx._prefix, seed_key)
+        except Exception:  # noqa: BLE001
+            _LOG.exception("model-probe cache load failed")
+    if usable is None:
+        if resuming:
+            # A resumed session never re-probes: the account was settled on the
+            # fresh run (and a cache miss here must not pay the probe cost).
+            return {}
+        model_ids = await _fetch_opencode_models(worker_port, password, directory)
+        if not model_ids:
+            return {}
+        # Log the milestone ONCE, then advance the bar silently per model.
+        ctx.report_progress(0.0, "Checking available models…")
+
+        def _report(i: int, total: int, _mid: str) -> None:
+            ctx.report_progress(i / total * 100.0)
+
+        try:
+            usable = await _run_model_probe(
+                worker_port, password, directory, model_ids, _report,
+            )
+        except Exception:  # noqa: BLE001
+            _LOG.exception("model probe failed; showing the unfiltered picker")
+            return {}
+        if seed_key is not None:
+            try:
+                await model_probe.save_probe_cache(
+                    ctx._db, ctx._prefix, seed_key, usable,
+                )
+            except Exception:  # noqa: BLE001
+                _LOG.exception("model-probe cache save failed")
+    return model_probe.disabled_map(usable)
 
 
 async def _write_seed_model_config(host: Host, model_str: str) -> None:

@@ -118,6 +118,29 @@ async def test_send_posts_prompt_async(conv, server):
     assert ("prompt", {"parts": [{"type": "text", "text": "hello"}]}) in server.journal
 
 
+async def test_set_active_model_attaches_model_to_prompt(conv, server):
+    # The model probe drives a throwaway conversation and needs each turn to run
+    # under a specific model. opencode attaches the model inline on prompt_async
+    # ({providerID, modelID}); set_active_model records the "providerID/modelID"
+    # string and send() splits it back out.
+    await conv.set_active_model("xai/grok-5")
+    assert conv.current_model_id == "xai/grok-5"
+    await conv.send("hi")
+    await asyncio.sleep(0.05)
+    assert (
+        "prompt",
+        {"parts": [{"type": "text", "text": "hi"}],
+         "model": {"providerID": "xai", "modelID": "grok-5"}},
+    ) in server.journal
+
+
+async def test_send_without_model_omits_model_field(conv, server):
+    # Default (no model set) must keep the historical body shape byte-for-byte.
+    await conv.send("plain")
+    await asyncio.sleep(0.05)
+    assert ("prompt", {"parts": [{"type": "text", "text": "plain"}]}) in server.journal
+
+
 async def test_on_event_is_raw_passthrough(conv, server):
     seen: list[dict] = []
     conv.on_event(seen.append)

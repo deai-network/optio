@@ -11,7 +11,7 @@ from bson import ObjectId
 
 from optio_core.context import ProcessContext
 from optio_core.models import BasicAuth  # match the import used in session.py
-from optio_opencode import OpencodeTaskConfig, create_opencode_task
+from optio_opencode import OpencodeTaskConfig, create_opencode_task, model_probe
 from optio_opencode.session import run_opencode_session
 
 
@@ -197,6 +197,66 @@ async def test_conversation_ui_sets_upstream_and_widget_data(ctx_and_captures, _
     assert "iframeSrc" not in data                # no SPA iframe fields
     await conv.close()
     await asyncio.wait_for(sess, timeout=30)
+
+
+async def test_probe_disabled_models_ride_widget_data(
+    ctx_and_captures, _supply_scenario, monkeypatch,
+):
+    """With show_session_controls, the startup probe enumerates models from the
+    server's /config/providers and injects the unusable ones as
+    widgetData.disabledModels (id → reason) for OpencodeView's picker."""
+    from optio_opencode import session as sess
+
+    seen_ids: dict = {}
+
+    async def _fake_run(port, password, directory, model_ids, report):
+        seen_ids["ids"] = sorted(model_ids)
+        # xAI's grok-5 is "unusable" for this account; the rest work.
+        return {mid: (mid != "xai/grok-5") for mid in model_ids}
+
+    monkeypatch.setattr(sess, "_run_model_probe", _fake_run)
+
+    ctx, cap, _ = ctx_and_captures
+    _supply_scenario["name"] = "conversation"
+    cfg = OpencodeTaskConfig(
+        consumer_instructions="", mode="conversation", host_protocol=False,
+        conversation_ui=True, show_session_controls=True,
+    )
+    sess_task, conv = await _launch(ctx, cfg)
+    [data] = cap.widget_data
+    # ids came from the fake server's real /config/providers response
+    assert seen_ids["ids"] == [
+        "opencode/big-pickle", "opencode/deepseek-v4-flash", "xai/grok-5",
+    ]
+    assert data["disabledModels"] == {
+        "xai/grok-5": model_probe.DISABLED_REASON,
+    }
+    await conv.close()
+    await asyncio.wait_for(sess_task, timeout=30)
+
+
+async def test_no_disabled_models_without_session_controls(
+    ctx_and_captures, _supply_scenario, monkeypatch,
+):
+    """No picker (show_session_controls off) → no probe, no disabledModels key."""
+    from optio_opencode import session as sess
+
+    async def _boom(*a, **k):
+        raise AssertionError("probe must not run without session controls")
+
+    monkeypatch.setattr(sess, "_run_model_probe", _boom)
+
+    ctx, cap, _ = ctx_and_captures
+    _supply_scenario["name"] = "conversation"
+    cfg = OpencodeTaskConfig(
+        consumer_instructions="", mode="conversation", host_protocol=False,
+        conversation_ui=True,
+    )
+    sess_task, conv = await _launch(ctx, cfg)
+    [data] = cap.widget_data
+    assert "disabledModels" not in data
+    await conv.close()
+    await asyncio.wait_for(sess_task, timeout=30)
 
 
 async def test_headless_conversation_sets_no_widget(ctx_and_captures, _supply_scenario):

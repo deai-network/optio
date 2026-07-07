@@ -117,6 +117,29 @@ describe('OpencodeView model control', () => {
     await waitFor(() => expect(screen.getByTestId('control-model')).toBeTruthy());
   });
 
+  it('disables models named in widgetData.disabledModels with the reason as tooltip', async () => {
+    installFetch({ history: [], posts: [] });
+    const reason = 'Not usable with this account (the provider rejected it)';
+    // Disable the NON-default model (big-pickle is the providers default and
+    // would render its label twice — in the selector box and the dropdown).
+    render(<OpencodeView {...makeProps({
+      sessionID: 'fake-session-id', directory: '/wd', showSessionControls: true,
+      disabledModels: { 'opencode/deepseek-v4-flash': reason },
+    })} />);
+    await waitFor(() => expect(screen.getByTestId('control-model')).toBeTruthy());
+    fireEvent.mouseDown(screen.getByTestId('control-model').querySelector('.ant-select-selector')!);
+    await waitFor(() => expect(screen.getByText('DeepSeek V4 Flash')).toBeTruthy());
+
+    const options = Array.from(document.querySelectorAll('.ant-select-item-option'));
+    const bad = options.find((o) => o.textContent === 'DeepSeek V4 Flash');
+    const good = options.find((o) => o.textContent === 'Big Pickle');
+    // The probed-unusable model is greyed and carries the reason as tooltip.
+    expect(bad?.classList.contains('ant-select-item-option-disabled')).toBe(true);
+    expect(bad?.getAttribute('title')).toBe(reason);
+    // The working model stays selectable.
+    expect(good?.classList.contains('ant-select-item-option-disabled')).toBe(false);
+  });
+
   it('selecting a model changes the model sent on the next prompt (UI-local, no POST)', async () => {
     const posts: { url: string; body: any }[] = [];
     installFetch({ history: [], posts });

@@ -39,6 +39,7 @@ from optio_agents.protocol import (
 )
 from optio_agents import browser_shims
 from optio_agents import claustrum
+from optio_agents import model_probe
 from optio_agents import seeds
 from optio_agents import session_controls
 from optio_agents.session_controls import ControlOption, SessionControl
@@ -64,6 +65,7 @@ __all__ = [
     "PermissionRequest",
     "browser_shims",
     "claustrum",
+    "model_probe",
     "seeds",
     "session_controls",
     "SessionControl",

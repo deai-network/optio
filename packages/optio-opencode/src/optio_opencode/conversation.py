@@ -57,6 +57,12 @@ class OpencodeConversation:
         # The server resolves instance directories (symlinks etc.) before
         # stamping them onto /global/event frames; compare against realpath too.
         self._directory_real = os.path.realpath(directory)
+        # Active model as "providerID/modelID" (or None → let opencode pick its
+        # own default). The operator UI attaches the model itself, client-side,
+        # per prompt_async; this field is used by the server-side model probe,
+        # which drives a throwaway conversation and must run each turn under a
+        # specific model. Split back into {providerID, modelID} in send().
+        self.current_model_id: str | None = None
         self._pending = False
         self._closed = asyncio.Event()
         self._close_reason: str | None = None
@@ -281,11 +287,16 @@ class OpencodeConversation:
         if self._closed.is_set():
             raise ConversationClosed(self._close_reason or "conversation closed")
         self._pending = True
+        body: dict = {"parts": [{"type": "text", "text": text}]}
+        if self.current_model_id:
+            prov, _, mod = self.current_model_id.partition("/")
+            if prov and mod:
+                body["model"] = {"providerID": prov, "modelID": mod}
         try:
             async with self._http.post(
                 self._url(f"/session/{self._session_id}/prompt_async"),
                 params=self._params(),
-                json={"parts": [{"type": "text", "text": text}]},
+                json=body,
             ) as resp:
                 resp.raise_for_status()
         except (aiohttp.ClientError, ConnectionError) as exc:
@@ -326,6 +337,12 @@ class OpencodeConversation:
             params=self._params(), json={},
         ) as resp:
             resp.raise_for_status()
+
+    async def set_active_model(self, model: str) -> None:
+        """Record the model (``"providerID/modelID"``) attached to subsequent
+        sends. Used by the server-side model probe; the operator UI drives its
+        own selection client-side (see set_control)."""
+        self.current_model_id = model
 
     async def set_control(self, control_id: str, value: "str | bool") -> None:
         # opencode's only session control is the model, which is resolved and
