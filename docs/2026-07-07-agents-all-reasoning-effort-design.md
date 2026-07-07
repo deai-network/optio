@@ -15,13 +15,26 @@ control works. Add a harmonized `reasoning_effort` config field (the initial
 value, like `model`) typed per-engine so Spec C's discriminated union selects the
 enum by `agent_type`.
 
-## Reachability (from this session's probes)
+## Reachability (verified this session)
 
-Graded reasoning-effort is reachable on **6 of 7** engines (not antigravity —
-agy bakes the thinking level into the model id, no lever). Two apply the change
-**live** (no restart); four are **restart-backed** (relaunch with the new
-setting, seamless via the engine's continue/resume — identical UX to switching
-the model on claudecode/antigravity today).
+Graded reasoning-effort is reachable on **5 engines** as a live control
+(codex/grok/opencode/kimi/claude). **cursor** exposes effort **through the model
+id** (variant ids like `…-thinking-high`), so it needs no separate control — it
+is picked via the model dropdown. **antigravity** has no lever (agy bakes the
+level into the model server-side).
+
+**No new restart machinery is needed** (an earlier read suggested kimi/grok would
+need a relaunch; deeper probing disproved it):
+- **codex / grok / opencode / kimi** apply effort **live** (no restart), through
+  each engine's existing runtime channel.
+- **claudecode** is the only restart-backed engine, and it **reuses its existing**
+  `model_change_requested` relaunch loop (the same path its model control already
+  uses) — no new machinery.
+
+**External dependency:** kimi's live graded effort requires the fork's
+`csillag/acp-graded-thinking` change, shipped in **`kimi-code ≥ 0.23.1-csillag.2`**
+(the ACP adapter now accepts a graded `session/set_config_option {configId:"thinking"}`
+and advertises the graded levels). Verified present in that release this session.
 
 ## Section 1 — Contract extension
 
@@ -33,13 +46,14 @@ the model on claudecode/antigravity today).
   and the `show_session_controls` gate all apply unchanged.
 
 ### Config field: `reasoning_effort` (per-engine enum)
-- Added to the 6 reachable engines' `TaskConfig` as the **initial** reasoning
-  effort (mirrors `model`; applied at launch), **typed as each engine's own
-  `Literal` enum** and validated in `__post_init__`. Spec C's discriminated union
-  selects the enum by `agent_type` — same field name, different value type per
-  variant.
-- It is **not** part of the harmonized common core (6/7 coverage; antigravity has
-  no such field) and stays **out** of the Spec-A parity guard's `CORE` set.
+- Added to the **5** effort-control engines' `TaskConfig` (codex/grok/opencode/
+  kimi/claude) as the **initial** reasoning effort (mirrors `model`; applied at
+  launch), **typed as each engine's own `Literal` enum** and validated in
+  `__post_init__`. Spec C's discriminated union selects the enum by `agent_type`
+  — same field name, different value type per variant. (cursor and antigravity
+  get no such field.)
+- It is **not** part of the harmonized common core (5/7 coverage) and stays
+  **out** of the Spec-A parity guard's `CORE` set.
 
 ### Live control
 - `id: "reasoning_effort"`, `kind: "slider"`, `levels` = the **current model's**
@@ -49,34 +63,37 @@ the model on claudecode/antigravity today).
 
 ## Section 2 — Per-engine wiring
 
-| Engine | `reasoning_effort` levels | `set_control` mechanism | Present when |
+The effort control is added to **5 engines** (codex/grok/opencode/kimi/claude).
+cursor is folded into the model control; antigravity is excluded.
+
+| Engine | `reasoning_effort` levels | `set_control("reasoning_effort", …)` | Present when |
 |---|---|---|---|
-| **codex** | `none/minimal/low/medium/high/xhigh` | **live** — stash `_requested_effort` → attach to next `turn/start.effort` (clone the existing inline model seam) | current model supports effort |
-| **opencode** | config enum `none/low/high/xhigh/max`; **live levels from the model's `variants`** | **live** — attach the chosen `variant` to the next prompt body (like `current_model_id`) | current model exposes reasoning `variants` |
-| **claudecode** | `low/medium/high/xhigh/max` | **restart** — relaunch `--effort <level> --continue` via the existing `model_change_requested` restart path | model advertises the `effort` capability |
-| **kimi** | `off/low/medium/high/xhigh/max` | **restart** — rewrite `config.toml [thinking]` (enabled + effort) + relaunch; **REPLACES kimi's current live thinking on/off control** | model `thinkingSupported` |
-| **grok** | `low…max` *(verify grok `--reasoning-effort` set in the plan)* | **restart** — relaunch with `--reasoning-effort <level>` | reasoning model (heuristic from the models block) |
-| **cursor** | *(verify cursor bracket effort set in the plan)* | **live** — rewrite the model-id `[effort=<level>]` bracket → ACP `session/set_model` | model is parameterized / reasoning |
+| **codex** | `none/minimal/low/medium/high/xhigh` | **live** — stash `_requested_effort` → attach to next `turn/start.effort` (clones the inline model seam) | model's `supported_reasoning_efforts` (app-server list) is non-empty |
+| **grok** | `low/medium/high/xhigh` | **live** — re-send `session/set_model` for the **current** model with the effort in the request `_meta` (`reasoningEffort`) — the TUI `/effort` path; **no restart** | model `_meta.supportsReasoningEffort` (advertised in the ACP model block, currently discarded) |
+| **opencode** | live levels = the current model's `variants` keys (config enum `none/minimal/low/medium/high/xhigh/max` superset) | **live** — attach the chosen `variant` to the next prompt body (client-side, like the model) | model's `variants` map is non-empty |
+| **kimi** | `off/low/medium/high/xhigh/max` (always-thinking model drops `off`) | **live** — `session/set_config_option {configId:"thinking", value:<level>}` (fork ≥0.23.1-csillag.2); **replaces** kimi's current live thinking on/off control | model `thinkingSupported` / advertised graded levels in `configOptions` |
+| **claudecode** | `low/medium/high/xhigh/max` | **restart** — relaunch `--effort <level> --continue` via the **existing** `model_change_requested` loop (add an effort arm) | model advertises the `effort` capability |
 
 Notes:
-- **kimi** — its reasoning is ONE system with two facets (`thinking` enable-toggle
-  live over ACP; grade `config.toml [thinking].effort` restart). We unify them
-  into a single `off…max` slider (restart-backed), and the current live thinking
-  on/off `SessionControl` in `parse_all_controls` is **removed** in favour of it.
-  Plan must verify `config.toml [thinking]` can set thinking *off* (not just
-  grade); if it cannot, fall back to keeping the live on/off toggle for the `off`
-  transition (hybrid) — but the design target is the unified restart-backed
-  slider.
-- **grok** — the harmonized field maps to grok's `--reasoning-effort` (reasoning
-  depth). grok's general `--effort` stays a grok-native field, untouched.
-- **cursor** — effort is encoded in the model id (`sonnet-4-thinking` /
-  `model[effort=high]`); `set_control("reasoning_effort", …)` rewrites the bracket
-  on the current model id and re-sends `session/set_model`. Model and effort
-  controls both touch the model id — the effort control reads the current bracket
-  and writes a new one.
-- **restart-backed engines reuse the model-swap relaunch** (the operator already
-  experiences this when switching model on claude/kimi/grok); no new restart
-  machinery.
+- **grok** — effort rides `session/set_model` (the same request the wrapper already
+  sends live for model), with the level in the request `_meta`. The exact request
+  `_meta` key/nesting needs a one-off **live probe** (candidates:
+  `_meta:{reasoningEffort:"high"}`, then top-level) — the method + no-restart are
+  certain. grok's general `--effort` stays a grok-native launch field, untouched.
+- **kimi** — its reasoning is ONE system (enable + grade). The fork now accepts a
+  graded `session/set_config_option {configId:"thinking"}` and advertises the
+  graded levels, so we expose a single `off…max` slider **live** and **remove**
+  the old off/on thinking control from `parse_all_controls`. For an
+  `always_thinking` model the fork drops the `off` level → the slider omits `off`
+  (locked-on, matching the existing `ALWAYS_THINKING_REASON` pattern).
+- **claudecode** — the only restart-backed engine; it has no live `set_effort`
+  control-request, so effort reuses the model relaunch loop (add an
+  `effort_task`/`requested_effort` arm alongside `model_change_requested`).
+- **cursor (no separate control)** — cursor lists effort-expanded model ids
+  (`gpt-5.3-codex-high`, `claude-opus-4-8-thinking-high`) and the `[effort=]`
+  bracket is `--model`-CLI-only (unverified over ACP). Effort is therefore chosen
+  via the existing **model** dropdown; adding a separate slider would duplicate
+  it. No `reasoning_effort` field for cursor.
 
 ## Section 3 — Model-dependent presence
 
@@ -88,15 +105,20 @@ it declares or omits the `reasoning_effort` control accordingly (a single-level 
 unsupported model → the control is disabled/locked with a `whyDisabled`, per the
 Spec-A single-option auto-lock, or omitted entirely).
 
-Per-engine capability source:
-- **opencode** — the model's `variants` map (clean; present ⇒ reasoning tiers).
+Per-engine capability source (all resolved this session):
+- **codex** — the app-server model list's `supported_reasoning_efforts` (non-empty
+  ⇒ supported) + `default_reasoning_effort`; populate the slider levels directly
+  from it.
+- **grok** — the ACP model block `_meta` (`supportsReasoningEffort` +
+  `reasoningEfforts`), currently read as only `{modelId,name}` — extend
+  `parse_acp_models` to capture the `_meta`.
+- **opencode** — the model's `variants` map (present ⇒ reasoning tiers); extend
+  `parse_model_ids` to read `variants` (currently discarded).
 - **claudecode** — model `capabilities` (`["effort", …]`) + `default_effort` from
   the model catalog (`models.py` already fetches models; extend to capture it).
-- **kimi** — `thinkingSupported` from ACP `configOptions` (kimi already knows).
-- **codex / grok / cursor** — RESEARCH-GATED (plan phase): confirm the capability
-  source (codex model list / config, grok models block, cursor model list) and
-  the exact level enum. Where a clean capability signal is unavailable, fall back
-  to a reasoning-model heuristic (id-based) and document it.
+- **kimi** — the fork's `configOptions` now advertises the graded levels for
+  thinking-capable models (and `always_thinking` collapses per the fork);
+  `parse_all_controls` reads them directly.
 
 ## Section 4 — UI
 
@@ -114,12 +136,13 @@ No other UI change.
 - **Renderer:** slider renders the right marks; dragging fires
   `onControlChange(id, level)`; single-level → disabled + tooltip.
 - **Per-engine `set_control` round-trip:**
-  - live (codex/opencode/cursor) — asserts the next `turn/start`/prompt-body/
-    `set_model` carries the effort (mock transport).
-  - restart (claudecode/kimi/grok) — asserts a restart is triggered and the
-    `--effort`/`config.toml`/`--reasoning-effort` value is rewritten.
+  - live (codex/grok/opencode/kimi) — asserts the next `turn/start` / prompt-body
+    `variant` / `set_model _meta` / `set_config_option` carries the effort (mock
+    transport).
+  - restart (claudecode) — asserts a relaunch is triggered with the new `--effort`.
   - **kimi** — `parse_all_controls` emits the `reasoning_effort` slider **instead
-    of** the thinking on/off control; `set_control` writes `config.toml [thinking]`.
+    of** the thinking on/off control; `set_control` issues
+    `session/set_config_option {configId:"thinking", value:<level>}`.
 - **Model-dependent presence:** the control appears when the model supports effort
   and vanishes (or locks) on switch to a non-reasoning model — per engine, with
   fakes.
@@ -128,16 +151,24 @@ No other UI change.
 - Standard: `.venv` in the worktree; pytest-xdist harness (new tests xdist-safe,
   `serial` only if spawn-heavy); conversation-ui via `tsc --noEmit` + vitest.
 
-## Research items (resolve in the plan phase)
+## Research items — RESOLVED this session
 
-1. **grok** `--reasoning-effort` accepted level set + reasoning-model detection.
-2. **cursor** model-id `[effort=…]` accepted level set + parameterized/reasoning
-   model detection (and confirm live `set_model` accepts a bracketed id).
-3. **codex** reasoning-effort capability source (which models support `effort`).
-4. **kimi** — confirm `config.toml [thinking]` can set thinking **off** (not just
-   grade), to validate the unified-slider (#1) design vs the hybrid fallback.
-5. **opencode** — the exact `variant` → reasoning-tier mapping per model (for the
-   live `levels`), and the fixed config-enum superset.
+1. **grok** — levels `low/medium/high/xhigh` (TUI picker set); capability +
+   levels advertised per-model in the ACP model `_meta`
+   (`supportsReasoningEffort`/`reasoningEfforts`). Live via `session/set_model`
+   `_meta`. **One residual live-probe:** the exact request-side `_meta` key for
+   setting effort (candidates in the plan) — method + no-restart are certain.
+2. **cursor** — effort is a model-id variant (folded into the model control; no
+   separate control). Bracket-over-ACP unverified → not used.
+3. **codex** — levels `none/minimal/low/medium/high/xhigh`; capability =
+   app-server `supported_reasoning_efforts` (non-empty).
+4. **kimi** — the fork (`≥0.23.1-csillag.2`, `csillag/acp-graded-thinking`)
+   accepts + advertises graded thinking over ACP → **live**, no restart, no
+   config.toml/relaunch. Verified in the release this session.
+5. **opencode** — `variant` keys are per-model (e.g. OpenAI
+   `none/minimal/low/medium/high/xhigh`, Anthropic `low…max`); the wrapper reads
+   the current model's `variants` keys for the live levels; config enum = the
+   union superset.
 
 ## Dependencies & rollout
 
