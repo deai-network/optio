@@ -276,6 +276,40 @@ class ProcessContext:
         from optio_core.store import clear_control_upstream
         await clear_control_upstream(self._db, self._prefix, self._process_oid)
 
+    def _owning_optio(self):
+        """The Optio instance that owns this task's process.
+
+        Reached via the executor back-reference (set by the executor right
+        after this context is constructed). The in-process upload-writer
+        registry lives on the Optio, not the context, because the RPC
+        handler resolving a writer by process_id (Optio.materialize_upload)
+        has no context in hand — only the Optio.
+        """
+        if self._executor is None or self._executor._optio is None:
+            raise RuntimeError(
+                "register_upload_writer: no Optio attached to this context"
+            )
+        return self._executor._optio
+
+    def register_upload_writer(self, writer: Callable[[str, bytes], Awaitable[str]]) -> None:
+        """Register an in-process writer that materializes an uploaded file.
+
+        ``writer(filename: str, data: bytes) -> Awaitable[str]`` writes the
+        blob into this task's workdir and returns the workdir-relative path.
+        The central ``Optio.materialize_upload`` handler — reached over
+        clamator by process_id, like ``cancel`` — resolves and invokes it.
+
+        Registration is process-local by design: the writer closes over the
+        live ``Host``, which may be a remote SFTP connection owned solely by
+        this worker and unreachable from any other process. The registry is
+        keyed by this process's ObjectId on the owning Optio.
+        """
+        self._owning_optio()._upload_writers[self._process_oid] = writer
+
+    def clear_upload_writer(self) -> None:
+        """Remove this task's upload writer (teardown). Idempotent."""
+        self._owning_optio()._upload_writers.pop(self._process_oid, None)
+
     async def set_widget_data(self, data) -> None:
         """Overwrite widgetData. Must be JSON-serializable. Optio does not interpret."""
         from optio_core.store import update_widget_data

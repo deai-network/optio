@@ -89,6 +89,12 @@ class Optio:
         self._supervisor_task: asyncio.Task | None = None
         self._auto_resume_task: asyncio.Task | None = None
         self._launch_blocks: dict[uuid.UUID, _BlockEntry] = {}
+        # In-process upload-writer registry: process ObjectId -> writer
+        # callable (filename, bytes) -> relpath. Populated by running tasks
+        # via ctx.register_upload_writer; read by materialize_upload (the
+        # clamator RPC handler) to resolve a writer by process_id. In-memory
+        # only — the writer holds this worker's live Host.
+        self._upload_writers: dict[ObjectId, Callable[[str, bytes], Awaitable[str]]] = {}
 
     @property
     def mongo_store(self) -> MongoStore:
@@ -490,6 +496,43 @@ class Optio:
         object up here by process_id.
         """
         return self._executor.get_published_result(process_id)
+
+    async def materialize_upload(
+        self, process_id: str, data: bytes, filename: str,
+    ) -> str:
+        """Resolve the in-process upload writer for ``process_id`` and invoke it.
+
+        The writer was registered by the running task via
+        ``ctx.register_upload_writer``; it writes ``data`` into the task's
+        workdir (local or remote Host) and returns the workdir-relative path.
+        ``process_id`` may be an OID hex or a processId — resolved the same
+        way ``cancel`` does. Raises ``NoUploadWriter`` when the process is
+        unknown or registered no writer (not accepting uploads / already gone).
+        """
+        from optio_core.exceptions import NoUploadWriter
+        proc = await self._resolve(process_id)
+        if proc is None:
+            raise NoUploadWriter(process_id)
+        writer = self._upload_writers.get(proc["_id"])
+        if writer is None:
+            raise NoUploadWriter(process_id)
+        return await writer(filename, data)
+
+    async def read_blob_bytes(self, file_id: ObjectId) -> bytes:
+        """Read a GridFS blob's full contents by id.
+
+        Used by the engine-service ``materialize_upload`` handler to pull the
+        staged upload bytes the API streamed into GridFS. Mirrors the bucket
+        binding ``ProcessContext.load_blob`` uses, but at the Optio level —
+        the RPC path holds no task context.
+        """
+        from motor.motor_asyncio import AsyncIOMotorGridFSBucket
+        bucket = AsyncIOMotorGridFSBucket(self._config.mongo_db)
+        stream = await bucket.open_download_stream(file_id)
+        try:
+            return await stream.read()
+        finally:
+            stream.close()
 
     async def _cancel_active_children(
         self,

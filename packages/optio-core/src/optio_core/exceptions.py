@@ -47,3 +47,16 @@ class ResultNotPublished(Exception):
         super().__init__(
             f"process '{process_id}' ended without publishing a result{suffix}"
         )
+
+
+class NoUploadWriter(Exception):
+    """Raised by Optio.materialize_upload when no in-process upload writer is
+    registered for the target process — the task never called
+    ctx.register_upload_writer (it does not accept uploads), or it has already
+    torn down / disappeared. Carries the offending process_id."""
+
+    def __init__(self, process_id: str):
+        self.process_id = process_id
+        super().__init__(
+            f"no upload writer registered for process '{process_id}'"
+        )
