@@ -110,9 +110,15 @@ export function GrokView(props: WidgetProps) {
         if (attachments.length > 0) {
           const uploadUrl = resolveUploadUrl(props.process.widgetData, widgetProxyUrl);
           if (!uploadUrl) return false;
-          const paths = await uploadFiles(uploadUrl, attachments, maxUploadBytes);
-          if (!paths) return false;
-          prompt = bundleUploadNotice(paths, body);
+          const { ok: stored, failed } = await uploadFiles(uploadUrl, attachments, maxUploadBytes);
+          for (const f of failed) {
+            // Surface each failed upload as an immediate, transient error row.
+            localSeqRef.current -= 1;
+            dispatch({ ev: { type: 'x-optio-local-error', text: `Upload failed: ${f.name} — ${f.error}` }, seq: localSeqRef.current });
+          }
+          // Everything failed and no prompt to send → don't send an empty turn.
+          if (stored.length === 0 && body.trim() === '') return false;
+          prompt = bundleUploadNotice(stored, body);
         }
         const ok = await post('send', { text: prompt });
         if (ok) {

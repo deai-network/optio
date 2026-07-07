@@ -375,3 +375,45 @@ describe('System-message block separation', () => {
     expect(act.text).toBe('System: first notice\nSystem: second notice');
   });
 });
+
+describe('claudecode upload notice → attachment row', () => {
+  it('splits an upload notice into a clean bubble + attachment row, deduping the optimistic echo (live path)', () => {
+    const s = run([
+      { type: 'x-optio-local-user', text: 'review the screenshot' },
+      user('System: upload received, stored in uploads/pic.png\n\nreview the screenshot'),
+    ]);
+    const users = s.items.filter((i) => i.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0].kind === 'user' && users[0].text).toBe('review the screenshot');
+    expect(users[0].kind === 'user' && users[0].local).toBeFalsy();
+    const attach = s.items.find((i) => i.kind === 'activity');
+    expect(attach && attach.kind === 'activity' && attach.text).toBe('📎 Attached: pic.png');
+    expect(s.items.findIndex((i) => i.kind === 'activity')).toBeLessThan(
+      s.items.findIndex((i) => i.kind === 'user'));
+  });
+
+  it('replays the attachment row from a resumed user echo — even after the answer streamed first (the resume guarantee)', () => {
+    // --replay-user-messages streams the answer BEFORE echoing the user turn,
+    // so the attachment row + bubble slot in front of the pending assistant.
+    const s = run([
+      delta('here is the review'),
+      user('System: upload received, stored in uploads/spec.md\n\nimplement it'),
+    ]);
+    const u = s.items.find((i) => i.kind === 'user');
+    expect(u && u.kind === 'user' && u.text).toBe('implement it');
+    const attach = s.items.find((i) => i.kind === 'activity');
+    expect(attach && attach.kind === 'activity' && attach.text).toBe('📎 Attached: spec.md');
+    // Chronological order: attachment row, then user bubble, then the answer.
+    const ai = s.items.findIndex((i) => i.kind === 'activity');
+    const ui = s.items.findIndex((i) => i.kind === 'user');
+    const asi = s.items.findIndex((i) => i.kind === 'assistant');
+    expect(ai).toBeLessThan(ui);
+    expect(ui).toBeLessThan(asi);
+  });
+
+  it('surfaces an x-optio-local-error as an error row', () => {
+    const s = run([{ type: 'x-optio-local-error', text: 'Upload failed: big.png — exceeds the size limit' }]);
+    const e = s.items.find((i) => i.kind === 'error');
+    expect(e && e.kind === 'error' && e.text).toBe('Upload failed: big.png — exceeds the size limit');
+  });
+});

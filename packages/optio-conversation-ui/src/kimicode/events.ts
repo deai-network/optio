@@ -21,6 +21,7 @@
 import type { ChatItem, ChatState } from '../chat.js';
 import { foldControlUpdate } from '../chat.js';
 import { explainApiError } from '../apiError.js';
+import { parseUploadNotice, uploadNoticeActivityText } from '../uploads.js';
 export { initialChatState } from '../chat.js';
 
 // Adapter-private memory threaded through the shared ChatState (structural
@@ -87,13 +88,6 @@ function appendThinking(items: ChatItem[], seq: number, text: string): ChatItem[
 // this prefix and render as muted activity rows, never user bubbles.
 const HARNESS_PREFIX = 'System: ';
 
-// On a file upload the view prepends one `System: upload received, stored in
-// <path>` line per file to the prompt; strip them from the wire echo so the user
-// bubble shows only the real request (and dedupes against the optimistic echo).
-function stripUploadNotice(text: string): string {
-  return text.replace(/^(?:System: upload received, stored in [^\n]*\n)+\n?/, '');
-}
-
 export function reduceKimiCodeEvent(state: ChatState, ev: any, seq: number): ChatState {
   return reduce(state as KimiCodeChatState, ev, seq);
 }
@@ -105,6 +99,13 @@ function reduce(st: KimiCodeChatState, ev: any, seq: number): KimiCodeChatState 
     const text = typeof ev.text === 'string' ? ev.text : '';
     if (text === '') return st;
     return { ...st, busy: true, items: [...st.items, { kind: 'user', text, seq, local: true }] };
+  }
+  if (synthetic === 'x-optio-local-error') {
+    // A client-side upload failure the view surfaces immediately (transient —
+    // not replayed on resume, unlike the successful-filename activity rows).
+    const text = typeof ev.text === 'string' ? ev.text : '';
+    if (text === '') return st;
+    return { ...st, items: [...st.items, { kind: 'error', text, seq }] };
   }
   if (synthetic === 'x-optio-permission-answered') {
     const requestId = String(ev.request_id);
@@ -216,28 +217,43 @@ function reduce(st: KimiCodeChatState, ev: any, seq: number): KimiCodeChatState 
       // answer bubble and bump the turn id so the next agent_message_chunk starts
       // a fresh bubble instead of coalescing every historic answer into one giant
       // agent bubble (the reported resume bug — merged answers, no prompts).
-      const text = stripUploadNotice(update.content?.text ?? '');
-      if (text === '') return st;
-      const items0 = finalizePending(dropTools(st.items));
+      // An upload prepends `System: upload received…` lines; split them off the
+      // wire echo — `.text` is the real prompt (dedupes against the optimistic
+      // echo), `.uploads` drives a persistent muted "attached files" row that
+      // re-renders on resume (this same chunk replays during session/load).
+      const { text, uploads } = parseUploadNotice(update.content?.text ?? '');
+      if (text === '' && uploads.length === 0) return st;
+      const base = finalizePending(dropTools(st.items));
       const turn = (st.turn ?? 0) + 1;
-      // Harness System: notices render as muted activity rows, never user bubbles.
-      if (text.startsWith(HARNESS_PREFIX)) {
-        // Dedup: the resume notice is injected engine-side as a synthetic
-        // user_message_chunk; if kimi ever ALSO echoes it live, don't render a
-        // second identical activity row (or bump the turn again).
-        const last = items0[items0.length - 1];
-        if (last && last.kind === 'activity' && last.text === text) return st;
-        return { ...st, items: [...items0, { kind: 'activity', text, seq }], turn };
-      }
-      // Dedup the optimistic local echo (x-optio-local-user): confirm it in place
-      // rather than adding a second bubble for the same prompt.
-      const idx = items0.findIndex((i) => i.kind === 'user' && i.local && i.text === text);
-      if (idx !== -1) {
-        const cur = items0[idx] as Extract<ChatItem, { kind: 'user' }>;
-        const items = [...items0.slice(0, idx), { ...cur, local: false }, ...items0.slice(idx + 1)];
+      const attach: ChatItem | null =
+        uploads.length > 0 ? { kind: 'activity', text: uploadNoticeActivityText(uploads), seq } : null;
+
+      // Harness System: notice (resume/auto-start), or an upload with no prompt
+      // body — render the attachment row (if any) then, for a harness message,
+      // the muted System row. Never a user bubble.
+      if (text === '' || text.startsWith(HARNESS_PREFIX)) {
+        let items = attach ? [...base, attach] : base;
+        if (text !== '') {
+          const last = base[base.length - 1];
+          if (!attach && last && last.kind === 'activity' && last.text === text) return st;
+          items = [...items, { kind: 'activity', text, seq }];
+        }
         return { ...st, items, turn };
       }
-      return { ...st, items: [...items0, { kind: 'user', text, seq }], turn };
+      // Real operator prompt: confirm the optimistic local echo in place (the
+      // attachment row slots in just before it to stay chronological), else
+      // append the attachment row then the user bubble.
+      const idx = base.findIndex((i) => i.kind === 'user' && i.local && i.text === text);
+      if (idx !== -1) {
+        const cur = base[idx] as Extract<ChatItem, { kind: 'user' }>;
+        const confirmed = { ...cur, local: false };
+        const items = attach
+          ? [...base.slice(0, idx), attach, confirmed, ...base.slice(idx + 1)]
+          : [...base.slice(0, idx), confirmed, ...base.slice(idx + 1)];
+        return { ...st, items, turn };
+      }
+      const appended = attach ? [...base, attach] : base;
+      return { ...st, items: [...appended, { kind: 'user', text, seq }], turn };
     }
 
     // plan / available_commands_update — no dedicated rendering; passed through

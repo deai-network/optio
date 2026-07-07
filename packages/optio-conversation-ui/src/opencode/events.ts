@@ -1,6 +1,7 @@
 import type { ChatItem, ChatState } from '../chat.js';
 import { foldControlUpdate } from '../chat.js';
 import { explainApiError } from '../apiError.js';
+import { parseUploadNotice, uploadNoticeActivityText } from '../uploads.js';
 
 /** Reducer over opencode's native /global/event SSE frames.
  *  Each frame is `{directory?, project?, payload: {id, type, properties}}`
@@ -45,18 +46,23 @@ function upsertAssistant(
 
 const dropTools = (items: ChatItem[]) => items.filter((i) => i.kind !== 'tool');
 
+// Find the user/activity row a message's text part fills, matched by the seq
+// stashed in userSeqs. Scans from the END so that when a persistent attachment
+// row (spliced in just before the prompt row) happens to share the seq, the
+// prompt row — appended after it — is the one selected, never the attachment row.
+function findRowBySeq(items: ChatItem[], seq: number): number {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const k = items[i].kind;
+    if ((k === 'user' || k === 'activity') && items[i].seq === seq) return i;
+  }
+  return -1;
+}
+
 // Harness-injected messages (resume notices, auto-start prompt) go through the
 // same prompt path, so opencode records them as user-role messages carrying this
 // prefix; they render as muted activity rows, never user bubbles (mirrors
 // antigravity's HARNESS_PREFIX and the shared acp reducer's user_message_chunk).
 const HARNESS_PREFIX = 'System: ';
-
-// On a file upload the workdir-write path prepends one `System: upload received,
-// stored in <path>` line per file to the prompt; strip them so the user bubble
-// shows only the real request (mirrors antigravity/acp stripUploadNotice).
-function stripUploadNotice(text: string): string {
-  return text.replace(/^(?:System: upload received, stored in [^\n]*\n)+\n?/, '');
-}
 
 export function reduceOpencodeEvent(
   state: ChatState, ev: any, seq: number, sessionID: string,
@@ -89,6 +95,15 @@ function reduce(
     return { ...st, busy: true, items: [...st.items, { kind: 'user', text: p.text ?? '', seq, local: true }] };
   }
 
+  // Synthetic, dispatched locally by the view on a client-side upload failure —
+  // surfaced immediately (transient; not replayed on resume, unlike the
+  // successful-filename activity rows).
+  if (t === 'x-optio-local-error') {
+    const text = typeof p.text === 'string' ? p.text : '';
+    if (text === '') return st;
+    return { ...st, items: [...st.items, { kind: 'error', text, seq }] };
+  }
+
   if (t === 'session.status' || t === 'session.idle') {
     const busy = t === 'session.status' && p.status?.type === 'busy';
     return { ...st, busy };
@@ -113,29 +128,41 @@ function reduce(
       : st.partTypes;
     if (part.type === 'text') {
       if (st.roles?.[msgId] === 'user') {
-        // Strip upload-notice lines, then mute harness `System:` messages: they
-        // ride the same user-role path but must render as activity rows, never
-        // user bubbles (a resume notice as a user bubble is the live bug).
-        const text = stripUploadNotice(part.text ?? '');
+        // Split upload-notice lines off, then mute harness `System:` messages:
+        // both ride the same user-role path but must render as activity rows,
+        // never user bubbles. `.uploads` drives a persistent muted "attached
+        // files" row (re-rendered on resume via historyToChatItems).
+        const { text, uploads } = parseUploadNotice(part.text ?? '');
         const harness = text.startsWith(HARNESS_PREFIX);
+        const attachText = uploads.length > 0 ? uploadNoticeActivityText(uploads) : null;
         // The user prompt's own text part: fill the already-rendered row
         // (optimistic echo or an earlier part event) in place, else append.
         const at = st.userSeqs?.[msgId];
-        const idx = at === undefined ? -1 : st.items.findIndex((i) => (i.kind === 'user' || i.kind === 'activity') && i.seq === at);
+        const idx = at === undefined ? -1 : findRowBySeq(st.items, at);
         if (idx !== -1) {
           const items = [...st.items];
           const existing = items[idx];
           items[idx] = existing.kind === 'activity'
             ? { ...existing, text }
             : { ...(existing as Extract<ChatItem, { kind: 'user' }>), text };
+          // Splice the attachment row in just before the prompt row, once
+          // (idempotent across repeat part.updated events for this part).
+          if (attachText) {
+            const prev = items[idx - 1];
+            if (!(prev && prev.kind === 'activity' && prev.text === attachText)) {
+              items.splice(idx, 0, { kind: 'activity', text: attachText, seq });
+            }
+          }
           return { ...st, partTypes, items };
         }
-        const row: ChatItem = harness
-          ? { kind: 'activity', text, seq }
-          : { kind: 'user', text, seq };
+        const appended = [...st.items];
+        if (attachText) appended.push({ kind: 'activity', text: attachText, seq });
+        // An upload with no prompt body renders just the attachment row.
+        if (text === '') return { ...st, partTypes, items: appended };
+        appended.push(harness ? { kind: 'activity', text, seq } : { kind: 'user', text, seq });
         return {
           ...st, partTypes,
-          items: [...st.items, row],
+          items: appended,
           userSeqs: { ...st.userSeqs, [msgId]: seq },
         };
       }
@@ -228,10 +255,13 @@ export function historyToChatItems(history: any[], sessionID: string): ChatItem[
     const parts = entry?.parts ?? [];
     if (info.role === 'user') {
       const raw = parts.filter((p: any) => p.type === 'text').map((p: any) => p.text).join('\n');
-      // Same muting as the live path: strip upload notices, render harness
-      // `System:` messages as activity rows so resume/history replays them the
-      // way the live reducer does (never as user bubbles).
-      const text = stripUploadNotice(raw);
+      // Same handling as the live path: split off upload notices (emitting the
+      // persistent "attached files" row — the resume guarantee), and render a
+      // harness `System:` message as an activity row (never a user bubble).
+      const { text, uploads } = parseUploadNotice(raw);
+      if (uploads.length > 0) {
+        items.push({ kind: 'activity', text: uploadNoticeActivityText(uploads), seq: seq++ });
+      }
       if (text) {
         items.push(text.startsWith(HARNESS_PREFIX)
           ? { kind: 'activity', text, seq: seq++ }

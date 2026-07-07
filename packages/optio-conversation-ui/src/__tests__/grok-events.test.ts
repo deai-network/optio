@@ -87,6 +87,41 @@ describe('grok/cursor shared ACP reducer — resume replay rendering', () => {
   });
 });
 
+describe('grok/cursor shared ACP reducer — upload notice → attachment row', () => {
+  it('splits an upload notice into a clean bubble + attachment row, deduping the optimistic echo (live path)', () => {
+    const s = play([
+      { type: 'x-optio-local-user', text: 'review the screenshot' },
+      userChunk('System: upload received, stored in uploads/pic.png\n\nreview the screenshot'),
+    ]);
+    const users = s.items.filter((i) => i.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0].kind === 'user' && users[0].text).toBe('review the screenshot');
+    expect(users[0].kind === 'user' && users[0].local).toBeFalsy();
+    const attach = s.items.find((i) => i.kind === 'activity');
+    expect(attach && attach.kind === 'activity' && attach.text).toBe('📎 Attached: pic.png');
+    expect(s.items.findIndex((i) => i.kind === 'activity')).toBeLessThan(
+      s.items.findIndex((i) => i.kind === 'user'));
+  });
+
+  it('replays the attachment row from a resumed multi-file upload chunk (no optimistic echo — the resume guarantee)', () => {
+    const s = play([
+      userChunk('System: upload received, stored in uploads/a.md\nSystem: upload received, stored in uploads/b.png\n\nlook at both'),
+    ]);
+    const u = s.items.find((i) => i.kind === 'user');
+    expect(u && u.kind === 'user' && u.text).toBe('look at both');
+    const attach = s.items.find((i) => i.kind === 'activity');
+    expect(attach && attach.kind === 'activity' && attach.text).toBe('📎 Attached: a.md, b.png');
+    expect(s.items.findIndex((i) => i.kind === 'activity')).toBeLessThan(
+      s.items.findIndex((i) => i.kind === 'user'));
+  });
+
+  it('surfaces an x-optio-local-error as an error row', () => {
+    const s = play([{ type: 'x-optio-local-error', text: 'Upload failed: big.png — exceeds the size limit' }]);
+    const e = s.items.find((i) => i.kind === 'error');
+    expect(e && e.kind === 'error' && e.text).toBe('Upload failed: big.png — exceeds the size limit');
+  });
+});
+
 describe('grok ACP event reducer', () => {
   it('agent_message_chunk deltas accumulate into one pending bubble', () => {
     const s = play([chunk('PO'), chunk('NG')]);

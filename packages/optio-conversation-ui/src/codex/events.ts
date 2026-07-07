@@ -18,6 +18,7 @@
 import type { ChatItem, ChatState } from '../chat.js';
 import { foldControlUpdate } from '../chat.js';
 import { explainApiError } from '../apiError.js';
+import { parseUploadNotice, uploadNoticeActivityText } from '../uploads.js';
 export { initialChatState } from '../chat.js';
 
 // Adapter-private memory threaded through the shared ChatState (structural
@@ -91,16 +92,6 @@ function appendThought(items: ChatItem[], seq: number, text: string): ChatItem[]
 // codex echoes them back as userMessage items too. They carry this prefix.
 const HARNESS_PREFIX = 'System: ';
 
-// On a file upload the view prepends one `System: upload received, stored in
-// <path>` line per file (+ a blank line) to the prompt sent to codex, but the
-// optimistic echo is just the typed body. Strip those lines from the wire echo
-// so the user bubble shows only the real request — otherwise it renders the
-// System notice as the operator's message AND fails to dedupe against the
-// optimistic echo, showing the prompt twice.
-function stripUploadNotice(text: string): string {
-  return text.replace(/^(?:System: upload received, stored in [^\n]*\n)+\n?/, '');
-}
-
 // A userMessage item's prompt text. The live app-server wire wraps it in
 // content:[{type:"text",text}] (verified capture); the thread/resume rollout
 // items the driver replays carry a flat `text` — accept either so the same
@@ -140,6 +131,13 @@ function reduce(st: CodexChatState, ev: any, seq: number): CodexChatState {
     const text = typeof ev.text === 'string' ? ev.text : '';
     if (text === '') return st;
     return { ...st, busy: true, items: [...st.items, { kind: 'user', text, seq, local: true }] };
+  }
+  if (synthetic === 'x-optio-local-error') {
+    // A client-side upload failure the view surfaces immediately (transient —
+    // not replayed on resume, unlike the successful-filename activity rows).
+    const text = typeof ev.text === 'string' ? ev.text : '';
+    if (text === '') return st;
+    return { ...st, items: [...st.items, { kind: 'error', text, seq }] };
   }
   if (synthetic === 'x-optio-permission-answered') {
     const requestId = String(ev.request_id);
@@ -252,23 +250,35 @@ function reduce(st: CodexChatState, ev: any, seq: number): CodexChatState {
         // driver replays prior turns' userMessage items with NO optimistic bubble
         // to match, so this appends the past prompt — the fix for resumed
         // conversations that previously showed only the agent's replies.
-        const text = stripUploadNotice(userMessageText(item));
-        if (!text) return st;
-        // A pure harness message (resume notice, auto-start prompt) — after the
-        // upload notice is stripped — renders as a muted activity row, never a
-        // user bubble (mirrors claudecode's HARNESS_PREFIX handling).
-        if (text.startsWith(HARNESS_PREFIX)) {
-          return { ...st, items: [...st.items, { kind: 'activity', text, seq }] };
+        // Split the `System: upload received…` notice off: `.text` is the real
+        // prompt (dedupes against the optimistic echo), `.uploads` drives a
+        // persistent muted "attached files" row. On resume the driver replays
+        // this same userMessage item, so the row re-renders from history.
+        const { text, uploads } = parseUploadNotice(userMessageText(item));
+        if (text === '' && uploads.length === 0) return st;
+        const attach: ChatItem | null =
+          uploads.length > 0 ? { kind: 'activity', text: uploadNoticeActivityText(uploads), seq } : null;
+        // A pure harness message (resume notice, auto-start prompt), or an upload
+        // with no prompt body — the attachment row (if any) then the muted System
+        // row; never a user bubble (mirrors claudecode's HARNESS_PREFIX handling).
+        if (text === '' || text.startsWith(HARNESS_PREFIX)) {
+          let items = attach ? [...st.items, attach] : st.items;
+          if (text !== '') items = [...items, { kind: 'activity', text, seq }];
+          return items === st.items ? st : { ...st, items };
         }
         const idx = st.items.findIndex(
           (i) => i.kind === 'user' && i.local && i.text === text,
         );
         if (idx !== -1) {
           const cur = st.items[idx] as Extract<ChatItem, { kind: 'user' }>;
-          const items = [...st.items.slice(0, idx), { ...cur, local: false }, ...st.items.slice(idx + 1)];
+          const confirmed = { ...cur, local: false };
+          const items = attach
+            ? [...st.items.slice(0, idx), attach, confirmed, ...st.items.slice(idx + 1)]
+            : [...st.items.slice(0, idx), confirmed, ...st.items.slice(idx + 1)];
           return { ...st, items };
         }
-        return { ...st, items: [...st.items, { kind: 'user', text, seq }] };
+        const appended = attach ? [...st.items, attach] : st.items;
+        return { ...st, items: [...appended, { kind: 'user', text, seq }] };
       }
       const row = toolRow(item);
       if (!row) return st;

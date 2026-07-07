@@ -11,34 +11,94 @@
  * Lifted from the per-engine ClaudeCodeView so all 7 views share one copy —
  * no inline data-URL file parts anywhere.
  */
-import { type Attachment, withinCap } from './attachments.js';
+import { type Attachment } from './attachments.js';
+
+/** Outcome of a multi-file upload: the stored relpaths that succeeded, plus a
+ *  per-file reason for each one that did not. Each file uploads independently,
+ *  so a single oversize / failing attachment never sinks the others. */
+export interface UploadOutcome {
+  ok: string[];
+  failed: { name: string; error: string }[];
+}
 
 /**
- * Multipart-POST the attachments to the generic upload route and return the
- * stored `uploads/<name>` relpaths, or `null` on oversize / any failure so the
- * caller can surface a retry instead of sending a half-uploaded prompt.
+ * Multipart-POST each attachment to the generic upload route INDEPENDENTLY and
+ * report a per-file outcome. Oversize files and fetch/HTTP failures land as
+ * `failed` entries (short human reason) instead of throwing or aborting the
+ * whole batch, so the caller can send the ones that stored and surface the rest
+ * as error rows.
  *
  * @param uploadUrl  the resolved `/api/widget-upload/<db>/<prefix>/<pid>` URL
  *                   (see {@link resolveUploadUrl}).
- * @param attachments  the picked files; each is appended under the `file` field.
- * @param maxBytes  per-file size cap; any attachment above it aborts the upload.
+ * @param attachments  the picked files; each is POSTed alone under the `file` field.
+ * @param maxBytes  per-file size cap; an attachment above it becomes a `failed` entry.
  */
 export async function uploadFiles(
   uploadUrl: string,
   attachments: Attachment[],
   maxBytes: number,
-): Promise<string[] | null> {
-  if (!withinCap(attachments, maxBytes)) return null;
-  const fd = new FormData();
-  for (const a of attachments) fd.append('file', a.file, a.filename);
-  try {
-    const resp = await fetch(uploadUrl, { method: 'POST', body: fd });
-    if (!resp.ok) return null;
-    const j = await resp.json();
-    return (j.files ?? []).map((f: any) => String(f.path));
-  } catch {
-    return null;
+): Promise<UploadOutcome> {
+  const ok: string[] = [];
+  const failed: { name: string; error: string }[] = [];
+  for (const a of attachments) {
+    if (a.file.size > maxBytes) {
+      failed.push({ name: a.filename, error: 'exceeds the size limit' });
+      continue;
+    }
+    const fd = new FormData();
+    fd.append('file', a.file, a.filename);
+    try {
+      const resp = await fetch(uploadUrl, { method: 'POST', body: fd });
+      if (!resp.ok) {
+        failed.push({ name: a.filename, error: `upload failed (${resp.status})` });
+        continue;
+      }
+      const j = await resp.json();
+      const paths = (j.files ?? []).map((f: any) => String(f.path));
+      if (paths.length === 0) failed.push({ name: a.filename, error: 'upload failed' });
+      else ok.push(...paths);
+    } catch {
+      failed.push({ name: a.filename, error: 'network error' });
+    }
   }
+  return { ok, failed };
+}
+
+// The upload-notice line the view bundles ahead of the prompt (see
+// bundleUploadNotice); the reducers parse it back out with parseUploadNotice.
+const NOTICE_LINE = /^System: upload received, stored in ([^\n]*)\n/;
+
+/**
+ * Split the leading `System: upload received, stored in <path>` notice lines
+ * (one per uploaded file, as {@link bundleUploadNotice} writes them) off the
+ * front of a wire/history user message. Returns the captured `<path>`s AND the
+ * clean remaining `text` (the operator's real prompt). No notice → passthrough.
+ *
+ * Reducers use `parseUploadNotice(raw).text` for the user bubble (unchanged
+ * behaviour vs. the old per-engine stripUploadNotice) and `.uploads` to emit a
+ * persistent muted "attached files" activity row.
+ */
+export function parseUploadNotice(text: string): { text: string; uploads: string[] } {
+  const uploads: string[] = [];
+  let rest = text;
+  let m: RegExpMatchArray | null;
+  while ((m = rest.match(NOTICE_LINE))) {
+    uploads.push(m[1]);
+    rest = rest.slice(m[0].length);
+  }
+  if (uploads.length > 0) rest = rest.replace(/^\n/, ''); // drop the blank separator line
+  return { text: rest, uploads };
+}
+
+/**
+ * A short, human muted-row label for the uploaded files, keyed off each stored
+ * path's basename, e.g. `📎 Attached: a.md, b.png`. Above three files it
+ * summarises with a count so the row stays short.
+ */
+export function uploadNoticeActivityText(uploads: string[]): string {
+  const names = uploads.map((p) => p.split('/').pop() || p);
+  if (names.length <= 3) return `📎 Attached: ${names.join(', ')}`;
+  return `📎 Attached ${names.length} files: ${names.slice(0, 3).join(', ')}, …`;
 }
 
 /**

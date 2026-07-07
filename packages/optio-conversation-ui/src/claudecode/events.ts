@@ -9,6 +9,7 @@
 import type { ChatItem, ChatState } from '../chat.js';
 import { foldControlUpdate } from '../chat.js';
 import { explainApiError } from '../apiError.js';
+import { parseUploadNotice, uploadNoticeActivityText } from '../uploads.js';
 export { initialChatState } from '../chat.js';
 
 const HARNESS_PREFIX = 'System: ';
@@ -114,10 +115,10 @@ function withoutTools(items: ChatItem[]): ChatItem[] {
   return items.filter((i) => i.kind !== 'tool');
 }
 
-function insertUserBeforePending(items: ChatItem[], item: ChatItem): ChatItem[] {
+function insertBeforePending(items: ChatItem[], rows: ChatItem[]): ChatItem[] {
   const idx = pendingIndex(items);
-  if (idx === -1 || !isTail(items, idx)) return [...items, item];
-  return [...items.slice(0, idx), item, ...items.slice(idx)];
+  if (idx === -1 || !isTail(items, idx)) return [...items, ...rows];
+  return [...items.slice(0, idx), ...rows, ...items.slice(idx)];
 }
 
 export function reduceEvent(state: ChatState, ev: any, seq: number): ChatState {
@@ -140,29 +141,42 @@ export function reduceEvent(state: ChatState, ev: any, seq: number): ChatState {
       return foldControlUpdate(state, ev);
 
     case 'user': {
-      const text = extractText(ev.message?.content);
-      if (text === '') return state;
-      // Harness-injected messages (resume notices, auto-start prompt) render
-      // as activity rows, not user bubbles, and just append. Either way the
-      // agent is working.
-      if (text.startsWith(HARNESS_PREFIX)) {
-        return { ...state, items: [...state.items, { kind: 'activity', text, seq }], busy: true };
+      // An upload prepends `System: upload received…` lines; split them off —
+      // `.text` is the real prompt, `.uploads` drives a persistent muted
+      // "attached files" row that re-renders on resume (Claude replays the user
+      // message under --replay-user-messages).
+      const { text, uploads } = parseUploadNotice(extractText(ev.message?.content));
+      if (text === '' && uploads.length === 0) return state;
+      const attach: ChatItem | null =
+        uploads.length > 0 ? { kind: 'activity', text: uploadNoticeActivityText(uploads), seq } : null;
+      // Harness-injected messages (resume notices, auto-start prompt) render as
+      // activity rows, not user bubbles; an upload with no prompt body renders
+      // just its attachment row. Either way the agent is working.
+      if (text === '' || text.startsWith(HARNESS_PREFIX)) {
+        let items = attach ? [...state.items, attach] : state.items;
+        if (text !== '') items = [...items, { kind: 'activity', text, seq }];
+        return { ...state, items, busy: true };
       }
       // Wire echo of an optimistically-rendered local message (sent from this
       // widget): confirm the local bubble in place instead of inserting a
-      // duplicate. FIFO by text — sends are echoed in order.
+      // duplicate (the attachment row slots just before it). FIFO by text.
       const localIdx = state.items.findIndex(
         (i) => i.kind === 'user' && i.local === true && i.text === text,
       );
       if (localIdx !== -1) {
         const confirmed = { ...state.items[localIdx] } as Extract<ChatItem, { kind: 'user' }>;
         delete confirmed.local;
-        const items = [...state.items];
-        items[localIdx] = confirmed;
+        const items = attach
+          ? [...state.items.slice(0, localIdx), attach, confirmed, ...state.items.slice(localIdx + 1)]
+          : [...state.items.slice(0, localIdx), confirmed, ...state.items.slice(localIdx + 1)];
         return { ...state, items, busy: true };
       }
-      const items = insertUserBeforePending(state.items, { kind: 'user', text, seq });
-      return { ...state, items, busy: true };
+      // Replayed / un-echoed prompt: slot the attachment row + user bubble in
+      // front of the in-flight assistant bubble (the answer streams first).
+      const rows: ChatItem[] = attach
+        ? [attach, { kind: 'user', text, seq }]
+        : [{ kind: 'user', text, seq }];
+      return { ...state, items: insertBeforePending(state.items, rows), busy: true };
     }
 
     // Synthetic, widget-emitted: render the operator's own message the moment
@@ -176,6 +190,14 @@ export function reduceEvent(state: ChatState, ev: any, seq: number): ChatState {
         items: [...state.items, { kind: 'user', text, seq, local: true }],
         busy: true,
       };
+    }
+
+    case 'x-optio-local-error': {
+      // A client-side upload failure the view surfaces immediately (transient —
+      // not replayed on resume, unlike the successful-filename activity rows).
+      const text = typeof ev.text === 'string' ? ev.text : '';
+      if (text === '') return state;
+      return { ...state, items: [...state.items, { kind: 'error', text, seq }] };
     }
 
     case 'assistant': {

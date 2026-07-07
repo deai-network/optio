@@ -211,3 +211,44 @@ describe('OpencodeView upload via the generic route', () => {
     expect(JSON.stringify(sent.body)).not.toContain('data:image');
   });
 });
+
+// -------------------------------------------------------------------------
+// Upload FAILURE: a per-file failure surfaces immediately as an error row
+// (client-side, transient), and the typed body still sends.
+// -------------------------------------------------------------------------
+
+describe('a failed upload surfaces an error row', () => {
+  it('ClaudeCodeView renders an error item naming the failed file and still sends the typed body', async () => {
+    const calls: { url: string; body: any }[] = [];
+    const fn = vi.fn(async (url: string, init?: any) => {
+      if (init?.body instanceof FormData) return new Response('nope', { status: 500 });
+      if (init?.method === 'POST') {
+        calls.push({ url, body: JSON.parse(init.body) });
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fn);
+
+    render(<ClaudeCodeView {...makeProps({ showFileUpload: true, uploadUrl: UPLOAD_URL })} />);
+    await waitFor(() => expect(screen.getByTestId('conversation-input-box')).toBeTruthy());
+
+    const input = screen.getByTestId('file-input') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [makePng('pic.png')] } });
+    await waitFor(() => expect(screen.getByTestId('attach-chips')).toBeTruthy());
+
+    const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: 'review this' } });
+    fireEvent.click(screen.getByTestId('conversation-send'));
+
+    // The failed upload is surfaced immediately as an error row naming the file.
+    await waitFor(() => expect(screen.getByTestId('conversation-error-item')).toBeTruthy());
+    expect(screen.getByTestId('conversation-error-item').textContent).toContain('pic.png');
+
+    // The typed body still sends (a body is present), with no System upload notice.
+    await waitFor(() => expect(calls.some((c) => c.url.endsWith('/send'))).toBe(true));
+    const sent = calls.find((c) => c.url.endsWith('/send'))!;
+    expect(sent.body.text).toBe('review this');
+    expect(sent.body.text).not.toContain('System: upload received');
+  });
+});

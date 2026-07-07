@@ -112,22 +112,30 @@ describe('opencode harness-message mute', () => {
     expect(items.some((i) => i.kind === 'activity' && i.text === 'System: you have been resumed')).toBe(true);
   });
 
-  it('strips a System: upload received notice line from the user bubble (live path)', () => {
+  it('splits a System: upload notice into a clean bubble + persistent attachment row (live path)', () => {
     const s = play([
       { type: 'message.updated', properties: { info: { id: 'mu2', sessionID: SID, role: 'user' } } },
       { type: 'message.part.updated', properties: { part: { id: 'up2', messageID: 'mu2', sessionID: SID, type: 'text', text: 'System: upload received, stored in uploads/doc.md\n\nplease review' } } },
     ]);
     const u = s.items.find((i) => i.kind === 'user');
     expect(u && u.kind === 'user' && u.text).toBe('please review');
-    expect(s.items.some((i) => i.kind === 'activity')).toBe(false);
+    const attach = s.items.find((i) => i.kind === 'activity');
+    expect(attach && attach.kind === 'activity' && attach.text).toBe('📎 Attached: doc.md');
+    expect(s.items.findIndex((i) => i.kind === 'activity')).toBeLessThan(
+      s.items.findIndex((i) => i.kind === 'user'),
+    );
   });
 
-  it('strips a System: upload received notice line from the user bubble (history path)', () => {
+  it('splits a System: upload notice into a clean bubble + persistent attachment row (history path — the resume guarantee)', () => {
     const items = historyToChatItems([
       { info: { id: 'mu3', sessionID: SID, role: 'user' }, parts: [{ type: 'text', text: 'System: upload received, stored in uploads/doc.md\n\nplease review' }] },
     ], SID);
     const u = items.find((i) => i.kind === 'user');
     expect(u && u.kind === 'user' && u.text).toBe('please review');
-    expect(items.some((i) => i.kind === 'activity')).toBe(false);
+    const attach = items.find((i) => i.kind === 'activity');
+    expect(attach && attach.kind === 'activity' && attach.text).toBe('📎 Attached: doc.md');
+    expect(items.findIndex((i) => i.kind === 'activity')).toBeLessThan(
+      items.findIndex((i) => i.kind === 'user'),
+    );
   });
 });

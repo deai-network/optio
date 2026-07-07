@@ -263,11 +263,11 @@ describe('codex app-server event reducer', () => {
     expect(a && a.kind === 'activity' && a.text).toBe('System: you have been resumed');
   });
 
-  it('an upload-notice userMessage strips the System notice and confirms the optimistic body', () => {
+  it('an upload-notice userMessage strips the System notice, confirms the optimistic body, and adds a persistent attachment row', () => {
     // On upload the prompt sent to codex is "System: upload received…\n\n<body>",
-    // but the optimistic echo is just <body>. The wire echo must strip the notice
-    // and confirm the optimistic bubble — not render the System notice as the
-    // operator's message nor duplicate it.
+    // but the optimistic echo is just <body>. The wire echo strips the notice and
+    // confirms the optimistic bubble (no duplicate), AND emits a muted "attached
+    // files" activity row naming the file, chronologically before the bubble.
     const s = play([
       { type: 'x-optio-local-user', text: 'summarize this' },
       itemCompleted({ type: 'userMessage', id: 'u1', content: [{ type: 'text',
@@ -277,7 +277,28 @@ describe('codex app-server event reducer', () => {
     expect(users).toHaveLength(1);
     expect(users[0].kind === 'user' && users[0].text).toBe('summarize this');
     expect(users[0].kind === 'user' && users[0].local).toBeFalsy();
-    expect(s.items.some((i) => i.kind === 'activity')).toBe(false);
+    const attach = s.items.find((i) => i.kind === 'activity');
+    expect(attach && attach.kind === 'activity' && attach.text).toBe('📎 Attached: a.txt');
+    expect(s.items.findIndex((i) => i.kind === 'activity')).toBeLessThan(
+      s.items.findIndex((i) => i.kind === 'user'),
+    );
+  });
+
+  it('replays the attachment row from a resumed userMessage (no optimistic echo)', () => {
+    // The resume guarantee: on session load the driver replays the userMessage
+    // WITHOUT a preceding optimistic echo, so the reducer must reconstruct both
+    // the clean bubble and the persistent attachment row from history alone.
+    const s = play([
+      itemCompleted({ type: 'userMessage', id: 'u9', content: [{ type: 'text',
+        text: 'System: upload received, stored in uploads/spec.md\n\nimplement it' }] }),
+    ]);
+    const u = s.items.find((i) => i.kind === 'user');
+    expect(u && u.kind === 'user' && u.text).toBe('implement it');
+    const attach = s.items.find((i) => i.kind === 'activity');
+    expect(attach && attach.kind === 'activity' && attach.text).toBe('📎 Attached: spec.md');
+    expect(s.items.findIndex((i) => i.kind === 'activity')).toBeLessThan(
+      s.items.findIndex((i) => i.kind === 'user'),
+    );
   });
 
   it('a full turn: local echo → reasoning → tool → answer → turn end', () => {

@@ -41,6 +41,7 @@
 
 import type { ChatItem, ChatState } from '../chat.js';
 import { foldControlUpdate } from '../chat.js';
+import { parseUploadNotice, uploadNoticeActivityText } from '../uploads.js';
 export { initialChatState } from '../chat.js';
 
 // Tool rows persist as transcript history, so — unlike the streaming engines —
@@ -77,23 +78,22 @@ function rewriteFileLinks(content: string): string {
 // Pull the operator's actual request out of a USER_INPUT `content` blob. The
 // real transcript wraps it as "<USER_REQUEST>\n{text}\n</USER_REQUEST>\n<…meta>";
 // we show only {text}. Absent tags (defensive) → the raw content, trimmed.
-// On a file upload the view prepends one `System: upload received, stored in
-// <path>` line per file (+ a blank line) to the prompt sent to agy, so those
-// lines land INSIDE the USER_INPUT. Strip them: the user bubble must show only
-// the real request — otherwise it renders the System notice as the operator's
-// message AND fails to dedupe against the optimistic echo (which is just the
-// typed text), showing the prompt twice.
-function stripUploadNotice(text: string): string {
-  return text.replace(/^(?:System: upload received, stored in [^\n]*\n)+\n?/, '');
-}
-
 // Harness-injected messages (resume notices, auto-start prompt) carry this
 // prefix; they render as activity rows, never user bubbles.
 const HARNESS_PREFIX = 'System: ';
-function extractUserRequest(content: unknown): string {
-  if (typeof content !== 'string') return '';
+
+// Pull the operator's request out of a USER_INPUT `content` blob AND split off
+// any `System: upload received…` notice lines an upload prepended (they land
+// INSIDE the USER_INPUT). Returns the clean `.text` (the user bubble must show
+// only the real request, and dedupe against the optimistic echo) and the
+// captured `.uploads` (which drive a persistent muted "attached files" row that
+// re-renders on transcript resume).
+function extractUserRequest(content: unknown): { text: string; uploads: string[] } {
+  if (typeof content !== 'string') return { text: '', uploads: [] };
   const m = content.match(/<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/);
-  return stripUploadNotice((m ? m[1] : content).trim()).trim();
+  const inner = (m ? m[1] : content).trim();
+  const { text, uploads } = parseUploadNotice(inner);
+  return { text: text.trim(), uploads };
 }
 
 // Coalesce a turn's answer into ONE assistant bubble. A turn is delimited by the
@@ -159,34 +159,49 @@ export function reduceAntigravityEvent(state: ChatState, ev: any, seq: number): 
       };
     }
 
-    case 'USER_INPUT': {
-      const text = extractUserRequest(ev.content);
+    case 'x-optio-local-error': {
+      // A client-side upload failure the view surfaces immediately (transient —
+      // not replayed on resume, unlike the successful-filename activity rows).
+      const text = typeof ev.text === 'string' ? ev.text : '';
       if (text === '') return state;
+      return { ...state, items: [...state.items, { kind: 'error', text, seq }] };
+    }
+
+    case 'USER_INPUT': {
+      const { text, uploads } = extractUserRequest(ev.content);
+      if (text === '' && uploads.length === 0) return state;
+      const attach: ChatItem | null =
+        uploads.length > 0 ? { kind: 'activity', text: uploadNoticeActivityText(uploads), seq } : null;
       // Harness-injected messages (resume notices, auto-start prompt) go through
       // the same send() path, so agy records them as USER_INPUT lines with a
-      // "System: " prefix. Render them as muted activity rows, never user
-      // bubbles (mirrors claudecode's HARNESS_PREFIX handling).
-      if (text.startsWith(HARNESS_PREFIX)) {
-        return { ...state, items: [...state.items, { kind: 'activity', text, seq }], busy: true };
+      // "System: " prefix — render them as muted activity rows, never user
+      // bubbles. An upload with no prompt body renders just its attachment row.
+      if (text === '' || text.startsWith(HARNESS_PREFIX)) {
+        let items = attach ? [...state.items, attach] : state.items;
+        if (text !== '') items = [...items, { kind: 'activity', text, seq }];
+        return { ...state, items, busy: true };
       }
       // Wire echo of an optimistically-rendered local message: confirm the
-      // local bubble in place instead of inserting a duplicate. FIFO by text —
-      // sends are echoed in transcript order. (The local echo carries the raw
-      // typed text; USER_INPUT carries the same text wrapped in USER_REQUEST,
-      // which extractUserRequest unwraps back to it.)
+      // local bubble in place instead of inserting a duplicate (the attachment
+      // row slots in just before it to stay chronological). FIFO by text — sends
+      // are echoed in transcript order. (The local echo carries the raw typed
+      // text; USER_INPUT carries the same text wrapped in USER_REQUEST, which
+      // extractUserRequest unwraps back to it.)
       const localIdx = state.items.findIndex(
         (i) => i.kind === 'user' && i.local === true && i.text === text,
       );
       if (localIdx !== -1) {
         const confirmed = { ...state.items[localIdx] } as Extract<ChatItem, { kind: 'user' }>;
         delete confirmed.local;
-        const items = [...state.items];
-        items[localIdx] = confirmed;
+        const items = attach
+          ? [...state.items.slice(0, localIdx), attach, confirmed, ...state.items.slice(localIdx + 1)]
+          : [...state.items.slice(0, localIdx), confirmed, ...state.items.slice(localIdx + 1)];
         return { ...state, items, busy: true };
       }
       // A user line the operator did not type through this widget (e.g. a replay
-      // of history) opens the turn: append + busy.
-      return { ...state, items: [...state.items, { kind: 'user', text, seq }], busy: true };
+      // of history) opens the turn: attachment row then user bubble + busy.
+      const appended = attach ? [...state.items, attach] : state.items;
+      return { ...state, items: [...appended, { kind: 'user', text, seq }], busy: true };
     }
 
     case 'PLANNER_RESPONSE': {

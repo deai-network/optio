@@ -230,8 +230,8 @@ describe('antigravity answer polish (agy quirks)', () => {
   });
 });
 
-describe('antigravity upload notice (no duplicate / not shown as user)', () => {
-  it('strips the prepended System: upload notice and dedupes with the echo', () => {
+describe('antigravity upload notice (attachment row + clean bubble)', () => {
+  it('splits the prepended System: upload notice into an attachment row + clean deduped bubble (live path)', () => {
     let s = initialChatState;
     // optimistic echo carries just the typed text
     s = reduceAntigravityEvent(s, { type: 'x-optio-local-user', text: 'explain the file' } as any, -1);
@@ -244,5 +244,26 @@ describe('antigravity upload notice (no duplicate / not shown as user)', () => {
     expect(users).toHaveLength(1);                         // no duplicate
     expect((users[0] as any).text).toBe('explain the file'); // notice stripped
     expect((users[0] as any).local).toBeUndefined();        // echo confirmed
+    const attach = s.items.find((i) => i.kind === 'activity');
+    expect(attach && attach.kind === 'activity' && attach.text).toBe('📎 Attached: x.md');
+    expect(s.items.findIndex((i) => i.kind === 'activity')).toBeLessThan(
+      s.items.findIndex((i) => i.kind === 'user'),
+    );
+  });
+
+  it('replays the attachment row from a resumed USER_INPUT (no optimistic echo — the resume guarantee)', () => {
+    let s = initialChatState;
+    // Transcript resume: the USER_INPUT line replays with no preceding echo.
+    s = reduceAntigravityEvent(s, {
+      type: 'USER_INPUT', source: 'USER_EXPLICIT',
+      content: '<USER_REQUEST>\nSystem: upload received, stored in uploads/x.md\n\nexplain the file\n</USER_REQUEST>',
+    } as any, 1);
+    const u = s.items.find((i) => i.kind === 'user');
+    expect(u && u.kind === 'user' && (u as any).text).toBe('explain the file');
+    const attach = s.items.find((i) => i.kind === 'activity');
+    expect(attach && attach.kind === 'activity' && attach.text).toBe('📎 Attached: x.md');
+    expect(s.items.findIndex((i) => i.kind === 'activity')).toBeLessThan(
+      s.items.findIndex((i) => i.kind === 'user'),
+    );
   });
 });
