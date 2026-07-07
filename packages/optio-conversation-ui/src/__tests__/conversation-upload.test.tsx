@@ -2,10 +2,15 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { OpencodeView } from '../opencode/OpencodeView.js';
 import { ClaudeCodeView } from '../claudecode/ClaudeCodeView.js';
+import { AntigravityView } from '../antigravity/AntigravityView.js';
+import { KimiCodeView } from '../kimicode/KimiCodeView.js';
+import { GrokView } from '../grok/GrokView.js';
+import { CursorView } from '../cursor/CursorView.js';
+import { CodexView } from '../codex/CodexView.js';
 
-// Shared EventSource stub: both views open one on mount for their event
-// stream; the upload tests don't drive any events, so a no-op that records
-// the last instance is enough (mirrors the model-widget harnesses).
+// Shared EventSource stub: every view opens one on mount for its event stream;
+// the upload tests don't drive any events, so a no-op that records the last
+// instance is enough (mirrors the model-widget harnesses).
 class MockEventSource {
   static last: MockEventSource | null = null;
   url: string;
@@ -23,16 +28,16 @@ beforeEach(() => {
   MockEventSource.last = null;
 });
 
-// A small in-memory PNG-ish file; jsdom's FileReader.readAsDataURL turns it
-// into a "data:<mime>;base64,<…>" URL, which is exactly what the opencode
-// inline file part carries.
+// A small in-memory PNG-ish file; the migrated views POST the raw bytes as
+// multipart (no data-URL) — the FormData carries this File under `file`.
 function makePng(name = 'pic.png'): File {
   return new File([new Uint8Array([1, 2, 3, 4])], name, { type: 'image/png' });
 }
 
-// -------------------------------------------------------------------------
-// OpencodeView: inline data-URL file part on prompt_async
-// -------------------------------------------------------------------------
+// Every migrated view resolves its upload route from widgetData.uploadUrl via
+// resolveUploadUrl(); an already-absolute value resolves untouched, so the
+// multipart POST lands on exactly this URL — NOT `${widgetProxyUrl}upload`.
+const UPLOAD_URL = '/api/widget-upload/db/gm/p1';
 
 const PROVIDERS = {
   providers: [{
@@ -44,96 +49,23 @@ const PROVIDERS = {
   default: { opencode: 'big-pickle' },
 };
 
-function installOpencodeFetch(opts: { posts: { url: string; body: any }[] }) {
+// Router that records the ordered calls. ANY multipart body is treated as the
+// upload (detected by FormData, not by URL) so the test observes exactly which
+// URL a view POSTs its files to; opencode's discovery GETs and every JSON POST
+// (send / prompt_async) are recorded/answered ok.
+function installFetch(opts: { calls: { url: string; body: any }[]; uploadPaths?: string[] }) {
   const fn = vi.fn(async (url: string, init?: any) => {
-    if (init?.method === 'POST') {
-      opts.posts.push({ url, body: JSON.parse(init.body) });
-      return { ok: true, json: async () => ({}) } as any;
-    }
-    if (url.includes('/config/providers')) return { ok: true, json: async () => PROVIDERS } as any;
-    if (url.includes('/message')) return { ok: true, json: async () => [] } as any;
-    return { ok: true, json: async () => ({}) } as any;
-  });
-  (globalThis as any).fetch = fn;
-  return fn;
-}
-
-function makeOpencodeProps(widgetData: any) {
-  return {
-    process: { _id: 'p1', name: 'n', widgetData, status: { state: 'running' } },
-    widgetProxyUrl: '/api/widget/db/gm/p1/',
-  } as any;
-}
-
-describe('OpencodeView file attach', () => {
-  it('hides the attach control when showFileUpload is absent/false', async () => {
-    installOpencodeFetch({ posts: [] });
-    render(<OpencodeView {...makeOpencodeProps({ sessionID: 'fake-session-id', directory: '/wd' })} />);
-    await waitFor(() => expect(screen.getByTestId('conversation-input-box')).toBeTruthy());
-    expect(screen.queryByTestId('attach-button')).toBeNull();
-    expect(screen.queryByTestId('file-input')).toBeNull();
-  });
-
-  it('shows the attach control when showFileUpload is true', async () => {
-    installOpencodeFetch({ posts: [] });
-    render(<OpencodeView {...makeOpencodeProps({ sessionID: 'fake-session-id', directory: '/wd', showFileUpload: true })} />);
-    await waitFor(() => expect(screen.getByTestId('attach-button')).toBeTruthy());
-    expect(screen.getByTestId('file-input')).toBeTruthy();
-  });
-
-  it('picking a file then sending includes a data-URL file part in prompt_async', async () => {
-    const posts: { url: string; body: any }[] = [];
-    installOpencodeFetch({ posts });
-    render(<OpencodeView {...makeOpencodeProps({ sessionID: 'fake-session-id', directory: '/wd', showFileUpload: true })} />);
-    await waitFor(() => expect(screen.getByTestId('conversation-input-box')).toBeTruthy());
-
-    const input = screen.getByTestId('file-input') as HTMLInputElement;
-    fireEvent.change(input, { target: { files: [makePng('pic.png')] } });
-    await waitFor(() => expect(screen.getByTestId('attach-chips')).toBeTruthy());
-
-    const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
-    fireEvent.change(box, { target: { value: 'look at this' } });
-    fireEvent.click(screen.getByTestId('conversation-send'));
-
-    await waitFor(() => expect(posts.some((p) => p.url.includes('/prompt_async'))).toBe(true));
-    const sent = posts.find((p) => p.url.includes('/prompt_async'))!;
-    const filePart = sent.body.parts.find((p: any) => p.type === 'file');
-    expect(filePart).toBeTruthy();
-    expect(filePart.mime).toBe('image/png');
-    expect(filePart.filename).toBe('pic.png');
-    expect(String(filePart.url)).toMatch(/^data:image\/png;base64,/);
-    // The text prompt still rides last.
-    expect(sent.body.parts[sent.body.parts.length - 1]).toEqual({ type: 'text', text: 'look at this' });
-  });
-});
-
-// -------------------------------------------------------------------------
-// ClaudeCodeView: POST /upload (multipart) then /send with System: preamble
-// -------------------------------------------------------------------------
-
-function makeClaudeProps(widgetData: any = {}) {
-  return {
-    process: { _id: 'p1', name: 'n', widgetData, status: { state: 'running' } },
-    apiBaseUrl: '',
-    widgetProxyUrl: '/api/widget/db/gm/p1/',
-    prefix: 'gm',
-    database: 'db',
-  } as any;
-}
-
-// Router that records the ordered calls, answers /upload with a stored path
-// and /send with ok. Upload bodies are FormData; send bodies are JSON.
-function installClaudeFetch(opts: { calls: { url: string; body: any }[]; uploadPaths?: string[] }) {
-  const fn = vi.fn(async (url: string, init?: any) => {
-    if (url.endsWith('/upload')) {
-      opts.calls.push({ url, body: init?.body });
+    if (init?.body instanceof FormData) {
+      opts.calls.push({ url, body: init.body });
       const paths = opts.uploadPaths ?? ['uploads/pic.png'];
       return new Response(
         JSON.stringify({ ok: true, files: paths.map((p) => ({ filename: p.split('/').pop(), path: p })) }),
         { status: 200 },
       );
     }
-    if (url.endsWith('/send')) {
+    if (url.includes('/config/providers')) return new Response(JSON.stringify(PROVIDERS), { status: 200 });
+    if (url.includes('/message')) return new Response('[]', { status: 200 });
+    if (init?.method === 'POST') {
       opts.calls.push({ url, body: JSON.parse(init.body) });
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
@@ -143,23 +75,74 @@ function installClaudeFetch(opts: { calls: { url: string; body: any }[]; uploadP
   return fn;
 }
 
-describe('ClaudeCodeView file attach', () => {
-  it('hides the attach control when showFileUpload is absent/false', () => {
-    render(<ClaudeCodeView {...makeClaudeProps({})} />);
+function makeProps(widgetData: any) {
+  return {
+    process: { _id: 'p1', name: 'n', widgetData, status: { state: 'running' } },
+    apiBaseUrl: '',
+    widgetProxyUrl: '/api/widget/db/gm/p1/',
+    prefix: 'gm',
+    database: 'db',
+  } as any;
+}
+
+// -------------------------------------------------------------------------
+// showFileUpload gating (attach control visibility) — one native transport
+// (claudecode) + the client-routed opencode transport.
+// -------------------------------------------------------------------------
+
+describe('attach control gating', () => {
+  it('ClaudeCodeView hides the attach control when showFileUpload is absent/false', () => {
+    installFetch({ calls: [] });
+    render(<ClaudeCodeView {...makeProps({})} />);
     expect(screen.queryByTestId('attach-button')).toBeNull();
     expect(screen.queryByTestId('file-input')).toBeNull();
   });
 
-  it('shows the attach control when showFileUpload is true', () => {
-    render(<ClaudeCodeView {...makeClaudeProps({ showFileUpload: true })} />);
+  it('ClaudeCodeView shows the attach control when showFileUpload is true', () => {
+    installFetch({ calls: [] });
+    render(<ClaudeCodeView {...makeProps({ showFileUpload: true, uploadUrl: UPLOAD_URL })} />);
     expect(screen.getByTestId('attach-button')).toBeTruthy();
     expect(screen.getByTestId('file-input')).toBeTruthy();
   });
 
-  it('picking a file then sending POSTs /upload (FormData) then /send with a System: preamble', async () => {
+  it('OpencodeView hides the attach control when showFileUpload is absent/false', async () => {
+    installFetch({ calls: [] });
+    render(<OpencodeView {...makeProps({ sessionID: 'fake-session-id', directory: '/wd' })} />);
+    await waitFor(() => expect(screen.getByTestId('conversation-input-box')).toBeTruthy());
+    expect(screen.queryByTestId('attach-button')).toBeNull();
+    expect(screen.queryByTestId('file-input')).toBeNull();
+  });
+
+  it('OpencodeView shows the attach control when showFileUpload is true', async () => {
+    installFetch({ calls: [] });
+    render(<OpencodeView {...makeProps({ sessionID: 'fake-session-id', directory: '/wd', showFileUpload: true, uploadUrl: UPLOAD_URL })} />);
+    await waitFor(() => expect(screen.getByTestId('attach-button')).toBeTruthy());
+    expect(screen.getByTestId('file-input')).toBeTruthy();
+  });
+});
+
+// -------------------------------------------------------------------------
+// The six `post('send', {text})` transports (claudecode + the ACP/app-server
+// engines): all migrate to the shared generic route. Attaching a file POSTs
+// multipart to the resolved uploadUrl, then sends a `send` body whose text is
+// bundleUploadNotice(paths, prompt) — no inline data-URL file part anywhere.
+// -------------------------------------------------------------------------
+
+const SEND_VIEWS = [
+  ['ClaudeCode', ClaudeCodeView],
+  ['Antigravity', AntigravityView],
+  ['KimiCode', KimiCodeView],
+  ['Grok', GrokView],
+  ['Cursor', CursorView],
+  ['Codex', CodexView],
+] as const;
+
+describe.each(SEND_VIEWS)('%s upload via the generic route', (_name, View) => {
+  it('POSTs multipart to the resolved uploadUrl then sends bundleUploadNotice text (no data-URL part)', async () => {
     const calls: { url: string; body: any }[] = [];
-    installClaudeFetch({ calls, uploadPaths: ['uploads/pic.png'] });
-    render(<ClaudeCodeView {...makeClaudeProps({ showFileUpload: true })} />);
+    installFetch({ calls, uploadPaths: ['uploads/pic.png'] });
+    render(<View {...makeProps({ showFileUpload: true, uploadUrl: UPLOAD_URL })} />);
+    await waitFor(() => expect(screen.getByTestId('conversation-input-box')).toBeTruthy());
 
     const input = screen.getByTestId('file-input') as HTMLInputElement;
     fireEvent.change(input, { target: { files: [makePng('pic.png')] } });
@@ -171,21 +154,60 @@ describe('ClaudeCodeView file attach', () => {
 
     await waitFor(() => expect(calls.some((c) => c.url.endsWith('/send'))).toBe(true));
 
-    // /upload happened before /send.
-    const uploadIdx = calls.findIndex((c) => c.url.endsWith('/upload'));
+    // The multipart upload lands on the resolved generic route, before /send.
+    const uploadIdx = calls.findIndex((c) => c.url === UPLOAD_URL);
     const sendIdx = calls.findIndex((c) => c.url.endsWith('/send'));
     expect(uploadIdx).toBeGreaterThanOrEqual(0);
     expect(sendIdx).toBeGreaterThan(uploadIdx);
 
-    // The upload body is a FormData carrying the file under field name "file".
     const uploadBody = calls[uploadIdx].body as FormData;
     expect(uploadBody).toBeInstanceOf(FormData);
     expect(uploadBody.getAll('file').length).toBe(1);
 
-    // The send body bundles a System: upload line ahead of the operator prompt.
+    // The send text bundles a System: line ahead of the operator prompt.
     const sendBody = calls[sendIdx].body;
     expect(sendBody.text).toContain('System: upload received, stored in uploads/pic.png');
     expect(sendBody.text).toContain('review the screenshot');
     expect(sendBody.text.indexOf('System:')).toBeLessThan(sendBody.text.indexOf('review the screenshot'));
+    // No inline data-URL file part rides the send.
+    expect(JSON.stringify(sendBody)).not.toContain('data:image');
+  });
+});
+
+// -------------------------------------------------------------------------
+// OpencodeView: the client-routed transport. Migrates OFF inline data-URL
+// file parts to the same generic route — the prompt_async carries a single
+// text part with the System notice, no `type: 'file'` part.
+// -------------------------------------------------------------------------
+
+describe('OpencodeView upload via the generic route', () => {
+  it('POSTs multipart to the resolved uploadUrl then sends a text-only prompt with the System notice', async () => {
+    const calls: { url: string; body: any }[] = [];
+    installFetch({ calls, uploadPaths: ['uploads/pic.png'] });
+    render(<OpencodeView {...makeProps({ sessionID: 'fake-session-id', directory: '/wd', showFileUpload: true, uploadUrl: UPLOAD_URL })} />);
+    await waitFor(() => expect(screen.getByTestId('conversation-input-box')).toBeTruthy());
+
+    const input = screen.getByTestId('file-input') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [makePng('pic.png')] } });
+    await waitFor(() => expect(screen.getByTestId('attach-chips')).toBeTruthy());
+
+    const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: 'look at this' } });
+    fireEvent.click(screen.getByTestId('conversation-send'));
+
+    await waitFor(() => expect(calls.some((c) => c.url.includes('/prompt_async'))).toBe(true));
+
+    const uploadIdx = calls.findIndex((c) => c.url === UPLOAD_URL);
+    expect(uploadIdx).toBeGreaterThanOrEqual(0);
+    expect((calls[uploadIdx].body as FormData).getAll('file').length).toBe(1);
+
+    const sent = calls.find((c) => c.url.includes('/prompt_async'))!;
+    // No inline file part — only a text part carrying the System notice + prompt.
+    const fileParts = sent.body.parts.filter((p: any) => p.type === 'file');
+    expect(fileParts.length).toBe(0);
+    const textPart = sent.body.parts.find((p: any) => p.type === 'text');
+    expect(textPart.text).toContain('System: upload received, stored in uploads/pic.png');
+    expect(textPart.text).toContain('look at this');
+    expect(JSON.stringify(sent.body)).not.toContain('data:image');
   });
 });

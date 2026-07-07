@@ -92,15 +92,15 @@ describe('CursorView (Stage 7 parity)', () => {
     expect(screen.getByTestId('file-input')).toBeTruthy();
   });
 
-  it('upload POSTs /upload (FormData) then attaches a System: reference to the next prompt', async () => {
+  it('upload POSTs the generic route (FormData) then attaches a System: reference to the next prompt', async () => {
     const fetchMock = vi.fn(async (...args: any[]) => {
-      if (String(args[0]).endsWith('/upload')) {
+      if (String(args[0]).includes('widget-upload')) {
         return new Response(JSON.stringify({ ok: true, files: [{ filename: 'note.txt', path: 'uploads/note.txt' }] }), { status: 200 });
       }
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     });
     vi.stubGlobal('fetch', fetchMock as any);
-    render(<ConversationWidget {...makeProps({ protocol: 'cursor', showFileUpload: true, maxUploadBytes: 1000 })} />);
+    render(<ConversationWidget {...makeProps({ protocol: 'cursor', showFileUpload: true, maxUploadBytes: 1000, uploadUrl: '/api/widget-upload/db/gm/p1' })} />);
 
     const fileInput = screen.getByTestId('file-input') as HTMLInputElement;
     const file = new File([new Uint8Array([104, 105])], 'note.txt', { type: 'text/plain' });
@@ -116,8 +116,8 @@ describe('CursorView (Stage 7 parity)', () => {
     const calls = fetchMock.mock.calls as any[];
     await waitFor(() => expect(calls.some((c) => String(c[0]).endsWith('/send'))).toBe(true));
 
-    // /upload happened before /send, and carries a FormData under field "file".
-    const uploadCall = calls.find((c) => String(c[0]).endsWith('/upload'));
+    // The upload POST happened before /send, and carries a FormData under field "file".
+    const uploadCall = calls.find((c) => String(c[0]).includes('widget-upload'));
     expect(uploadCall).toBeTruthy();
     const uploadBody = (uploadCall[1] as RequestInit).body as FormData;
     expect(uploadBody).toBeInstanceOf(FormData);

@@ -2,7 +2,7 @@ import { useEffect, useReducer, useRef } from 'react';
 import type { WidgetProps } from 'optio-ui';
 import type { ChatState, SessionControl } from '../chat.js';
 import { initialChatState, reduceCursorEvent } from './events.js';
-import { type Attachment } from '../attachments.js';
+import { resolveUploadUrl, uploadFiles, bundleUploadNotice } from '../uploads.js';
 import { blobDownload } from '../FileDownloadContext.js';
 import { ConversationView } from '../ConversationView.js';
 import { NativeSpinner } from '../spinners/NativeSpinner.js';
@@ -79,22 +79,6 @@ export function CursorView(props: WidgetProps) {
     }
   }
 
-  // Cursor has no headless inline ingest, so uploads land in the session
-  // workdir via the listener's multipart POST /upload; the next prompt then
-  // references them by path. Returns the stored relpaths, or null on failure.
-  async function uploadFiles(atts: Attachment[]): Promise<string[] | null> {
-    const fd = new FormData();
-    for (const a of atts) fd.append('file', a.file, a.filename);
-    try {
-      const resp = await fetch(`${widgetProxyUrl}upload`, { method: 'POST', body: fd });
-      if (!resp.ok) return null;
-      const j = await resp.json();
-      return (j.files ?? []).map((f: any) => String(f.path));
-    } catch {
-      return null;
-    }
-  }
-
   async function onFileDownload(relpath: string, filename: string) {
     try {
       const r = await fetch(`${widgetProxyUrl}download?path=${encodeURIComponent(relpath)}`);
@@ -119,16 +103,17 @@ export function CursorView(props: WidgetProps) {
       fileDownload={fileDownload}
       nativeSpinner={nativeSpinner ? <NativeSpinner engine="cursor" /> : undefined}
       onSend={async (body, attachments) => {
-        // With attachments, upload first, then bundle one System: notice per
-        // stored file into the prompt so cursor reads them from the workdir
-        // with its own tools. The optimistic echo still shows the operator's
-        // text.
+        // With attachments, upload through the generic route first, then bundle
+        // one System: notice per stored file into the prompt so cursor reads
+        // them from the workdir with its own tools. The optimistic echo still
+        // shows the operator's text.
         let prompt = body;
         if (attachments.length > 0) {
-          const paths = await uploadFiles(attachments);
+          const uploadUrl = resolveUploadUrl(props.process.widgetData, widgetProxyUrl);
+          if (!uploadUrl) return false;
+          const paths = await uploadFiles(uploadUrl, attachments, maxUploadBytes);
           if (!paths) return false;
-          const notice = paths.map((p) => `System: upload received, stored in ${p}`).join('\n');
-          prompt = `${notice}\n\n${body}`;
+          prompt = bundleUploadNotice(paths, body);
         }
         const ok = await post('send', { text: prompt });
         if (ok) {

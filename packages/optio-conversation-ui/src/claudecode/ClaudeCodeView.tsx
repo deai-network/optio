@@ -2,7 +2,7 @@ import { useEffect, useReducer, useRef } from 'react';
 import type { WidgetProps } from 'optio-ui';
 import type { ChatState, SessionControl } from '../chat.js';
 import { initialChatState, reduceEvent } from './events.js';
-import { type Attachment } from '../attachments.js';
+import { resolveUploadUrl, uploadFiles, bundleUploadNotice } from '../uploads.js';
 import { blobDownload } from '../FileDownloadContext.js';
 import { ConversationView } from '../ConversationView.js';
 import { NativeSpinner } from '../spinners/NativeSpinner.js';
@@ -68,22 +68,6 @@ export function ClaudeCodeView(props: WidgetProps) {
     }
   }
 
-  // Claude Code uploads attachments into the session workdir via the listener's
-  // multipart POST /upload (not the JSON `post` helper). Returns the stored
-  // relpaths, or null on any failure so send() can surface a retry.
-  async function uploadFiles(atts: Attachment[]): Promise<string[] | null> {
-    const fd = new FormData();
-    for (const a of atts) fd.append('file', a.file, a.filename);
-    try {
-      const resp = await fetch(`${widgetProxyUrl}upload`, { method: 'POST', body: fd });
-      if (!resp.ok) return null;
-      const j = await resp.json();
-      return (j.files ?? []).map((f: any) => String(f.path));
-    } catch {
-      return null;
-    }
-  }
-
   async function onFileDownload(relpath: string, filename: string) {
     try {
       const r = await fetch(`${widgetProxyUrl}download?path=${encodeURIComponent(relpath)}`);
@@ -108,16 +92,17 @@ export function ClaudeCodeView(props: WidgetProps) {
       fileDownload={fileDownload}
       nativeSpinner={nativeSpinner ? <NativeSpinner engine="claudecode" /> : undefined}
       onSend={async (body, attachments) => {
-        // When files are attached, upload them first, then bundle one `System:`
-        // notice line per stored file into the prompt so the agent can Read them
-        // from the workdir. The optimistic echo still shows the operator's text
-        // (`body`), not the System: preamble.
+        // When files are attached, upload them through the generic route first,
+        // then bundle one `System:` notice line per stored file into the prompt
+        // so the agent can Read them from the workdir. The optimistic echo still
+        // shows the operator's text (`body`), not the System: preamble.
         let prompt = body;
         if (attachments.length > 0) {
-          const paths = await uploadFiles(attachments);
+          const uploadUrl = resolveUploadUrl(props.process.widgetData, widgetProxyUrl);
+          if (!uploadUrl) return false;
+          const paths = await uploadFiles(uploadUrl, attachments, maxUploadBytes);
           if (!paths) return false;
-          const notice = paths.map((p) => `System: upload received, stored in ${p}`).join('\n');
-          prompt = `${notice}\n\n${body}`;
+          prompt = bundleUploadNotice(paths, body);
         }
         const ok = await post('send', { text: prompt });
         if (ok) {

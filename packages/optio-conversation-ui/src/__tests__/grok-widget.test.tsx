@@ -59,13 +59,13 @@ describe('GrokView (Stage 7 parity)', () => {
 
   it('upload attaches a System: reference to the next prompt', async () => {
     const fetchMock = vi.fn(async (...args: any[]) => {
-      if (String(args[0]).endsWith('/upload')) {
+      if (String(args[0]).includes('widget-upload')) {
         return new Response(JSON.stringify({ ok: true, files: [{ filename: 'note.txt', path: 'uploads/note.txt' }] }), { status: 200 });
       }
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     });
     vi.stubGlobal('fetch', fetchMock as any);
-    render(<ConversationWidget {...makeProps({ protocol: 'grok', showFileUpload: true, maxUploadBytes: 1000 })} />);
+    render(<ConversationWidget {...makeProps({ protocol: 'grok', showFileUpload: true, maxUploadBytes: 1000, uploadUrl: '/api/widget-upload/db/gm/p1' })} />);
 
     const fileInput = screen.getByTestId('file-input') as HTMLInputElement;
     const file = new File([new Uint8Array([104, 105])], 'note.txt', { type: 'text/plain' });

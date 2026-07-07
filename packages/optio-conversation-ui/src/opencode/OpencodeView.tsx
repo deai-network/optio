@@ -8,7 +8,8 @@ import {
   parseProviders, lastModelFromHistory,
   type OpencodeModel, type ModelGroup,
 } from './events.js';
-import { type Attachment, readAsDataUrl } from '../attachments.js';
+import { type Attachment } from '../attachments.js';
+import { resolveUploadUrl, uploadFiles, bundleUploadNotice } from '../uploads.js';
 import { blobDownload } from '../FileDownloadContext.js';
 import { ConversationView } from '../ConversationView.js';
 import { NativeSpinner } from '../spinners/NativeSpinner.js';
@@ -204,12 +205,19 @@ function OpencodeChat(
   }
 
   async function onSend(body: string, attachments: Attachment[]): Promise<boolean> {
-    const fileParts = await Promise.all(
-      attachments.map(async (a) => ({
-        type: 'file' as const, mime: a.mime, filename: a.filename, url: await readAsDataUrl(a.file),
-      })),
-    );
-    const promptBody: any = { parts: [...fileParts, { type: 'text', text: body }] };
+    // With attachments, upload through the generic route first (the bytes land
+    // in <workdir>/uploads/<name>), then bundle one System: notice per stored
+    // file into the prompt so opencode reads them from the workdir with its own
+    // tools. No inline data-URL file part — every engine shares one path now.
+    let prompt = body;
+    if (attachments.length > 0) {
+      const uploadUrl = resolveUploadUrl(props.process.widgetData, widgetProxyUrl);
+      if (!uploadUrl) return false;
+      const paths = await uploadFiles(uploadUrl, attachments, maxUploadBytes);
+      if (!paths) return false;
+      prompt = bundleUploadNotice(paths, body);
+    }
+    const promptBody: any = { parts: [{ type: 'text', text: prompt }] };
     if (currentModel) promptBody.model = currentModel;
     const ok = await post(`session/${sessionID}/prompt_async${q}`, promptBody);
     if (ok) {
