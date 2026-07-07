@@ -82,7 +82,11 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
     # loopback OAuth URL via xdg-open; the redirect shim captures it as a
     # BROWSER: marker so the driver surfaces it to the operator (who completes
     # the sign-in), instead of silently swallowing it. Matches claudecode/grok.
-    protocol = get_protocol(browser="redirect")
+    protocol = get_protocol(
+        browser="redirect",
+        client_messages=config.use_client_messages,
+        caller_messages=config.on_caller_message is not None,
+    )
     launched_handle: ProcessHandle | None = None
     tmux_path: str | None = None
     tmux_socket: str | None = None
@@ -163,7 +167,10 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             # auth, config). A present snapshot that fails to restore is
             # fatal — the call is intentionally outside any except so it
             # surfaces to the caller (no silent fresh-start).
-            await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
+            await _restore_workdir_blob(
+                ctx, host, snapshot["workdirBlobId"],
+                session_blob_decrypt=config.session_blob_decrypt,
+            )
             await host_actions._rotate_optio_log(host)
             resume_session_id = snapshot.get("sessionId")
             if resume_session_id is None:
@@ -179,7 +186,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
         codex_path = await host_actions.ensure_codex_installed(
             hook_ctx,
             install_if_missing=config.install_if_missing,
-            install_dir=config.codex_install_dir,
+            install_dir=config.install_dir,
         )
         # Stage 8: resolve the native-sandbox posture ONCE. ``~/`` grants
         # expand against the REAL host home (codex runs under an isolated
@@ -222,19 +229,30 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             # Baseline the merged auth.json so the in-session watcher and
             # the teardown backstop only save back a genuinely rotated token.
             cred_baseline = await cred_watcher.cred_fingerprint(host)
-        await host.write_text(
-            "AGENTS.md",
-            compose_agents_md(
-                config.consumer_instructions,
-                documentation=protocol.documentation if config.host_protocol else None,
-                host_protocol=config.host_protocol,
-                workdir_exclude=config.workdir_exclude,
-                supports_resume=config.supports_resume,
-                file_download=config.file_download,
-            ),
-        )
+        refreshed_files: list[str] = []
+        if not resuming:
+            await host.write_text(
+                "AGENTS.md",
+                compose_agents_md(
+                    config.consumer_instructions,
+                    documentation=protocol.documentation if config.host_protocol else None,
+                    host_protocol=config.host_protocol,
+                    workdir_exclude=config.workdir_exclude,
+                    supports_resume=config.supports_resume,
+                    file_download=config.file_download,
+                ),
+            )
+        else:
+            # Resume: AGENTS.md was restored from the snapshot. Run the
+            # on_resume_refresh hook (default identity) and rewrite it only if
+            # the recomposed body differs, tagging resume.log so codex re-reads.
+            refreshed_files = await _maybe_refresh_on_resume(
+                host, hook_ctx, config, protocol,
+            )
         if config.supports_resume:
-            await host_actions._append_resume_log_entry(host)
+            await host_actions._append_resume_log_entry(
+                host, refreshed=refreshed_files,
+            )
         if config.before_execute is not None:
             # End-of-prepare placement matches claudecode (its
             # _plant_session_content ends with before_execute, inside its
@@ -431,7 +449,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             # bootstrap (authed, exact ids), else the static fallback.
             model_list = codex_models.parse_model_list(conversation.model_list)
             current_model = (
-                config.default_model
+                config.model
                 or conversation.current_model_id
                 or model_list.get("default")
             )
@@ -552,6 +570,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             body=body,
             prepare=_prepare,
             on_deliverable=config.on_deliverable,
+            on_caller_message=config.on_caller_message,
             after_execute=config.after_execute,
             protocol=protocol,
             agent_sender=_agent_sender,
@@ -706,6 +725,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                     ctx, host,
                     end_state="cancelled" if cancelled else "done",
                     workdir_exclude=config.workdir_exclude,
+                    session_blob_encrypt=config.session_blob_encrypt,
                     # Iframe mode: scan the newest rollout filename. The
                     # conversation body records the live thread id captured at
                     # thread/start (thread/resume's resume source) instead.
@@ -730,6 +750,52 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             _LOG.exception("host.disconnect failed")
 
 
+async def _maybe_refresh_on_resume(
+    host: Host,
+    hook_ctx: HookContext,
+    config: CodexTaskConfig,
+    protocol,
+) -> list[str]:
+    """Run ``on_resume_refresh`` (if any) and rewrite AGENTS.md when changed.
+
+    Returns the list of filenames rewritten (currently at most
+    ``["AGENTS.md"]``). A hook that raises is logged and ignored. The
+    recompose reuses the SAME ``protocol`` documentation as the fresh-start
+    write, so an unchanged config (the default identity hook) reproduces the
+    restored AGENTS.md byte-for-byte — no spurious ``REFRESHED:`` is emitted.
+    """
+    if config.on_resume_refresh is None:
+        return []
+    try:
+        new_config = config.on_resume_refresh(config)
+    except Exception:
+        _LOG.exception(
+            "on_resume_refresh raised; keeping existing AGENTS.md from snapshot",
+        )
+        return []
+    new_agents_md = compose_agents_md(
+        new_config.consumer_instructions,
+        documentation=protocol.documentation if new_config.host_protocol else None,
+        host_protocol=new_config.host_protocol,
+        workdir_exclude=new_config.workdir_exclude,
+        supports_resume=new_config.supports_resume,
+        file_download=new_config.file_download,
+    )
+    try:
+        existing = await hook_ctx.read_text_from_host("AGENTS.md", silent=True)
+    except FileNotFoundError:
+        existing = None
+    except Exception:
+        _LOG.exception(
+            "failed to read existing AGENTS.md on resume; rewriting unconditionally",
+        )
+        existing = None
+    if existing == new_agents_md:
+        return []
+    await host.write_text("AGENTS.md", new_agents_md)
+    return ["AGENTS.md"]
+
+
 async def _stream_blob(ctx: ProcessContext, blob_id) -> "AsyncIterator[bytes]":
     async with ctx.load_blob(blob_id) as reader:
         while True:
@@ -739,6 +805,44 @@ async def _stream_blob(ctx: ProcessContext, blob_id) -> "AsyncIterator[bytes]":
             yield chunk
 
 
+async def _read_blob_bytes(ctx: ProcessContext, blob_id) -> bytes:
+    """Read an entire GridFS blob into memory (used only on the encrypted
+    resume path, where the whole-bytes ``session_blob_decrypt`` transform
+    cannot operate on a stream)."""
+    out = bytearray()
+    async with ctx.load_blob(blob_id) as reader:
+        while True:
+            chunk = await reader.read(1 << 20)
+            if not chunk:
+                break
+            out.extend(chunk)
+    return bytes(out)
+
+
+async def _one_chunk(payload: bytes) -> "AsyncIterator[bytes]":
+    yield payload
+
+
+async def _restore_workdir_blob(
+    ctx: ProcessContext,
+    host: Host,
+    blob_id,
+    *,
+    session_blob_decrypt: "Callable[[bytes], bytes] | None",
+) -> None:
+    """Restore the resume workdir tar, decrypting first when configured.
+
+    Plaintext (default) streams straight through ``_stream_blob``; an
+    encrypted blob is read whole, passed through ``session_blob_decrypt``, and
+    fed to ``restore_workdir`` as a single chunk."""
+    if session_blob_decrypt is None:
+        await host.restore_workdir(_stream_blob(ctx, blob_id))
+        return
+    payload = await _read_blob_bytes(ctx, blob_id)
+    plain = session_blob_decrypt(payload)
+    await host.restore_workdir(_one_chunk(plain))
+
+
 async def _capture_snapshot(
     ctx: ProcessContext,
     host: Host,
@@ -746,6 +850,7 @@ async def _capture_snapshot(
     end_state: str,
     workdir_exclude: list[str] | None,
     session_id: str | None,
+    session_blob_encrypt: "Callable[[bytes], bytes] | None" = None,
 ) -> None:
     """Capture a single-blob resume snapshot of the (now static) workdir.
 
@@ -755,11 +860,22 @@ async def _capture_snapshot(
     into GridFS honoring the effective exclude list, records the snapshot
     row, prunes to the retention limit (deleting stale blobs), and surfaces
     the Resume affordance.
+
+    ``session_blob_encrypt`` (when set) wraps the tar at rest: the archive is
+    buffered whole and passed through the transform before the GridFS write
+    (the default None keeps the memory-cheap streaming path). The matching
+    ``session_blob_decrypt`` unwraps it on the restore read.
     """
     exclude = effective_workdir_exclude(workdir_exclude)
     async with ctx.store_blob("workdir") as wwriter:
-        async for chunk in host.archive_workdir(exclude):
-            await wwriter.write(chunk)
+        if session_blob_encrypt is None:
+            async for chunk in host.archive_workdir(exclude):
+                await wwriter.write(chunk)
+        else:
+            buf = bytearray()
+            async for chunk in host.archive_workdir(exclude):
+                buf.extend(chunk)
+            await wwriter.write(session_blob_encrypt(bytes(buf)))
         workdir_blob_id = wwriter.file_id
 
     await insert_snapshot(

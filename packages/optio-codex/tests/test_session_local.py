@@ -43,7 +43,7 @@ async def test_local_happy_path_done_in_optio_log(
         name="Local happy",
         config=CodexTaskConfig(
             consumer_instructions="Hello from the test.",
-            codex_install_dir=str(shim_install_dir),
+            install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
             after_execute=after_execute,
         ),
@@ -84,7 +84,7 @@ async def test_local_deliverable_callback_fired(
         name="d",
         config=CodexTaskConfig(
             consumer_instructions="hand back a file",
-            codex_install_dir=str(shim_install_dir),
+            install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
             on_deliverable=on_deliverable,
         ),
@@ -111,7 +111,7 @@ async def test_local_error_raises(
         name="e",
         config=CodexTaskConfig(
             consumer_instructions="fail",
-            codex_install_dir=str(shim_install_dir),
+            install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
         ),
     )
@@ -137,7 +137,7 @@ async def test_exit_zero_appends_done_via_shell_channel(
         process_id="codex-exit-zero", name="z",
         config=CodexTaskConfig(
             consumer_instructions="exit cleanly",
-            codex_install_dir=str(shim_install_dir),
+            install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
             after_execute=after_execute,
         ),
@@ -156,7 +156,7 @@ async def test_exit_nonzero_appends_error_and_raises(
         process_id="codex-exit-nonzero", name="n",
         config=CodexTaskConfig(
             consumer_instructions="crash",
-            codex_install_dir=str(shim_install_dir),
+            install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
         ),
     )
@@ -182,7 +182,7 @@ async def test_cancellation_returns_clean_and_tears_down(
         process_id=process_id, name="c",
         config=CodexTaskConfig(
             consumer_instructions="run forever",
-            codex_install_dir=str(shim_install_dir),
+            install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
         ),
     )

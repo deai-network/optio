@@ -48,7 +48,7 @@ async def test_iframe_sandbox_args_wired(
         name="s",
         config=CodexTaskConfig(
             consumer_instructions="do the thing",
-            codex_install_dir=str(shim_install_dir),
+            install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
             extra_allowed_dirs=[AllowedDir("/scratch", "rw")],
             network_access=True,
@@ -81,7 +81,7 @@ async def test_iframe_unconfined_when_fs_isolation_off(
         name="s",
         config=CodexTaskConfig(
             consumer_instructions="do the thing",
-            codex_install_dir=str(shim_install_dir),
+            install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
             fs_isolation=False,
         ),

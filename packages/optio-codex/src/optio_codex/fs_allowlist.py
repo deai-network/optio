@@ -89,16 +89,17 @@ def resolve_sandbox_settings(
     """Resolve ``fs_isolation``/``sandbox``/``extra_allowed_dirs``/
     ``network_access`` into one :class:`SandboxSettings`.
 
-    ``ro`` grants are skipped (codex never restricts reads — see module
-    docstring); ``rw`` grants become ``writable_roots`` with ``~/`` expanded
-    against ``host_home``. Roots/network only apply to workspace-write
-    (validated in CodexTaskConfig.__post_init__).
+    ``ro``/``rox`` grants are skipped (codex never restricts reads — see module
+    docstring); ``rw``/``rwx`` grants become ``writable_roots`` with ``~/``
+    expanded against ``host_home`` (codex's native sandbox has no execute bit,
+    so ``rwx``==``rw`` and ``rox``==``ro``). Roots/network only apply to
+    workspace-write (validated in CodexTaskConfig.__post_init__).
     """
     mode = config.effective_sandbox_mode
     roots: list[str] = []
     if mode == "workspace-write":
         for ad in config.extra_allowed_dirs or []:
-            if ad.mode == "rw":
+            if ad.mode in ("rw", "rwx"):
                 roots.append(_expand_home(ad.path, host_home).rstrip("/"))
     return SandboxSettings(
         mode=mode,

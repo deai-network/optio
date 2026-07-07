@@ -63,7 +63,7 @@ def _conversation_config(shim_install_dir: pathlib.Path, **kw) -> CodexTaskConfi
     base = dict(
         consumer_instructions="Converse with the test.",
         mode="conversation",
-        codex_install_dir=str(shim_install_dir),
+        install_dir=str(shim_install_dir),
         ttyd_install_dir=str(shim_install_dir),
         auto_start=False,
         # Plan B landed: keep these tests snapshot-free.

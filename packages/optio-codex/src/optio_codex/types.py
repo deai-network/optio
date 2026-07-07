@@ -1,9 +1,39 @@
-"""Public data types for optio-codex consumers."""
+"""Public data types for optio-codex consumers.
+
+The generic ``DeliverableCallback`` / ``HookCallback`` / ``UploadCallback`` /
+``CallerMessageCallback`` types are owned by ``optio-agents`` and ``SSHConfig``
+by ``optio-host``; the config vocabulary (``ConversationMode`` /
+``ToolVerbosity`` / ``ThinkingVerbosity`` / ``SeedProvider`` /
+``SeedUnavailableError`` / ``AllowedDir``) is owned by
+``optio_agents.config_types``. This module imports and re-exports them (see
+``__all__``) so existing ``from optio_codex.types import …`` sites keep
+working. The shared ``AllowedDir`` validates ``mode`` at construction against
+the 4-value superset ``ro``/``rw``/``rox``/``rwx``; codex's native sandbox has
+no execute-bit concept, so it treats ``rox``==``ro`` and ``rwx``==``rw``.
+
+Native tool allow/deny gap: codex exposes NO per-tool allow/deny mechanism the
+wrapper can drive — its permission profiles cover filesystem/network posture
+only (``ask_for_approval`` + ``sandbox``/``network_access``), and the
+``[tools]`` config keys are boolean capability toggles, not an allow/deny
+list. So ``CodexTaskConfig`` deliberately OMITS the generic
+``allowed_tools``/``disallowed_tools`` fields present on the engines that can
+honor them (kimi/grok/cursor/claudecode/opencode). Revisit only if codex adds
+a real per-tool permission grammar.
+"""
 
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Literal
 
+from optio_agents import (
+    AllowedDir,
+    ConversationMode,
+    SeedProvider,
+    SeedUnavailableError,
+    ThinkingVerbosity,
+    ToolVerbosity,
+)
 from optio_agents.protocol.session import (
+    CallerMessageCallback,
     DeliverableCallback,
     HookCallback,
 )
@@ -12,6 +42,7 @@ from optio_host.types import SSHConfig
 
 
 __all__ = [
+    "CallerMessageCallback",
     "DeliverableCallback",
     "HookCallback",
     "UploadCallback",
@@ -28,22 +59,14 @@ __all__ = [
 ]
 
 
-# "iframe" = ttyd TUI in the browser. "conversation" = a headless
-# ``codex app-server`` session; the task publishes a live CodexConversation
-# via ctx.publish_result (Stage 6).
-ConversationMode = Literal["iframe", "conversation"]
+# ``ConversationMode`` values: "iframe" = ttyd TUI in the browser;
+# "conversation" = a headless ``codex app-server`` session (the task publishes
+# a live CodexConversation via ctx.publish_result, Stage 6).
 _VALID_MODES = {"iframe", "conversation"}
-
-# Verbosity of tool-call rendering in the conversation widget
-# (conversation_ui only). Mirrors optio-claudecode/grok; consumed by the
-# dashboard reducer.
-ToolVerbosity = Literal["silent", "description-only", "verbose"]
+# Validation sets mirroring the shared ``ToolVerbosity`` / ``ThinkingVerbosity``
+# Literals (used by ``__post_init__``; the aliases themselves are imported
+# above from optio_agents).
 _VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
-
-# Visibility of the agent's reasoning trace in the conversation widget
-# (conversation_ui only). Mirrors optio-grok; consumed by the dashboard
-# reducer/ConversationView (thinkingVerbosity gate).
-ThinkingVerbosity = Literal["hidden", "visible"]
 _VALID_THINKING_VERBOSITY = {"hidden", "visible"}
 
 ApprovalPolicy = Literal["untrusted", "on-failure", "on-request", "never"]
@@ -53,44 +76,11 @@ SandboxMode = Literal["read-only", "workspace-write", "danger-full-access"]
 _VALID_SANDBOX_MODES = {"read-only", "workspace-write", "danger-full-access"}
 
 
-# A seed provider resolves a usable seed_id at launch time (e.g. leasing one
-# from a pool). Mirrors optio-grok's SeedProvider; the callable/lease path
-# is exercised by the Stage-4 wiring — a static string seed_id carries no
-# lease.
-SeedProvider = Callable[[str], Awaitable[str]]
-
-
-class SeedUnavailableError(Exception):
-    """Raised by a seed provider when no usable seed is available; the
-    message is surfaced as the process failure."""
-
-
-@dataclass
-class AllowedDir:
-    """A caller-supplied extra path grant for filesystem isolation (Stage 8).
-
-    ``mode`` is ``"ro"`` or ``"rw"``. Grants are ADDITIVE: they may widen the
-    sandbox allowlist, never mask the baseline (the workdir/cwd and ``/tmp``
-    are always writable in workspace-write).
-
-    codex divergence (vs grok/claudecode, whose sandboxes also deny reads):
-    codex ``workspace-write`` restricts WRITES only — the read side is open,
-    so ``mode="ro"`` is trivially satisfied and changes nothing (documented
-    no-op, kept for cross-wrapper config portability). Only ``mode="rw"``
-    grants alter behavior, via ``sandbox_workspace_write.writable_roots``.
-    A leading ``~/`` expands against the REAL host home at launch time (the
-    codex process runs under an isolated ``$HOME``).
-    """
-
-    path: str
-    mode: Literal["ro", "rw"]
-
-    def __post_init__(self) -> None:
-        if self.mode not in ("ro", "rw"):
-            raise ValueError(
-                f"AllowedDir.mode={self.mode!r} must be one of 'ro', 'rw' "
-                f"(path={self.path!r})."
-            )
+def _identity_resume_refresh(config: "CodexTaskConfig") -> "CodexTaskConfig":
+    """Default ``on_resume_refresh``: recompose AGENTS.md from the unchanged
+    config on resume, so a resumed session picks up instruction/template
+    changes instead of freezing at first launch (no config mutation)."""
+    return config
 
 
 @dataclass
@@ -107,6 +97,10 @@ class CodexTaskConfig:
     env: dict[str, str] | None = None
     scrub_env: list[str] | None = None
 
+    # Model id passed to codex at launch (``--model`` in iframe/exec,
+    # thread/start in conversation mode). In conversation_ui it ALSO seeds the
+    # model picker's initial selection (falling back to the live thread model
+    # when unset); codex switches the model INLINE on the next turn/start.
     model: str | None = None
     # IFRAME-ONLY. Interactive iframe defaults: unattended launch in ttyd
     # (mirrors claudecode bypassPermissions for embedded sessions nobody is
@@ -130,14 +124,16 @@ class CodexTaskConfig:
     fs_isolation: bool = True
     # Additional path grants beyond the workdir + temp dirs. ``~/`` expands
     # against the real host home at launch. "ro" grants are a documented
-    # no-op on codex (reads are unrestricted in workspace-write).
+    # no-op on codex (reads are unrestricted in workspace-write). codex's
+    # native sandbox has no execute bit, so a ``rox`` grant is treated as
+    # ``ro`` and a ``rwx`` grant as ``rw``.
     extra_allowed_dirs: list[AllowedDir] | None = None
 
     ssh: SSHConfig | None = None
 
     install_if_missing: bool = True
     install_ttyd_if_missing: bool = True
-    codex_install_dir: str | None = None
+    install_dir: str | None = None
     ttyd_install_dir: str | None = None
 
     # When True, a fresh launch kicks off the first turn itself — iframe mode
@@ -152,6 +148,14 @@ class CodexTaskConfig:
     before_execute: HookCallback | None = None
     after_execute: HookCallback | None = None
     on_deliverable: DeliverableCallback | None = None
+    # Enable the CLIENT_MESSAGE keyword: agent-pushed messages routed to the
+    # originating browser session's frontend (stored as sessionEvents,
+    # surfaced via optio-ui's onClientMessage). Off by default.
+    use_client_messages: bool = False
+    # Enable the CALLER_MESSAGE keyword: agent-pushed messages routed to this
+    # callback in the embedding application. A non-None return value is sent
+    # back to the agent as feedback. Off (None) by default.
+    on_caller_message: CallerMessageCallback | None = None
 
     # --- seed surface (start fresh from a stored environment) -----------
     # Consumed (default/fallback): merge this seed's environment (codex
@@ -188,11 +192,6 @@ class CodexTaskConfig:
     thinking_verbosity: ThinkingVerbosity = "hidden"
 
     # --- conversation frontend parity (Stage 7) -------------------------
-    # Model preselected in the widget's model picker. Requires
-    # mode="conversation" and conversation_ui=True. Defaults to the live
-    # thread model when unset. (config.model still drives thread/start;
-    # this only controls the picker's initial value.)
-    default_model: str | None = None
     # Show the session controls (the model picker is the id="model" control).
     # Codex switches the model INLINE: the chosen model rides the next
     # turn/start and sticks — no process restart.
@@ -228,6 +227,22 @@ class CodexTaskConfig:
     # + CODEX_HOME junk: packages/, *.sqlite*, cache/, tmp/, …). MUST NOT be
     # set to exclude home/.codex/sessions — that is the resume source.
     workdir_exclude: list[str] | None = None
+    # Optional pair of synchronous bytes->bytes transforms wrapping the resume
+    # workdir tar (which carries home/.codex — sessions, auth, config) at
+    # GridFS write/read. Both set → encrypted at rest; both None (default) →
+    # plaintext. Setting only one is a config error (asymmetric usage is always
+    # a mistake, cross-checked in __post_init__).
+    session_blob_encrypt: Callable[[bytes], bytes] | None = None
+    session_blob_decrypt: Callable[[bytes], bytes] | None = None
+    # Hook fired on resume only (never on fresh start). Receives the original
+    # config; returns a (possibly mutated) config. The harness re-renders
+    # AGENTS.md from the returned config and writes it back only when it differs
+    # from the file restored in the snapshot, tagging the next resume.log line
+    # with `REFRESHED:AGENTS.md` so codex re-reads. Default = identity
+    # (recompose from the same config, so instruction/template changes reach a
+    # resumed session instead of freezing at first launch). Pass None to
+    # disable.
+    on_resume_refresh: "Callable[[CodexTaskConfig], CodexTaskConfig] | None" = _identity_resume_refresh
 
     @property
     def effective_sandbox_mode(self) -> SandboxMode:
@@ -270,11 +285,6 @@ class CodexTaskConfig:
         # Frontend-parity features are opt-in flags that only make sense
         # with the conversation UI wired (mirrors claudecode/grok).
         conv_ui = self.mode == "conversation" and self.conversation_ui
-        if self.default_model is not None and not conv_ui:
-            raise ValueError(
-                "CodexTaskConfig: default_model requires mode='conversation' "
-                "and conversation_ui=True."
-            )
         if self.show_session_controls and not conv_ui:
             raise ValueError(
                 "CodexTaskConfig: show_session_controls=True requires "
@@ -319,7 +329,9 @@ class CodexTaskConfig:
                 f"sandbox={self.sandbox!r} contradicts it. Drop one of the "
                 "two settings."
             )
-        rw_extras = [d for d in (self.extra_allowed_dirs or []) if d.mode == "rw"]
+        rw_extras = [
+            d for d in (self.extra_allowed_dirs or []) if d.mode in ("rw", "rwx")
+        ]
         if rw_extras and self.effective_sandbox_mode == "read-only":
             raise ValueError(
                 "CodexTaskConfig: extra_allowed_dirs rw grants "
@@ -333,10 +345,18 @@ class CodexTaskConfig:
                 "[sandbox_workspace_write] knob and cannot apply under "
                 "sandbox='read-only'."
             )
-        for field_name in ("codex_install_dir", "ttyd_install_dir"):
+        for field_name in ("install_dir", "ttyd_install_dir"):
             val = getattr(self, field_name)
             if val is not None and not val.startswith("/") and not val.startswith("~"):
                 raise ValueError(
                     f"CodexTaskConfig.{field_name}={val!r} must be an "
                     f"absolute path (start with '/' or '~')."
                 )
+        e = self.session_blob_encrypt is not None
+        d = self.session_blob_decrypt is not None
+        if e != d:
+            raise ValueError(
+                "CodexTaskConfig: session_blob_encrypt and session_blob_decrypt "
+                "must be set together or both left None; one without the other "
+                "is a config error."
+            )

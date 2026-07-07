@@ -11,7 +11,7 @@ def test_defaults_and_validation():
     assert c.supports_resume is True
     assert c.workdir_exclude is None
     with pytest.raises(ValueError):
-        CodexTaskConfig(consumer_instructions="x", codex_install_dir="relative/path")
+        CodexTaskConfig(consumer_instructions="x", install_dir="relative/path")
     with pytest.raises(ValueError):
         CodexTaskConfig(consumer_instructions="x", ask_for_approval="bogus")
 
@@ -91,7 +91,6 @@ def test_tool_verbosity_validated():
 
 
 @pytest.mark.parametrize("field,value", [
-    ("default_model", "gpt-5.5"),
     ("show_session_controls", True),
     ("native_spinner", True),
     ("show_file_upload", True),
@@ -104,6 +103,15 @@ def test_frontend_flags_require_conversation_ui(field, value):
     # … and accepted with it.
     cfg = _cfg(mode="conversation", conversation_ui=True, **{field: value})
     assert getattr(cfg, field) == value
+
+
+def test_model_is_ungated_single_field():
+    # C3: default_model dropped; the single `model` field carries the launch
+    # model AND (in conversation_ui) the picker's initial value. It is valid
+    # in every mode — no conversation_ui gate.
+    assert _cfg(model="gpt-5.5").model == "gpt-5.5"
+    assert _cfg(mode="conversation", model="gpt-5.5").model == "gpt-5.5"
+    assert not hasattr(_cfg(), "default_model")
 
 
 def test_upload_download_byte_limits_default():

@@ -105,7 +105,7 @@ async def resolve_codex(
             return candidate
         raise RuntimeError(
             f"codex not present at {candidate!r} on host "
-            f"(codex_install_dir={install_dir!r})."
+            f"(install_dir={install_dir!r})."
         )
 
     result = await host.run_command("bash -lc 'command -v codex'")
@@ -128,7 +128,7 @@ async def _resolve_codex_cache_dir(host: "Host", override: str | None) -> str:
     """Resolve the optio-owned codex binary-cache dir as an absolute worker
     path.
 
-    ``override`` (``config.codex_install_dir``) wins. Otherwise the worker's
+    ``override`` (``config.install_dir``) wins. Otherwise the worker's
     real env decides via a shell echo: ``OPTIO_CODEX_CACHE_DIR`` else
     ``${XDG_CACHE_HOME:-$HOME/.cache}/optio-codex/bin`` — resolved on the
     host so RemoteHost gets the remote location. Mirrors grok's
