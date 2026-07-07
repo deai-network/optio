@@ -69,3 +69,18 @@ def test_build_sandbox_toml_rw_extra_home_expansion():
 def test_allowed_dir_rejects_bad_mode():
     with pytest.raises(ValueError):
         AllowedDir("/x", "wx")  # type: ignore[arg-type]
+
+
+def test_build_sandbox_toml_folds_superset_modes():
+    # Landlock-only: rwx≡rw (writable), rox≡ro (read-only).
+    toml_str = build_sandbox_toml(
+        workdir="/w/task",
+        extra_allowed_dirs=[
+            AllowedDir("/exec-rw", "rwx"),
+            AllowedDir("/exec-ro", "rox"),
+        ],
+        host_home="/home/u",
+    )
+    prof = _parse(toml_str)
+    assert "/exec-rw" in prof["read_write"]
+    assert "/exec-ro" in prof["read_only"]

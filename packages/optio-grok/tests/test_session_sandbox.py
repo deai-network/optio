@@ -48,7 +48,7 @@ async def test_iframe_sandbox_wired_and_profile_planted(
         name="s",
         config=GrokTaskConfig(
             consumer_instructions="do the thing",
-            grok_install_dir=str(shim_install_dir),
+            install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
             extra_allowed_dirs=[AllowedDir("/scratch", "rw")],
         ),
@@ -84,7 +84,7 @@ async def test_iframe_no_sandbox_when_disabled(
         name="s",
         config=GrokTaskConfig(
             consumer_instructions="do the thing",
-            grok_install_dir=str(shim_install_dir),
+            install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
             fs_isolation=False,
         ),

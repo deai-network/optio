@@ -16,6 +16,7 @@ import json
 import pathlib
 import tarfile
 
+import pytest
 from motor.motor_asyncio import AsyncIOMotorGridFSBucket
 
 from optio_core.context import ProcessContext
@@ -64,7 +65,7 @@ async def _make_ctx(mongo_db, process_id: str, *, resume: bool) -> ProcessContex
 def _cfg(shim_install_dir: pathlib.Path) -> GrokTaskConfig:
     return GrokTaskConfig(
         consumer_instructions="do the thing",
-        grok_install_dir=str(shim_install_dir),
+        install_dir=str(shim_install_dir),
         ttyd_install_dir=str(shim_install_dir),
         supports_resume=True,
     )
@@ -136,3 +137,61 @@ async def test_resume_with_no_prior_snapshot_falls_back_to_fresh(
     await _run(mongo_db, pid, shim_install_dir, resume=True, monkeypatch=monkeypatch)
     snap = await load_latest_snapshot(mongo_db, "test", pid)
     assert snap is not None
+
+
+def _rev(b: bytes) -> bytes:
+    """Trivial reversible session-blob transform for the encrypt round-trip."""
+    return b[::-1]
+
+
+async def test_session_blob_encrypt_roundtrip(
+    mongo_db, task_root, shim_install_dir, monkeypatch,
+):
+    """P1: session_blob_encrypt/decrypt wrap the workdir tar (grok's session
+    carrier, since home/.grok lives inside the workdir). The stored blob is
+    ciphertext at rest, and the matching decrypt restores it on resume."""
+    monkeypatch.setenv("FAKE_GROK_SCENARIO", "resume")
+    pid = "grok_encrypt_1"
+    cfg = GrokTaskConfig(
+        consumer_instructions="do the thing",
+        install_dir=str(shim_install_dir),
+        ttyd_install_dir=str(shim_install_dir),
+        supports_resume=True,
+        session_blob_encrypt=_rev,
+        session_blob_decrypt=_rev,
+    )
+
+    # Fresh run: captures an ENCRYPTED workdir snapshot.
+    ctx = await _make_ctx(mongo_db, pid, resume=False)
+    await run_grok_session(ctx, cfg)
+
+    snap = await load_latest_snapshot(mongo_db, "test", pid)
+    bucket = AsyncIOMotorGridFSBucket(mongo_db)
+    stored = await (await bucket.open_download_stream(snap["workdirBlobId"])).read()
+    # At rest the blob is the reversed tar — NOT a valid gzip until un-reversed.
+    with pytest.raises((tarfile.ReadError, OSError)):
+        tarfile.open(fileobj=io.BytesIO(stored), mode="r:gz")
+    with tarfile.open(fileobj=io.BytesIO(stored[::-1]), mode="r:gz") as tar:
+        assert any(
+            m.name.endswith("home/.grok/fake_grok_argv.jsonl")
+            for m in tar.getmembers()
+        )
+
+    # Resume with the matching decrypt: restores the encrypted tar and relaunches.
+    ctx2 = await _make_ctx(mongo_db, pid, resume=True)
+    await run_grok_session(ctx2, cfg)
+    snap2 = await load_latest_snapshot(mongo_db, "test", pid)
+    stored2 = await (await bucket.open_download_stream(snap2["workdirBlobId"])).read()
+    with tarfile.open(fileobj=io.BytesIO(stored2[::-1]), mode="r:gz") as tar:
+        member = next(
+            m for m in tar.getmembers()
+            if m.name.endswith("home/.grok/fake_grok_argv.jsonl")
+        )
+        launches = [
+            json.loads(line)
+            for line in tar.extractfile(member).read().decode("utf-8").splitlines()
+            if line
+        ]
+    # Two launches ⟹ the fresh run's line survived the encrypted restore.
+    assert len(launches) == 2, launches
+    assert "-c" in launches[1], launches[1]

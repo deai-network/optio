@@ -40,7 +40,7 @@ async def test_local_deliverable_callback_fired(
         name="d",
         config=GrokTaskConfig(
             consumer_instructions="hand back a file",
-            grok_install_dir=str(shim_install_dir),
+            install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
             on_deliverable=on_deliverable,
         ),
@@ -63,7 +63,7 @@ async def test_local_error_raises(
         name="e",
         config=GrokTaskConfig(
             consumer_instructions="fail",
-            grok_install_dir=str(shim_install_dir),
+            install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
         ),
     )

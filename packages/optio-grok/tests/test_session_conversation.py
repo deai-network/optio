@@ -64,7 +64,7 @@ def _conversation_config(shim_install_dir: pathlib.Path, **kw) -> GrokTaskConfig
     base = dict(
         consumer_instructions="Converse with the test.",
         mode="conversation",
-        grok_install_dir=str(shim_install_dir),
+        install_dir=str(shim_install_dir),
         ttyd_install_dir=str(shim_install_dir),
         auto_start=False,
         supports_resume=False,

@@ -1,14 +1,28 @@
 """Public data types for optio-grok consumers.
 
-The generic ``DeliverableCallback`` / ``HookCallback`` types are owned by
-``optio-agents`` and ``SSHConfig`` by ``optio-host``. This module
-re-exports them alongside the package-specific ``GrokTaskConfig``.
+The generic ``DeliverableCallback`` / ``HookCallback`` /
+``CallerMessageCallback`` types are owned by ``optio-agents`` and ``SSHConfig``
+by ``optio-host``. The engine-neutral config vocabulary (``ConversationMode`` /
+``ToolVerbosity`` / ``ThinkingVerbosity`` / ``SeedProvider`` /
+``SeedUnavailableError`` / ``AllowedDir``) is owned by
+``optio_agents.config_types``. This module re-exports them all alongside the
+package-specific ``GrokTaskConfig`` so existing
+``from optio_grok.types import ...`` sites keep working unchanged.
 """
 
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Literal
 
+from optio_agents import (
+    AllowedDir,
+    ConversationMode,
+    SeedProvider,
+    SeedUnavailableError,
+    ThinkingVerbosity,
+    ToolVerbosity,
+)
 from optio_agents.protocol.session import (
+    CallerMessageCallback,
     DeliverableCallback,
     HookCallback,
 )
@@ -17,6 +31,7 @@ from optio_host.types import SSHConfig
 
 
 __all__ = [
+    "CallerMessageCallback",
     "DeliverableCallback",
     "HookCallback",
     "UploadCallback",
@@ -32,44 +47,6 @@ __all__ = [
 ]
 
 
-@dataclass
-class AllowedDir:
-    """A caller-supplied extra path grant for filesystem isolation (Stage 8).
-
-    ``mode`` is one of ``"ro"`` (read-only) or ``"rw"`` (read-write). Grants
-    are additive: callers may widen the sandbox allowlist but never mask the
-    security baseline (the workdir + temp dirs are always writable).
-
-    grok's native sandbox is Landlock-only here (no ``deny`` list, so no
-    bubblewrap dependency), so unlike optio-claudecode there is no separate
-    execute bit — Landlock read/write grants cover execution. A leading
-    ``~/`` in ``path`` is expanded against the REAL host home at launch time
-    (the grok process runs under an isolated ``$HOME``, so grants cannot rely
-    on its shell expansion).
-    """
-
-    path: str
-    mode: Literal["ro", "rw"]
-
-    def __post_init__(self) -> None:
-        if self.mode not in ("ro", "rw"):
-            raise ValueError(
-                f"AllowedDir.mode={self.mode!r} must be one of 'ro', 'rw' "
-                f"(path={self.path!r})."
-            )
-
-
-# A seed provider resolves a usable seed_id at launch time (e.g. leasing one
-# from a pool). Mirrors optio-claudecode's SeedProvider; the callable/lease
-# path is exercised in Stage 4 — Stage 3 only needs a static string seed_id.
-SeedProvider = Callable[[str], Awaitable[str]]
-
-
-class SeedUnavailableError(Exception):
-    """Raised by a seed provider when no usable seed is available; the message
-    is surfaced as the process failure."""
-
-
 PermissionMode = Literal[
     "default", "acceptEdits", "auto", "dontAsk", "bypassPermissions", "plan"
 ]
@@ -77,20 +54,18 @@ _VALID_PERMISSION_MODES = {
     "default", "acceptEdits", "auto", "dontAsk", "bypassPermissions", "plan"
 }
 
-# "iframe" = ttyd TUI in the browser (Stages 0-5). "conversation" = a headless
-# ``grok agent … stdio`` (ACP) session; the task publishes a live
-# GrokConversation via ctx.publish_result (Stage 6).
-ConversationMode = Literal["iframe", "conversation"]
-
-# Verbosity of tool-call rendering in the conversation widget (conversation_ui
-# only). Mirrors optio-claudecode; consumed by the dashboard reducer.
-ToolVerbosity = Literal["silent", "description-only", "verbose"]
+# Local validation sets derived from the shared ``ToolVerbosity`` /
+# ``ThinkingVerbosity`` Literals (imported from optio_agents), kept for the
+# construction-time checks in ``__post_init__``.
 _VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
-
-# Visibility of reasoning/thinking traces (grok's agent_thought_chunk) in the
-# conversation widget. Task-level, mirrors ToolVerbosity; the UI never decides.
-ThinkingVerbosity = Literal["hidden", "visible"]
 _VALID_THINKING_VERBOSITY = {"hidden", "visible"}
+
+
+def _identity_resume_refresh(config: "GrokTaskConfig") -> "GrokTaskConfig":
+    """Default ``on_resume_refresh``: recompose AGENTS.md from the unchanged
+    config on resume, so a resumed session picks up instruction/template
+    changes instead of freezing at first launch (no config mutation)."""
+    return config
 
 
 @dataclass
@@ -123,7 +98,7 @@ class GrokTaskConfig:
     install_if_missing: bool = True
     install_ttyd_if_missing: bool = True
     # Override for where the ``grok`` binary is resolved on the host.
-    grok_install_dir: str | None = None
+    install_dir: str | None = None
     ttyd_install_dir: str | None = None
 
     # When True, a fresh launch kicks off the first turn itself — iframe mode
@@ -141,6 +116,14 @@ class GrokTaskConfig:
     before_execute: HookCallback | None = None
     after_execute: HookCallback | None = None
     on_deliverable: DeliverableCallback | None = None
+    # Enable the CLIENT_MESSAGE keyword: agent-pushed messages routed to the
+    # originating browser session's frontend (stored as sessionEvents,
+    # surfaced via optio-ui's onClientMessage). Off by default.
+    use_client_messages: bool = False
+    # Enable the CALLER_MESSAGE keyword: agent-pushed messages routed to this
+    # callback in the embedding application. A non-None return value is sent
+    # back to the agent as feedback. Off (None) by default.
+    on_caller_message: CallerMessageCallback | None = None
 
     # --- seed surface (start fresh from a stored environment) -----------
     # Consumed (default/fallback): merge this seed's environment (grok
@@ -165,6 +148,22 @@ class GrokTaskConfig:
     # None → the framework defaults (see optio_host.archive). Keep home/.grok
     # OUT of this list: it carries the grok session state that --continue needs.
     workdir_exclude: list[str] | None = None
+    # Optional pair of synchronous bytes->bytes transforms wrapping the resume
+    # snapshot's workdir tar at GridFS write/read. grok's session store lives
+    # under home/.grok INSIDE the workdir, so this one tar IS the session blob
+    # (unlike claudecode's separate home/.claude blob). Both set → encrypted at
+    # rest; both None (default) → plaintext. Setting only one is a config error
+    # (asymmetric usage is always a mistake).
+    session_blob_encrypt: Callable[[bytes], bytes] | None = None
+    session_blob_decrypt: Callable[[bytes], bytes] | None = None
+    # Hook fired on resume only (never on fresh start). Receives the original
+    # config; returns a (possibly mutated) config. The harness re-renders
+    # AGENTS.md from the returned config and writes it back only when it differs
+    # from the file restored by the snapshot, tagging the next resume.log line
+    # with `REFRESHED:AGENTS.md` so the agent re-reads. Default = identity
+    # (recompose from the same config, so instruction/template changes reach a
+    # resumed session instead of freezing at first launch). Pass None to disable.
+    on_resume_refresh: "Callable[[GrokTaskConfig], GrokTaskConfig] | None" = _identity_resume_refresh
 
     # "iframe" = ttyd TUI (Stages 0-5). "conversation" = headless ACP
     # (grok agent stdio); the task publishes a live GrokConversation (Stage 6).
@@ -192,11 +191,6 @@ class GrokTaskConfig:
     thinking_verbosity: ThinkingVerbosity = "hidden"
 
     # --- conversation frontend parity (Stage 7) -------------------------
-    # Model preselected in the widget's model picker. Requires
-    # mode="conversation" and conversation_ui=True. Defaults to the live ACP
-    # current model when unset. (config.model still drives the launch --model
-    # flag; this only controls the picker's initial value.)
-    default_model: str | None = None
     # Show the engine-neutral session controls in the conversation widget.
     # Grok exposes only the model control, switched inline over ACP
     # (session/set_model) — no process restart. Requires mode="conversation"
@@ -281,14 +275,19 @@ class GrokTaskConfig:
                 f"GrokTaskConfig.thinking_verbosity={self.thinking_verbosity!r} "
                 f"is not one of {sorted(_VALID_THINKING_VERBOSITY)}"
             )
+        # Session-blob transforms are all-or-nothing: encrypting on write with
+        # no matching decrypt on read (or vice versa) always corrupts resume.
+        e = self.session_blob_encrypt is not None
+        d = self.session_blob_decrypt is not None
+        if e != d:
+            raise ValueError(
+                "GrokTaskConfig: session_blob_encrypt and session_blob_decrypt "
+                "must be set together or both left None; one without the other "
+                "is a config error."
+            )
         # Frontend-parity features are opt-in flags that only make sense with
         # the conversation UI wired (mirrors optio-claudecode).
         conv_ui = self.mode == "conversation" and self.conversation_ui
-        if self.default_model is not None and not conv_ui:
-            raise ValueError(
-                "GrokTaskConfig: default_model requires mode='conversation' "
-                "and conversation_ui=True."
-            )
         if self.show_session_controls and not conv_ui:
             raise ValueError(
                 "GrokTaskConfig: show_session_controls=True requires "
@@ -310,12 +309,15 @@ class GrokTaskConfig:
                 "mode='conversation' and conversation_ui=True."
             )
         for ad in self.extra_allowed_dirs or []:
-            if ad.mode not in ("ro", "rw"):
+            # Shared 4-value superset. grok's sandbox is Landlock-only, which
+            # implies execute on any readable grant, so rox≡ro and rwx≡rw here
+            # (the fs_allowlist builder folds the execute variants accordingly).
+            if ad.mode not in ("ro", "rw", "rox", "rwx"):
                 raise ValueError(
                     f"GrokTaskConfig.extra_allowed_dirs: mode={ad.mode!r} "
-                    f"must be one of 'ro', 'rw' (path={ad.path!r})."
+                    f"must be one of 'ro', 'rw', 'rox', 'rwx' (path={ad.path!r})."
                 )
-        for field_name in ("grok_install_dir", "ttyd_install_dir"):
+        for field_name in ("install_dir", "ttyd_install_dir"):
             val = getattr(self, field_name)
             if val is not None and not val.startswith("/") and not val.startswith("~"):
                 raise ValueError(

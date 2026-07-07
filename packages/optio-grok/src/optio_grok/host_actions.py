@@ -85,7 +85,7 @@ async def _resolve_install_dir(host: "Host", install_dir: str | None) -> str:
 async def _resolve_grok_cache_dir(host: "Host", override: str | None) -> str:
     """Resolve the optio-owned grok binary-cache dir as an absolute worker path.
 
-    ``override`` (``config.grok_install_dir``) wins. Otherwise the worker's real
+    ``override`` (``config.install_dir``) wins. Otherwise the worker's real
     env decides via a shell echo: ``GROK_CACHE_DIR`` else
     ``${XDG_CACHE_HOME:-$HOME/.cache}/optio-grok/bin`` — resolved on the host so
     RemoteHost gets the remote location. Deliberately mirrors claudecode's
@@ -128,7 +128,7 @@ async def resolve_grok(
             return candidate
         raise RuntimeError(
             f"grok not present at {candidate!r} on host "
-            f"(grok_install_dir={install_dir!r})."
+            f"(install_dir={install_dir!r})."
         )
 
     result = await host.run_command("bash -lc 'command -v grok'")
@@ -143,7 +143,7 @@ async def resolve_grok(
     raise RuntimeError(
         "grok not found on the worker (looked via 'command -v grok'). Stage 0 "
         "has no auto-install (the binary cache is a later stage) — install "
-        "grok manually (e.g. ~/.grok/bin/grok) or pass grok_install_dir."
+        "grok manually (e.g. ~/.grok/bin/grok) or pass install_dir."
     )
 
 

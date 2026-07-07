@@ -19,7 +19,7 @@ import os
 import secrets
 import shlex
 import time as _time
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 
 from optio_core.context import ProcessContext
 from optio_core.models import BasicAuth, TaskInstance
@@ -109,7 +109,11 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
     # completes the 127.0.0.1 loopback in their own browser — works in local mode;
     # remote uses seeds/device-auth per the design). ``suppress`` (the old value)
     # silently no-op'd the launch, so login just vanished with no feedback.
-    protocol = get_protocol(browser="redirect")
+    protocol = get_protocol(
+        browser="redirect",
+        client_messages=config.use_client_messages,
+        caller_messages=config.on_caller_message is not None,
+    )
     launched_handle: ProcessHandle | None = None
     tmux_path: str | None = None
     tmux_socket: str | None = None
@@ -159,7 +163,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
         grok_path = await host_actions.ensure_grok_installed(
             hook_ctx,
             install_if_missing=config.install_if_missing,
-            install_dir=config.grok_install_dir,
+            install_dir=config.install_dir,
         )
         # Conversation mode is headless (grok agent stdio) — no ttyd needed.
         if config.mode != "conversation":
@@ -180,8 +184,14 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             # Restore the workdir tar (carries home/.grok, i.e. grok's session
             # store). A present snapshot that fails to restore is fatal — the
             # restore call is intentionally outside any except so it surfaces
-            # to the caller (no silent fresh-start).
-            await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
+            # to the caller (no silent fresh-start). When session-blob encryption
+            # is configured, the stored tar is decrypted whole before restore
+            # (see _restore_workdir_stream); plaintext streams chunk-by-chunk.
+            await host.restore_workdir(
+                _restore_workdir_stream(
+                    ctx, snapshot["workdirBlobId"], config.session_blob_decrypt,
+                )
+            )
             # The grok launch symlink (home/.local/bin/grok) lives INSIDE the
             # workdir and was wiped by the restore; re-establish it against the
             # cache (which lives OUTSIDE the workdir and survives). Idempotent:
@@ -190,7 +200,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             grok_path = await host_actions.ensure_grok_installed(
                 hook_ctx,
                 install_if_missing=config.install_if_missing,
-                install_dir=config.grok_install_dir,
+                install_dir=config.install_dir,
                 progress_label="Restoring Grok Build runtime…",
                 # The ensure_grok_installed call at the top of _prepare already
                 # ran the version-check/refresh for this resume; skip the second
@@ -262,18 +272,27 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
         # runs for fresh, seeded, and resumed launches alike.
         await host_actions.write_grok_config(host, host.workdir)
 
-        await host.write_text(
-            "AGENTS.md",
-            compose_agents_md(
-                config.consumer_instructions,
-                host_protocol=config.host_protocol,
-                workdir_exclude=config.workdir_exclude,
-                supports_resume=config.supports_resume,
-                file_download=config.file_download,
-            ),
-        )
+        refreshed_files: list[str] = []
+        if resuming:
+            # Resume: AGENTS.md was restored from the snapshot workdir tar.
+            # Recompose it from the (optionally hook-mutated) config and write
+            # back only when it differs, so a resumed session picks up
+            # instruction/template changes; the rewritten filename tags the
+            # resume-log line so the agent re-reads. Parity with claudecode.
+            refreshed_files = await _maybe_refresh_on_resume(host, hook_ctx, config)
+        else:
+            await host.write_text(
+                "AGENTS.md",
+                compose_agents_md(
+                    config.consumer_instructions,
+                    host_protocol=config.host_protocol,
+                    workdir_exclude=config.workdir_exclude,
+                    supports_resume=config.supports_resume,
+                    file_download=config.file_download,
+                ),
+            )
         if config.supports_resume:
-            await host_actions._append_resume_log_entry(host)
+            await host_actions._append_resume_log_entry(host, refreshed=refreshed_files)
         if config.before_execute is not None:
             await config.before_execute(hook_ctx)
 
@@ -488,12 +507,13 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             )
             # Model picker options: prefer the ACP session block captured at
             # bootstrap (authed, exact ids set_model accepts), else `grok
-            # models`, else a static list. default_model overrides the picker's
-            # initial value; otherwise the live current model is shown.
+            # models`, else a static list. config.model (which also drives the
+            # launch --model flag) preselects the picker's initial value;
+            # otherwise the live current model is shown.
             model_list = await grok_models.fetch_available_models(
                 conversation.session_models, host=host, grok_path=grok_path,
             )
-            current_model = config.default_model or model_list.get("default")
+            current_model = config.model or model_list.get("default")
             # The former bespoke model selector is now the id="model" entry of
             # the engine-neutral session-controls list; grok exposes only this
             # one control (switched inline over ACP via set_control).
@@ -648,6 +668,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             body=body,
             prepare=_prepare,
             on_deliverable=config.on_deliverable,
+            on_caller_message=config.on_caller_message,
             after_execute=config.after_execute,
             protocol=protocol,
             agent_sender=_agent_sender,
@@ -820,6 +841,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                     ctx, host,
                     end_state="cancelled" if cancelled else "done",
                     workdir_exclude=config.workdir_exclude,
+                    session_blob_encrypt=config.session_blob_encrypt,
                     # Conversation mode: persist the live ACP session id (the
                     # adopted-prior id after a replay, else the fresh session/new
                     # id) so the next resume can session/load + replay it. iframe
@@ -857,6 +879,36 @@ async def _stream_blob(ctx: ProcessContext, blob_id) -> "AsyncIterator[bytes]":
             yield chunk
 
 
+async def _read_blob_bytes(ctx: ProcessContext, blob_id) -> bytes:
+    out = bytearray()
+    async with ctx.load_blob(blob_id) as reader:
+        while True:
+            chunk = await reader.read(1 << 20)
+            if not chunk:
+                break
+            out.extend(chunk)
+    return bytes(out)
+
+
+async def _restore_workdir_stream(
+    ctx: ProcessContext,
+    blob_id,
+    session_blob_decrypt: "Callable[[bytes], bytes] | None",
+) -> "AsyncIterator[bytes]":
+    """Yield the workdir tar bytes for ``restore_workdir``.
+
+    Plaintext (no decrypt): stream chunk-by-chunk so a large tar never buffers
+    whole. Encrypted: the transform operates on the WHOLE ciphertext, so read
+    the blob fully, decrypt, and yield the plaintext tar in one piece (mirrors
+    claudecode's whole-bytes session-blob decrypt)."""
+    if session_blob_decrypt is None:
+        async for chunk in _stream_blob(ctx, blob_id):
+            yield chunk
+    else:
+        payload = await _read_blob_bytes(ctx, blob_id)
+        yield session_blob_decrypt(payload)
+
+
 async def _capture_snapshot(
     ctx: ProcessContext,
     host: Host,
@@ -864,6 +916,7 @@ async def _capture_snapshot(
     end_state: str,
     workdir_exclude: list[str] | None,
     session_id: str | None = None,
+    session_blob_encrypt: "Callable[[bytes], bytes] | None" = None,
 ) -> None:
     """Capture a single-blob resume snapshot of the (now static) workdir.
 
@@ -876,10 +929,24 @@ async def _capture_snapshot(
     ``session_id`` is grok's live ACP session id (conversation mode); it rides
     the snapshot row so a later resume can ``session/load`` it to replay prior
     history. ``None`` for iframe mode.
+
+    ``session_blob_encrypt`` (when set) wraps the workdir tar at rest. Because
+    grok's session store lives under home/.grok INSIDE the workdir, this one
+    tar IS the session blob, so encrypting it protects the resume state on the
+    GridFS side. The transform operates on the WHOLE tar, so the plaintext is
+    buffered and encrypted before the single write; the plaintext path keeps
+    streaming chunk-by-chunk to avoid buffering a large tar. Decrypted on read
+    by ``_restore_workdir_stream``.
     """
     async with ctx.store_blob("workdir") as wwriter:
-        async for chunk in host.archive_workdir(workdir_exclude):
-            await wwriter.write(chunk)
+        if session_blob_encrypt is None:
+            async for chunk in host.archive_workdir(workdir_exclude):
+                await wwriter.write(chunk)
+        else:
+            buf = bytearray()
+            async for chunk in host.archive_workdir(workdir_exclude):
+                buf.extend(chunk)
+            await wwriter.write(session_blob_encrypt(bytes(buf)))
         workdir_blob_id = wwriter.file_id
 
     await insert_snapshot(
@@ -898,6 +965,48 @@ async def _capture_snapshot(
             _LOG.exception("delete_blob(workdir) failed")
 
     await ctx.mark_has_saved_state()
+
+
+async def _maybe_refresh_on_resume(
+    host: Host, hook_ctx: HookContext, config: GrokTaskConfig,
+) -> list[str]:
+    """Run ``on_resume_refresh`` (if any) and rewrite AGENTS.md when changed.
+
+    Returns the list of filenames rewritten (currently at most
+    ``["AGENTS.md"]``), fed to the resume-log append so the agent re-reads. A
+    hook that raises is logged and ignored (the restored AGENTS.md is kept).
+    Mirrors optio-claudecode's CLAUDE.md refresh; the instruction file here is
+    AGENTS.md, recomposed via ``compose_agents_md``.
+    """
+    if config.on_resume_refresh is None:
+        return []
+    try:
+        new_config = config.on_resume_refresh(config)
+    except Exception:
+        _LOG.exception(
+            "on_resume_refresh raised; keeping existing AGENTS.md from snapshot",
+        )
+        return []
+    new_agents_md = compose_agents_md(
+        new_config.consumer_instructions,
+        host_protocol=new_config.host_protocol,
+        workdir_exclude=new_config.workdir_exclude,
+        supports_resume=new_config.supports_resume,
+        file_download=new_config.file_download,
+    )
+    try:
+        existing = await hook_ctx.read_text_from_host("AGENTS.md", silent=True)
+    except FileNotFoundError:
+        existing = None
+    except Exception:
+        _LOG.exception(
+            "failed to read existing AGENTS.md on resume; rewriting unconditionally",
+        )
+        existing = None
+    if existing == new_agents_md:
+        return []
+    await host.write_text("AGENTS.md", new_agents_md)
+    return ["AGENTS.md"]
 
 
 def create_grok_task(

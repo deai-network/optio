@@ -70,7 +70,10 @@ def build_sandbox_toml(
     read_only: list[str] = []
     for ad in extra_allowed_dirs or []:
         target = _expand_home(ad.path, host_home)
-        if ad.mode == "rw":
+        # Shared 4-value superset mode. grok's sandbox is Landlock-only, so the
+        # execute variants collapse onto their base: rwx≡rw (writable), rox≡ro
+        # (read-only) — Landlock grants imply execute on anything readable.
+        if ad.mode in ("rw", "rwx"):
             read_write.append(target)
         else:
             read_only.append(target)

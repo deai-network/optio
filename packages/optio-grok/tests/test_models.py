@@ -3,7 +3,7 @@
 File-disjoint units that don't need a live grok:
   * models.py parse helpers (ACP session block + `grok models` CLI text);
   * fetch_available_models source precedence (ACP → CLI → fallback);
-  * GrokTaskConfig.show_session_controls / default_model validation.
+  * GrokTaskConfig.show_session_controls / native_spinner validation.
 
 The inline model-switch mechanism itself (session/set_model over ACP) is
 covered at the conversation level in test_conversation.py; the end-to-end swap
@@ -150,11 +150,12 @@ def test_native_spinner_ok_in_conversation_ui():
     assert cfg.native_spinner is True
 
 
-def test_default_model_requires_conversation_ui():
-    with pytest.raises(ValueError, match="default_model"):
-        _cfg(mode="conversation", conversation_ui=False, default_model="grok-build")
-
-
-def test_default_model_ok_in_conversation_ui():
-    cfg = _cfg(mode="conversation", conversation_ui=True, default_model="grok-build")
-    assert cfg.default_model == "grok-build"
+def test_model_preselects_picker_with_no_conversation_ui_gate():
+    """C3: the single ``model`` field both drives the launch --model flag and
+    preselects the conversation picker — it is valid in every mode (the old
+    ``default_model`` conversation_ui gate is gone)."""
+    cfg = _cfg(model="grok-build")
+    assert cfg.model == "grok-build"
+    # No gate: a model is accepted in plain iframe mode too.
+    cfg2 = _cfg(mode="iframe", model="grok-composer-2.5-fast")
+    assert cfg2.model == "grok-composer-2.5-fast"
