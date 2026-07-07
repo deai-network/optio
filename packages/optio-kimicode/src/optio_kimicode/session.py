@@ -37,7 +37,7 @@ from optio_agents import HookContext, get_protocol
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
 from optio_agents import seeds as _seeds
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
-from optio_agents.uploads import materialize
+from optio_agents.uploads import materialize, upload_url_token
 from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
 from optio_host.paths import task_dir
 
@@ -569,15 +569,8 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                 conversation.session_config_options,
                 default_model=config.default_model,
             )
-            # The client POSTs uploads to the generic optio-api route, resolved
-            # relative to {widgetProxyUrl} (=<base>/api/widget/<db>/<prefix>/<pid>/):
-            # climb to <base>/api/, then descend into the sibling widget-upload
-            # route with the SAME db/prefix/pid. Relative so a base path prefix or
-            # non-origin API host is preserved (see resolveUploadUrl).
-            upload_url = (
-                "{widgetProxyUrl}../../../../widget-upload/"
-                f"{ctx._db.name}/{ctx._prefix}/{ctx.process_id}"
-            )
+            # widgetData.uploadUrl token; see optio_agents.uploads.upload_url_token.
+            upload_url = upload_url_token(ctx._db.name, ctx._prefix, ctx.process_id)
             await ctx.set_widget_data({
                 "protocol": "kimicode",
                 "toolVerbosity": config.tool_verbosity,

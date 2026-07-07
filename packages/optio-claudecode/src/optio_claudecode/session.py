@@ -35,7 +35,7 @@ from optio_host.paths import task_dir
 from optio_agents import seeds as _seeds
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, claustrum, get_protocol
 from optio_agents.session_controls import model_control
-from optio_agents.uploads import materialize
+from optio_agents.uploads import materialize, upload_url_token
 
 from optio_claudecode import cred_watcher
 from optio_claudecode import host_actions
@@ -542,15 +542,8 @@ async def run_claudecode_session(
             # --model): the view sniffs the runtime model from system/init and
             # folds it into the control value.
             control = model_control(models=model_list["models"], current=current_model)
-            # The client POSTs uploads to the generic optio-api route, resolved
-            # relative to {widgetProxyUrl} (=<base>/api/widget/<db>/<prefix>/<pid>/):
-            # climb to <base>/api/, then descend into the sibling widget-upload
-            # route with the SAME db/prefix/pid. Relative so a base path prefix
-            # or non-origin API host is preserved (see resolveUploadUrl).
-            upload_url = (
-                "{widgetProxyUrl}../../../../widget-upload/"
-                f"{ctx._db.name}/{ctx._prefix}/{ctx.process_id}"
-            )
+            # widgetData.uploadUrl token; see optio_agents.uploads.upload_url_token.
+            upload_url = upload_url_token(ctx._db.name, ctx._prefix, ctx.process_id)
             await ctx.set_widget_data({
                 "protocol": "claudecode",
                 "toolVerbosity": config.tool_verbosity,

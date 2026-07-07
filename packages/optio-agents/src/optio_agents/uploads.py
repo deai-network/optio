@@ -38,6 +38,22 @@ def safe_upload_relpath(filename: str) -> str:
     return rel
 
 
+def upload_url_token(database: str, prefix: str, process_id: str) -> str:
+    """The relative widgetData.uploadUrl token every engine advertises.
+
+    The client POSTs uploads to the generic optio-api /api/widget-upload route,
+    resolved relative to ``{widgetProxyUrl}`` (=<base>/api/widget/<db>/<prefix>/
+    <pid>/): climb to <base>/api/, then descend into the sibling widget-upload
+    route with the SAME db/prefix/pid. Relative so a base path prefix or
+    non-origin API host is preserved (see resolveUploadUrl). Engines assert this
+    exact string, so the format must stay byte-identical.
+    """
+    return (
+        "{widgetProxyUrl}../../../../widget-upload/"
+        f"{database}/{prefix}/{process_id}"
+    )
+
+
 async def materialize(host, workdir, filename, data, hook_ctx=None, on_upload=None):
     """Write an uploaded blob into <workdir>/uploads/<name> and fire on_upload.
 

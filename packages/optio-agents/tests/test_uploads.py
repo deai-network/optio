@@ -1,5 +1,15 @@
 import pytest
-from optio_agents.uploads import materialize, safe_upload_relpath
+from optio_agents.uploads import materialize, safe_upload_relpath, upload_url_token
+
+
+def test_upload_url_token_exact_format():
+    # The token every engine's session.py builds today for widgetData.uploadUrl:
+    #   "{widgetProxyUrl}../../../../widget-upload/" + f"{db}/{prefix}/{pid}"
+    # Several engines assert this exact string, so it must stay byte-identical.
+    assert (
+        upload_url_token("mydb", "optio", "p1")
+        == "{widgetProxyUrl}../../../../widget-upload/mydb/optio/p1"
+    )
 
 
 def test_preserves_original_name_with_spaces_and_unicode():

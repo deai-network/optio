@@ -28,7 +28,7 @@ from optio_agents import seeds as _seeds
 from optio_agents.input_listener import serialized, start_input_listener
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_agents.session_controls import model_control
-from optio_agents.uploads import materialize
+from optio_agents.uploads import materialize, upload_url_token
 from optio_host.host import Host, LocalHost, ProcessHandle
 from optio_host.paths import task_dir
 
@@ -487,15 +487,8 @@ async def run_antigravity_session(
             control = model_control(
                 models=model_list["models"], current=current_model,
             )
-            # The client POSTs uploads to the generic optio-api route, resolved
-            # relative to {widgetProxyUrl} (=<base>/api/widget/<db>/<prefix>/<pid>/):
-            # climb to <base>/api/, then descend into the sibling widget-upload
-            # route with the SAME db/prefix/pid. Relative so a base path prefix or
-            # non-origin API host is preserved (see resolveUploadUrl).
-            upload_url = (
-                "{widgetProxyUrl}../../../../widget-upload/"
-                f"{ctx._db.name}/{ctx._prefix}/{ctx.process_id}"
-            )
+            # widgetData.uploadUrl token; see optio_agents.uploads.upload_url_token.
+            upload_url = upload_url_token(ctx._db.name, ctx._prefix, ctx.process_id)
             await ctx.set_widget_data({
                 "protocol": "antigravity",
                 "toolVerbosity": config.tool_verbosity,
