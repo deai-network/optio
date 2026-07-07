@@ -51,3 +51,17 @@ export function bundleUploadNotice(paths: string[], body: string): string {
   const notice = paths.map((p) => `System: upload received, stored in ${p}`).join('\n');
   return `${notice}\n\n${body}`;
 }
+
+/**
+ * Resolve the upload route URL a view POSTs to from its widgetData. Every
+ * engine publishes the SAME `widgetData.uploadUrl` key — a `{widgetProxyUrl}`
+ * token (the same substitution {@link IframeWidget} applies) that expands to the
+ * API's `/api/widget-upload/<db>/<prefix>/<pid>` route. Resolving it here keeps
+ * all 7 views on one code path. Returns `null` when the task did not advertise
+ * an upload URL (upload disabled), so the view can hide/skip the upload step.
+ */
+export function resolveUploadUrl(widgetData: unknown, widgetProxyUrl: string): string | null {
+  const raw = (widgetData as { uploadUrl?: unknown } | null | undefined)?.uploadUrl;
+  if (typeof raw !== 'string' || !raw) return null;
+  return raw.replace(/\{widgetProxyUrl\}/g, widgetProxyUrl);
+}

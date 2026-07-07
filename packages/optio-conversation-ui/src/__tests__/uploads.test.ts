@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { uploadFiles, bundleUploadNotice } from '../uploads.js';
+import { uploadFiles, bundleUploadNotice, resolveUploadUrl } from '../uploads.js';
 import type { Attachment } from '../attachments.js';
 
 function makeAttachment(name: string, bytes = 4, mime = 'image/png'): Attachment {
@@ -105,5 +105,28 @@ describe('bundleUploadNotice', () => {
 
   it('returns the body unchanged when there are no paths', () => {
     expect(bundleUploadNotice([], 'hello')).toBe('hello');
+  });
+});
+
+describe('resolveUploadUrl', () => {
+  it('expands the {widgetProxyUrl} token in widgetData.uploadUrl', () => {
+    const out = resolveUploadUrl(
+      { uploadUrl: '{widgetProxyUrl}../../../api/widget-upload/db/gm/p1' },
+      '/api/widget/db/gm/p1/',
+    );
+    expect(out).toBe('/api/widget/db/gm/p1/../../../api/widget-upload/db/gm/p1');
+  });
+
+  it('returns an already-absolute uploadUrl untouched', () => {
+    const out = resolveUploadUrl({ uploadUrl: '/api/widget-upload/db/gm/p1' }, '/api/widget/db/gm/p1/');
+    expect(out).toBe('/api/widget-upload/db/gm/p1');
+  });
+
+  it('returns null when uploadUrl is missing or not a string', () => {
+    expect(resolveUploadUrl({}, '/proxy/')).toBeNull();
+    expect(resolveUploadUrl(undefined, '/proxy/')).toBeNull();
+    expect(resolveUploadUrl(null, '/proxy/')).toBeNull();
+    expect(resolveUploadUrl({ uploadUrl: 123 }, '/proxy/')).toBeNull();
+    expect(resolveUploadUrl({ uploadUrl: '' }, '/proxy/')).toBeNull();
   });
 });
