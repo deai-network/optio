@@ -163,3 +163,102 @@ describe('OpencodeView model control', () => {
       .toEqual({ providerID: 'opencode', modelID: 'deepseek-v4-flash' });
   });
 });
+
+// opencode grades reasoning effort per-prompt via a model's named `variant`,
+// attached to prompt_async beside `model` (client-side). The effort slider is
+// built from the CURRENT model's variant keys (widgetData.modelVariants) and
+// only appears when the model has variants — re-derived on model change.
+describe('OpencodeView effort control', () => {
+  // big-pickle (the providers default) has variants; deepseek-v4-flash does not.
+  const VARIANTS = { 'opencode/big-pickle': ['low', 'medium', 'high'] };
+
+  it('renders the effort slider for a variant-capable current model', async () => {
+    installFetch({ history: [], posts: [] });
+    render(<OpencodeView {...makeProps({
+      sessionID: 'fake-session-id', directory: '/wd', showSessionControls: true,
+      modelVariants: VARIANTS,
+    })} />);
+    await waitFor(() => expect(screen.getByTestId('control-reasoning_effort')).toBeTruthy());
+  });
+
+  it('omits the effort slider when the current model has no variants', async () => {
+    // history pins deepseek-v4-flash (no variants) as the resolved model.
+    installFetch({
+      history: [{ info: { role: 'assistant', providerID: 'opencode', modelID: 'deepseek-v4-flash' }, parts: [] }],
+      posts: [],
+    });
+    render(<OpencodeView {...makeProps({
+      sessionID: 'fake-session-id', directory: '/wd', showSessionControls: true,
+      modelVariants: VARIANTS,
+    })} />);
+    await waitFor(() => expect(screen.getByTestId('control-model')).toBeTruthy());
+    expect(screen.queryByTestId('control-reasoning_effort')).toBeNull();
+  });
+
+  it('is hidden when showSessionControls is false even with variants', async () => {
+    installFetch({ history: [], posts: [] });
+    render(<OpencodeView {...makeProps({
+      sessionID: 'fake-session-id', directory: '/wd', modelVariants: VARIANTS,
+    })} />);
+    await waitFor(() => expect(screen.getByTestId('conversation-input-box')).toBeTruthy());
+    expect(screen.queryByTestId('control-reasoning_effort')).toBeNull();
+  });
+
+  it('attaches defaultEffort as the variant on the next prompt_async', async () => {
+    const posts: { url: string; body: any }[] = [];
+    installFetch({ history: [], posts });
+    render(<OpencodeView {...makeProps({
+      sessionID: 'fake-session-id', directory: '/wd', showSessionControls: true,
+      modelVariants: VARIANTS, defaultEffort: 'medium',
+    })} />);
+    await waitFor(() => expect(screen.getByTestId('control-reasoning_effort')).toBeTruthy());
+    const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: 'hi' } });
+    fireEvent.click(screen.getByTestId('conversation-send'));
+    await waitFor(() => expect(posts.some((p) => p.url.includes('/prompt_async'))).toBe(true));
+    const sent = posts.find((p) => p.url.includes('/prompt_async'))!;
+    expect(sent.body.variant).toBe('medium');
+    expect(sent.body.model).toEqual({ providerID: 'opencode', modelID: 'big-pickle' });
+  });
+
+  it('falls back to the first variant when no defaultEffort is set', async () => {
+    const posts: { url: string; body: any }[] = [];
+    installFetch({ history: [], posts });
+    render(<OpencodeView {...makeProps({
+      sessionID: 'fake-session-id', directory: '/wd', showSessionControls: true,
+      modelVariants: VARIANTS,
+    })} />);
+    await waitFor(() => expect(screen.getByTestId('control-reasoning_effort')).toBeTruthy());
+    const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: 'hi' } });
+    fireEvent.click(screen.getByTestId('conversation-send'));
+    await waitFor(() => expect(posts.some((p) => p.url.includes('/prompt_async'))).toBe(true));
+    expect(posts.find((p) => p.url.includes('/prompt_async'))!.body.variant).toBe('low');
+  });
+
+  it('drops the effort control and the variant when switching to a no-variant model', async () => {
+    const posts: { url: string; body: any }[] = [];
+    installFetch({ history: [], posts });
+    render(<OpencodeView {...makeProps({
+      sessionID: 'fake-session-id', directory: '/wd', showSessionControls: true,
+      modelVariants: VARIANTS, defaultEffort: 'high',
+    })} />);
+    await waitFor(() => expect(screen.getByTestId('control-reasoning_effort')).toBeTruthy());
+
+    // Switch from big-pickle (has variants) to deepseek-v4-flash (none).
+    fireEvent.mouseDown(screen.getByTestId('control-model').querySelector('.ant-select-selector')!);
+    await waitFor(() => expect(screen.getByText('DeepSeek V4 Flash')).toBeTruthy());
+    fireEvent.click(screen.getByText('DeepSeek V4 Flash'));
+
+    // The effort control disappears (presence follows the model).
+    await waitFor(() => expect(screen.queryByTestId('control-reasoning_effort')).toBeNull());
+
+    const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: 'hi' } });
+    fireEvent.click(screen.getByTestId('conversation-send'));
+    await waitFor(() => expect(posts.some((p) => p.url.includes('/prompt_async'))).toBe(true));
+    const sent = posts.find((p) => p.url.includes('/prompt_async'))!;
+    expect(sent.body.model).toEqual({ providerID: 'opencode', modelID: 'deepseek-v4-flash' });
+    expect(sent.body.variant).toBeUndefined();
+  });
+});
