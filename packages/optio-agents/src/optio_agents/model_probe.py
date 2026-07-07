@@ -144,8 +144,6 @@ async def probe_models(
     result: dict[str, bool] = {}
     total = len(model_ids)
     for i, mid in enumerate(model_ids):
-        if report is not None:
-            report(i + 1, total, mid)
         try:
             await _maybe_await(set_model(conversation, mid))
             answer, error = await _probe_turn(
@@ -156,6 +154,12 @@ async def probe_models(
         except Exception:  # noqa: BLE001 — a probe failure just disables the model
             _LOG.exception("model probe failed for %r", mid)
             result[mid] = False
+        # Report AFTER each model completes (not before it starts): a model's turn
+        # can take tens of seconds, so reporting up front made the bar read 100%
+        # while the LAST model was still being probed. Same (i+1, total, mid)
+        # sequence, honest timing — 100% now means genuinely done.
+        if report is not None:
+            report(i + 1, total, mid)
     if original is not None:
         try:
             await _maybe_await(set_model(conversation, original))
