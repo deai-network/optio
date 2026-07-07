@@ -7,12 +7,14 @@ from optio_agents.protocol.session import (
     DeliverableCallback,
     HookCallback,
 )
+from optio_agents.uploads import UploadCallback
 from optio_host.types import SSHConfig
 
 
 __all__ = [
     "DeliverableCallback",
     "HookCallback",
+    "UploadCallback",
     "SSHConfig",
     "AllowedDir",
     "CodexTaskConfig",
@@ -202,6 +204,11 @@ class CodexTaskConfig:
     # Show the file-upload control. Uploaded bytes land under
     # <workdir>/uploads and are referenced to codex via a System: path line.
     show_file_upload: bool = False
+    # Per-task upload hook, fired (additively to the System: path line) after an
+    # uploaded file lands under <workdir>/uploads. Mirrors on_deliverable minus
+    # the text arg: ``async on_upload(hook_ctx, "uploads/<name>")``. Optional;
+    # the workdir write + System: reference happen whether or not it is set.
+    on_upload: UploadCallback | None = None
     # Upper bound (bytes) on a single uploaded file; the listener rejects
     # larger with HTTP 413. Mirrored to the widget via widgetData.
     max_upload_bytes: int = 10_000_000
