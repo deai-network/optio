@@ -38,9 +38,40 @@ from datetime import datetime, timezone
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from optio_host.archive import DEFAULT_WORKDIR_EXCLUDES
+
 
 SESSION_SNAPSHOT_COLLECTION_SUFFIX = "_cursor_session_snapshots"
 SNAPSHOT_RETENTION = 5
+
+# Default snapshot exclude list (used when ``CursorTaskConfig.workdir_exclude``
+# is None): the framework defaults plus cursor-agent's self-update binary dir.
+# cursor sets no self-update disable, and its update-write target
+# ``home/.local/share/cursor-agent/versions/<v>`` sits INSIDE the snapshotted
+# workdir. If cursor-agent ever self-updates in-session, ~150 MB of binary would
+# land in the snapshot and blow the cancel-grace. The binary is a regenerable,
+# out-of-tree cache (re-seeded on resume), so excluding it is free and defends
+# regardless of whether the self-update fires. MUST NOT exclude ``home/.cursor``
+# — that is cursor's chat/session store and the resume source. Pattern semantics
+# (optio_host.archive): fnmatch against the full workdir-relative path AND
+# against every single path segment, so the multi-segment entry prunes exactly
+# that one subtree.
+CURSOR_WORKDIR_EXCLUDE_DEFAULT: list[str] = [
+    *DEFAULT_WORKDIR_EXCLUDES,
+    "home/.local/share/cursor-agent",
+]
+
+
+def effective_workdir_exclude(workdir_exclude: list[str] | None) -> list[str]:
+    """The exclude list a snapshot will actually honor.
+
+    ``None`` (the config default) means the cursor defaults above — NOT the
+    bare framework defaults — so the self-update binary dir is always pruned.
+    An explicit ``workdir_exclude`` (including ``[]``) overrides verbatim.
+    """
+    if workdir_exclude is None:
+        return CURSOR_WORKDIR_EXCLUDE_DEFAULT
+    return workdir_exclude
 
 
 def _collection(db: AsyncIOMotorDatabase, prefix: str):

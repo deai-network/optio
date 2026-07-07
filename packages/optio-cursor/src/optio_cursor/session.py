@@ -42,6 +42,7 @@ from optio_cursor.conversation_listener import ConversationListener
 from optio_cursor.prompt import compose_agents_md
 from optio_cursor.seed_manifest import CURSOR_SEED_MANIFEST, CURSOR_SEED_SUFFIX
 from optio_cursor.snapshots import (
+    effective_workdir_exclude,
     insert_snapshot,
     load_latest_snapshot,
     prune_snapshots,
@@ -967,7 +968,9 @@ async def _capture_snapshot(
     prior history. ``None`` for iframe mode.
     """
     async with ctx.store_blob("workdir") as wwriter:
-        async for chunk in host.archive_workdir(workdir_exclude):
+        async for chunk in host.archive_workdir(
+            effective_workdir_exclude(workdir_exclude)
+        ):
             await wwriter.write(chunk)
         workdir_blob_id = wwriter.file_id
 
