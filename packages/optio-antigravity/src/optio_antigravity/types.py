@@ -13,15 +13,37 @@ state tree under ``~/.gemini``, its transcript-driven conversation mode).
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Literal
 
+from optio_agents import (
+    AllowedDir,
+    ConversationMode,
+    SeedProvider,
+    SeedUnavailableError,
+    ThinkingVerbosity,
+    ToolVerbosity,
+)
 from optio_agents.protocol.session import (
+    CallerMessageCallback,
     DeliverableCallback,
     HookCallback,
 )
 from optio_agents.uploads import UploadCallback
 from optio_host.types import SSHConfig
 
+# AllowedDir, ConversationMode, ToolVerbosity, ThinkingVerbosity, SeedProvider
+# and SeedUnavailableError are the shared config vocabulary owned by
+# ``optio_agents``; they are imported above and re-exported here (see __all__)
+# so existing ``from optio_antigravity.types import AllowedDir, …`` sites (in
+# ``fs_allowlist.py``/``session.py``) keep working. The shared ``AllowedDir``
+# validates ``mode`` at construction against the 4-value superset
+# (``ro``/``rw``/``rox``/``rwx``); this Landlock-only claustrum treats
+# ``rox``≡``ro`` and ``rwx``≡``rw`` (a Landlock read/write grant already covers
+# execution). A leading ``~/`` in an ``AllowedDir.path`` is expanded against the
+# REAL host home at launch time (the ``agy`` process runs under an isolated
+# ``$HOME``, so grants cannot rely on its shell expansion).
+
 
 __all__ = [
+    "CallerMessageCallback",
     "DeliverableCallback",
     "HookCallback",
     "UploadCallback",
@@ -37,48 +59,13 @@ __all__ = [
 ]
 
 
-@dataclass
-class AllowedDir:
-    """A caller-supplied extra path grant for filesystem isolation (Stage 8).
-
-    ``mode`` is one of ``"ro"`` (read-only) or ``"rw"`` (read-write). Grants
-    are additive: callers may widen the sandbox allowlist but never mask the
-    security baseline (the workdir + temp dirs are always writable).
-
-    optio wraps ``agy`` in claustrum (Landlock-only kernel enforcement here,
-    so no ``deny`` list and no bubblewrap dependency); Landlock read/write
-    grants cover execution, so — unlike optio-claudecode — there is no separate
-    execute bit. A leading ``~/`` in ``path`` is expanded against the REAL host
-    home at launch time (the ``agy`` process runs under an isolated ``$HOME``,
-    so grants cannot rely on its shell expansion).
-    """
-
-    path: str
-    mode: Literal["ro", "rw"]
-
-    def __post_init__(self) -> None:
-        if self.mode not in ("ro", "rw"):
-            raise ValueError(
-                f"AllowedDir.mode={self.mode!r} must be one of 'ro', 'rw' "
-                f"(path={self.path!r})."
-            )
-
-
-# A seed provider resolves a usable seed_id at launch time (e.g. leasing one
-# from a pool). Mirrors optio-claudecode's SeedProvider; the callable/lease
-# path is exercised in Stage 4 — Stage 3 only needs a static string seed_id.
-SeedProvider = Callable[[str], Awaitable[str]]
-
-
-class SeedUnavailableError(Exception):
-    """Raised by a seed provider when no usable seed is available; the message
-    is surfaced as the process failure."""
-
-
 # agy's native permission surface is binary: normal prompting ("default") or
 # ``--dangerously-skip-permissions`` (auto-approve every tool). optio's generic
 # callers pass the claudecode-style ``bypassPermissions``; we accept it as an
 # alias and map it to the skip flag at launch (see host_actions, Task 0.3+).
+# NATIVE GAP: agy exposes no per-tool allow/deny grammar (only this binary
+# skip), so — unlike claude/grok/cursor — this wrapper carries no
+# ``allowed_tools``/``disallowed_tools`` fields (there is nothing to drive).
 PermissionMode = Literal["default", "dangerously-skip-permissions"]
 _PERMISSION_MODE_ALIASES = {"bypassPermissions": "dangerously-skip-permissions"}
 _VALID_PERMISSION_MODES = {
@@ -86,22 +73,19 @@ _VALID_PERMISSION_MODES = {
     "dangerously-skip-permissions",
 } | set(_PERMISSION_MODE_ALIASES)
 
-# "iframe" = ttyd TUI in the browser (Stages 0-5). "conversation" = a
-# synthetic, transcript-driven session (each turn driven by
-# ``agy -p --conversation <id>`` under a PTY, events read from
-# ``~/.gemini/antigravity/transcript.jsonl``); the task publishes a live
-# AntigravityConversation via ctx.publish_result (Stage 6).
-ConversationMode = Literal["iframe", "conversation"]
-
-# Verbosity of tool-call rendering in the conversation widget (conversation_ui
-# only). Mirrors optio-claudecode; consumed by the dashboard reducer.
-ToolVerbosity = Literal["silent", "description-only", "verbose"]
+# Local-validation supersets for the shared ``ToolVerbosity``/``ThinkingVerbosity``
+# Literals (the aliases themselves are imported from ``optio_agents`` above).
 _VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
-
-# Visibility of reasoning/thinking traces in the conversation widget.
-# Task-level, mirrors ToolVerbosity; the UI never decides.
-ThinkingVerbosity = Literal["hidden", "visible"]
 _VALID_THINKING_VERBOSITY = {"hidden", "visible"}
+
+
+def _identity_resume_refresh(
+    config: "AntigravityTaskConfig",
+) -> "AntigravityTaskConfig":
+    """Default ``on_resume_refresh``: recompose AGENTS.md from the unchanged
+    config on resume, so a resumed session picks up instruction/template
+    changes instead of freezing at first launch (no config mutation)."""
+    return config
 
 
 @dataclass
@@ -121,20 +105,18 @@ class AntigravityTaskConfig:
     scrub_env: list[str] | None = None
 
     permission_mode: PermissionMode | None = None
-    allowed_tools: list[str] | None = None
-    disallowed_tools: list[str] | None = None
     # Passed through as ``--model``. Not validated — vendor strings change
-    # (Gemini ids plus BYO Claude/GPT model ids exposed by ``agy models``).
+    # (Gemini ids plus BYO Claude/GPT model ids exposed by ``agy models``). Also
+    # the conversation model-picker's initial value (Stage 7): config.model
+    # drives both the launch ``--model`` flag and the picker default.
     model: str | None = None
-    effort: str | None = None
-    reasoning_effort: str | None = None
 
     ssh: SSHConfig | None = None
 
     install_if_missing: bool = True
     install_ttyd_if_missing: bool = True
-    # Override for where the ``agy`` binary is resolved on the host.
-    agy_install_dir: str | None = None
+    # Override for the optio-owned ``agy`` binary-cache directory on the host.
+    install_dir: str | None = None
     ttyd_install_dir: str | None = None
 
     # When True, a fresh launch kicks off the first turn itself — iframe mode
@@ -149,6 +131,14 @@ class AntigravityTaskConfig:
     before_execute: HookCallback | None = None
     after_execute: HookCallback | None = None
     on_deliverable: DeliverableCallback | None = None
+    # Enable the CLIENT_MESSAGE keyword: agent-pushed messages routed to the
+    # originating browser session's frontend (stored as sessionEvents, surfaced
+    # via optio-ui's onClientMessage). Off by default.
+    use_client_messages: bool = False
+    # Enable the CALLER_MESSAGE keyword: agent-pushed messages routed to this
+    # callback in the embedding application. A non-None return value is sent
+    # back to the agent as feedback. Off (None) by default.
+    on_caller_message: CallerMessageCallback | None = None
 
     # --- seed surface (start fresh from a stored environment) -----------
     # Consumed (default/fallback): merge this seed's environment (agy's Google
@@ -175,6 +165,21 @@ class AntigravityTaskConfig:
     # ~/.gemini state OUT of this list: it carries the transcript + settings
     # that --continue/--conversation need.
     workdir_exclude: list[str] | None = None
+    # Optional pair of synchronous bytes->bytes transforms wrapping the resume
+    # workdir tar (which carries agy's ~/.gemini conversation state, so it IS
+    # the session blob here) at the GridFS write/read. Both set → encrypted at
+    # rest; both None (default) → plaintext streamed unchanged. Setting only one
+    # is a config error (asymmetric usage is always a mistake).
+    session_blob_encrypt: Callable[[bytes], bytes] | None = None
+    session_blob_decrypt: Callable[[bytes], bytes] | None = None
+    # Hook fired on resume only (never on fresh start). Receives the original
+    # config; returns a (possibly mutated) config. The harness re-renders
+    # AGENTS.md from the returned config and writes it back only when it differs
+    # from the restored file, tagging the next resume.log line
+    # `REFRESHED:AGENTS.md` so the agent re-reads. Default = identity (recompose
+    # from the same config, so instruction/template changes reach a resumed
+    # session instead of freezing at first launch). Pass None to disable.
+    on_resume_refresh: "Callable[[AntigravityTaskConfig], AntigravityTaskConfig] | None" = _identity_resume_refresh
 
     # "iframe" = ttyd TUI (Stages 0-5). "conversation" = synthetic
     # transcript-driven turns; the task publishes a live AntigravityConversation
@@ -203,11 +208,8 @@ class AntigravityTaskConfig:
     thinking_verbosity: ThinkingVerbosity = "hidden"
 
     # --- conversation frontend parity (Stage 7) -------------------------
-    # Model preselected in the widget's model picker. Requires
-    # mode="conversation" and conversation_ui=True. Defaults to the launch
-    # --model when unset. (config.model still drives the launch --model flag;
-    # this only controls the picker's initial value.)
-    default_model: str | None = None
+    # The widget's model picker preselects ``config.model`` (falling back to the
+    # live ``agy models`` default); there is no separate ``default_model`` knob.
     # Show the engine-neutral session controls in the conversation widget.
     # agy switches model by restarting the session with --model <new> +
     # --continue (claudecode precedent — no inline switch). Requires
@@ -295,11 +297,6 @@ class AntigravityTaskConfig:
         # Frontend-parity features are opt-in flags that only make sense with
         # the conversation UI wired (mirrors optio-claudecode).
         conv_ui = self.mode == "conversation" and self.conversation_ui
-        if self.default_model is not None and not conv_ui:
-            raise ValueError(
-                "AntigravityTaskConfig: default_model requires "
-                "mode='conversation' and conversation_ui=True."
-            )
         if self.show_session_controls and not conv_ui:
             raise ValueError(
                 "AntigravityTaskConfig: show_session_controls=True requires "
@@ -320,16 +317,22 @@ class AntigravityTaskConfig:
                 "AntigravityTaskConfig: file_download=True requires "
                 "mode='conversation' and conversation_ui=True."
             )
-        for ad in self.extra_allowed_dirs or []:
-            if ad.mode not in ("ro", "rw"):
-                raise ValueError(
-                    f"AntigravityTaskConfig.extra_allowed_dirs: mode={ad.mode!r} "
-                    f"must be one of 'ro', 'rw' (path={ad.path!r})."
-                )
-        for field_name in ("agy_install_dir", "ttyd_install_dir"):
+        # extra_allowed_dirs entries self-validate at construction (the shared
+        # AllowedDir __post_init__ rejects any mode outside the ro/rw/rox/rwx
+        # superset), so no extra per-entry check is needed here.
+        for field_name in ("install_dir", "ttyd_install_dir"):
             val = getattr(self, field_name)
             if val is not None and not val.startswith("/") and not val.startswith("~"):
                 raise ValueError(
                     f"AntigravityTaskConfig.{field_name}={val!r} must be an "
                     f"absolute path (start with '/' or '~')."
                 )
+        # Session-blob transforms are all-or-nothing (mirrors optio-claudecode).
+        e = self.session_blob_encrypt is not None
+        d = self.session_blob_decrypt is not None
+        if e != d:
+            raise ValueError(
+                "AntigravityTaskConfig: session_blob_encrypt and "
+                "session_blob_decrypt must be set together or both left None; "
+                "one without the other is a config error."
+            )

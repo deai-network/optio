@@ -63,7 +63,7 @@ async def test_remote_deliverable_callback_fired(sshd, ctx_and_captures):
             host=sshd["host"], user=sshd["user"],
             key_path=sshd["key_path"], port=sshd["port"],
         ),
-        agy_install_dir="/usr/local/bin",
+        install_dir="/usr/local/bin",
         ttyd_install_dir="/usr/local/bin",
         install_if_missing=False,
         install_ttyd_if_missing=False,

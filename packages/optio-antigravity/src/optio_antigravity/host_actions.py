@@ -117,7 +117,7 @@ async def resolve_agy(
             return candidate
         raise RuntimeError(
             f"agy not present at {candidate!r} on host "
-            f"(agy_install_dir={install_dir!r})."
+            f"(install_dir={install_dir!r})."
         )
 
     result = await host.run_command("bash -lc 'command -v agy'")
@@ -132,14 +132,14 @@ async def resolve_agy(
     raise RuntimeError(
         "agy not found on the worker (looked via 'command -v agy'). Stage 0 has "
         "no auto-install (the binary cache is Stage 5) — install agy manually "
-        "(e.g. ~/.local/bin/agy) or pass agy_install_dir."
+        "(e.g. ~/.local/bin/agy) or pass install_dir."
     )
 
 
 async def _resolve_antigravity_cache_dir(host: "Host", override: str | None) -> str:
     """Resolve the optio-owned agy binary-cache dir as an absolute worker path.
 
-    ``override`` (``config.agy_install_dir``) wins. Otherwise the worker's real
+    ``override`` (``config.install_dir``) wins. Otherwise the worker's real
     env decides via a shell echo: ``ANTIGRAVITY_CACHE_DIR`` else
     ``${XDG_CACHE_HOME:-$HOME/.cache}/optio-antigravity/bin`` — resolved on the
     host so RemoteHost gets the remote location. Mirrors grok's
@@ -1290,7 +1290,7 @@ async def _build_claustrum_wrap(
         return None
     from . import fs_allowlist
 
-    cache_dir = await _resolve_antigravity_cache_dir(host, config.agy_install_dir)
+    cache_dir = await _resolve_antigravity_cache_dir(host, config.install_dir)
     # ``~/`` caller extras expand against the REAL host home (the agy process
     # runs under an isolated $HOME, and grants reach claustrum verbatim).
     host_home = (

@@ -18,9 +18,12 @@ config/transcript/artifacts tree lives INSIDE the workdir and is already covered
 by the ``--rwx`` workdir grant — no separate ``~/.gemini`` flag is needed. The
 per-task temp likewise lives under the workdir home (XDG_* pinned there).
 
-``AllowedDir.mode`` is the 2-value ``ro``/``rw`` enum: extras map to ``--ro`` /
-``--rw`` (both valid claustrum flags). The execute-bearing grants (``--rwx``
-workdir, ``--rox`` cache) are the wrapper's own fixed grants, not caller-driven.
+``AllowedDir.mode`` is the shared 4-value superset (``ro``/``rw``/``rox``/``rwx``):
+each extra maps straight to the matching claustrum flag (``--ro``/``--rw``/``--rox``/
+``--rwx``, all valid). This Landlock-only sandbox treats ``rox``≡``ro`` and
+``rwx``≡``rw`` (a Landlock read/write grant already covers execution), so the
+distinction is cosmetic here. The wrapper's own fixed execute-bearing grants
+(``--rwx`` workdir, ``--rox`` cache) are not caller-driven.
 """
 
 from __future__ import annotations

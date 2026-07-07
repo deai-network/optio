@@ -36,7 +36,7 @@ async def test_local_reaches_done_and_tears_down(
         name="h",
         config=AntigravityTaskConfig(
             consumer_instructions="do the thing",
-            agy_install_dir=str(shim_install_dir),
+            install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
             # Stage-0 launch mechanics: fs-isolation is exercised in
             # test_fs_allowlist.py + the opt-in enforce tests, and the fake agy
@@ -73,7 +73,7 @@ async def test_local_deliverable_callback_fired(
         name="d",
         config=AntigravityTaskConfig(
             consumer_instructions="hand back a file",
-            agy_install_dir=str(shim_install_dir),
+            install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
             # Stage-0 launch mechanics: fs-isolation is exercised in
             # test_fs_allowlist.py + the opt-in enforce tests, and the fake agy
@@ -100,7 +100,7 @@ async def test_local_error_raises(
         name="e",
         config=AntigravityTaskConfig(
             consumer_instructions="fail",
-            agy_install_dir=str(shim_install_dir),
+            install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
             # Stage-0 launch mechanics: fs-isolation is exercised in
             # test_fs_allowlist.py + the opt-in enforce tests, and the fake agy

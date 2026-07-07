@@ -61,7 +61,7 @@ async def _make_ctx(mongo_db, process_id: str) -> ProcessContext:
 def _cfg(shim_install_dir: pathlib.Path, **kw) -> AntigravityTaskConfig:
     return AntigravityTaskConfig(
         consumer_instructions="do the thing",
-        agy_install_dir=str(shim_install_dir),
+        install_dir=str(shim_install_dir),
         ttyd_install_dir=str(shim_install_dir),
         # The fake agy can't run under a real claustrum here.
         fs_isolation=False,

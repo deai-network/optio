@@ -18,7 +18,7 @@ import mimetypes
 import os
 import secrets
 import shlex
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 
 from optio_core.context import ProcessContext
 from optio_core.models import BasicAuth, TaskInstance
@@ -95,7 +95,11 @@ async def run_antigravity_session(
     # and surfaced to the operator via a BROWSER: log line (the operator
     # completes the flow in their own browser; remote uses seeds/device-auth
     # per the design).
-    protocol = get_protocol(browser="redirect")
+    protocol = get_protocol(
+        browser="redirect",
+        client_messages=config.use_client_messages,
+        caller_messages=config.on_caller_message is not None,
+    )
     launched_handle: ProcessHandle | None = None
     tmux_path: str | None = None
     tmux_socket: str | None = None
@@ -149,7 +153,7 @@ async def run_antigravity_session(
         agy_path = await host_actions.ensure_antigravity_installed(
             hook_ctx,
             install_if_missing=config.install_if_missing,
-            install_dir=config.agy_install_dir,
+            install_dir=config.install_dir,
         )
         # Conversation mode is headless (each turn is a one-shot `agy -p` under a
         # PTY) — no ttyd is launched, so skip its install.
@@ -172,8 +176,16 @@ async def run_antigravity_session(
             # agy's conversation/transcript/settings store). A present snapshot
             # that fails to restore is fatal — the restore call is intentionally
             # outside any except so it surfaces to the caller (no silent
-            # fresh-start).
-            await host.restore_workdir(_stream_blob(ctx, snapshot["workdirBlobId"]))
+            # fresh-start). When a session_blob transform is configured the tar
+            # is encrypted at rest, so buffer + decrypt the whole blob before
+            # feeding it to restore_workdir; the plaintext default keeps
+            # streaming chunk-by-chunk (no in-memory buffering).
+            await host.restore_workdir(
+                _stream_restore_blob(
+                    ctx, snapshot["workdirBlobId"],
+                    decrypt=config.session_blob_decrypt,
+                )
+            )
             # The agy launch symlink (home/.local/bin/agy) lives INSIDE the
             # workdir and was wiped by the restore; re-establish it against the
             # cache (which lives OUTSIDE the workdir and survives). Idempotent:
@@ -182,7 +194,7 @@ async def run_antigravity_session(
             agy_path = await host_actions.ensure_antigravity_installed(
                 hook_ctx,
                 install_if_missing=config.install_if_missing,
-                install_dir=config.agy_install_dir,
+                install_dir=config.install_dir,
                 progress_label="Restoring Antigravity runtime…",
             )
             await host_actions._rotate_optio_log(host)
@@ -228,7 +240,7 @@ async def run_antigravity_session(
         # launch paths via host_actions._build_claustrum_wrap.
         if config.fs_isolation:
             claustrum_path = await host_actions.ensure_claustrum_installed(
-                hook_ctx, install_dir=config.agy_install_dir,
+                hook_ctx, install_dir=config.install_dir,
             )
 
         # Disable agy's background self-update for this task (best-effort settings
@@ -238,18 +250,29 @@ async def run_antigravity_session(
         # restored settings.json. TODO(S2): reconcile with the self-update spike.
         await host_actions.disable_agy_self_update(host, host.workdir)
 
-        await host.write_text(
-            "AGENTS.md",
-            compose_agents_md(
-                config.consumer_instructions,
-                host_protocol=config.host_protocol,
-                workdir_exclude=config.workdir_exclude,
-                supports_resume=config.supports_resume,
-                file_download=config.file_download,
-            ),
-        )
+        # Fresh start plants AGENTS.md from the config; on resume the restored
+        # tree already carries it, so the on_resume_refresh hook recomposes it
+        # (from a possibly-mutated config) and rewrites ONLY when the content
+        # changed, returning the rewritten filenames so the resume.log line is
+        # tagged REFRESHED:AGENTS.md (mirrors optio-claudecode).
+        refreshed_files: list[str] = []
+        if resuming:
+            refreshed_files = await _maybe_refresh_on_resume(host, hook_ctx, config)
+        else:
+            await host.write_text(
+                "AGENTS.md",
+                compose_agents_md(
+                    config.consumer_instructions,
+                    host_protocol=config.host_protocol,
+                    workdir_exclude=config.workdir_exclude,
+                    supports_resume=config.supports_resume,
+                    file_download=config.file_download,
+                ),
+            )
         if config.supports_resume:
-            await host_actions._append_resume_log_entry(host)
+            await host_actions._append_resume_log_entry(
+                host, refreshed=refreshed_files,
+            )
         if config.before_execute is not None:
             await config.before_execute(hook_ctx)
 
@@ -474,13 +497,12 @@ async def run_antigravity_session(
             # Model picker options: `agy models` on the host (Gemini + BYO
             # Claude/GPT ids), else a static list. Antigravity has no ACP
             # session block to prefer (design §1), so the CLI is the only live
-            # source. default_model overrides the picker's initial value.
+            # source. config.model is the picker's initial value (falling back
+            # to the live default).
             model_list = await antigravity_models.fetch_available_models(
                 host=host, agy_path=agy_path,
             )
-            current_model = (
-                config.default_model or config.model or model_list.get("default")
-            )
+            current_model = config.model or model_list.get("default")
             # The model is the id="model" entry of the engine-neutral
             # session-controls list; antigravity exposes only this one control
             # (switched restart-based via set_control — the next turn's --model).
@@ -566,6 +588,7 @@ async def run_antigravity_session(
             body=body,
             prepare=_prepare,
             on_deliverable=config.on_deliverable,
+            on_caller_message=config.on_caller_message,
             after_execute=config.after_execute,
             protocol=protocol,
             agent_sender=_agent_sender,
@@ -735,6 +758,7 @@ async def run_antigravity_session(
                     ctx, host,
                     end_state="cancelled" if cancelled else "done",
                     workdir_exclude=config.workdir_exclude,
+                    session_blob_encrypt=config.session_blob_encrypt,
                 )
             except Exception:
                 _LOG.exception(
@@ -760,24 +784,97 @@ async def _stream_blob(ctx: ProcessContext, blob_id) -> "AsyncIterator[bytes]":
             yield chunk
 
 
+async def _stream_restore_blob(
+    ctx: ProcessContext,
+    blob_id,
+    *,
+    decrypt: "Callable[[bytes], bytes] | None",
+) -> "AsyncIterator[bytes]":
+    """Yield the resume workdir tar for ``restore_workdir``.
+
+    Plaintext default (``decrypt is None``): stream chunk-by-chunk, no buffering.
+    When a ``session_blob_decrypt`` transform is configured, the tar was
+    encrypted as a whole at capture, so buffer it fully, decrypt, and yield the
+    single plaintext blob (mirrors optio-claudecode's decrypt-on-restore).
+    """
+    if decrypt is None:
+        async for chunk in _stream_blob(ctx, blob_id):
+            yield chunk
+        return
+    payload = b"".join([chunk async for chunk in _stream_blob(ctx, blob_id)])
+    yield decrypt(payload)
+
+
+async def _maybe_refresh_on_resume(
+    host: Host, hook_ctx: HookContext, config: AntigravityTaskConfig,
+) -> list[str]:
+    """Run ``on_resume_refresh`` (if any) and rewrite AGENTS.md when changed.
+
+    Returns the list of filenames rewritten (currently at most
+    ``["AGENTS.md"]``). A hook that raises is logged and ignored, keeping the
+    restored AGENTS.md. Mirrors optio-claudecode's ``_maybe_refresh_on_resume``.
+    """
+    if config.on_resume_refresh is None:
+        return []
+    try:
+        new_config = config.on_resume_refresh(config)
+    except Exception:
+        _LOG.exception(
+            "on_resume_refresh raised; keeping existing AGENTS.md from snapshot",
+        )
+        return []
+    new_agents_md = compose_agents_md(
+        new_config.consumer_instructions,
+        host_protocol=new_config.host_protocol,
+        workdir_exclude=new_config.workdir_exclude,
+        supports_resume=new_config.supports_resume,
+        file_download=new_config.file_download,
+    )
+    try:
+        existing = await hook_ctx.read_text_from_host("AGENTS.md", silent=True)
+    except FileNotFoundError:
+        existing = None
+    except Exception:
+        _LOG.exception(
+            "failed to read existing AGENTS.md on resume; rewriting unconditionally",
+        )
+        existing = None
+    if existing == new_agents_md:
+        return []
+    await host.write_text("AGENTS.md", new_agents_md)
+    return ["AGENTS.md"]
+
+
 async def _capture_snapshot(
     ctx: ProcessContext,
     host: Host,
     *,
     end_state: str,
     workdir_exclude: list[str] | None,
+    session_blob_encrypt: "Callable[[bytes], bytes] | None" = None,
 ) -> None:
     """Capture a single-blob resume snapshot of the (now static) workdir.
 
     ``agy``'s conversation state lives under ``home/.gemini/antigravity`` INSIDE
-    the workdir, so one plaintext workdir tar carries everything ``--continue`` /
+    the workdir, so one workdir tar carries everything ``--continue`` /
     ``--conversation <id>`` needs — no separate session blob. Streams the tar
     into GridFS, records the snapshot row, prunes to the retention limit
     (deleting stale blobs), and surfaces the Resume affordance.
+
+    ``session_blob_encrypt`` (default None): when set, the whole tar is buffered
+    and encrypted before the GridFS write (it IS the session blob here, carrying
+    agy's ~/.gemini state); the plaintext default streams chunk-by-chunk with no
+    buffering. Mirrors optio-claudecode's encrypt-on-capture.
     """
     async with ctx.store_blob("workdir") as wwriter:
-        async for chunk in host.archive_workdir(workdir_exclude):
-            await wwriter.write(chunk)
+        if session_blob_encrypt is None:
+            async for chunk in host.archive_workdir(workdir_exclude):
+                await wwriter.write(chunk)
+        else:
+            raw = b"".join(
+                [chunk async for chunk in host.archive_workdir(workdir_exclude)]
+            )
+            await wwriter.write(session_blob_encrypt(raw))
         workdir_blob_id = wwriter.file_id
 
     await insert_snapshot(
