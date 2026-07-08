@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time as _time
 
 import pytest
 import pytest_asyncio
@@ -138,7 +139,13 @@ async def test_watcher_saves_back_on_change(mongo_db, host, tmp_path, monkeypatc
     ))
     _write_auth(host.workdir, {"acct": {"refresh_token": "T2"}})
     try:
-        for i in range(40):
+        # Poll until the watcher saves back the rotated token, bounded by a
+        # generous hang-ceiling so CPU starvation (watcher not scheduled yet)
+        # can't trip a too-tight fixed window.
+        deadline = _time.monotonic() + 60.0
+        i = 0
+        while True:
+            i += 1
             await asyncio.sleep(0.05)
             dst = LocalHost(taskdir=str(tmp_path / f"chk{i}"))
             await dst.setup_workdir()
@@ -150,8 +157,8 @@ async def test_watcher_saves_back_on_change(mongo_db, host, tmp_path, monkeypatc
             with open(p) as fh:
                 if "T2" in fh.read():
                     break
-        else:
-            raise AssertionError("watcher did not save back the rotated auth.json")
+            if _time.monotonic() >= deadline:
+                raise AssertionError("watcher did not save back the rotated auth.json")
     finally:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -192,11 +199,12 @@ async def test_watcher_cancels_session_on_lease_loss(mongo_db, host, monkeypatch
     )
     assert stolen == seed_id
 
-    for _ in range(60):
+    # Poll until the watcher flags cancellation, with a generous hang-ceiling so
+    # a starved CPU (watcher loop not scheduled) can't trip a fixed window.
+    deadline = _time.monotonic() + 60.0
+    while not ctx.cancellation_flag.is_set():
         await asyncio.sleep(0.05)
-        if ctx.cancellation_flag.is_set():
-            break
-    else:
-        task.cancel()
-        raise AssertionError("watcher did not flag cancellation on lease loss")
+        if _time.monotonic() >= deadline:
+            task.cancel()
+            raise AssertionError("watcher did not flag cancellation on lease loss")
     await task  # returns (not raises): lease-loss exit is a normal return

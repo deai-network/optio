@@ -70,7 +70,11 @@ async def test_exec_launch_is_reaped_on_teardown(tmp_path: Path):
     assert final_pid == handle.pid_like.pid, "exec should make grok the launched pid"
     assert _alive(final_pid)
     await host.terminate_subprocess(handle, aggressive=True)
-    await asyncio.sleep(0.4)
+    # Poll until reaped rather than asserting death after a fixed sleep: under CPU
+    # starvation, signal delivery + process teardown can lag well past 0.4s.
+    deadline = asyncio.get_event_loop().time() + 60.0
+    while _alive(final_pid) and asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(0.02)
     assert not _alive(final_pid), "grok must be reaped by killpg teardown"
 
 

@@ -18,6 +18,20 @@ from optio_agents.conversation import ConversationClosed, PermissionDecision
 from optio_grok.conversation_listener import ConversationListener
 
 
+async def _wait_until(pred, timeout: float = 60.0):
+    """Poll an observable predicate until true, bounded by a generous hang-ceiling.
+
+    Waits for the EVENT rather than a fixed duration, so it stays correct when the
+    box is CPU-starved and the awaited coroutine simply hasn't been scheduled yet.
+    """
+    end = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < end:
+        if pred():
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError("condition not met within timeout")
+
+
 class FakeConversation:
     def __init__(self):
         self.handlers = []
@@ -242,7 +256,9 @@ async def test_permission_roundtrip_by_jsonrpc_id(listener):
         input = {"command": "echo hi"}
 
     task = asyncio.create_task(conv.perm_handler(Req()))
-    await asyncio.sleep(0.05)
+    # Wait for the handler to register the pending request rather than assuming
+    # it ran within a fixed sleep (fragile under CPU starvation).
+    await _wait_until(lambda: "99" in lst._pending_permissions)
     async with aiohttp.ClientSession() as s:
         r = await s.post(f"{url}/permission",
                          json={"request_id": "99", "behavior": "allow"},
