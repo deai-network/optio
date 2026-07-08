@@ -28,6 +28,8 @@ from typing import TYPE_CHECKING, Callable
 
 from optio_host.host import ProcessHandle
 
+from optio_opencode.info import AGENT_INFO
+
 if TYPE_CHECKING:
     from optio_host.host import Host
 
@@ -259,7 +261,7 @@ async def ensure_opencode_installed(
     # dashboard shows it working rather than stuck at 0% while the install
     # check (and any subsequent download child task) runs.
     if report_progress is not None:
-        report_progress(None, "Checking opencode installation…")
+        report_progress(None, f"Checking {AGENT_INFO.name} installation…")
     kind, url = await _smart_install_check(host, install_dir=resolved_install_dir)
     if kind == "ok":
         # Resolve the on-PATH path. Login shell so ``$HOME``-relative
@@ -286,7 +288,7 @@ async def ensure_opencode_installed(
         )
     assert url is not None  # _smart_install_check guarantees
     if report_progress is not None:
-        report_progress(None, "Installing opencode…")
+        report_progress(None, f"Installing {AGENT_INFO.name}…")
     return await _install_opencode_from_zip(
         host, download, url, install_dir=resolved_install_dir,
     )

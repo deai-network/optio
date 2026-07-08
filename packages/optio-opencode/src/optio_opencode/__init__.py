@@ -8,6 +8,7 @@ from optio_host import (
     RunResult,
     SSHConfig,
 )
+from optio_opencode.info import AGENT_INFO
 from optio_opencode.session import create_opencode_task, run_opencode_session
 from optio_opencode.types import (
     ConversationMode,
@@ -36,6 +37,7 @@ from optio_opencode.verify import verify_and_refresh_seed
 _logging.getLogger("asyncssh").setLevel(_logging.WARNING)
 
 __all__ = [
+    "AGENT_INFO",
     "create_opencode_task",
     "run_opencode_session",
     "DeliverableCallback",

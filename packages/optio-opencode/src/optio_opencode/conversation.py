@@ -37,6 +37,8 @@ from optio_agents.conversation import (
     PermissionRequest,
 )
 
+from .info import AGENT_INFO
+
 _LOG = logging.getLogger(__name__)
 
 # Reconnect backoff for the SSE reader (capped; the session body cancels the
@@ -49,7 +51,9 @@ class OpencodeConversation:
 
     def __init__(
         self, *, port: int, password: str, session_id: str, directory: str,
+        agent_label: str = AGENT_INFO.slug,
     ) -> None:
+        self._agent_label = agent_label
         self._base = f"http://127.0.0.1:{port}"
         self._auth = aiohttp.BasicAuth("opencode", password)
         self._session_id = session_id

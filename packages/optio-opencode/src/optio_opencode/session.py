@@ -39,6 +39,7 @@ from optio_agents.uploads import materialize, upload_url_token
 from optio_agents import seeds as _seeds
 from optio_opencode import cred_watcher, host_actions
 from optio_opencode import model_probe
+from optio_opencode.info import AGENT_INFO
 from optio_opencode.conversation import OpencodeConversation
 from optio_opencode.prompt import DEFAULT_CONVERSATION_INSTRUCTIONS, compose_agents_md
 from optio_opencode.seed_manifest import (
@@ -392,7 +393,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         opencode_hostname = bind_addr if isinstance(host, LocalHost) else "127.0.0.1"
 
         _warn_if_fs_isolation_unenforced(config)
-        ctx.report_progress(None, f"Launching opencode{version_suffix}…")
+        ctx.report_progress(None, f"Launching {AGENT_INFO.name}{version_suffix}…")
         handle, opencode_port = await host_actions.launch_opencode(
             host, password,
             ready_timeout_s=READY_TIMEOUT_S,
@@ -453,7 +454,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                     "opencode.global.dat:layout": '{"review": {"panelOpened": false}}',
                 },
             })
-            ctx.report_progress(None, "opencode is live")
+            ctx.report_progress(None, f"{AGENT_INFO.name} is live")
         elif config.conversation_ui:
             # Conversation widget: the opencode server itself is the upstream
             # (same proxy + inner-auth model as iframe mode); the widget talks
@@ -574,7 +575,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         )
         reader_task = asyncio.create_task(conversation.run_reader())
         ctx.publish_result(conversation)
-        ctx.report_progress(None, "opencode conversation is live")
+        ctx.report_progress(None, f"{AGENT_INFO.name} conversation is live")
 
         proc = launched_handle.pid_like
         wait_task = asyncio.create_task(proc.wait())  # type: ignore[union-attr]
