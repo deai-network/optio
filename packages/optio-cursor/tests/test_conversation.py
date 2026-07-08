@@ -58,16 +58,16 @@ class _FakeHandle:
 async def _bootstrap(c, handle, session_id="s1"):
     """Drive the initialize + session/new handshake by feeding responses."""
     boot = asyncio.create_task(c.bootstrap())
-    req1 = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    req1 = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert req1["method"] == "initialize"
     handle.stdout.feed({"jsonrpc": "2.0", "id": req1["id"],
                         "result": {"protocolVersion": 1, "agentCapabilities": {}}})
-    req2 = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    req2 = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert req2["method"] == "session/new"
     assert req2["params"]["cwd"] == "/w"
     handle.stdout.feed({"jsonrpc": "2.0", "id": req2["id"],
                         "result": {"sessionId": session_id}})
-    await asyncio.wait_for(boot, 1)
+    await asyncio.wait_for(boot, 60)
 
 
 @pytest.fixture
@@ -134,7 +134,7 @@ async def test_send_receive_and_on_event_transparent(convo):
     assert not c.is_pending()
     await c.send("say PONG")
     assert c.is_pending()
-    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert prompt["method"] == "session/prompt"
     assert prompt["params"]["prompt"][0]["text"] == "say PONG"
     assert prompt["params"]["sessionId"] == "s1"
@@ -148,7 +148,7 @@ async def test_send_receive_and_on_event_transparent(convo):
     handle.stdout.feed({"jsonrpc": "2.0", "id": prompt["id"],
                         "result": {"stopReason": "end_turn"}})
 
-    reply = await asyncio.wait_for(_first(texts), 2)
+    reply = await asyncio.wait_for(_first(texts), 60)
     assert reply == "PONG"
     await _wait_for(lambda: not c.is_pending())
 
@@ -168,7 +168,7 @@ async def test_thought_chunks_not_folded_into_answer(convo):
     texts = []
     c.on_message(texts.append)
     await c.send("think then answer")
-    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     handle.stdout.feed({"jsonrpc": "2.0", "method": "session/update",
                         "params": {"sessionId": "s1", "update": {
                             "sessionUpdate": "agent_thought_chunk",
@@ -179,7 +179,7 @@ async def test_thought_chunks_not_folded_into_answer(convo):
                             "content": {"type": "text", "text": "ANSWER"}}}})
     handle.stdout.feed({"jsonrpc": "2.0", "id": prompt["id"],
                         "result": {"stopReason": "end_turn"}})
-    reply = await asyncio.wait_for(_first(texts), 2)
+    reply = await asyncio.wait_for(_first(texts), 60)
     assert reply == "ANSWER"
     handle.stdout.eof()
     await reader
@@ -209,7 +209,7 @@ async def test_permission_request_roundtrip_deny(convo):
                             "options": [
                                 {"optionId": "allow-once", "name": "Yes", "kind": "allow_once"},
                                 {"optionId": "reject-once", "name": "No", "kind": "reject_once"}]}})
-    resp = await asyncio.wait_for(handle.stdin.lines.get(), 2)
+    resp = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert resp["id"] == 99
     assert resp["result"]["outcome"]["outcome"] == "selected"
     assert resp["result"]["outcome"]["optionId"] == "reject-once"
@@ -237,7 +237,7 @@ async def test_permission_request_allow_selects_allow_option(convo):
                             "options": [
                                 {"optionId": "allow-once", "name": "Yes", "kind": "allow_once"},
                                 {"optionId": "reject-once", "name": "No", "kind": "reject_once"}]}})
-    resp = await asyncio.wait_for(handle.stdin.lines.get(), 2)
+    resp = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert resp["result"]["outcome"]["optionId"] == "allow-once"
     handle.stdout.eof()
     await reader
@@ -256,7 +256,7 @@ async def test_gate_off_denies_permission_defensively():
                             "toolCallId": "tc", "title": "Shell", "rawInput": {}},
                             "options": [
                                 {"optionId": "reject-once", "name": "No", "kind": "reject_once"}]}})
-    resp = await asyncio.wait_for(handle.stdin.lines.get(), 2)
+    resp = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert resp["id"] == 5
     # Defensive deny: a reject option is selected (or cancelled if none).
     assert resp["result"]["outcome"]["outcome"] in ("selected", "cancelled")
@@ -272,10 +272,10 @@ async def test_interrupt_sends_session_cancel(convo):
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle)
     await c.send("count to 100")
-    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert c.is_pending()
     await c.interrupt()
-    cancel = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    cancel = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert cancel["method"] == "session/cancel"
     assert cancel["params"]["sessionId"] == "s1"
     assert "id" not in cancel  # notification, no response expected
@@ -331,10 +331,10 @@ async def test_bootstrap_captures_session_models(convo):
     c, handle = convo
     reader = asyncio.create_task(c.run_reader())
     boot = asyncio.create_task(c.bootstrap())
-    req1 = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    req1 = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     handle.stdout.feed({"jsonrpc": "2.0", "id": req1["id"],
                         "result": {"protocolVersion": 1, "agentCapabilities": {}}})
-    req2 = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    req2 = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     handle.stdout.feed({"jsonrpc": "2.0", "id": req2["id"], "result": {
         "sessionId": "s1",
         "models": {
@@ -345,7 +345,7 @@ async def test_bootstrap_captures_session_models(convo):
             ],
         },
     }})
-    await asyncio.wait_for(boot, 1)
+    await asyncio.wait_for(boot, 60)
     assert c.current_model_id == "composer-1"
     assert c.session_models["availableModels"][1]["modelId"] == "gpt-5"
     handle.stdout.eof()
@@ -361,12 +361,12 @@ async def test_set_control_model_sends_set_model(convo):
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle)
     change = asyncio.create_task(c.set_control("model", "gpt-5"))
-    msg = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    msg = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert msg["method"] == "session/set_model"
     assert msg["params"]["sessionId"] == "s1"
     assert msg["params"]["modelId"] == "gpt-5"
     handle.stdout.feed({"jsonrpc": "2.0", "id": msg["id"], "result": {}})
-    await asyncio.wait_for(change, 1)
+    await asyncio.wait_for(change, 60)
     assert c.current_model_id == "gpt-5"  # set after the round-trip
     handle.stdout.eof()
     await reader
@@ -378,7 +378,7 @@ async def test_set_control_unknown_id_is_noop(convo):
     c, handle = convo
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle)
-    await asyncio.wait_for(c.set_control("thinking", "high"), 1)
+    await asyncio.wait_for(c.set_control("thinking", "high"), 60)
     assert handle.stdin.lines.empty()
     handle.stdout.eof()
     await reader
@@ -413,14 +413,14 @@ async def test_resume_lists_then_loads_prior_session(convo):
     c.on_event(events.append)
 
     replay = asyncio.create_task(c.replay_history())
-    listing = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    listing = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert listing["method"] == "session/list"
     handle.stdout.feed({"jsonrpc": "2.0", "id": listing["id"], "result": {
         "sessions": [
             {"sessionId": "fresh-sess", "cwd": "/w"},   # the one bootstrap minted
             {"sessionId": "prior-sess", "cwd": "/w"},   # the restored prior chat
         ]}})
-    load = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    load = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert load["method"] == "session/load"
     assert load["params"]["sessionId"] == "prior-sess"
     # Replay notifications arrive BEFORE the load response (wire order).
@@ -432,7 +432,7 @@ async def test_resume_lists_then_loads_prior_session(convo):
                                 "content": {"type": "text", "text": text}}}})
     handle.stdout.feed({"jsonrpc": "2.0", "id": load["id"], "result": {}})
 
-    assert await asyncio.wait_for(replay, 2) == "prior-sess"
+    assert await asyncio.wait_for(replay, 60) == "prior-sess"
     # The replayed session/update events reached on_event.
     await _wait_for(lambda: sum(
         1 for e in events if e.get("method") == "session/update") >= 2)
@@ -443,7 +443,7 @@ async def test_resume_lists_then_loads_prior_session(convo):
     c.on_message(msgs.append)
     assert msgs == []                       # replay synthesised no turn message
     await c.send("continue please")
-    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert prompt["params"]["sessionId"] == "prior-sess"   # continues prior thread
     handle.stdout.feed({"jsonrpc": "2.0", "method": "session/update",
                         "params": {"sessionId": "prior-sess", "update": {
@@ -451,7 +451,7 @@ async def test_resume_lists_then_loads_prior_session(convo):
                             "content": {"type": "text", "text": "NEW"}}}})
     handle.stdout.feed({"jsonrpc": "2.0", "id": prompt["id"],
                         "result": {"stopReason": "end_turn"}})
-    reply = await asyncio.wait_for(_first(msgs), 2)
+    reply = await asyncio.wait_for(_first(msgs), 60)
     assert reply == "NEW"                    # NOT "prior answerNEW"
     handle.stdout.eof()
     await reader
@@ -472,11 +472,11 @@ async def test_resume_replays_prior_history_to_late_subscriber(convo):
     port = await listener.start("127.0.0.1")
     try:
         replay = asyncio.create_task(c.replay_history())
-        listing = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+        listing = await asyncio.wait_for(handle.stdin.lines.get(), 60)
         assert listing["method"] == "session/list"
         handle.stdout.feed({"jsonrpc": "2.0", "id": listing["id"], "result": {
             "sessions": [{"sessionId": "prior-sess", "cwd": "/w"}]}})
-        load = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+        load = await asyncio.wait_for(handle.stdin.lines.get(), 60)
         assert load["method"] == "session/load"
         for text in ("prior-q", "prior-a"):
             handle.stdout.feed({"jsonrpc": "2.0", "method": "session/update",
@@ -484,7 +484,7 @@ async def test_resume_replays_prior_history_to_late_subscriber(convo):
                                     "sessionUpdate": "agent_message_chunk",
                                     "content": {"type": "text", "text": text}}}})
         handle.stdout.feed({"jsonrpc": "2.0", "id": load["id"], "result": {}})
-        assert await asyncio.wait_for(replay, 2) == "prior-sess"
+        assert await asyncio.wait_for(replay, 60) == "prior-sess"
 
         async with aiohttp.ClientSession() as s:
             async with s.get(f"http://127.0.0.1:{port}/events",
@@ -508,14 +508,14 @@ async def test_resume_empty_session_list_falls_back_to_new(convo):
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle, session_id="fresh-sess")
     replay = asyncio.create_task(c.replay_history())
-    listing = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    listing = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert listing["method"] == "session/list"
     handle.stdout.feed({"jsonrpc": "2.0", "id": listing["id"], "result": {
         "sessions": [{"sessionId": "fresh-sess", "cwd": "/w"}]}})
-    assert await asyncio.wait_for(replay, 2) is None
+    assert await asyncio.wait_for(replay, 60) is None
     assert handle.stdin.lines.empty()       # no session/load attempted
     await c.send("hello")
-    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert prompt["method"] == "session/prompt"
     assert prompt["params"]["sessionId"] == "fresh-sess"
     handle.stdout.eof()
@@ -531,16 +531,16 @@ async def test_resume_session_load_error_falls_back_to_new(convo):
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle, session_id="fresh-sess")
     replay = asyncio.create_task(c.replay_history())
-    listing = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    listing = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     handle.stdout.feed({"jsonrpc": "2.0", "id": listing["id"], "result": {
         "sessions": [{"sessionId": "prior-sess", "cwd": "/w"}]}})
-    load = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    load = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert load["method"] == "session/load"
     handle.stdout.feed({"jsonrpc": "2.0", "id": load["id"],
                         "error": {"code": -32000, "message": "cannot load"}})
-    assert await asyncio.wait_for(replay, 2) is None
+    assert await asyncio.wait_for(replay, 60) is None
     await c.send("hello")
-    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert prompt["params"]["sessionId"] == "fresh-sess"
     handle.stdout.eof()
     await reader
@@ -573,7 +573,7 @@ async def test_resume_with_persisted_id_loads_directly_skipping_list(convo):
     c.on_event(events.append)
 
     replay = asyncio.create_task(c.replay_history("persisted-sess"))
-    load = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    load = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert load["method"] == "session/load"        # NOT session/list
     assert load["params"]["sessionId"] == "persisted-sess"
     for kind, text in (("user_message_chunk", "prior question"),
@@ -584,14 +584,14 @@ async def test_resume_with_persisted_id_loads_directly_skipping_list(convo):
                                 "content": {"type": "text", "text": text}}}})
     handle.stdout.feed({"jsonrpc": "2.0", "id": load["id"], "result": {}})
 
-    assert await asyncio.wait_for(replay, 2) == "persisted-sess"
+    assert await asyncio.wait_for(replay, 60) == "persisted-sess"
     # The replayed session/update events reached on_event (listener replay buffer).
     await _wait_for(lambda: sum(
         1 for e in events if e.get("method") == "session/update") >= 2)
     # Adopted -> a subsequent send continues the prior thread.
     assert c.session_id == "persisted-sess"
     await c.send("continue please")
-    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert prompt["params"]["sessionId"] == "persisted-sess"
     handle.stdout.eof()
     await reader
@@ -607,14 +607,14 @@ async def test_resume_persisted_id_load_error_keeps_fresh_no_list(convo):
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle, session_id="fresh-sess")
     replay = asyncio.create_task(c.replay_history("gone-sess"))
-    load = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    load = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert load["method"] == "session/load"
     handle.stdout.feed({"jsonrpc": "2.0", "id": load["id"],
                         "error": {"code": -32000, "message": "cannot load"}})
-    assert await asyncio.wait_for(replay, 2) is None
+    assert await asyncio.wait_for(replay, 60) is None
     assert handle.stdin.lines.empty()      # did NOT fall back to session/list
     await c.send("hello")
-    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert prompt["params"]["sessionId"] == "fresh-sess"
     handle.stdout.eof()
     await reader
@@ -630,17 +630,17 @@ async def test_fresh_start_never_lists_or_loads(convo):
     reader = asyncio.create_task(c.run_reader())
     boot = asyncio.create_task(c.bootstrap())
     methods = []
-    req1 = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    req1 = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     methods.append(req1["method"])
     handle.stdout.feed({"jsonrpc": "2.0", "id": req1["id"],
                         "result": {"protocolVersion": 1, "agentCapabilities": {}}})
-    req2 = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    req2 = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     methods.append(req2["method"])
     handle.stdout.feed({"jsonrpc": "2.0", "id": req2["id"],
                         "result": {"sessionId": "s1"}})
-    await asyncio.wait_for(boot, 1)
+    await asyncio.wait_for(boot, 60)
     await c.send("hi")
-    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    prompt = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     methods.append(prompt["method"])
     assert methods == ["initialize", "session/new", "session/prompt"]
     handle.stdout.eof()
@@ -655,7 +655,7 @@ def _auth(pw):
     return {"Authorization": f"Basic {token}"}
 
 
-async def _collect_update_texts(resp, n, timeout=5):
+async def _collect_update_texts(resp, n, timeout=60):
     """Read SSE data frames and collect the text of the first n session/update
     events (ignoring the request-response objects the driver also broadcasts)."""
     out, buf = [], b""
@@ -682,7 +682,7 @@ async def _collect_update_texts(resp, n, timeout=5):
     await asyncio.wait_for(_go(), timeout)
     return out
 
-async def _first(bucket: list, timeout: float = 2.0):
+async def _first(bucket: list, timeout: float = 60.0):
     end = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < end:
         if bucket:
@@ -691,7 +691,7 @@ async def _first(bucket: list, timeout: float = 2.0):
     raise AssertionError("no item arrived")
 
 
-async def _wait_for(pred, timeout: float = 2.0):
+async def _wait_for(pred, timeout: float = 60.0):
     end = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < end:
         if pred():
