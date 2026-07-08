@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, claustrum
+from optio_agents import pane_surfacing
 from optio_agents import tmux_input as _tmux_input
 from optio_host.host import proc_wait
 
@@ -741,10 +742,21 @@ def _build_grok_shell_command(
     grok_argv = " ".join(shlex.quote(c) for c in confined)
     log_path = f"{workdir_clean}/optio.log"
 
+    # On abnormal exit, surface the tail of the tmux pane mirror (grok-pane.log,
+    # written live by `tmux pipe-pane` in launch_ttyd_with_grok) into optio.log,
+    # ANSI-stripped, after the "grok exited <rc>" line. The mirror is used INSTEAD
+    # of an stdout/stderr redirect because redirecting stdout makes isatty() false
+    # and the TUI never renders (an interactive launch then fails for a DIFFERENT
+    # reason, with no output). pipe-pane leaves grok's PTY intact, so the real
+    # failure — and whatever grok paints before exiting — is captured. Derived
+    # from workdir so it matches the launch's mirror path.
+    pane_log = pane_surfacing.pane_log_path(workdir_clean, "grok")
+    tail_snippet = pane_surfacing.error_tail_snippet(log_path, pane_log, "grok")
     bash_payload = (
         f"cd {shlex.quote(workdir_clean)} && {grok_argv}; rc=$?; "
         f'if [ "$rc" = 0 ]; then echo DONE >> {shlex.quote(log_path)}; '
-        f"else printf 'ERROR: grok exited %s\\n' \"$rc\" >> {shlex.quote(log_path)}; fi"
+        f"else printf 'ERROR: grok exited %s\\n' \"$rc\" >> {shlex.quote(log_path)}; "
+        f"{tail_snippet}fi"
     )
     shell_command = "env " + " ".join(
         shlex.quote(x) for x in [*env_assignments, "bash", "-c", bash_payload]
@@ -1048,6 +1060,17 @@ async def launch_ttyd_with_grok(
     session_cmd = " ".join(shlex.quote(a) for a in session_argv)
     await _launch_detached_checked(
         host, session_cmd, env_remove=env_remove, what="tmux new-session",
+    )
+
+    # 1b) Always mirror the live pane to grok-pane.log (outside the workdir, which
+    #     is torn down on failure). pipe-pane copies the PTY output stream — it does
+    #     NOT insert a pipe in grok's fd chain, so the TUI is unaffected. The
+    #     wrapper tails this on abnormal exit to surface the real launch failure
+    #     (see _build_grok_shell_command).
+    pane_log = pane_surfacing.pane_log_path(host.workdir, "grok")
+    await host.run_command(pane_surfacing.mkdir_pane_dir_cmd(pane_log))
+    await host.run_command(
+        pane_surfacing.pipe_pane_cmd(tmux_path, socket_path, session_name, pane_log)
     )
 
     # 2) Start ttyd attaching to the live session.

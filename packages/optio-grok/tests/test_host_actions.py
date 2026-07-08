@@ -43,6 +43,20 @@ def test_env_isolation_and_done_error():
     assert "--no-leader" in cmd
 
 
+def test_error_branch_surfaces_pane_tail():
+    """The failure branch tails the tmux pane mirror into optio.log after the
+    ERROR line, so a swallowed launch failure is surfaced (always-on)."""
+    _env, cmd = _build_grok_shell_command(
+        grok_path="/x/grok", workdir="/w/task", extra_env=None, grok_flags=[],
+    )
+    # ERROR line comes first, then the pane-tail snippet.
+    err_idx = cmd.index("ERROR: grok exited")
+    tail_idx = cmd.index("tail -n 150")
+    assert err_idx < tail_idx
+    assert "grok-pane.log" in cmd
+    assert "grok tmux pane" in cmd
+
+
 def _flags(**over):
     base = dict(
         permission_mode=None, allowed_tools=None, disallowed_tools=None,
