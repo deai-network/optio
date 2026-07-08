@@ -160,6 +160,23 @@ async def _wait_widget_upstream(
     raise AssertionError(f"{process_id} never set widgetUpstream in {timeout}s")
 
 
+async def _wait_widget_data(
+    optio: Optio, process_id: str, timeout: float = 60.0,
+) -> dict:
+    """Poll the process doc until widgetData is set; return the doc.
+
+    widgetData is written AFTER widgetUpstream (with a model-probe subprocess
+    in between), so a widgetUpstream-only wait can return before it lands.
+    """
+    end = _time.monotonic() + timeout
+    while _time.monotonic() < end:
+        proc = await optio.get_process(process_id)
+        if proc is not None and proc.get("widgetData"):
+            return proc
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"{process_id} never set widgetData in {timeout}s")
+
+
 async def _read_until(resp, predicate, timeout: float = 60.0) -> dict:
     """Parse SSE data frames from an open aiohttp response until one
     satisfies ``predicate``; return it. Keep-alive comment frames carry no
@@ -251,6 +268,11 @@ async def test_conversation_ui_session_lifecycle(
         assert inner is not None
         assert inner["username"] == "optio"
         assert inner["password"]
+
+        # widgetData lands after widgetUpstream (a model-probe subprocess runs
+        # between the two writes); re-fetch until it is present so a load-stalled
+        # write can't make the equality check read a missing field.
+        proc = await _wait_widget_data(optio, "cc-conv-ui")
         assert proc["widgetData"] == {
             "protocol": "claudecode",
             "toolVerbosity": "description-only",
