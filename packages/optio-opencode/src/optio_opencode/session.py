@@ -106,16 +106,33 @@ def _fold_tool_permissions(
     return cfg
 
 
-def _warn_if_fs_isolation_unenforced(config: "OpencodeTaskConfig") -> None:
-    """Emit a runtime warning on the worker console when ``fs_isolation`` is
-    requested. opencode has no claustrum sandbox wired yet, so the flag is
-    INERT (see OpencodeTaskConfig.fs_isolation): honour the operator's signal
-    by making the no-op loud rather than silent."""
-    if config.fs_isolation:
-        _LOG.warning(
-            "opencode fs_isolation requested but not yet enforced "
-            "(claustrum pending); the agent is NOT filesystem-confined."
-        )
+async def _build_claustrum_wrap(
+    host: Host, config: OpencodeTaskConfig, claustrum_path: str | None,
+) -> list[str] | None:
+    """claustrum argv prefix that Landlock-confines the ``opencode web`` server
+    tree, or None when fs_isolation is off.
+
+    Grants: the workdir (rwx; opencode's isolated HOME/XDG live under it), the
+    taskdir (rwx; the live ``opencode.db`` is a sibling of the workdir), the
+    opencode binary cache (rox), the system baseline, and caller extras. ``~/``
+    extras expand against the REAL host home (opencode runs under an isolated
+    $HOME; grants reach claustrum verbatim)."""
+    if not config.fs_isolation:
+        return None
+    from optio_opencode import fs_allowlist
+
+    cache_dir = await host_actions._resolve_install_dir(host, config.install_dir)
+    host_home = (
+        await host.resolve_host_home() if config.extra_allowed_dirs else None
+    )
+    grants = fs_allowlist.build_grant_flags(
+        workdir=host.workdir,
+        taskdir=host.taskdir,
+        opencode_cache_dir=cache_dir,
+        extra_allowed_dirs=config.extra_allowed_dirs,
+        host_home=host_home,
+    )
+    return host_actions.claustrum.build_claustrum_wrap(claustrum_path, grants)
 
 
 def conversation_widget_data(config: "OpencodeTaskConfig", *, session_id: str, directory: str) -> dict:
@@ -182,6 +199,12 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
     cred_watch_task: "asyncio.Task | None" = None
     resolved_seed_id: str | None = None
     lease_holder: str | None = None
+    # Path to the claustrum Landlock binary on the (possibly remote) host, set by
+    # _prepare when fs_isolation is on; read by the body to wrap the opencode
+    # launch. ``claustrum_newer`` carries a newer-than-pinned tag (if any) so the
+    # body can route the update notice. Both stay None when fs_isolation is off.
+    claustrum_path: str | None = None
+    claustrum_newer: str | None = None
 
     await host.connect()
 
@@ -196,6 +219,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         before the tail can re-emit its stale DELIVERABLE/DONE/ERROR lines.
         """
         nonlocal opencode_exec, resuming, preserved_session_id
+        nonlocal claustrum_path, claustrum_newer
         opencode_exec = await host_actions.ensure_opencode_installed(
             hook_ctx._host,
             download=hook_ctx.download_file,
@@ -203,6 +227,16 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             install_if_missing=config.install_if_missing,
             install_dir=config.install_dir,
         )
+
+        # Filesystem isolation: provision the claustrum Landlock binary BEFORE
+        # launch. Any failure raises here — fail-closed: the task never proceeds
+        # to an unconfined launch. Skipped when fs_isolation is off. Placed onto
+        # the same optio-opencode cache tree as the opencode binary.
+        if config.fs_isolation:
+            claustrum_path = await host_actions.ensure_claustrum_installed(
+                hook_ctx, install_dir=config.install_dir,
+            )
+            claustrum_newer = await host_actions.claustrum_newer_tag()
 
         resume_requested = bool(getattr(ctx, "resume", False))
         snapshot: dict | None = None
@@ -392,7 +426,19 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         # loopback; the SSH tunnel on the engine side handles exposure.
         opencode_hostname = bind_addr if isinstance(host, LocalHost) else "127.0.0.1"
 
-        _warn_if_fs_isolation_unenforced(config)
+        # Filesystem isolation: route the "newer claustrum available" security
+        # notice (if any) through on_deliverable BEFORE launch, then build the
+        # Landlock wrap that confines the opencode server tree.
+        if config.fs_isolation and claustrum_newer:
+            await host_actions.claustrum.emit_claustrum_update_notice(
+                host, hook_ctx,
+                delivery_type=config.delivery_type,
+                on_deliverable=config.on_deliverable,
+                newer=claustrum_newer,
+                pinned=host_actions.claustrum.CLAUSTRUM_PINNED_TAG,
+            )
+        claustrum_wrap = await _build_claustrum_wrap(host, config, claustrum_path)
+
         ctx.report_progress(None, f"Launching {AGENT_INFO.name}{version_suffix}…")
         handle, opencode_port = await host_actions.launch_opencode(
             host, password,
@@ -401,6 +447,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             hostname=opencode_hostname,
             extra_env={**(config.env or {}), **hook_ctx.browser_launch_env},
             env_remove=config.scrub_env,
+            claustrum_wrap=claustrum_wrap,
         )
         launched_handle = handle
 

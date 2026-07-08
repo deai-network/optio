@@ -70,7 +70,7 @@ async def test_remote_happy_path(sshd, ctx, monkeypatch):
     monkeypatch.setattr(_host_actions, "ensure_opencode_installed", _ensure)
 
     config = OpencodeTaskConfig(
-        consumer_instructions="remote test",
+        consumer_instructions="remote test", fs_isolation=False,
         ssh=SSHConfig(
             host=sshd["host"], user=sshd["user"],
             key_path=sshd["key_path"], port=sshd["port"],

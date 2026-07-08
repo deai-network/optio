@@ -185,6 +185,9 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                 before_execute=_before_execute,
                 after_execute=_after_execute,
                 on_deliverable=_on_deliverable,
+                # claustrum fs-isolation on (default); the mandatory delivery_type
+                # routes the "newer claustrum available" notice via on_deliverable.
+                delivery_type="system-notices",
             ),
         ),
         # The seed setup task: vanilla (no seed_id), on_seed_saved wired.
@@ -205,6 +208,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                 # Interactive login; no resume for a one-time setup session.
                 supports_resume=False,
                 on_seed_saved=_make_on_seed_saved(db, prefix, fw),
+                delivery_type="system-notices",
             ),
         ),
     ]
@@ -234,6 +238,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     supports_resume=True,
                     # Kick the agent off unattended (reads AGENTS.md + executes).
                     auto_start=True,
+                    delivery_type="system-notices",
                 ),
             )
         )
@@ -258,6 +263,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     ssh=ssh,
                     seed_id=seed_id,
                     supports_resume=True,
+                    delivery_type="system-notices",
                 ),
             )
         )

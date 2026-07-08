@@ -1,37 +1,15 @@
 """Session-level tests for the config-harmonization additions:
 
-- the inert ``fs_isolation`` runtime warning (change 6: NOT-YET-ENFORCED), and
 - the ``allowed_tools``/``disallowed_tools`` fold into opencode.json's
   ``permission`` map (T2: REACHABLE → wired).
+
+(The former ``fs_isolation`` inert-warning tests were removed when claustrum
+was wired for opencode; the fs-isolation triad is covered by test_claustrum.py.)
 
 Pure/unit — no subprocess, no host, xdist-safe.
 """
 
-import logging
-
-from optio_opencode.session import (
-    _fold_tool_permissions,
-    _warn_if_fs_isolation_unenforced,
-)
-from optio_opencode.types import OpencodeTaskConfig
-
-
-# --- fs_isolation inert warning ----------------------------------------------
-
-
-def test_fs_isolation_true_emits_not_enforced_warning(caplog):
-    cfg = OpencodeTaskConfig(consumer_instructions="x", fs_isolation=True)
-    with caplog.at_level(logging.WARNING, logger="optio_opencode.session"):
-        _warn_if_fs_isolation_unenforced(cfg)
-    msgs = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert any("fs_isolation" in m and "not yet enforced" in m for m in msgs), msgs
-
-
-def test_fs_isolation_false_is_silent(caplog):
-    cfg = OpencodeTaskConfig(consumer_instructions="x", fs_isolation=False)
-    with caplog.at_level(logging.WARNING, logger="optio_opencode.session"):
-        _warn_if_fs_isolation_unenforced(cfg)
-    assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
+from optio_opencode.session import _fold_tool_permissions
 
 
 # --- allowed_tools / disallowed_tools fold -----------------------------------

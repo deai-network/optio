@@ -11,7 +11,7 @@ from optio_opencode.types import OpencodeTaskConfig
 def test_file_download_requires_conversation_ui():
     with pytest.raises(ValueError, match="conversation_ui=True"):
         OpencodeTaskConfig(
-            consumer_instructions="t",
+            consumer_instructions="t", fs_isolation=False,
             mode="conversation",
             conversation_ui=False,
             file_download=True,
@@ -20,7 +20,7 @@ def test_file_download_requires_conversation_ui():
 
 def test_file_download_ok():
     cfg = OpencodeTaskConfig(
-        consumer_instructions="t",
+        consumer_instructions="t", fs_isolation=False,
         mode="conversation",
         conversation_ui=True,
         file_download=True,
@@ -31,7 +31,7 @@ def test_file_download_ok():
 
 def test_file_download_defaults_off():
     cfg = OpencodeTaskConfig(
-        consumer_instructions="t", mode="conversation", conversation_ui=True
+        consumer_instructions="t", mode="conversation", conversation_ui=True, fs_isolation=False
     )
     assert cfg.file_download is False
     assert cfg.max_download_bytes == 10_000_000
@@ -42,7 +42,7 @@ def test_file_download_defaults_off():
 
 def test_widget_data_carries_download_flags():
     cfg = OpencodeTaskConfig(
-        consumer_instructions="t",
+        consumer_instructions="t", fs_isolation=False,
         mode="conversation",
         conversation_ui=True,
         file_download=True,
@@ -54,7 +54,7 @@ def test_widget_data_carries_download_flags():
 
 def test_widget_data_download_flags_default_off():
     cfg = OpencodeTaskConfig(
-        consumer_instructions="t", mode="conversation", conversation_ui=True
+        consumer_instructions="t", mode="conversation", conversation_ui=True, fs_isolation=False
     )
     wd = conversation_widget_data(cfg, session_id="s", directory="/w")
     assert wd["fileDownload"] is False

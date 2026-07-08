@@ -131,7 +131,7 @@ def _supply_scenario(monkeypatch):
     orig_launch = host_actions.launch_opencode
     scenario_holder: dict = {"name": "happy"}
 
-    async def _launch_oc(host, password, *, ready_timeout_s=30.0, opencode_executable="opencode", hostname="127.0.0.1", extra_env=None, env_remove=None):
+    async def _launch_oc(host, password, *, ready_timeout_s=30.0, opencode_executable="opencode", hostname="127.0.0.1", extra_env=None, env_remove=None, claustrum_wrap=None):
         del opencode_executable  # we substitute fully
         return await orig_launch(
             host, password,
@@ -211,7 +211,7 @@ async def _launch(ctx, cfg):
 
 
 def test_create_opencode_task_ui_widget_matrix():
-    base = dict(consumer_instructions="x")
+    base = dict(consumer_instructions="x", fs_isolation=False)
     t_iframe = create_opencode_task("p1", "n", OpencodeTaskConfig(**base))
     assert t_iframe.ui_widget == "iframe"
     t_conv = create_opencode_task(
@@ -228,7 +228,7 @@ async def test_conversation_ui_sets_upstream_and_widget_data(ctx_and_captures, _
     ctx, cap, _ = ctx_and_captures
     _supply_scenario["name"] = "conversation"
     cfg = OpencodeTaskConfig(
-        consumer_instructions="", mode="conversation", host_protocol=False,
+        consumer_instructions="", mode="conversation", host_protocol=False, fs_isolation=False,
         conversation_ui=True, tool_verbosity="verbose",
     )
     sess, conv = await _launch(ctx, cfg)          # helper as in Task 5
@@ -266,7 +266,7 @@ async def test_probe_disabled_models_ride_widget_data(
     ctx, cap, _ = ctx_and_captures
     _supply_scenario["name"] = "conversation"
     cfg = OpencodeTaskConfig(
-        consumer_instructions="", mode="conversation", host_protocol=False,
+        consumer_instructions="", mode="conversation", host_protocol=False, fs_isolation=False,
         conversation_ui=True, show_session_controls=True,
     )
     sess_task, conv = await _launch(ctx, cfg)
@@ -296,7 +296,7 @@ async def test_no_disabled_models_without_session_controls(
     ctx, cap, _ = ctx_and_captures
     _supply_scenario["name"] = "conversation"
     cfg = OpencodeTaskConfig(
-        consumer_instructions="", mode="conversation", host_protocol=False,
+        consumer_instructions="", mode="conversation", host_protocol=False, fs_isolation=False,
         conversation_ui=True,
     )
     sess_task, conv = await _launch(ctx, cfg)
@@ -310,7 +310,7 @@ async def test_headless_conversation_sets_no_widget(ctx_and_captures, _supply_sc
     ctx, cap, _ = ctx_and_captures
     _supply_scenario["name"] = "conversation"
     cfg = OpencodeTaskConfig(
-        consumer_instructions="", mode="conversation", host_protocol=False,
+        consumer_instructions="", mode="conversation", host_protocol=False, fs_isolation=False,
     )
     sess, conv = await _launch(ctx, cfg)
     assert cap.widget_upstream == []

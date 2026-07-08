@@ -109,7 +109,7 @@ def _supply_scenario(monkeypatch):
     orig_launch = host_actions.launch_opencode
     scenario_holder: dict = {"name": "happy"}
 
-    async def _launch_oc(host, password, *, ready_timeout_s=30.0, opencode_executable="opencode", hostname="127.0.0.1", extra_env=None, env_remove=None):
+    async def _launch_oc(host, password, *, ready_timeout_s=30.0, opencode_executable="opencode", hostname="127.0.0.1", extra_env=None, env_remove=None, claustrum_wrap=None):
         del opencode_executable  # we substitute fully
         return await orig_launch(
             host, password,
@@ -192,7 +192,7 @@ async def test_conversation_published_and_close_ends_session(ctx_and_captures, _
     ctx, cap, _ = ctx_and_captures
     _supply_scenario["name"] = "conversation"
     cfg = OpencodeTaskConfig(
-        consumer_instructions="", mode="conversation", host_protocol=False,
+        consumer_instructions="", mode="conversation", host_protocol=False, fs_isolation=False,
     )
     sess, conv = await _launch(ctx, cfg)
     assert not conv.closed
@@ -205,7 +205,7 @@ async def test_conversation_with_host_protocol_done_keyword_also_ends(ctx_and_ca
     ctx, cap, _ = ctx_and_captures
     _supply_scenario["name"] = "conversation_then_done"   # scenario emits DONE after a delay
     cfg = OpencodeTaskConfig(
-        consumer_instructions="chat", mode="conversation", host_protocol=True,
+        consumer_instructions="chat", mode="conversation", host_protocol=True, fs_isolation=False,
     )
     sess, conv = await _launch(ctx, cfg)
     await asyncio.wait_for(sess, timeout=60)              # DONE from the keyword channel ends it
@@ -216,7 +216,7 @@ async def test_question_tool_disabled_in_conversation_opencode_json(ctx_and_capt
     ctx, cap, _ = ctx_and_captures
     _supply_scenario["name"] = "conversation"
     cfg = OpencodeTaskConfig(
-        consumer_instructions="", mode="conversation", host_protocol=False,
+        consumer_instructions="", mode="conversation", host_protocol=False, fs_isolation=False,
         opencode_config={"theme": "dark", "tools": {"webfetch": True}},
     )
     sess, conv = await _launch(ctx, cfg)
@@ -230,7 +230,7 @@ async def test_question_tool_disabled_in_conversation_opencode_json(ctx_and_capt
 async def test_iframe_mode_opencode_json_untouched(ctx_and_captures, _supply_scenario, tmp_workdir_peek):
     ctx, cap, _ = ctx_and_captures
     _supply_scenario["name"] = "happy"
-    cfg = OpencodeTaskConfig(consumer_instructions="task", opencode_config={"theme": "dark"})
+    cfg = OpencodeTaskConfig(consumer_instructions="task", opencode_config={"theme": "dark"}, fs_isolation=False)
     await run_opencode_session(ctx, cfg)
     assert json.loads(tmp_workdir_peek("opencode.json")) == {"theme": "dark"}
 
@@ -239,7 +239,7 @@ async def test_premature_server_exit_fails_session(ctx_and_captures, _supply_sce
     ctx, cap, _ = ctx_and_captures
     _supply_scenario["name"] = "conversation_early_exit"  # scenario: short sleep then ("exit", 1)
     cfg = OpencodeTaskConfig(
-        consumer_instructions="", mode="conversation", host_protocol=False,
+        consumer_instructions="", mode="conversation", host_protocol=False, fs_isolation=False,
     )
     sess, conv = await _launch(ctx, cfg)
     with pytest.raises(Exception):

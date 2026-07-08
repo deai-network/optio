@@ -67,7 +67,7 @@ def _supply_scenario(monkeypatch):
     orig_launch = host_actions.launch_opencode
     holder = {"name": "happy"}
 
-    async def _launch(host, password, *, ready_timeout_s=30.0, opencode_executable="opencode", hostname="127.0.0.1", extra_env=None, env_remove=None):
+    async def _launch(host, password, *, ready_timeout_s=30.0, opencode_executable="opencode", hostname="127.0.0.1", extra_env=None, env_remove=None, claustrum_wrap=None):
         del opencode_executable
         return await orig_launch(
             host, password,
@@ -171,7 +171,7 @@ async def test_rotation_during_session_updates_seed(
 
     ctx1 = await _make_ctx(mongo_db, "oc_sb_src")
     await run_opencode_session(ctx1, OpencodeTaskConfig(
-        consumer_instructions="(seed setup)",
+        consumer_instructions="(seed setup)", fs_isolation=False,
         supports_resume=False,
         on_seed_saved=_on_seed_saved,
         before_execute=_plant_seed_env,
@@ -192,7 +192,7 @@ async def test_rotation_during_session_updates_seed(
     ctx2 = await _make_ctx(mongo_db, "oc_sb_run")
     # 3. Run with the fake binary scenario that exits promptly.
     await run_opencode_session(ctx2, OpencodeTaskConfig(
-        consumer_instructions="(seeded, rotating)",
+        consumer_instructions="(seeded, rotating)", fs_isolation=False,
         supports_resume=False,
         seed_id=_seed_provider,
         before_execute=_write_auth_hook("T2"),

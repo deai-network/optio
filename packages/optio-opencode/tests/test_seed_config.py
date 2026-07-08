@@ -26,7 +26,7 @@ from optio_opencode.seed_manifest import (
 
 
 def test_seed_config_defaults_none():
-    cfg = OpencodeTaskConfig(consumer_instructions="hi")
+    cfg = OpencodeTaskConfig(consumer_instructions="hi", fs_isolation=False)
     assert cfg.seed_id is None
     assert cfg.on_seed_saved is None
     assert cfg.auto_start is False
@@ -34,7 +34,7 @@ def test_seed_config_defaults_none():
 
 def test_opencode_config_scrub_env_default_none():
     from optio_opencode.types import OpencodeTaskConfig
-    assert OpencodeTaskConfig(consumer_instructions="hi").scrub_env is None
+    assert OpencodeTaskConfig(consumer_instructions="hi", fs_isolation=False).scrub_env is None
 
 
 def test_manifest_shape():

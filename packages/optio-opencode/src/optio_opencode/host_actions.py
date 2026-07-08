@@ -28,6 +28,8 @@ from typing import TYPE_CHECKING, Callable
 
 from optio_host.host import ProcessHandle
 
+from optio_agents import claustrum
+
 from optio_opencode.info import AGENT_INFO
 
 if TYPE_CHECKING:
@@ -69,6 +71,72 @@ async def _resolve_install_dir(host: "Host", install_dir: str | None) -> str:
             f"{r.stderr.strip()[:200]}"
         )
     return path.rstrip("/")
+
+
+# --- claustrum provisioning -------------------------------------------------
+#
+# opencode is wrapped in claustrum (Landlock, fail-closed) so the whole
+# ``opencode web`` server tree — the server and every tool subprocess it spawns
+# — is confined to an explicit filesystem allowlist. The provisioning logic
+# (engine cross-compile, ELF-guarded build cache, functional wrap+exec
+# validation, fail-closed placement) is the shared ``optio_agents.claustrum``
+# module; this wrapper contributes only the opencode-owned cache-dir resolution
+# and, in session.py, the grant set (``fs_allowlist.build_grant_flags``).
+
+
+async def ensure_claustrum_installed(
+    hook_ctx,
+    *,
+    install_dir: str | None = None,
+) -> str:
+    """Ensure a functioning claustrum binary is on the host; return its path.
+
+    Thin wrapper over :func:`optio_agents.claustrum.ensure_claustrum_installed`:
+    resolves the opencode-owned target cache dir (on the worker, beside the
+    opencode binary cache), pins the engine build cache to
+    ``~/.cache/optio-opencode``, and forwards the UI progress callback. All the
+    real work (cross-compile, ELF-guarded engine cache, functional wrap+exec
+    validation) lives in the shared module. Fail-closed — any failure RAISES, so
+    the caller never proceeds to an unconfined launch.
+    """
+    host = hook_ctx._host
+    cache_dir = await _resolve_install_dir(host, install_dir)
+    return await claustrum.ensure_claustrum_installed(
+        host,
+        cache_dir=cache_dir,
+        engine_cache_dir=os.path.expanduser("~/.cache/optio-opencode"),
+        report_progress=hook_ctx.report_progress,
+    )
+
+
+async def claustrum_newer_tag() -> str | None:
+    """Return the newest claustrum tag if it is newer than the pinned one, else None.
+
+    Engine-side egress only. Best-effort: network failure returns None (no notice).
+    """
+    try:
+        p = await asyncio.create_subprocess_exec(
+            "git", "ls-remote", "--tags", "--refs", claustrum.CLAUSTRUM_REPO,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await p.communicate()
+        if p.returncode != 0:
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    tags = []
+    for line in out.decode().splitlines():
+        ref = line.rsplit("/", 1)[-1].strip()
+        if ref.startswith("v"):
+            tags.append(ref)
+
+    def key(t: str) -> tuple:
+        return tuple(int(x) for x in t.lstrip("v").split(".") if x.isdigit())
+
+    if not tags:
+        return None
+    newest = max(tags, key=key)
+    return newest if key(newest) > key(claustrum.CLAUSTRUM_PINNED_TAG) else None
 
 
 def _isolation_env(host: "Host") -> dict[str, str]:
@@ -437,6 +505,7 @@ async def launch_opencode(
     hostname: str = "127.0.0.1",
     extra_env: dict[str, str] | None = None,
     env_remove: list[str] | None = None,
+    claustrum_wrap: list[str] | None = None,
 ) -> tuple[ProcessHandle, int]:
     """Launch ``opencode web`` on ``host``; wait for the listening URL.
 
@@ -475,10 +544,18 @@ async def launch_opencode(
     # opencode succeeds at opening a real browser window. opencode_executable
     # is an absolute path (resolved by ensure_opencode_installed), so
     # login-shell PATH lookup is not needed to find the binary.
+    #
+    # claustrum_wrap (fs isolation) is spliced BETWEEN the ``env …`` password
+    # assignment and the opencode executable: ``exec env VAR=… claustrum … --
+    # opencode web``. The ``$(cat …)`` runs in the outer shell (before exec), so
+    # the password read happens outside the Landlock confinement; ``env`` then
+    # execs claustrum, which Landlock-confines itself and execs opencode, so the
+    # server and every tool subprocess inherit the allowlist. None → no wrap.
+    wrap_prefix = f"{shlex.join(claustrum_wrap)} " if claustrum_wrap else ""
     cmd = (
         f"exec env "
         f"OPENCODE_SERVER_PASSWORD=\"$(cat {shlex.quote(host.workdir + '/' + pw_file)})\" "
-        f"{opencode_executable} web --port=0 --hostname={shlex.quote(hostname)}"
+        f"{wrap_prefix}{opencode_executable} web --port=0 --hostname={shlex.quote(hostname)}"
     )
 
     # OPENCODE_DB must point at the same per-task db file used by the

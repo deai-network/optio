@@ -6,7 +6,7 @@ from optio_opencode.types import OpencodeTaskConfig
 
 def test_defaults_are_off():
     cfg = OpencodeTaskConfig(
-        consumer_instructions="task", mode="conversation", conversation_ui=True
+        consumer_instructions="task", fs_isolation=False, mode="conversation", conversation_ui=True
     )
     assert cfg.model is None
     assert cfg.show_session_controls is False
@@ -14,7 +14,7 @@ def test_defaults_are_off():
 
 def test_fields_accepted_in_conversation_ui():
     cfg = OpencodeTaskConfig(
-        consumer_instructions="task",
+        consumer_instructions="task", fs_isolation=False,
         mode="conversation",
         conversation_ui=True,
         model="opencode/big-pickle",
@@ -27,7 +27,7 @@ def test_fields_accepted_in_conversation_ui():
 def test_show_session_controls_requires_conversation_ui():
     with pytest.raises(ValueError, match="conversation_ui=True"):
         OpencodeTaskConfig(
-            consumer_instructions="task",
+            consumer_instructions="task", fs_isolation=False,
             mode="conversation",
             conversation_ui=False,
             show_session_controls=True,
@@ -37,7 +37,7 @@ def test_show_session_controls_requires_conversation_ui():
 def test_native_spinner_requires_conversation_ui():
     with pytest.raises(ValueError, match="conversation_ui=True"):
         OpencodeTaskConfig(
-            consumer_instructions="task",
+            consumer_instructions="task", fs_isolation=False,
             mode="conversation",
             conversation_ui=False,
             native_spinner=True,
@@ -48,7 +48,7 @@ def test_model_valid_without_conversation_ui():
     # The conversation_ui gate was dropped: model is now valid in every mode
     # (it also feeds the launch opencode.json default, not just the widget).
     cfg = OpencodeTaskConfig(
-        consumer_instructions="task",
+        consumer_instructions="task", fs_isolation=False,
         mode="iframe",
         conversation_ui=False,
         model="opencode/big-pickle",
@@ -58,7 +58,7 @@ def test_model_valid_without_conversation_ui():
 
 def test_widget_data_carries_model_fields():
     cfg = OpencodeTaskConfig(
-        consumer_instructions="task",
+        consumer_instructions="task", fs_isolation=False,
         mode="conversation",
         conversation_ui=True,
         model="opencode/big-pickle",
@@ -86,7 +86,7 @@ def test_widget_data_carries_model_fields():
 
 def test_widget_data_defaults():
     cfg = OpencodeTaskConfig(
-        consumer_instructions="task", mode="conversation", conversation_ui=True
+        consumer_instructions="task", fs_isolation=False, mode="conversation", conversation_ui=True
     )
     wd = conversation_widget_data(cfg, session_id="s1", directory="/wd")
     assert wd["showSessionControls"] is False
@@ -99,7 +99,7 @@ def test_widget_data_defaults():
 
 def test_reasoning_effort_accepted():
     cfg = OpencodeTaskConfig(
-        consumer_instructions="task",
+        consumer_instructions="task", fs_isolation=False,
         mode="conversation",
         conversation_ui=True,
         reasoning_effort="medium",
@@ -109,7 +109,7 @@ def test_reasoning_effort_accepted():
 
 def test_reasoning_effort_defaults_none():
     cfg = OpencodeTaskConfig(
-        consumer_instructions="task", mode="conversation", conversation_ui=True
+        consumer_instructions="task", fs_isolation=False, mode="conversation", conversation_ui=True
     )
     assert cfg.reasoning_effort is None
 
@@ -117,7 +117,7 @@ def test_reasoning_effort_defaults_none():
 def test_reasoning_effort_rejects_bad_value():
     with pytest.raises(ValueError, match="reasoning_effort"):
         OpencodeTaskConfig(
-            consumer_instructions="task",
+            consumer_instructions="task", fs_isolation=False,
             mode="conversation",
             conversation_ui=True,
             reasoning_effort="turbo",

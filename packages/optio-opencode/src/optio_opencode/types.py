@@ -17,6 +17,7 @@ from optio_agents import (
     ThinkingVerbosity,
     ToolVerbosity,
 )
+from optio_agents.config_types import ClaustrumConfigMixin
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -70,9 +71,16 @@ def _identity_resume_refresh(config: "OpencodeTaskConfig") -> "OpencodeTaskConfi
     return config
 
 
-@dataclass
-class OpencodeTaskConfig:
-    """Configuration for one optio-opencode task instance."""
+@dataclass(frozen=True, kw_only=True)
+class OpencodeTaskConfig(ClaustrumConfigMixin):
+    """Configuration for one optio-opencode task instance.
+
+    Inherits the claustrum filesystem-isolation triad (``fs_isolation`` /
+    ``extra_allowed_dirs`` / ``delivery_type``) from ``ClaustrumConfigMixin``;
+    those fields stay top-level here (callers write ``fs_isolation=`` /
+    ``delivery_type=`` verbatim). Frozen because the mixin is frozen; ``kw_only``
+    so the required ``consumer_instructions`` can follow the mixin's defaulted
+    triad without a field-ordering conflict (all callers pass by keyword)."""
     consumer_instructions: str
     agent_type: Literal["opencode"] = "opencode"
     opencode_config: dict[str, Any] = field(default_factory=dict)
@@ -194,18 +202,17 @@ class OpencodeTaskConfig:
     file_download: bool = False
     max_download_bytes: int = 10_000_000
 
-    # --- filesystem isolation (INERT — claustrum port pending) ---
-    # NOT YET ENFORCED. opencode has no claustrum sandbox wired yet, so these
-    # two fields are a known no-op today: they ship now for cross-engine
-    # config parity (and so consumers can pin the intended policy), but the
-    # launch path only emits a runtime warning when fs_isolation is True — it
-    # does NOT restrict the filesystem. When claustrum lands for opencode,
-    # fs_isolation will confine the agent to the workdir and extra_allowed_dirs
-    # will widen that grant. Until then, treat both as advisory.
-    fs_isolation: bool = True
-    # Extra filesystem grants beyond the workdir (shared AllowedDir; ro/rw/
-    # rox/rwx). INERT until claustrum lands (see fs_isolation above).
-    extra_allowed_dirs: list[AllowedDir] | None = None
+    # --- filesystem isolation (claustrum) -------------------------------
+    # fs_isolation / extra_allowed_dirs / delivery_type are inherited from
+    # ClaustrumConfigMixin. When fs_isolation is True (default), the whole
+    # ``opencode web`` server tree runs confined to an explicit filesystem
+    # allowlist (task workdir + taskdir-local opencode.db + opencode binary
+    # cache + explicit grants), kernel-enforced via the claustrum Landlock
+    # sandbox. Fail-closed: if claustrum cannot be provisioned or the kernel
+    # lacks Landlock, the task refuses to launch rather than run unconfined.
+    # ``delivery_type`` is MANDATORY when fs_isolation is on (routes the
+    # "newer claustrum release available" security notice via on_deliverable);
+    # validated by _validate_claustrum(). Set fs_isolation=False to opt out.
 
     # --- tool allow/deny (folded into opencode.json's ``permission`` map) ---
     # Convenience fields that fold into opencode.json's per-tool ``permission``
@@ -219,6 +226,9 @@ class OpencodeTaskConfig:
     disallowed_tools: list[str] | None = None
 
     def __post_init__(self) -> None:
+        # Claustrum triad first: a missing delivery_type (fs_isolation on)
+        # fails fast before the opencode-specific checks below.
+        self._validate_claustrum()
         e = self.session_blob_encrypt is not None
         d = self.session_blob_decrypt is not None
         if e != d:

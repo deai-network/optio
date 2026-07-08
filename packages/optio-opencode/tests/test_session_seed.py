@@ -71,7 +71,7 @@ def _supply_scenario(monkeypatch):
     orig_launch = host_actions.launch_opencode
     holder = {"name": "happy"}
 
-    async def _launch(host, password, *, ready_timeout_s=30.0, opencode_executable="opencode", hostname="127.0.0.1", extra_env=None, env_remove=None):
+    async def _launch(host, password, *, ready_timeout_s=30.0, opencode_executable="opencode", hostname="127.0.0.1", extra_env=None, env_remove=None, claustrum_wrap=None):
         del opencode_executable
         return await orig_launch(
             host, password,
@@ -169,7 +169,7 @@ async def test_capture_fires_callback_and_stores_env_only_seed(
 
     ctx = await _make_ctx(mongo_db, "oc_seed_cap")
     cfg = OpencodeTaskConfig(
-        consumer_instructions="(seed setup)",
+        consumer_instructions="(seed setup)", fs_isolation=False,
         supports_resume=False,
         on_seed_saved=_on_seed_saved,
         before_execute=_plant_env,
@@ -225,7 +225,7 @@ async def test_capture_synthesises_model_into_opencode_json(
 
     ctx = await _make_ctx(mongo_db, "oc_seed_model")
     await run_opencode_session(ctx, OpencodeTaskConfig(
-        consumer_instructions="(seed setup)",
+        consumer_instructions="(seed setup)", fs_isolation=False,
         supports_resume=False,
         on_seed_saved=_on_seed_saved,
         before_execute=_plant_env,
@@ -268,7 +268,7 @@ async def test_second_session_consumes_seed(
 
     ctx1 = await _make_ctx(mongo_db, "oc_seed_src")
     await run_opencode_session(ctx1, OpencodeTaskConfig(
-        consumer_instructions="(seed setup)",
+        consumer_instructions="(seed setup)", fs_isolation=False,
         supports_resume=False,
         on_seed_saved=_on_seed_saved,
         before_execute=_plant_env,
@@ -297,7 +297,7 @@ async def test_second_session_consumes_seed(
 
     ctx2 = await _make_ctx(mongo_db, "oc_seed_dst")
     await run_opencode_session(ctx2, OpencodeTaskConfig(
-        consumer_instructions="(seeded fresh)",
+        consumer_instructions="(seeded fresh)", fs_isolation=False,
         supports_resume=False,
         seed_id=seed_id,
         before_execute=_probe,
@@ -333,7 +333,7 @@ async def test_auto_start_posts_on_fresh_and_not_on_resume(
     # resume leg) → must POST exactly once
     ctx_fresh = await _make_ctx(mongo_db, pid, resume=False)
     await run_opencode_session(ctx_fresh, OpencodeTaskConfig(
-        consumer_instructions="(scenario: happy)",
+        consumer_instructions="(scenario: happy)", fs_isolation=False,
         auto_start=True,
         # Plant auth.json so the snapshot-capture defense-in-depth guard does
         # not refuse to mark this resumable; otherwise the resume leg would
@@ -355,7 +355,7 @@ async def test_auto_start_posts_on_fresh_and_not_on_resume(
     # resume notice is POSTed so the agent notices the resume.
     ctx_resume = await _make_ctx(mongo_db, pid, resume=True)
     await run_opencode_session(ctx_resume, OpencodeTaskConfig(
-        consumer_instructions="(scenario: happy)",
+        consumer_instructions="(scenario: happy)", fs_isolation=False,
         auto_start=True,
         before_execute=_plant_env,
     ))

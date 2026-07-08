@@ -97,7 +97,7 @@ def _supply_scenario(monkeypatch):
     from optio_opencode import host_actions
     orig_launch = host_actions.launch_opencode
 
-    async def _launch_oc(host, password, *, ready_timeout_s=30.0, opencode_executable="opencode", hostname="127.0.0.1", extra_env=None, env_remove=None):
+    async def _launch_oc(host, password, *, ready_timeout_s=30.0, opencode_executable="opencode", hostname="127.0.0.1", extra_env=None, env_remove=None, claustrum_wrap=None):
         del opencode_executable
         return await orig_launch(
             host, password,
@@ -135,7 +135,7 @@ async def test_registers_writer_that_materializes_and_fires_on_upload(ctx_and_ca
     async def _on_upload(hook_ctx, path):
         seen.append(path)
     cfg = OpencodeTaskConfig(
-        consumer_instructions="", mode="conversation", host_protocol=False,
+        consumer_instructions="", mode="conversation", host_protocol=False, fs_isolation=False,
         conversation_ui=True, show_file_upload=True, on_upload=_on_upload,
     )
     sess, conv = await _launch(ctx, cfg)

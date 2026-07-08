@@ -118,7 +118,7 @@ def _patch_host_actions(monkeypatch, host):
     async def _version(_host, *, opencode_executable="opencode"):
         return None
 
-    async def _launch(_host, _password, *, ready_timeout_s=30.0, opencode_executable="opencode", hostname="127.0.0.1", extra_env=None, env_remove=None):
+    async def _launch(_host, _password, *, ready_timeout_s=30.0, opencode_executable="opencode", hostname="127.0.0.1", extra_env=None, env_remove=None, claustrum_wrap=None):
         host.timeline.append("launch_opencode")
         raise RuntimeError("test never gets past launch")
 
@@ -135,7 +135,7 @@ async def test_before_execute_runs_after_install_before_launch(tmp_workdir, monk
         host.timeline.append("before_execute")
 
     config = OpencodeTaskConfig(
-        consumer_instructions="x",
+        consumer_instructions="x", fs_isolation=False,
         before_execute=my_before,
     )
 
@@ -165,7 +165,7 @@ async def test_after_execute_runs_when_before_execute_raises(tmp_workdir, monkey
         host.timeline.append("after_execute")
 
     config = OpencodeTaskConfig(
-        consumer_instructions="x",
+        consumer_instructions="x", fs_isolation=False,
         before_execute=failing_before,
         after_execute=my_after,
     )
@@ -192,7 +192,7 @@ async def test_after_execute_skipped_when_failure_before_host_connect(tmp_workdi
         host.timeline.append("after_execute")
 
     config = OpencodeTaskConfig(
-        consumer_instructions="x",
+        consumer_instructions="x", fs_isolation=False,
         after_execute=my_after,
     )
     monkeypatch.setattr(
@@ -220,7 +220,7 @@ async def test_after_execute_failure_does_not_shadow_session_error(tmp_workdir, 
         raise RuntimeError("secondary after failure")
 
     config = OpencodeTaskConfig(
-        consumer_instructions="x",
+        consumer_instructions="x", fs_isolation=False,
         before_execute=failing_before,
         after_execute=failing_after,
     )
@@ -250,7 +250,7 @@ async def test_on_deliverable_receives_hook_ctx_and_can_use_host_primitives(tmp_
         await hook_ctx.run_on_host("noop")
 
     config = OpencodeTaskConfig(
-        consumer_instructions="x",
+        consumer_instructions="x", fs_isolation=False,
         on_deliverable=cb,
     )
     # We don't run a full session here; we directly invoke

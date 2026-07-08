@@ -95,6 +95,9 @@ def _config(scenario: str, deliverable_cb=None, raises: bool = False) -> Opencod
     return OpencodeTaskConfig(
         consumer_instructions=f"(scenario: {scenario})",
         on_deliverable=deliverable_cb,
+        # These session tests run against a real LocalHost with a monkeypatched
+        # launch; claustrum provisioning is out of scope here, so opt out.
+        fs_isolation=False,
     )
 
 
@@ -126,7 +129,7 @@ def _supply_scenario(monkeypatch):
     orig_launch = host_actions.launch_opencode
     scenario_holder: dict = {"name": "happy"}
 
-    async def _launch(host, password, *, ready_timeout_s=30.0, opencode_executable="opencode", hostname="127.0.0.1", extra_env=None, env_remove=None):
+    async def _launch(host, password, *, ready_timeout_s=30.0, opencode_executable="opencode", hostname="127.0.0.1", extra_env=None, env_remove=None, claustrum_wrap=None):
         del opencode_executable  # we substitute fully
         return await orig_launch(
             host, password,
@@ -333,6 +336,7 @@ async def test_caller_message_reaches_callback(ctx_and_captures, _supply_scenari
     cfg = OpencodeTaskConfig(
         consumer_instructions="(scenario: caller_message)",
         on_caller_message=on_caller,
+        fs_isolation=False,
     )
     await run_opencode_session(ctx, cfg)
 
@@ -348,6 +352,7 @@ async def test_client_message_stored_as_session_event(
     cfg = OpencodeTaskConfig(
         consumer_instructions="(scenario: client_message)",
         use_client_messages=True,
+        fs_isolation=False,
     )
     await run_opencode_session(ctx, cfg)
 
@@ -483,7 +488,9 @@ async def test_maybe_refresh_on_resume_no_hook(tmp_workdir):
     host = LocalHost(taskdir=tmp_workdir)
     await host.setup_workdir()
     # Explicit None opts out of refresh (the default is now identity-refresh).
-    config = OpencodeTaskConfig(consumer_instructions="x", on_resume_refresh=None)
+    config = OpencodeTaskConfig(
+        consumer_instructions="x", on_resume_refresh=None, fs_isolation=False,
+    )
 
     refreshed = await _maybe_refresh_on_resume(host, None, config)
 
@@ -502,7 +509,7 @@ async def test_maybe_refresh_on_resume_unchanged_content_skips_write(tmp_workdir
     host = LocalHost(taskdir=tmp_workdir)
     await host.setup_workdir()
     # Default on_resume_refresh is identity — recompose from the same config.
-    config = OpencodeTaskConfig(consumer_instructions="task X")
+    config = OpencodeTaskConfig(consumer_instructions="task X", fs_isolation=False)
     expected = compose_agents_md(
         config.consumer_instructions,
         workdir_exclude=config.workdir_exclude,
@@ -538,6 +545,7 @@ async def test_maybe_refresh_on_resume_changed_content_writes(tmp_workdir):
     config = OpencodeTaskConfig(
         consumer_instructions="old task",
         on_resume_refresh=lambda c: replace(c, consumer_instructions="new task"),
+        fs_isolation=False,
     )
     old_agents = compose_agents_md(
         "old task",
@@ -575,7 +583,7 @@ async def test_maybe_refresh_on_resume_hook_raises_keeps_existing(tmp_workdir):
     await host.setup_workdir()
     await host.write_text("AGENTS.md", "existing content")
     config = OpencodeTaskConfig(
-        consumer_instructions="x", on_resume_refresh=_boom,
+        consumer_instructions="x", on_resume_refresh=_boom, fs_isolation=False,
     )
 
     refreshed = await _maybe_refresh_on_resume(host, None, config)
@@ -601,6 +609,7 @@ async def test_session_local_supports_resume_false_skips_resume_log(
     cfg = OpencodeTaskConfig(
         consumer_instructions="(scenario: happy)",
         supports_resume=False,
+        fs_isolation=False,
     )
 
     spy = AsyncMock()
@@ -640,6 +649,7 @@ async def test_session_local_supports_resume_false_skips_snapshot_capture(
     cfg = OpencodeTaskConfig(
         consumer_instructions="(scenario: happy)",
         supports_resume=False,
+        fs_isolation=False,
     )
     await run_opencode_session(ctx, cfg)
 

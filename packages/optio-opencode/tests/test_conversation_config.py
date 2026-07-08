@@ -6,6 +6,9 @@ from optio_opencode.types import OpencodeTaskConfig
 
 
 def _cfg(**kw):
+    # fs_isolation off by default here: these tests exercise conversation-mode
+    # validation, not claustrum (which would otherwise demand delivery_type).
+    kw.setdefault("fs_isolation", False)
     return OpencodeTaskConfig(consumer_instructions="do things", **kw)
 
 
@@ -45,5 +48,7 @@ def test_tool_verbosity_validated():
 
 
 def test_empty_instructions_allowed_in_conversation_mode():
-    cfg = OpencodeTaskConfig(consumer_instructions="", mode="conversation")
+    cfg = OpencodeTaskConfig(
+        consumer_instructions="", mode="conversation", fs_isolation=False,
+    )
     assert cfg.consumer_instructions == ""
