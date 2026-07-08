@@ -18,6 +18,7 @@ from optio_agents import (
     ThinkingVerbosity,
     ToolVerbosity,
 )
+from optio_agents.config_types import ClaustrumConfigMixin
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -80,12 +81,19 @@ def _identity_resume_refresh(config: "ClaudeCodeTaskConfig") -> "ClaudeCodeTaskC
     return config
 
 
-@dataclass
-class ClaudeCodeTaskConfig:
+@dataclass(frozen=True, kw_only=True)
+class ClaudeCodeTaskConfig(ClaustrumConfigMixin):
     """Configuration for one optio-claudecode task instance.
 
     See ``docs/2026-05-28-optio-claudecode-design.md`` for full field
     semantics.
+
+    Inherits the claustrum filesystem-isolation triad (``fs_isolation`` /
+    ``extra_allowed_dirs`` / ``delivery_type``) from ``ClaustrumConfigMixin``;
+    those fields stay top-level here (callers write ``fs_isolation=`` /
+    ``delivery_type=`` verbatim). Frozen because the mixin is frozen; ``kw_only``
+    because the mixin's defaulted triad would otherwise precede the required
+    ``consumer_instructions``.
     """
 
     consumer_instructions: str
@@ -114,17 +122,10 @@ class ClaudeCodeTaskConfig:
     focus_mode: bool = False
 
     # --- filesystem isolation (claustrum) ------------------------------
-    # When True (default), claude runs confined to an explicit filesystem
-    # allowlist via the claustrum Landlock sandbox. Fail-closed: if claustrum
-    # cannot be provisioned or the kernel lacks Landlock, the task refuses to
-    # launch rather than run unconfined. Set False to opt a single task out.
-    fs_isolation: bool = True
-    # Additive caller extensions to the allowlist (never masks the baseline).
-    extra_allowed_dirs: list[AllowedDir] | None = None
-    # Top-level subdir under <workdir>/deliverables/ used to route the
-    # pre-launch "newer claustrum release available" notice through the
-    # existing on_deliverable callback. MANDATORY when fs_isolation is True.
-    delivery_type: str | None = None
+    # fs_isolation / extra_allowed_dirs / delivery_type are inherited from
+    # ClaustrumConfigMixin (claustrum Landlock sandbox, fail-closed). When
+    # fs_isolation is on (default), delivery_type is MANDATORY — validated by
+    # _validate_claustrum(), called from __post_init__ below.
 
     ssh: SSHConfig | None = None
 
@@ -262,6 +263,9 @@ class ClaudeCodeTaskConfig:
     reasoning_effort: "ReasoningEffort | None" = None
 
     def __post_init__(self) -> None:
+        # Validate the inherited claustrum triad first, so a missing
+        # delivery_type (with fs_isolation on) fails fast.
+        self._validate_claustrum()
         if self.permission_mode is not None and self.permission_mode not in _VALID_PERMISSION_MODES:
             raise ValueError(
                 f"ClaudeCodeTaskConfig.permission_mode={self.permission_mode!r} "
@@ -365,16 +369,3 @@ class ClaudeCodeTaskConfig:
                 "session_restore_from is incompatible with auto_start "
                 "(a restored conversation is continued by the caller)"
             )
-        if self.fs_isolation and not (self.delivery_type and self.delivery_type.strip()):
-            raise ValueError(
-                "ClaudeCodeTaskConfig: fs_isolation is on (default) but "
-                "delivery_type is unset. Set delivery_type=<subdir> (the "
-                "deliverables/ prefix for filesystem-isolation notices), or "
-                "set fs_isolation=False to opt out."
-            )
-        for ad in self.extra_allowed_dirs or []:
-            if ad.mode not in ("ro", "rw", "rox", "rwx"):
-                raise ValueError(
-                    f"ClaudeCodeTaskConfig.extra_allowed_dirs: mode={ad.mode!r} "
-                    f"must be one of 'ro', 'rw', 'rox', 'rwx' (path={ad.path!r})."
-                )

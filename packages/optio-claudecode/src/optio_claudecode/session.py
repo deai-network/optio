@@ -116,20 +116,20 @@ async def _build_claustrum_wrap(
     is off. Shared by the iframe and conversation launch paths."""
     if not config.fs_isolation:
         return None
-    from . import fs_allowlist
+    from optio_agents import fs_grants
     cache_dir = await host_actions._resolve_cache_dir(host, config.install_dir)
     # `~/` caller extras expand against the REAL host home (the claude process
     # runs under an isolated $HOME, and grants reach claustrum verbatim).
     host_home = (
         await host.resolve_host_home() if config.extra_allowed_dirs else None
     )
-    grants = fs_allowlist.build_grant_flags(
+    grants = fs_grants.build_grant_flags(
         workdir=host.workdir,
-        claude_cache_dir=cache_dir,
+        engine_cache_dir=cache_dir,
         extra_allowed_dirs=config.extra_allowed_dirs,
         host_home=host_home,
     )
-    return [claustrum_path, "--best-effort", "--abi-min", "1", *grants, "--"]
+    return claustrum.build_claustrum_wrap(claustrum_path, grants)
 
 
 def _partials_enabled(config: ClaudeCodeTaskConfig) -> bool:
@@ -314,23 +314,14 @@ async def run_claudecode_session(
         upstream_host = os.environ.get("OPTIO_WIDGET_TUNNEL_HOST", "127.0.0.1")
         ttyd_iface = bind_addr if isinstance(host, LocalHost) else "127.0.0.1"
 
-        if config.fs_isolation and claustrum_newer and config.on_deliverable is not None:
-            rel = f"{config.delivery_type}/claustrum-update-{claustrum_newer}.md"
-            text = (
-                f"A newer claustrum release ({claustrum_newer}) is available; "
-                f"the pinned version is {claustrum.CLAUSTRUM_PINNED_TAG}. "
-                f"Audit it and consider bumping the pin."
+        if config.fs_isolation and claustrum_newer:
+            await claustrum.emit_claustrum_update_notice(
+                host, hook_ctx,
+                delivery_type=config.delivery_type,
+                on_deliverable=config.on_deliverable,
+                newer=claustrum_newer,
+                pinned=claustrum.CLAUSTRUM_PINNED_TAG,
             )
-            await host.write_text(f"deliverables/{rel}", text)
-            try:
-                await config.on_deliverable(hook_ctx, rel, text)
-            finally:
-                # Clean slate for the real agent: remove the notice file. (No
-                # optio.log "Deliverable:" line is written — this is a direct
-                # callback invocation, not the tail loop.)
-                await host.run_command(
-                    f"rm -f {__import__('shlex').quote(host.workdir.rstrip('/') + '/deliverables/' + rel)}"
-                )
 
         claude_flags = host_actions.build_claude_flags(
             permission_mode=config.permission_mode,

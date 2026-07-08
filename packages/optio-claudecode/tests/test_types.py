@@ -48,6 +48,7 @@ def test_install_dir_must_be_absolute_when_set():
         ClaudeCodeTaskConfig(
             consumer_instructions="hi",
             install_dir="relative/path",
+            fs_isolation=False,
         )
     assert "absolute" in str(exc_info.value).lower()
 
@@ -55,6 +56,7 @@ def test_install_dir_must_be_absolute_when_set():
         ClaudeCodeTaskConfig(
             consumer_instructions="hi",
             ttyd_install_dir="also-relative",
+            fs_isolation=False,
         )
 
 

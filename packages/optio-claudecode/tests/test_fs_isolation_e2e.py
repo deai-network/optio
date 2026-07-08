@@ -1,7 +1,7 @@
 """End-to-end: the allowlist optio computes, fed to a real claustrum binary,
 actually confines the command to the workdir.
 
-This ties together the security-critical path: ``fs_allowlist.build_grant_flags``
+This ties together the security-critical path: ``fs_grants.build_grant_flags``
 (what optio emits per task) -> the ``claustrum --best-effort --abi-min 1 <grants>
 -- CMD`` wrapper (what the launch builds) -> real Landlock enforcement. It asserts
 a read INSIDE the workdir succeeds and a read OUTSIDE it is denied (EACCES).
@@ -23,7 +23,7 @@ import pathlib
 
 import pytest
 
-from optio_claudecode import fs_allowlist
+from optio_agents import fs_grants
 
 
 def _claustrum_binary(tmp: pathlib.Path) -> str | None:
@@ -80,9 +80,9 @@ def test_optio_allowlist_confines_to_workdir(tmp_path):
 
     # The exact grant flags optio computes for a task, then the exact wrapper the
     # launch builds. claude_cache_dir points at a real dir so --rox has a target.
-    grants = fs_allowlist.build_grant_flags(
+    grants = fs_grants.build_grant_flags(
         workdir=str(workdir),
-        claude_cache_dir="/usr",
+        engine_cache_dir="/usr",
         extra_allowed_dirs=None,
     )
     wrap = [claustrum, "--best-effort", "--abi-min", "1", *grants, "--"]
@@ -116,14 +116,14 @@ def test_extra_allowed_dirs_widen_the_jail(tmp_path):
     f.write_text("shared")
 
     # Without the extra grant: denied.
-    grants = fs_allowlist.build_grant_flags(
-        workdir=str(workdir), claude_cache_dir="/usr", extra_allowed_dirs=None)
+    grants = fs_grants.build_grant_flags(
+        workdir=str(workdir), engine_cache_dir="/usr", extra_allowed_dirs=None)
     wrap = [claustrum, "--best-effort", "--abi-min", "1", *grants, "--"]
     assert subprocess.run([*wrap, "/bin/cat", str(f)], capture_output=True).returncode != 0
 
     # With the caller-supplied extra (ro): allowed.
-    grants2 = fs_allowlist.build_grant_flags(
-        workdir=str(workdir), claude_cache_dir="/usr",
+    grants2 = fs_grants.build_grant_flags(
+        workdir=str(workdir), engine_cache_dir="/usr",
         extra_allowed_dirs=[AllowedDir(path=str(extra), mode="ro")])
     wrap2 = [claustrum, "--best-effort", "--abi-min", "1", *grants2, "--"]
     r = subprocess.run([*wrap2, "/bin/cat", str(f)], capture_output=True)

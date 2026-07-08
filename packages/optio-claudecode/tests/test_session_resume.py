@@ -1,6 +1,7 @@
 """Full-cycle resume test for optio-claudecode against fake_claude.py."""
 
 import asyncio
+import dataclasses
 import json
 import os
 import pathlib
@@ -321,8 +322,10 @@ async def test_resume_relocates_old_root_claude_json(
         )
 
     ctx = await _make_ctx(mongo_db, pid, resume=False)
-    cfg = _cfg(shim_install_dir, claude_cache_dir, "idempotent_done")
-    cfg.before_execute = _plant_old_root
+    cfg = dataclasses.replace(
+        _cfg(shim_install_dir, claude_cache_dir, "idempotent_done"),
+        before_execute=_plant_old_root,
+    )
     monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "idempotent_done")
     await run_claudecode_session(ctx, cfg)
 
@@ -335,8 +338,10 @@ async def test_resume_relocates_old_root_claude_json(
         observed["old"] = os.path.exists(f"{wd}/home/.claude.json")
 
     ctx2 = await _make_ctx(mongo_db, pid, resume=True)
-    cfg2 = _cfg(shim_install_dir, claude_cache_dir, "idempotent_done")
-    cfg2.before_execute = _assert_relocated
+    cfg2 = dataclasses.replace(
+        _cfg(shim_install_dir, claude_cache_dir, "idempotent_done"),
+        before_execute=_assert_relocated,
+    )
     await run_claudecode_session(ctx2, cfg2)
 
     assert observed.get("new") is True, "resume must relocate .claude.json into .claude/"
