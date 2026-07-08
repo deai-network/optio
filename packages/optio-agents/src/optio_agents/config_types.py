@@ -27,3 +27,36 @@ class AllowedDir:
     def __post_init__(self) -> None:
         if self.mode not in ("ro", "rw", "rox", "rwx"):
             raise ValueError(f"AllowedDir.mode={self.mode!r} must be ro/rw/rox/rwx")
+
+
+@dataclass(frozen=True)
+class ClaustrumConfigMixin:
+    """The claustrum filesystem-isolation triad, shared by every engine
+    TaskConfig via inheritance. Fields stay top-level on each config (no nesting)
+    so callers write ``fs_isolation=`` / ``delivery_type=`` verbatim.
+
+    Claustrum (Landlock, fail-closed) is the trusted fs-isolation layer on every
+    engine. ``delivery_type`` names a subdir under ``<workdir>/deliverables/``
+    used to route the "a newer claustrum release is available" notice through
+    ``on_deliverable`` — MANDATORY when ``fs_isolation`` is on, because a new
+    release may patch a vulnerability the operator must hear about immediately."""
+    fs_isolation: bool = True
+    extra_allowed_dirs: list[AllowedDir] | None = None
+    delivery_type: str | None = None
+
+    def _validate_claustrum(self) -> None:
+        """Raise if the claustrum triad is inconsistent. Call from each engine
+        config's ``__post_init__``."""
+        if self.fs_isolation and not (self.delivery_type and self.delivery_type.strip()):
+            raise ValueError(
+                f"{type(self).__name__}: fs_isolation is on (default) but "
+                "delivery_type is unset. Set delivery_type=<subdir> (routes the "
+                "'newer claustrum available' security notice via on_deliverable), "
+                "or set fs_isolation=False to opt out."
+            )
+        for ad in self.extra_allowed_dirs or []:
+            if ad.mode not in ("ro", "rw", "rox", "rwx"):
+                raise ValueError(
+                    f"{type(self).__name__}.extra_allowed_dirs: mode={ad.mode!r} "
+                    "must be ro/rw/rox/rwx."
+                )
