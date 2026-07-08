@@ -222,14 +222,34 @@ async def test_cancel_shared_deadline_across_subtree(mongo_db):
     else:
         raise AssertionError("children never registered in _cancellation_flags")
 
-    await optio.cancel("parent")
+    # Capture each shared deadline at the moment it is assigned, rather than
+    # snapshotting survivors after cancel() returns. Children unwind
+    # cooperatively and pop their own _cancellation_flags entry *during* the
+    # awaits inside cancel(), so a post-cancel read races that removal and sees
+    # fewer than 3 entries under CPU load (the "got 1"/"got 2" flake). Spying
+    # request_cancel_with_deadline observes exactly the invariant under test —
+    # one cancel sweep assigns one shared deadline across the subtree — and is
+    # immune to entries being removed as children finish.
+    seen_deadlines: list[float] = []
+    _orig_rcwd = optio._executor.request_cancel_with_deadline
 
-    # Inspect deadlines in the executor's cancellation_flags map.
-    entries = optio._executor._cancellation_flags
-    deadlines = [entry.deadline for entry in entries.values() if entry.deadline is not None]
-    assert len(deadlines) >= 3, f"expected >=3 entries, got {len(deadlines)}: {deadlines}"
-    assert all(d == deadlines[0] for d in deadlines), (
-        f"deadlines diverge: {deadlines}"
+    def _spy_rcwd(process_oid, deadline):
+        ok = _orig_rcwd(process_oid, deadline=deadline)
+        if ok:
+            seen_deadlines.append(deadline)
+        return ok
+
+    optio._executor.request_cancel_with_deadline = _spy_rcwd
+    try:
+        await optio.cancel("parent")
+    finally:
+        optio._executor.request_cancel_with_deadline = _orig_rcwd
+
+    assert len(seen_deadlines) >= 3, (
+        f"expected >=3 cancel requests, got {len(seen_deadlines)}: {seen_deadlines}"
+    )
+    assert all(d == seen_deadlines[0] for d in seen_deadlines), (
+        f"deadlines diverge: {seen_deadlines}"
     )
 
     await asyncio.wait_for(runner, timeout=10.0)
