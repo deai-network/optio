@@ -41,6 +41,11 @@ def test_env_isolation_and_done_error():
     assert "CLAUDE_CONFIG_DIR=/w/task/home/.claude" in env   # claude-compat neutralized
     assert "echo DONE" in cmd and "ERROR: grok exited" in cmd
     assert "--no-leader" in cmd
+    # grok's stderr is captured to a file and surfaced on failure (not swallowed
+    # to the tmux pane): sanitized dump + the last stderr line as the ERROR reason
+    assert ".optio-grok-launch.err" in cmd
+    assert "grok-stderr| " in cmd            # sanitized prefix (can't spoof the protocol)
+    assert "${reason:+: $reason}" in cmd     # reason appended to the terminal ERROR line
 
 
 def _flags(**over):
