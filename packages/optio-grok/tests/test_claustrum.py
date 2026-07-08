@@ -46,8 +46,11 @@ async def test_build_claustrum_wrap_shape():
     wrap = await grok_session._build_claustrum_wrap(host, config, "/c/claustrum")
     assert wrap[:4] == ["/c/claustrum", "--best-effort", "--abi-min", "1"]
     assert wrap[-1] == "--"
-    # workdir rwx grant + grok-cache rox grant, trailing (just before `--`).
-    assert wrap[-5:] == ["--rwx", "/wd", "--rox", "/opt/grok/cache", "--"]
+    # workdir rwx grant + grok-cache-ROOT rox grant, trailing (just before `--`).
+    # The rox grant is the PARENT of the resolved cache/bin dir (/opt/grok/cache
+    # -> /opt/grok): grok's real ELF is a symlink target in the sibling
+    # <root>/.grok/downloads, outside the bin dir, so bin alone gets exec-denied.
+    assert wrap[-5:] == ["--rwx", "/wd", "--rox", "/opt/grok", "--"]
     # system baseline present.
     assert "--rox" in wrap and "/usr" in wrap
 

@@ -117,12 +117,18 @@ async def _build_claustrum_wrap(
         return None
     from optio_agents import fs_grants
     cache_dir = await host_actions._resolve_grok_cache_dir(host, config.install_dir)
+    # grok's installer symlinks <cache>/bin/grok -> <cache-root>/.grok/downloads/
+    # <binary>; the REAL ELF lives in that sibling .grok/downloads dir, so the
+    # rox grant must cover the cache ROOT (the parent of the bin dir), not just
+    # bin — Landlock resolves the symlink to the real path and denies the exec
+    # otherwise (observed: "claustrum: permission denied", exit 126).
+    cache_root = os.path.dirname(cache_dir.rstrip("/"))
     host_home = (
         await host.resolve_host_home() if config.extra_allowed_dirs else None
     )
     grants = fs_grants.build_grant_flags(
         workdir=host.workdir,
-        engine_cache_dir=cache_dir,
+        engine_cache_dir=cache_root,
         extra_allowed_dirs=config.extra_allowed_dirs,
         host_home=host_home,
     )
