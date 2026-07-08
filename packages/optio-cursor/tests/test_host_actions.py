@@ -121,6 +121,23 @@ def test_env_isolation_and_done_error():
     assert "--force" in cmd
 
 
+def test_error_branch_surfaces_pane_tail():
+    """ALWAYS-ON launch-failure surfacing: the error (else) branch must tail the
+    tmux pane mirror (cursor-pane.log) into optio.log AFTER the ERROR line, so a
+    swallowed launch failure is visible in optio.log. The pane-log path is
+    derived from the workdir via pane_surfacing.pane_log_path (same call the
+    launch mirror uses), and the tail is ANSI-stripped."""
+    _env, cmd = _build_cursor_shell_command(
+        cursor_path="/x/cursor-agent", workdir="/w/task", extra_env=None,
+        cursor_flags=[],
+    )
+    # ERROR line precedes the pane tail (mirrors claudecode's ordering).
+    assert cmd.index("ERROR: cursor-agent exited") < cmd.index("cursor-pane.log")
+    assert "cursor-pane.log" in cmd
+    assert "tail -n 150" in cmd
+    assert "cursor tmux pane (tail, ANSI-stripped)" in cmd
+
+
 def test_iframe_scrubs_cursor_ssh_detection_vars():
     """Cursor's isSSH() gate refuses to spawn xdg-open (so the redirect shim can
     never capture the login URL) whenever an SSH_* var is present. The launch

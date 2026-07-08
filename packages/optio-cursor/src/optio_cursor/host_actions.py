@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, claustrum
+from optio_agents import pane_surfacing
 from optio_agents import tmux_input as _tmux_input
 from optio_host.host import proc_wait
 
@@ -816,10 +817,21 @@ def _build_cursor_shell_command(
     cursor_argv = " ".join(shlex.quote(c) for c in confined)
     log_path = f"{workdir_clean}/optio.log"
 
+    # ALWAYS-ON launch-failure surfacing: on abnormal exit, tail the tmux pane
+    # mirror (cursor-pane.log, written live by `tmux pipe-pane` set up in
+    # launch_ttyd_with_cursor) into optio.log, ANSI-stripped, after the terminal
+    # ERROR line. The mirror path is derived from workdir via the SAME
+    # pane_surfacing.pane_log_path call the launch uses, so both resolve to the
+    # same file. pipe-pane is used INSTEAD of an stdout/stderr redirect on
+    # purpose: redirecting cursor's streams makes isatty() false and the TUI
+    # never renders (see pane_surfacing docstring).
+    pane_log = pane_surfacing.pane_log_path(workdir_clean, "cursor")
+    tail_snippet = pane_surfacing.error_tail_snippet(log_path, pane_log, "cursor")
     bash_payload = (
         f"cd {shlex.quote(workdir_clean)} && {cursor_argv}; rc=$?; "
         f'if [ "$rc" = 0 ]; then echo DONE >> {shlex.quote(log_path)}; '
-        f"else printf 'ERROR: cursor-agent exited %s\\n' \"$rc\" >> {shlex.quote(log_path)}; fi"
+        f"else printf 'ERROR: cursor-agent exited %s\\n' \"$rc\" >> {shlex.quote(log_path)}; "
+        f"{tail_snippet}fi"
     )
     # Scrub cursor's SSH-detection vars (see _CURSOR_SSH_DETECT_VARS) so its
     # login opens the browser via xdg-open (captured by the redirect shim)
@@ -1156,6 +1168,19 @@ async def launch_ttyd_with_cursor(
     session_cmd = " ".join(shlex.quote(a) for a in session_argv)
     await _launch_detached_checked(
         host, session_cmd, env_remove=env_remove, what="tmux new-session",
+    )
+
+    # 1b) ALWAYS-ON launch-failure surfacing: mirror the live pane to
+    #     cursor-pane.log (OUTSIDE the workdir, so it survives the workdir
+    #     teardown). pipe-pane copies the PTY output stream — it does NOT insert
+    #     a pipe in cursor's fd chain, so the TUI is unaffected (a redirect would
+    #     make isatty() false and break the TUI). The wrapper tails this on
+    #     abnormal exit (see _build_cursor_shell_command). Runs OUTSIDE claustrum
+    #     (tmux + surrounding bash are unwrapped), so /tmp is reachable.
+    pane_log = pane_surfacing.pane_log_path(host.workdir, "cursor")
+    await host.run_command(pane_surfacing.mkdir_pane_dir_cmd(pane_log))
+    await host.run_command(
+        pane_surfacing.pipe_pane_cmd(tmux_path, socket_path, session_name, pane_log)
     )
 
     # 2) Start ttyd attaching to the live session.
