@@ -71,6 +71,20 @@ def _auth(pw):
     return {"Authorization": f"Basic {token}"}
 
 
+async def _wait_until(pred, timeout: float = 60.0, step: float = 0.02):
+    """Poll until pred() is truthy. Waits for the OBSERVABLE event rather than
+    a fixed wall-clock duration, so it survives arbitrary CPU starvation; the
+    generous ceiling only bounds a true hang."""
+    import time as _time
+
+    end = _time.monotonic() + timeout
+    while _time.monotonic() < end:
+        if pred():
+            return
+        await asyncio.sleep(step)
+    raise AssertionError("condition not met within deadline")
+
+
 @pytest.fixture
 async def listener():
     conv = FakeConversation()
@@ -196,7 +210,9 @@ async def test_permission_roundtrip_by_jsonrpc_id(listener):
         input = {"command": "echo hi"}
 
     task = asyncio.create_task(conv.perm_handler(Req()))
-    await asyncio.sleep(0.05)
+    # Wait until the handler has registered the pending permission (observable
+    # state) rather than assuming it happened within a fixed sleep.
+    await _wait_until(lambda: "99" in lst._pending_permissions)
     async with aiohttp.ClientSession() as s:
         r = await s.post(f"{url}/permission",
                          json={"request_id": "99", "behavior": "allow"},
@@ -245,7 +261,9 @@ async def test_stop_resolves_pending_permission_with_deny(listener):
         input = {}
 
     task = asyncio.create_task(conv.perm_handler(Req()))
-    await asyncio.sleep(0.05)
+    # Wait until the pending permission is registered before stopping, so the
+    # stop path actually has a pending future to resolve with deny.
+    await _wait_until(lambda: "41" in lst._pending_permissions)
     await lst.stop()
     decision = await asyncio.wait_for(task, 60)
     assert decision.behavior == "deny"

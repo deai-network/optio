@@ -229,7 +229,10 @@ async def test_conversation_ui_publishes_widget(shim_install_dir, task_root, mon
             proc = await optio.get_process("cx-conv-ui")
             return (proc or {}).get("widgetData") or {}
 
-        end = _time.monotonic() + 10
+        # Poll until the widget data reports the codex protocol. Generous
+        # ceiling only bounds a true hang — a tight window would flake when the
+        # CPU is starved and the listener simply hasn't published yet.
+        end = _time.monotonic() + 60
         wd: dict = {}
         while _time.monotonic() < end:
             wd = await _widget_data()

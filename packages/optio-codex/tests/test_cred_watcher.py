@@ -162,7 +162,9 @@ async def test_watcher_saves_back_on_change(mongo_db, host, tmp_path, monkeypatc
     ))
     _write_auth(host.workdir, _chatgpt_auth("T2"))
     try:
-        for i in range(40):
+        # Iteration-bounded poll (each step yields the loop to the watcher);
+        # a generous count only bounds a true hang under CPU starvation.
+        for i in range(2000):
             await asyncio.sleep(0.05)
             dst = LocalHost(taskdir=str(tmp_path / f"chk{i}"))
             await dst.setup_workdir()
@@ -216,7 +218,9 @@ async def test_watcher_cancels_session_on_lease_loss(mongo_db, host, monkeypatch
     )
     assert stolen == seed_id
 
-    for _ in range(60):
+    # Iteration-bounded poll (generous count only bounds a true hang under
+    # CPU starvation; each step yields the loop to the watcher task).
+    for _ in range(2000):
         await asyncio.sleep(0.05)
         if ctx.cancellation_flag.is_set():
             break

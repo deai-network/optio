@@ -2,6 +2,7 @@ import asyncio
 import re
 import shutil
 import subprocess
+import time as _time
 
 import pytest
 
@@ -195,7 +196,14 @@ async def test_kill_codex_processes_spares_other_tasks(tmp_path):
         taskdir_a = str(tmp_path / "a")
         host = LocalHost(taskdir=taskdir_a)
         await kill_codex_processes(host, paths[0])
-        await asyncio.sleep(0.5)
+        # Wait for the OBSERVABLE event (task A's process actually exiting)
+        # rather than assuming it happens within a fixed wall-clock window —
+        # under CPU starvation the reap can lag arbitrarily. Generous ceiling
+        # only bounds a true hang. task B is `sleep 30`, so it stays alive for
+        # the whole window and the survivor check remains meaningful.
+        _deadline = _time.monotonic() + 60.0
+        while procs[0].poll() is None and _time.monotonic() < _deadline:
+            await asyncio.sleep(0.02)
         assert procs[0].poll() is not None, "task A's codex should be dead"
         assert procs[1].poll() is None, "task B's codex must survive"
     finally:
