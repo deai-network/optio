@@ -1,4 +1,5 @@
 import type { CSSProperties } from 'react';
+import type { AgentType } from 'optio-agents-ui';
 
 // On-brand "agent is working" spinners, one per engine. Rendered by
 // ConversationView in place of the generic antd <Spin> when a task opts in via
@@ -13,8 +14,8 @@ import type { CSSProperties } from 'react';
 // and grok (3x3 snake matrix) are built to the brand's own spec/geometry.
 // Retuning a mark is a local edit here; it never touches the wiring.
 
-export type SpinnerEngine =
-  | 'claudecode' | 'opencode' | 'grok' | 'codex' | 'cursor' | 'kimicode' | 'antigravity';
+// The engine set is owned by optio-agents-ui (generated from the Python SSOT).
+export type SpinnerEngine = AgentType;
 
 // @keyframes can't be expressed inline, so (like ConversationView's flash/copy
 // styles) inject them once into the document head, keyed by a stable id.

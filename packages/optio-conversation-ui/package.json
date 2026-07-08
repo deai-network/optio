@@ -33,6 +33,7 @@
   "dependencies": {
     "katex": "^0.16.47",
     "mermaid": "^11.4.0",
+    "optio-agents-ui": "workspace:*",
     "optio-ui": "workspace:*",
     "react-markdown": "^10.1.0",
     "rehype-katex": "^7.0.1",
