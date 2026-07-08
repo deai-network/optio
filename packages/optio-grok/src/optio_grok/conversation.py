@@ -73,6 +73,8 @@ from optio_agents.conversation import (
     PermissionRequest,
 )
 
+from optio_grok.info import AGENT_INFO
+
 _LOG = logging.getLogger(__name__)
 
 # ACP option `kind` prefixes for allow / reject decisions.
@@ -87,7 +89,7 @@ class GrokConversation:
         self,
         *,
         cwd: str,
-        agent_label: str = "grok",
+        agent_label: str = AGENT_INFO.slug,
         permission_gate: bool = False,
         mcp_servers: list | None = None,
     ) -> None:

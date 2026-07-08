@@ -17,6 +17,7 @@ from optio_grok.seed_manifest import (
     list_seeds,
     purge_seed,
 )
+from optio_grok.info import AGENT_INFO
 from optio_grok.session import create_grok_task, run_grok_session
 from optio_grok.verify import verify_and_refresh_seed
 from optio_grok.types import (
@@ -36,6 +37,7 @@ _logging.getLogger("asyncssh").setLevel(_logging.WARNING)
 
 
 __all__ = [
+    "AGENT_INFO",
     "create_grok_task",
     "run_grok_session",
     "GrokTaskConfig",

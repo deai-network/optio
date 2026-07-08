@@ -36,6 +36,7 @@ from optio_host.paths import task_dir
 from optio_grok import cred_watcher, host_actions
 from optio_grok import models as grok_models
 from optio_grok.conversation import GrokConversation
+from optio_grok.info import AGENT_INFO
 from optio_grok.fs_allowlist import build_sandbox_toml
 from optio_grok.conversation_listener import ConversationListener
 from optio_grok.prompt import compose_agents_md
@@ -201,7 +202,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                 hook_ctx,
                 install_if_missing=config.install_if_missing,
                 install_dir=config.install_dir,
-                progress_label="Restoring Grok Build runtime…",
+                progress_label=f"Restoring {AGENT_INFO.name} runtime…",
                 # The ensure_grok_installed call at the top of _prepare already
                 # ran the version-check/refresh for this resume; skip the second
                 # network probe — this call only needs to re-link the symlink the
@@ -332,7 +333,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             **(config.env or {}),
             **(hook_ctx.browser_launch_env or {}),
         }
-        ctx.report_progress(None, "Launching Grok Build…")
+        ctx.report_progress(None, f"Launching {AGENT_INFO.name}…")
         handle, ttyd_port, tmux_socket, tmux_session = await host_actions.launch_ttyd_with_grok(
             host,
             ttyd_path=ttyd_path,
@@ -351,7 +352,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
         await ctx.set_widget_data({
             "iframeSrc": "{widgetProxyUrl}/",
         })
-        ctx.report_progress(None, "Grok Build is live")
+        ctx.report_progress(None, f"{AGENT_INFO.name} is live")
 
         # iframe-input widget: start the engine-side input listener and publish it
         # as the control upstream. The operator types messages / drives TUI menus
@@ -443,7 +444,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             **(config.env or {}),
             **(hook_ctx.browser_launch_env or {}),
         }
-        ctx.report_progress(None, "Launching Grok Build (conversation)…")
+        ctx.report_progress(None, f"Launching {AGENT_INFO.name} (conversation)…")
         handle = await host.launch_subprocess(
             cmd, env=env, cwd=host.workdir,
             env_remove=config.scrub_env, stdin=True, merge_stderr=False,
@@ -458,7 +459,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             raise
 
         ctx.publish_result(conversation)
-        ctx.report_progress(None, "Grok Build conversation is live")
+        ctx.report_progress(None, f"{AGENT_INFO.name} conversation is live")
 
         # Opt-in dashboard chat widget: start a per-task SSE listener over the
         # published conversation and publish it as the "conversation" widget via
