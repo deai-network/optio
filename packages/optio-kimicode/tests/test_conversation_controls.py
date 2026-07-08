@@ -264,28 +264,22 @@ def test_parse_all_controls_default_effort_override():
     assert by_id["reasoning_effort"].value == "high"
 
 
-def test_parse_all_controls_always_thinking_disables_effort_slider():
-    # An always-thinking model omits the 'off' level (reasoning can't be turned
-    # off) -> the slider is disabled with a thinking-specific hover reason.
+def test_parse_all_controls_single_value_thinking_yields_no_slider():
+    # An always-thinking model advertises a SINGLE fixed level (e.g. ["on"] —
+    # reasoning can't be turned off and has no depth choice). A one-value slider
+    # is not a control (nothing to switch to), so NO reasoning_effort control is
+    # emitted at all — rendering a disabled single-tick slider is pure noise.
     config_options = [
         {"type": "select", "id": "model", "currentValue": "k2t",
          "options": [{"value": "k2t", "name": "K2 Thinking"},
                      {"value": "k2", "name": "K2"}]},
         {"type": "select", "id": "thinking", "category": "thought_level",
-         "currentValue": "high",
-         "options": [{"value": "low", "name": "Low"},
-                     {"value": "medium", "name": "Medium"},
-                     {"value": "high", "name": "High"}]},
+         "currentValue": "on",
+         "options": [{"value": "on", "name": "On"}]},
     ]
     by_id = {c.id: c for c in parse_all_controls(config_options)}
-    eff = by_id["reasoning_effort"]
-    assert eff.kind == "slider" and eff.disabled is True
-    assert eff.why_disabled == "This model always thinks; thinking can't be turned off."
-    assert eff.to_dict()["whyDisabled"]
-    # the graded levels are still carried so the locked slider shows the grade.
-    assert eff.levels == ["low", "medium", "high"] and eff.value == "high"
-    # a 2-model picker is still switchable
-    assert by_id["model"].disabled is False
+    assert "reasoning_effort" not in by_id   # single-value slider is skipped
+    assert by_id["model"].disabled is False  # 2-model picker still switchable
 
 
 def test_parse_all_controls_boolean_thinking_yields_off_on_slider():
