@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "optio-antigravity"
-version = "0.1.0"
+version = "0.1.1"
 description = "Run Google Antigravity (agy) as an optio task; local subprocess or remote via SSH; ttyd-served TUI iframe or transcript-driven conversation."
 readme = "README.md"
 license = "Apache-2.0"
