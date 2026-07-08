@@ -1,9 +1,11 @@
 # Writing an optio Coding-Agent Wrapper
 
 This is the porting guide for running a new coding agent as an optio task. optio
-already wraps two agents — **Claude Code** (`optio-claudecode`) and **opencode**
-(`optio-opencode`) — and this guide is how you add more (codex, cursor, grok, …)
-quickly and consistently.
+already ships **seven** wrappers — antigravity, claudecode, codex, cursor, grok,
+kimicode, and opencode — and this guide is how you add the next one quickly and
+consistently. **Claude Code** (`optio-claudecode`) and **opencode**
+(`optio-opencode`) are the two most-documented references; the guide points into
+them throughout, but every shipped wrapper is a live example.
 
 **How to read this guide.** For each thing a wrapper must provide, the guide gives
 the *goal* (what capability, and why), the *interface to implement* (the method,
@@ -24,11 +26,27 @@ name what is still missing so it is a tracked gap, not a silent one.
 
 ### What a wrapper is
 
-A wrapper is a **`TaskInstance` factory that bundles mode-adapters.** It exposes a
+A wrapper is a **`TaskInstance` factory that bundles mode-adapters.** It supplies a
 `create_<agent>_task(...)` function returning an optio-core `TaskInstance`, plus a
 config dataclass. Internally it runs the agent as a managed subprocess (local or
 over SSH) and binds it to one or more optio *surfaces* (an embedded UI, a live
 conversation object, the dashboard chat widget).
+
+**The caller-facing entry point is `create_task`, not your factory.** Callers go
+through the single meta-factory `create_task(process_id, name, config)` in
+`optio-agents-all`, which dispatches on `config.agent_type` to the right per-engine
+`create_<agent>_task`. Your `create_<agent>_task` is therefore an *implementation
+detail behind the registry* — reachable, but not what consumers import. For this to
+work your config dataclass must carry a **required `agent_type` discriminator**
+(`agent_type: Literal["<engine>"] = "<engine>"`) so the union and the registry can
+route on it. See [The meta-factory](#the-meta-factory-optio-agents-all).
+
+**Every wrapper also ships `optio_<engine>/info.py` → `AGENT_INFO`.** It is an
+`AgentInfo(slug, name, url)` (the type comes from `optio_agents`), exported from the
+wrapper `__init__`, and is the SSOT for the engine's user-facing name/URL. Never
+retype an engine's display name in a message or label — reference `AGENT_INFO.name`.
+`optio-agents-all` aggregates all seven into `AGENTS` / `get_agent_info(agent_type)`
+so cross-engine consumers can look any of them up.
 
 The heavy lifting is already generic. The shared driver owns the workdir lifecycle,
 the coordination-log loop, the hook context, and the seed/resume machinery. Your
@@ -60,12 +78,41 @@ interactive surface for that operation and/or pre-provision identity with a
 |---|---|---|
 | `optio-core` | engine, scheduler, `TaskInstance`, `ProcessContext` (`ctx`), `publish_result` / `launch_and_await_result` | base |
 | `optio-host` | transport: `Host` protocol with `LocalHost` / `RemoteHost` (SSH) | → optio-core |
-| `optio-agents` | **the wrapper contracts**: the log-protocol driver, the `Conversation` protocol, `HookContext`, the prompt SSOT, the seed/lease engine | → optio-host, optio-core |
+| `optio-agents` | **the wrapper contracts**: the log-protocol driver, the `Conversation` protocol, `HookContext`, the prompt SSOT, the seed/lease engine, the shared config-value vocabulary (`config_types.py`), and `AgentInfo` (`agent_info.py`) | → optio-host, optio-core |
 | `optio-conversation-ui` | engine-neutral React chat widget; renders any wrapper that provides a reducer + adapter | frontend |
 | **`optio-<agent>`** | **your wrapper** | → optio-core, optio-host, optio-agents |
+| `optio-agents-all` | **the single entry point / meta-factory**: the `AgentType` + `AgentTaskConfig` unions, `create_task` (registry dispatch), and the `AGENTS` / `get_agent_info` metadata map | → every wrapper |
 
-Reference wrappers: `packages/optio-claudecode`, `packages/optio-opencode`.
-Every part below points into them.
+The seven shipped wrappers are `optio-{antigravity,claudecode,codex,cursor,grok,kimicode,opencode}`.
+`packages/optio-claudecode` and `packages/optio-opencode` are the most-documented
+references and the parts below point into them, but any shipped wrapper is a live
+example. Shared config-value types (`ConversationMode`, `ToolVerbosity`,
+`AllowedDir`, …) are defined **once** in `optio-agents/…/config_types.py` and
+imported by wrappers — never redefined per wrapper (see [Appendix D](#appendix-d--task-configuration-surface)).
+
+### The meta-factory (optio-agents-all)
+
+`optio-agents-all` is **the** entry point consumers use; a wrapper is not fully
+wired until it is registered here. It exposes three things a consumer needs and one
+your wrapper must feed:
+
+- **`AgentType`** — a `Literal` union of every engine's slug
+  (`optio_agents_all/types.py`). Add your slug here.
+- **`AgentTaskConfig`** — a discriminated union of the seven wrapper `TaskConfig`
+  dataclasses, discriminated on the `agent_type` field each one declares. Add your
+  `TaskConfig` here.
+- **`create_task(process_id, name, config, description=None, metadata=None)`**
+  (`factory.py`) — looks up `config.agent_type` in a
+  `_REGISTRY: dict[AgentType, Callable]` and calls the matching per-engine
+  `create_<engine>_task`. Register your factory in `_REGISTRY`.
+- **`AGENTS` / `get_agent_info(agent_type)`** (`info.py`) — the aggregated
+  `AgentInfo` map (built from each wrapper's `AGENT_INFO`), for canonical
+  name/URL lookup by any consumer.
+
+`create_task` and all seven `*TaskConfig` are re-exported from
+`optio_agents_all/__init__.py`. The per-engine `create_<engine>_task` stays an
+implementation detail behind the registry — consumers dispatch through
+`create_task`, never by importing your factory directly.
 
 ---
 
@@ -418,13 +465,18 @@ verbosity in the conversation UI. **Touches.** `permission_gate`;
 **Session controls are one engine-neutral contract, not a bespoke model dropdown.**
 The model picker is just the `id:"model"` entry in a generic `SessionControl[]`
 (`optio_agents.session_controls`, mirrored in `conversation-ui/src/chat.ts`). Each
-control is `select` / `boolean` / `segmented`, carries its `value` + `disabled` /
-`whyDisabled`, and is emitted in `widgetData.controls`; the shared `ConversationView`
-renders them generically and calls `onControlChange(id, value)`, which routes to the
-wrapper's `Conversation.set_control(id, value)` (via a `/control` listener route, or
-UI-local where the agent has no round-trip). Expose **every** live control the agent
-offers, not only the model — kimi additionally surfaces `thinking` and `mode` from
-its ACP `configOptions`. A control that collapses to ≤1 option is auto-marked
+control's `kind` is `select` / `boolean` / `segmented` / `slider`, carries its
+`value` + `disabled` / `whyDisabled`, and is emitted in `widgetData.controls`; the
+shared `ConversationView` renders them generically and calls `onControlChange(id,
+value)`, which routes to the wrapper's `Conversation.set_control(id, value)` (via a
+`/control` listener route, or UI-local where the agent has no round-trip). Two
+builders ship: `model_control(...)` (`id:"model"`) and `effort_control(...)`, which
+produces the `id:"reasoning_effort"` **slider** from the engine's ordered effort
+levels — surface it wherever a per-task `reasoning_effort` config field exists (e.g.
+codex's `ReasoningEffort` literal). Expose **every** live control the agent offers,
+not only the model — kimi additionally surfaces `thinking` and `mode` from its ACP
+`configOptions`, and effort-capable engines add the reasoning-effort slider. A
+control that collapses to ≤1 option is auto-marked
 `disabled` with a reason (e.g. an always-thinking model can't toggle thinking off),
 which the UI greys and explains on hover.
 
@@ -737,11 +789,22 @@ is required for every wrapper.
 - **Package.** `packages/optio-<agent>/` with its own `pyproject.toml` (setuptools,
   `src/` layout), depending on `optio-core` / `optio-host` / `optio-agents`. Mirror
   either reference wrapper's `pyproject.toml`.
+- **`info.py` / `AGENT_INFO`.** Ship `optio_<agent>/info.py` defining
+  `AGENT_INFO = AgentInfo(slug=…, name=…, url=…)` (the canonical, user-facing
+  name/URL SSOT), export it from the wrapper `__init__`, and use `AGENT_INFO.name`
+  for every user-facing engine label/message — never a retyped display name.
+- **Register in `optio-agents-all` (required).** The wrapper is invisible to
+  consumers until it is in the meta-factory:
+  1. add your slug to the `AgentType` union and your `TaskConfig` to the
+     `AgentTaskConfig` union in `optio-agents-all/…/types.py`;
+  2. add `create_<agent>_task` to `_REGISTRY` in `…/factory.py`;
+  3. re-export your `<Engine>TaskConfig` from `…/__init__.py`;
+  4. add your `AGENT_INFO` to the `AGENTS` map in `…/info.py`.
 - **Editable install + release lists.** Add the package to the demo's install list
   and the repo's release list so it is built and shipped. **Reference.** the
   `LOCAL_PKGS` / `install -e` lines in `packages/optio-demo/Makefile`, the
-  `RELEASABLE_PY` list in the root `Makefile`, and the demo's `pyproject.toml`
-  `dependencies`.
+  `PY_PACKAGES` / `RELEASABLE_PY` lists in the root `Makefile` (which already carry
+  `optio-agents-all`), and the demo's `pyproject.toml` `dependencies`.
 
 ### Demo tasks (`optio-demo`)
 **Goal.** Every wrapper ships demo tasks so it is exercised in the real dashboard,
@@ -767,7 +830,11 @@ against the reference and keep it identical.
 **Interface to implement.** Expose `async def get_tasks(services) -> list[TaskInstance]`
 in `optio_demo/tasks/<agent>.py` (services gives `db`, `prefix`, and the framework
 handle), then aggregate it in `optio_demo/tasks/__init__.py`'s
-`get_task_definitions`. Build each task with your `create_<agent>_task(...)` factory.
+`get_task_definitions`. Build each task through the single entry point:
+`from optio_agents_all import <Engine>TaskConfig, create_task`, construct your
+`<Engine>TaskConfig` (its `agent_type` discriminator routes it), then
+`create_task(process_id, name, config, description=…, metadata=…)` — not your
+per-engine factory directly.
 
 **Reference.** `packages/optio-demo/src/optio_demo/tasks/claudecode.py` and
 `…/opencode.py` (the seed-setup + seed-pinned task pair, and the
@@ -816,7 +883,7 @@ A finished wrapper covers this surface. `req` = expected for any wrapper;
 | 25 | filesystem isolation (Landlock) | opt | claudecode `fs_allowlist.py` |
 | 26 | browser handling (ignore/suppress/redirect) | req | `get_protocol(browser=…)` |
 | 27 | headless-login strategy | req* | seeds / interactive fallback / redirect rewrite |
-| 28 | packaging + editable/release registration | req | `optio-demo/Makefile`, root `Makefile` `RELEASABLE_PY` |
+| 28 | packaging + editable/release registration + **register in `optio-agents-all`** (`AgentType` + `AgentTaskConfig` union + `_REGISTRY` + `AGENTS`) | req | `optio-demo/Makefile`, root `Makefile` `PY_PACKAGES`/`RELEASABLE_PY` (already carry `optio-agents-all`, a demo dep); `optio-agents-all/…/{types,factory,info}.py` |
 | 29 | demo tasks: seed-setup + two seed-pinned (iframe & conversation) | req | `optio-demo/…/tasks/{claudecode,opencode}.py` |
 | 30 | **real-binary E2E of every surface** (not just the fake harness) | req | [Testing checklist](#testing-fakes-for-logic-the-real-binary-for-truth); `test_*_sandbox_enforce.py` |
 
@@ -839,7 +906,13 @@ died on first real launch, all with a green suite.
 | `build_log_channel_prompt`, `RESUME_NOTICE` | `optio-agents/…/protocol/prompt.py` |
 | `Conversation`, `PermissionRequest`, `PermissionDecision`, `ConversationClosed` | `optio-agents/…/conversation.py` |
 | `HookContext`, `HookContextProtocol` | `optio-agents/…/context.py` |
-| `SessionControl`, `ControlOption`, `model_control`, `Conversation.set_control` | `optio-agents/…/session_controls.py` + `…/conversation.py` |
+| `SessionControl`, `ControlOption`, `ControlKind`, `model_control`, `effort_control`, `Conversation.set_control` | `optio-agents/…/session_controls.py` + `…/conversation.py` |
+| `AgentInfo` (slug/name/url) | `optio-agents/…/agent_info.py` |
+| `ConversationMode`, `ToolVerbosity`, `ThinkingVerbosity`, `SeedProvider`, `SeedUnavailableError`, `AllowedDir` | `optio-agents/…/config_types.py` |
+| `create_task`, `_REGISTRY` | `optio-agents-all/…/factory.py` |
+| `AgentType`, `AgentTaskConfig` union | `optio-agents-all/…/types.py` |
+| `AGENTS`, `get_agent_info` | `optio-agents-all/…/info.py` |
+| `AGENT_INFO` (per-wrapper instance) | `optio-<engine>/…/info.py` |
 | `ensure_claustrum_installed` (shared fs-sandbox provisioning + functional validation) | `optio-agents/…/claustrum.py` |
 | seed/lease engine (`capture_seed`, `plant_seed`, `merge_seed`, `refresh_seed`, `acquire`, `renew_lease`, `release`, `SeedManifest`) | `optio-agents/…/seeds.py` |
 | `ChatItem`, `ChatState` | `optio-conversation-ui/src/chat.ts` |
@@ -848,9 +921,14 @@ died on first real launch, all with a green suite.
 
 ## Appendix C — Engine divergence table
 
-Same capability, different mechanism — the range of valid implementations.
+Same capability, different mechanism. The two columns below are **illustrative, not
+exhaustive** — they contrast the two reference engines to show the *shape* of valid
+divergence, not to enumerate all engines. Five more wrappers now ship (antigravity,
+codex, cursor, grok, kimicode), each with its own transport, embed, and
+teardown mechanics; the live wrappers are the source of truth for how each one
+resolves these axes.
 
-| Capability | claudecode | opencode |
+| Capability | claudecode | opencode (illustrative) |
 |---|---|---|
 | conversation transport | stream-json over stdio | HTTP + SSE (client of the spawned server) |
 | embedded UI | tmux + ttyd (TUI) | `opencode web` SPA |
@@ -884,14 +962,20 @@ HOME — each with its *own* capture/flush timing to establish the same way.
 Every wrapper's `TaskConfig` (a dataclass in its `types.py`) is what a caller sets
 per task. Accept and handle at least the parameters below — they are the
 engine-neutral contract; the reference `types.py` in either wrapper is the
-canonical field list, and new wrappers should mirror the field names for
-cross-engine consistency. **Validate them in `__post_init__`** (reject
-out-of-range enums, and cross-field constraints — e.g. `conversation_ui` requires
+canonical field list. **Do not redefine the field-value vocabulary** — import and
+re-export the shared types (`ConversationMode`, `ToolVerbosity`,
+`ThinkingVerbosity`, `SeedProvider`, `SeedUnavailableError`, `AllowedDir`) from
+`optio_agents.config_types`; they live there once so every engine agrees.
+**Add the `agent_type` discriminator** — `agent_type: Literal["<engine>"] =
+"<engine>"` — which is what the `AgentTaskConfig` union and the `create_task`
+registry route on. **Validate the rest in `__post_init__`** (reject out-of-range
+enums, and cross-field constraints — e.g. `conversation_ui` requires
 `mode="conversation"`).
 
 **Surface & task shape**
 | Parameter | Meaning / gotcha |
 |---|---|
+| `agent_type` | **Required discriminator** — `Literal["<engine>"] = "<engine>"`. Routes the `AgentTaskConfig` union and the `create_task` registry; not caller-tuned, but every `TaskConfig` must declare it. |
 | `consumer_instructions` | The task/prompt text composed into the agent's instructions file (`AGENTS.md`/`CLAUDE.md`). Empty = pure chat. |
 | `mode` | `iframe` (ttyd TUI / web SPA) vs `conversation` (headless live `Conversation`). |
 | `conversation_ui` | Publish the dashboard chat widget. Requires `mode="conversation"`. |
@@ -923,13 +1007,13 @@ out-of-range enums, and cross-field constraints — e.g. `conversation_ui` requi
 **Model / effort**
 | Parameter | Meaning |
 |---|---|
-| `model`, `effort` / `reasoning_effort` | Passed to the agent CLI. |
+| `model`, `effort` / `reasoning_effort` | Passed to the agent CLI. On effort-capable engines (e.g. codex's `ReasoningEffort` literal) `reasoning_effort` also backs the `effort_control(...)` slider (`id:"reasoning_effort"`) in the session controls (Stage 7). |
 
 **Isolation & provisioning**
 | Parameter | Meaning |
 |---|---|
 | `fs_isolation` | Kernel-enforced sandbox. **Default on**, fail-closed. |
-| `extra_allowed_dirs` | `AllowedDir(path, "ro"\|"rw")` grants beyond the workdir. |
+| `extra_allowed_dirs` | `AllowedDir(path, mode)` grants beyond the workdir; `mode` is the 4-value superset `ro`/`rw`/`rox`/`rwx` (Landlock engines fold `rox→ro`, `rwx→rw`). |
 | `scrub_env` | Env vars to strip from the launch. |
 | install-dir overrides / `install_if_missing` | Binary-cache location + auto-install toggle (Stage 5). |
 
