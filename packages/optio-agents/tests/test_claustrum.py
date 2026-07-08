@@ -69,7 +69,7 @@ async def test_cache_hit_when_functional(tmp_path):
         cache_dir=str(tmp_path / "cache"),
         engine_cache_dir=str(tmp_path / "engine"),
     )
-    assert path.endswith("/claustrum/v0.1.1/amd64/claustrum")
+    assert path.endswith(f"/claustrum/{claustrum.CLAUSTRUM_PINNED_TAG}/amd64/claustrum")
     # A functional cache hit never triggers a build (no engine cache written).
     assert not (tmp_path / "engine").exists()
 

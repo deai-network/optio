@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from optio_host import Host
 
 CLAUSTRUM_REPO = "https://github.com/deai-network/claustrum"
-CLAUSTRUM_PINNED_TAG = "v0.1.1"
+CLAUSTRUM_PINNED_TAG = "v0.1.2"
 
 # uname -m -> Go GOARCH.
 _GOARCH_BY_UNAME = {"x86_64": "amd64", "aarch64": "arm64"}
