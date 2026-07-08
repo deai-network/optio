@@ -27,7 +27,7 @@ classifiers = [
 ]
 dependencies = [
     "optio-agents>=0.5,<0.6",
-    "optio-opencode>=0.3,<0.4",
+    "optio-opencode>=0.4,<0.5",
     "optio-claudecode>=0.4,<0.5",
     "optio-grok>=0.2,<0.3",
     "optio-codex>=0.2,<0.3",
