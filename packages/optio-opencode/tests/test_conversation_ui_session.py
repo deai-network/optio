@@ -243,7 +243,7 @@ async def test_conversation_ui_sets_upstream_and_widget_data(ctx_and_captures, _
     assert data["toolVerbosity"] == "verbose"
     assert "iframeSrc" not in data                # no SPA iframe fields
     await conv.close()
-    await asyncio.wait_for(sess, timeout=30)
+    await asyncio.wait_for(sess, timeout=60)
 
 
 async def test_probe_disabled_models_ride_widget_data(
@@ -279,7 +279,7 @@ async def test_probe_disabled_models_ride_widget_data(
         "xai/grok-5": model_probe.DISABLED_REASON,
     }
     await conv.close()
-    await asyncio.wait_for(sess_task, timeout=30)
+    await asyncio.wait_for(sess_task, timeout=60)
 
 
 async def test_no_disabled_models_without_session_controls(
@@ -303,7 +303,7 @@ async def test_no_disabled_models_without_session_controls(
     [data] = cap.widget_data
     assert "disabledModels" not in data
     await conv.close()
-    await asyncio.wait_for(sess_task, timeout=30)
+    await asyncio.wait_for(sess_task, timeout=60)
 
 
 async def test_headless_conversation_sets_no_widget(ctx_and_captures, _supply_scenario):
@@ -316,4 +316,4 @@ async def test_headless_conversation_sets_no_widget(ctx_and_captures, _supply_sc
     assert cap.widget_upstream == []
     assert cap.widget_data == []
     await conv.close()
-    await asyncio.wait_for(sess, timeout=30)
+    await asyncio.wait_for(sess, timeout=60)

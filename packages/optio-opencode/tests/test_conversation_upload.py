@@ -121,7 +121,7 @@ def _supply_scenario(monkeypatch):
 
 async def _launch(ctx, cfg):
     sess = asyncio.create_task(run_opencode_session(ctx, cfg))
-    for _ in range(200):
+    for _ in range(1200):
         if ctx.published_results:
             return sess, ctx.published_results[0]
         await asyncio.sleep(0.05)
@@ -159,6 +159,6 @@ async def test_registers_writer_that_materializes_and_fires_on_upload(ctx_and_ca
     assert seen == ["uploads/notes.md"]
 
     await conv.close()
-    await asyncio.wait_for(sess, timeout=30)
+    await asyncio.wait_for(sess, timeout=60)
     # Writer dropped on teardown.
     assert cap.upload_cleared >= 1

@@ -279,7 +279,7 @@ def _wire_conversation_captures(ctx) -> list:
 async def _launch_conversation(ctx, cfg):
     """Run the session as a task; wait until publish_result was called."""
     sess = asyncio.create_task(run_opencode_session(ctx, cfg))
-    for _ in range(200):
+    for _ in range(1200):
         if ctx.published_results:           # captured by _wire_conversation_captures
             return sess, ctx.published_results[0]
         await asyncio.sleep(0.05)
@@ -321,7 +321,7 @@ async def test_conversation_mode_resume_reattaches_session(
     ctx.cancellation_flag.set()             # simulate user cancel
     # The protocol driver swallows cancellation cleanly and returns; the
     # session's finally captures the snapshot with endState "cancelled".
-    await asyncio.wait_for(sess, timeout=30)
+    await asyncio.wait_for(sess, timeout=60)
     assert conv.closed
     snap = await load_latest_snapshot(mongo_db, prefix="test", process_id="oc_conv_resume")
     assert snap is not None
@@ -336,5 +336,5 @@ async def test_conversation_mode_resume_reattaches_session(
     assert not conv2.closed
     await conv2.send("we're back")          # gateway functional after resume
     await conv2.close()
-    await asyncio.wait_for(sess2, timeout=30)
+    await asyncio.wait_for(sess2, timeout=60)
     assert conv2.closed

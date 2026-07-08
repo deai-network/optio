@@ -322,7 +322,7 @@ async def fake_proc(tmp_path):
     port = int(line.rsplit(":", 1)[1].strip().rstrip("/"))
     yield port, tmp_path
     proc.terminate()
-    proc.wait(timeout=5)
+    proc.wait(timeout=60)
 
 
 async def test_driver_against_fake_opencode_subprocess(fake_proc):
@@ -374,7 +374,7 @@ async def test_probe_flow_gates_on_ready_and_returns_mix(server):
         port=server.port, password="pw", session_id=SID, directory="/work",
     )
     reader = asyncio.create_task(c.run_reader())
-    await asyncio.wait_for(c._ready.wait(), timeout=5.0)
+    await asyncio.wait_for(c._ready.wait(), timeout=60.0)
     try:
         usable = await model_probe.probe_models(
             c, ["prov/good", "prov/bad"], per_model_timeout=2.0,

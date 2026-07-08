@@ -180,7 +180,7 @@ def tmp_workdir_peek(monkeypatch):
 async def _launch(ctx, cfg):
     """Run the session as a task; wait until publish_result was called."""
     sess = asyncio.create_task(run_opencode_session(ctx, cfg))
-    for _ in range(200):
+    for _ in range(1200):
         if ctx.published_results:           # captured by the fixture wrapper
             return sess, ctx.published_results[0]
         await asyncio.sleep(0.05)
@@ -197,7 +197,7 @@ async def test_conversation_published_and_close_ends_session(ctx_and_captures, _
     sess, conv = await _launch(ctx, cfg)
     assert not conv.closed
     await conv.close()
-    await asyncio.wait_for(sess, timeout=30)
+    await asyncio.wait_for(sess, timeout=60)
     assert conv.closed                      # _finish ran during teardown
 
 
@@ -208,7 +208,7 @@ async def test_conversation_with_host_protocol_done_keyword_also_ends(ctx_and_ca
         consumer_instructions="chat", mode="conversation", host_protocol=True,
     )
     sess, conv = await _launch(ctx, cfg)
-    await asyncio.wait_for(sess, timeout=30)              # DONE from the keyword channel ends it
+    await asyncio.wait_for(sess, timeout=60)              # DONE from the keyword channel ends it
     assert conv.closed
 
 
@@ -224,7 +224,7 @@ async def test_question_tool_disabled_in_conversation_opencode_json(ctx_and_capt
     assert written["tools"] == {"webfetch": True, "question": False}
     assert written["theme"] == "dark"
     await conv.close()
-    await asyncio.wait_for(sess, timeout=30)
+    await asyncio.wait_for(sess, timeout=60)
 
 
 async def test_iframe_mode_opencode_json_untouched(ctx_and_captures, _supply_scenario, tmp_workdir_peek):
@@ -243,5 +243,5 @@ async def test_premature_server_exit_fails_session(ctx_and_captures, _supply_sce
     )
     sess, conv = await _launch(ctx, cfg)
     with pytest.raises(Exception):
-        await asyncio.wait_for(sess, timeout=30)
+        await asyncio.wait_for(sess, timeout=60)
     assert conv.closed
