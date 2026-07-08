@@ -453,10 +453,14 @@ async def test_acquire_leases_a_free_seed(mongo_db):
     assert got == sid
     doc = await seeds.load_seed(mongo_db, prefix="t", suffix=SUFFIX, seed_id=sid)
     assert doc["lease"]["holder"] == "h1"
-    # Mongo's $$NOW (and the round-tripped expiresAt) is UTC; compare to a UTC
-    # now made naive to match the document_class tz-awareness of the client.
-    assert doc["lease"]["expiresAt"] > _dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None)
+    # Robust to CPU starvation: assert the lease TTL is in the future using only
+    # server-clock timestamps, never the client wall clock. acquire() stamps both
+    # expiresAt and lastLeasedAt from Mongo's $$NOW in a single pipeline, so
+    # expiresAt == lastLeasedAt + LEASE_TTL_SECONDS regardless of how long the
+    # test then takes to run. Comparing against a client-side now() could flake
+    # if >LEASE_TTL_SECONDS of real time elapsed between acquire and this assert.
     assert "lastLeasedAt" in doc
+    assert doc["lease"]["expiresAt"] > doc["lastLeasedAt"]
 
 
 async def test_acquire_is_exclusive_and_returns_none_when_exhausted(mongo_db):
