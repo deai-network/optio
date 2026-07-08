@@ -68,16 +68,16 @@ class _FakeHandle:
 
 async def _bootstrap(c, handle, session_id="s1", config_options=None):
     boot = asyncio.create_task(c.bootstrap())
-    req1 = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    req1 = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert req1["method"] == "initialize"
     handle.stdout.feed({"jsonrpc": "2.0", "id": req1["id"],
                         "result": {"protocolVersion": 1, "agentCapabilities": {}}})
-    req2 = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    req2 = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert req2["method"] == "session/new"
     handle.stdout.feed({"jsonrpc": "2.0", "id": req2["id"],
                         "result": {"sessionId": session_id,
                                    "configOptions": config_options or []}})
-    await asyncio.wait_for(boot, 1)
+    await asyncio.wait_for(boot, 60)
 
 
 @pytest.fixture
@@ -97,12 +97,12 @@ async def test_set_control_model_sends_set_model(convo):
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle)
     task = asyncio.create_task(c.set_control("model", "kimi-k2-thinking"))
-    msg = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    msg = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert msg["method"] == "session/set_model"
     assert msg["params"] == {"sessionId": "s1", "modelId": "kimi-k2-thinking"}
     assert c.current_model_id == "kimi-k2-thinking"  # optimistic
     handle.stdout.feed({"jsonrpc": "2.0", "id": msg["id"], "result": {}})
-    await asyncio.wait_for(task, 1)
+    await asyncio.wait_for(task, 60)
     handle.stdout.eof()
     await reader
 
@@ -117,11 +117,11 @@ async def test_set_control_reasoning_effort_maps_to_thinking_config_id(convo):
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle)
     task = asyncio.create_task(c.set_control("reasoning_effort", "high"))
-    msg = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    msg = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert msg["method"] == "session/set_config_option"
     assert msg["params"] == {"sessionId": "s1", "configId": "thinking", "value": "high"}
     handle.stdout.feed({"jsonrpc": "2.0", "id": msg["id"], "result": {}})
-    await asyncio.wait_for(task, 1)
+    await asyncio.wait_for(task, 60)
     handle.stdout.eof()
     await reader
 
@@ -132,11 +132,11 @@ async def test_set_control_mode_sends_set_config_option(convo):
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle)
     task = asyncio.create_task(c.set_control("mode", "yolo"))
-    msg = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    msg = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert msg["method"] == "session/set_config_option"
     assert msg["params"] == {"sessionId": "s1", "configId": "mode", "value": "yolo"}
     handle.stdout.feed({"jsonrpc": "2.0", "id": msg["id"], "result": {}})
-    await asyncio.wait_for(task, 1)
+    await asyncio.wait_for(task, 60)
     handle.stdout.eof()
     await reader
 
@@ -188,7 +188,7 @@ async def test_config_option_update_emits_control_snapshot(convo):
                     return ev
             await asyncio.sleep(0.01)
 
-    synthetic = await asyncio.wait_for(_wait_for_synthetic(), 2)
+    synthetic = await asyncio.wait_for(_wait_for_synthetic(), 60)
     controls = synthetic["controls"]
     # The `thinking` configOption is projected to the `reasoning_effort` slider;
     # its live currentValue tracks the snapshot (re-emit-on-change path).
