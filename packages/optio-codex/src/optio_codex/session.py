@@ -24,6 +24,7 @@ from optio_host.paths import task_dir
 
 from optio_codex import cred_watcher, host_actions
 from optio_codex import models as codex_models
+from optio_codex.info import AGENT_INFO
 from optio_codex.conversation import CodexConversation
 from optio_codex.conversation_listener import ConversationListener
 from optio_codex.fs_allowlist import (
@@ -290,7 +291,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             **(config.env or {}),
             **(hook_ctx.browser_launch_env or {}),
         }
-        ctx.report_progress(None, "Launching Codex…")
+        ctx.report_progress(None, f"Launching {AGENT_INFO.name}…")
         handle, tmux_path_local, ttyd_port, tmux_socket, tmux_session = await host_actions.launch_ttyd_with_codex(
             host,
             ttyd_path=ttyd_path,
@@ -309,7 +310,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
         await ctx.set_widget_data({
             "iframeSrc": "{widgetProxyUrl}/",
         })
-        ctx.report_progress(None, "Codex is live")
+        ctx.report_progress(None, f"{AGENT_INFO.name} is live")
 
         # iframe-input widget: start the engine-side input listener and publish it
         # as the control upstream. The operator types messages / drives TUI menus
@@ -383,7 +384,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             **(config.env or {}),
             **(hook_ctx.browser_launch_env or {}),
         }
-        ctx.report_progress(None, "Launching Codex (conversation)…")
+        ctx.report_progress(None, f"Launching {AGENT_INFO.name} (conversation)…")
         handle = await host.launch_subprocess(
             cmd, env=env, cwd=host.workdir,
             env_remove=config.scrub_env, stdin=True, merge_stderr=False,
@@ -398,7 +399,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             raise
 
         ctx.publish_result(conversation)
-        ctx.report_progress(None, "Codex conversation is live")
+        ctx.report_progress(None, f"{AGENT_INFO.name} conversation is live")
 
         # Opt-in dashboard chat widget: per-task SSE listener over the
         # published conversation, reached via the widget proxy (which injects

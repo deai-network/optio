@@ -101,6 +101,7 @@ from optio_agents.conversation import (
     PermissionRequest,
 )
 from optio_codex import models as codex_models
+from optio_codex.info import AGENT_INFO
 
 _LOG = logging.getLogger(__name__)
 
@@ -120,7 +121,7 @@ class CodexConversation:
         self,
         *,
         cwd: str,
-        agent_label: str = "codex",
+        agent_label: str = AGENT_INFO.slug,
         permission_gate: bool = False,
         model: str | None = None,
         reasoning_effort: str | None = None,
