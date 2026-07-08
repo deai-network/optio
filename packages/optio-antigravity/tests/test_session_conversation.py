@@ -372,7 +372,9 @@ def test_ui_widget_per_mode():
     conv_task = create_antigravity_task(
         process_id="ag-widget-conv",
         name="Widget conv",
-        config=AntigravityTaskConfig(consumer_instructions="x", mode="conversation"),
+        config=AntigravityTaskConfig(
+            consumer_instructions="x", mode="conversation", delivery_type="audit",
+        ),
     )
     assert conv_task.ui_widget is None
 
@@ -381,6 +383,7 @@ def test_ui_widget_per_mode():
         name="Widget conv ui",
         config=AntigravityTaskConfig(
             consumer_instructions="x", mode="conversation", conversation_ui=True,
+            delivery_type="audit",
         ),
     )
     assert ui_task.ui_widget == "conversation"
@@ -388,7 +391,9 @@ def test_ui_widget_per_mode():
     iframe_task = create_antigravity_task(
         process_id="ag-widget-iframe",
         name="Widget iframe",
-        config=AntigravityTaskConfig(consumer_instructions="x"),
+        config=AntigravityTaskConfig(
+            consumer_instructions="x", delivery_type="audit",
+        ),
     )
     assert iframe_task.ui_widget == "iframe-input"
 

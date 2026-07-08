@@ -1304,7 +1304,7 @@ async def _build_claustrum_wrap(
         extra_allowed_dirs=config.extra_allowed_dirs,
         host_home=host_home,
     )
-    return [claustrum_path, "--best-effort", "--abi-min", "1", *grants, "--"]
+    return claustrum.build_claustrum_wrap(claustrum_path, grants)
 
 
 async def claustrum_newer_tag() -> str | None:

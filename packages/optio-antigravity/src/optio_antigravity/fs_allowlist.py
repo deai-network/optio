@@ -1,59 +1,25 @@
-"""Build the claustrum filesystem-allowlist flags for an agy launch.
+"""Claustrum filesystem-allowlist flags for an agy launch (thin over shared).
 
-Ported from ``optio_kimicode.fs_allowlist`` (kimi→agy); the claustrum lineage is
-claudecode → kimicode → antigravity. Three parts:
-
-  * a curated static BASELINE of what agy + its tool subprocesses need
-    (system dirs, /dev nodes, /proc, CA certs) — see ``_BASELINE``. A build-time
-    artifact distilled from a traced agent session, NOT a runtime trace.
-  * DYNAMIC per-task paths (the workdir, the agy binary cache).
-  * CALLER extras (``AntigravityTaskConfig.extra_allowed_dirs``).
-
-Output is the ordered list of claustrum grant flags, e.g.
-``["--rox", "/usr", ..., "--rwx", "/wd", "--rox", "/cache", "--ro", "/data"]``.
-Non-existent paths are harmless: claustrum ignores missing paths.
+The system baseline + the workdir/cache/extras composition are engine-neutral and
+now live in :mod:`optio_agents.fs_grants` (single source of truth for every
+wrapper). This module is a thin, agy-named delegator: it maps the agy-specific
+``agy_cache_dir`` argument onto the shared ``engine_cache_dir`` and forwards the
+rest verbatim.
 
 agy runs under an ISOLATED ``$HOME`` (``<workdir>/home``), so its ``~/.gemini``
 config/transcript/artifacts tree lives INSIDE the workdir and is already covered
-by the ``--rwx`` workdir grant — no separate ``~/.gemini`` flag is needed. The
-per-task temp likewise lives under the workdir home (XDG_* pinned there).
-
-``AllowedDir.mode`` is the shared 4-value superset (``ro``/``rw``/``rox``/``rwx``):
-each extra maps straight to the matching claustrum flag (``--ro``/``--rw``/``--rox``/
-``--rwx``, all valid). This Landlock-only sandbox treats ``rox``≡``ro`` and
-``rwx``≡``rw`` (a Landlock read/write grant already covers execution), so the
-distinction is cosmetic here. The wrapper's own fixed execute-bearing grants
-(``--rwx`` workdir, ``--rox`` cache) are not caller-driven.
+by the shared ``--rwx`` workdir grant — no separate ``~/.gemini`` flag is needed.
+The per-task temp likewise lives under the workdir home (XDG_* pinned there). A
+caller extra with a leading ``~/`` is expanded against the REAL host home (the
+shared builder does this against ``host_home``), because grants reach claustrum
+verbatim and the agy process's own ``$HOME`` is isolated.
 """
 
 from __future__ import annotations
 
-from .types import AllowedDir
+from optio_agents import fs_grants
 
-# (flag, path) baseline. --rox = read+execute (binaries/libs), --ro = read-only,
-# --rw = read+write. Missing paths are ignored by claustrum.
-_BASELINE: list[tuple[str, str]] = [
-    ("--rox", "/usr"),
-    ("--rox", "/bin"),
-    ("--rox", "/sbin"),
-    ("--rox", "/lib"),
-    ("--rox", "/lib64"),
-    ("--rox", "/lib32"),
-    ("--ro", "/etc"),
-    ("--ro", "/etc/ssl"),
-    ("--ro", "/etc/resolv.conf"),
-    ("--ro", "/proc"),
-    ("--rw", "/dev/null"),
-    ("--rw", "/dev/zero"),
-    ("--ro", "/dev/urandom"),
-    ("--ro", "/dev/random"),
-    ("--rw", "/dev/tty"),
-    # Pseudo-terminals: agy's TUI (inside tmux) and each conversation ``agy -p``
-    # turn run under a pty (`script -qec`); agy's tool subprocesses (bash) may
-    # allocate their own.
-    ("--rw", "/dev/pts"),
-    ("--rw", "/dev/ptmx"),
-]
+from .types import AllowedDir  # noqa: F401  (re-exported for existing importers)
 
 
 def build_grant_flags(
@@ -63,26 +29,17 @@ def build_grant_flags(
     extra_allowed_dirs: list[AllowedDir] | None,
     host_home: str | None = None,
 ) -> list[str]:
-    """Return the ordered list of claustrum grant flags for a launch.
+    """Return the ordered claustrum grant flags for an agy launch.
 
-    ``workdir`` (the per-task tree, incl. the isolated home and agy's ``~/.gemini``
-    state) is granted rwx so agy's tools may write and execute scripts.
-    ``agy_cache_dir`` (where the real agy binary lives, outside the workdir — the
-    launch symlink's target) is granted read+exec so agy can be exec'd under the
-    isolated ``$HOME``.
-
-    Grants reach claustrum verbatim (no shell between), and the agy process runs
-    under an isolated ``$HOME`` — so a caller extra with a leading ``~/`` is
-    expanded against ``host_home`` (the REAL host home) here.
+    Delegates to :func:`optio_agents.fs_grants.build_grant_flags`; ``agy_cache_dir``
+    (where the real agy binary lives, outside the workdir — the launch symlink's
+    target) is the shared builder's ``engine_cache_dir`` (granted read+exec so agy
+    can be exec'd under the isolated ``$HOME``). ``workdir`` (the per-task tree
+    incl. the isolated home and agy's ``~/.gemini`` state) is granted rwx.
     """
-    flags: list[str] = []
-    for flag, path in _BASELINE:
-        flags += [flag, path]
-    flags += ["--rwx", workdir.rstrip("/")]
-    flags += ["--rox", agy_cache_dir.rstrip("/")]
-    for ad in extra_allowed_dirs or []:
-        path = ad.path
-        if host_home and (path == "~" or path.startswith("~/")):
-            path = host_home.rstrip("/") + path[1:]
-        flags += [f"--{ad.mode}", path]
-    return flags
+    return fs_grants.build_grant_flags(
+        workdir=workdir,
+        engine_cache_dir=agy_cache_dir,
+        extra_allowed_dirs=extra_allowed_dirs,
+        host_home=host_home,
+    )

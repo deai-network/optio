@@ -200,6 +200,9 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                 # per-task HOME (<workdir>/home/.gemini), which is inside the
                 # sandbox, and OAuth happens in the host browser (or via a
                 # device-code URL over SSH) — so isolation does not block login.
+                # delivery_type is mandatory while fs_isolation is on (routes the
+                # 'newer claustrum available' security notice).
+                delivery_type="audit",
                 supports_resume=False,
                 on_seed_saved=_make_on_seed_saved(db, prefix, fw),
             ),
@@ -234,6 +237,9 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     before_execute=_before_execute,
                     after_execute=_after_execute,
                     on_deliverable=_on_deliverable,
+                    # Mandatory while fs_isolation is on (default): routes the
+                    # 'newer claustrum available' security notice via on_deliverable.
+                    delivery_type="audit",
                     seed_id=seed_id,
                     supports_resume=True,
                     # Kick the agent off unattended (reads AGENTS.md + executes).
@@ -265,6 +271,8 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     ssh=ssh,
                     seed_id=seed_id,
                     supports_resume=True,
+                    # Mandatory while fs_isolation is on (default).
+                    delivery_type="audit",
                 ),
             )
         )

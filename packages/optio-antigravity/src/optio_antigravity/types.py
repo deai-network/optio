@@ -21,6 +21,7 @@ from optio_agents import (
     ThinkingVerbosity,
     ToolVerbosity,
 )
+from optio_agents.config_types import ClaustrumConfigMixin
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -88,12 +89,19 @@ def _identity_resume_refresh(
     return config
 
 
-@dataclass
-class AntigravityTaskConfig:
+@dataclass(frozen=True, kw_only=True)
+class AntigravityTaskConfig(ClaustrumConfigMixin):
     """Configuration for one optio-antigravity task instance (Stage 0).
 
     Stage 0 covers iframe/ttyd mode on the local host. Resume, seeds,
     conversation mode, and filesystem isolation arrive in later stages.
+
+    The claustrum filesystem-isolation triad (``fs_isolation`` /
+    ``extra_allowed_dirs`` / ``delivery_type``) is inherited from the shared
+    ``ClaustrumConfigMixin`` — those fields stay top-level here, so callers still
+    write ``fs_isolation=`` / ``delivery_type=`` verbatim. The base is a frozen,
+    keyword-only dataclass, so this config is too (all construction is by keyword,
+    which every caller already does).
     """
 
     consumer_instructions: str
@@ -245,17 +253,18 @@ class AntigravityTaskConfig:
     max_download_bytes: int = 10_000_000
 
     # --- filesystem isolation (Stage 8) ---------------------------------
-    # Confine the agy process (and every tool/subprocess it spawns) to the
-    # task workdir + temp dirs + explicit grants, kernel-enforced via claustrum
-    # (Landlock on Linux), optionally combined with agy's native ``--sandbox``.
-    # Default-ON, fail-CLOSED: if the kernel can't apply the sandbox the launch
-    # refuses to start. Requires Landlock (kernel >= 5.13) on the worker.
-    fs_isolation: bool = True
-    # Additional path grants beyond the workdir + temp dirs. ``~/`` expands
-    # against the real host home at launch. Ignored when fs_isolation=False.
-    extra_allowed_dirs: list[AllowedDir] | None = None
+    # ``fs_isolation`` / ``extra_allowed_dirs`` / ``delivery_type`` are inherited
+    # from ``ClaustrumConfigMixin``. Claustrum (Landlock, fail-CLOSED) confines
+    # the agy process and every tool/subprocess it spawns to the task workdir +
+    # explicit grants; if the kernel can't apply the sandbox the launch refuses
+    # to start. ``delivery_type`` is MANDATORY while ``fs_isolation`` is on — it
+    # routes the "a newer claustrum release is available" security notice through
+    # ``on_deliverable`` (see ``_validate_claustrum``).
 
     def __post_init__(self) -> None:
+        # Fail fast on a missing delivery_type (or a bad extra_allowed_dirs mode)
+        # before any other check.
+        self._validate_claustrum()
         if (
             self.permission_mode is not None
             and self.permission_mode not in _VALID_PERMISSION_MODES

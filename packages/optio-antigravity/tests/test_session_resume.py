@@ -36,7 +36,7 @@ from optio_antigravity.snapshots import (
 
 def test_config_resume_defaults():
     """Stage 2: supports_resume is ON by default and workdir_exclude defaults None."""
-    c = AntigravityTaskConfig(consumer_instructions="x")
+    c = AntigravityTaskConfig(consumer_instructions="x", delivery_type="audit")
     assert c.supports_resume is True
     assert c.workdir_exclude is None
 

@@ -107,7 +107,10 @@ class _FakeHost:
 
 
 def _config(**kw) -> AntigravityTaskConfig:
-    base = dict(consumer_instructions="do it", mode="conversation", host_protocol=True)
+    base = dict(
+        consumer_instructions="do it", mode="conversation", host_protocol=True,
+        delivery_type="audit",  # mandatory while fs_isolation is on (default)
+    )
     base.update(kw)
     return AntigravityTaskConfig(**base)
 

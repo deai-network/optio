@@ -35,7 +35,9 @@ async def _post(port, payload):
 def test_iframe_task_advertises_iframe_input_widget():
     t = create_antigravity_task(
         process_id="p", name="n",
-        config=AntigravityTaskConfig(consumer_instructions="x", mode="iframe"),
+        config=AntigravityTaskConfig(
+            consumer_instructions="x", mode="iframe", delivery_type="audit",
+        ),
     )
     assert t.ui_widget == "iframe-input"
 
@@ -45,6 +47,7 @@ def test_conversation_ui_task_still_uses_conversation_widget():
         process_id="p", name="n",
         config=AntigravityTaskConfig(
             consumer_instructions="x", mode="conversation", conversation_ui=True,
+            delivery_type="audit",
         ),
     )
     assert t.ui_widget == "conversation"

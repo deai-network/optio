@@ -14,7 +14,7 @@ from optio_antigravity.types import AntigravityTaskConfig
 
 
 def _cfg(**kw):
-    base = dict(consumer_instructions="do things")
+    base = dict(consumer_instructions="do things", delivery_type="audit")
     base.update(kw)
     return AntigravityTaskConfig(**base)
 

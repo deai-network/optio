@@ -12,25 +12,29 @@ def _field_names() -> set[str]:
 def test_conversation_ui_requires_conversation_mode():
     with pytest.raises(ValueError, match="conversation_ui"):
         AntigravityTaskConfig(
-            consumer_instructions="x", mode="iframe", conversation_ui=True
+            consumer_instructions="x", mode="iframe", conversation_ui=True,
+            delivery_type="audit",
         )
 
 
 def test_default_mode_is_iframe_and_auto_start_false():
-    c = AntigravityTaskConfig(consumer_instructions="x")
+    c = AntigravityTaskConfig(consumer_instructions="x", delivery_type="audit")
     assert c.mode == "iframe"
     assert c.auto_start is False  # a conversation task must not auto-fire
 
 
 def test_invalid_permission_mode_rejected():
     with pytest.raises(ValueError):
-        AntigravityTaskConfig(consumer_instructions="x", permission_mode="bogus")
+        AntigravityTaskConfig(
+            consumer_instructions="x", permission_mode="bogus", delivery_type="audit",
+        )
 
 
 def test_native_spinner_requires_conversation_ui():
     with pytest.raises(ValueError, match="native_spinner"):
         AntigravityTaskConfig(
-            consumer_instructions="x", mode="iframe", native_spinner=True
+            consumer_instructions="x", mode="iframe", native_spinner=True,
+            delivery_type="audit",
         )
 
 
@@ -40,6 +44,7 @@ def test_native_spinner_accepted_in_conversation_ui():
         mode="conversation",
         conversation_ui=True,
         native_spinner=True,
+        delivery_type="audit",
     )
     assert c.native_spinner is True
 
@@ -53,8 +58,13 @@ def test_install_dir_renamed_and_validated():
     assert "agy_install_dir" not in names
     # absolute-path validation carried over to the renamed field.
     with pytest.raises(ValueError, match="install_dir"):
-        AntigravityTaskConfig(consumer_instructions="x", install_dir="relative/bin")
-    c = AntigravityTaskConfig(consumer_instructions="x", install_dir="/opt/agy")
+        AntigravityTaskConfig(
+            consumer_instructions="x", install_dir="relative/bin",
+            delivery_type="audit",
+        )
+    c = AntigravityTaskConfig(
+        consumer_instructions="x", install_dir="/opt/agy", delivery_type="audit",
+    )
     assert c.install_dir == "/opt/agy"
 
 
@@ -79,7 +89,7 @@ def test_ported_feature_fields_present_with_defaults():
         "use_client_messages", "on_caller_message",
     ):
         assert f in names, f
-    c = AntigravityTaskConfig(consumer_instructions="x")
+    c = AntigravityTaskConfig(consumer_instructions="x", delivery_type="audit")
     assert c.session_blob_encrypt is None
     assert c.session_blob_decrypt is None
     assert c.use_client_messages is False
@@ -93,18 +103,51 @@ def test_session_blob_transforms_must_be_paired():
     with pytest.raises(ValueError, match="session_blob"):
         AntigravityTaskConfig(
             consumer_instructions="x", session_blob_encrypt=lambda b: b,
+            delivery_type="audit",
         )
     with pytest.raises(ValueError, match="session_blob"):
         AntigravityTaskConfig(
             consumer_instructions="x", session_blob_decrypt=lambda b: b,
+            delivery_type="audit",
         )
     # both set together is fine.
     c = AntigravityTaskConfig(
         consumer_instructions="x",
         session_blob_encrypt=lambda b: b,
         session_blob_decrypt=lambda b: b,
+        delivery_type="audit",
     )
     assert c.session_blob_encrypt is not None and c.session_blob_decrypt is not None
+
+
+# --- claustrum triad (shared ClaustrumConfigMixin) --------------------------
+
+
+def test_claustrum_triad_present():
+    names = _field_names()
+    assert {"fs_isolation", "extra_allowed_dirs", "delivery_type"} <= names
+
+
+def test_fs_isolation_on_requires_delivery_type():
+    # fs_isolation defaults ON → delivery_type is mandatory (routes the
+    # 'newer claustrum available' security notice via on_deliverable).
+    with pytest.raises(ValueError, match="delivery_type"):
+        AntigravityTaskConfig(consumer_instructions="x", fs_isolation=True)
+    # bare default (fs_isolation implicitly True) raises the same way.
+    with pytest.raises(ValueError, match="delivery_type"):
+        AntigravityTaskConfig(consumer_instructions="x")
+
+
+def test_fs_isolation_off_allows_missing_delivery_type():
+    c = AntigravityTaskConfig(consumer_instructions="x", fs_isolation=False)
+    assert c.delivery_type is None
+
+
+def test_delivery_type_satisfies_the_rule():
+    c = AntigravityTaskConfig(
+        consumer_instructions="x", fs_isolation=True, delivery_type="audit"
+    )
+    assert c.delivery_type == "audit"
 
 
 def test_extra_allowed_dirs_accept_shared_superset():
@@ -114,6 +157,7 @@ def test_extra_allowed_dirs_accept_shared_superset():
         c = AntigravityTaskConfig(
             consumer_instructions="x",
             extra_allowed_dirs=[AllowedDir("/data", m)],
+            delivery_type="audit",
         )
         assert c.extra_allowed_dirs[0].mode == m
     with pytest.raises(ValueError):

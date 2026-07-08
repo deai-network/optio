@@ -111,6 +111,10 @@ async def run_antigravity_session(
     # in _prepare when config.fs_isolation (fail-closed: provisioning raises
     # rather than launching unconfined); stays None when isolation is off.
     claustrum_path: str | None = None
+    # The newest published claustrum tag when it is newer than the pinned one
+    # (else None). Captured in _prepare beside provisioning; drives the one-shot
+    # "a newer claustrum release is available" security notice.
+    claustrum_newer: str | None = None
     cancelled = False
     # Whether a snapshot was restored this run (drives --continue + the resume
     # notice + auto-start suppression). Set by _prepare, read by the body + the
@@ -150,6 +154,7 @@ async def run_antigravity_session(
         wiped by it.
         """
         nonlocal agy_path, ttyd_path, resuming, pass_continue, claustrum_path
+        nonlocal claustrum_newer
         nonlocal resolved_seed_id, lease_holder, cred_baseline
         agy_path = await host_actions.ensure_antigravity_installed(
             hook_ctx,
@@ -243,6 +248,10 @@ async def run_antigravity_session(
             claustrum_path = await host_actions.ensure_claustrum_installed(
                 hook_ctx, install_dir=config.install_dir,
             )
+            # Best-effort egress: is a newer claustrum tag published than the
+            # pinned one? Drives the security notice below (network failure → None
+            # → no notice; never blocks the launch).
+            claustrum_newer = await host_actions.claustrum_newer_tag()
 
         # Disable agy's background self-update for this task (best-effort settings
         # key) on every launch path — fresh and resume alike — so the pinned
@@ -273,6 +282,20 @@ async def run_antigravity_session(
         if config.supports_resume:
             await host_actions._append_resume_log_entry(
                 host, refreshed=refreshed_files,
+            )
+        # Stage 8: if a newer claustrum release is published, route a one-shot
+        # security notice through on_deliverable (a new release may patch a
+        # vulnerability the operator must hear about immediately), then remove the
+        # notice file so the agent starts on a clean slate. Shared prelude — fires
+        # once for both the iframe and conversation launch paths. No-op when
+        # on_deliverable is unset or no newer tag exists.
+        if config.fs_isolation and claustrum_newer:
+            await host_actions.claustrum.emit_claustrum_update_notice(
+                host, hook_ctx,
+                delivery_type=config.delivery_type,
+                on_deliverable=config.on_deliverable,
+                newer=claustrum_newer,
+                pinned=host_actions.claustrum.CLAUSTRUM_PINNED_TAG,
             )
         if config.before_execute is not None:
             await config.before_execute(hook_ctx)
