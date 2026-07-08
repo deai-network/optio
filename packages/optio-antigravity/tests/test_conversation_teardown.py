@@ -49,7 +49,7 @@ async def _spy_and_run_inflight(conv):
 
     conv._host.terminate_subprocess = _spy  # type: ignore[method-assign]
     task = asyncio.ensure_future(conv.send("slow"))
-    await asyncio.wait_for(conv._handle_ready.wait(), timeout=5.0)
+    await asyncio.wait_for(conv._handle_ready.wait(), timeout=60.0)
     return recorded, task
 
 

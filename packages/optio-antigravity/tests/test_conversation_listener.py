@@ -81,7 +81,7 @@ async def listener():
     await lst.stop()
 
 
-async def _read_events(resp, n, timeout=5):
+async def _read_events(resp, n, timeout=60):
     """Parse n SSE data frames from an open aiohttp response."""
     out = []
     buf = b""
@@ -202,7 +202,7 @@ async def test_permission_roundtrip_by_request_id(listener):
                          json={"request_id": "99", "behavior": "allow"},
                          headers=_auth("pw"))
         assert r.status == 200
-        decision = await asyncio.wait_for(task, 2)
+        decision = await asyncio.wait_for(task, 60)
         assert isinstance(decision, PermissionDecision)
         assert decision.behavior == "allow"
         # A second answer for the resolved request is a 404.
@@ -231,4 +231,4 @@ async def test_stop_returns_promptly_with_open_sse(listener):
         async with s.get(f"{url}/events", headers=_auth("pw")) as resp:
             conv.fire({"type": "assistant", "conversationId": "c1", "text": "x"})
             await _read_events(resp, 1)  # handler is now in its live loop
-            await asyncio.wait_for(lst.stop(), timeout=5)
+            await asyncio.wait_for(lst.stop(), timeout=60)

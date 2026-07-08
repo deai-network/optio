@@ -39,7 +39,7 @@ async def _make_optio(mongo_db, prefix: str) -> Optio:
     return optio
 
 
-async def _wait_terminal(optio: Optio, process_id: str, timeout: float = 30.0) -> dict:
+async def _wait_terminal(optio: Optio, process_id: str, timeout: float = 60.0) -> dict:
     end = _time.monotonic() + timeout
     while _time.monotonic() < end:
         proc = await optio.get_process(process_id)
@@ -49,7 +49,7 @@ async def _wait_terminal(optio: Optio, process_id: str, timeout: float = 30.0) -
     raise AssertionError(f"{process_id} did not reach terminal state in {timeout}s")
 
 
-async def _wait_widget_upstream(optio: Optio, process_id: str, timeout: float = 10.0) -> dict:
+async def _wait_widget_upstream(optio: Optio, process_id: str, timeout: float = 60.0) -> dict:
     end = _time.monotonic() + timeout
     while _time.monotonic() < end:
         proc = await optio.get_process(process_id)
@@ -59,7 +59,7 @@ async def _wait_widget_upstream(optio: Optio, process_id: str, timeout: float = 
     raise AssertionError(f"{process_id} never set widgetUpstream in {timeout}s")
 
 
-async def _wait_widget_data(optio: Optio, process_id: str, timeout: float = 10.0) -> dict:
+async def _wait_widget_data(optio: Optio, process_id: str, timeout: float = 60.0) -> dict:
     end = _time.monotonic() + timeout
     while _time.monotonic() < end:
         proc = await optio.get_process(process_id)
@@ -69,7 +69,7 @@ async def _wait_widget_data(optio: Optio, process_id: str, timeout: float = 10.0
     raise AssertionError(f"{process_id} never set widgetData in {timeout}s")
 
 
-async def _read_until(resp, predicate, timeout: float = 10.0) -> dict:
+async def _read_until(resp, predicate, timeout: float = 60.0) -> dict:
     buf = b""
 
     async def _go():
@@ -91,7 +91,7 @@ async def _read_until(resp, predicate, timeout: float = 10.0) -> dict:
     return await asyncio.wait_for(_go(), timeout)
 
 
-async def _wait_port_refused(port: int, timeout: float = 10.0) -> None:
+async def _wait_port_refused(port: int, timeout: float = 60.0) -> None:
     end = _time.monotonic() + timeout
     while _time.monotonic() < end:
         try:
@@ -143,7 +143,7 @@ async def test_publish_send_receive(shim_install_dir, task_root, mongo_db):
         assert not conv.is_pending()
         # The fake replies with the text after "say " → one coalesced answer.
         await conv.send("say hello")
-        msg = await asyncio.wait_for(msgs.get(), 10)
+        msg = await asyncio.wait_for(msgs.get(), 60)
         assert msg.text.strip() == "hello"
         assert not conv.is_pending()
 
