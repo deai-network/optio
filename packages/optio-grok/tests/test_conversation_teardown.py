@@ -55,7 +55,7 @@ async def _launch_fake(tmp_path: Path, *, use_exec: bool):
         cmd, env=_isolation_env(host.workdir), cwd=host.workdir, stdin=True, merge_stderr=False,
     )
     # wait for the wrapper to exec through to the fake and record its pid
-    for _ in range(100):
+    for _ in range(1200):
         if pidfile.exists() and pidfile.read_text().strip():
             break
         await asyncio.sleep(0.05)

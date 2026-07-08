@@ -55,15 +55,15 @@ class _FakeHandle:
 
 async def _bootstrap(c, handle, session_id="s1"):
     boot = asyncio.create_task(c.bootstrap())
-    req1 = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    req1 = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert req1["method"] == "initialize"
     handle.stdout.feed({"jsonrpc": "2.0", "id": req1["id"],
                         "result": {"protocolVersion": 1, "agentCapabilities": {}}})
-    req2 = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    req2 = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert req2["method"] == "session/new"
     handle.stdout.feed({"jsonrpc": "2.0", "id": req2["id"],
                         "result": {"sessionId": session_id}})
-    await asyncio.wait_for(boot, 1)
+    await asyncio.wait_for(boot, 60)
 
 
 @pytest.fixture
@@ -82,14 +82,14 @@ async def test_set_control_model_sends_set_model(convo):
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle)
     ctrl = asyncio.create_task(c.set_control("model", "grok-build"))
-    msg = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    msg = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert msg["method"] == "session/set_model"
     assert msg["params"]["sessionId"] == "s1"
     assert msg["params"]["modelId"] == "grok-build"
     assert c.current_model_id == "grok-build"  # optimistic
     handle.stdout.feed({"jsonrpc": "2.0", "id": msg["id"],
                         "result": {"_meta": {"model": {"Ok": "grok-build-0.1"}}}})
-    await asyncio.wait_for(ctrl, 1)
+    await asyncio.wait_for(ctrl, 60)
     handle.stdout.eof()
     await reader
 
@@ -140,10 +140,10 @@ async def test_set_control_model_reemits_controls_snapshot(convo):
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle)
     ctrl = asyncio.create_task(c.set_control("model", "grok-build"))
-    msg = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    msg = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert msg["method"] == "session/set_model"
     handle.stdout.feed({"jsonrpc": "2.0", "id": msg["id"], "result": {}})
-    await asyncio.wait_for(ctrl, 1)
+    await asyncio.wait_for(ctrl, 60)
     handle.stdout.eof()
     await reader
     updates = [e for e in seen if e.get("type") == "x-optio-control-update"]

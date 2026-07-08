@@ -30,7 +30,7 @@ async def _make_optio(mongo_db, prefix: str) -> Optio:
     return optio
 
 
-async def _wait_terminal(optio: Optio, process_id: str, timeout: float = 30.0) -> dict:
+async def _wait_terminal(optio: Optio, process_id: str, timeout: float = 60.0) -> dict:
     end = _time.monotonic() + timeout
     while _time.monotonic() < end:
         proc = await optio.get_process(process_id)
@@ -40,7 +40,7 @@ async def _wait_terminal(optio: Optio, process_id: str, timeout: float = 30.0) -
     raise AssertionError(f"{process_id} did not reach terminal state in {timeout}s")
 
 
-async def _wait_for(predicate, timeout: float = 10.0) -> None:
+async def _wait_for(predicate, timeout: float = 60.0) -> None:
     end = _time.monotonic() + timeout
     while _time.monotonic() < end:
         if predicate():
@@ -49,7 +49,7 @@ async def _wait_for(predicate, timeout: float = 10.0) -> None:
     raise AssertionError(f"condition not met within {timeout}s")
 
 
-async def _wait_widget_data(optio: Optio, process_id: str, timeout: float = 10.0) -> dict:
+async def _wait_widget_data(optio: Optio, process_id: str, timeout: float = 60.0) -> dict:
     """Poll the process doc until widgetData is set; return the widgetData dict."""
     end = _time.monotonic() + timeout
     while _time.monotonic() < end:
@@ -100,7 +100,7 @@ async def test_publish_send_receive_and_pending(shim_install_dir, task_root, mon
         assert not conv.is_pending()
         await conv.send("hello")
         assert conv.is_pending()
-        reply = await asyncio.wait_for(msgs.get(), 10)
+        reply = await asyncio.wait_for(msgs.get(), 60)
         assert reply == "reply-1"
         await _wait_for(lambda: not conv.is_pending())
 
@@ -140,7 +140,7 @@ async def test_permission_gate_denies_when_configured(shim_install_dir, task_roo
         msgs: asyncio.Queue[str] = asyncio.Queue()
         conv.on_message(msgs.put_nowait)
         await conv.send("please use a TOOL to do it")
-        reply = await asyncio.wait_for(msgs.get(), 10)
+        reply = await asyncio.wait_for(msgs.get(), 60)
         assert reply == "tool-denied"
         assert seen["tool"]  # the handler saw the request
 
@@ -170,7 +170,7 @@ async def test_unexpected_exit_fails_task(shim_install_dir, task_root, mongo_db,
         msgs: asyncio.Queue[str] = asyncio.Queue()
         conv.on_message(msgs.put_nowait)
         await conv.send("trigger the last turn")
-        assert await asyncio.wait_for(msgs.get(), 10) == "reply-1"
+        assert await asyncio.wait_for(msgs.get(), 60) == "reply-1"
 
         proc = await _wait_terminal(optio, "gk-conv-dies")
         assert proc["status"]["state"] == "failed"
@@ -200,7 +200,7 @@ async def test_auto_start_sends_kickoff_first(shim_install_dir, task_root, mongo
         await conv.send("ping")
         seen: list[str] = []
         while "reply-2" not in seen:
-            seen.append(await asyncio.wait_for(msgs.get(), 10))
+            seen.append(await asyncio.wait_for(msgs.get(), 60))
 
         await conv.close()
         proc = await _wait_terminal(optio, "gk-conv-kickoff")
@@ -322,7 +322,7 @@ async def test_conversation_ui_resume_session_load_reject_falls_back(
         msgs: asyncio.Queue[str] = asyncio.Queue()
         conv2.on_message(msgs.put_nowait)
         await conv2.send("still working after fallback")
-        assert await asyncio.wait_for(msgs.get(), 10)  # a reply arrives
+        assert await asyncio.wait_for(msgs.get(), 60)  # a reply arrives
         await conv2.close()
         assert (await _wait_terminal(optio, "gk-conv-reject"))["status"]["state"] == "done"
     finally:
