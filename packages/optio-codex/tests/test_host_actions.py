@@ -92,6 +92,23 @@ def test_env_isolation_and_done_error():
     assert "--model" in cmd and "gpt-test" in cmd
 
 
+def test_error_branch_tails_pane_mirror():
+    """ALWAYS-ON launch-failure surfacing: the ERROR (else) branch must append
+    the tail of the tmux pane mirror (codex-pane.log) after the ERROR line so
+    the swallowed launch failure reaches optio.log."""
+    _, cmd = _build_codex_shell_command(
+        codex_path="/x/codex", workdir="/w/task", extra_env=None,
+        codex_flags=[],
+    )
+    # The tail snippet targets the shared pane-mirror path and reads 150 lines.
+    assert "codex-pane.log" in cmd
+    assert "tail -n 150" in cmd
+    # Order: the printf ERROR line precedes the pane-tail snippet.
+    err_idx = cmd.index("ERROR: codex exited")
+    tail_idx = cmd.index("tail -n 150")
+    assert err_idx < tail_idx
+
+
 class _RecordingHost:
     """Fake Host: records run_command calls, returns success."""
 

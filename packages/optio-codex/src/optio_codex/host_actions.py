@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
 from optio_agents import claustrum
+from optio_agents import pane_surfacing
 from optio_agents import tmux_input as _tmux_input
 from optio_host.host import proc_wait
 
@@ -610,6 +611,16 @@ def _build_codex_shell_command(
     )
     log_path = f"{workdir_clean}/optio.log"
 
+    # ALWAYS-ON launch-failure surfacing: on abnormal exit, tail the tmux
+    # pane mirror (codex-pane.log, written live by `tmux pipe-pane` in
+    # launch_ttyd_with_codex) into optio.log after the ERROR line, so the real
+    # failure — whatever codex paints before exiting — is not swallowed. The
+    # mirror uses pipe-pane INSTEAD of a stdout/stderr redirect because a
+    # redirect makes isatty() false and the TUI never renders. The pane_log is
+    # derived from the same workdir the launch mirror uses, so both resolve to
+    # the same file.
+    pane_log = pane_surfacing.pane_log_path(workdir_clean, "codex")
+
     if path_override is not None:
         path_expr = (
             f"export PATH={shlex.quote(f'{home_local_bin}:{path_override}')}; "
@@ -620,7 +631,10 @@ def _build_codex_shell_command(
         f"{path_expr}"
         f"cd {shlex.quote(workdir_clean)} && {codex_argv}; rc=$?; "
         f'if [ "$rc" = 0 ]; then echo DONE >> {shlex.quote(log_path)}; '
-        f"else printf 'ERROR: codex exited %s\\n' \"$rc\" >> {shlex.quote(log_path)}; fi"
+        f"else "
+        f"printf 'ERROR: codex exited %s\\n' \"$rc\" >> {shlex.quote(log_path)}; "
+        f"{pane_surfacing.error_tail_snippet(log_path, pane_log, 'codex')}"
+        f"fi"
     )
     shell_command = "env " + " ".join(
         shlex.quote(x) for x in [*env_assignments, "bash", "-c", bash_payload]
@@ -871,6 +885,18 @@ async def launch_ttyd_with_codex(
     session_cmd = " ".join(shlex.quote(a) for a in session_argv)
     await _launch_detached_checked(
         host, session_cmd, env_remove=env_remove, what="tmux new-session",
+    )
+
+    # ALWAYS-ON pane mirror: duplicate the live pane to codex-pane.log (outside
+    # the workdir, so it survives the workdir teardown on failure). pipe-pane
+    # copies the PTY output stream — it does NOT insert a pipe in codex's fd
+    # chain, so the TUI is unaffected (a stdout/stderr redirect would make
+    # isatty() false and the TUI would never render). The launch payload tails
+    # this on abnormal exit (see _build_codex_shell_command).
+    pane_log = pane_surfacing.pane_log_path(host.workdir, "codex")
+    await host.run_command(pane_surfacing.mkdir_pane_dir_cmd(pane_log))
+    await host.run_command(
+        pane_surfacing.pipe_pane_cmd(tmux_path, socket_path, session_name, pane_log)
     )
 
     ttyd_argv = build_ttyd_attach_argv(
