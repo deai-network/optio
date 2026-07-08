@@ -60,6 +60,35 @@ async def _wait_widget_data(optio: Optio, process_id: str, timeout: float = 60.0
     raise AssertionError(f"{process_id} never set widgetData in {timeout}s")
 
 
+async def _wait_result_retired(optio: Optio, process_id: str, timeout: float = 60.0) -> None:
+    """Wait until a finished run's in-process published-result entry is cleared
+    before RELAUNCHING the same processId (resume).
+
+    ``launch_and_await_result`` registers a per-processId result future; the
+    executor's teardown ``finally`` pops BOTH the published-result registry entry
+    and that future in consecutive statements (no await between). But the
+    ``status → 'done'`` write happens EARLIER, before that finally — so
+    ``_wait_terminal`` (which polls for the terminal state) can return while the
+    prior run's teardown is still mid-flight. Relaunching the SAME processId in
+    that window makes ``ensure_result_future`` install a FRESH future which the
+    prior run's lagging finally then pops and fails with ``ResultNotPublished``
+    (observed ~1/4 under CPU starvation on the conversation_ui resume tests).
+
+    ``get_published_result`` reads that same registry entry, and it is cleared in
+    the statement immediately before the future is popped — so once it reports
+    ``None`` the prior run's future has been retired too and can no longer clobber
+    the resume run's future. Gate the relaunch on that.
+    """
+    end = _time.monotonic() + timeout
+    while _time.monotonic() < end:
+        if optio.get_published_result(process_id) is None:
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError(
+        f"{process_id} published result was not retired in {timeout}s"
+    )
+
+
 def _conversation_config(shim_install_dir: pathlib.Path, **kw) -> GrokTaskConfig:
     base = dict(
         consumer_instructions="Converse with the test.",
@@ -272,6 +301,9 @@ async def test_conversation_ui_resume_replays_prior_history(
         await conv.close()
         proc = await _wait_terminal(optio, "gk-conv-replay")
         assert proc["status"]["state"] == "done"
+        # Barrier: let the fresh run's result future be retired before reusing
+        # the processId, else its lagging teardown clobbers the resume future.
+        await _wait_result_retired(optio, "gk-conv-replay")
 
         # Resumed run: restores the workdir, reads the persisted sessionId, and
         # (conversation_ui + resuming) calls session/load to replay history.
@@ -313,6 +345,9 @@ async def test_conversation_ui_resume_session_load_reject_falls_back(
         await conv.send("hello")
         await conv.close()
         assert (await _wait_terminal(optio, "gk-conv-reject"))["status"]["state"] == "done"
+        # Barrier: let the fresh run's result future be retired before reusing
+        # the processId, else its lagging teardown clobbers the resume future.
+        await _wait_result_retired(optio, "gk-conv-reject")
 
         # Resume: session/load is rejected -> fall back to the fresh session; the
         # conversation is still usable (a turn round-trips) and the run completes.
