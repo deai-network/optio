@@ -16,6 +16,7 @@ from optio_agents import (
     ThinkingVerbosity,
     ToolVerbosity,
 )
+from optio_agents.config_types import ClaustrumConfigMixin
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -61,12 +62,18 @@ def _identity_resume_refresh(config: "CursorTaskConfig") -> "CursorTaskConfig":
     return config
 
 
-@dataclass
-class CursorTaskConfig:
+@dataclass(frozen=True, kw_only=True)
+class CursorTaskConfig(ClaustrumConfigMixin):
     """Configuration for one optio-cursor task instance (Stage 0).
 
     Stage 0 covers iframe/ttyd mode on the local host. Resume, seeds,
     conversation mode, and filesystem isolation arrive in later stages.
+
+    The ``fs_isolation`` / ``extra_allowed_dirs`` / ``delivery_type`` triad is
+    inherited from :class:`optio_agents.config_types.ClaustrumConfigMixin`
+    (top-level fields, so callers keep writing ``fs_isolation=`` /
+    ``delivery_type=`` verbatim). Frozen + keyword-only so the required
+    ``consumer_instructions`` can follow the mixin's defaulted triad fields.
     """
 
     consumer_instructions: str
@@ -96,21 +103,13 @@ class CursorTaskConfig:
     api_key: str | None = None
 
     # --- filesystem isolation (Stage 8, claustrum) ----------------------
-    # When True (default), cursor-agent runs confined to an explicit
-    # filesystem allowlist (task workdir + temp dirs + explicit grants),
-    # kernel-enforced via the claustrum Landlock sandbox wrapping the WHOLE
-    # cursor-agent process tree. Fail-closed: if claustrum cannot be
-    # provisioned or the kernel lacks Landlock, the task refuses to launch
-    # rather than run unconfined. Set False to opt a single task out.
-    #
-    # (Cursor's own ``--sandbox enabled`` is NOT used for this: it is a
-    # per-shell-command wrapper only, so the agent's in-process Write/Edit
-    # tools escape it. See the Stage-8 design doc Decision 6.)
-    fs_isolation: bool = True
-    # Additional path grants beyond the workdir + temp dirs (never masks the
-    # baseline). ``~/`` expands against the real host home at launch. Ignored
-    # when fs_isolation=False.
-    extra_allowed_dirs: list["AllowedDir"] | None = None
+    # ``fs_isolation`` / ``extra_allowed_dirs`` / ``delivery_type`` are inherited
+    # from ClaustrumConfigMixin. Claustrum (Landlock, fail-closed) wraps the
+    # WHOLE cursor-agent process tree; cursor's own ``--sandbox enabled`` is NOT
+    # used for isolation (it is a per-shell-command wrapper only, so the agent's
+    # in-process Write/Edit tools escape it — see fs_allowlist.py). When
+    # fs_isolation is on (default), delivery_type is MANDATORY (routes the
+    # 'newer claustrum available' security notice via on_deliverable).
 
     ssh: SSHConfig | None = None
 
@@ -238,6 +237,10 @@ class CursorTaskConfig:
     max_download_bytes: int = 10_000_000
 
     def __post_init__(self) -> None:
+        # Shared claustrum-triad validation FIRST, so a missing delivery_type
+        # (mandatory when fs_isolation is on) fails fast. Also validates the
+        # extra_allowed_dirs modes (was a local loop here).
+        self._validate_claustrum()
         if self.sandbox is not None and self.sandbox not in _VALID_SANDBOX_MODES:
             raise ValueError(
                 f"CursorTaskConfig.sandbox={self.sandbox!r} "
@@ -312,9 +315,3 @@ class CursorTaskConfig:
                 "session_blob_decrypt must be set together (both callables) "
                 "or both left as None; one without the other is a config error."
             )
-        for ad in self.extra_allowed_dirs or []:
-            if ad.mode not in ("ro", "rw", "rox", "rwx"):
-                raise ValueError(
-                    f"CursorTaskConfig.extra_allowed_dirs: mode={ad.mode!r} "
-                    f"must be one of 'ro', 'rw', 'rox', 'rwx' (path={ad.path!r})."
-                )

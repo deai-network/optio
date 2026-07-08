@@ -25,7 +25,13 @@ from typing import AsyncIterator, Callable
 from optio_core.context import ProcessContext
 from optio_core.models import BasicAuth, TaskInstance
 
-from optio_agents import HookContext, RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
+from optio_agents import (
+    HookContext,
+    RESUME_NOTICE,
+    SYSTEM_MESSAGE_PREFIX,
+    claustrum,
+    get_protocol,
+)
 from optio_agents import seeds as _seeds
 from optio_agents.input_listener import serialized, start_input_listener
 from optio_agents.session_controls import model_control
@@ -97,24 +103,25 @@ async def _build_claustrum_wrap(
 
     ``~/`` caller extras expand against the REAL host home (cursor-agent runs
     under an isolated $HOME, and grants reach claustrum verbatim — no shell
-    between). Ported from optio-claudecode's ``_build_claustrum_wrap``.
+    between). Grant set + argv-prefix come from the shared
+    ``optio_agents.fs_grants`` / ``optio_agents.claustrum`` helpers.
     """
     if not config.fs_isolation:
         return None
-    from . import fs_allowlist
+    from optio_agents import fs_grants
     cache_dir = await host_actions._resolve_cursor_cache_dir(
         host, config.install_dir,
     )
     host_home = (
         await host.resolve_host_home() if config.extra_allowed_dirs else None
     )
-    grants = fs_allowlist.build_grant_flags(
+    grants = fs_grants.build_grant_flags(
         workdir=host.workdir,
-        cursor_cache_dir=cache_dir,
+        engine_cache_dir=cache_dir,
         extra_allowed_dirs=config.extra_allowed_dirs,
         host_home=host_home,
     )
-    return [claustrum_path, "--best-effort", "--abi-min", "1", *grants, "--"]
+    return claustrum.build_claustrum_wrap(claustrum_path, grants)
 
 
 async def _probe_or_cached_models(
@@ -233,6 +240,10 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
     # by _prepare when fs_isolation is on; read by both bodies to wrap the
     # cursor-agent launch. Stays None when fs_isolation is off.
     claustrum_path: str | None = None
+    # The newest upstream claustrum tag when it is NEWER than the pinned one
+    # (else None), captured in _prepare beside provisioning. Drives the
+    # 'a newer claustrum release is available' security notice.
+    claustrum_newer: str | None = None
     # iframe-input widget: an engine-side HTTP listener injects operator input
     # (typed messages + NAV keystrokes) into the cursor tmux TUI. One lock
     # serializes human input against the system (_agent_sender) sends so bursts
@@ -255,6 +266,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
         """
         nonlocal cursor_path, ttyd_path, resuming, pass_continue, resolved_seed_id
         nonlocal lease_holder, cred_baseline, claustrum_path, resume_session_id
+        nonlocal claustrum_newer
         cursor_path = await host_actions.ensure_cursor_installed(
             hook_ctx,
             install_if_missing=config.install_if_missing,
@@ -275,6 +287,20 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
         if config.fs_isolation:
             claustrum_path = await host_actions.ensure_claustrum_installed(
                 hook_ctx, install_dir=config.install_dir,
+            )
+            # Newer-release check (engine-side egress, best-effort → None on
+            # failure). Routed through on_deliverable as a security notice: a
+            # new claustrum release may patch a vulnerability the operator must
+            # hear about ASAP. delivery_type is mandatory here (mixin-enforced).
+            # No-op when on_deliverable is unset or no newer tag exists. Shared
+            # by both launch modes since _prepare is their common prelude.
+            claustrum_newer = await host_actions.claustrum_newer_tag()
+            await claustrum.emit_claustrum_update_notice(
+                host, hook_ctx,
+                delivery_type=config.delivery_type,
+                on_deliverable=config.on_deliverable,
+                newer=claustrum_newer,
+                pinned=claustrum.CLAUSTRUM_PINNED_TAG,
             )
 
         resume_requested = bool(getattr(ctx, "resume", False))

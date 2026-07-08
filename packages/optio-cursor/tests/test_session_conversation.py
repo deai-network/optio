@@ -90,6 +90,7 @@ def _conversation_config(shim_install_dir: pathlib.Path, **kw) -> CursorTaskConf
         ttyd_install_dir=str(shim_install_dir),
         auto_start=False,
         supports_resume=False,
+        delivery_type="audit",
     )
     base.update(kw)
     return CursorTaskConfig(**base)
@@ -282,14 +283,16 @@ def test_ui_widget_per_mode():
     conv_task = create_cursor_task(
         process_id="cu-widget-conv",
         name="Widget conv",
-        config=CursorTaskConfig(consumer_instructions="x", mode="conversation"),
+        config=CursorTaskConfig(
+            consumer_instructions="x", mode="conversation", delivery_type="audit",
+        ),
     )
     assert conv_task.ui_widget is None
 
     iframe_task = create_cursor_task(
         process_id="cu-widget-iframe",
         name="Widget iframe",
-        config=CursorTaskConfig(consumer_instructions="x"),
+        config=CursorTaskConfig(consumer_instructions="x", delivery_type="audit"),
     )
     assert iframe_task.ui_widget == "iframe-input"
 
@@ -493,16 +496,29 @@ def test_config_validation_conversation_fields():
     """__post_init__ mirrors grok's conversation validations."""
     # permission_gate requires conversation mode
     with pytest.raises(ValueError):
-        CursorTaskConfig(consumer_instructions="x", permission_gate=True)
+        CursorTaskConfig(
+            consumer_instructions="x", permission_gate=True, delivery_type="audit",
+        )
     # conversation_ui requires conversation mode
     with pytest.raises(ValueError):
-        CursorTaskConfig(consumer_instructions="x", conversation_ui=True)
+        CursorTaskConfig(
+            consumer_instructions="x", conversation_ui=True, delivery_type="audit",
+        )
     # iframe mode requires host_protocol
     with pytest.raises(ValueError):
-        CursorTaskConfig(consumer_instructions="x", mode="iframe", host_protocol=False)
+        CursorTaskConfig(
+            consumer_instructions="x", mode="iframe", host_protocol=False,
+            delivery_type="audit",
+        )
     # bad tool_verbosity
     with pytest.raises(ValueError):
-        CursorTaskConfig(consumer_instructions="x", mode="conversation", tool_verbosity="loud")
+        CursorTaskConfig(
+            consumer_instructions="x", mode="conversation", tool_verbosity="loud",
+            delivery_type="audit",
+        )
     # host_protocol=False is allowed in conversation mode
-    cfg = CursorTaskConfig(consumer_instructions="x", mode="conversation", host_protocol=False)
+    cfg = CursorTaskConfig(
+        consumer_instructions="x", mode="conversation", host_protocol=False,
+        delivery_type="audit",
+    )
     assert cfg.host_protocol is False

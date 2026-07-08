@@ -36,7 +36,7 @@ from optio_cursor.snapshots import (
 
 def test_config_resume_defaults():
     """Stage 2 flips supports_resume ON by default and adds workdir_exclude."""
-    c = CursorTaskConfig(consumer_instructions="x")
+    c = CursorTaskConfig(consumer_instructions="x", delivery_type="audit")
     assert c.supports_resume is True
     assert c.workdir_exclude is None
 
@@ -71,6 +71,7 @@ def _cfg(shim_install_dir: pathlib.Path) -> CursorTaskConfig:
         install_dir=str(shim_install_dir),
         ttyd_install_dir=str(shim_install_dir),
         supports_resume=True,
+        delivery_type="audit",
     )
 
 

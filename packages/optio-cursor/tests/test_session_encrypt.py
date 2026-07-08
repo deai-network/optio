@@ -72,6 +72,7 @@ def _cfg(shim_install_dir: pathlib.Path) -> CursorTaskConfig:
         supports_resume=True,
         session_blob_encrypt=_reverse,
         session_blob_decrypt=_reverse,
+        delivery_type="audit",
     )
 
 

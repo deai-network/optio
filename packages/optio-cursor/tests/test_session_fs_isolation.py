@@ -47,7 +47,8 @@ async def test_iframe_default_on_wraps_argv_and_disables_native_sandbox(
             consumer_instructions="do it",
             install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
-            # fs_isolation defaults True — no opt-in.
+            # fs_isolation defaults True — no opt-in. delivery_type is mandatory.
+            delivery_type="audit",
         ),
     )
     await task.execute(ctx)
@@ -92,7 +93,8 @@ async def test_conversation_launch_is_claustrum_wrapped(
         host_protocol=False,
         install_dir=str(shim_install_dir),
         ttyd_install_dir=str(shim_install_dir),
-        # fs_isolation defaults True.
+        # fs_isolation defaults True. delivery_type is mandatory.
+        delivery_type="audit",
     )
     try:
         await run_cursor_session(ctx, config)
@@ -132,6 +134,7 @@ async def test_fs_isolation_is_fail_closed(
             consumer_instructions="do it",
             install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
+            delivery_type="audit",
         ),
     )
     with pytest.raises(RuntimeError, match="Landlock"):

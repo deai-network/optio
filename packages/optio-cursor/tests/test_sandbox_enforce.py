@@ -36,8 +36,8 @@ from pathlib import Path
 import pytest
 
 from optio_agents.claustrum import CLAUSTRUM_PINNED_TAG
+from optio_agents.fs_grants import build_grant_flags
 from optio_cursor import host_actions
-from optio_cursor.fs_allowlist import build_grant_flags
 from optio_cursor.host_actions import run_cursor_probe
 
 
@@ -132,7 +132,7 @@ async def test_real_cursor_claustrum_blocks_out_of_tree_write(tmp_path: Path):
     cursor_cache_dir = os.path.dirname(cursor_agent)
     grants = build_grant_flags(
         workdir=workdir,
-        cursor_cache_dir=cursor_cache_dir,
+        engine_cache_dir=cursor_cache_dir,
         extra_allowed_dirs=None,
     )
     claustrum_wrap = [claustrum, "--best-effort", "--abi-min", "1", *grants, "--"]

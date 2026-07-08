@@ -25,7 +25,7 @@ from optio_cursor.types import CursorTaskConfig
 
 
 def _cfg(**kw):
-    base = dict(consumer_instructions="do things")
+    base = dict(consumer_instructions="do things", delivery_type="audit")
     base.update(kw)
     return CursorTaskConfig(**base)
 
@@ -195,7 +195,10 @@ def test_model_is_ungated_single_field():
     # the single source both for the launch --model flag and the conversation
     # picker's initial value, and it is valid in ALL modes (no conversation_ui
     # gate — the old default_model gate was removed).
-    assert not hasattr(CursorTaskConfig(consumer_instructions="x"), "default_model")
+    assert not hasattr(
+        CursorTaskConfig(consumer_instructions="x", delivery_type="audit"),
+        "default_model",
+    )
     cfg_iframe = _cfg(model="gpt-5")
     assert cfg_iframe.model == "gpt-5"
     cfg_conv = _cfg(mode="conversation", conversation_ui=True, model="gpt-5")

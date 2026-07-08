@@ -54,6 +54,7 @@ def _cfg(shim: pathlib.Path, **kw) -> CursorTaskConfig:
         install_dir=str(shim),
         ttyd_install_dir=str(shim),
         supports_resume=True,
+        delivery_type="audit",
     )
     base.update(kw)
     return CursorTaskConfig(**base)

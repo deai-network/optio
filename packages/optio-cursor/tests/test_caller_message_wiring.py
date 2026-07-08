@@ -69,6 +69,7 @@ async def test_caller_message_flags_flow_through():
             consumer_instructions="x",
             use_client_messages=True,
             on_caller_message=_cb,
+            delivery_type="audit",
         )
     )
     assert proto["client_messages"] is True
@@ -78,7 +79,7 @@ async def test_caller_message_flags_flow_through():
 
 async def test_caller_message_defaults_off():
     proto, run = await _capture_wiring(
-        CursorTaskConfig(consumer_instructions="x")
+        CursorTaskConfig(consumer_instructions="x", delivery_type="audit")
     )
     assert proto["client_messages"] is False
     assert proto["caller_messages"] is False

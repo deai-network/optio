@@ -145,6 +145,40 @@ async def ensure_claustrum_installed(
     )
 
 
+async def claustrum_newer_tag() -> str | None:
+    """Return the newest claustrum tag if it is newer than the pinned one, else None.
+
+    Engine-side egress only (``git ls-remote`` against the claustrum repo).
+    Best-effort: any network/parse failure returns None (no notice). Drives the
+    'a newer claustrum release is available' security notice in session.py.
+    """
+    import asyncio
+
+    try:
+        p = await asyncio.create_subprocess_exec(
+            "git", "ls-remote", "--tags", "--refs", claustrum.CLAUSTRUM_REPO,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await p.communicate()
+        if p.returncode != 0:
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    tags = []
+    for line in out.decode().splitlines():
+        ref = line.rsplit("/", 1)[-1].strip()
+        if ref.startswith("v"):
+            tags.append(ref)
+
+    def key(t: str) -> tuple:
+        return tuple(int(x) for x in t.lstrip("v").split(".") if x.isdigit())
+
+    if not tags:
+        return None
+    newest = max(tags, key=key)
+    return newest if key(newest) > key(claustrum.CLAUSTRUM_PINNED_TAG) else None
+
+
 # --- cursor-agent resolution + optio-owned binary cache (Stage 5) -----------
 
 

@@ -203,7 +203,9 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                 # seed-setup tasks): cursor writes its login state under the
                 # per-task HOME (<workdir>/home/.cursor), which is inside the
                 # sandbox, and device-auth happens in the host browser — so
-                # isolation does not block login.
+                # isolation does not block login. delivery_type is mandatory
+                # under fs_isolation (routes the claustrum update notice).
+                delivery_type="system-notices",
                 supports_resume=False,
                 on_seed_saved=_make_on_seed_saved(db, prefix, fw),
             ),
@@ -234,6 +236,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     before_execute=_before_execute,
                     after_execute=_after_execute,
                     on_deliverable=_on_deliverable,
+                    delivery_type="system-notices",
                     seed_id=seed_id,
                     supports_resume=True,
                     # Kick the agent off unattended (reads AGENTS.md + executes).
@@ -265,6 +268,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     host_protocol=False,        # pure conversation gate
                     ssh=ssh,
                     seed_id=seed_id,
+                    delivery_type="system-notices",
                     supports_resume=True,
                 ),
             )

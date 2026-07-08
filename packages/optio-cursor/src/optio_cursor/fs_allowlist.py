@@ -49,76 +49,12 @@ process and all descendants), fail-closed, and launch cursor-agent with
 outer Landlock ruleset (wiring is Stage-8 Task 2).
 
 --------------------------------------------------------------------------------
-This module is a file-by-file port of optio-claudecode's ``fs_allowlist.py``.
-Three parts:
-  * a curated static BASELINE of what cursor-agent + its tool subprocesses need
-    (system dirs, /dev nodes, /proc, CA certs) — see _BASELINE. Mirrors the
-    claudecode baseline distilled from a real session trace; missing paths are
-    harmless (claustrum ignores them).
-  * DYNAMIC per-task paths (the workdir, the cursor install/cache tree at
-    ``~/.local/share/cursor-agent/versions/<v>/``).
-  * CALLER extras (CursorTaskConfig.extra_allowed_dirs).
-
-Output is the ordered list of claustrum grant flags, e.g.
-``["--rox", "/usr", ..., "--rwx", "/wd", "--rox", "/cache", "--ro", "/data"]``.
-Non-existent paths are harmless: claustrum ignores missing paths.
+The grant-flag machinery (system BASELINE + workdir/cache + caller extras) now
+lives in the shared ``optio_agents.fs_grants.build_grant_flags`` (single source
+of truth across every wrapper); the claustrum argv prefix is
+``optio_agents.claustrum.build_claustrum_wrap``. session.py's
+``_build_claustrum_wrap`` consumes both. This module retains only the mechanism
+DECISION rationale above, which the code references.
 """
 
 from __future__ import annotations
-
-from .types import AllowedDir
-
-# (flag, path) baseline. --rox = read+execute (binaries/libs), --ro = read-only.
-# Ported from optio-claudecode. Missing paths are ignored by claustrum.
-_BASELINE: list[tuple[str, str]] = [
-    ("--rox", "/usr"),
-    ("--rox", "/bin"),
-    ("--rox", "/sbin"),
-    ("--rox", "/lib"),
-    ("--rox", "/lib64"),
-    ("--rox", "/lib32"),
-    ("--ro", "/etc"),
-    ("--ro", "/etc/ssl"),
-    ("--ro", "/etc/resolv.conf"),
-    ("--ro", "/proc"),
-    ("--rw", "/dev/null"),
-    ("--rw", "/dev/zero"),
-    ("--ro", "/dev/urandom"),
-    ("--ro", "/dev/random"),
-    ("--rw", "/dev/tty"),
-    # Pseudo-terminals: cursor-agent runs in a TUI inside tmux, which allocates
-    # a pty.
-    ("--rw", "/dev/pts"),
-    ("--rw", "/dev/ptmx"),
-]
-
-
-def build_grant_flags(
-    *,
-    workdir: str,
-    cursor_cache_dir: str,
-    extra_allowed_dirs: list[AllowedDir] | None,
-    host_home: str | None = None,
-) -> list[str]:
-    """Return the ordered list of claustrum grant flags for a launch.
-
-    ``workdir`` (the per-task tree, incl. the isolated home) is granted rwx so
-    cursor-agent tools may write and execute scripts. ``cursor_cache_dir``
-    (where the real cursor-agent binaries live, outside the workdir — the
-    ``~/.local/share/cursor-agent/versions/<v>/`` tree) is granted read+exec.
-
-    Grants reach claustrum verbatim (no shell between), and the cursor-agent
-    process runs under an isolated $HOME — so a caller extra with a leading
-    ``~/`` is expanded against ``host_home`` (the REAL host home) here.
-    """
-    flags: list[str] = []
-    for flag, path in _BASELINE:
-        flags += [flag, path]
-    flags += ["--rwx", workdir.rstrip("/")]
-    flags += ["--rox", cursor_cache_dir.rstrip("/")]
-    for ad in extra_allowed_dirs or []:
-        path = ad.path
-        if host_home and (path == "~" or path.startswith("~/")):
-            path = host_home.rstrip("/") + path[1:]
-        flags += [f"--{ad.mode}", path]
-    return flags

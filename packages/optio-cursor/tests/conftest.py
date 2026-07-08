@@ -57,6 +57,13 @@ def fake_claustrum(monkeypatch):
         return shim
 
     monkeypatch.setattr(host_actions, "ensure_claustrum_installed", _fake_install)
+
+    # Suppress the engine-side `git ls-remote` egress the update-notice check
+    # would otherwise make on every fs-isolated session (slow/flaky in tests).
+    async def _no_newer():
+        return None
+
+    monkeypatch.setattr(host_actions, "claustrum_newer_tag", _no_newer)
     return shim
 
 
