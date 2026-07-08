@@ -3,6 +3,7 @@
 Spec: docs/2026-04-30-deadline-cancel-launchguard-integration-design.md
 """
 import asyncio
+import time as _time
 
 import pytest
 
@@ -90,7 +91,15 @@ async def test_child_launchblocked_propagates_and_parent_cancellable(mongo_db):
         assert optio._launch_blocks == {}
 
         # Registries should be empty for parent (cooperative cancel) and
-        # the would-be child should never have appeared.
+        # the would-be child should never have appeared. The parent's
+        # in-memory registry cleanup runs in the task's terminal `finally`,
+        # which can land just after cancel_and_wait observes the terminal DB
+        # write — poll until they drain rather than asserting immediately.
+        deadline = _time.monotonic() + 60.0
+        while optio._executor._cancellation_flags or optio._executor._running_tasks:
+            if _time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(0.02)
         assert optio._executor._cancellation_flags == {}
         assert optio._executor._running_tasks == {}
         # Parent observed the LaunchBlocked exception.

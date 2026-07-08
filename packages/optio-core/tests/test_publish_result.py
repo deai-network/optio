@@ -24,7 +24,7 @@ async def _define(optio: Optio, process_id: str, execute) -> None:
     )
 
 
-async def _wait_terminal(optio: Optio, process_id: str, timeout: float = 5.0) -> dict:
+async def _wait_terminal(optio: Optio, process_id: str, timeout: float = 60.0) -> dict:
     """Poll until process_id reaches a terminal state or timeout."""
     end = _time.monotonic() + timeout
     while _time.monotonic() < end:
@@ -87,8 +87,13 @@ async def test_double_publish_raises_inside_task(mongo_db):
         "pub-3", session_id=None, timeout=10,
     )
     assert res == 1
-    # allow the body to finish
-    await asyncio.sleep(0.2)
+    # allow the body to finish — poll until the second publish has raised
+    # (event, not a fixed duration, so CPU starvation can't race us)
+    end = _time.monotonic() + 60.0
+    while len(seen) < 1:
+        if _time.monotonic() >= end:
+            break
+        await asyncio.sleep(0.02)
     assert len(seen) == 1
 
     await _wait_terminal(optio, "pub-3")

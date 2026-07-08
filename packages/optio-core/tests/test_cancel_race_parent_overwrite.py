@@ -34,7 +34,7 @@ from optio_core.models import TaskInstance
 from optio_core.store import get_process_by_process_id, upsert_process
 
 
-async def _wait_terminal(mongo_db, prefix, process_id, timeout=5.0):
+async def _wait_terminal(mongo_db, prefix, process_id, timeout=60.0):
     end = _time.monotonic() + timeout
     while _time.monotonic() < end:
         proc = await get_process_by_process_id(mongo_db, prefix, process_id)

@@ -38,7 +38,7 @@ async def test_resync_cancels_running_stale_task(mongo_db):
     )
     try:
         await optio.launch("t1", session_id=None)
-        await asyncio.wait_for(started.wait(), timeout=2.0)
+        await asyncio.wait_for(started.wait(), timeout=60.0)
 
         # Snapshot the running asyncio task so we can confirm it terminated.
         proc_doc = await mongo_db["test_processes"].find_one({"processId": "t1"})
@@ -66,7 +66,7 @@ async def test_resync_cancels_running_stale_task(mongo_db):
         )
         # The running task either is done or finishing its terminal-cleanup
         # finally block. Give it a moment to fully complete.
-        await asyncio.wait_for(running_task, timeout=2.0)
+        await asyncio.wait_for(running_task, timeout=60.0)
         assert running_task.done()
     finally:
         await optio.shutdown(grace_seconds=1.0)
@@ -135,7 +135,7 @@ async def test_resync_cancel_grace_exceeded_proceeds_with_deletion(mongo_db):
     )
     try:
         await optio.launch("t1", session_id=None)
-        await asyncio.wait_for(started.wait(), timeout=2.0)
+        await asyncio.wait_for(started.wait(), timeout=60.0)
 
         state["tasks"] = []
         await optio.resync()
@@ -170,7 +170,7 @@ async def test_resync_does_not_cancel_non_stale_running_task(mongo_db):
     )
     try:
         await optio.launch("t1", session_id=None)
-        await asyncio.wait_for(started.wait(), timeout=2.0)
+        await asyncio.wait_for(started.wait(), timeout=60.0)
 
         # Resync — same task list, t1 stays.
         await optio.resync()

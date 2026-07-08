@@ -123,7 +123,7 @@ async def test_shutdown_stamps_eligible_top_level_process(mongo_db):
     fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix=prefix, get_task_definitions=get_tasks)
     await fw.launch("ana", session_id=None)
-    await asyncio.wait_for(started.wait(), timeout=2.0)
+    await asyncio.wait_for(started.wait(), timeout=60.0)
 
     await fw.shutdown(grace_seconds=1.0)
 
@@ -152,7 +152,7 @@ async def test_shutdown_does_not_stamp_non_auto_resume(mongo_db):
     fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix=prefix, get_task_definitions=get_tasks)
     await fw.launch("plain", session_id=None)
-    await asyncio.wait_for(started.wait(), timeout=2.0)
+    await asyncio.wait_for(started.wait(), timeout=60.0)
 
     await fw.shutdown(grace_seconds=1.0)
 
@@ -217,7 +217,7 @@ async def test_force_cancel_clears_stamp(mongo_db):
     fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix=prefix, get_task_definitions=get_tasks)
     await fw.launch("stuck", session_id=None)
-    await asyncio.wait_for(started.wait(), timeout=2.0)
+    await asyncio.wait_for(started.wait(), timeout=60.0)
 
     await fw.shutdown(grace_seconds=0.2)
 
@@ -312,9 +312,19 @@ async def test_sweep_resumes_eligible_and_clears_stamp(mongo_db):
             }},
         )
         await fw._auto_resume_scheduled_processes()
-        await asyncio.sleep(0.1)  # let the fire-and-forget executor advance
-
-        proc = await get_process_by_process_id(mongo_db, prefix, "r")
+        # Poll until the fire-and-forget relaunch has advanced the process out
+        # of 'cancelled', instead of sleeping a fixed margin that a starved CPU
+        # can outrun.
+        deadline = time.monotonic() + 60.0
+        while True:
+            proc = await get_process_by_process_id(mongo_db, prefix, "r")
+            if proc["status"]["state"] != "cancelled":
+                break
+            if time.monotonic() >= deadline:
+                raise AssertionError(
+                    f"process was not resumed (state={proc['status']['state']})"
+                )
+            await asyncio.sleep(0.02)
         assert proc["status"]["state"] != "cancelled"  # got (re)launched
         assert proc.get("autoResumeScheduled") is False
     finally:
@@ -413,7 +423,7 @@ async def test_timer_fires_after_delay_via_run(mongo_db):
         # resumes the process via launch(), which also clears the stamp before
         # the state leaves 'cancelled'. Poll for the resume to land rather than
         # guessing a fixed delay+advance margin.
-        deadline = time.monotonic() + 5.0
+        deadline = time.monotonic() + 60.0
         while True:
             proc = await get_process_by_process_id(mongo_db, prefix, "r")
             if proc["status"]["state"] != "cancelled":
@@ -428,7 +438,7 @@ async def test_timer_fires_after_delay_via_run(mongo_db):
         assert proc.get("autoResumeScheduled") is False
     finally:
         await fw.shutdown()
-        await asyncio.wait_for(run_task, timeout=5.0)
+        await asyncio.wait_for(run_task, timeout=60.0)
 
 
 async def test_timer_does_not_fire_if_shutdown_first(mongo_db):
@@ -455,13 +465,13 @@ async def test_timer_does_not_fire_if_shutdown_first(mongo_db):
     run_task = asyncio.create_task(fw.run())
     # Wait until run() has actually armed the one-shot timer (created the task),
     # so shutdown provably cancels a pending timer — vs. guessing with a sleep.
-    deadline = time.monotonic() + 5.0
+    deadline = time.monotonic() + 60.0
     while fw._auto_resume_task is None:
         if time.monotonic() >= deadline:
             raise AssertionError("run() did not arm the auto-resume timer")
         await asyncio.sleep(0.005)
     await fw.shutdown()
-    await asyncio.wait_for(run_task, timeout=5.0)
+    await asyncio.wait_for(run_task, timeout=60.0)
 
     proc = await get_process_by_process_id(mongo_db, prefix, "r")
     assert proc["status"]["state"] == "cancelled"  # not resumed

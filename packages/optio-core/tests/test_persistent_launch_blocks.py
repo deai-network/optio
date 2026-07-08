@@ -417,7 +417,7 @@ async def test_group_cancel_and_wait_persist_installs_persistent_block(mongo_db)
     try:
         # Launch one process; wait for it to start.
         await optio.launch("p_gcw", session_id=None)
-        await asyncio.wait_for(started.wait(), timeout=5.0)
+        await asyncio.wait_for(started.wait(), timeout=60.0)
 
         await optio.group_cancel_and_wait(
             {"tenant": "acme"},

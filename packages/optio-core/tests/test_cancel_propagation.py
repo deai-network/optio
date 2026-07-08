@@ -15,7 +15,7 @@ from optio_core.store import (
 )
 
 
-async def _wait_terminal(mongo_db, prefix: str, process_id: str, timeout: float = 5.0):
+async def _wait_terminal(mongo_db, prefix: str, process_id: str, timeout: float = 60.0):
     """Poll until process_id reaches a terminal state or timeout."""
     end = _time.monotonic() + timeout
     while _time.monotonic() < end:
@@ -114,7 +114,7 @@ async def test_cancel_optout_does_not_auto_cancel_children(mongo_db):
     # opt-out terminal behavior is verified in Phase 5 (force-cancel
     # cascade) and Phase 6 (orphan safety net).
     await optio.cancel("child")
-    await asyncio.wait_for(runner, timeout=5.0)
+    await asyncio.wait_for(runner, timeout=60.0)
     await optio.shutdown(grace_seconds=0.5)
 
 
@@ -172,7 +172,7 @@ async def test_cancel_recursion_honors_per_level_optout(mongo_db):
 
     # Cleanup: cancel C directly so B can exit, then A can exit.
     await optio.cancel("c")
-    await asyncio.wait_for(runner, timeout=5.0)
+    await asyncio.wait_for(runner, timeout=60.0)
     await optio.shutdown(grace_seconds=0.5)
 
 
@@ -252,7 +252,7 @@ async def test_cancel_shared_deadline_across_subtree(mongo_db):
         f"deadlines diverge: {seen_deadlines}"
     )
 
-    await asyncio.wait_for(runner, timeout=10.0)
+    await asyncio.wait_for(runner, timeout=60.0)
     await optio.shutdown(grace_seconds=0.5)
 
 
@@ -290,7 +290,7 @@ async def test_cancel_concurrent_calls_are_idempotent(mongo_db):
     assert ok_count == 1, f"expected exactly one ok, got {ok_count} ({results})"
     assert ok_count + not_cancellable_count == 3
 
-    await asyncio.wait_for(runner, timeout=3.0)
+    await asyncio.wait_for(runner, timeout=60.0)
     parent_proc = await _wait_terminal(mongo_db, prefix, "parent")
     assert parent_proc["status"]["state"] == "cancelled"
 
@@ -383,7 +383,7 @@ async def test_alpha_child_cancel_triggers_parent_cancel_of_siblings(mongo_db):
     # Cancel B directly: alpha should trigger cancel(A) which propagates to C.
     await optio.cancel("b")
 
-    await asyncio.wait_for(runner, timeout=5.0)
+    await asyncio.wait_for(runner, timeout=60.0)
     a_proc = await _wait_terminal(mongo_db, prefix, "a")
     b_proc = await _wait_terminal(mongo_db, prefix, "b")
     c_proc = await _wait_terminal(mongo_db, prefix, "c")
@@ -431,7 +431,7 @@ async def test_parallel_group_fail_fast_under_alpha(mongo_db):
     t0 = _time.monotonic()
     runner = asyncio.create_task(optio.launch_and_wait("a", session_id=None))
     await started.wait()
-    await asyncio.wait_for(runner, timeout=5.0)
+    await asyncio.wait_for(runner, timeout=60.0)
     elapsed = _time.monotonic() - t0
 
     assert elapsed < 2.0, f"expected fail-fast, took {elapsed:.2f}s"
@@ -491,8 +491,8 @@ async def test_force_cancel_cascade_auto_propagate(mongo_db):
 
     # Poll DB until both reach terminal (force-cancel writes 'failed'
     # after grace expires).
-    parent_proc = await _wait_terminal(mongo_db, prefix, "parent", timeout=5.0)
-    child_proc = await _wait_terminal(mongo_db, prefix, "stub", timeout=5.0)
+    parent_proc = await _wait_terminal(mongo_db, prefix, "parent", timeout=60.0)
+    child_proc = await _wait_terminal(mongo_db, prefix, "stub", timeout=60.0)
     assert parent_proc["status"]["state"] in {"failed", "cancelled"}
     assert child_proc["status"]["state"] in {"failed", "cancelled"}
 
@@ -551,8 +551,8 @@ async def test_force_cancel_cascade_optout_path(mongo_db):
     assert b_proc["status"]["state"] in {"running", "scheduled"}
 
     # After grace + cascade, B reaches terminal via force_cancel cascade.
-    b_proc = await _wait_terminal(mongo_db, prefix, "b", timeout=5.0)
-    parent_proc = await _wait_terminal(mongo_db, prefix, "parent", timeout=5.0)
+    b_proc = await _wait_terminal(mongo_db, prefix, "b", timeout=60.0)
+    parent_proc = await _wait_terminal(mongo_db, prefix, "parent", timeout=60.0)
     assert b_proc["status"]["state"] == "failed"
     assert parent_proc["status"]["state"] == "failed"
 
@@ -628,7 +628,7 @@ async def test_force_cancel_cascade_catches_late_optout_child(mongo_db):
     assert late_proc["status"]["state"] in {"running", "scheduled"}
 
     # After grace + cascade, late child reaches terminal.
-    late_proc = await _wait_terminal(mongo_db, prefix, "late", timeout=5.0)
+    late_proc = await _wait_terminal(mongo_db, prefix, "late", timeout=60.0)
     assert late_proc["status"]["state"] == "failed"
 
     optio._running = False

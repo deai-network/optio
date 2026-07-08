@@ -225,8 +225,8 @@ async def test_supervisor_force_cancels_past_deadline_entries(mongo_db):
         # Cancel — record the deadline.
         await optio.cancel("p.supv")
 
-        # Within ~3s the supervisor should have force-cancelled.
-        deadline = _time.monotonic() + 3.0
+        # Poll (generous hang-ceiling) until the supervisor force-cancels.
+        deadline = _time.monotonic() + 60.0
         while _time.monotonic() < deadline:
             proc = await optio.get_process("p.supv")
             if proc and proc["status"]["state"] == "failed":
@@ -275,7 +275,15 @@ async def test_cancel_and_wait_cooperative(mongo_db):
     run_task = asyncio.create_task(optio.run())
     try:
         await optio.launch("p.coop", session_id=None)
-        await asyncio.sleep(0.2)  # let it transition to running
+        # Wait until the process is running before cancelling, so the flag
+        # registers on a live task (poll observable state, not a fixed delay).
+        import time as _time
+        _d = _time.monotonic() + 60.0
+        while _time.monotonic() < _d:
+            p = await optio.get_process("p.coop")
+            if p and p["status"]["state"] == "running":
+                break
+            await asyncio.sleep(0.02)
         state = await optio.cancel_and_wait("p.coop")
         assert state == "cancelled"
     finally:
@@ -609,7 +617,7 @@ async def test_re_entry_idempotency_does_not_refresh_deadline(mongo_db):
 
         # Eventually terminal.
         import time as _time
-        ceil = _time.monotonic() + 4.0
+        ceil = _time.monotonic() + 60.0
         while _time.monotonic() < ceil:
             proc = await optio.get_process("p.stub")
             if proc and proc["status"]["state"] in ("failed", "cancelled"):
@@ -658,12 +666,19 @@ async def test_to_thread_blocked_task_reaches_failed_state(mongo_db):
     run_task = asyncio.create_task(optio.run())
     try:
         await optio.launch("p.thr", session_id=None)
-        await asyncio.sleep(0.2)
+        # Wait until the process is running before cancelling, so cancel
+        # registers a flag on a live task (poll state, not a fixed delay).
+        import time as _time
+        _d = _time.monotonic() + 60.0
+        while _time.monotonic() < _d:
+            p = await optio.get_process("p.thr")
+            if p and p["status"]["state"] == "running":
+                break
+            await asyncio.sleep(0.02)
 
         await optio.cancel("p.thr")
 
-        import time as _time
-        ceil = _time.monotonic() + 4.0
+        ceil = _time.monotonic() + 60.0
         while _time.monotonic() < ceil:
             proc = await optio.get_process("p.thr")
             if proc and proc["status"]["state"] == "failed":

@@ -46,23 +46,23 @@ async def test_shutdown_event_fires_only_after_drain(mongo_db):
     run_task = asyncio.create_task(optio.run())
     try:
         await optio.launch("t.cap", session_id=None)
-        await asyncio.wait_for(running.wait(), timeout=5)
+        await asyncio.wait_for(running.wait(), timeout=60)
 
         # Mimic the signal handler: dispatch shutdown as a detached task.
         shutdown_task = asyncio.create_task(optio.shutdown())
 
         # The invariant: by the time run()'s unblock event is set, the
         # cooperative drain must already have completed (task captured).
-        await asyncio.wait_for(optio._shutdown_event.wait(), timeout=5)
+        await asyncio.wait_for(optio._shutdown_event.wait(), timeout=60)
         assert captured.is_set(), (
             "_shutdown_event fired before the running task finished its "
             "cooperative capture — run() would return and the loop tear-down "
             "would abort the drain"
         )
 
-        await asyncio.wait_for(shutdown_task, timeout=5)
+        await asyncio.wait_for(shutdown_task, timeout=60)
     finally:
-        await asyncio.wait_for(run_task, timeout=5)
+        await asyncio.wait_for(run_task, timeout=60)
 
 
 async def test_launch_refused_during_shutdown(mongo_db):
@@ -90,13 +90,13 @@ async def test_launch_refused_during_shutdown(mongo_db):
     run_task = asyncio.create_task(optio.run())
     try:
         await optio.launch("t.a", session_id=None)
-        await asyncio.wait_for(running.wait(), timeout=5)
+        await asyncio.wait_for(running.wait(), timeout=60)
 
         shutdown_task = asyncio.create_task(optio.shutdown())
         # Wait until shutdown() has actually entered its shutting-down state
         # (set synchronously at the top of shutdown()), then verify the launch
         # is refused. Gating on the state, not a fixed sleep, is race-free.
-        deadline = time.monotonic() + 5.0
+        deadline = time.monotonic() + 60.0
         while not optio._shutting_down:
             if time.monotonic() >= deadline:
                 raise AssertionError("shutdown did not enter shutting-down state")
@@ -106,9 +106,9 @@ async def test_launch_refused_during_shutdown(mongo_db):
         assert outcome.ok is False
         assert outcome.reason == "shutting-down"
 
-        await asyncio.wait_for(shutdown_task, timeout=5)
+        await asyncio.wait_for(shutdown_task, timeout=60)
     finally:
-        await asyncio.wait_for(run_task, timeout=5)
+        await asyncio.wait_for(run_task, timeout=60)
 
 
 async def test_shutdown_drains_parent_and_child(mongo_db):
@@ -143,15 +143,15 @@ async def test_shutdown_drains_parent_and_child(mongo_db):
     run_task = asyncio.create_task(optio.run())
     try:
         await optio.launch("p.parent", session_id=None)
-        await asyncio.wait_for(parent_running.wait(), timeout=5)
-        await asyncio.wait_for(child_running.wait(), timeout=5)
+        await asyncio.wait_for(parent_running.wait(), timeout=60)
+        await asyncio.wait_for(child_running.wait(), timeout=60)
 
         shutdown_task = asyncio.create_task(optio.shutdown())
-        await asyncio.wait_for(optio._shutdown_event.wait(), timeout=6)
+        await asyncio.wait_for(optio._shutdown_event.wait(), timeout=60)
 
         # The child cooperated and captured before the event fired.
         assert child_captured.is_set()
 
-        await asyncio.wait_for(shutdown_task, timeout=5)
+        await asyncio.wait_for(shutdown_task, timeout=60)
     finally:
-        await asyncio.wait_for(run_task, timeout=5)
+        await asyncio.wait_for(run_task, timeout=60)

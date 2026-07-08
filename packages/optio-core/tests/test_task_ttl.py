@@ -9,7 +9,7 @@ from optio_core.lifecycle import Optio
 from optio_core.models import TaskInstance
 
 
-async def _wait_state(mongo_db, prefix, process_id, target, timeout_s=2.0):
+async def _wait_state(mongo_db, prefix, process_id, target, timeout_s=60.0):
     deadline = asyncio.get_event_loop().time() + timeout_s
     while asyncio.get_event_loop().time() < deadline:
         doc = await mongo_db[f"{prefix}_processes"].find_one({"processId": process_id})
@@ -36,20 +36,23 @@ async def test_done_task_with_ttl_sets_expire_at_approximately(mongo_db):
         get_task_definitions=gen,
     )
     try:
-        before = datetime.now(timezone.utc)
         await optio.launch("t1", session_id=None)
         doc = await _wait_state(mongo_db, "test", "t1", "done")
-        after = datetime.now(timezone.utc)
         assert "expireAt" in doc, f"expireAt missing on done: {doc!r}"
         # expireAt is timezone-naive when retrieved by motor with default
         # codec_options; normalize for comparison.
         expire_at = doc["expireAt"]
         if expire_at.tzinfo is None:
             expire_at = expire_at.replace(tzinfo=timezone.utc)
-        delta_lo = (expire_at - before).total_seconds()
-        delta_hi = (expire_at - after).total_seconds()
-        assert 55 <= delta_lo <= 65, f"expireAt delta_lo={delta_lo}"
-        assert 55 <= delta_hi <= 65, f"expireAt delta_hi={delta_hi}"
+        # Anchor the window to the task's OWN doneAt rather than a wall-clock
+        # stamp taken before launch: under CPU starvation the task can take
+        # many seconds to complete, which would inflate a before-launch delta
+        # past the ceiling even though expireAt == doneAt + ttl_seconds holds.
+        done_at = doc["status"]["doneAt"]
+        if done_at.tzinfo is None:
+            done_at = done_at.replace(tzinfo=timezone.utc)
+        delta = (expire_at - done_at).total_seconds()
+        assert 55 <= delta <= 65, f"expireAt - doneAt = {delta}"
     finally:
         await optio.shutdown(grace_seconds=1.0)
 
@@ -124,7 +127,7 @@ async def test_cancelled_task_with_ttl_sets_expire_at(mongo_db):
     )
     try:
         await optio.launch("t1", session_id=None)
-        await asyncio.wait_for(started.wait(), timeout=2.0)
+        await asyncio.wait_for(started.wait(), timeout=60.0)
         await _wait_state(mongo_db, "test", "t1", "running")
         terminal = await optio.cancel_and_wait("t1")
         assert terminal == "cancelled", terminal

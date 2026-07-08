@@ -380,7 +380,7 @@ async def test_parallel_group_mixed_cancel_and_fail_synthesizes_for_cancelled(mo
     optio._executor.register_tasks([parent_inst, a_inst, b_inst])
 
     try:
-        await asyncio.wait_for(optio.launch_and_wait("pmfx", session_id=None), timeout=10.0)
+        await asyncio.wait_for(optio.launch_and_wait("pmfx", session_id=None), timeout=60.0)
     finally:
         await optio.shutdown(grace_seconds=0.5)
 

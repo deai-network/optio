@@ -168,7 +168,7 @@ async def test_refused_spawn_when_parent_cancelled(mongo_db):
         try:
             await asyncio.wait_for(
                 ctx.run_child_with_result(child_exec, "child-ref-1", "Child"),
-                timeout=5,
+                timeout=60,
             )
         except ResultNotPublished as e:
             seen["exc"] = e

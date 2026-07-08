@@ -138,7 +138,7 @@ async def test_shutdown_force_finalizes_uncooperative_task(mongo_db):
     fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix=prefix, get_task_definitions=get_tasks)
     await fw.launch("stuck", session_id=None)
-    await asyncio.wait_for(started.wait(), timeout=2.0)
+    await asyncio.wait_for(started.wait(), timeout=60.0)
 
     # Sanity: upstream was actually set before shutdown.
     pre = await get_process_by_process_id(mongo_db, prefix, "stuck")
@@ -172,7 +172,7 @@ async def test_shutdown_leaves_cooperative_task_alone(mongo_db):
     fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix=prefix, get_task_definitions=get_tasks)
     await fw.launch("nice", session_id=None)
-    await asyncio.wait_for(started.wait(), timeout=2.0)
+    await asyncio.wait_for(started.wait(), timeout=60.0)
 
     await fw.shutdown(grace_seconds=1.0)
 
@@ -209,7 +209,7 @@ async def test_shutdown_leaves_cooperative_task_widget_upstream_alone(mongo_db):
     fw = Optio()
     await fw.init(mongo_db=mongo_db, prefix=prefix, get_task_definitions=get_tasks)
     await fw.launch("nice", session_id=None)
-    await asyncio.wait_for(started.wait(), timeout=2.0)
+    await asyncio.wait_for(started.wait(), timeout=60.0)
 
     await fw.shutdown(grace_seconds=1.0)
 

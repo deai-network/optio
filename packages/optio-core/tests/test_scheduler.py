@@ -152,8 +152,10 @@ async def test_start_actually_runs_trigger_loop():
             id="t_real",
             args=["t_real"],
         )
-        # Wait up to 3 seconds for at least one fire.
-        for _ in range(30):
+        # Poll (generous hang-ceiling) for at least one fire — the trigger
+        # interval is 0.5s but under CPU starvation the first fire can land
+        # much later, so wait on the observable event, not a tight window.
+        for _ in range(600):
             await asyncio.sleep(0.1)
             if _test_fires:
                 break

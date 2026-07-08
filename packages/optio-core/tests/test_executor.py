@@ -212,7 +212,17 @@ async def test_idempotent_launch(mongo_db):
 
     # Launch in background
     launch_task = asyncio.create_task(executor.launch_process("idem", session_id=None))
-    await asyncio.sleep(0.05)
+    # Wait until the background launch has actually marked the process running
+    # (observable state), rather than assuming it happens within a fixed delay.
+    import time as _time
+    _deadline = _time.monotonic() + 60.0
+    while _time.monotonic() < _deadline:
+        proc = await get_process_by_process_id(mongo_db, "test", "idem")
+        if proc is not None and proc["status"]["state"] == "running":
+            break
+        await asyncio.sleep(0.02)
+    else:
+        raise AssertionError("background launch never reached running state")
 
     # Try to launch again — should return None (already running)
     result2 = await executor.launch_process("idem", session_id=None)
@@ -227,9 +237,16 @@ async def test_idempotent_launch(mongo_db):
 
 async def test_lifecycle_log_entries(mongo_db):
     """Process execution writes log entries for state transitions and progress messages."""
+    import time as _time
+
+    release = asyncio.Event()
+
     async def my_task(ctx):
         ctx.report_progress(50, "Halfway there")
-        await asyncio.sleep(1.1)  # wait for progress flush
+        # Stay alive until the test confirms the periodic flush persisted the
+        # progress message — waiting on the observable DB state instead of a
+        # fixed sleep keeps this robust under CPU starvation.
+        await release.wait()
         ctx.report_progress(100)  # no message — should NOT produce a log entry
 
     task = TaskInstance(execute=my_task, process_id="loglife", name="Lifecycle")
@@ -237,7 +254,21 @@ async def test_lifecycle_log_entries(mongo_db):
 
     executor = Executor(mongo_db, "test", {})
     executor.register_tasks([task])
-    await executor.launch_process("loglife", session_id=None)
+    launch_task = asyncio.create_task(executor.launch_process("loglife", session_id=None))
+
+    # Poll the DB until the progress flush has persisted "Halfway there",
+    # then release the task so it finishes with the message-less 100% update.
+    _deadline = _time.monotonic() + 60.0
+    while _time.monotonic() < _deadline:
+        proc = await get_process_by_process_id(mongo_db, "test", "loglife")
+        msgs = [e["message"] for e in proc["log"]] if proc else []
+        if "Halfway there" in msgs:
+            break
+        await asyncio.sleep(0.02)
+    else:
+        raise AssertionError("progress message 'Halfway there' was never flushed")
+    release.set()
+    await asyncio.wait_for(launch_task, timeout=60)
 
     proc = await get_process_by_process_id(mongo_db, "test", "loglife")
     messages = [e["message"] for e in proc["log"]]

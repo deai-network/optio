@@ -92,12 +92,21 @@ async def test_group_cancel_only_cancels_in_scope(mongo_db):
 
         await optio.group_cancel({"team": "alpha"})
 
-        # Wait long enough for cooperative_a to observe and unwind.
-        await asyncio.sleep(0.25)
+        # Poll until cooperative_a has observed the flag and unwound to
+        # terminal, instead of assuming it happens within a fixed window.
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            proc_a = await optio.get_process("p.a")
+            if proc_a["status"]["state"] == "cancelled":
+                break
+            await asyncio.sleep(0.02)
+        else:
+            raise AssertionError("p.a did not reach cancelled state")
 
-        proc_a = await optio.get_process("p.a")
         proc_b = await optio.get_process("p.b")
         assert proc_a["status"]["state"] == "cancelled"
+        # p.b is out of scope (team beta) and blocked on release_b, so it
+        # stays running regardless of scheduling.
         assert proc_b["status"]["state"] == "running"
 
         release_b.set()
@@ -326,7 +335,7 @@ async def test_block_new_launches_rejects_during_call(mongo_db):
             # guard (block_launches populates _launch_blocks synchronously on
             # entry, before the snapshot). Gating on that state — not a fixed
             # sleep — makes "launch during the call" deterministic.
-            deadline = time.monotonic() + 5.0
+            deadline = time.monotonic() + 60.0
             while not optio._launch_blocks:
                 if time.monotonic() >= deadline:
                     raise AssertionError("launch guard was never registered")
@@ -513,11 +522,12 @@ async def test_self_cancel_via_group_cancel(mongo_db):
         await optio.launch("p.self", session_id=None)
 
         # Wait for the task to reach the post-call point and then unwind.
-        for _ in range(200):
-            await asyncio.sleep(0.05)
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
             proc = await optio.get_process("p.self")
             if proc["status"]["state"] == "cancelled":
                 break
+            await asyncio.sleep(0.05)
         proc = await optio.get_process("p.self")
         assert proc["status"]["state"] == "cancelled"
         assert reached_after_call.is_set()  # the call returned

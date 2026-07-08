@@ -15,7 +15,7 @@ from optio_core.models import TaskInstance
 from optio_core.store import get_process_by_process_id, upsert_process
 
 
-async def _wait_terminal(mongo_db, prefix, process_id, timeout=5.0):
+async def _wait_terminal(mongo_db, prefix, process_id, timeout=60.0):
     end = _time.monotonic() + timeout
     while _time.monotonic() < end:
         proc = await get_process_by_process_id(mongo_db, prefix, process_id)
@@ -61,7 +61,7 @@ async def test_should_continue_true_inside_except_when_child_fails_in_group(mong
     optio._executor.register_tasks([parent_inst, fc_inst, sc_inst])
 
     try:
-        await asyncio.wait_for(optio.launch_and_wait("p_isct1", session_id=None), timeout=10.0)
+        await asyncio.wait_for(optio.launch_and_wait("p_isct1", session_id=None), timeout=60.0)
     finally:
         await optio.shutdown(grace_seconds=0.5)
 
@@ -104,7 +104,7 @@ async def test_should_continue_false_when_parent_externally_cancelled(mongo_db):
     await parent_started.wait()
     await asyncio.sleep(0.05)
     await optio.cancel("p_isct2")
-    await asyncio.wait_for(runner, timeout=5.0)
+    await asyncio.wait_for(runner, timeout=60.0)
     await optio.shutdown(grace_seconds=0.5)
 
     assert observed["should_continue"] is False
@@ -152,7 +152,7 @@ async def test_should_continue_false_when_child_cancelled_externally_no_survive(
     await b_running.wait()
     await asyncio.sleep(0.05)
     await optio.cancel("lc3a")
-    await asyncio.wait_for(runner, timeout=5.0)
+    await asyncio.wait_for(runner, timeout=60.0)
     await optio.shutdown(grace_seconds=0.5)
 
     assert observed["should_continue"] is False
@@ -192,7 +192,7 @@ async def test_parent_terminal_done_when_child_fails_and_parent_catches_returns(
     optio._executor.register_tasks([parent_inst, fc_inst, sc_inst])
 
     try:
-        await asyncio.wait_for(optio.launch_and_wait("p_t1", session_id=None), timeout=10.0)
+        await asyncio.wait_for(optio.launch_and_wait("p_t1", session_id=None), timeout=60.0)
     finally:
         await optio.shutdown(grace_seconds=0.5)
 
@@ -231,7 +231,7 @@ async def test_parent_terminal_failed_when_child_fails_and_parent_reraises(mongo
     optio._executor.register_tasks([parent_inst, fc_inst, sc_inst])
 
     try:
-        await asyncio.wait_for(optio.launch_and_wait("p_t2", session_id=None), timeout=10.0)
+        await asyncio.wait_for(optio.launch_and_wait("p_t2", session_id=None), timeout=60.0)
     finally:
         await optio.shutdown(grace_seconds=0.5)
 
@@ -280,7 +280,7 @@ async def test_parent_terminal_cancelled_when_child_cancel_cascades_and_parent_c
     await b_running.wait()
     await asyncio.sleep(0.05)
     await optio.cancel("lc_t3a")
-    await asyncio.wait_for(runner, timeout=5.0)
+    await asyncio.wait_for(runner, timeout=60.0)
     await optio.shutdown(grace_seconds=0.5)
 
     parent_proc = await _wait_terminal(mongo_db, prefix, "p_t3")
@@ -324,7 +324,7 @@ async def test_nongroup_run_child_failure_does_not_set_parent_flag(mongo_db):
     optio._executor.register_tasks([parent_inst, fc_inst, sc_inst])
 
     try:
-        await asyncio.wait_for(optio.launch_and_wait("p_ng1", session_id=None), timeout=10.0)
+        await asyncio.wait_for(optio.launch_and_wait("p_ng1", session_id=None), timeout=60.0)
     finally:
         await optio.shutdown(grace_seconds=0.5)
 
@@ -363,7 +363,7 @@ async def test_nongroup_run_child_cancel_sets_parent_flag(mongo_db):
     await child_started.wait()
     await asyncio.sleep(0.05)
     await optio.cancel("nglc1")
-    await asyncio.wait_for(runner, timeout=5.0)
+    await asyncio.wait_for(runner, timeout=60.0)
     await optio.shutdown(grace_seconds=0.5)
 
     assert observed["outcome_state"] == "cancelled"
@@ -420,7 +420,7 @@ async def test_mixed_breach_failure_dominates_cancel(mongo_db):
     await b_running.wait()
     await asyncio.sleep(0.05)
     await optio.cancel("mixA")
-    await asyncio.wait_for(runner, timeout=5.0)
+    await asyncio.wait_for(runner, timeout=60.0)
     await optio.shutdown(grace_seconds=0.5)
 
     assert observed["should_continue"] is True, observed
@@ -469,7 +469,7 @@ async def test_excavator_reproducer_optio_row_correct(mongo_db):
     optio._executor.register_tasks([parent_inst, prod_inst, cons_inst])
 
     try:
-        await asyncio.wait_for(optio.launch_and_wait("exc_parent", session_id=None), timeout=10.0)
+        await asyncio.wait_for(optio.launch_and_wait("exc_parent", session_id=None), timeout=60.0)
     finally:
         await optio.shutdown(grace_seconds=0.5)
 
