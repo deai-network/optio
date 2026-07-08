@@ -741,24 +741,10 @@ def _build_grok_shell_command(
     grok_argv = " ".join(shlex.quote(c) for c in confined)
     log_path = f"{workdir_clean}/optio.log"
 
-    # Capture grok's stderr so a launch failure's REASON reaches optio.log
-    # instead of being swallowed to the tmux pane (an exec failure like exit 126
-    # — "Permission denied" — otherwise shows only as "grok exited 126"). On
-    # failure the captured stderr is appended as SANITIZED plain lines (prefixed
-    # so a stray DONE/ERROR:/STATUS: in grok's output can't spoof the log
-    # protocol — see optio_agents.protocol.parser), and the terminal ERROR line
-    # carries the last stderr line as the reason. Discarded on success.
-    err_path = f"{workdir_clean}/.optio-grok-launch.err"
     bash_payload = (
-        f"cd {shlex.quote(workdir_clean)} && {grok_argv} 2> {shlex.quote(err_path)}; rc=$?; "
+        f"cd {shlex.quote(workdir_clean)} && {grok_argv}; rc=$?; "
         f'if [ "$rc" = 0 ]; then echo DONE >> {shlex.quote(log_path)}; '
-        f"else "
-        f"sed 's/^/grok-stderr| /' {shlex.quote(err_path)} >> {shlex.quote(log_path)}; "
-        f"reason=$(grep -v '^[[:space:]]*$' {shlex.quote(err_path)} | tail -n1); "
-        f"printf 'ERROR: grok exited %s%s\\n' \"$rc\" \"${{reason:+: $reason}}\" "
-        f">> {shlex.quote(log_path)}; "
-        f"fi; "
-        f"rm -f {shlex.quote(err_path)}"
+        f"else printf 'ERROR: grok exited %s\\n' \"$rc\" >> {shlex.quote(log_path)}; fi"
     )
     shell_command = "env " + " ".join(
         shlex.quote(x) for x in [*env_assignments, "bash", "-c", bash_payload]
