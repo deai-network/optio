@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 
 import pytest
 import pytest_asyncio
@@ -16,6 +17,19 @@ from optio_opencode.conversation import OpencodeConversation
 from optio_opencode import model_probe, session as sess
 
 SID = "ses_test"
+
+
+async def _wait_until(pred, timeout: float = 60.0, step: float = 0.02) -> None:
+    """Poll ``pred()`` until it is truthy, bounded by a generous monotonic
+    deadline. Waits for the OBSERVABLE event rather than a fixed duration, so it
+    stays correct under arbitrary CPU starvation (the ceiling only bounds a true
+    hang)."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if pred():
+            return
+        await asyncio.sleep(step)
+    raise AssertionError("_wait_until: condition not met within timeout")
 
 
 class FakeServer:
@@ -130,7 +144,7 @@ async def conv(server):
         port=server.port, password="pw", session_id=SID, directory="/work",
     )
     reader = asyncio.create_task(c.run_reader())
-    await asyncio.sleep(0.05)  # let the SSE connect
+    await asyncio.wait_for(c._ready.wait(), timeout=60.0)  # SSE connected
     yield c
     reader.cancel()
     try:
@@ -146,8 +160,10 @@ def test_implements_protocol():
 
 async def test_send_posts_prompt_async(conv, server):
     await conv.send("hello")
-    await asyncio.sleep(0.05)
-    assert ("prompt", {"parts": [{"type": "text", "text": "hello"}]}) in server.journal
+    await _wait_until(
+        lambda: ("prompt", {"parts": [{"type": "text", "text": "hello"}]})
+        in server.journal
+    )
 
 
 async def test_set_active_model_attaches_model_to_prompt(conv, server):
@@ -158,19 +174,22 @@ async def test_set_active_model_attaches_model_to_prompt(conv, server):
     await conv.set_active_model("xai/grok-5")
     assert conv.current_model_id == "xai/grok-5"
     await conv.send("hi")
-    await asyncio.sleep(0.05)
-    assert (
-        "prompt",
-        {"parts": [{"type": "text", "text": "hi"}],
-         "model": {"providerID": "xai", "modelID": "grok-5"}},
-    ) in server.journal
+    await _wait_until(
+        lambda: (
+            "prompt",
+            {"parts": [{"type": "text", "text": "hi"}],
+             "model": {"providerID": "xai", "modelID": "grok-5"}},
+        ) in server.journal
+    )
 
 
 async def test_send_without_model_omits_model_field(conv, server):
     # Default (no model set) must keep the historical body shape byte-for-byte.
     await conv.send("plain")
-    await asyncio.sleep(0.05)
-    assert ("prompt", {"parts": [{"type": "text", "text": "plain"}]}) in server.journal
+    await _wait_until(
+        lambda: ("prompt", {"parts": [{"type": "text", "text": "plain"}]})
+        in server.journal
+    )
 
 
 async def test_on_event_is_raw_passthrough(conv, server):
@@ -178,8 +197,9 @@ async def test_on_event_is_raw_passthrough(conv, server):
     conv.on_event(seen.append)
     server.emit("message.part.delta",
                 {"sessionID": SID, "messageID": "m1", "partID": "p1", "delta": "He"})
-    await asyncio.sleep(0.05)
-    assert any(e.get("type") == "message.part.delta" for e in seen)
+    await _wait_until(
+        lambda: any(e.get("type") == "message.part.delta" for e in seen)
+    )
     raw = next(e for e in seen if e.get("type") == "message.part.delta")
     assert raw["properties"]["delta"] == "He"  # unmodified native payload
 
@@ -187,12 +207,27 @@ async def test_on_event_is_raw_passthrough(conv, server):
 async def test_other_directory_frames_are_dropped(conv, server):
     seen: list[dict] = []
     conv.on_event(seen.append)
+    # Emit the foreign-directory frame, then a same-directory sentinel. The fake
+    # feeds one SSE stream in FIFO order, so once the sentinel has been observed
+    # the earlier foreign frame has definitively been processed (and dropped) —
+    # this makes the negative assertion deterministic rather than a race against
+    # a fixed sleep that CPU starvation could trivially satisfy.
     server.emit("message.part.delta",
                 {"sessionID": SID, "messageID": "m1", "partID": "p1",
                  "field": "text", "delta": "not ours"},
                 directory="/elsewhere")
-    await asyncio.sleep(0.05)
-    assert not any(e.get("type") == "message.part.delta" for e in seen)
+    server.emit("message.part.delta",
+                {"sessionID": SID, "messageID": "m2", "partID": "p2",
+                 "field": "text", "delta": "ours"},
+                directory="/work")
+    await _wait_until(
+        lambda: any(
+            e.get("properties", {}).get("delta") == "ours" for e in seen
+        )
+    )
+    assert not any(
+        e.get("properties", {}).get("delta") == "not ours" for e in seen
+    )
 
 
 async def test_on_message_fires_on_completed_assistant_message(conv, server):
@@ -204,7 +239,7 @@ async def test_on_message_fires_on_completed_assistant_message(conv, server):
     server.emit("message.updated",
                 {"info": {"id": "m1", "sessionID": SID, "role": "assistant",
                           "time": {"created": 1, "completed": 2}}})
-    await asyncio.sleep(0.05)
+    await _wait_until(lambda: len(msgs) >= 1)
     assert msgs == ["final answer"]
 
 
@@ -213,15 +248,14 @@ async def test_busy_tracking_via_session_status(conv, server):
     await conv.send("q")
     assert conv.is_pending() is True
     server.emit("session.status", {"sessionID": SID, "status": {"type": "idle"}})
-    await asyncio.sleep(0.05)
+    await _wait_until(lambda: conv.is_pending() is False)
     assert conv.is_pending() is False
 
 
 async def test_interrupt_posts_abort(conv, server):
     await conv.send("q")
     await conv.interrupt()
-    await asyncio.sleep(0.05)
-    assert ("abort", {}) in server.journal
+    await _wait_until(lambda: ("abort", {}) in server.journal)
 
 
 async def test_permission_flow_allow_maps_to_once(conv, server):
@@ -234,8 +268,10 @@ async def test_permission_flow_allow_maps_to_once(conv, server):
     server.emit("permission.asked",
                 {"id": "per_1", "sessionID": SID, "permission": "bash",
                  "patterns": [], "metadata": {}, "always": []})
-    await asyncio.sleep(0.1)
-    assert ("perm_reply", {"rid": "per_1", "reply": "once"}) in server.journal
+    await _wait_until(
+        lambda: ("perm_reply", {"rid": "per_1", "reply": "once"})
+        in server.journal
+    )
 
 
 async def test_permission_deny_maps_to_reject_with_message(conv, server):
@@ -246,22 +282,29 @@ async def test_permission_deny_maps_to_reject_with_message(conv, server):
     server.emit("permission.asked",
                 {"id": "per_2", "sessionID": SID, "permission": "bash",
                  "patterns": [], "metadata": {}, "always": []})
-    await asyncio.sleep(0.1)
-    assert ("perm_reply", {"rid": "per_2", "reply": "reject", "message": "nope"}) in server.journal
+    await _wait_until(
+        lambda: ("perm_reply",
+                 {"rid": "per_2", "reply": "reject", "message": "nope"})
+        in server.journal
+    )
 
 
 async def test_permission_asked_before_handler_is_queued(conv, server):
     server.emit("permission.asked",
                 {"id": "per_3", "sessionID": SID, "permission": "bash",
                  "patterns": [], "metadata": {}, "always": []})
-    await asyncio.sleep(0.05)
+    # Wait for the request to be queued (no handler yet) via the observable
+    # queue, guaranteeing the "asked before handler" ordering deterministically.
+    await _wait_until(lambda: len(conv._queued_permission_requests) >= 1)
 
     async def handler(req):
         return PermissionDecision(behavior="allow")
 
     conv.on_permission_request(handler)
-    await asyncio.sleep(0.1)
-    assert ("perm_reply", {"rid": "per_3", "reply": "once"}) in server.journal
+    await _wait_until(
+        lambda: ("perm_reply", {"rid": "per_3", "reply": "once"})
+        in server.journal
+    )
 
 
 async def test_pending_permissions_swept_on_connect(server):
@@ -278,7 +321,11 @@ async def test_pending_permissions_swept_on_connect(server):
 
     c.on_permission_request(handler)
     reader = asyncio.create_task(c.run_reader())
-    await asyncio.sleep(0.15)
+    await asyncio.wait_for(c._ready.wait(), timeout=60.0)
+    await _wait_until(
+        lambda: ("perm_reply", {"rid": "per_old", "reply": "once"})
+        in server.journal
+    )
     reader.cancel()
     try:
         await reader
@@ -333,10 +380,27 @@ async def test_driver_against_fake_opencode_subprocess(fake_proc):
     seen: list[dict] = []
     c.on_event(seen.append)
     reader = asyncio.create_task(c.run_reader())
-    await asyncio.sleep(0.3)  # scenario emits its scripted events
+    await asyncio.wait_for(c._ready.wait(), timeout=60.0)  # SSE connected
+    # Scenario's scripted event arrives over SSE — wait for it, don't guess.
+    await _wait_until(
+        lambda: any(e.get("type") == "message.part.delta" for e in seen)
+    )
     await c.send("hi there")
     await c.interrupt()
-    await asyncio.sleep(0.2)
+
+    def _journal_has_posts() -> bool:
+        p = workdir / "conv_journal.jsonl"
+        if not p.exists():
+            return False
+        kinds = [
+            json.loads(line)["kind"]
+            for line in p.read_text().splitlines()
+            if line.strip()
+        ]
+        return "prompt_async" in kinds and "abort" in kinds
+
+    # The fake journals our POSTs — wait until both have landed.
+    await _wait_until(_journal_has_posts)
     reader.cancel()
     try:
         await reader

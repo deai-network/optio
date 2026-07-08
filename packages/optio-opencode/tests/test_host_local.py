@@ -148,7 +148,7 @@ async def test_tail_file_yields_appended_lines(local_host):
             if collected == ["hello"]:
                 break
 
-    await asyncio.wait_for(_collect(), timeout=5.0)
+    await asyncio.wait_for(_collect(), timeout=60.0)
     await task
     assert collected == ["hello"]
 
