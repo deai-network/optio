@@ -32,6 +32,7 @@ from optio_agents import (
     ThinkingVerbosity,
     ToolVerbosity,
 )
+from optio_agents.config_types import ClaustrumConfigMixin
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -90,13 +91,16 @@ def _identity_resume_refresh(config: "CodexTaskConfig") -> "CodexTaskConfig":
     return config
 
 
-@dataclass
-class CodexTaskConfig:
-    """Configuration for one optio-codex task instance (Stage 0).
+@dataclass(frozen=True, kw_only=True)
+class CodexTaskConfig(ClaustrumConfigMixin):
+    """Configuration for one optio-codex task instance.
 
-    Stages 0-2 cover iframe/ttyd mode on local and SSH-remote hosts with
-    resume/snapshots. Seeds, conversation mode, and filesystem isolation
-    arrive in later stages.
+    Inherits the claustrum filesystem-isolation triad (``fs_isolation`` /
+    ``extra_allowed_dirs`` / ``delivery_type``) from ``ClaustrumConfigMixin``;
+    those fields stay top-level here (callers write ``fs_isolation=`` /
+    ``delivery_type=`` verbatim). Frozen because the mixin is frozen;
+    ``kw_only`` because the mixin contributes defaulted fields ahead of the
+    required ``consumer_instructions``.
     """
 
     consumer_instructions: str
@@ -124,9 +128,11 @@ class CodexTaskConfig:
     # watching). In conversation mode the thread's approvalPolicy is derived
     # from permission_gate (never / on-request), NOT from this field.
     ask_for_approval: ApprovalPolicy = "never"
-    # codex-native sandbox mode. None (default) derives from fs_isolation:
-    # workspace-write when isolation is on, danger-full-access when off.
-    # Explicit values are cross-validated against fs_isolation below.
+    # codex-native sandbox mode. Claustrum (see session.py), NOT this native
+    # mode, owns filesystem isolation now; the native mode is retained ONLY to
+    # carry the network knob (workspace-write keeps network confined per
+    # ``network_access``; danger-full-access frees it). None (default) →
+    # workspace-write. Decoupled from ``fs_isolation``.
     sandbox: SandboxMode | None = None
     # Grant network to sandboxed tool commands (codex workspace-write default
     # is network OFF — [sandbox_workspace_write] network_access). False
@@ -134,17 +140,15 @@ class CodexTaskConfig:
     # sandboxes do not restrict the network at all.
     network_access: bool = False
 
-    # --- filesystem isolation (Stage 8) ---------------------------------
-    # Confine codex tool subprocesses to the task workdir + /tmp + explicit
-    # rw grants, kernel-enforced via codex's NATIVE sandbox (bundled
-    # bubblewrap primary, Landlock+seccomp fallback on Linux). Default-ON.
-    fs_isolation: bool = True
-    # Additional path grants beyond the workdir + temp dirs. ``~/`` expands
-    # against the real host home at launch. "ro" grants are a documented
-    # no-op on codex (reads are unrestricted in workspace-write). codex's
-    # native sandbox has no execute bit, so a ``rox`` grant is treated as
-    # ``ro`` and a ``rwx`` grant as ``rw``.
-    extra_allowed_dirs: list[AllowedDir] | None = None
+    # --- filesystem isolation ------------------------------------------------
+    # fs_isolation / extra_allowed_dirs / delivery_type are INHERITED from
+    # ClaustrumConfigMixin. Claustrum (Landlock, fail-closed) confines codex
+    # and its whole tool-subprocess tree to the task workdir + explicit grants;
+    # ``extra_allowed_dirs`` rw grants ALSO feed codex's native ``writable_roots``
+    # so the redundant native layer never blocks a write claustrum permits.
+    # ``~/`` grants expand against the real host home at launch. delivery_type
+    # is MANDATORY when fs_isolation is on (routes the "newer claustrum
+    # available" security notice via on_deliverable).
 
     ssh: SSHConfig | None = None
 
@@ -263,11 +267,16 @@ class CodexTaskConfig:
 
     @property
     def effective_sandbox_mode(self) -> SandboxMode:
+        # Claustrum (not the native sandbox) owns fs isolation now. The native
+        # mode exists ONLY to carry the network knob: workspace-write keeps
+        # network confined per ``network_access``; danger-full-access frees it.
+        # Decoupled from ``fs_isolation``.
         if self.sandbox is not None:
             return self.sandbox
-        return "workspace-write" if self.fs_isolation else "danger-full-access"
+        return "workspace-write"
 
     def __post_init__(self) -> None:
+        self._validate_claustrum()
         if self.mode not in _VALID_MODES:
             raise ValueError(
                 f"CodexTaskConfig.mode={self.mode!r} is not one of "
@@ -340,20 +349,10 @@ class CodexTaskConfig:
                 f"CodexTaskConfig.reasoning_effort={self.reasoning_effort!r} "
                 f"is not one of {sorted(_VALID_REASONING_EFFORTS)}"
             )
-        if self.fs_isolation and self.effective_sandbox_mode == "danger-full-access":
-            raise ValueError(
-                "CodexTaskConfig: fs_isolation=True is incompatible with "
-                "sandbox='danger-full-access' — fs_isolation exists to "
-                "guarantee a kernel-enforced sandbox. Set fs_isolation=False "
-                "to run unconfined."
-            )
-        if not self.fs_isolation and self.sandbox in ("read-only", "workspace-write"):
-            raise ValueError(
-                "CodexTaskConfig: fs_isolation=False launches codex "
-                "unconfined (danger-full-access); an explicit restrictive "
-                f"sandbox={self.sandbox!r} contradicts it. Drop one of the "
-                "two settings."
-            )
+        # fs_isolation drives CLAUSTRUM (see session.py), decoupled from the
+        # native mode — no fs_isolation⇄native-mode cross-validation. Only the
+        # native-mode-internal couplings remain below (rw grants + network both
+        # need workspace-write, since read-only carries neither).
         rw_extras = [
             d for d in (self.extra_allowed_dirs or []) if d.mode in ("rw", "rwx")
         ]

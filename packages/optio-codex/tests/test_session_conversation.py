@@ -62,6 +62,7 @@ async def _wait_widget_data(optio: Optio, process_id: str, timeout: float = 60.0
 def _conversation_config(shim_install_dir: pathlib.Path, **kw) -> CodexTaskConfig:
     base = dict(
         consumer_instructions="Converse with the test.",
+        delivery_type="audit",
         mode="conversation",
         install_dir=str(shim_install_dir),
         ttyd_install_dir=str(shim_install_dir),
@@ -367,14 +368,17 @@ async def test_conversation_sandbox_wired(
 
 
 @pytest.mark.asyncio
-async def test_conversation_unconfined_when_fs_isolation_off(
+async def test_conversation_no_claustrum_when_fs_isolation_off(
     shim_install_dir, task_root, mongo_db, tmp_path, monkeypatch,
 ):
-    """fs_isolation=False → app-server launch carries no
-    ``sandbox_workspace_write.*`` overrides and thread/start requests
-    danger-full-access."""
+    """fs_isolation=False → the app-server launch is NOT claustrum-wrapped
+    (no Landlock). The native mode is decoupled now, so thread/start still
+    requests the default workspace-write (it only carries the network posture),
+    with no ``sandbox_workspace_write.*`` overrides for a bare config."""
     record = tmp_path / "codex_record.jsonl"
     monkeypatch.setenv("FAKE_CODEX_RECORD", str(record))
+    claustrum_record = tmp_path / "claustrum_record.log"
+    monkeypatch.setenv("FAKE_CLAUSTRUM_RECORD", str(claustrum_record))
     optio = await _make_optio(mongo_db, "cxconv7")
     try:
         task = create_codex_task(
@@ -387,16 +391,19 @@ async def test_conversation_unconfined_when_fs_isolation_off(
             "cx-conv-unconfined", session_id=None, timeout=60,
         )
 
+        # Claustrum was never invoked — the launch is unconfined by Landlock.
+        assert not claustrum_record.exists()
         recs = _read_records(record)
         launches = [r for r in recs if "argv" in r]
         assert launches, "app-server launch was not recorded"
         argv = launches[-1]["argv"]
+        assert argv[0] == "app-server"  # claustrum wrap absent, codex is argv[0]
         assert not any(a.startswith("sandbox_workspace_write.") for a in argv)
 
         starts = [r for r in recs if "thread_start_params" in r]
         assert starts, "thread/start params were not recorded"
         assert (
-            starts[-1]["thread_start_params"]["sandbox"] == "danger-full-access"
+            starts[-1]["thread_start_params"]["sandbox"] == "workspace-write"
         )
 
         await conv.close()
@@ -411,7 +418,7 @@ def test_ui_widget_per_mode():
     conv_task = create_codex_task(
         process_id="cx-widget-conv",
         name="Widget conv",
-        config=CodexTaskConfig(consumer_instructions="x", mode="conversation"),
+        config=CodexTaskConfig(consumer_instructions="x", delivery_type="audit", mode="conversation"),
     )
     assert conv_task.ui_widget is None
 
@@ -420,6 +427,7 @@ def test_ui_widget_per_mode():
         name="Widget conv ui",
         config=CodexTaskConfig(
             consumer_instructions="x", mode="conversation", conversation_ui=True,
+            delivery_type="audit",
         ),
     )
     assert ui_task.ui_widget == "conversation"
@@ -427,6 +435,6 @@ def test_ui_widget_per_mode():
     iframe_task = create_codex_task(
         process_id="cx-widget-iframe",
         name="Widget iframe",
-        config=CodexTaskConfig(consumer_instructions="x"),
+        config=CodexTaskConfig(consumer_instructions="x", delivery_type="audit"),
     )
     assert iframe_task.ui_widget == "iframe-input"

@@ -127,6 +127,7 @@ async def test_seed_capture_then_replant(mongo_db, task_root):
             ctx_src,
             CodexTaskConfig(
                 consumer_instructions=_DONE_INSTRUCTIONS,
+                delivery_type="audit",
                 before_execute=_plant_identity,
                 on_seed_saved=on_seed_saved,
                 auto_start=True,
@@ -148,6 +149,7 @@ async def test_seed_capture_then_replant(mongo_db, task_root):
             ctx_dst,
             CodexTaskConfig(
                 consumer_instructions=_DONE_INSTRUCTIONS, seed_id=seed_id,
+                delivery_type="audit",
                 auto_start=True,
             ),
         ),
@@ -166,6 +168,7 @@ async def test_resume_relaunch_picks_up_session(mongo_db, task_root):
     pid = "codex-real-resume"
     cfg = CodexTaskConfig(
         consumer_instructions=_DONE_INSTRUCTIONS,
+        delivery_type="audit",
         before_execute=_plant_identity,
         supports_resume=True,
         auto_start=True,
@@ -208,6 +211,7 @@ async def test_remote_iframe_surface_end_to_end(mongo_db, task_root):
             ctx,
             CodexTaskConfig(
                 consumer_instructions=_DONE_INSTRUCTIONS,
+                delivery_type="audit",
                 ssh=SSHConfig(host=host, user=user, key_path=key_path, port=port),
                 before_execute=_plant_identity,
                 auto_start=True,

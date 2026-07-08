@@ -72,6 +72,11 @@ async def test_remote_deliverable_callback_fired(sshd, ctx_and_captures):
         install_if_missing=False,
         install_ttyd_if_missing=False,
         on_deliverable=on_deliverable,
+        # This test proves the SSH transport, not fs isolation: the fast suite
+        # stubs claustrum with an ENGINE-local shim, which a remote host cannot
+        # exec, so opt out here. Real remote Landlock enforcement is the
+        # env-gated test_sandbox_enforce.py.
+        fs_isolation=False,
         # Remote codex can't inherit the test process env — the scenario
         # must travel in the launch env.
         env={"FAKE_CODEX_SCENARIO": "deliverable"},

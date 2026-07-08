@@ -21,7 +21,7 @@ from optio_codex.types import CodexTaskConfig
 
 
 def _cfg(**kw) -> CodexTaskConfig:
-    base = dict(consumer_instructions="do things")
+    base = dict(consumer_instructions="do things", delivery_type="audit")
     base.update(kw)
     return CodexTaskConfig(**base)
 

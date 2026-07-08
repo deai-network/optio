@@ -196,6 +196,10 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
             ),
             config=CodexTaskConfig(
                 consumer_instructions=SEED_SETUP_PROMPT,
+                # claustrum fs-isolation on (default); delivery_type is mandatory
+                # then — it routes the "newer claustrum available" security
+                # notice through on_deliverable.
+                delivery_type="system-notices",
                 ssh=ssh,
                 env=_setup_env(),
                 # One-time interactive setup: no resume. Codex writes its
@@ -226,6 +230,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                 ),
                 config=CodexTaskConfig(
                     consumer_instructions=CONSUMER_PROMPT,
+                    delivery_type="system-notices",
                     ssh=ssh,
                     before_execute=_before_execute,
                     after_execute=_after_execute,
@@ -251,6 +256,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                 ),
                 config=CodexTaskConfig(
                     consumer_instructions="",   # defaulted conversation prompt
+                    delivery_type="system-notices",
                     mode="conversation",
                     conversation_ui=True,
                     tool_verbosity="description-only",

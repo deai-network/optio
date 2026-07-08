@@ -21,7 +21,7 @@ from optio_codex.types import AllowedDir, CodexTaskConfig
 
 
 def _cfg(**kw) -> CodexTaskConfig:
-    return CodexTaskConfig(consumer_instructions="x", **kw)
+    return CodexTaskConfig(consumer_instructions="x", delivery_type="audit", **kw)
 
 
 def test_resolve_default_workspace_write_no_extras():
@@ -43,9 +43,11 @@ def test_resolve_rw_extras_expand_against_real_host_home():
     assert s.writable_roots == ("/home/alice/cache", "/scratch")
 
 
-def test_resolve_fs_isolation_off_is_danger_full_access():
+def test_resolve_native_mode_decoupled_from_fs_isolation():
+    # Native mode no longer follows fs_isolation (claustrum owns fs now): the
+    # default native mode stays workspace-write even with fs_isolation off.
     s = resolve_sandbox_settings(_cfg(fs_isolation=False), host_home="/home/u")
-    assert s.mode == "danger-full-access"
+    assert s.mode == "workspace-write"
     assert s.writable_roots == ()
     assert s.network_access is False
 

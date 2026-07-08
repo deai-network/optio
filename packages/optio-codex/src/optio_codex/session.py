@@ -55,6 +55,36 @@ def _build_host(config: CodexTaskConfig, process_id: str) -> Host:
     return host_actions.build_host(config.ssh, taskdir)
 
 
+async def _build_claustrum_wrap(
+    host: Host, config: CodexTaskConfig, claustrum_path: str | None,
+) -> list[str] | None:
+    """claustrum argv prefix for an fs-isolated launch, or None when
+    fs_isolation is off. Shared by the iframe and conversation launch paths so
+    both confine codex + its whole subprocess tree identically.
+
+    ``workdir`` (incl. the isolated home) is granted rwx; the codex binary cache
+    (where the ``<workdir>/home/.local/bin/codex`` symlink targets, outside the
+    workdir) is granted read+exec so codex can exec itself. ``~/`` caller extras
+    expand against the REAL host home (codex runs under an isolated $HOME, and
+    grants reach claustrum verbatim — no shell between). Consumes the shared
+    ``optio_agents.fs_grants`` + ``optio_agents.claustrum`` helpers.
+    """
+    if not config.fs_isolation:
+        return None
+    from optio_agents import fs_grants
+    cache_dir = await host_actions._resolve_codex_cache_dir(host, config.install_dir)
+    host_home = (
+        await host.resolve_host_home() if config.extra_allowed_dirs else None
+    )
+    grants = fs_grants.build_grant_flags(
+        workdir=host.workdir,
+        engine_cache_dir=cache_dir,
+        extra_allowed_dirs=config.extra_allowed_dirs,
+        host_home=host_home,
+    )
+    return host_actions.claustrum.build_claustrum_wrap(claustrum_path, grants)
+
+
 async def _call_maybe_async(fn, *args) -> None:
     """Invoke a callback that may be sync or async."""
     result = fn(*args)
@@ -99,6 +129,13 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
     # build_sandbox_cli_args; the codex app-server launch via thread/start's
     # `sandbox` mode + build_sandbox_config_overrides in the conversation body).
     sandbox_settings: SandboxSettings | None = None
+    # Stage 9: claustrum (Landlock, fail-closed) is the fs-isolation guarantee.
+    # Provisioned once in _prepare when fs_isolation is on; the resolved binary
+    # path feeds every launch surface's claustrum wrap. ``claustrum_newer`` is
+    # the newest upstream tag when it exceeds the pinned one (drives the update
+    # notice), else None.
+    claustrum_path: str | None = None
+    claustrum_newer: str | None = None
     cancelled = False
     # Whether a snapshot was restored this run (suppresses the auto-start
     # positional). Set by _prepare, read by the body.
@@ -153,7 +190,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
         """
         nonlocal codex_path, ttyd_path, resuming, resume_session_id
         nonlocal resolved_seed_id, lease_holder, cred_baseline
-        nonlocal sandbox_settings
+        nonlocal sandbox_settings, claustrum_path, claustrum_newer
 
         resume_requested = bool(getattr(ctx, "resume", False))
         snapshot = None
@@ -194,6 +231,14 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
         # renders from this single object.
         host_home = await host.resolve_host_home()
         sandbox_settings = resolve_sandbox_settings(config, host_home=host_home)
+        # Stage 9: provision claustrum (Landlock, fail-closed) — the trusted fs
+        # guarantee. Any failure RAISES here, so the launch never proceeds
+        # unconfined. claustrum_newer drives the update notice below.
+        if config.fs_isolation:
+            claustrum_path = await host_actions.ensure_claustrum_installed(
+                hook_ctx, install_dir=config.install_dir,
+            )
+            claustrum_newer = await host_actions.claustrum_newer_tag()
         # Conversation mode is headless (codex app-server stdio) — no ttyd.
         if config.mode != "conversation":
             ttyd_path = await host_actions.ensure_ttyd_installed(
@@ -253,6 +298,18 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             await host_actions._append_resume_log_entry(
                 host, refreshed=refreshed_files,
             )
+        # Stage 9: if a newer claustrum release exists, route the security
+        # notice through on_deliverable (a new release may patch a
+        # vulnerability). No-op without a callback or a newer tag. Runs for both
+        # iframe and conversation modes.
+        if config.fs_isolation and claustrum_newer:
+            await host_actions.claustrum.emit_claustrum_update_notice(
+                host, hook_ctx,
+                delivery_type=config.delivery_type,
+                on_deliverable=config.on_deliverable,
+                newer=claustrum_newer,
+                pinned=host_actions.claustrum.CLAUSTRUM_PINNED_TAG,
+            )
         if config.before_execute is not None:
             # End-of-prepare placement matches claudecode (its
             # _plant_session_content ends with before_execute, inside its
@@ -291,6 +348,9 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             **(config.env or {}),
             **(hook_ctx.browser_launch_env or {}),
         }
+        # Stage 9: Landlock-confine codex + its whole tmux/bash subprocess tree
+        # (None when fs_isolation is off).
+        claustrum_wrap = await _build_claustrum_wrap(host, config, claustrum_path)
         ctx.report_progress(None, f"Launching {AGENT_INFO.name}…")
         handle, tmux_path_local, ttyd_port, tmux_socket, tmux_session = await host_actions.launch_ttyd_with_codex(
             host,
@@ -299,6 +359,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             bind_iface=ttyd_iface,
             extra_env=launch_env,
             codex_flags=codex_flags,
+            claustrum_wrap=claustrum_wrap,
             ready_timeout_s=READY_TIMEOUT_S,
             env_remove=config.scrub_env,
         )
@@ -374,7 +435,11 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             # thread id recorded in the restored snapshot.
             resume_thread_id=resume_session_id if resuming else None,
         )
+        # Stage 9: Landlock-confine the app-server process tree (None when
+        # fs_isolation is off).
+        claustrum_wrap = await _build_claustrum_wrap(host, config, claustrum_path)
         argv = [
+            *(claustrum_wrap or []),
             codex_path, "app-server",
             *build_sandbox_config_overrides(sandbox_settings),
         ]

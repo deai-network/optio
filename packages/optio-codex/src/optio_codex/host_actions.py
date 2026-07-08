@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
+from optio_agents import claustrum
 from optio_agents import tmux_input as _tmux_input
 from optio_host.host import proc_wait
 
@@ -144,6 +145,65 @@ async def _resolve_codex_cache_dir(host: "Host", override: str | None) -> str:
             f"(exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
         )
     return path.rstrip("/")
+
+
+async def ensure_claustrum_installed(
+    hook_ctx: "HookContextProtocol",
+    *,
+    install_dir: str | None = None,
+) -> str:
+    """Ensure a functioning claustrum binary (pinned tag, host arch) is on the
+    host, and return its path.
+
+    Thin wrapper over :func:`optio_agents.claustrum.ensure_claustrum_installed`:
+    it resolves the codex-owned target cache dir (on the worker) and the
+    engine-local build cache root, then delegates the cross-compile/place/
+    validate to the shared module (fail-closed, functional probe, ELF-guarded
+    build cache). The codex-owned grant set + wrap live in
+    ``session._build_claustrum_wrap``. Claustrum — not codex's native sandbox —
+    is the trusted fs-isolation layer: the native sandbox confines shell-exec
+    commands but the codex agent's OWN process tree is only whole-tree confined
+    by the outer Landlock ruleset; the native mode is kept for the network knob.
+    """
+    host = hook_ctx._host
+    cache_dir = await _resolve_codex_cache_dir(host, install_dir)
+    return await claustrum.ensure_claustrum_installed(
+        host,
+        cache_dir=cache_dir,
+        engine_cache_dir=os.path.expanduser("~/.cache/optio-codex"),
+        report_progress=hook_ctx.report_progress,
+    )
+
+
+async def claustrum_newer_tag() -> str | None:
+    """Return the newest claustrum tag if it is newer than the pinned one, else None.
+
+    Engine-side egress only. Best-effort: network failure returns None (no
+    notice). Mirrors the claudecode/cursor shim.
+    """
+    try:
+        p = await asyncio.create_subprocess_exec(
+            "git", "ls-remote", "--tags", "--refs", claustrum.CLAUSTRUM_REPO,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await p.communicate()
+        if p.returncode != 0:
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    tags = []
+    for line in out.decode().splitlines():
+        ref = line.rsplit("/", 1)[-1].strip()
+        if ref.startswith("v"):
+            tags.append(ref)
+
+    def key(t: str) -> tuple:
+        return tuple(int(x) for x in t.lstrip("v").split(".") if x.isdigit())
+
+    if not tags:
+        return None
+    newest = max(tags, key=key)
+    return newest if key(newest) > key(claustrum.CLAUSTRUM_PINNED_TAG) else None
 
 
 async def ensure_codex_installed(
@@ -525,6 +585,7 @@ def _build_codex_shell_command(
     workdir: str,
     extra_env: dict[str, str] | None,
     codex_flags: list[str],
+    claustrum_wrap: list[str] | None = None,
 ) -> tuple[list[str], str]:
     workdir_clean = workdir.rstrip("/")
     iso = _isolation_env(workdir_clean)
@@ -541,7 +602,12 @@ def _build_codex_shell_command(
     for k, v in extra.items():
         env_assignments.append(f"{k}={v}")
 
-    codex_argv = " ".join(shlex.quote(c) for c in [codex_path, *codex_flags])
+    # Stage 9: when fs_isolation is on, ``claustrum_wrap`` is the claustrum
+    # argv prefix (``claustrum … --``) that Landlock-confines codex + its whole
+    # subprocess tree. None ⇒ unconfined (fs_isolation off).
+    codex_argv = " ".join(
+        shlex.quote(c) for c in [*(claustrum_wrap or []), codex_path, *codex_flags]
+    )
     log_path = f"{workdir_clean}/optio.log"
 
     if path_override is not None:
@@ -707,12 +773,14 @@ def build_tmux_session_argv(
     session_name: str,
     extra_env: dict[str, str] | None,
     codex_flags: list[str],
+    claustrum_wrap: list[str] | None = None,
 ) -> list[str]:
     _, shell_command = _build_codex_shell_command(
         codex_path=codex_path,
         workdir=workdir,
         extra_env=extra_env,
         codex_flags=codex_flags,
+        claustrum_wrap=claustrum_wrap,
     )
     return [
         tmux_path, "-S", socket_path, "new-session", "-d",
@@ -781,6 +849,7 @@ async def launch_ttyd_with_codex(
     bind_iface: str,
     extra_env: dict[str, str] | None,
     codex_flags: list[str],
+    claustrum_wrap: list[str] | None = None,
     ready_timeout_s: float = 30.0,
     env_remove: list[str] | None = None,
     session_name: str = "optio",
@@ -797,6 +866,7 @@ async def launch_ttyd_with_codex(
         session_name=session_name,
         extra_env=extra_env,
         codex_flags=codex_flags,
+        claustrum_wrap=claustrum_wrap,
     )
     session_cmd = " ".join(shlex.quote(a) for a in session_argv)
     await _launch_detached_checked(

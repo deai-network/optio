@@ -70,6 +70,7 @@ async def test_real_codex_stage0_done_when(ctx_and_captures, task_root):
                 "optio.log in the current directory (as the coordination "
                 "protocol above describes), then stop. Do nothing else."
             ),
+            delivery_type="audit",
             before_execute=_plant_identity,
             # Task-execution done-when proof: the agent must auto-run its
             # AGENTS.md task and emit DONE. auto_start defaults to False

@@ -77,6 +77,7 @@ async def test_real_conversation_turn_and_capture(mongo_db, task_root):
         name="real conversation proof",
         config=CodexTaskConfig(
             consumer_instructions="",
+            delivery_type="audit",
             mode="conversation",
             host_protocol=False,
             before_execute=_plant_identity,
