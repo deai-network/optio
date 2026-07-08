@@ -232,6 +232,10 @@ async def test_conversation_ui_session_lifecycle(shim_install_dir, task_root, mo
         assert inner is not None
         assert inner["username"] == "optio"
         assert inner["password"]
+        # widgetData is written AFTER widgetUpstream (session.py sets upstream,
+        # then awaits `agy models`, then set_widget_data) — under load that gap
+        # is wide, so wait for widgetData specifically before asserting it.
+        proc = await _wait_widget_data(optio, "ag-conv-ui")
         assert proc["widgetData"] == {
             "protocol": "antigravity",
             "toolVerbosity": "description-only",
