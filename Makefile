@@ -78,6 +78,8 @@ codegen:  ## Regenerate clamator RPC client/server stubs from optio-contracts so
 	  mv packages/optio-core/src/optio_core/_generated/optio-engine.py \
 	     packages/optio-core/src/optio_core/_generated/optio_engine.py; \
 	fi
+	@# Agent metadata: emit the TS catalog from the Python AGENTS source of truth.
+	$(PY) packages/optio-agents-ui/scripts/generate.py
 
 test: $(VENV)/bin/python  ## Run all tests (TS + Python; per-package, no docker)
 	pnpm -r test
@@ -124,6 +126,7 @@ clean:  ## Remove build artifacts and dependency caches (KEEPS committed _genera
 clean-codegen:  ## Remove generated clamator stubs (require make codegen to rebuild)
 	rm -rf packages/optio-api/src/_generated
 	rm -rf packages/optio-core/src/optio_core/_generated
+	rm -f packages/optio-agents-ui/src/agents.generated.ts
 
 clean-deep: clean clean-codegen  ## clean + clean-codegen (full reset)
 
