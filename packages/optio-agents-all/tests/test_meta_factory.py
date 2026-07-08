@@ -25,13 +25,13 @@ def test_create_task_dispatches_by_agent_type(monkeypatch):
                 "hit", _s
             ),
         )
-    cfg = aa.KimiCodeTaskConfig(consumer_instructions="x")
+    cfg = aa.KimiCodeTaskConfig(consumer_instructions="x", fs_isolation=False)
     aa.create_task("pid", "nm", cfg)
     assert called["hit"] == "kimicode"
 
 
 def test_unknown_agent_type_raises():
-    cfg = aa.GrokTaskConfig(consumer_instructions="x")
+    cfg = aa.GrokTaskConfig(consumer_instructions="x", fs_isolation=False)
     object.__setattr__(cfg, "agent_type", "bogus")
     with pytest.raises(ValueError):
         aa.create_task("pid", "nm", cfg)
@@ -61,8 +61,8 @@ def test_import_surface():
 
 
 def test_agent_type_defaults_per_engine():
-    assert aa.KimiCodeTaskConfig(consumer_instructions="x").agent_type == "kimicode"
-    assert aa.GrokTaskConfig(consumer_instructions="x").agent_type == "grok"
+    assert aa.KimiCodeTaskConfig(consumer_instructions="x", fs_isolation=False).agent_type == "kimicode"
+    assert aa.GrokTaskConfig(consumer_instructions="x", fs_isolation=False).agent_type == "grok"
     assert (
-        aa.AntigravityTaskConfig(consumer_instructions="x").agent_type == "antigravity"
+        aa.AntigravityTaskConfig(consumer_instructions="x", fs_isolation=False).agent_type == "antigravity"
     )
