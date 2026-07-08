@@ -455,6 +455,16 @@ describe('registerWidgetProxy — HTTP path', () => {
   });
 });
 
+// Generous hang-ceiling for WS events. The handshake through the fastify proxy
+// to the upstream WSS can take well over 2s when the whole workspace tests in
+// parallel (`pnpm -r`) and this worker's event loop is starved — the old fixed
+// 2000ms budget then fired before a legitimately-slow-but-succeeding handshake
+// completed ("timeout waiting for open/echo"), the flake seen only under load.
+// The timeout only bounds a true hang; the real signal is the WS event, which
+// is awaited directly. Every timer below is cleared on settle so it cannot
+// dangle as a live handle and fire during a later test.
+const WS_WAIT_MS = 15_000;
+
 describe('registerWidgetProxy — WebSocket path', () => {
   let mongoClient: MongoClient;
   let db: Db;
@@ -525,9 +535,10 @@ describe('registerWidgetProxy — WebSocket path', () => {
 
     const ws = new WebSocket(`ws://127.0.0.1:${port}${widgetUrl(oid, '/ws')}`);
     const result = await new Promise<string>((resolve) => {
-      ws.once('error', () => resolve('error'));
-      ws.once('open', () => resolve('open'));
-      setTimeout(() => resolve('timeout'), 2000);
+      const timer = setTimeout(() => resolve('timeout'), WS_WAIT_MS);
+      const done = (v: string) => { clearTimeout(timer); resolve(v); };
+      ws.once('error', () => done('error'));
+      ws.once('open', () => done('open'));
     });
     ws.terminate();
     await app.close();
@@ -540,9 +551,10 @@ describe('registerWidgetProxy — WebSocket path', () => {
 
     const ws = new WebSocket(`ws://127.0.0.1:${port}${widgetUrl(unknownOid, '/ws')}`);
     const result = await new Promise<string>((resolve) => {
-      ws.once('error', () => resolve('error'));
-      ws.once('open', () => resolve('open'));
-      setTimeout(() => resolve('timeout'), 2000);
+      const timer = setTimeout(() => resolve('timeout'), WS_WAIT_MS);
+      const done = (v: string) => { clearTimeout(timer); resolve(v); };
+      ws.once('error', () => done('error'));
+      ws.once('open', () => done('open'));
     });
     ws.terminate();
     await app.close();
@@ -555,15 +567,16 @@ describe('registerWidgetProxy — WebSocket path', () => {
 
     const ws = new WebSocket(`ws://127.0.0.1:${port}${widgetUrl(oid, '/ws')}`);
     await new Promise<void>((resolve, reject) => {
-      ws.once('open', () => resolve());
-      ws.once('error', reject);
-      setTimeout(() => reject(new Error('timeout waiting for open')), 2000);
+      const timer = setTimeout(() => reject(new Error('timeout waiting for open')), WS_WAIT_MS);
+      ws.once('open', () => { clearTimeout(timer); resolve(); });
+      ws.once('error', (e) => { clearTimeout(timer); reject(e); });
     });
 
     const echo = await new Promise<string>((resolve, reject) => {
-      ws.once('message', (data) => resolve(data.toString()));
+      const timer = setTimeout(() => reject(new Error('timeout waiting for echo')), WS_WAIT_MS);
+      ws.once('message', (data) => { clearTimeout(timer); resolve(data.toString()); });
+      ws.once('error', (e) => { clearTimeout(timer); reject(e); });
       ws.send('hello');
-      setTimeout(() => reject(new Error('timeout waiting for echo')), 2000);
     });
 
     ws.close();
@@ -580,9 +593,9 @@ describe('registerWidgetProxy — WebSocket path', () => {
 
     const ws = new WebSocket(`ws://127.0.0.1:${port}${widgetUrl(oid, '/ws')}`);
     await new Promise<void>((resolve, reject) => {
-      ws.once('open', () => resolve());
-      ws.once('error', reject);
-      setTimeout(() => reject(new Error('timeout waiting for open')), 2000);
+      const timer = setTimeout(() => reject(new Error('timeout waiting for open')), WS_WAIT_MS);
+      ws.once('open', () => { clearTimeout(timer); resolve(); });
+      ws.once('error', (e) => { clearTimeout(timer); reject(e); });
     });
 
     ws.close();
