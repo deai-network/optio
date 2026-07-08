@@ -123,6 +123,41 @@ async def _eof_shutdown(handle, *, timeout: float) -> bool:
         return False
 
 
+async def _drain_launch_stderr(
+    handle, *, timeout: float = 2.0, max_lines: int = 40,
+) -> str:
+    """Best-effort tail of ``kimi acp``'s stderr, for a launch/handshake failure.
+
+    The ACP conversation launches with ``merge_stderr=False`` (kimi's diagnostics
+    must stay off the JSON-RPC stdout the driver parses), so on a hard exit at
+    launch its stderr is otherwise never read: the driver's stdout hits EOF, the
+    reader raises a bare ``ConversationClosed("process ended")``, and the operator
+    sees no REASON in optio.log. This reads the separate stderr stream (bounded,
+    since the process has already exited so it EOFs quickly) and returns the last
+    ``max_lines`` non-blank lines so the caller can fold kimi's actual complaint
+    into the raised error. Silent on any error / when stderr was merged."""
+    stderr = getattr(handle, "stderr", None)
+    if stderr is None:
+        return ""
+    lines: list[str] = []
+
+    async def _collect() -> None:
+        async for raw in stderr:
+            text = (
+                raw.decode("utf-8", errors="replace")
+                if isinstance(raw, bytes) else str(raw)
+            )
+            for ln in text.splitlines():
+                if ln.strip():
+                    lines.append(ln.rstrip())
+
+    try:
+        await asyncio.wait_for(_collect(), timeout=timeout)
+    except Exception:  # noqa: BLE001 — timeout or stream quirk: return what we have
+        pass
+    return "\n".join(lines[-max_lines:])
+
+
 def _build_host(config: KimiCodeTaskConfig, process_id: str) -> Host:
     """Construct the appropriate Host for the given config.
 
@@ -540,8 +575,19 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
         reader_task = asyncio.create_task(conversation.run_reader())
         try:
             await conversation.bootstrap()
-        except Exception:
+        except Exception as exc:
             reader_task.cancel()
+            # A hard exit at launch (bad binary, claustrum exec denial, missing
+            # runtime lib) reaches here as a bare "process ended" — kimi's actual
+            # diagnostic went to the separate (merge_stderr=False) stderr stream we
+            # never otherwise read. Fold its tail into the error so optio.log shows
+            # WHY the launch failed, not just that it did.
+            detail = await _drain_launch_stderr(handle)
+            if detail:
+                raise RuntimeError(
+                    f"kimi acp failed to start ({exc}). "
+                    f"stderr tail:\n{detail}"
+                ) from exc
             raise
 
         ctx.publish_result(conversation)

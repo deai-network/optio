@@ -457,7 +457,18 @@ def _run_acp_stdio() -> int:
 
     ``FAKE_KIMI_EXIT_AFTER=N`` makes the process exit non-zero after N prompt
     turns, modelling an unexpected crash for the session-failure test.
+
+    ``FAKE_KIMI_ACP_FAIL_LAUNCH`` makes the process print a diagnostic to stderr
+    and exit non-zero BEFORE answering ``initialize`` — modelling a hard exit at
+    launch (bad binary / sandbox exec denial / missing runtime lib). Used to
+    verify the wrapper folds that stderr into the raised launch error instead of
+    surfacing a bare "process ended".
     """
+    fail = os.environ.get("FAKE_KIMI_ACP_FAIL_LAUNCH", "").strip()
+    if fail:
+        sys.stderr.write(fail + "\n")
+        sys.stderr.flush()
+        return 3
     session_id = "fake-kimi-session"
     exit_after = int(os.environ.get("FAKE_KIMI_EXIT_AFTER", "0") or "0")
     turn = 0

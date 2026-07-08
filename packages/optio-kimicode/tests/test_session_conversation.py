@@ -213,6 +213,28 @@ async def test_unexpected_exit_fails_task(shim_install_dir, task_root, mongo_db,
 
 
 @pytest.mark.asyncio
+async def test_launch_failure_surfaces_stderr(
+    shim_install_dir, ctx_and_captures, task_root, monkeypatch,
+):
+    """A hard exit at launch — ``kimi acp`` writes a diagnostic to stderr and
+    exits non-zero BEFORE the ACP handshake — surfaces that stderr in the raised
+    RuntimeError, instead of a bare 'process ended' with no reason. The launch
+    uses ``merge_stderr=False``, so without the drain the diagnostic is lost."""
+    ctx, *_ = ctx_and_captures
+    monkeypatch.setenv("FAKE_KIMI_ACP_FAIL_LAUNCH", "boom: kimi could not start")
+    task = create_kimicode_task(
+        process_id="kk-conv-fail",
+        name="Conversation launch failure",
+        config=_conversation_config(shim_install_dir),
+    )
+    with pytest.raises(RuntimeError) as exc:
+        await task.execute(ctx)
+    msg = str(exc.value)
+    assert "kimi acp failed to start" in msg
+    assert "boom: kimi could not start" in msg
+
+
+@pytest.mark.asyncio
 async def test_auto_start_sends_kickoff_first(shim_install_dir, task_root, mongo_db):
     """auto_start=True → the body sends the kickoff prompt first, so the
     caller's first send returns 'reply-2' (kickoff was prompt #1)."""
