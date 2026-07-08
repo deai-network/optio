@@ -584,19 +584,40 @@ async def launch_opencode(
         cmd, env=env, cwd=host.workdir, env_remove=env_remove,
     )
 
+    # Retain the tail of the launch stream so a failed start surfaces its REASON.
+    # `opencode web` is a plain server (not a TUI), so its startup diagnostics —
+    # a bind error, an auth/config crash, a claustrum "operation not permitted"
+    # denial — arrive as ordinary lines on the merged stdout+stderr the loop
+    # below already consumes. Without retaining them, they are scanned by
+    # _READY_RE, discarded, and the operator sees only "exited before printing a
+    # URL". A bounded deque keeps memory flat on a chatty-but-successful start.
+    # No ANSI strip (unlike the tmux engines' pipe-pane mirror): server logs are
+    # plain text, not PTY-painted TUI frames.
+    from collections import deque
+
+    tail: "deque[str]" = deque(maxlen=40)
+
+    def _reason_suffix() -> str:
+        recent = "\n".join(tail).strip()
+        return f"; last output:\n{recent}" if recent else ""
+
     async def _read_url() -> int:
         async for raw in handle.stdout:
             if isinstance(raw, bytes):
                 line = raw.decode("utf-8", errors="replace").rstrip()
             else:
                 line = str(raw).rstrip()
+            if line:
+                tail.append(line)
             m = _READY_RE.search(line)
             if m:
                 m2 = re.search(r":(\d+)", m.group(1))
                 if not m2:
                     raise RuntimeError(f"could not find port in URL: {line}")
                 return int(m2.group(1))
-        raise RuntimeError("opencode exited before printing a URL")
+        raise RuntimeError(
+            f"opencode exited before printing a URL{_reason_suffix()}"
+        )
 
     try:
         port = await asyncio.wait_for(_read_url(), timeout=ready_timeout_s)
@@ -604,6 +625,7 @@ async def launch_opencode(
         await host.terminate_subprocess(handle, aggressive=True)
         raise TimeoutError(
             f"opencode did not print a listening URL within {ready_timeout_s}s"
+            f"{_reason_suffix()}"
         )
     except BaseException:
         await host.terminate_subprocess(handle, aggressive=True)

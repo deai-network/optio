@@ -5,6 +5,8 @@ the per-task ``_isolation_env``)."""
 
 from __future__ import annotations
 
+import pytest
+
 from optio_host.host import ProcessHandle, RunResult
 
 from optio_opencode import host_actions
@@ -182,6 +184,65 @@ async def test_launch_opencode_env_merges_extra_env_on_top():
     assert env["OPENCODE_DB"] == "/td/opencode.db"
     assert env["BROWSER"] == "/wd/bin/open"
     assert env["PATH"] == "/wd/bin:/usr/bin"
+
+
+class _FailingLaunchHost:
+    """Fake host whose launched process emits diagnostic lines on the merged
+    stdout stream then exits WITHOUT ever printing a listening URL — the
+    process-died-at-launch failure mode."""
+
+    def __init__(self, output_lines: list[bytes], *, workdir="/wd", taskdir="/td"):
+        self.workdir = workdir
+        self.taskdir = taskdir
+        self._output_lines = output_lines
+        self.terminated = False
+
+    async def write_text(self, relpath: str, content: str) -> None:
+        pass
+
+    async def run_command(self, cmd: str, *, cwd=None, env=None) -> RunResult:
+        return RunResult(stdout="", stderr="", exit_code=0)
+
+    async def launch_subprocess(
+        self, command, *, env=None, cwd=None, merge_stderr=True, stdin=False,
+        env_remove=None,
+    ) -> ProcessHandle:
+        lines = self._output_lines
+
+        async def _stdout():
+            for ln in lines:
+                yield ln
+
+        return ProcessHandle(pid_like=object(), stdout=_stdout())
+
+    async def terminate_subprocess(self, handle, *, aggressive=False) -> None:
+        self.terminated = True
+
+
+async def test_launch_opencode_surfaces_reason_when_no_url():
+    """When opencode exits before printing a URL, the raised error must carry
+    the tail of the server's own output (merged stdout+stderr) so the operator
+    sees the REASON — not a bare 'exited before printing a URL'."""
+    host = _FailingLaunchHost([
+        b"opencode: failed to bind :0\n",
+        b"error: operation not permitted (claustrum denial)\n",
+    ])
+    with pytest.raises(RuntimeError) as ei:
+        await host_actions.launch_opencode(host, "pw")
+    msg = str(ei.value)
+    assert "exited before printing a URL" in msg
+    assert "operation not permitted (claustrum denial)" in msg
+    assert "failed to bind :0" in msg
+
+
+async def test_launch_opencode_no_url_no_output_stays_bare():
+    """No captured output → no dangling 'last output:' suffix (bounded, clean)."""
+    host = _FailingLaunchHost([])
+    with pytest.raises(RuntimeError) as ei:
+        await host_actions.launch_opencode(host, "pw")
+    msg = str(ei.value)
+    assert msg.endswith("exited before printing a URL")
+    assert "last output" not in msg
 
 
 # ---------------------------------------------------------------------------
