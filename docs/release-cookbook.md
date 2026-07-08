@@ -64,10 +64,15 @@ a manual bump).
    published AFTER its workspace/sibling deps and BEFORE its consumers:
    - **Python:** `wire` (core) → `optio-host` → `optio-agents` →
      `optio-opencode` → `optio-claudecode` → `optio-grok` → `optio-codex` →
-     `optio-cursor` → `optio-kimicode` → `optio-demo`
+     `optio-cursor` → `optio-kimicode` → `optio-antigravity` →
+     `optio-agents-all` → `optio-demo`
      (the agent wrappers `optio-grok` / `optio-codex` / `optio-cursor` /
-     `optio-kimicode` all depend on `optio-agents`+`optio-host` and are consumed
-     by `optio-demo`, so they slot between `optio-claudecode` and `optio-demo`.)
+     `optio-kimicode` / `optio-antigravity` all depend on `optio-agents`+
+     `optio-host`; `optio-agents-all` re-exports ALL seven wrappers so it must
+     come AFTER every wrapper; `optio-demo` consumes `optio-agents-all` so it is
+     last. This matches `PY_PUBLISHABLE` in `run.py` verbatim.)
+     First publishes (no prior tag, `BUMP=none`): `optio-kimicode`,
+     `optio-antigravity`, `optio-agents-all`.
    - **TS:** `wire` (contracts) → `optio-ui` → `optio-api` →
      `optio-conversation-ui` → `optio-dashboard`
      (`filtrum-core`, `filtrum-mongo` are independent)
