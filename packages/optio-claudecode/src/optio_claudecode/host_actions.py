@@ -16,6 +16,7 @@ import shlex
 from typing import TYPE_CHECKING, Any
 
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, claustrum
+from optio_agents import pane_surfacing
 from optio_agents import tmux_input as _tmux_input
 from optio_host.host import proc_wait
 
@@ -27,43 +28,6 @@ if TYPE_CHECKING:
     from optio_host.host import ProcessHandle
 
 _LOG = logging.getLogger(__name__)
-
-
-def _debug_enabled() -> bool:
-    """True when OPTIO_CLAUDECODE_DEBUG requests output capture."""
-    return bool(os.environ.get("OPTIO_CLAUDECODE_DEBUG", "").strip())
-
-
-def _debug_dir_for(workdir: str) -> str:
-    """Per-task debug dir OUTSIDE the workdir (the workdir is torn down on
-    failure, taking any in-workdir logs with it). Keyed by the task folder name
-    (parent of <workdir>) so it is stable across a task's calls. Override the
-    root with OPTIO_CLAUDECODE_DEBUG_DIR (default /tmp/optio-cc-debug)."""
-    root = (
-        os.environ.get("OPTIO_CLAUDECODE_DEBUG_DIR", "").strip()
-        or "/tmp/optio-cc-debug"
-    ).rstrip("/")
-    name = os.path.basename(os.path.dirname(workdir.rstrip("/"))) or "session"
-    return f"{root}/{name}"
-
-
-# A sed program that strips ANSI escapes (CSI sequences + OSC strings) so a
-# captured TUI-pane mirror reads as plain text when surfaced into optio.log.
-# Real ESC/BEL bytes are embedded directly (not \x1b text) so the program works
-# regardless of whether the runtime sed interprets hex escapes.
-_ESC = "\x1b"
-_BEL = "\x07"
-# NOTES:
-#  - '/' is the s/// delimiter, so no pattern may contain a literal '/' (the CSI
-#    intermediate-byte range 0x20-0x2F is omitted — claude's colour/cursor codes
-#    are ESC[...<final-byte> with no intermediates).
-#  - LC_ALL=C is REQUIRED: under a UTF-8 locale GNU sed treats [@-~] as a
-#    collation range (which excludes the CSI final bytes); byte semantics fix it.
-_ANSI_STRIP_SED = (
-    "LC_ALL=C sed -E 's/" + _ESC + r"\[[0-9;?]*[@-~]//g; "
-    "s/" + _ESC + r"[()][0-9A-Za-z]//g; "
-    "s/" + _ESC + r"\][^" + _BEL + "]*(" + _BEL + "|" + _ESC + r"\\)//g'"
-)
 
 
 # ttyd's ready banner takes a few forms across versions:
@@ -507,13 +471,12 @@ def _build_claude_shell_command(
     remote, so the seal is skipped even if OPTIO_CLAUDECODE_NETNS is set in the
     engine env.
 
-    When OPTIO_CLAUDECODE_DEBUG is set, the tmux pane is mirrored to
-    claude-pane.log under OPTIO_CLAUDECODE_DEBUG_DIR (default /tmp/optio-cc-debug)
-    — OUTSIDE the torn-down workdir — via `tmux pipe-pane` (set up in
-    launch_ttyd_with_claude); on abnormal exit its tail is ANSI-stripped into
-    optio.log. The mirror preserves claude's PTY, so the TUI still renders and
-    the real failure is captured (unlike an stdout redirect, which would itself
-    break the TUI).
+    Launch-failure surfacing is ALWAYS ON: the tmux pane is mirrored to a
+    pane-log OUTSIDE the torn-down workdir (see pane_surfacing.pane_log_path)
+    via `tmux pipe-pane` (set up in launch_ttyd_with_claude); on abnormal exit
+    its tail is ANSI-stripped into optio.log after the ERROR line. The mirror
+    preserves claude's PTY, so the TUI still renders and the real failure is
+    captured (unlike an stdout redirect, which would itself break the TUI).
     """
     workdir_clean = workdir.rstrip("/")
     home_dir = f"{workdir_clean}/home"
@@ -572,32 +535,24 @@ def _build_claude_shell_command(
     claude_argv = " ".join(shlex.quote(c) for c in claude_cmd)
     log_path = f"{workdir_clean}/optio.log"
 
-    # Debug capture (OPTIO_CLAUDECODE_DEBUG): on abnormal exit, surface the tail
-    # of the tmux pane mirror (claude-pane.log, written live by `tmux pipe-pane`
-    # in launch_ttyd_with_claude) into optio.log, ANSI-stripped, alongside
-    # "claude exited <rc>". The mirror is used INSTEAD of an stdout/stderr
-    # redirect because redirecting stdout makes isatty() false and the TUI never
-    # renders (an interactive launch then fails for a DIFFERENT reason, with no
-    # output). pipe-pane leaves claude's PTY intact, so the real failure — and
-    # whatever claude paints before exiting — is captured.
-    if _debug_enabled():
-        pane_log = f"{_debug_dir_for(workdir_clean)}/claude-pane.log"
-        bash_payload = (
-            f"cd {shlex.quote(workdir_clean)} && {claude_argv}; rc=$?; "
-            f'if [ "$rc" = 0 ]; then echo DONE >> {shlex.quote(log_path)}; '
-            f"else "
-            f"printf 'ERROR: claude exited %s\\n' \"$rc\" >> {shlex.quote(log_path)}; "
-            f"echo '--- claude tmux pane (tail, ANSI-stripped) ---' >> {shlex.quote(log_path)}; "
-            f"tail -n 150 {shlex.quote(pane_log)} 2>/dev/null | {_ANSI_STRIP_SED} "
-            f">> {shlex.quote(log_path)} 2>/dev/null; "
-            f"fi"
-        )
-    else:
-        bash_payload = (
-            f"cd {shlex.quote(workdir_clean)} && {claude_argv}; rc=$?; "
-            f'if [ "$rc" = 0 ]; then echo DONE >> {shlex.quote(log_path)}; '
-            f"else printf 'ERROR: claude exited %s\\n' \"$rc\" >> {shlex.quote(log_path)}; fi"
-        )
+    # Launch-failure surfacing (always on): on abnormal exit, surface the tail
+    # of the tmux pane mirror (written live by `tmux pipe-pane` in
+    # launch_ttyd_with_claude) into optio.log, ANSI-stripped, after the
+    # "ERROR: claude exited <rc>" line. The mirror is used INSTEAD of an
+    # stdout/stderr redirect because redirecting stdout makes isatty() false and
+    # the TUI never renders (an interactive launch then fails for a DIFFERENT
+    # reason, with no output). pipe-pane leaves claude's PTY intact, so the real
+    # failure — and whatever claude paints before exiting — is captured.
+    pane_log = pane_surfacing.pane_log_path(workdir_clean, "claudecode")
+    error_tail = pane_surfacing.error_tail_snippet(log_path, pane_log, "claudecode")
+    bash_payload = (
+        f"cd {shlex.quote(workdir_clean)} && {claude_argv}; rc=$?; "
+        f'if [ "$rc" = 0 ]; then echo DONE >> {shlex.quote(log_path)}; '
+        f"else "
+        f"printf 'ERROR: claude exited %s\\n' \"$rc\" >> {shlex.quote(log_path)}; "
+        f"{error_tail}"
+        f"fi"
+    )
     shell_command = "env " + " ".join(
         shlex.quote(x) for x in [*env_assignments, "bash", "-c", bash_payload]
     )
@@ -762,21 +717,15 @@ async def launch_ttyd_with_claude(
         host, session_cmd, env_remove=env_remove, what="tmux new-session",
     )
 
-    # 1b) Debug mirror: duplicate the live pane to claude-pane.log (outside the
-    #     workdir). pipe-pane copies the PTY output stream — it does NOT insert
-    #     a pipe in claude's fd chain, so the TUI is unaffected. The wrapper
-    #     tails this on abnormal exit (see _build_claude_shell_command).
-    if _debug_enabled():
-        debug_dir = _debug_dir_for(host.workdir)
-        pane_log = f"{debug_dir}/claude-pane.log"
-        _LOG.warning(
-            "OPTIO_CLAUDECODE_DEBUG active: mirroring tmux pane to %s", pane_log,
-        )
-        await host.run_command(f"mkdir -p {shlex.quote(debug_dir)}")
-        await host.run_command(
-            f"{shlex.quote(tmux_path)} -S {shlex.quote(socket_path)} pipe-pane "
-            f"-t {shlex.quote(session_name)} -o {shlex.quote('cat >> ' + shlex.quote(pane_log))}"
-        )
+    # 1b) Pane mirror (always on): duplicate the live pane to the pane-log
+    #     (outside the workdir). pipe-pane copies the PTY output stream — it does
+    #     NOT insert a pipe in claude's fd chain, so the TUI is unaffected. The
+    #     wrapper tails this on abnormal exit (see _build_claude_shell_command).
+    pane_log = pane_surfacing.pane_log_path(host.workdir, "claudecode")
+    await host.run_command(pane_surfacing.mkdir_pane_dir_cmd(pane_log))
+    await host.run_command(
+        pane_surfacing.pipe_pane_cmd(tmux_path, socket_path, session_name, pane_log)
+    )
 
     # 2) Start ttyd attaching to the live session.
     ttyd_argv = build_ttyd_attach_argv(
