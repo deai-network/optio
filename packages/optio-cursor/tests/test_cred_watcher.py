@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 
 import pytest
 import pytest_asyncio
@@ -140,9 +141,17 @@ async def test_watcher_saves_back_on_change(mongo_db, host, tmp_path, monkeypatc
     ))
     _write_auth(host.workdir, {"accessToken": "A2", "refreshToken": "T2"})
     try:
-        for i in range(40):
+        # Poll for the observable event (the rotated token saved back into the
+        # seed) under a generous monotonic ceiling, rather than a fixed number
+        # of iterations — under CPU starvation the watcher cycle may take much
+        # longer than a couple of seconds to run.
+        deadline = time.monotonic() + 60.0
+        i = 0
+        saved_back = False
+        while time.monotonic() < deadline:
             await asyncio.sleep(0.05)
             dst = LocalHost(taskdir=str(tmp_path / f"chk{i}"))
+            i += 1
             await dst.setup_workdir()
             await seeds.merge_seed(
                 ctx, dst, seed_id=seed_id, manifest=CURSOR_CRED_MANIFEST,
@@ -151,8 +160,9 @@ async def test_watcher_saves_back_on_change(mongo_db, host, tmp_path, monkeypatc
             p = os.path.join(dst.workdir, "home", ".config", "cursor", "auth.json")
             with open(p) as fh:
                 if "T2" in fh.read():
+                    saved_back = True
                     break
-        else:
+        if not saved_back:
             raise AssertionError("watcher did not save back the rotated auth.json")
     finally:
         task.cancel()
@@ -194,7 +204,11 @@ async def test_watcher_cancels_session_on_lease_loss(mongo_db, host, monkeypatch
     )
     assert stolen == seed_id
 
-    for _ in range(60):
+    # Wait for the cancellation flag (the observable event) under a generous
+    # monotonic ceiling rather than a fixed iteration count, so a starved CPU
+    # that delays the watcher cycle doesn't spuriously trip the failure branch.
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
         await asyncio.sleep(0.05)
         if ctx.cancellation_flag.is_set():
             break

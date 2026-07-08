@@ -10,9 +10,25 @@ PermissionRequest carries the whole JSON-RPC object as ``raw``).
 import asyncio
 import base64
 import json
+import time
 
 import aiohttp
 import pytest
+
+
+async def _wait_until(pred, timeout: float = 60.0, step: float = 0.02) -> None:
+    """Poll ``pred`` until it holds, bounded by a generous monotonic ceiling.
+
+    Waits for the observable EVENT rather than a fixed wall-clock duration, so
+    the test survives arbitrary CPU starvation (a starved box only delays when
+    the condition becomes true, never falsifies it).
+    """
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if pred():
+            return
+        await asyncio.sleep(step)
+    raise AssertionError("condition not met within timeout")
 
 from optio_agents.conversation import ConversationClosed, PermissionDecision
 from optio_cursor.conversation_listener import ConversationListener
@@ -207,7 +223,9 @@ async def test_permission_roundtrip_by_jsonrpc_id(listener):
         input = {"command": "echo hi"}
 
     task = asyncio.create_task(conv.perm_handler(Req()))
-    await asyncio.sleep(0.05)
+    # Wait for the handler to actually register the pending request keyed by its
+    # JSON-RPC id, rather than assuming it ran within a fixed 0.05s window.
+    await _wait_until(lambda: "99" in lst._pending_permissions)
     async with aiohttp.ClientSession() as s:
         r = await s.post(f"{url}/permission",
                          json={"request_id": "99", "behavior": "allow"},
