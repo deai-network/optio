@@ -60,7 +60,9 @@ async def test_tail_file_yields_line_larger_than_default_limit(localhost, tmp_pa
     # tail -F never exits on its own; bound the test with a timeout and then
     # terminate the underlying tail process.
     try:
-        await asyncio.wait_for(_consume(), timeout=5.0)
+        # Wait for the EVENT (one line consumed), not a duration; the 60s
+        # ceiling only bounds a true hang so this survives CPU starvation.
+        await asyncio.wait_for(_consume(), timeout=60.0)
     finally:
         if localhost._tail_proc is not None and localhost._tail_proc.returncode is None:
             localhost._tail_proc.terminate()

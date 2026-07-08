@@ -99,7 +99,9 @@ async def test_remote_stdin_interleaved_request_response(remote_host):
 
     async def read_line() -> bytes:
         it = handle.stdout.__aiter__()
-        chunk = await asyncio.wait_for(it.__anext__(), timeout=10)
+        # Wait for the reply line (the EVENT); 60s only bounds a true hang so
+        # this survives CPU starvation rather than a fixed real-time budget.
+        chunk = await asyncio.wait_for(it.__anext__(), timeout=60)
         return chunk if isinstance(chunk, bytes) else chunk.encode()
 
     handle.stdin.write(b"first\n")

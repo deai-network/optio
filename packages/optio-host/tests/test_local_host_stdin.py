@@ -65,7 +65,8 @@ async def test_launch_subprocess_stdin_true_close_signals_eof(localhost):
     assert b"got: world" in out
 
     proc = handle.pid_like
-    await asyncio.wait_for(proc.wait(), timeout=2.0)
+    # Wait for the process to exit (the EVENT); 60s only bounds a true hang.
+    await asyncio.wait_for(proc.wait(), timeout=60.0)
     assert proc.returncode == 0
 
 

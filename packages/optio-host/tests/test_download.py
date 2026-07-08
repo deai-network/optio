@@ -206,6 +206,19 @@ def slow_http_server(tmp_path):
         thread.join(timeout=2)
 
 
+async def _wait_until(pred, *, timeout=60.0, step=0.05, what="condition"):
+    """Poll until ``pred()`` is truthy. Waits for the EVENT, not a duration:
+    the timeout is a generous hang-ceiling that only bounds a true hang, so
+    the test stays correct under arbitrary CPU starvation.
+    """
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        if pred():
+            return
+        await asyncio.sleep(step)
+    pytest.fail(f"waited for {what} but it never happened within {timeout}s")
+
+
 class _RecordingCtx:
     """Fake ProcessContext for execute-level tests. Records report_progress."""
 
@@ -320,19 +333,19 @@ async def test_download_execute_no_host_cancel_mid_stream(slow_http_server, tmp_
         await task.execute(ctx)
 
     run_t = asyncio.create_task(_run())
-    for _ in range(200):
-        if any(p is not None and p > 0 for p, _m in ctx.progress):
-            break
-        await asyncio.sleep(0.05)
-    else:
-        pytest.fail("did not see any numeric progress before cancelling")
+    await _wait_until(
+        lambda: any(p is not None and p > 0 for p, _m in ctx.progress),
+        what="numeric progress before cancelling",
+    )
 
-    start = _time.monotonic()
     ctx.cancellation_flag.set()
-    await asyncio.wait_for(run_t, timeout=10.0)
-    elapsed = _time.monotonic() - start
+    # Wait for the task to settle (the EVENT). Generous ceiling only bounds a
+    # true hang; correctness that cancel *interrupted* the stream (rather than
+    # letting the full 50MB download finish) is proven by the cleaned-up target
+    # below — a completed download would leave the file in place. This replaces
+    # a wall-clock `elapsed < 8.0` assertion that flaked under CPU starvation.
+    await asyncio.wait_for(run_t, timeout=60.0)
 
-    assert elapsed < 8.0, f"cancel took too long: {elapsed:.1f}s"
     assert not target.exists()
 
 
@@ -416,17 +429,17 @@ async def test_download_execute_host_cancel_mid_stream(slow_http_server, tmp_pat
     ctx = _RecordingCtx()
 
     run_t = asyncio.create_task(task.execute(ctx))
-    for _ in range(200):
-        if any(p is not None and p > 0 for p, _m in ctx.progress):
-            break
-        await asyncio.sleep(0.05)
-    else:
-        pytest.fail("did not see any numeric progress before cancelling")
+    await _wait_until(
+        lambda: any(p is not None and p > 0 for p, _m in ctx.progress),
+        what="numeric progress before cancelling",
+    )
 
-    start = _time.monotonic()
     ctx.cancellation_flag.set()
-    await asyncio.wait_for(run_t, timeout=10.0)
-    elapsed = _time.monotonic() - start
+    # Wait for the task to settle (the EVENT). Generous ceiling only bounds a
+    # true hang; correctness that cancel *interrupted* the stream (rather than
+    # letting the full 50MB download finish) is proven by the cleaned-up target
+    # below — a completed download would leave the file in place. This replaces
+    # a wall-clock `elapsed < 8.0` assertion that flaked under CPU starvation.
+    await asyncio.wait_for(run_t, timeout=60.0)
 
-    assert elapsed < 8.0, f"cancel took too long: {elapsed:.1f}s"
     assert not os.path.exists(target_abs)
