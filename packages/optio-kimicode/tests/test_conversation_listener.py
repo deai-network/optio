@@ -250,7 +250,13 @@ async def test_permission_roundtrip_by_jsonrpc_id(listener):
         input = {"command": "echo hi"}
 
     task = asyncio.create_task(conv.perm_handler(Req()))
-    await asyncio.sleep(0.05)
+    # Wait until the handler has actually PARKED the pending request (event-
+    # driven), not a fixed sleep: a starved CPU may not have run the handler
+    # yet, and POSTing before it parks would 404 instead of resolving.
+    _deadline = asyncio.get_event_loop().time() + 60
+    while "99" not in lst._pending_permissions:
+        assert asyncio.get_event_loop().time() < _deadline, "permission never parked"
+        await asyncio.sleep(0.02)
     async with aiohttp.ClientSession() as s:
         r = await s.post(f"{url}/permission",
                          json={"request_id": "99", "behavior": "allow"},

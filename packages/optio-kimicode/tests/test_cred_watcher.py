@@ -209,12 +209,13 @@ async def test_watcher_saves_back_on_change(mongo_db, host, monkeypatch):
     ))
     _write_cred(host.workdir, {"refresh_token": "T2"})
     try:
-        for _ in range(40):
+        # Poll the OBSERVABLE (rotated token saved back) on a generous monotonic
+        # ceiling so a CPU-starved watcher task still gets to run before we fail.
+        deadline = asyncio.get_event_loop().time() + 60
+        while (await _seed_cred(mongo_db, seed_id))["refresh_token"] != "T2":
+            if asyncio.get_event_loop().time() >= deadline:
+                raise AssertionError("watcher did not save back the rotated token")
             await asyncio.sleep(0.05)
-            if (await _seed_cred(mongo_db, seed_id))["refresh_token"] == "T2":
-                break
-        else:
-            raise AssertionError("watcher did not save back the rotated token")
     finally:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -257,13 +258,14 @@ async def test_watcher_cancels_session_on_lease_loss(mongo_db, host, monkeypatch
     )
     assert stolen == seed_id
 
-    for _ in range(60):
+    # Poll the OBSERVABLE (cancellation flagged) on a generous monotonic ceiling
+    # so a CPU-starved watcher still gets to detect the stolen lease.
+    deadline = asyncio.get_event_loop().time() + 60
+    while not ctx.cancellation_flag.is_set():
+        if asyncio.get_event_loop().time() >= deadline:
+            task.cancel()
+            raise AssertionError("watcher did not flag cancellation on lease loss")
         await asyncio.sleep(0.05)
-        if ctx.cancellation_flag.is_set():
-            break
-    else:
-        task.cancel()
-        raise AssertionError("watcher did not flag cancellation on lease loss")
     await task  # lease-loss exit is a normal return, not a raise
 
 
@@ -403,13 +405,14 @@ async def test_cancelled_seeded_session_flushes_before_backstop(
 
     # Wait until the widget is live (kimi launched, handle assigned) before
     # cancelling, so teardown exercises the graceful terminate path.
-    for _ in range(200):
-        if cap.widget_data:
-            break
+    # Poll the OBSERVABLE (widget went live) on a generous monotonic ceiling so
+    # a CPU-starved session still gets to launch kimi before we give up.
+    deadline = asyncio.get_event_loop().time() + 60
+    while not cap.widget_data:
+        if asyncio.get_event_loop().time() >= deadline:
+            session.cancel()
+            raise AssertionError("kimi widget never went live")
         await asyncio.sleep(0.05)
-    else:
-        session.cancel()
-        raise AssertionError("kimi widget never went live")
 
     flag.set()  # cancel the session
     await session
