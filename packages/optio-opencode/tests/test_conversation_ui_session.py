@@ -175,12 +175,37 @@ def _supply_scenario(monkeypatch):
 
 
 async def _launch(ctx, cfg):
-    """Run the session as a task; wait until publish_result was called."""
+    """Run the session as a task; wait until publish_result was called.
+
+    Event-driven with a generous hang-ceiling. The previous fixed
+    200 x 0.05s = 10s poll budget was load-blind: under heavy parallel-worker
+    CPU contention the pre-publish chain (subprocess spawns + HTTP round-trips
+    to fake_opencode) legitimately exceeds 10s, so the poller cancelled a
+    still-progressing session ("conversation was never published"). Wait on an
+    event fired by publish_result instead, and race it against the session task
+    so a session that dies before publishing surfaces its real exception rather
+    than the misleading generic assertion. The 60s ceiling only bounds a true
+    hang; it is far beyond the real work time even under oversubscription.
+    """
+    published = asyncio.Event()
+    orig_publish = ctx.publish_result
+
+    def _pub(obj):
+        orig_publish(obj)                   # keep the fixture's recording behavior
+        published.set()
+
+    ctx.publish_result = _pub  # type: ignore[method-assign]
+
     sess = asyncio.create_task(run_opencode_session(ctx, cfg))
-    for _ in range(200):
-        if ctx.published_results:           # captured by the fixture wrapper
-            return sess, ctx.published_results[0]
-        await asyncio.sleep(0.05)
+    waiter = asyncio.create_task(published.wait())
+    done, _pending = await asyncio.wait(
+        {sess, waiter}, timeout=60, return_when=asyncio.FIRST_COMPLETED,
+    )
+    if waiter in done:
+        return sess, ctx.published_results[0]
+    waiter.cancel()
+    if sess in done:
+        sess.result()                       # session ended first -> re-raise real cause
     sess.cancel()
     raise AssertionError("conversation was never published")
 
