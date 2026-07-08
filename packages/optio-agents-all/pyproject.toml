@@ -33,7 +33,7 @@ dependencies = [
     "optio-codex>=0.3,<0.4",
     "optio-cursor>=0.3,<0.4",
     "optio-kimicode>=0.2,<0.3",
-    "optio-antigravity>=0.1,<0.2",
+    "optio-antigravity>=0.2,<0.3",
 ]
 
 [project.optional-dependencies]
