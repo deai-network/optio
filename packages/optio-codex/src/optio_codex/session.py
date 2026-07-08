@@ -81,6 +81,14 @@ async def _build_claustrum_wrap(
         engine_cache_dir=cache_dir,
         extra_allowed_dirs=config.extra_allowed_dirs,
         host_home=host_home,
+        # codex's NATIVE bubblewrap sandbox (kept for the network_access knob)
+        # runs INSIDE this claustrum wrap and materializes synthetic mount
+        # targets + a lock under /tmp/codex-bwrap-synthetic-mount-targets-<uid>/.
+        # Landlock must grant /tmp (and /var/tmp) or bwrap can't start. This does
+        # NOT loosen the effective sandbox: bwrap re-narrows /tmp to its own
+        # mounts within (defense in depth). codex-only — the other 6 engines run
+        # no inner sandbox and confine temp to the workdir.
+        extra_baseline=[("--rw", "/tmp"), ("--rw", "/var/tmp")],
     )
     return host_actions.claustrum.build_claustrum_wrap(claustrum_path, grants)
 

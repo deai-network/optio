@@ -100,6 +100,10 @@ async def test_build_claustrum_wrap_shape(monkeypatch):
     assert "--rw" in wrap and "/home/op/data" in wrap
     # system baseline present
     assert "/usr" in wrap
+    # codex's native bubblewrap (kept for network_access) writes synthetic mount
+    # targets under /tmp INSIDE this wrap, so claustrum must grant /tmp + /var/tmp
+    assert wrap[wrap.index("/tmp") - 1] == "--rw"
+    assert "/var/tmp" in wrap
 
 
 @pytest.mark.asyncio
