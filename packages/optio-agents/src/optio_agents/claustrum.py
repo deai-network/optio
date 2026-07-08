@@ -176,3 +176,31 @@ async def ensure_claustrum_installed(
             f"no-op the launch). Refusing to launch unconfined."
         )
     return target_path
+
+
+def build_claustrum_wrap(claustrum_path: str, grants: list[str]) -> list[str]:
+    """The claustrum argv prefix that Landlock-confines the launched process
+    tree. ``grants`` come from :func:`optio_agents.fs_grants.build_grant_flags`."""
+    return [claustrum_path, "--best-effort", "--abi-min", "1", *grants, "--"]
+
+
+async def emit_claustrum_update_notice(
+    host, hook_ctx, *, delivery_type: str, on_deliverable, newer: str, pinned: str,
+) -> None:
+    """Route the 'a newer claustrum release is available' notice through
+    ``on_deliverable``, then remove the notice file (clean slate for the real
+    agent). No-op when ``on_deliverable`` is None or ``newer`` is falsy."""
+    if on_deliverable is None or not newer:
+        return
+    rel = f"{delivery_type}/claustrum-update-{newer}.md"
+    text = (
+        f"A newer claustrum release ({newer}) is available; the pinned version "
+        f"is {pinned}. Audit it and consider bumping the pin."
+    )
+    await host.write_text(f"deliverables/{rel}", text)
+    try:
+        await on_deliverable(hook_ctx, rel, text)
+    finally:
+        await host.run_command(
+            f"rm -f {shlex.quote(host.workdir.rstrip('/') + '/deliverables/' + rel)}"
+        )
