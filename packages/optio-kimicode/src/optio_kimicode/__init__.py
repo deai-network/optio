@@ -9,6 +9,7 @@ from optio_host import (
     SSHConfig,
 )
 
+from optio_kimicode.info import AGENT_INFO
 from optio_kimicode.seed_manifest import (
     KIMI_CRED_MANIFEST,
     KIMI_SEED_MANIFEST,
@@ -36,6 +37,7 @@ _logging.getLogger("asyncssh").setLevel(_logging.WARNING)
 
 
 __all__ = [
+    "AGENT_INFO",
     "create_kimicode_task",
     "run_kimicode_session",
     "KimiCodeTaskConfig",

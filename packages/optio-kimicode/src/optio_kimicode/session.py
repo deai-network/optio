@@ -42,6 +42,7 @@ from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
 from optio_host.paths import task_dir
 
 from optio_kimicode import cred_watcher, host_actions, verify
+from optio_kimicode.info import AGENT_INFO
 from optio_kimicode import models as kimi_models
 from optio_kimicode.conversation import KimiCodeConversation
 from optio_kimicode.conversation_listener import ConversationListener
@@ -177,9 +178,9 @@ async def _merge_seed_with_refresh(
         )
         if doc is not None and doc.get("status") == "dead":
             raise RuntimeError(
-                f"Kimi Code seed {seed_id} is spoiled: its login token is expired "
-                f"or revoked and can no longer be refreshed — a fresh Kimi Code "
-                f"login is required to use this seed."
+                f"{AGENT_INFO.name} seed {seed_id} is spoiled: its login token is "
+                f"expired or revoked and can no longer be refreshed — a fresh "
+                f"{AGENT_INFO.name} login is required to use this seed."
             )
         _LOG.warning(
             "kimi seed %s could not be refreshed (transient); merging the existing "
@@ -381,7 +382,7 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             **(config.env or {}),
             **(hook_ctx.browser_launch_env or {}),
         }
-        ctx.report_progress(None, "Launching Kimi Code…")
+        ctx.report_progress(None, f"Launching {AGENT_INFO.name}…")
         # Stage 8: confine the kimi web server (and its tool subprocesses) to
         # the workdir + grants. None when fs_isolation is off.
         claustrum_wrap = await host_actions._build_claustrum_wrap(
@@ -430,7 +431,7 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             # its router sees the app URL space. (ttyd widgets omit this.)
             "stripProxyPrefix": True,
         })
-        ctx.report_progress(None, "Kimi Code is live")
+        ctx.report_progress(None, f"{AGENT_INFO.name} is live")
 
         # Start the in-session credential watcher for a seeded session: it saves
         # back the rotated kimi-code.json, and (when the seed is leased) renews
@@ -516,7 +517,7 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             host.workdir,
             {**(config.env or {}), **(hook_ctx.browser_launch_env or {})},
         )
-        ctx.report_progress(None, "Launching Kimi Code (conversation)…")
+        ctx.report_progress(None, f"Launching {AGENT_INFO.name} (conversation)…")
         handle = await host.launch_subprocess(
             cmd, env=env, cwd=host.workdir,
             env_remove=config.scrub_env, stdin=True, merge_stderr=False,
@@ -531,7 +532,7 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             raise
 
         ctx.publish_result(conversation)
-        ctx.report_progress(None, "Kimi Code conversation is live")
+        ctx.report_progress(None, f"{AGENT_INFO.name} conversation is live")
 
         # Opt-in dashboard chat widget: start a per-task SSE listener over the
         # published conversation and publish it as the "conversation" widget via
