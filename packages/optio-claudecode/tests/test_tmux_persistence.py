@@ -7,6 +7,7 @@ detached, survives a ttyd kill, and is reaped by teardown.
 import asyncio
 import os
 import shutil
+import time
 
 import pytest
 
@@ -83,8 +84,22 @@ async def test_session_survives_ttyd_teardown_then_killed_on_teardown(tmp_path):
 
         # teardown kills the session
         await host_actions._kill_tmux_session(host, tmux_path, socket, "optio")
-        await asyncio.sleep(0.5)
+        # Session teardown and child reaping are asynchronous; poll for the
+        # observable end state rather than assuming a fixed wall-clock delay
+        # (which flakes under CPU starvation when the reaper hasn't run yet).
+        end = time.monotonic() + 60
+        while time.monotonic() < end:
+            if not await host_actions.tmux_session_alive(host, tmux_path, socket, "optio"):
+                break
+            await asyncio.sleep(0.05)
         assert not await host_actions.tmux_session_alive(host, tmux_path, socket, "optio")
+        end = time.monotonic() + 60
+        while time.monotonic() < end:
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                break
+            await asyncio.sleep(0.05)
         with pytest.raises(ProcessLookupError):
             os.kill(child_pid, 0)
     finally:

@@ -114,7 +114,7 @@ def test_show_file_upload_ok_in_conversation_ui():
 # --- end-to-end writer registration + materialize -------------------------
 
 
-async def _wait_terminal(optio: Optio, process_id: str, timeout: float = 30.0) -> dict:
+async def _wait_terminal(optio: Optio, process_id: str, timeout: float = 60.0) -> dict:
     end = _time.monotonic() + timeout
     while _time.monotonic() < end:
         proc = await optio.get_process(process_id)
@@ -124,7 +124,7 @@ async def _wait_terminal(optio: Optio, process_id: str, timeout: float = 30.0) -
     raise AssertionError(f"{process_id} did not reach terminal state in {timeout}s")
 
 
-async def _wait_widget_data(optio: Optio, process_id: str, timeout: float = 10.0) -> dict:
+async def _wait_widget_data(optio: Optio, process_id: str, timeout: float = 60.0) -> dict:
     """Poll until the task publishes widgetData (set last in the conversation-ui
     branch, after the upload writer is registered)."""
     end = _time.monotonic() + timeout

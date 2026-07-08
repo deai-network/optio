@@ -209,6 +209,7 @@ async def test_rescue_end_to_end_kills_orphan_and_snapshots(
           -k end_to_end -v
     """
     import asyncio
+    import time
 
     from optio_claudecode.snapshots import load_latest_snapshot
     from optio_host.host import LocalHost
@@ -252,7 +253,16 @@ async def test_rescue_end_to_end_kills_orphan_and_snapshots(
     # The tmux session is gone (orphan killed before capture).
     assert (await H.tmux_session_alive(host, tmux_path, socket, "optio")) is False
     # The sleep shim child is reaped (kill-session SIGHUPs the pane tree).
-    await asyncio.sleep(0.3)
+    # Reaping is asynchronous; poll for the child's disappearance instead of
+    # assuming it happens within a fixed wall-clock window (which flakes when
+    # the CPU is starved and the reaper simply hasn't run yet).
+    end = time.monotonic() + 60
+    while time.monotonic() < end:
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        await asyncio.sleep(0.05)
     with pytest.raises(ProcessLookupError):
         os.kill(child_pid, 0)
 

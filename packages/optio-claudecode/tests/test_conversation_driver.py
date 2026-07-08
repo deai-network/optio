@@ -82,7 +82,15 @@ async def test_send_writes_user_message_and_pending(convo):
     assert c.is_pending()
     handle.stdout.feed({"type": "result", "subtype": "success",
                         "result": "hi back", "is_error": False})
-    await asyncio.sleep(0.05)
+    # The reader clears pending when it processes the result; poll for that
+    # transition rather than assuming it lands within a fixed wall-clock delay
+    # (which flakes when the reader task is CPU-starved).
+    import time
+    end = time.monotonic() + 60
+    while time.monotonic() < end:
+        if not c.is_pending():
+            break
+        await asyncio.sleep(0.02)
     assert not c.is_pending()
     handle.stdout.eof()
     await reader

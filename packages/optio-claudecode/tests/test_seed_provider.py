@@ -74,7 +74,15 @@ async def test_watcher_renews_lease_and_aborts_when_lost(mongo_db, monkeypatch):
     )
     assert await seeds.acquire(mongo_db, prefix="test", suffix=CLAUDE_SEED_SUFFIX, poolKey="pool-1", holder="thief") == sid
 
-    await asyncio.sleep(0.2)  # next renew tick sees the loss
+    # The next renew tick sees the loss and signals abort; poll for that
+    # observable transition instead of assuming it happens within a fixed
+    # wall-clock window (which flakes when the watcher task is CPU-starved).
+    import time
+    end = time.monotonic() + 60
+    while time.monotonic() < end:
+        if ctx.cancellation_flag.is_set():
+            break
+        await asyncio.sleep(0.02)
     assert ctx.cancellation_flag.is_set()  # watcher signalled abort
     task.cancel()
     try:

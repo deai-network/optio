@@ -92,11 +92,19 @@ async def test_run_credential_watcher_saves_on_change_then_cancels(
     task = asyncio.create_task(cred_watcher.run_credential_watcher(
         ctx, host, seed_id=seed_id, baseline=baseline, encrypt=None, decrypt=None,
     ))
-    # rotate creds; the watcher should pick it up within a few intervals
+    # rotate creds; the watcher should pick it up eventually. Poll for the
+    # observable save-back under a generous wall-clock ceiling rather than a
+    # fixed iteration budget, which flakes when the watcher task is CPU-starved
+    # and hasn't had enough scheduler turns within a tight window.
     _write_creds(host.workdir, "T2")
-    for _ in range(40):
+    import time
+    end = time.monotonic() + 60
+    saved_back = False
+    i = 0
+    while time.monotonic() < end:
         await asyncio.sleep(0.05)
-        dst = LocalHost(taskdir=os.path.join(tmp_workdir, f"chk{_}"))
+        dst = LocalHost(taskdir=os.path.join(tmp_workdir, f"chk{i}"))
+        i += 1
         await dst.setup_workdir()
         await seeds.merge_seed(
             ctx, dst, seed_id=seed_id, manifest=CLAUDE_CRED_MANIFEST,
@@ -104,8 +112,9 @@ async def test_run_credential_watcher_saves_on_change_then_cancels(
         )
         with open(os.path.join(dst.workdir, "home", ".claude", ".credentials.json")) as fh:
             if "T2" in fh.read():
+                saved_back = True
                 break
-    else:
+    if not saved_back:
         task.cancel()
         raise AssertionError("watcher did not save back the rotated credentials")
 

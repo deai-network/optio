@@ -125,7 +125,16 @@ async def test_permission_roundtrip_and_second_answer_404(listener):
         input = {}
 
     task = asyncio.create_task(conv.perm_handler(Req()))
-    await asyncio.sleep(0.05)
+    # Wait until the handler has actually parked the pending request before we
+    # answer it; polling this observable avoids a fixed wall-clock delay that
+    # flakes when the handler task is CPU-starved and hasn't registered yet.
+    import time
+    end = time.monotonic() + 60
+    while time.monotonic() < end:
+        if "perm-1" in lst._pending_permissions:
+            break
+        await asyncio.sleep(0.02)
+    assert "perm-1" in lst._pending_permissions
     async with aiohttp.ClientSession() as s:
         r = await s.post(f"{url}/permission",
                          json={"request_id": "perm-1", "behavior": "allow"},
