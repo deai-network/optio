@@ -46,7 +46,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
-from optio_agents_all import KimiCodeTaskConfig, create_task
+from optio_agents_all import KimiCodeTaskConfig, create_task, get_agent_info
 from optio_core.models import TaskInstance
 from optio_kimicode import (
     HookContext,
@@ -55,6 +55,9 @@ from optio_kimicode import (
 )
 
 from optio_demo.tasks._feedback import make_feedback_on_deliverable
+
+
+_NAME = get_agent_info("kimicode").name  # "Kimi Code"
 
 
 CONTEXT_TXT = b"""\
@@ -183,7 +186,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         # The seed setup task: vanilla (no seed_id), on_seed_saved wired.
         create_task(
             process_id="kimicode-seed-setup",
-            name="Setup Kimi Code seed",
+            name=f"Setup {_NAME} seed",
             description=(
                 "One-time: run `kimi login` interactively (device-code), "
                 "then stop the task to capture a reusable seed. New "
@@ -213,7 +216,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         tasks.append(
             create_task(
                 process_id=f"kimicode-demo-seed-{seed_id}",
-                name=f"Kimi Code demo — {name}",
+                name=f"{_NAME} demo — {name}",
                 description=(
                     "Fresh kimi-web session started from a captured "
                     f"seed ({name}): logged-in and configured, new "
@@ -240,7 +243,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         tasks.append(
             create_task(
                 process_id=f"kimicode-conversation-seed-{seed_id}",
-                name=f"Kimi Code conversation — {name}",
+                name=f"{_NAME} conversation — {name}",
                 description=(
                     "Conversation-mode (ACP) Kimi Code session from a "
                     f"captured seed ({name}): chat with the agent in the "

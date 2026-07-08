@@ -44,7 +44,7 @@ import os
 from datetime import datetime, timezone
 
 from optio_agents import HookContext
-from optio_agents_all import AntigravityTaskConfig, create_task
+from optio_agents_all import AntigravityTaskConfig, create_task, get_agent_info
 from optio_core.models import TaskInstance
 from optio_host import SSHConfig
 
@@ -53,6 +53,9 @@ from optio_antigravity import (
 )
 
 from optio_demo.tasks._feedback import make_feedback_on_deliverable
+
+
+_NAME = get_agent_info("antigravity").name  # "Antigravity CLI"
 
 
 CONTEXT_TXT = b"""\
@@ -182,7 +185,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         # The seed setup task: vanilla (no seed_id), on_seed_saved wired.
         create_task(
             process_id="antigravity-seed-setup",
-            name="Setup Antigravity seed",
+            name=f"Setup {_NAME} seed",
             description=(
                 "One-time: log into Antigravity with a Google account "
                 "interactively, then stop the task to capture a reusable "
@@ -213,7 +216,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         tasks.append(
             create_task(
                 process_id=f"antigravity-demo-seed-{seed_id}",
-                name=f"Antigravity demo — {name}",
+                name=f"{_NAME} demo — {name}",
                 description=(
                     "Fresh Antigravity (agy) TUI session started from a "
                     f"captured seed ({name}): logged-in and configured, new "
@@ -241,7 +244,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         tasks.append(
             create_task(
                 process_id=f"antigravity-conversation-seed-{seed_id}",
-                name=f"Antigravity conversation — {name}",
+                name=f"{_NAME} conversation — {name}",
                 description=(
                     "Conversation-mode (transcript-driven) Antigravity "
                     f"session from a captured seed ({name}): chat with the "

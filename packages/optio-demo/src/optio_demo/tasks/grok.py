@@ -43,7 +43,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
-from optio_agents_all import GrokTaskConfig, create_task
+from optio_agents_all import GrokTaskConfig, create_task, get_agent_info
 from optio_core.models import TaskInstance
 from optio_grok import (
     HookContext,
@@ -52,6 +52,9 @@ from optio_grok import (
 )
 
 from optio_demo.tasks._feedback import make_feedback_on_deliverable
+
+
+_NAME = get_agent_info("grok").name  # "Grok Build"
 
 
 CONTEXT_TXT = b"""\
@@ -179,7 +182,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         # The seed setup task: vanilla (no seed_id), on_seed_saved wired.
         create_task(
             process_id="grok-seed-setup",
-            name="Setup Grok seed",
+            name=f"Setup {_NAME} seed",
             description=(
                 "One-time: log into Grok Build interactively, then stop the "
                 "task to capture a reusable seed. New seed-pinned demo tasks "
@@ -209,7 +212,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         tasks.append(
             create_task(
                 process_id=f"grok-demo-seed-{seed_id}",
-                name=f"Grok demo — {name}",
+                name=f"{_NAME} demo — {name}",
                 description=(
                     "Fresh Grok Build session started from a captured "
                     f"seed ({name}): logged-in and configured, new "
@@ -233,7 +236,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         tasks.append(
             create_task(
                 process_id=f"grok-conversation-seed-{seed_id}",
-                name=f"Grok conversation — {name}",
+                name=f"{_NAME} conversation — {name}",
                 description=(
                     "Conversation-mode Grok Build session from a captured "
                     f"seed ({name}): chat with the agent in the dashboard, "

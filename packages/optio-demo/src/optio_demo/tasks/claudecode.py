@@ -38,7 +38,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
-from optio_agents_all import ClaudeCodeTaskConfig, create_task
+from optio_agents_all import ClaudeCodeTaskConfig, create_task, get_agent_info
 from optio_claudecode import (
     HookContext,
     SSHConfig,
@@ -46,6 +46,9 @@ from optio_claudecode import (
 from optio_core.models import TaskInstance
 
 from optio_demo.tasks._feedback import make_feedback_on_deliverable
+
+
+_NAME = get_agent_info("claudecode").name  # "Claude Code"
 
 
 CONTEXT_TXT = b"""\
@@ -165,7 +168,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         # The seed setup task: vanilla (no seed_id), on_seed_saved wired.
         create_task(
             process_id="claudecode-seed-setup",
-            name="Setup Claude Code seed",
+            name=f"Setup {_NAME} seed",
             description=(
                 "One-time: log into Claude Code and configure plugins, "
                 "then stop the task to capture a reusable seed. A new "
@@ -196,7 +199,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         tasks.append(
             create_task(
                 process_id=f"claudecode-demo-seed-{seed_id}",
-                name=f"Claude Code demo — {name}",
+                name=f"{_NAME} demo — {name}",
                 description=(
                     "Fresh Claude Code session started from a captured "
                     f"seed ({name}): logged-in and configured, new "
@@ -223,7 +226,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         tasks.append(
             create_task(
                 process_id=f"claudecode-conversation-seed-{seed_id}",
-                name=f"Claude Code conversation — {name}",
+                name=f"{_NAME} conversation — {name}",
                 description=(
                     "Conversation-mode Claude Code session from a captured "
                     f"seed ({name}): chat with the agent in the dashboard, "
@@ -249,7 +252,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         tasks.append(
             create_task(
                 process_id=f"claudecode-conversation-task-seed-{seed_id}",
-                name=f"Claude Code conversation+task — {name}",
+                name=f"{_NAME} conversation+task — {name}",
                 description=(
                     "Same favourite-colour task as the iframe demo (reads "
                     "context.txt, asks for a colour, ships a deliverable) but "

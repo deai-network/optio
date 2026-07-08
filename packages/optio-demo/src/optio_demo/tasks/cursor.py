@@ -43,7 +43,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
-from optio_agents_all import CursorTaskConfig, create_task
+from optio_agents_all import CursorTaskConfig, create_task, get_agent_info
 from optio_core.models import TaskInstance
 from optio_cursor import (
     HookContext,
@@ -52,6 +52,9 @@ from optio_cursor import (
 )
 
 from optio_demo.tasks._feedback import make_feedback_on_deliverable
+
+
+_NAME = get_agent_info("cursor").name  # "Cursor CLI"
 
 
 CONTEXT_TXT = b"""\
@@ -186,7 +189,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         # The seed setup task: vanilla (no seed_id), on_seed_saved wired.
         create_task(
             process_id="cursor-seed-setup",
-            name="Setup Cursor seed",
+            name=f"Setup {_NAME} seed",
             description=(
                 "One-time: run `cursor-agent login` interactively, then stop "
                 "the task to capture a reusable seed. New seed-pinned demo "
@@ -216,7 +219,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         tasks.append(
             create_task(
                 process_id=f"cursor-demo-seed-{seed_id}",
-                name=f"Cursor demo — {name}",
+                name=f"{_NAME} demo — {name}",
                 description=(
                     "Fresh Cursor session started from a captured seed "
                     f"({name}): logged-in and configured, new conversation. "
@@ -244,7 +247,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         tasks.append(
             create_task(
                 process_id=f"cursor-conversation-seed-{seed_id}",
-                name=f"Cursor conversation — {name}",
+                name=f"{_NAME} conversation — {name}",
                 description=(
                     "Conversation-mode Cursor session from a captured seed "
                     f"({name}): chat with the agent in the dashboard, approve "

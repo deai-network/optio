@@ -41,7 +41,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
-from optio_agents_all import CodexTaskConfig, create_task
+from optio_agents_all import CodexTaskConfig, create_task, get_agent_info
 from optio_codex import (
     HookContext,
     SSHConfig,
@@ -50,6 +50,9 @@ from optio_codex import (
 from optio_core.models import TaskInstance
 
 from optio_demo.tasks._feedback import make_feedback_on_deliverable
+
+
+_NAME = get_agent_info("codex").name  # "Codex"
 
 
 CONTEXT_TXT = b"""\
@@ -183,7 +186,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         # The seed setup task: vanilla (no seed_id), on_seed_saved wired.
         create_task(
             process_id="codex-seed-setup",
-            name="Setup Codex seed",
+            name=f"Setup {_NAME} seed",
             description=(
                 "One-time: log into Codex interactively (`codex login "
                 "--device-auth`, or `codex login --with-api-key` with "
@@ -214,7 +217,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         tasks.append(
             create_task(
                 process_id=f"codex-demo-seed-{seed_id}",
-                name=f"Codex demo — {name}",
+                name=f"{_NAME} demo — {name}",
                 description=(
                     "Fresh Codex session started from a captured seed "
                     f"({name}): logged-in and configured, new "
@@ -240,7 +243,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         tasks.append(
             create_task(
                 process_id=f"codex-conversation-seed-{seed_id}",
-                name=f"Codex conversation — {name}",
+                name=f"{_NAME} conversation — {name}",
                 description=(
                     "Conversation-mode Codex session from a captured "
                     f"seed ({name}): chat with the agent in the dashboard, "

@@ -39,7 +39,7 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 
-from optio_agents_all import OpencodeTaskConfig, create_task
+from optio_agents_all import OpencodeTaskConfig, create_task, get_agent_info
 from optio_core.models import TaskInstance
 from optio_opencode import (
     HookContext,
@@ -47,6 +47,9 @@ from optio_opencode import (
 )
 
 from optio_demo.tasks._feedback import make_feedback_on_deliverable
+
+
+_NAME = get_agent_info("opencode").name  # "OpenCode"
 
 
 CONTEXT_TXT = b"""\
@@ -167,7 +170,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         # The original, additive demo task (no seed; vanilla session).
         create_task(
             process_id="opencode-demo",
-            name="Opencode demo",
+            name=f"{_NAME} demo",
             description=(
                 "Opencode session that reads a context file shipped by "
                 "before_execute, asks for a favorite color, ships a "
@@ -189,7 +192,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         # no redirect/OAuth handling is built here.
         create_task(
             process_id="opencode-seed-setup",
-            name="Setup opencode seed",
+            name=f"Setup {_NAME} seed",
             description=(
                 "One-time: connect a provider in opencode, pick your model "
                 "and send one message with it (this records the model as the "
@@ -214,7 +217,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         tasks.append(
             create_task(
                 process_id=f"opencode-demo-seed-{seed_id}",
-                name=f"opencode demo — {name}",
+                name=f"{_NAME} demo — {name}",
                 description=(
                     "Fresh opencode session started from a captured "
                     f"seed ({name}): authenticated and configured, new "
@@ -237,7 +240,7 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
         tasks.append(
             create_task(
                 process_id=f"opencode-conversation-seed-{seed_id}",
-                name=f"opencode conversation — {name}",
+                name=f"{_NAME} conversation — {name}",
                 description=(
                     "Conversation-mode opencode session from a captured seed: "
                     "drive it from the dashboard's conversation widget (send, "
