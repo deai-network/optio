@@ -6,6 +6,25 @@ const MONGO_URL = process.env.MONGO_URL ?? 'mongodb://localhost:27017';
 const DB_NAME = 'optio_test_stream_poller';
 const PREFIX = 'test';
 
+/**
+ * Wait until `pred` holds, polling frequently. The generous ceiling only
+ * bounds a genuine hang; correctness never depends on wall-clock timing, so
+ * this stays reliable even when the CPU is heavily oversubscribed and the
+ * poller's ~1s ticks are delayed.
+ */
+async function waitUntil(
+  pred: () => boolean | Promise<boolean>,
+  timeoutMs = 60_000,
+  stepMs = 20,
+): Promise<void> {
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    if (await pred()) return;
+    await new Promise((r) => setTimeout(r, stepMs));
+  }
+  throw new Error('waitUntil: condition not met within timeout');
+}
+
 let client: MongoClient;
 let db: Db;
 
@@ -48,7 +67,7 @@ describe('createTreePoller widgetData propagation', () => {
       baseDepth: 0,
     });
     poller.start();
-    await new Promise((r) => setTimeout(r, 1100));
+    await waitUntil(() => events.some((e) => e.type === 'update'));
     poller.stop();
 
     const update = events.find((e) => e.type === 'update');
@@ -80,7 +99,7 @@ describe('createTreePoller widgetData propagation', () => {
       baseDepth: 0,
     });
     poller.start();
-    await new Promise((r) => setTimeout(r, 1100));
+    await waitUntil(() => events.filter((e) => e.type === 'update').length >= 1);
 
     const before = events.filter((e) => e.type === 'update').length;
     expect(before).toBeGreaterThanOrEqual(1);
@@ -89,7 +108,7 @@ describe('createTreePoller widgetData propagation', () => {
       { _id: rootId },
       { $set: { widgetData: { v: 2 } } },
     );
-    await new Promise((r) => setTimeout(r, 1100));
+    await waitUntil(() => events.filter((e) => e.type === 'update').length > before);
     poller.stop();
 
     const after = events.filter((e) => e.type === 'update').length;
@@ -121,7 +140,7 @@ describe('createTreePoller widgetData propagation', () => {
       baseDepth: 0,
     });
     poller.start();
-    await new Promise((r) => setTimeout(r, 1100));
+    await waitUntil(() => events.some((e) => e.type === 'update'));
     poller.stop();
 
     const update = events.find((e) => e.type === 'update');
@@ -152,7 +171,7 @@ describe('createTreePoller widgetData propagation', () => {
       baseDepth: 0,
     });
     poller.start();
-    await new Promise((r) => setTimeout(r, 1100));
+    await waitUntil(() => events.some((e) => e.type === 'update'));
     poller.stop();
 
     const update = events.find((e) => e.type === 'update');
@@ -186,7 +205,7 @@ describe('createTreePoller widgetData propagation', () => {
       baseDepth: 0,
     });
     poller.start();
-    await new Promise((r) => setTimeout(r, 1100));
+    await waitUntil(() => events.filter((e) => e.type === 'update').length >= 1);
 
     const before = events.filter((e) => e.type === 'update').length;
     expect(before).toBeGreaterThanOrEqual(1);
@@ -195,7 +214,7 @@ describe('createTreePoller widgetData propagation', () => {
       { _id: rootId },
       { $set: { metadata: { known_bad: true, broken_reason: 'target disabled' } } },
     );
-    await new Promise((r) => setTimeout(r, 1100));
+    await waitUntil(() => events.filter((e) => e.type === 'update').length > before);
     poller.stop();
 
     const after = events.filter((e) => e.type === 'update').length;
@@ -231,7 +250,7 @@ describe('createTreePoller widgetData propagation', () => {
       baseDepth: 0,
     });
     poller.start();
-    await new Promise((r) => setTimeout(r, 1100));
+    await waitUntil(() => events.some((e) => e.type === 'update'));
     poller.stop();
 
     const update = events.find((e) => e.type === 'update');
@@ -278,7 +297,7 @@ describe('createListPoller metadataFilter', () => {
       onError: () => {},
     });
     poller.start();
-    await new Promise((r) => setTimeout(r, 1100));
+    await waitUntil(() => events.some((e) => e.type === 'update'));
     poller.stop();
 
     const update = events.find((e) => e.type === 'update');
@@ -298,7 +317,7 @@ describe('createListPoller metadataFilter', () => {
       metadataFilter: { project: 'x' },
     });
     poller.start();
-    await new Promise((r) => setTimeout(r, 1100));
+    await waitUntil(() => events.some((e) => e.type === 'update'));
     poller.stop();
 
     const update = events.find((e) => e.type === 'update');
@@ -320,7 +339,7 @@ describe('createListPoller metadataFilter', () => {
       metadataFilter: { project: 'x', kind: 'a' },
     });
     poller.start();
-    await new Promise((r) => setTimeout(r, 1100));
+    await waitUntil(() => events.some((e) => e.type === 'update'));
     poller.stop();
 
     const update = events.find((e) => e.type === 'update');
@@ -351,7 +370,7 @@ describe('createMultiTreePoller', () => {
       flatIds: [],
     });
     poller.start();
-    await new Promise((r) => setTimeout(r, 1100));
+    await waitUntil(() => events.length > 0);
     poller.stop();
 
     expect(events.length).toBeGreaterThan(0);
@@ -382,7 +401,7 @@ describe('createMultiTreePoller', () => {
       flatIds: [flatRoot],
     });
     poller.start();
-    await new Promise((r) => setTimeout(r, 1100));
+    await waitUntil(() => events.length > 0);
     poller.stop();
 
     expect(events.length).toBeGreaterThan(0);
@@ -408,7 +427,7 @@ describe('createMultiTreePoller', () => {
       flatIds: [],
     });
     poller.start();
-    await new Promise((r) => setTimeout(r, 1100));
+    await waitUntil(() => logs.length > 0);
     poller.stop();
 
     expect(logs.length).toBeGreaterThan(0);
@@ -417,6 +436,7 @@ describe('createMultiTreePoller', () => {
 
   it('flat-id descendants do NOT emit log entries', async () => {
     const logs: any[] = [];
+    const updates: any[] = [];
     const flatRoot = new ObjectId(); const flatChild = new ObjectId();
     await db.collection(`${PREFIX}_processes`).insertMany([
       { _id: flatRoot, processId: 'flatR', name: 'flat-root', rootId: flatRoot, parentId: null, depth: 0, order: 0, status: { state: 'running' }, progress: {}, cancellable: true, log: [] },
@@ -425,13 +445,19 @@ describe('createMultiTreePoller', () => {
     const { createMultiTreePoller } = await import('../stream-poller.js');
     const poller = createMultiTreePoller({
       db, prefix: PREFIX,
-      sendEvent: (e: any) => { if (e.type === 'log') logs.push(e); },
+      sendEvent: (e: any) => {
+        if (e.type === 'log') logs.push(e);
+        else if (e.type === 'update') updates.push(e);
+      },
       onError: () => {},
       treeRoots: [],
       flatIds: [flatRoot],
     });
     poller.start();
-    await new Promise((r) => setTimeout(r, 1100));
+    // Wait for a full poll cycle to complete (the update proves the poll ran).
+    // Log entries are emitted synchronously in that same poll after the update,
+    // so if any were due for the flat row they would already be present.
+    await waitUntil(() => updates.length > 0);
     poller.stop();
 
     expect(logs).toHaveLength(0);
@@ -471,7 +497,7 @@ describe('createTreePoller rootId propagation', () => {
       baseDepth: 0,
     });
     poller.start();
-    await new Promise((r) => setTimeout(r, 1100));
+    await waitUntil(() => events.length > 0);
     poller.stop();
 
     expect(events.length).toBeGreaterThan(0);
@@ -505,7 +531,7 @@ describe('browserOpenRequests propagation', () => {
       baseDepth: 0,
     });
     poller.start();
-    await new Promise((r) => setTimeout(r, 1100));
+    await waitUntil(() => events.some((e) => e.type === 'update'));
     poller.stop();
     const update = events.find((e) => e.type === 'update');
     expect(update.processes[0].browserOpenRequests).toEqual([{ requestId: 'r1', url: 'https://x' }]);
@@ -525,7 +551,7 @@ describe('browserOpenRequests propagation', () => {
       onError: () => {},
     });
     poller.start();
-    await new Promise((r) => setTimeout(r, 1100));
+    await waitUntil(() => events.some((e) => e.type === 'update'));
     poller.stop();
     const update = events.find((e) => e.type === 'update');
     const p2 = update.processes.find((p: any) => p.processId === 'p2');
@@ -557,7 +583,7 @@ describe('autoResumeScheduled propagation', () => {
       baseDepth: 0,
     });
     poller.start();
-    await new Promise((r) => setTimeout(r, 1100));
+    await waitUntil(() => events.some((e) => e.type === 'update'));
     poller.stop();
     const update = events.find((e) => e.type === 'update');
     expect(update.processes[0].autoResumeScheduled).toBe(true);

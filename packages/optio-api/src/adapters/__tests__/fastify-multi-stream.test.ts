@@ -64,7 +64,7 @@ async function startServer(): Promise<{ app: FastifyInstance; baseUrl: string }>
 function collectSseEvents(
   url: string,
   shouldStop: (events: unknown[]) => boolean,
-  timeoutMs = 8000,
+  timeoutMs = 60000,
 ): Promise<unknown[]> {
   return new Promise((resolve, reject) => {
     const events: unknown[] = [];

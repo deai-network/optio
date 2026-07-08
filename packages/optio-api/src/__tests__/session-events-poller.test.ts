@@ -6,6 +6,25 @@ const MONGO_URL = process.env.MONGO_URL ?? 'mongodb://localhost:27017';
 const DB_NAME = 'optio_test_session_events_poller';
 const PREFIX = 'test';
 
+/**
+ * Wait until `pred` holds, polling frequently. The generous ceiling only
+ * bounds a genuine hang; correctness never depends on wall-clock timing, so
+ * this stays reliable even when the CPU is heavily oversubscribed and the
+ * poller's ~1s ticks are delayed.
+ */
+async function waitUntil(
+  pred: () => boolean | Promise<boolean>,
+  timeoutMs = 60_000,
+  stepMs = 20,
+): Promise<void> {
+  const end = Date.now() + timeoutMs;
+  while (Date.now() < end) {
+    if (await pred()) return;
+    await new Promise((r) => setTimeout(r, stepMs));
+  }
+  throw new Error('waitUntil: condition not met within timeout');
+}
+
 let client: MongoClient;
 let db: Db;
 
@@ -44,7 +63,7 @@ describe('createSessionEventsPoller', () => {
       sendEvent: (d) => events.push(d), onError: () => {},
     });
     poller.start();
-    await new Promise((r) => setTimeout(r, 1100));
+    await waitUntil(() => events.filter((e) => e.type === 'session-events').length >= 1);
     poller.stop();
     const msgs = events.filter((e) => e.type === 'session-events');
     expect(msgs).toHaveLength(1);
@@ -63,13 +82,16 @@ describe('createSessionEventsPoller', () => {
       db, prefix: PREFIX, sessionId: 'tok',
       sendEvent: (d) => events.push(d), onError: () => {},
     });
+    const reqIds = () =>
+      events
+        .filter((e) => e.type === 'session-events')
+        .flatMap((m) => m.events.map((e: any) => e.requestId));
     poller.start();
-    await new Promise((r) => setTimeout(r, 1100));
+    await waitUntil(() => reqIds().includes('r1'));
     await coll.updateOne({ _id: id }, { $push: { sessionEvents: { requestId: 'r2', type: 'client', keyword: 'k', data: 1 } } });
-    await new Promise((r) => setTimeout(r, 1100));
+    await waitUntil(() => reqIds().includes('r2'));
     poller.stop();
-    const msgs = events.filter((e) => e.type === 'session-events');
-    const allReqIds = msgs.flatMap((m) => m.events.map((e: any) => e.requestId));
+    const allReqIds = reqIds();
     expect(allReqIds).toEqual(['r1', 'r2']);
   });
 });

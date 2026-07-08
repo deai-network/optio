@@ -463,7 +463,10 @@ describe('registerWidgetProxy — HTTP path', () => {
 // The timeout only bounds a true hang; the real signal is the WS event, which
 // is awaited directly. Every timer below is cleared on settle so it cannot
 // dangle as a live handle and fire during a later test.
-const WS_WAIT_MS = 15_000;
+// Generous hang-ceiling for event-driven WS waits (open / echo / error).
+// These resolve as soon as the event fires; the ceiling only bounds a true
+// hang, so it must survive heavy CPU oversubscription without false timeouts.
+const WS_WAIT_MS = 60_000;
 
 describe('registerWidgetProxy — WebSocket path', () => {
   let mongoClient: MongoClient;
