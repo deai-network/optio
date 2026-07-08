@@ -16,6 +16,7 @@ from optio_kimicode import create_kimicode_task
 from optio_opencode import create_opencode_task
 
 from optio_agents_all.factory import create_task
+from optio_agents_all.info import AGENTS, get_agent_info
 from optio_agents_all.types import (
     AgentTaskConfig,
     AgentType,
@@ -30,6 +31,8 @@ from optio_agents_all.types import (
 
 __all__ = [
     "create_task",
+    "AGENTS",
+    "get_agent_info",
     "AgentType",
     "AgentTaskConfig",
     "KimiCodeTaskConfig",
