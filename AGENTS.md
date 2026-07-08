@@ -35,6 +35,47 @@ that package's `AGENTS.md` to reflect the change in the same commit. Also check 
 the root `AGENTS.md` needs a corresponding update — it contains a unified reference that
 must stay consistent with the package-level files.
 
+### Tests must survive CPU starvation — no wall-clock dependence
+
+`make test` runs the whole suite in parallel, and the machine is routinely oversubscribed
+(several agent sessions run at once). Any test that assumes code runs within a fixed
+real-time window flakes when the CPU is starved. **No test may depend on wall-clock time
+for correctness.** This is not optional — a wall-clock-dependent test is a latent mine.
+
+**Never write these:**
+- *Sleep-then-assert.* `await asyncio.sleep(N); assert happened` /
+  `await new Promise(r => setTimeout(r, N)); expect(count)...`. Under load the awaited work
+  has not run yet.
+- *Read async-populated state without waiting.* Launch/await, then immediately
+  `assert proc["widgetData"] == {...}` / `assert optio.get_published_result(...)` /
+  `expect(cap.widgetData)...`. The async write (a mongo field, a published result, a
+  captured hook) may not have landed — the read returns `None`/stale and the assert fails.
+- *Too-tight positive-wait ceilings.* `asyncio.wait_for(x, 2)`, `for _ in range(200)` polls,
+  a fixed `setTimeout(reject, 2000)` gating a WS `open`/`message`.
+- *Count-over-wallclock.* Asserting a number of periodic events after a fixed sleep.
+
+**Write instead:**
+- Wait for the specific **condition/event**, bounded by a **generous 60s hang-ceiling** —
+  the ceiling only bounds a true hang; correctness comes from the awaited condition, not the
+  duration. Use the existing poll helpers (`_wait_for` / `_wait_terminal` /
+  `_wait_widget_data` in Python; a local `waitUntil(pred, 60000)` in TS). Prefer event-driven
+  (`asyncio.Event` raced against the producer task) over polling.
+- Poll until the observable value is **present**, *then* assert its contents — insert the
+  wait, never weaken the assertion.
+
+**Leave alone (not wall-clock bugs):** poll-*interval* sleeps inside a bounded loop
+(`asyncio.sleep(0.02)` as a loop step); sleeps inside fake binaries (`fake_*.py` — they
+simulate the real agent's timing, so wait on the fake's *output* instead); product/behavior
+timeouts passed into product code (`cancel_grace_seconds`, `ready_timeout_s`, deadlines).
+Negative/intermediate-state assertions ("still pending *immediately* after cancel") are
+genuinely hard — avoid writing them; if unavoidable, gate on a deterministic checkpoint, not
+a time window.
+
+**Verify under load, not once.** A single green run does not prove robustness. Before
+claiming a timing-sensitive test is fixed, loop it under CPU contention and require zero
+failures — e.g. `hogs=""; for i in $(seq 1 12); do python3 -c "while True: pass" & hogs="$hogs $!"; done;`
+run the file 10–20×, then `kill $hogs`.
+
 ---
 
 ## Integration Levels
