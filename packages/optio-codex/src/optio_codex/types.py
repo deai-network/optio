@@ -129,15 +129,21 @@ class CodexTaskConfig(ClaustrumConfigMixin):
     # from permission_gate (never / on-request), NOT from this field.
     ask_for_approval: ApprovalPolicy = "never"
     # codex-native sandbox mode. Claustrum (see session.py), NOT this native
-    # mode, owns filesystem isolation now; the native mode is retained ONLY to
-    # carry the network knob (workspace-write keeps network confined per
-    # ``network_access``; danger-full-access frees it). None (default) →
-    # workspace-write. Decoupled from ``fs_isolation``.
+    # mode, owns filesystem isolation. codex's native sandbox is BUBBLEWRAP,
+    # which cannot nest inside claustrum, so with fs_isolation=True (default) the
+    # native mode MUST be danger-full-access (no bwrap) — None (default) resolves
+    # to danger-full-access, and an explicit workspace-write/read-only +
+    # fs_isolation is rejected. Set fs_isolation=False to run codex's native
+    # sandbox standalone (then None → workspace-write is NOT auto-picked; pass an
+    # explicit sandbox=). Decoupled from ``fs_isolation``.
     sandbox: SandboxMode | None = None
-    # Grant network to sandboxed tool commands (codex workspace-write default
-    # is network OFF — [sandbox_workspace_write] network_access). False
-    # mirrors codex; note this is STRICTER than grok/claudecode, whose fs
-    # sandboxes do not restrict the network at all.
+    # Grant network to sandboxed tool commands. This is a native-bubblewrap
+    # ([sandbox_workspace_write]) knob and therefore applies ONLY when codex runs
+    # its native workspace-write sandbox standalone (fs_isolation=False,
+    # sandbox='workspace-write'). Under claustrum (fs_isolation=True) codex has NO
+    # network confinement — bwrap can't nest — so this field is a NO-OP there and
+    # session.py warns at launch. The pending shared pasta/netns layer will
+    # restore network isolation universally.
     network_access: bool = False
 
     # --- filesystem isolation ------------------------------------------------
@@ -267,13 +273,20 @@ class CodexTaskConfig(ClaustrumConfigMixin):
 
     @property
     def effective_sandbox_mode(self) -> SandboxMode:
-        # Claustrum (not the native sandbox) owns fs isolation now. The native
-        # mode exists ONLY to carry the network knob: workspace-write keeps
-        # network confined per ``network_access``; danger-full-access frees it.
-        # Decoupled from ``fs_isolation``.
+        # Claustrum (Landlock, see session.py) is the sole fs-isolation layer.
+        # codex's NATIVE sandbox (bubblewrap) CANNOT nest inside claustrum — its
+        # user+mount-namespace setup fails ("setting up uid map / make / slave:
+        # Permission denied") because Landlock denies the /proc write and the
+        # mount-propagation op. So under claustrum the native sandbox is DISABLED
+        # (danger-full-access = no bwrap) and claustrum alone confines the fs.
+        # Consequence: network confinement (a bubblewrap-only feature) is
+        # unavailable here — session.py warns at launch; the pending shared
+        # pasta/netns layer will restore it. Explicit ``sandbox=`` is honored
+        # (power-user escape hatch), but workspace-write/read-only + fs_isolation
+        # is rejected in __post_init__ (it would try to nest bwrap and fail).
         if self.sandbox is not None:
             return self.sandbox
-        return "workspace-write"
+        return "danger-full-access"
 
     def __post_init__(self) -> None:
         self._validate_claustrum()
@@ -349,10 +362,22 @@ class CodexTaskConfig(ClaustrumConfigMixin):
                 f"CodexTaskConfig.reasoning_effort={self.reasoning_effort!r} "
                 f"is not one of {sorted(_VALID_REASONING_EFFORTS)}"
             )
-        # fs_isolation drives CLAUSTRUM (see session.py), decoupled from the
-        # native mode — no fs_isolation⇄native-mode cross-validation. Only the
-        # native-mode-internal couplings remain below (rw grants + network both
-        # need workspace-write, since read-only carries neither).
+        # fs_isolation drives CLAUSTRUM (see session.py). codex's native
+        # bubblewrap sandbox cannot nest inside claustrum's Landlock domain, so
+        # an explicit restrictive native mode + fs_isolation is a hard error:
+        # the launch would try to start bwrap under claustrum and fail-closed.
+        if self.fs_isolation and self.sandbox in ("workspace-write", "read-only"):
+            raise ValueError(
+                f"CodexTaskConfig: sandbox={self.sandbox!r} (codex's native "
+                "bubblewrap sandbox) cannot run inside claustrum — bwrap's "
+                "user/mount-namespace setup fails under Landlock. With "
+                "fs_isolation=True, claustrum is the fs sandbox and the native "
+                "mode must be danger-full-access (the default). Set "
+                "fs_isolation=False to use codex's native sandbox standalone."
+            )
+        # Native-mode-internal couplings (apply only with fs_isolation=False +
+        # an explicit native mode): rw grants + network both need workspace-write,
+        # since read-only carries neither.
         rw_extras = [
             d for d in (self.extra_allowed_dirs or []) if d.mode in ("rw", "rwx")
         ]

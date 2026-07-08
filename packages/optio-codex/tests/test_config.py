@@ -7,7 +7,7 @@ from optio_codex.types import AllowedDir
 def test_defaults_and_validation():
     c = CodexTaskConfig(consumer_instructions="do it", delivery_type="audit")
     assert c.mode == "iframe" and c.host_protocol is True and c.auto_start is False
-    assert c.ask_for_approval == "never" and c.effective_sandbox_mode == "workspace-write"
+    assert c.ask_for_approval == "never" and c.effective_sandbox_mode == "danger-full-access"
     assert c.supports_resume is True
     assert c.workdir_exclude is None
     with pytest.raises(ValueError, match="install_dir"):
@@ -158,14 +158,15 @@ def test_allowed_dir_rejects_bad_mode():
 
 def test_native_mode_decoupled_from_fs_isolation():
     # Claustrum (not the native sandbox) owns fs isolation now, so the native
-    # mode no longer follows fs_isolation: it defaults to workspace-write in
-    # BOTH states (it only carries the network posture).
+    # mode no longer follows fs_isolation: with sandbox unset it resolves to
+    # danger-full-access in BOTH states (codex's native bwrap can't nest in
+    # claustrum, and fs_isolation=False does NOT auto-pick workspace-write).
     on = CodexTaskConfig(consumer_instructions="x", delivery_type="audit")
     assert on.fs_isolation is True
     assert on.sandbox is None
-    assert on.effective_sandbox_mode == "workspace-write"
+    assert on.effective_sandbox_mode == "danger-full-access"
     off = CodexTaskConfig(consumer_instructions="x", fs_isolation=False)
-    assert off.effective_sandbox_mode == "workspace-write"
+    assert off.effective_sandbox_mode == "danger-full-access"
 
 
 def test_danger_full_access_no_longer_cross_validated():
@@ -196,10 +197,17 @@ def test_fs_isolation_off_allows_restrictive_native_sandbox():
 
 
 def test_explicit_read_only_native_mode_is_valid():
+    # read-only is codex's NATIVE (bubblewrap) mode → valid ONLY standalone
+    # (fs_isolation=False). Under claustrum (fs_isolation=True) bwrap can't nest,
+    # so the same explicit mode is rejected.
     c = CodexTaskConfig(
-        consumer_instructions="x", delivery_type="audit", sandbox="read-only",
+        consumer_instructions="x", fs_isolation=False, sandbox="read-only",
     )
     assert c.effective_sandbox_mode == "read-only"
+    with pytest.raises(ValueError, match="cannot run inside claustrum"):
+        CodexTaskConfig(
+            consumer_instructions="x", delivery_type="audit", sandbox="read-only",
+        )
 
 
 def test_rw_grant_under_read_only_rejected():
@@ -213,11 +221,12 @@ def test_rw_grant_under_read_only_rejected():
 
 
 def test_ro_grant_always_accepted_and_noop():
-    # codex workspace-write leaves the READ side open, so "ro" grants are
-    # trivially satisfied (documented no-op) — accepted in every mode.
+    # codex leaves the READ side open, so "ro" grants are trivially satisfied
+    # (documented no-op) — accepted in every mode. read-only is native, so it is
+    # reachable only standalone (fs_isolation=False).
     c = CodexTaskConfig(
         consumer_instructions="x",
-        delivery_type="audit",
+        fs_isolation=False,
         sandbox="read-only",
         extra_allowed_dirs=[AllowedDir("~/data", "ro")],
     )
@@ -225,11 +234,15 @@ def test_ro_grant_always_accepted_and_noop():
 
 
 def test_network_access_requires_workspace_write():
+    # network_access is a [sandbox_workspace_write] knob on codex's NATIVE
+    # sandbox (fs_isolation=False). Under read-only it is rejected …
     with pytest.raises(ValueError, match="network_access"):
         CodexTaskConfig(
-            consumer_instructions="x", delivery_type="audit",
+            consumer_instructions="x", fs_isolation=False,
             sandbox="read-only", network_access=True,
         )
+    # … under fs_isolation=True (claustrum) the native mode is
+    # danger-full-access and network_access is a documented NO-OP, not an error.
     ok = CodexTaskConfig(
         consumer_instructions="x", delivery_type="audit", network_access=True,
     )

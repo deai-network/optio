@@ -24,16 +24,20 @@ def _cfg(**kw) -> CodexTaskConfig:
     return CodexTaskConfig(consumer_instructions="x", delivery_type="audit", **kw)
 
 
-def test_resolve_default_workspace_write_no_extras():
+def test_resolve_default_danger_full_access_no_extras():
+    # Default posture: fs_isolation=True → claustrum owns fs, native mode
+    # resolves to danger-full-access with no writable_roots / network.
     s = resolve_sandbox_settings(_cfg(), host_home="/home/u")
     assert s == SandboxSettings(
-        mode="workspace-write", writable_roots=(), network_access=False,
+        mode="danger-full-access", writable_roots=(), network_access=False,
     )
 
 
 def test_resolve_rw_extras_expand_against_real_host_home():
+    # rw extras / host-home expansion live on codex's NATIVE workspace-write
+    # path, reachable only standalone (fs_isolation=False + explicit sandbox).
     s = resolve_sandbox_settings(
-        _cfg(extra_allowed_dirs=[
+        _cfg(fs_isolation=False, sandbox="workspace-write", extra_allowed_dirs=[
             AllowedDir("~/cache", "rw"),
             AllowedDir("/scratch/", "rw"),
             AllowedDir("~/data", "ro"),   # no-op: codex reads are open
@@ -44,10 +48,11 @@ def test_resolve_rw_extras_expand_against_real_host_home():
 
 
 def test_resolve_native_mode_decoupled_from_fs_isolation():
-    # Native mode no longer follows fs_isolation (claustrum owns fs now): the
-    # default native mode stays workspace-write even with fs_isolation off.
+    # Native mode no longer follows fs_isolation (claustrum owns fs now):
+    # fs_isolation=False does NOT auto-pick workspace-write — with sandbox unset
+    # the default resolves to danger-full-access.
     s = resolve_sandbox_settings(_cfg(fs_isolation=False), host_home="/home/u")
-    assert s.mode == "workspace-write"
+    assert s.mode == "danger-full-access"
     assert s.writable_roots == ()
     assert s.network_access is False
 

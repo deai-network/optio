@@ -321,15 +321,13 @@ async def test_conversation_sandbox_wired(
     shim_install_dir, task_root, mongo_db, tmp_path, monkeypatch,
 ):
     """Stage 8: a default (fs_isolation=True) conversation task launches
-    ``codex app-server`` with the ``-c sandbox_workspace_write.*`` overrides
-    derived from the config, and thread/start carries the kebab-case mode.
+    ``codex app-server`` and thread/start carries the kebab-case mode. Claustrum
+    owns fs isolation, so the native mode is danger-full-access — no
+    ``-c sandbox_workspace_write.*`` overrides ride the launch.
 
     The app-server has no ``--sandbox`` flag, so the mode rides thread/start's
-    ``sandbox`` field while writable_roots/network_access ride ``-c`` at launch
-    — both from the one resolved SandboxSettings.
+    ``sandbox`` field — from the one resolved SandboxSettings.
     """
-    from optio_codex import AllowedDir
-
     record = tmp_path / "codex_record.jsonl"
     monkeypatch.setenv("FAKE_CODEX_RECORD", str(record))
     optio = await _make_optio(mongo_db, "cxconv6")
@@ -337,11 +335,7 @@ async def test_conversation_sandbox_wired(
         task = create_codex_task(
             process_id="cx-conv-sandbox",
             name="Conversation sandbox",
-            config=_conversation_config(
-                shim_install_dir,
-                extra_allowed_dirs=[AllowedDir("/scratch", "rw")],
-                network_access=True,
-            ),
+            config=_conversation_config(shim_install_dir),
         )
         await optio.adhoc_define(task)
         conv = await optio.launch_and_await_result(
@@ -354,12 +348,11 @@ async def test_conversation_sandbox_wired(
         argv = launches[-1]["argv"]
         assert argv[0] == "app-server"
         assert "--sandbox" not in argv  # app-server has no --sandbox flag
-        assert 'sandbox_workspace_write.writable_roots=["/scratch"]' in argv
-        assert "sandbox_workspace_write.network_access=true" in argv
+        assert not any(a.startswith("sandbox_workspace_write.") for a in argv)
 
         starts = [r for r in recs if "thread_start_params" in r]
         assert starts, "thread/start params were not recorded"
-        assert starts[-1]["thread_start_params"]["sandbox"] == "workspace-write"
+        assert starts[-1]["thread_start_params"]["sandbox"] == "danger-full-access"
 
         await conv.close()
         await _wait_terminal(optio, "cx-conv-sandbox")
@@ -372,9 +365,9 @@ async def test_conversation_no_claustrum_when_fs_isolation_off(
     shim_install_dir, task_root, mongo_db, tmp_path, monkeypatch,
 ):
     """fs_isolation=False → the app-server launch is NOT claustrum-wrapped
-    (no Landlock). The native mode is decoupled now, so thread/start still
-    requests the default workspace-write (it only carries the network posture),
-    with no ``sandbox_workspace_write.*`` overrides for a bare config."""
+    (no Landlock). The native mode is decoupled now: fs_isolation=False does NOT
+    auto-pick workspace-write, so with sandbox unset thread/start requests
+    danger-full-access, with no ``sandbox_workspace_write.*`` overrides."""
     record = tmp_path / "codex_record.jsonl"
     monkeypatch.setenv("FAKE_CODEX_RECORD", str(record))
     claustrum_record = tmp_path / "claustrum_record.log"
@@ -403,7 +396,7 @@ async def test_conversation_no_claustrum_when_fs_isolation_off(
         starts = [r for r in recs if "thread_start_params" in r]
         assert starts, "thread/start params were not recorded"
         assert (
-            starts[-1]["thread_start_params"]["sandbox"] == "workspace-write"
+            starts[-1]["thread_start_params"]["sandbox"] == "danger-full-access"
         )
 
         await conv.close()

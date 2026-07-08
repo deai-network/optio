@@ -1,10 +1,11 @@
 """Session-level wiring test for Stage 8 filesystem isolation (iframe).
 
 Runs a local iframe task with the default ``fs_isolation=True`` and asserts
-the fake codex was launched with ``--sandbox workspace-write`` plus the
-``-c sandbox_workspace_write.*`` overrides derived from the config. The
-workdir is wiped on teardown, so the fake records argv to a durable path
-(``FAKE_CODEX_RECORD``) that outlives the task.
+the fake codex was launched with ``--sandbox danger-full-access`` and no
+``-c sandbox_workspace_write.*`` overrides (claustrum owns fs isolation; the
+native bwrap sandbox cannot nest inside it). The workdir is wiped on teardown,
+so the fake records argv to a durable path (``FAKE_CODEX_RECORD``) that
+outlives the task.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import pathlib
 
 import pytest
 
-from optio_codex import AllowedDir, CodexTaskConfig, create_codex_task
+from optio_codex import CodexTaskConfig, create_codex_task
 
 
 def _launch_record(path: pathlib.Path) -> dict:
@@ -51,17 +52,15 @@ async def test_iframe_sandbox_args_wired(
             delivery_type="audit",
             install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
-            extra_allowed_dirs=[AllowedDir("/scratch", "rw")],
-            network_access=True,
         ),
     )
     await task.execute(ctx)
 
     argv = _launch_record(record)["argv"]
-    assert argv[argv.index("--sandbox") + 1] == "workspace-write"
-    assert "danger-full-access" not in argv
-    assert 'sandbox_workspace_write.writable_roots=["/scratch"]' in argv
-    assert "sandbox_workspace_write.network_access=true" in argv
+    # Default (fs_isolation=True): claustrum owns fs, so the native mode is
+    # danger-full-access with no `-c sandbox_workspace_write.*` overrides.
+    assert argv[argv.index("--sandbox") + 1] == "danger-full-access"
+    assert not any(a.startswith("sandbox_workspace_write.") for a in argv)
 
 
 @pytest.mark.asyncio
@@ -73,9 +72,10 @@ async def test_iframe_no_claustrum_when_fs_isolation_off(
     monkeypatch,
 ):
     """fs_isolation=False → codex launches WITHOUT the claustrum wrap (no
-    Landlock confinement). The NATIVE mode is decoupled now, so it still
-    defaults to workspace-write (it only carries the network posture); an
-    explicit sandbox='danger-full-access' would be needed to free it."""
+    Landlock confinement). The NATIVE mode is decoupled now: fs_isolation=False
+    does NOT auto-pick workspace-write, so with sandbox unset the mode resolves
+    to danger-full-access (an explicit sandbox='workspace-write' is needed to
+    engage codex's native sandbox standalone)."""
     ctx, *_ = ctx_and_captures
     monkeypatch.setenv("FAKE_CODEX_SCENARIO", "happy")
     record = tmp_path / "codex_record.jsonl"
@@ -98,8 +98,9 @@ async def test_iframe_no_claustrum_when_fs_isolation_off(
     # Claustrum was never invoked — the launch is unconfined by Landlock.
     assert not claustrum_record.exists()
     argv = _launch_record(record)["argv"]
-    # Native mode is decoupled from fs_isolation: default stays workspace-write.
-    assert argv[argv.index("--sandbox") + 1] == "workspace-write"
+    # Native mode is decoupled from fs_isolation: with sandbox unset the default
+    # resolves to danger-full-access (workspace-write is NOT auto-picked).
+    assert argv[argv.index("--sandbox") + 1] == "danger-full-access"
 
 
 @pytest.mark.asyncio

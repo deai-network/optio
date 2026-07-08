@@ -42,15 +42,32 @@ def test_fs_isolation_off_needs_no_delivery_type():
     assert c.delivery_type is None
 
 
-def test_effective_sandbox_mode_is_workspace_write_regardless_of_fs_isolation():
-    # Native mode is decoupled from fs_isolation now (claustrum owns fs); the
-    # native default carries only the network posture.
-    assert _cfg(fs_isolation=True).effective_sandbox_mode == "workspace-write"
+def test_effective_sandbox_mode_defaults_to_danger_full_access():
+    # codex's native sandbox is bubblewrap, which can't nest inside claustrum,
+    # so the native default is danger-full-access (no bwrap) — claustrum is the
+    # sole fs sandbox. Same default with or without fs_isolation.
+    assert _cfg(fs_isolation=True).effective_sandbox_mode == "danger-full-access"
     assert (
         CodexTaskConfig(consumer_instructions="x", fs_isolation=False)
         .effective_sandbox_mode
-        == "workspace-write"
+        == "danger-full-access"
     )
+
+
+def test_native_restrictive_mode_with_fs_isolation_is_rejected():
+    # bwrap can't nest inside claustrum: an explicit workspace-write/read-only
+    # native mode + fs_isolation is a hard config error.
+    for mode in ("workspace-write", "read-only"):
+        with pytest.raises(ValueError, match="cannot run inside claustrum"):
+            _cfg(sandbox=mode)
+
+
+def test_native_restrictive_mode_allowed_when_fs_isolation_off():
+    # Without claustrum, codex's native bubblewrap sandbox runs standalone.
+    c = CodexTaskConfig(
+        consumer_instructions="x", fs_isolation=False, sandbox="workspace-write",
+    )
+    assert c.effective_sandbox_mode == "workspace-write"
 
 
 def test_fs_isolation_off_with_danger_full_access_no_longer_raises():

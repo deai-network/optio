@@ -81,13 +81,10 @@ async def _build_claustrum_wrap(
         engine_cache_dir=cache_dir,
         extra_allowed_dirs=config.extra_allowed_dirs,
         host_home=host_home,
-        # codex's NATIVE bubblewrap sandbox (kept for the network_access knob)
-        # runs INSIDE this claustrum wrap and materializes synthetic mount
-        # targets + a lock under /tmp/codex-bwrap-synthetic-mount-targets-<uid>/.
-        # Landlock must grant /tmp (and /var/tmp) or bwrap can't start. This does
-        # NOT loosen the effective sandbox: bwrap re-narrows /tmp to its own
-        # mounts within (defense in depth). codex-only — the other 6 engines run
-        # no inner sandbox and confine temp to the workdir.
+        # codex writes temp files under /tmp (its _isolation_env sets HOME/
+        # CODEX_HOME/XDG_* but NOT TMPDIR, so tempfile falls back to /tmp), so
+        # claustrum must grant /tmp (+ /var/tmp) or those writes are denied.
+        # codex-specific: the other engines confine temp to the workdir.
         extra_baseline=[("--rw", "/tmp"), ("--rw", "/var/tmp")],
     )
     return host_actions.claustrum.build_claustrum_wrap(claustrum_path, grants)
@@ -247,6 +244,17 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                 hook_ctx, install_dir=config.install_dir,
             )
             claustrum_newer = await host_actions.claustrum_newer_tag()
+            # SECURITY: under claustrum codex runs danger-full-access (its native
+            # bubblewrap sandbox can't nest inside Landlock), so codex's NETWORK
+            # is NOT confined — the network_access knob is a no-op here. Make the
+            # gap loud. The pending shared pasta/netns layer will close it.
+            _LOG.warning(
+                "codex fs is claustrum-confined, but its NETWORK is UNCONFINED "
+                "(bubblewrap can't nest in claustrum; network_access=%s is a "
+                "no-op under fs_isolation). Network isolation pending the shared "
+                "pasta/netns layer.",
+                config.network_access,
+            )
         # Conversation mode is headless (codex app-server stdio) — no ttyd.
         if config.mode != "conversation":
             ttyd_path = await host_actions.ensure_ttyd_installed(
