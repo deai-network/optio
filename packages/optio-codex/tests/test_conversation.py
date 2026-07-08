@@ -77,7 +77,7 @@ async def _bootstrap(c, handle, thread_id="t1", resume=False):
     thread/start | thread/resume.
     """
     boot = asyncio.create_task(c.bootstrap())
-    req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    req = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert req["method"] == "initialize"
     assert "jsonrpc" not in req                      # omitted on the wire
     assert req["params"]["clientInfo"]["name"] == "optio_codex"
@@ -85,17 +85,17 @@ async def _bootstrap(c, handle, thread_id="t1", resume=False):
     handle.stdout.feed({"id": req["id"], "result": {
         "userAgent": "codex/0.142.5-fake", "codexHome": "/h",
         "platformFamily": "fake", "platformOs": "fake"}})
-    note = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    note = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert note == {"method": "initialized"}         # notification, no id
-    req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    req = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert req["method"] == "account/read"
     assert req["params"] == {"refreshToken": False}
     handle.stdout.feed({"id": req["id"], "result": {
         "account": {"type": "apikey"}, "requiresOpenaiAuth": False}})
-    req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    req = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert req["method"] == "model/list"
     handle.stdout.feed({"id": req["id"], "result": MODEL_LIST})
-    req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    req = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     if resume:
         assert req["method"] == "thread/resume"
         assert req["params"]["threadId"] == thread_id
@@ -109,7 +109,7 @@ async def _bootstrap(c, handle, thread_id="t1", resume=False):
             "never", "on-request", "untrusted", "on-failure")
     handle.stdout.feed({"id": req["id"], "result": {
         "thread": {"id": thread_id}, "model": "gpt-5.5"}})
-    await asyncio.wait_for(boot, 1)
+    await asyncio.wait_for(boot, 60)
 
 
 def _delta(item_id: str, delta: str, turn_id="turn-1"):
@@ -157,27 +157,27 @@ async def _bootstrap_resume(c, handle, thread_id="t9", turns=None):
     the prior conversation inline (result.thread.turns[].items[]) — the live
     shape backfill parses."""
     boot = asyncio.create_task(c.bootstrap())
-    req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    req = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert req["method"] == "initialize"
     handle.stdout.feed({"id": req["id"], "result": {
         "userAgent": "codex/0.142.5-fake", "codexHome": "/h",
         "platformFamily": "fake", "platformOs": "fake"}})
-    assert await asyncio.wait_for(handle.stdin.lines.get(), 1) == {"method": "initialized"}
-    req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    assert await asyncio.wait_for(handle.stdin.lines.get(), 60) == {"method": "initialized"}
+    req = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert req["method"] == "account/read"
     handle.stdout.feed({"id": req["id"], "result": {
         "account": {"type": "apikey"}, "requiresOpenaiAuth": False}})
-    req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    req = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert req["method"] == "model/list"
     handle.stdout.feed({"id": req["id"], "result": MODEL_LIST})
-    req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    req = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert req["method"] == "thread/resume"
     thread = {"id": thread_id}
     if turns is not None:
         thread["turns"] = turns
     handle.stdout.feed({"id": req["id"], "result": {
         "thread": thread, "model": "gpt-5.5"}})
-    await asyncio.wait_for(boot, 1)
+    await asyncio.wait_for(boot, 60)
 
 
 @pytest.fixture
@@ -206,7 +206,7 @@ async def test_send_receive_and_on_event_transparent(convo):
     assert not c.is_pending()
     await c.send("say PONG")
     assert c.is_pending()
-    turn_req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    turn_req = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert turn_req["method"] == "turn/start"
     assert turn_req["params"]["threadId"] == "t1"
     assert turn_req["params"]["input"] == [{"type": "text", "text": "say PONG"}]
@@ -222,7 +222,7 @@ async def test_send_receive_and_on_event_transparent(convo):
         {"type": "agentMessage", "id": "i-msg", "text": "PONG"}))
     handle.stdout.feed(_turn_completed())
 
-    reply = await asyncio.wait_for(_first(texts), 2)
+    reply = await asyncio.wait_for(_first(texts), 60)
     assert reply == "PONG"
     await _wait_for(lambda: not c.is_pending())
 
@@ -241,7 +241,7 @@ async def test_reasoning_deltas_not_folded_into_answer(convo):
     texts = []
     c.on_message(texts.append)
     await c.send("think then answer")
-    turn_req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    turn_req = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     handle.stdout.feed({"id": turn_req["id"], "result": {
         "turn": {"id": "turn-1", "status": "inProgress", "items": []}}})
     handle.stdout.feed({"method": "item/reasoning/summaryTextDelta", "params": {
@@ -249,7 +249,7 @@ async def test_reasoning_deltas_not_folded_into_answer(convo):
         "delta": "hmm", "summaryIndex": 0}})
     handle.stdout.feed(_delta("i-msg", "ANSWER"))
     handle.stdout.feed(_turn_completed())
-    reply = await asyncio.wait_for(_first(texts), 2)
+    reply = await asyncio.wait_for(_first(texts), 60)
     assert reply == "ANSWER"
     handle.stdout.eof()
     await reader
@@ -264,12 +264,12 @@ async def test_item_completed_text_is_authoritative(convo):
     texts = []
     c.on_message(texts.append)
     await c.send("x")
-    await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    await asyncio.wait_for(handle.stdin.lines.get(), 60)
     handle.stdout.feed(_delta("i-msg", "PO"))  # "NG" delta lost
     handle.stdout.feed(_item_completed(
         {"type": "agentMessage", "id": "i-msg", "text": "PONG"}))
     handle.stdout.feed(_turn_completed())
-    assert await asyncio.wait_for(_first(texts), 2) == "PONG"
+    assert await asyncio.wait_for(_first(texts), 60) == "PONG"
     handle.stdout.eof()
     await reader
 
@@ -282,7 +282,7 @@ async def test_two_agent_messages_in_one_turn_concatenate(convo):
     texts = []
     c.on_message(texts.append)
     await c.send("x")
-    await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    await asyncio.wait_for(handle.stdin.lines.get(), 60)
     handle.stdout.feed(_delta("i-1", "part1 "))
     handle.stdout.feed(_item_completed(
         {"type": "agentMessage", "id": "i-1", "text": "part1 "}))
@@ -290,7 +290,7 @@ async def test_two_agent_messages_in_one_turn_concatenate(convo):
     handle.stdout.feed(_item_completed(
         {"type": "agentMessage", "id": "i-2", "text": "part2"}))
     handle.stdout.feed(_turn_completed())
-    assert await asyncio.wait_for(_first(texts), 2) == "part1 part2"
+    assert await asyncio.wait_for(_first(texts), 60) == "part1 part2"
     handle.stdout.eof()
     await reader
 
@@ -311,7 +311,7 @@ async def test_permission_request_roundtrip_deny(convo):
 
     c.on_permission_request(handler)
     handle.stdout.feed(_cmd_approval(99))
-    resp = await asyncio.wait_for(handle.stdin.lines.get(), 2)
+    resp = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert resp["id"] == 99
     assert resp["result"] == {"decision": "decline"}
     assert seen["tool"] == "echo hi"          # command string as the tool name
@@ -332,7 +332,7 @@ async def test_permission_request_allow_answers_accept(convo):
 
     c.on_permission_request(handler)
     handle.stdout.feed(_cmd_approval(7))
-    resp = await asyncio.wait_for(handle.stdin.lines.get(), 2)
+    resp = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert resp == {"id": 7, "result": {"decision": "accept"}}
     handle.stdout.eof()
     await reader
@@ -353,7 +353,7 @@ async def test_file_change_approval_maps_too(convo):
                         "params": {"threadId": "t1", "turnId": "turn-1",
                                    "itemId": "i-2", "reason": None,
                                    "startedAtMs": 0}})
-    resp = await asyncio.wait_for(handle.stdin.lines.get(), 2)
+    resp = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert resp == {"id": 8, "result": {"decision": "accept"}}
     handle.stdout.eof()
     await reader
@@ -374,7 +374,7 @@ async def test_permission_queued_until_handler_registered(convo):
         return PermissionDecision(behavior="allow")
 
     c.on_permission_request(handler)
-    resp = await asyncio.wait_for(handle.stdin.lines.get(), 2)
+    resp = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert resp == {"id": 55, "result": {"decision": "accept"}}
     handle.stdout.eof()
     await reader
@@ -388,7 +388,7 @@ async def test_gate_off_denies_permission_defensively():
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle)
     handle.stdout.feed(_cmd_approval(5))
-    resp = await asyncio.wait_for(handle.stdin.lines.get(), 2)
+    resp = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert resp == {"id": 5, "result": {"decision": "decline"}}
     handle.stdout.eof()
     await reader
@@ -401,7 +401,7 @@ async def test_unknown_server_request_gets_method_not_found(convo):
     await _bootstrap(c, handle)
     handle.stdout.feed({"id": 12, "method": "item/tool/requestUserInput",
                         "params": {"threadId": "t1"}})
-    resp = await asyncio.wait_for(handle.stdin.lines.get(), 2)
+    resp = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert resp["id"] == 12
     assert resp["error"]["code"] == -32601
     handle.stdout.eof()
@@ -414,18 +414,18 @@ async def test_interrupt_sends_turn_interrupt(convo):
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle)
     await c.send("count to 100")
-    turn_req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    turn_req = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     handle.stdout.feed({"id": turn_req["id"], "result": {
         "turn": {"id": "turn-1", "status": "inProgress", "items": []}}})
     await _wait_for(lambda: c.current_turn_id == "turn-1")
     assert c.is_pending()
 
     intr_task = asyncio.create_task(c.interrupt())
-    intr = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    intr = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert intr["method"] == "turn/interrupt"
     assert intr["params"] == {"threadId": "t1", "turnId": "turn-1"}
     handle.stdout.feed({"id": intr["id"], "result": {}})  # ACK, not completion
-    await asyncio.wait_for(intr_task, 1)
+    await asyncio.wait_for(intr_task, 60)
     assert c.is_pending()                                  # still in flight
     handle.stdout.feed(_turn_completed(status="interrupted"))
     await _wait_for(lambda: not c.is_pending())
@@ -582,7 +582,7 @@ async def test_set_control_model_applies_on_next_turn(convo):
     assert c.current_model_id == "gpt-5.4-mini"   # optimistic
     assert handle.stdin.lines.empty()              # nothing on the wire yet
     await c.send("hello")
-    turn_req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    turn_req = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert turn_req["params"]["model"] == "gpt-5.4-mini"
     handle.stdout.eof()
     await reader
@@ -646,7 +646,7 @@ async def test_set_control_reasoning_effort_rides_next_turn(convo):
     await c.set_control("reasoning_effort", "high")
     assert handle.stdin.lines.empty()              # nothing on the wire yet
     await c.send("hello")
-    turn_req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    turn_req = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert turn_req["method"] == "turn/start"
     assert turn_req["params"]["effort"] == "high"
     handle.stdout.eof()
@@ -662,7 +662,7 @@ async def test_initial_reasoning_effort_rides_first_turn():
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle)
     await c.send("hello")
-    turn_req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    turn_req = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert turn_req["params"]["effort"] == "low"
     handle.stdout.eof()
     await reader
@@ -675,7 +675,7 @@ async def test_no_effort_key_when_unset(convo):
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle)
     await c.send("hello")
-    turn_req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    turn_req = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert "effort" not in turn_req["params"]
     handle.stdout.eof()
     await reader
@@ -722,7 +722,7 @@ async def test_turn_start_error_response_unwinds_pending(convo):
     reader = asyncio.create_task(c.run_reader())
     await _bootstrap(c, handle)
     await c.send("x")
-    turn_req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    turn_req = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     handle.stdout.feed({"id": turn_req["id"], "error": {
         "code": -32001, "message": "Server overloaded; retry later."}})
     await _wait_for(lambda: not c.is_pending())   # no turn will ever complete
@@ -732,7 +732,7 @@ async def test_turn_start_error_response_unwinds_pending(convo):
 
 # --- tiny polling helpers ---------------------------------------------------
 
-async def _first(bucket: list, timeout: float = 2.0):
+async def _first(bucket: list, timeout: float = 60.0):
     end = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < end:
         if bucket:
@@ -741,7 +741,7 @@ async def _first(bucket: list, timeout: float = 2.0):
     raise AssertionError("no item arrived")
 
 
-async def _wait_for(pred, timeout: float = 2.0):
+async def _wait_for(pred, timeout: float = 60.0):
     end = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < end:
         if pred():

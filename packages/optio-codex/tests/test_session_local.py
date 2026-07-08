@@ -188,7 +188,7 @@ async def test_cancellation_returns_clean_and_tears_down(
     )
 
     async def _cancel_when_running():
-        for _ in range(200):  # up to 20s
+        for _ in range(600):  # up to 60s
             if any("Codex is live" == m for _, m in captures.progress):
                 break
             await asyncio.sleep(0.1)

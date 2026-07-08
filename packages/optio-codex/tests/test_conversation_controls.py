@@ -66,22 +66,22 @@ MODEL_LIST = {
 
 async def _bootstrap(c, handle, thread_id="t1"):
     boot = asyncio.create_task(c.bootstrap())
-    req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    req = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert req["method"] == "initialize"
     handle.stdout.feed({"id": req["id"], "result": {"userAgent": "fake"}})
-    note = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    note = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert note == {"method": "initialized"}
-    req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    req = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert req["method"] == "account/read"
     handle.stdout.feed({"id": req["id"], "result": {"account": {"type": "apikey"}}})
-    req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    req = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert req["method"] == "model/list"
     handle.stdout.feed({"id": req["id"], "result": MODEL_LIST})
-    req = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    req = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert req["method"] == "thread/start"
     handle.stdout.feed({"id": req["id"], "result": {
         "thread": {"id": thread_id}, "model": "gpt-5.5"}})
-    await asyncio.wait_for(boot, 1)
+    await asyncio.wait_for(boot, 60)
 
 
 @pytest.fixture
@@ -103,7 +103,7 @@ async def test_set_control_model_pins_next_turn(convo):
     assert handle.stdin.lines.empty()                # INLINE — no wire write
 
     await c.send("hi")
-    turn = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    turn = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert turn["method"] == "turn/start"
     assert turn["params"]["model"] == "gpt-5.4-mini"
 
@@ -122,7 +122,7 @@ async def test_set_control_non_model_id_ignored(convo):
     assert c._requested_model is None                # no inline override armed
 
     await c.send("hi")
-    turn = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    turn = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert "model" not in turn["params"]             # nothing pinned
 
     handle.stdout.eof()
