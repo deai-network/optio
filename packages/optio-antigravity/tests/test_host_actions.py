@@ -38,6 +38,20 @@ def test_env_isolation_and_done_error():
     assert "--model" in cmd and "gemini-2.5-pro" in cmd
 
 
+def test_error_branch_tails_pane_mirror():
+    """On abnormal exit the payload tails the tmux pane mirror
+    (antigravity-pane.log) into optio.log AFTER the ERROR line, so a swallowed
+    launch failure is surfaced instead of a bare ``agy exited N``."""
+    _env, cmd = _build_agy_shell_command(
+        agy_path="/x/agy", workdir="/w/task", extra_env=None, agy_flags=[],
+    )
+    # The pane mirror and tail are present in the failure branch.
+    assert "antigravity-pane.log" in cmd
+    assert "tail -n 150" in cmd
+    # ERROR line comes before the tail snippet (surface reason after the marker).
+    assert cmd.index("ERROR: agy exited") < cmd.index("antigravity-pane.log")
+
+
 def test_build_agy_flags_skip_permissions_alias():
     """The claudecode-style ``bypassPermissions`` maps to agy's binary
     ``--dangerously-skip-permissions`` flag (agy has no --permission-mode)."""

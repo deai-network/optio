@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
 from optio_agents import claustrum
+from optio_agents import pane_surfacing
 from optio_agents import tmux_input as _tmux_input
 from optio_host.host import proc_wait
 
@@ -741,10 +742,20 @@ def _build_agy_shell_command(
     )
     log_path = f"{workdir_clean}/optio.log"
 
+    # Always-on launch-failure surfacing: on abnormal exit, tail the tmux pane
+    # mirror (antigravity-pane.log, written live by `tmux pipe-pane` in
+    # launch_ttyd_with_agy) into optio.log after the ERROR line, ANSI-stripped.
+    # The mirror path is derived from workdir here so it matches the launch's
+    # pipe-pane target. pipe-pane is used INSTEAD of a stdout redirect because a
+    # redirect makes isatty() false and the agy TUI never renders.
+    pane_log = pane_surfacing.pane_log_path(workdir_clean, "antigravity")
+    error_tail = pane_surfacing.error_tail_snippet(log_path, pane_log, "antigravity")
+
     bash_payload = (
         f"cd {shlex.quote(workdir_clean)} && {agy_argv}; rc=$?; "
         f'if [ "$rc" = 0 ]; then echo DONE >> {shlex.quote(log_path)}; '
-        f"else printf 'ERROR: agy exited %s\\n' \"$rc\" >> {shlex.quote(log_path)}; fi"
+        f"else printf 'ERROR: agy exited %s\\n' \"$rc\" >> {shlex.quote(log_path)}; "
+        f"{error_tail}fi"
     )
     shell_command = "env " + " ".join(
         shlex.quote(x) for x in [*env_assignments, "bash", "-c", bash_payload]
@@ -992,6 +1003,17 @@ async def launch_ttyd_with_agy(
     session_cmd = " ".join(shlex.quote(a) for a in session_argv)
     await _launch_detached_checked(
         host, session_cmd, env_remove=env_remove, what="tmux new-session",
+    )
+
+    # 1b) Always-on launch-failure surfacing: mirror the live pane to
+    #     antigravity-pane.log (outside the workdir). pipe-pane copies the PTY
+    #     output stream — it does NOT insert a pipe in agy's fd chain, so the TUI
+    #     is unaffected. The wrapper tails this on abnormal exit (see
+    #     _build_agy_shell_command).
+    pane_log = pane_surfacing.pane_log_path(host.workdir, "antigravity")
+    await host.run_command(pane_surfacing.mkdir_pane_dir_cmd(pane_log))
+    await host.run_command(
+        pane_surfacing.pipe_pane_cmd(tmux_path, socket_path, session_name, pane_log)
     )
 
     # 2) Start ttyd attaching to the live session.
