@@ -35,6 +35,7 @@ from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
 from optio_host.paths import task_dir
 
 from optio_cursor import cred_watcher, host_actions
+from optio_cursor.info import AGENT_INFO
 from optio_cursor import model_probe
 from optio_cursor import models as cursor_models
 from optio_cursor.conversation import CursorConversation
@@ -445,7 +446,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
         if config.api_key:
             # api_key rides the launch env, never argv (process listings).
             launch_env["CURSOR_API_KEY"] = config.api_key
-        ctx.report_progress(None, "Launching Cursor…")
+        ctx.report_progress(None, f"Launching {AGENT_INFO.name}…")
         # Fs-isolation wrap: confine cursor-agent + its whole tool/subprocess
         # tree inside the tmux pane (None when fs_isolation is off).
         claustrum_wrap = await _build_claustrum_wrap(host, config, claustrum_path)
@@ -468,7 +469,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
         await ctx.set_widget_data({
             "iframeSrc": "{widgetProxyUrl}/",
         })
-        ctx.report_progress(None, "Cursor is live")
+        ctx.report_progress(None, f"{AGENT_INFO.name} is live")
 
         # iframe-input widget: start the engine-side input listener and publish
         # it as the control upstream. The operator types messages / drives the
@@ -560,7 +561,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
         if config.api_key:
             # api_key rides the launch env, never argv (process listings).
             env["CURSOR_API_KEY"] = config.api_key
-        ctx.report_progress(None, "Launching Cursor (conversation)…")
+        ctx.report_progress(None, f"Launching {AGENT_INFO.name} (conversation)…")
         handle = await host.launch_subprocess(
             cmd, env=env, cwd=host.workdir,
             env_remove=config.scrub_env, stdin=True, merge_stderr=False,
@@ -575,7 +576,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             raise
 
         ctx.publish_result(conversation)
-        ctx.report_progress(None, "Cursor conversation is live")
+        ctx.report_progress(None, f"{AGENT_INFO.name} conversation is live")
 
         # Opt-in dashboard chat widget: start a per-task SSE listener over the
         # published conversation and publish it as the "conversation" widget
