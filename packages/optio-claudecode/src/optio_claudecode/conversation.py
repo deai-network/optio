@@ -23,6 +23,8 @@ from optio_agents.conversation import (
     PermissionRequest,
 )
 
+from optio_claudecode.info import AGENT_INFO
+
 _LOG = logging.getLogger(__name__)
 
 
@@ -36,7 +38,7 @@ def _user_message_line(text: str) -> bytes:
 class ClaudeCodeConversation:
     """Implements optio_agents.conversation.Conversation for Claude Code."""
 
-    def __init__(self, *, agent_label: str = "claude", permission_gate: bool = False) -> None:
+    def __init__(self, *, agent_label: str = AGENT_INFO.slug, permission_gate: bool = False) -> None:
         self._agent_label = agent_label
         # When False, can_use_tool control_requests are answered with a
         # defensive deny (design §3.5) instead of being queued for a handler.

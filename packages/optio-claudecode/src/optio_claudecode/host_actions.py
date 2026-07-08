@@ -19,6 +19,8 @@ from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, claustrum
 from optio_agents import tmux_input as _tmux_input
 from optio_host.host import proc_wait
 
+from optio_claudecode.info import AGENT_INFO
+
 if TYPE_CHECKING:
     from optio_agents import HookContextProtocol
     from optio_host import Host
@@ -215,7 +217,7 @@ async def ensure_claude_installed(
     *,
     install_if_missing: bool = True,
     install_dir: str | None = None,
-    progress_label: str = "Preparing Claude Code…",
+    progress_label: str = f"Preparing {AGENT_INFO.name}…",
 ) -> str:
     """Provision claude for this task from the shared, optio-owned version cache.
 
@@ -288,7 +290,7 @@ async def ensure_claude_installed(
         "install.sh (downloads, ~1min). If this repeats every launch, the cache_dir is "
         "wrong/ephemeral or being wiped.", cache_dir, newest,
     )
-    hook_ctx.report_progress(None, "Installing Claude Code…")
+    hook_ctx.report_progress(None, f"Installing {AGENT_INFO.name}…")
     install_cmd = (
         f"env HOME={shlex.quote(home)} sh -c "
         f"{shlex.quote(f'curl -fsSL {_CLAUDE_INSTALL_URL} | bash')}"

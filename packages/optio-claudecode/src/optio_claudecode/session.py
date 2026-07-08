@@ -40,6 +40,7 @@ from optio_agents.uploads import materialize, upload_url_token
 from optio_claudecode import cred_watcher
 from optio_claudecode import host_actions
 from optio_claudecode import models as cc_models
+from optio_claudecode.info import AGENT_INFO
 from optio_claudecode.conversation import ClaudeCodeConversation
 from optio_claudecode.conversation_listener import ConversationListener
 from optio_claudecode.input_listener import serialized, start_input_listener
@@ -246,7 +247,7 @@ async def run_claudecode_session(
                 hook_ctx,
                 install_if_missing=config.install_if_missing,
                 install_dir=config.install_dir,
-                progress_label="Restoring Claude Code runtime…",
+                progress_label=f"Restoring {AGENT_INFO.name} runtime…",
             )
             payload = await _read_blob_bytes(ctx, snapshot["sessionBlobId"])
             decrypt = config.session_blob_decrypt or (lambda b: b)
@@ -363,7 +364,7 @@ async def run_claudecode_session(
             **focus_env,
             **(hook_ctx.browser_launch_env or {}),
         }
-        ctx.report_progress(None, "Launching Claude Code…")
+        ctx.report_progress(None, f"Launching {AGENT_INFO.name}…")
         claustrum_wrap = await _build_claustrum_wrap(host, config, claustrum_path)
         handle, ttyd_port, tmux_socket, tmux_session = await host_actions.launch_ttyd_with_claude(
             host,
@@ -401,7 +402,7 @@ async def run_claudecode_session(
             on_key=serialized(injection_lock, _inject_key),
         )
         await ctx.set_control_upstream(f"http://{upstream_host}:{input_port}")
-        ctx.report_progress(None, "Claude Code is live")
+        ctx.report_progress(None, f"{AGENT_INFO.name} is live")
 
         # Await the claude process inside tmux (NOT the ttyd connection). ttyd
         # stays up serving viewers; the task is alive while the tmux session is.
@@ -570,12 +571,12 @@ async def run_claudecode_session(
             probed = await _probe_default_model(env)
             if probed:
                 current_model = probed
-        ctx.report_progress(None, "Launching Claude Code (conversation)…")
+        ctx.report_progress(None, f"Launching {AGENT_INFO.name} (conversation)…")
         handle, reader_task = await _spawn(current_model, do_continue=pass_continue)
         launched_handle = handle
 
         ctx.publish_result(conversation)
-        ctx.report_progress(None, "Claude Code conversation is live")
+        ctx.report_progress(None, f"{AGENT_INFO.name} conversation is live")
 
         nonlocal conv_listener
         if config.conversation_ui:
@@ -750,7 +751,7 @@ async def run_claudecode_session(
                             build_controls(current_model, current_effort)
                         )
                     ctx.report_progress(
-                        None, f"Claude Code resumed on {current_model or 'default model'}"
+                        None, f"{AGENT_INFO.name} resumed on {current_model or 'default model'}"
                     )
                     continue
 
