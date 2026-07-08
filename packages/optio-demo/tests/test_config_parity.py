@@ -6,6 +6,8 @@ Pure/xdist-safe. Lives in optio-demo because only optio-demo depends on all 7
 wrappers (the wrappers depend on optio-agents, not each other)."""
 import dataclasses
 
+import pytest
+
 from optio_antigravity.types import AntigravityTaskConfig
 from optio_claudecode.types import ClaudeCodeTaskConfig
 from optio_codex.types import CodexTaskConfig
@@ -35,6 +37,34 @@ CORE = {
 
 def _fields(cls):
     return {f.name: f for f in dataclasses.fields(cls)}
+
+
+def _construct_minimal(cls, **overrides):
+    """Build a config with only its required fields + the given overrides.
+
+    Every engine config requires only ``consumer_instructions``; all other
+    fields (incl. the claustrum triad) default. Any extra required kwargs a
+    future engine adds should be threaded here."""
+    kwargs = {"consumer_instructions": ""}
+    kwargs.update(overrides)
+    return cls(**kwargs)
+
+
+# The claustrum filesystem-isolation triad — inherited by every engine
+# TaskConfig from optio_agents.config_types.ClaustrumConfigMixin.
+CLAUSTRUM_TRIAD = {"fs_isolation", "extra_allowed_dirs", "delivery_type"}
+
+
+def test_every_engine_has_the_claustrum_triad():
+    for cls in CONFIGS:
+        missing = CLAUSTRUM_TRIAD - set(_fields(cls))
+        assert not missing, f"{cls.__name__} missing claustrum triad: {sorted(missing)}"
+
+
+def test_every_engine_requires_delivery_type_when_fs_isolation_on():
+    for cls in CONFIGS:
+        with pytest.raises(ValueError, match="delivery_type"):
+            _construct_minimal(cls, fs_isolation=True, delivery_type=None)
 
 
 def test_every_engine_has_the_core():
