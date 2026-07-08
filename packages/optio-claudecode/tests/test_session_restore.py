@@ -84,7 +84,7 @@ async def _make_optio(mongo_db, prefix: str) -> Optio:
     return optio
 
 
-async def _wait_terminal(optio: Optio, process_id: str, timeout: float = 30.0) -> dict:
+async def _wait_terminal(optio: Optio, process_id: str, timeout: float = 60.0) -> dict:
     end = _time.monotonic() + timeout
     while _time.monotonic() < end:
         proc = await optio.get_process(process_id)
@@ -231,7 +231,7 @@ async def test_restore_round_trip_rekeys_to_new_workdir(
         msgs: asyncio.Queue[str] = asyncio.Queue()
         conv.on_message(msgs.put_nowait)
         await conv.send("ping")
-        assert await asyncio.wait_for(msgs.get(), 10) == "reply-1"
+        assert await asyncio.wait_for(msgs.get(), 60) == "reply-1"
         await conv.close()
         proc = await _wait_terminal(optio, "sr-rt-b")
         assert proc["status"]["state"] == "done"

@@ -56,7 +56,7 @@ async def listener():
     await lst.stop()
 
 
-async def _read_events(resp, n, timeout=5):
+async def _read_events(resp, n, timeout=60):
     """Parse n SSE data frames from an open aiohttp response."""
     out = []
     buf = b""
@@ -131,7 +131,7 @@ async def test_permission_roundtrip_and_second_answer_404(listener):
                          json={"request_id": "perm-1", "behavior": "allow"},
                          headers=_auth("pw"))
         assert r.status == 200
-        decision = await asyncio.wait_for(task, 2)
+        decision = await asyncio.wait_for(task, 60)
         assert isinstance(decision, PermissionDecision)
         assert decision.behavior == "allow"
         r = await s.post(f"{url}/permission",

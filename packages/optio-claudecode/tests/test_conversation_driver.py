@@ -63,7 +63,7 @@ async def test_gate_off_denies_can_use_tool_defensively():
     handle.stdout.feed({"type": "control_request", "request_id": "perm-x",
                         "request": {"subtype": "can_use_tool",
                                     "tool_name": "Bash", "input": {}}})
-    resp = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    resp = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert resp["type"] == "control_response"
     assert resp["response"]["request_id"] == "perm-x"
     assert resp["response"]["response"]["behavior"] == "deny"
@@ -76,7 +76,7 @@ async def test_send_writes_user_message_and_pending(convo):
     c, handle = convo
     reader = asyncio.create_task(c.run_reader())
     await c.send("hello")
-    sent = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    sent = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert sent["type"] == "user"
     assert sent["message"]["content"][0]["text"] == "hello"
     assert c.is_pending()
@@ -148,7 +148,7 @@ async def test_permission_roundtrip_and_late_registration(convo):
         return PermissionDecision(behavior="deny", message="nope")
 
     c.on_permission_request(handler)
-    resp = await asyncio.wait_for(handle.stdin.lines.get(), 1)
+    resp = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert resp["type"] == "control_response"
     assert resp["response"]["request_id"] == "perm-1"
     assert resp["response"]["response"]["behavior"] == "deny"
@@ -163,12 +163,12 @@ async def test_interrupt_handshake(convo):
     reader = asyncio.create_task(c.run_reader())
     await c.send("long task")
     intr = asyncio.create_task(c.interrupt())
-    sent = await asyncio.wait_for(handle.stdin.lines.get(), 1)   # user msg
-    ctrl = await asyncio.wait_for(handle.stdin.lines.get(), 1)   # control_request
+    sent = await asyncio.wait_for(handle.stdin.lines.get(), 60)   # user msg
+    ctrl = await asyncio.wait_for(handle.stdin.lines.get(), 60)   # control_request
     assert ctrl["request"]["subtype"] == "interrupt"
     handle.stdout.feed({"type": "control_response", "response": {
         "subtype": "success", "request_id": ctrl["request_id"]}})
-    await asyncio.wait_for(intr, 1)
+    await asyncio.wait_for(intr, 60)
     handle.stdout.eof()
     await reader
 

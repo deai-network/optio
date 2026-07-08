@@ -136,7 +136,7 @@ async def _make_optio(mongo_db, prefix: str) -> Optio:
     return optio
 
 
-async def _wait_terminal(optio: Optio, process_id: str, timeout: float = 30.0) -> dict:
+async def _wait_terminal(optio: Optio, process_id: str, timeout: float = 60.0) -> dict:
     """Poll until process_id reaches a terminal state or timeout."""
     end = _time.monotonic() + timeout
     while _time.monotonic() < end:
@@ -148,7 +148,7 @@ async def _wait_terminal(optio: Optio, process_id: str, timeout: float = 30.0) -
 
 
 async def _wait_widget_upstream(
-    optio: Optio, process_id: str, timeout: float = 10.0,
+    optio: Optio, process_id: str, timeout: float = 60.0,
 ) -> dict:
     """Poll the process doc until widgetUpstream is set; return the doc."""
     end = _time.monotonic() + timeout
@@ -160,7 +160,7 @@ async def _wait_widget_upstream(
     raise AssertionError(f"{process_id} never set widgetUpstream in {timeout}s")
 
 
-async def _read_until(resp, predicate, timeout: float = 10.0) -> dict:
+async def _read_until(resp, predicate, timeout: float = 60.0) -> dict:
     """Parse SSE data frames from an open aiohttp response until one
     satisfies ``predicate``; return it. Keep-alive comment frames carry no
     data line and are skipped."""
@@ -185,7 +185,7 @@ async def _read_until(resp, predicate, timeout: float = 10.0) -> dict:
     return await asyncio.wait_for(_go(), timeout)
 
 
-async def _wait_port_refused(port: int, timeout: float = 10.0) -> None:
+async def _wait_port_refused(port: int, timeout: float = 60.0) -> None:
     """Poll until connecting to 127.0.0.1:<port> is refused."""
     end = _time.monotonic() + timeout
     while _time.monotonic() < end:

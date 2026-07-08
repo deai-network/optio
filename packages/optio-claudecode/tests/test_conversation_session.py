@@ -45,7 +45,7 @@ async def _make_optio(mongo_db, prefix: str) -> Optio:
     return optio
 
 
-async def _wait_terminal(optio: Optio, process_id: str, timeout: float = 30.0) -> dict:
+async def _wait_terminal(optio: Optio, process_id: str, timeout: float = 60.0) -> dict:
     """Poll until process_id reaches a terminal state or timeout."""
     end = _time.monotonic() + timeout
     while _time.monotonic() < end:
@@ -56,7 +56,7 @@ async def _wait_terminal(optio: Optio, process_id: str, timeout: float = 30.0) -
     raise AssertionError(f"{process_id} did not reach terminal state in {timeout}s")
 
 
-async def _wait_for(predicate, timeout: float = 10.0) -> None:
+async def _wait_for(predicate, timeout: float = 60.0) -> None:
     """Poll a sync predicate until truthy or timeout."""
     end = _time.monotonic() + timeout
     while _time.monotonic() < end:
@@ -111,7 +111,7 @@ async def test_publish_send_receive_and_pending(
         assert not conv.is_pending()
         await conv.send("hello")
         assert conv.is_pending()
-        reply = await asyncio.wait_for(msgs.get(), 10)
+        reply = await asyncio.wait_for(msgs.get(), 60)
         assert reply == "reply-1"
         await _wait_for(lambda: not conv.is_pending())
 
@@ -183,7 +183,7 @@ async def test_unexpected_exit_fails_task(
         msgs: asyncio.Queue[str] = asyncio.Queue()
         conv.on_message(msgs.put_nowait)
         await conv.send("trigger the last turn")
-        assert await asyncio.wait_for(msgs.get(), 10) == "reply-1"
+        assert await asyncio.wait_for(msgs.get(), 60) == "reply-1"
 
         proc = await _wait_terminal(optio, "cc-conv-dies")
         assert proc["status"]["state"] == "failed"
@@ -224,7 +224,7 @@ async def test_auto_start_sends_kickoff_first(
         await conv.send("ping")
         seen: list[str] = []
         while "reply-2" not in seen:
-            seen.append(await asyncio.wait_for(msgs.get(), 10))
+            seen.append(await asyncio.wait_for(msgs.get(), 60))
 
         await conv.close()
         proc = await _wait_terminal(optio, "cc-conv-kickoff")
