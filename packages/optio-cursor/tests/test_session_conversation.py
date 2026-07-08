@@ -50,6 +50,27 @@ async def _wait_for(predicate, timeout: float = 60.0) -> None:
     raise AssertionError(f"condition not met within {timeout}s")
 
 
+async def _wait_result_channel_cleared(
+    optio: Optio, process_id: str, timeout: float = 60.0,
+) -> None:
+    """Wait until a finished run's published result has been torn down.
+
+    The executor writes ``status=done`` (what ``_wait_terminal`` observes) and
+    then, several awaits later, runs the ``finally`` that pops BOTH the result
+    registry and the launcher-side result future. Relaunching the SAME
+    process_id (a resume) after only ``_wait_terminal`` races that teardown:
+    under CPU starvation the resume launch registers its fresh future first,
+    then the prior run's ``finally`` pops+clobbers it with ResultNotPublished
+    ('... ended without publishing'). The registry entry is popped in the SAME
+    synchronous ``finally`` as the future (no await between), so once
+    ``get_published_result`` reads None the future pop has also completed and the
+    resume launch will register an uncontended future.
+    """
+    await _wait_for(
+        lambda: optio.get_published_result(process_id) is None, timeout=timeout,
+    )
+
+
 async def _wait_widget_data(optio: Optio, process_id: str, timeout: float = 60.0) -> dict:
     """Poll the process doc until widgetData is set; return the widgetData dict."""
     end = _time.monotonic() + timeout
@@ -351,6 +372,9 @@ async def test_conversation_ui_resume_replays_prior_history_via_persisted_id(
 
         # Resumed run: restores the workdir, reads the persisted sessionId, and
         # (conversation_ui + resuming) calls session/load with it to replay.
+        # Wait out the prior run's result-channel teardown first so this resume
+        # launch's future is not clobbered by it (see _wait_result_channel_cleared).
+        await _wait_result_channel_cleared(optio, "cu-conv-replay")
         conv2 = await optio.launch_and_await_result(
             "cu-conv-replay", resume=True, session_id=None, timeout=60,
         )
@@ -395,6 +419,9 @@ async def test_conversation_ui_resume_session_load_reject_falls_back(
 
         # Resume: session/load is rejected -> fall back to the fresh session; the
         # conversation is still usable (a turn round-trips) and the run completes.
+        # Wait out the prior run's result-channel teardown first so this resume
+        # launch's future is not clobbered by it (see _wait_result_channel_cleared).
+        await _wait_result_channel_cleared(optio, "cu-conv-reject")
         conv2 = await optio.launch_and_await_result(
             "cu-conv-reject", resume=True, session_id=None, timeout=60,
         )
