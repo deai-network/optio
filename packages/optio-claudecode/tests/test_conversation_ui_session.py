@@ -263,7 +263,11 @@ async def test_conversation_ui_session_lifecycle(
                     "kind": "select",
                     "label": "Model",
                     "category": "model",
-                    "value": "",
+                    # No-kickoff conversation: the warm-up probe ran a throwaway
+                    # turn and read the runtime model from the shim's system/init
+                    # ("fake-model"), so the picker is pre-seeded up front rather
+                    # than left empty until the first prompt.
+                    "value": "fake-model",
                     "disabled": False,
                     "options": [
                         {"value": "claude-opus-4-8", "label": "Claude Opus 4.8", "disabled": False},
