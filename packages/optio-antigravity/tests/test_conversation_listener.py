@@ -12,6 +12,7 @@ exercised here with a fake that fires, to prove the shared route works.
 import asyncio
 import base64
 import json
+import time
 
 import aiohttp
 import pytest
@@ -196,7 +197,13 @@ async def test_permission_roundtrip_by_request_id(listener):
         input = {"command": "echo hi"}
 
     task = asyncio.create_task(conv.perm_handler(Req()))
-    await asyncio.sleep(0.05)
+    # Wait for the handler to REGISTER the pending request (the observable event)
+    # before answering it — not a fixed delay that CPU starvation could outrun.
+    end = time.monotonic() + 60.0
+    while "99" not in lst._pending_permissions:
+        if time.monotonic() > end:
+            raise AssertionError("permission request 99 was never registered")
+        await asyncio.sleep(0.02)
     async with aiohttp.ClientSession() as s:
         r = await s.post(f"{url}/permission",
                          json={"request_id": "99", "behavior": "allow"},

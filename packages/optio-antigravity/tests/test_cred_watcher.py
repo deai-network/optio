@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time as _time
 
 import pytest
 from bson import ObjectId
@@ -172,9 +173,15 @@ async def test_watcher_saves_back_on_change(mongo_db, host, tmp_path, monkeypatc
     ))
     _write_creds(host.workdir, {"refresh_token": "T2"})
     try:
-        for i in range(40):
-            await asyncio.sleep(0.05)
+        # Poll until the watcher saves the rotated token back into the seed,
+        # bounded only by a generous hang-ceiling (robust to CPU starvation —
+        # a fixed iteration budget could expire before the watcher gets to run).
+        end = _time.monotonic() + 60.0
+        i = 0
+        saved = False
+        while _time.monotonic() < end:
             dst = LocalHost(taskdir=str(tmp_path / f"chk{i}"))
+            i += 1
             await dst.setup_workdir()
             await seeds.merge_seed(
                 ctx, dst, seed_id=seed_id, manifest=ANTIGRAVITY_CRED_MANIFEST,
@@ -182,9 +189,10 @@ async def test_watcher_saves_back_on_change(mongo_db, host, tmp_path, monkeypatc
             )
             with open(_token_path(dst.workdir)) as fh:
                 if "T2" in fh.read():
+                    saved = True
                     break
-        else:
-            raise AssertionError("watcher did not save back the rotated token store")
+            await asyncio.sleep(0.05)
+        assert saved, "watcher did not save back the rotated token store"
     finally:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -225,11 +233,12 @@ async def test_watcher_cancels_session_on_lease_loss(mongo_db, host, monkeypatch
     )
     assert stolen == seed_id
 
-    for _ in range(60):
+    # Wait for the watcher to observe the stolen lease and flag cancellation —
+    # generous hang-ceiling, not a fixed iteration budget that starvation outruns.
+    end = _time.monotonic() + 60.0
+    while not ctx.cancellation_flag.is_set():
+        if _time.monotonic() > end:
+            task.cancel()
+            raise AssertionError("watcher did not flag cancellation on lease loss")
         await asyncio.sleep(0.05)
-        if ctx.cancellation_flag.is_set():
-            break
-    else:
-        task.cancel()
-        raise AssertionError("watcher did not flag cancellation on lease loss")
     await task  # returns (not raises): lease-loss exit is a normal return

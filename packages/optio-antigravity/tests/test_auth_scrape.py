@@ -108,18 +108,37 @@ async def test_scraper_emits_each_url_once(tmp_path, monkeypatch):
     monkeypatch.setattr(m, "_capture_pane", fake_capture)
 
     import asyncio
+    import time
+
+    def _emitted() -> list[str]:
+        log = open(f"{host.workdir}/optio.log").read()
+        return [ln for ln in log.splitlines() if ln.startswith("BROWSER:")]
+
     task = asyncio.ensure_future(
         run_auth_url_scraper(
             host, tmux_path="tmux", socket_path="s", session_name="optio",
             interval=0.01,
         )
     )
-    await asyncio.sleep(0.1)  # several poll cycles
-    task.cancel()
     try:
-        await task
-    except asyncio.CancelledError:
-        pass
-    log = open(f"{host.workdir}/optio.log").read()
-    emitted = [ln for ln in log.splitlines() if ln.startswith("BROWSER:")]
-    assert len(emitted) == 1
+        # Wait for the EVENT (the first emit), not a fixed duration — under CPU
+        # starvation the scraper may not get a poll cycle for a while. The 60s
+        # ceiling only bounds a true hang.
+        end = time.monotonic() + 60.0
+        while time.monotonic() < end:
+            if len(_emitted()) >= 1:
+                break
+            await asyncio.sleep(0.02)
+        else:
+            raise AssertionError("scraper did not emit the auth URL within 60s")
+        # Keep the scraper polling the (unchanged) pane a while longer: a broken
+        # dedup would re-emit on every cycle. Starvation only makes this check
+        # more lenient (never a false failure), so a short observation is fine.
+        await asyncio.sleep(0.1)
+        assert len(_emitted()) == 1
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
