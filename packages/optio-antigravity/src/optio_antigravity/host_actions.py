@@ -28,6 +28,8 @@ from optio_agents import claustrum
 from optio_agents import tmux_input as _tmux_input
 from optio_host.host import proc_wait
 
+from optio_antigravity.info import AGENT_INFO
+
 if TYPE_CHECKING:
     from optio_agents import HookContextProtocol
     from optio_host import Host
@@ -256,7 +258,7 @@ async def _install_antigravity_into_cache(
         )
     tmpdir = r.stdout.strip()
     try:
-        hook_ctx.report_progress(None, "Fetching Antigravity manifest…")
+        hook_ctx.report_progress(None, f"Fetching {AGENT_INFO.name} manifest…")
         manifest_dest = f"{tmpdir}/manifest.json"
         await hook_ctx.download_file(manifest_url, manifest_dest)
         raw = (await host.fetch_bytes_from_host(manifest_dest)).decode("utf-8")
@@ -271,7 +273,7 @@ async def _install_antigravity_into_cache(
                 f"({exc!r}): {raw[:200]!r}"
             ) from exc
 
-        hook_ctx.report_progress(None, f"Downloading Antigravity {version}…")
+        hook_ctx.report_progress(None, f"Downloading {AGENT_INFO.name} {version}…")
         tarball = f"{tmpdir}/antigravity.tar.gz"
         await hook_ctx.download_file(url, tarball)
 
@@ -365,7 +367,7 @@ async def _populate_antigravity_cache(
         )
         return
 
-    hook_ctx.report_progress(None, "Seeding Antigravity cache…")
+    hook_ctx.report_progress(None, f"Seeding {AGENT_INFO.name} cache…")
     # ``-L`` dereferences: a symlinked host agy becomes a real, stable copy in
     # the cache (independent of the host binary the operator may autoupdate).
     r = await host.run_command(
@@ -414,7 +416,7 @@ async def ensure_antigravity_installed(
     *,
     install_if_missing: bool = True,
     install_dir: str | None = None,
-    progress_label: str = "Preparing Antigravity…",
+    progress_label: str = f"Preparing {AGENT_INFO.name}…",
 ) -> str:
     """Provision ``agy`` for this task from the optio-owned binary cache and
     return its per-task launch path.

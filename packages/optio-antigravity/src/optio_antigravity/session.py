@@ -35,6 +35,7 @@ from optio_host.paths import task_dir
 from optio_antigravity import auth_scrape, cred_watcher, host_actions
 from optio_antigravity import models as antigravity_models
 from optio_antigravity.conversation import AntigravityConversation
+from optio_antigravity.info import AGENT_INFO
 from optio_antigravity.conversation_listener import ConversationListener
 from optio_antigravity.prompt import compose_agents_md
 from optio_antigravity.seed_manifest import (
@@ -195,7 +196,7 @@ async def run_antigravity_session(
                 hook_ctx,
                 install_if_missing=config.install_if_missing,
                 install_dir=config.install_dir,
-                progress_label="Restoring Antigravity runtime…",
+                progress_label=f"Restoring {AGENT_INFO.name} runtime…",
             )
             await host_actions._rotate_optio_log(host)
             # A restored snapshot means agy persisted a conversation for this
@@ -312,7 +313,7 @@ async def run_antigravity_session(
         claustrum_wrap = await host_actions._build_claustrum_wrap(
             host, config, claustrum_path,
         )
-        ctx.report_progress(None, "Launching Antigravity…")
+        ctx.report_progress(None, f"Launching {AGENT_INFO.name}…")
         handle, ttyd_port, tmux_socket, tmux_session = await host_actions.launch_ttyd_with_agy(
             host,
             ttyd_path=ttyd_path,
@@ -332,7 +333,7 @@ async def run_antigravity_session(
         await ctx.set_widget_data({
             "iframeSrc": "{widgetProxyUrl}/",
         })
-        ctx.report_progress(None, "Antigravity is live")
+        ctx.report_progress(None, f"{AGENT_INFO.name} is live")
 
         # agy's login prints the Google OAuth URL into the TUI (no browser open —
         # the redirect shims never fire) and HARD-wraps it, so ttyd linkifies only
@@ -444,7 +445,7 @@ async def run_antigravity_session(
             if resumed:
                 _LOG.info("antigravity conversation resume: continuing %s", resumed)
         ctx.publish_result(conversation)
-        ctx.report_progress(None, "Antigravity conversation is live")
+        ctx.report_progress(None, f"{AGENT_INFO.name} conversation is live")
 
         # Opt-in dashboard chat widget: start a per-task SSE listener over the
         # published conversation and publish it as the "conversation" widget via

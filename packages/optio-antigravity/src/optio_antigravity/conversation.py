@@ -65,6 +65,8 @@ from optio_host.host import proc_wait
 
 from optio_agents.conversation import ConversationClosed
 
+from optio_antigravity.info import AGENT_INFO
+
 _LOG = logging.getLogger(__name__)
 
 # How long interrupt() waits for a just-started turn's process handle to
@@ -135,8 +137,10 @@ class AntigravityConversation:
         skip_permissions: bool = True,
         pty: bool = True,
         claustrum_wrap: list[str] | None = None,
+        agent_label: str = AGENT_INFO.slug,
     ) -> None:
         self._host = host
+        self._agent_label = agent_label
         self._agy_path = agy_path
         self._cwd = cwd
         # The isolated per-task HOME (``<workdir>/home``). The real ``agy``
