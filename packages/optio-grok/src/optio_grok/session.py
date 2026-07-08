@@ -24,7 +24,7 @@ from typing import AsyncIterator, Callable
 from optio_core.context import ProcessContext
 from optio_core.models import BasicAuth, TaskInstance
 
-from optio_agents import HookContext, RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
+from optio_agents import HookContext, RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, claustrum, get_protocol
 from optio_agents import seeds as _seeds
 from optio_agents.input_listener import serialized, start_input_listener
 from optio_agents.session_controls import model_control
@@ -37,7 +37,6 @@ from optio_grok import cred_watcher, host_actions
 from optio_grok import models as grok_models
 from optio_grok.conversation import GrokConversation
 from optio_grok.info import AGENT_INFO
-from optio_grok.fs_allowlist import build_sandbox_toml
 from optio_grok.conversation_listener import ConversationListener
 from optio_grok.prompt import compose_agents_md
 from optio_grok.seed_manifest import GROK_SEED_MANIFEST, GROK_SEED_SUFFIX
@@ -99,6 +98,37 @@ def _build_host(config: GrokTaskConfig, process_id: str) -> Host:
     return host_actions.build_host(config.ssh, taskdir)
 
 
+async def _build_claustrum_wrap(
+    host: Host, config: GrokTaskConfig, claustrum_path: str | None,
+) -> list[str] | None:
+    """claustrum argv prefix for an fs-isolated launch, or None when
+    fs_isolation is off. Shared by the iframe and conversation launch paths so
+    both confine grok + its whole subprocess tree identically.
+
+    Grants: the whole per-task ``<workdir>`` (rwx — covers the isolated
+    ``home`` GROK_HOME/XDG tree) plus the grok binary cache (rox — the real
+    binary the ``<workdir>/home/.local/bin/grok`` symlink targets, outside the
+    workdir; grok cannot exec itself without it), on top of the shared system
+    baseline. ``~/`` caller extras expand against the REAL host home (grok runs
+    under an isolated $HOME, and grants reach claustrum verbatim — no shell
+    between).
+    """
+    if not config.fs_isolation:
+        return None
+    from optio_agents import fs_grants
+    cache_dir = await host_actions._resolve_grok_cache_dir(host, config.install_dir)
+    host_home = (
+        await host.resolve_host_home() if config.extra_allowed_dirs else None
+    )
+    grants = fs_grants.build_grant_flags(
+        workdir=host.workdir,
+        engine_cache_dir=cache_dir,
+        extra_allowed_dirs=config.extra_allowed_dirs,
+        host_home=host_home,
+    )
+    return claustrum.build_claustrum_wrap(claustrum_path, grants)
+
+
 async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
     """Execute function body for one optio-grok task instance."""
     host: Host = _build_host(config, ctx.process_id)
@@ -141,6 +171,13 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
     lease_holder: str | None = None
     cred_baseline: str | None = None
     cred_watch_task: "asyncio.Task | None" = None
+    # Path to the claustrum Landlock binary on the (possibly remote) host, set
+    # by _prepare when fs_isolation is on; read by both bodies to wrap the grok
+    # launch. ``claustrum_newer`` is the newest available claustrum tag when it
+    # is ahead of the pinned one (drives the pre-launch update notice), else
+    # None. Both stay None when fs_isolation is off.
+    claustrum_path: str | None = None
+    claustrum_newer: str | None = None
     # iframe-input widget: an engine-side HTTP listener injects operator input
     # (typed messages + NAV keystrokes) into the grok tmux TUI. One lock serializes
     # human input against the system (_agent_sender) sends so bursts never interleave.
@@ -161,11 +198,23 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
         """
         nonlocal grok_path, ttyd_path, resuming, pass_continue, resolved_seed_id
         nonlocal lease_holder, cred_baseline, resume_session_id
+        nonlocal claustrum_path, claustrum_newer
         grok_path = await host_actions.ensure_grok_installed(
             hook_ctx,
             install_if_missing=config.install_if_missing,
             install_dir=config.install_dir,
         )
+        # Filesystem isolation: provision the claustrum Landlock binary BEFORE
+        # launch. Any failure raises here — fail-closed: the task never proceeds
+        # to an unconfined launch. Skipped when fs_isolation is off. The pinned
+        # tag drives the pre-launch "newer claustrum available" notice below.
+        claustrum_path = None
+        claustrum_newer = None
+        if config.fs_isolation:
+            claustrum_path = await host_actions.ensure_claustrum_installed(
+                hook_ctx, install_dir=config.install_dir,
+            )
+            claustrum_newer = await host_actions.claustrum_newer_tag()
         # Conversation mode is headless (grok agent stdio) — no ttyd needed.
         if config.mode != "conversation":
             ttyd_path = await host_actions.ensure_ttyd_installed(
@@ -247,22 +296,18 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             # teardown backstop only save back a genuinely rotated token.
             cred_baseline = await cred_watcher.cred_fingerprint(host)
 
-        if config.fs_isolation:
-            # Plant the fail-closed custom sandbox profile under the per-task
-            # GROK_HOME (<workdir>/home/.grok/sandbox.toml, a "global" custom
-            # profile for this GROK_HOME). grok launches with --sandbox optio;
-            # a custom profile refuses to start if the kernel can't apply it
-            # (fail-closed). ``~/`` grants expand against the REAL host home
-            # (grok itself runs under an isolated $HOME). Planted AFTER any
-            # restore so a stale profile from the snapshot is overwritten.
-            host_home = await host.resolve_host_home()
-            await host.write_text(
-                "home/.grok/sandbox.toml",
-                build_sandbox_toml(
-                    workdir=host.workdir,
-                    extra_allowed_dirs=config.extra_allowed_dirs,
-                    host_home=host_home,
-                ),
+        # Route the "a newer claustrum release is available" notice through
+        # on_deliverable (a security feature: a new release may patch a
+        # vulnerability the operator must hear about ASAP), then clean it up.
+        # No-op when fs_isolation is off, on_deliverable is None, or the cache
+        # is already at the newest tag.
+        if config.fs_isolation and claustrum_newer:
+            await claustrum.emit_claustrum_update_notice(
+                host, hook_ctx,
+                delivery_type=config.delivery_type,
+                on_deliverable=config.on_deliverable,
+                newer=claustrum_newer,
+                pinned=claustrum.CLAUSTRUM_PINNED_TAG,
             )
 
         # Force `[cli] auto_update = false` in the per-task GROK_HOME config so
@@ -316,7 +361,6 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             reasoning_effort=config.reasoning_effort,
             no_leader=config.no_leader,
             resuming=pass_continue,
-            fs_isolation=config.fs_isolation,
         )
         grok_flags = [
             *grok_flags,
@@ -334,6 +378,9 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             **(hook_ctx.browser_launch_env or {}),
         }
         ctx.report_progress(None, f"Launching {AGENT_INFO.name}…")
+        # Fs-isolation wrap: confine grok + its whole tool/subprocess tree
+        # inside the tmux pane (None when fs_isolation is off).
+        claustrum_wrap = await _build_claustrum_wrap(host, config, claustrum_path)
         handle, ttyd_port, tmux_socket, tmux_session = await host_actions.launch_ttyd_with_grok(
             host,
             ttyd_path=ttyd_path,
@@ -343,6 +390,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             grok_flags=grok_flags,
             ready_timeout_s=READY_TIMEOUT_S,
             env_remove=config.scrub_env,
+            claustrum_wrap=claustrum_wrap,
         )
         launched_handle = handle
         tmux_path = await host_actions._require_tmux(host)
@@ -423,17 +471,21 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             reasoning_effort=config.reasoning_effort,
             no_leader=config.no_leader,
             always_approve=not config.permission_gate,
-            fs_isolation=config.fs_isolation,
         )
-        # `exec` so /bin/sh REPLACES itself with the (tty-wrapper →) grok process
+        # Same claustrum fs-isolation wrap as the iframe path; claustrum
+        # execve's grok, so the bidirectional ACP stdio pipes pass through
+        # unchanged (None when fs_isolation is off).
+        wrap = await _build_claustrum_wrap(host, config, claustrum_path)
+        if wrap:
+            argv = [*wrap, *argv]
+        # `exec` so /bin/sh REPLACES itself with the (claustrum →) grok process
         # instead of forking it. launch_subprocess starts the sh with
-        # start_new_session=True, making sh the session leader; exec transfers that
-        # leadership straight to grok (or the python tty-wrapper that execs grok).
-        # Grok then IS the session leader in the launcher's process group — the pgid
-        # optio's killpg teardown targets. WITHOUT exec, the fs-isolation tty wrapper
-        # calls setsid() (needed to acquire the sandbox's controlling /dev/tty) from a
-        # FORKED (non-leader) child, which escapes into a brand-new session/pgid that
-        # killpg never reaches → grok is orphaned (reparented to init) on cancel.
+        # start_new_session=True, making sh the session leader; exec transfers
+        # that leadership straight into the chain, and claustrum execve's grok in
+        # place — so grok IS the session leader in the launcher's process group,
+        # the pgid optio's killpg teardown targets. (claustrum, unlike grok's old
+        # fail-closed native profile, needs no controlling /dev/tty, so there is
+        # no forked setsid tty wrapper to escape the pgid.)
         cmd = "exec " + " ".join(shlex.quote(a) for a in argv)
         # Same per-task HOME/GROK_HOME/XDG isolation as the iframe launch. PATH
         # is inherited by launch_subprocess (os.environ.copy) so interpreters

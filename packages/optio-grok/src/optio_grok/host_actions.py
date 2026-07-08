@@ -20,7 +20,7 @@ import shlex
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
+from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, claustrum
 from optio_agents import tmux_input as _tmux_input
 from optio_host.host import proc_wait
 
@@ -103,6 +103,71 @@ async def _resolve_grok_cache_dir(host: "Host", override: str | None) -> str:
             f"(exit {r.exit_code}): {(r.stderr or '').strip()[:200]}"
         )
     return path.rstrip("/")
+
+
+# --- claustrum provisioning (filesystem isolation) --------------------------
+#
+# The provisioning logic (engine cross-compile, ELF-guarded build cache,
+# functional wrap+exec validation, fail-closed placement) is the shared
+# ``optio_agents.claustrum`` module — the single source of truth across every
+# wrapper. This wrapper contributes only the grok-owned cache-dir resolution
+# and, in session.py, the grant set (``_build_claustrum_wrap``). Grok uses
+# claustrum — replacing its own native ``--sandbox`` custom Landlock profile —
+# so the WHOLE process tree is confined by one trusted, engine-neutral layer.
+
+
+async def ensure_claustrum_installed(
+    hook_ctx: "HookContextProtocol",
+    *,
+    install_dir: str | None = None,
+) -> str:
+    """Ensure a functioning claustrum binary is on the host; return its path.
+
+    Thin wrapper over :func:`optio_agents.claustrum.ensure_claustrum_installed`:
+    resolves the grok-owned target cache dir, pins the engine build cache to
+    ``~/.cache/optio-grok``, and forwards the UI progress callback. All the real
+    work (cross-compile, ELF-guarded engine cache, functional wrap+exec
+    validation) lives in the shared module. Fail-closed — any failure RAISES, so
+    the caller never proceeds to an unconfined launch.
+    """
+    host = hook_ctx._host
+    cache_dir = await _resolve_grok_cache_dir(host, install_dir)
+    return await claustrum.ensure_claustrum_installed(
+        host,
+        cache_dir=cache_dir,
+        engine_cache_dir=os.path.expanduser("~/.cache/optio-grok"),
+        report_progress=hook_ctx.report_progress,
+    )
+
+
+async def claustrum_newer_tag() -> str | None:
+    """Return the newest claustrum tag if it is newer than the pinned one, else None.
+
+    Engine-side egress only. Best-effort: network failure returns None (no notice).
+    """
+    try:
+        p = await asyncio.create_subprocess_exec(
+            "git", "ls-remote", "--tags", "--refs", claustrum.CLAUSTRUM_REPO,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await p.communicate()
+        if p.returncode != 0:
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    tags = []
+    for line in out.decode().splitlines():
+        ref = line.rsplit("/", 1)[-1].strip()
+        if ref.startswith("v"):
+            tags.append(ref)
+
+    def key(t: str) -> tuple:
+        return tuple(int(x) for x in t.lstrip("v").split(".") if x.isdigit())
+
+    if not tags:
+        return None
+    newest = max(tags, key=key)
+    return newest if key(newest) > key(claustrum.CLAUSTRUM_PINNED_TAG) else None
 
 
 # --- grok resolution (Stage 0: no binary cache/download; that is Stage 5) ---
@@ -626,6 +691,7 @@ def _build_grok_shell_command(
     extra_env: dict[str, str] | None,
     grok_flags: list[str],
     local_mode: bool = False,
+    claustrum_wrap: list[str] | None = None,
 ) -> tuple[list[str], str]:
     """Return (env_assignments, shell_command).
 
@@ -640,6 +706,11 @@ def _build_grok_shell_command(
     neutralizes grok's claude-compat layer: without it the host operator's
     global ``~/.claude/CLAUDE.md``, settings, and hooks leak into the
     sandboxed task. Point it at the empty per-task dir.
+
+    ``claustrum_wrap`` (filesystem isolation) is the OUTERMOST argv prefix that
+    Landlock-confines grok and every tool/subprocess it spawns; when set it is
+    prepended to the grok invocation (``claustrum … -- grok …``), so claustrum
+    execs grok inside the ruleset. None launches unconfined (fs_isolation off).
     """
     workdir_clean = workdir.rstrip("/")
     iso = _isolation_env(workdir_clean)
@@ -661,7 +732,13 @@ def _build_grok_shell_command(
     for k, v in extra.items():
         env_assignments.append(f"{k}={v}")
 
-    grok_argv = " ".join(shlex.quote(c) for c in [grok_path, *grok_flags])
+    # claustrum is the OUTERMOST wrapper: it confines grok and every
+    # tool/subprocess it spawns. When absent the invocation is grok alone
+    # (fs_isolation off).
+    if claustrum_wrap:
+        _LOG.info("claustrum filesystem isolation active (wrap=%r)", claustrum_wrap)
+    confined = [*(claustrum_wrap or []), grok_path, *grok_flags]
+    grok_argv = " ".join(shlex.quote(c) for c in confined)
     log_path = f"{workdir_clean}/optio.log"
 
     bash_payload = (
@@ -678,12 +755,6 @@ def _build_grok_shell_command(
 # --- flags -----------------------------------------------------------------
 
 
-# Name of the fail-closed custom sandbox profile optio plants + launches under
-# (Stage 8). A CUSTOM profile fails-CLOSED (grok refuses to start if it can't
-# apply it); built-in profiles fail-OPEN, so they are unusable for optio.
-SANDBOX_PROFILE_NAME = "optio"
-
-
 def build_grok_flags(
     *,
     permission_mode: str | None,
@@ -694,7 +765,6 @@ def build_grok_flags(
     reasoning_effort: str | None,
     no_leader: bool,
     resuming: bool = False,
-    fs_isolation: bool = False,
 ) -> list[str]:
     """Translate GrokTaskConfig knobs to an argv list.
 
@@ -702,9 +772,9 @@ def build_grok_flags(
     repeated once per allowed-tools rule (grok's spelling); disallowed tools
     are comma-joined. ``--no-leader`` is emitted when ``no_leader`` so tasks
     never share a grok backend. ``-c`` (continue) is appended when
-    ``resuming`` (always False in Stage 0). ``--sandbox optio`` is appended
-    when ``fs_isolation`` so grok launches under the fail-closed custom
-    Landlock profile (Stage 8). Validation of ``permission_mode`` lives in
+    ``resuming``. Filesystem isolation is NOT a grok flag: claustrum wraps the
+    whole launch from the outside (see session._build_claustrum_wrap), so grok's
+    own ``--sandbox`` is never used. Validation of ``permission_mode`` lives in
     ``GrokTaskConfig.__post_init__``.
     """
     out: list[str] = []
@@ -723,8 +793,6 @@ def build_grok_flags(
         out += ["--reasoning-effort", reasoning_effort]
     if no_leader:
         out += ["--no-leader"]
-    if fs_isolation:
-        out += ["--sandbox", SANDBOX_PROFILE_NAME]
     if resuming:
         out += ["-c"]
     return out
@@ -764,39 +832,6 @@ def build_resume_notice_args(*, resuming: bool) -> list[str]:
     return [f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}"] if resuming else []
 
 
-# Controlling-tty wrapper for the conversation launch under fs-isolation.
-#
-# Grok's CUSTOM (fail-closed) Landlock profile applier opens ``/dev/tty`` and
-# refuses to start without a controlling terminal. But conversation mode launches
-# grok over PIPES with ``start_new_session=True`` (so the ACP JSON-RPC stream on
-# stdin/stdout stays byte-clean — a pty would corrupt the framing), which leaves
-# grok session-detached with no ``/dev/tty`` → the sandbox fails closed → grok
-# exits immediately ("could not apply the 'optio' sandbox profile; refusing to
-# start").
-#
-# This helper is exec'd AS the launched process. It acquires a controlling pty
-# WITHOUT routing stdio through it: open a pty purely to ``TIOCSCTTY`` it, then
-# ``execvp`` grok with fd 0/1/2 (the JSON-RPC pipes) untouched. ``setsid`` is
-# best-effort — under ``start_new_session`` the process is already a session
-# leader (raises, caught); over SSH it may not be (succeeds). The pty fds are
-# left inheritable/open so the controlling terminal stays valid for grok's
-# ``/dev/tty`` open. A command wrapper (not a ``preexec_fn``) is the portable
-# seam: it works identically for LocalHost and RemoteHost (a preexec_fn can't run
-# on the remote host). Requires ``python3`` on the worker (already an optio-worker
-# dependency; the same interpreter that runs the engine).
-_CTTY_WRAP_PYTHON = "python3"
-_CTTY_WRAP_HELPER = (
-    "import os,sys,fcntl,termios,pty\n"
-    "try:\n os.setsid()\n"
-    "except OSError:\n pass\n"
-    "m,s=pty.openpty()\n"
-    "os.set_inheritable(m,True)\n"
-    "os.set_inheritable(s,True)\n"
-    "fcntl.ioctl(s,termios.TIOCSCTTY,0)\n"
-    "os.execvp(sys.argv[1],sys.argv[1:])\n"
-)
-
-
 def build_conversation_argv(
     grok_path: str,
     *,
@@ -804,38 +839,28 @@ def build_conversation_argv(
     reasoning_effort: str | None = None,
     no_leader: bool = True,
     always_approve: bool = False,
-    fs_isolation: bool = False,
 ) -> list[str]:
     """Argv for a headless ACP conversation: ``grok agent [opts] stdio``.
 
-    ``--sandbox`` is a TOP-LEVEL grok flag (``grok [OPTIONS] [COMMAND]``), so
-    it precedes the ``agent`` subcommand when ``fs_isolation`` is set (Stage 8
-    fail-closed custom Landlock profile). The remaining options belong to
-    ``grok agent`` and MUST precede the ``stdio`` subcommand (verified against
-    the real CLI ``grok agent --help``): ``--model``, ``--no-leader`` (start a
-    fresh agent, never share the leader socket), ``--always-approve``
-    (auto-approve every tool — used when no permission gate is wired). No
-    tmux/ttyd: the subprocess IS the agent.
+    The options belong to ``grok agent`` and MUST precede the ``stdio``
+    subcommand (verified against the real CLI ``grok agent --help``):
+    ``--model``, ``--no-leader`` (start a fresh agent, never share the leader
+    socket), ``--always-approve`` (auto-approve every tool — used when no
+    permission gate is wired). No tmux/ttyd: the subprocess IS the agent.
 
     ``--reasoning-effort`` (when set) seeds the graded effort at launch,
     mirroring ``--model``. It is launch-only — grok's ACP advertises no
     per-model reasoning-effort capability, so there is no live mid-session
-    effort control (see conversation.set_control). LIVE-VERIFY: the iframe launch
-    (:func:`build_grok_flags`) accepts ``--reasoning-effort`` at the top level;
-    the ``grok agent`` subcommand's acceptance of it is a real-binary probe item
-    (fold the flag in only if ``grok agent --help`` lists it). Omitted when None,
-    so a probe mismatch is a no-op for the common (unset) path.
+    effort control (see conversation.set_control). Omitted when None.
 
-    When ``fs_isolation`` is set, the whole command is wrapped in the
-    controlling-tty helper (:data:`_CTTY_WRAP_HELPER`) — grok's fail-closed
-    sandbox needs a ``/dev/tty`` that the piped, session-detached conversation
-    launch otherwise lacks. The wrap is gated on ``fs_isolation`` so it appears
-    exactly when ``--sandbox`` does.
+    Filesystem isolation is NOT expressed here: claustrum wraps the whole launch
+    from the outside (see session._build_claustrum_wrap), so grok's own
+    ``--sandbox`` is gone — and with it the controlling-tty helper the fail-closed
+    native profile once needed (claustrum does not open ``/dev/tty``). The
+    returned argv is therefore grok directly; the caller prepends the claustrum
+    wrap when fs_isolation is on.
     """
-    argv = [grok_path]
-    if fs_isolation:
-        argv += ["--sandbox", SANDBOX_PROFILE_NAME]
-    argv += ["agent"]
+    argv = [grok_path, "agent"]
     if model:
         argv += ["--model", model]
     if reasoning_effort:
@@ -845,8 +870,6 @@ def build_conversation_argv(
     if no_leader:
         argv += ["--no-leader"]
     argv += ["stdio"]
-    if fs_isolation:
-        argv = [_CTTY_WRAP_PYTHON, "-c", _CTTY_WRAP_HELPER, *argv]
     return argv
 
 
@@ -863,6 +886,7 @@ def build_tmux_session_argv(
     extra_env: dict[str, str] | None,
     grok_flags: list[str],
     local_mode: bool = False,
+    claustrum_wrap: list[str] | None = None,
 ) -> list[str]:
     """Argv for the detached ``tmux new-session`` that starts grok.
 
@@ -870,6 +894,9 @@ def build_tmux_session_argv(
     wrapper is a single trailing shell-string element. The private socket
     (``-S socket_path``) isolates this task's tmux server. ``-x/-y`` give the
     detached pane a sane initial size before any viewer attaches.
+
+    ``claustrum_wrap`` (filesystem isolation) threads the fs-isolation prefix
+    through to :func:`_build_grok_shell_command`.
     """
     _, shell_command = _build_grok_shell_command(
         grok_path=grok_path,
@@ -877,6 +904,7 @@ def build_tmux_session_argv(
         extra_env=extra_env,
         grok_flags=grok_flags,
         local_mode=local_mode,
+        claustrum_wrap=claustrum_wrap,
     )
     return [
         tmux_path, "-S", socket_path, "new-session", "-d",
@@ -985,12 +1013,16 @@ async def launch_ttyd_with_grok(
     ready_timeout_s: float = 30.0,
     env_remove: list[str] | None = None,
     session_name: str = "optio",
+    claustrum_wrap: list[str] | None = None,
 ) -> "tuple[ProcessHandle, int, str, str]":
     """Start grok in a detached tmux session, then ttyd attaching to it.
 
     Returns ``(ttyd_handle, port, socket_path, session_name)``. grok runs in
     the tmux session independent of ttyd; the caller awaits tmux-session
     liveness for completion and tears down BOTH the tmux session and ttyd.
+
+    ``claustrum_wrap`` (filesystem isolation) Landlock-confines grok + its whole
+    subprocess tree inside the tmux pane (None launches unconfined).
     """
     tmux_path = await _require_tmux(host)
     socket_path = _tmux_socket_path(host)
@@ -1011,6 +1043,7 @@ async def launch_ttyd_with_grok(
         extra_env=extra_env,
         grok_flags=grok_flags,
         local_mode=local_mode,
+        claustrum_wrap=claustrum_wrap,
     )
     session_cmd = " ".join(shlex.quote(a) for a in session_argv)
     await _launch_detached_checked(

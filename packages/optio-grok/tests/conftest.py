@@ -35,6 +35,36 @@ from optio_core.context import ProcessContext
 TESTS_DIR = pathlib.Path(__file__).parent
 
 
+@pytest.fixture(autouse=True)
+def fake_claustrum(monkeypatch):
+    """Default-on fs_isolation without a real Landlock build.
+
+    ``GrokTaskConfig.fs_isolation`` defaults True, so every session-flow test
+    provisions claustrum. Stub ``ensure_claustrum_installed`` to return the
+    package's ``claustrum-shim.sh`` (which execs its wrapped command, enforcing
+    nothing) instead of cross-compiling the real binary on the engine, and stub
+    ``claustrum_newer_tag`` to None so the update-notice probe makes no network
+    call. This is what makes the fast suite EXERCISE the default-on wiring
+    end-to-end (real tmux -> bash -> shim -> grok-shim -> fake_grok). Real
+    kernel enforcement is the env-gated live check (Task 12). Autouse + harmless
+    for the unit tests that never call it; a test needing fail-closed behaviour
+    re-monkeypatches this to raise (last setattr wins)."""
+    shim = str(TESTS_DIR / "claustrum-shim.sh")
+    (TESTS_DIR / "claustrum-shim.sh").chmod(0o755)
+
+    async def _fake_install(hook_ctx, *, install_dir=None):
+        return shim
+
+    async def _no_newer():
+        return None
+
+    from optio_grok import host_actions
+
+    monkeypatch.setattr(host_actions, "ensure_claustrum_installed", _fake_install)
+    monkeypatch.setattr(host_actions, "claustrum_newer_tag", _no_newer)
+    return shim
+
+
 @pytest.fixture
 def shim_install_dir(tmp_path: pathlib.Path) -> pathlib.Path:
     """Tmp dir containing symlinks to the grok + ttyd shims."""

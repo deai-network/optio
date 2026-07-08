@@ -21,6 +21,7 @@ from optio_agents import (
     ThinkingVerbosity,
     ToolVerbosity,
 )
+from optio_agents.config_types import ClaustrumConfigMixin
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -79,12 +80,16 @@ def _identity_resume_refresh(config: "GrokTaskConfig") -> "GrokTaskConfig":
     return config
 
 
-@dataclass
-class GrokTaskConfig:
-    """Configuration for one optio-grok task instance (Stage 0).
+@dataclass(frozen=True, kw_only=True)
+class GrokTaskConfig(ClaustrumConfigMixin):
+    """Configuration for one optio-grok task instance.
 
-    Stage 0 covers iframe/ttyd mode on the local host. Resume, seeds,
-    conversation mode, and filesystem isolation arrive in later stages.
+    Inherits the claustrum filesystem-isolation triad (``fs_isolation`` /
+    ``extra_allowed_dirs`` / ``delivery_type``) from ``ClaustrumConfigMixin``;
+    those fields stay top-level (callers write ``fs_isolation=`` /
+    ``delivery_type=`` verbatim). Frozen because the mixin is frozen;
+    ``kw_only`` because the mixin contributes defaulted fields ahead of the
+    required ``consumer_instructions``.
     """
 
     consumer_instructions: str
@@ -239,21 +244,19 @@ class GrokTaskConfig:
     # anything larger with HTTP 413. Mirrored to the widget via widgetData.
     max_download_bytes: int = 10_000_000
 
-    # --- filesystem isolation (Stage 8) ---------------------------------
-    # Confine the grok process (and every tool/subprocess it spawns) to the
-    # task workdir + temp dirs + explicit grants, kernel-enforced via grok's
-    # NATIVE sandbox (Landlock on Linux). optio plants a CUSTOM
-    # ``[profiles.optio]`` (extends="strict") under the per-task GROK_HOME and
-    # launches with ``--sandbox optio``. Custom profiles are fail-CLOSED: if
-    # the kernel can't apply them grok refuses to start (built-in profiles
-    # fail-OPEN, which is why optio uses a custom one). Requires Landlock
-    # (kernel >= 5.13) on the worker. Default-ON.
-    fs_isolation: bool = True
-    # Additional path grants beyond the workdir + temp dirs. ``~/`` expands
-    # against the real host home at launch. Ignored when fs_isolation=False.
-    extra_allowed_dirs: list[AllowedDir] | None = None
+    # --- filesystem isolation -------------------------------------------
+    # The claustrum triad — ``fs_isolation`` (default-ON), ``extra_allowed_dirs``,
+    # and the MANDATORY-when-on ``delivery_type`` — is inherited from
+    # ClaustrumConfigMixin. Claustrum (Landlock, fail-closed) confines the grok
+    # process and every tool/subprocess it spawns to the task workdir + explicit
+    # grants; if the kernel cannot apply Landlock the task refuses to launch.
+    # ``~/`` grants expand against the real host home at launch. See
+    # session._build_claustrum_wrap for the grant set.
 
     def __post_init__(self) -> None:
+        # Validate the claustrum triad first so a missing delivery_type fails
+        # fast (before the other, engine-specific checks below).
+        self._validate_claustrum()
         if (
             self.permission_mode is not None
             and self.permission_mode not in _VALID_PERMISSION_MODES
@@ -334,15 +337,6 @@ class GrokTaskConfig:
                 "GrokTaskConfig: file_download=True requires "
                 "mode='conversation' and conversation_ui=True."
             )
-        for ad in self.extra_allowed_dirs or []:
-            # Shared 4-value superset. grok's sandbox is Landlock-only, which
-            # implies execute on any readable grant, so rox≡ro and rwx≡rw here
-            # (the fs_allowlist builder folds the execute variants accordingly).
-            if ad.mode not in ("ro", "rw", "rox", "rwx"):
-                raise ValueError(
-                    f"GrokTaskConfig.extra_allowed_dirs: mode={ad.mode!r} "
-                    f"must be one of 'ro', 'rw', 'rox', 'rwx' (path={ad.path!r})."
-                )
         for field_name in ("install_dir", "ttyd_install_dir"):
             val = getattr(self, field_name)
             if val is not None and not val.startswith("/") and not val.startswith("~"):

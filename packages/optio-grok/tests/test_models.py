@@ -22,7 +22,7 @@ from optio_grok.types import GrokTaskConfig
 
 
 def _cfg(**kw):
-    base = dict(consumer_instructions="do things")
+    base = dict(consumer_instructions="do things", delivery_type="audit")
     base.update(kw)
     return GrokTaskConfig(**base)
 

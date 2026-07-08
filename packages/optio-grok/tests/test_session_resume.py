@@ -33,7 +33,7 @@ from optio_grok.snapshots import (
 
 def test_config_resume_defaults():
     """Stage 2 flips supports_resume ON by default and adds workdir_exclude."""
-    c = GrokTaskConfig(consumer_instructions="x")
+    c = GrokTaskConfig(consumer_instructions="x", delivery_type="audit")
     assert c.supports_resume is True
     assert c.workdir_exclude is None
 
@@ -68,6 +68,7 @@ def _cfg(shim_install_dir: pathlib.Path) -> GrokTaskConfig:
         install_dir=str(shim_install_dir),
         ttyd_install_dir=str(shim_install_dir),
         supports_resume=True,
+        delivery_type="audit",
     )
 
 
@@ -157,6 +158,7 @@ async def test_session_blob_encrypt_roundtrip(
         install_dir=str(shim_install_dir),
         ttyd_install_dir=str(shim_install_dir),
         supports_resume=True,
+        delivery_type="audit",
         session_blob_encrypt=_rev,
         session_blob_decrypt=_rev,
     )

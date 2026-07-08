@@ -42,6 +42,7 @@ async def test_local_deliverable_callback_fired(
             consumer_instructions="hand back a file",
             install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
+            delivery_type="audit",
             on_deliverable=on_deliverable,
         ),
     )
@@ -65,6 +66,7 @@ async def test_local_error_raises(
             consumer_instructions="fail",
             install_dir=str(shim_install_dir),
             ttyd_install_dir=str(shim_install_dir),
+            delivery_type="audit",
         ),
     )
     with pytest.raises(RuntimeError):

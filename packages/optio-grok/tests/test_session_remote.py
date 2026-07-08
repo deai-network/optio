@@ -67,6 +67,10 @@ async def test_remote_deliverable_callback_fired(sshd, ctx_and_captures):
         ttyd_install_dir="/usr/local/bin",
         install_if_missing=False,
         install_ttyd_if_missing=False,
+        # This test exercises the deliverable callback over SSH, not fs
+        # isolation. Claustrum would need a real (cross-compiled) binary on the
+        # container; opt out here (mirrors optio-cursor's remote test).
+        fs_isolation=False,
         on_deliverable=on_deliverable,
         # Remote grok can't inherit the test process env — the scenario must
         # travel in the launch env.

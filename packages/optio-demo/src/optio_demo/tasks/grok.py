@@ -195,8 +195,11 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                 # fs_isolation left at its default (mirrors the claudecode
                 # seed-setup task): grok writes its login state under the
                 # per-task GROK_HOME (<workdir>/home/.grok), which is inside
-                # the sandbox, and device-auth happens in the host browser —
-                # so isolation does not block login.
+                # the claustrum-confined workdir, and device-auth happens in the
+                # host browser — so isolation does not block login. delivery_type
+                # is mandatory when fs_isolation is on (routes the claustrum
+                # update notice via on_deliverable).
+                delivery_type="system-notices",
                 supports_resume=False,
                 on_seed_saved=_make_on_seed_saved(db, prefix, fw),
             ),
@@ -226,6 +229,9 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     before_execute=_before_execute,
                     after_execute=_after_execute,
                     on_deliverable=_on_deliverable,
+                    # Mandatory when fs_isolation is on (default): routes the
+                    # claustrum update notice via on_deliverable.
+                    delivery_type="system-notices",
                     seed_id=seed_id,
                     supports_resume=True,
                     # Kick the agent off unattended (reads AGENTS.md + executes).
@@ -254,6 +260,9 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     permission_gate=True,       # exercises the approve/deny UI
                     host_protocol=False,        # pure conversation gate
                     ssh=ssh,
+                    # Mandatory when fs_isolation is on (default): routes the
+                    # claustrum update notice via on_deliverable.
+                    delivery_type="system-notices",
                     seed_id=seed_id,
                     supports_resume=True,
                 ),

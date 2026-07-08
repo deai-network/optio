@@ -97,6 +97,8 @@ def _conversation_config(shim_install_dir: pathlib.Path, **kw) -> GrokTaskConfig
         ttyd_install_dir=str(shim_install_dir),
         auto_start=False,
         supports_resume=False,
+        # fs_isolation defaults ON (claustrum) → delivery_type mandatory.
+        delivery_type="audit",
     )
     base.update(kw)
     return GrokTaskConfig(**base)
@@ -419,37 +421,45 @@ def test_ui_widget_per_mode():
     conv_task = create_grok_task(
         process_id="gk-widget-conv",
         name="Widget conv",
-        config=GrokTaskConfig(consumer_instructions="x", mode="conversation"),
+        config=GrokTaskConfig(
+            consumer_instructions="x", mode="conversation", delivery_type="audit",
+        ),
     )
     assert conv_task.ui_widget is None
 
     iframe_task = create_grok_task(
         process_id="gk-widget-iframe",
         name="Widget iframe",
-        config=GrokTaskConfig(consumer_instructions="x"),
+        config=GrokTaskConfig(consumer_instructions="x", delivery_type="audit"),
     )
     assert iframe_task.ui_widget == "iframe-input"
 
 
 def test_config_validation_conversation_fields():
-    """__post_init__ mirrors claudecode's conversation validations."""
+    """__post_init__ mirrors claudecode's conversation validations. All configs
+    carry delivery_type so the mandatory-when-fs_isolation check (which runs
+    first) does not mask the engine-specific validation under test."""
     # permission_gate requires conversation mode
     with pytest.raises(ValueError):
-        GrokTaskConfig(consumer_instructions="x", permission_gate=True)
+        GrokTaskConfig(consumer_instructions="x", permission_gate=True, delivery_type="audit")
     # conversation_ui requires conversation mode
     with pytest.raises(ValueError):
-        GrokTaskConfig(consumer_instructions="x", conversation_ui=True)
+        GrokTaskConfig(consumer_instructions="x", conversation_ui=True, delivery_type="audit")
     # iframe mode requires host_protocol
     with pytest.raises(ValueError):
-        GrokTaskConfig(consumer_instructions="x", mode="iframe", host_protocol=False)
+        GrokTaskConfig(consumer_instructions="x", mode="iframe", host_protocol=False, delivery_type="audit")
     # bad tool_verbosity
     with pytest.raises(ValueError):
-        GrokTaskConfig(consumer_instructions="x", mode="conversation", tool_verbosity="loud")
+        GrokTaskConfig(consumer_instructions="x", mode="conversation", tool_verbosity="loud", delivery_type="audit")
     # bad thinking_verbosity
     with pytest.raises(ValueError):
-        GrokTaskConfig(consumer_instructions="x", mode="conversation", thinking_verbosity="loud")
+        GrokTaskConfig(consumer_instructions="x", mode="conversation", thinking_verbosity="loud", delivery_type="audit")
     # thinking_verbosity defaults to hidden
-    assert GrokTaskConfig(consumer_instructions="x", mode="conversation").thinking_verbosity == "hidden"
+    assert GrokTaskConfig(
+        consumer_instructions="x", mode="conversation", delivery_type="audit",
+    ).thinking_verbosity == "hidden"
     # host_protocol=False is allowed in conversation mode
-    cfg = GrokTaskConfig(consumer_instructions="x", mode="conversation", host_protocol=False)
+    cfg = GrokTaskConfig(
+        consumer_instructions="x", mode="conversation", host_protocol=False, delivery_type="audit",
+    )
     assert cfg.host_protocol is False

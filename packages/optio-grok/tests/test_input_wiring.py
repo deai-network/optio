@@ -34,7 +34,7 @@ async def _post(port, payload):
 def test_iframe_task_advertises_iframe_input_widget():
     t = create_grok_task(
         process_id="p", name="n",
-        config=GrokTaskConfig(consumer_instructions="x", mode="iframe"),
+        config=GrokTaskConfig(consumer_instructions="x", mode="iframe", delivery_type="audit"),
     )
     assert t.ui_widget == "iframe-input"
 
@@ -42,7 +42,7 @@ def test_iframe_task_advertises_iframe_input_widget():
 def test_conversation_task_uses_no_widget():
     t = create_grok_task(
         process_id="p", name="n",
-        config=GrokTaskConfig(consumer_instructions="x", mode="conversation"),
+        config=GrokTaskConfig(consumer_instructions="x", mode="conversation", delivery_type="audit"),
     )
     assert t.ui_widget is None
 

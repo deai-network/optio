@@ -54,6 +54,7 @@ def _cfg(shim_install_dir: pathlib.Path, **kw) -> GrokTaskConfig:
         consumer_instructions="do the thing",
         install_dir=str(shim_install_dir),
         ttyd_install_dir=str(shim_install_dir),
+        delivery_type="audit",
         **kw,
     )
 

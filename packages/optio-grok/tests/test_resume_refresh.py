@@ -45,7 +45,7 @@ def _agents_md(cfg: GrokTaskConfig) -> str:
 
 
 async def test_refresh_none_hook_is_noop():
-    cfg = GrokTaskConfig(consumer_instructions="original", on_resume_refresh=None)
+    cfg = GrokTaskConfig(consumer_instructions="original", delivery_type="audit", on_resume_refresh=None)
     host, hook = _FakeHost(), _FakeHookCtx(existing="whatever")
     assert await _maybe_refresh_on_resume(host, hook, cfg) == []
     assert host.writes == []
@@ -53,7 +53,7 @@ async def test_refresh_none_hook_is_noop():
 
 async def test_refresh_identity_unchanged_no_rewrite():
     # Identity default: recomputed AGENTS.md == the restored one → no rewrite.
-    cfg = GrokTaskConfig(consumer_instructions="original")
+    cfg = GrokTaskConfig(consumer_instructions="original", delivery_type="audit")
     host = _FakeHost()
     hook = _FakeHookCtx(existing=_agents_md(cfg))
     assert await _maybe_refresh_on_resume(host, hook, cfg) == []
@@ -64,7 +64,7 @@ async def test_refresh_mutating_hook_rewrites_agents_md():
     def _mutate(c: GrokTaskConfig) -> GrokTaskConfig:
         return dataclasses.replace(c, consumer_instructions="UPDATED instructions")
 
-    cfg = GrokTaskConfig(consumer_instructions="original", on_resume_refresh=_mutate)
+    cfg = GrokTaskConfig(consumer_instructions="original", delivery_type="audit", on_resume_refresh=_mutate)
     host = _FakeHost()
     hook = _FakeHookCtx(existing=_agents_md(cfg))  # old, unmutated content
     out = await _maybe_refresh_on_resume(host, hook, cfg)
@@ -79,7 +79,7 @@ async def test_refresh_hook_raises_is_ignored():
     def _boom(c: GrokTaskConfig) -> GrokTaskConfig:
         raise RuntimeError("nope")
 
-    cfg = GrokTaskConfig(consumer_instructions="original", on_resume_refresh=_boom)
+    cfg = GrokTaskConfig(consumer_instructions="original", delivery_type="audit", on_resume_refresh=_boom)
     host = _FakeHost()
     hook = _FakeHookCtx(existing="restored")
     assert await _maybe_refresh_on_resume(host, hook, cfg) == []
@@ -88,7 +88,7 @@ async def test_refresh_hook_raises_is_ignored():
 
 async def test_refresh_missing_file_rewrites():
     # No AGENTS.md on disk (FileNotFoundError) → treated as changed, rewritten.
-    cfg = GrokTaskConfig(consumer_instructions="original")
+    cfg = GrokTaskConfig(consumer_instructions="original", delivery_type="audit")
     host = _FakeHost()
     hook = _FakeHookCtx(existing=None)
     out = await _maybe_refresh_on_resume(host, hook, cfg)
