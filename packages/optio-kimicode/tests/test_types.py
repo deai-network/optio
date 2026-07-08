@@ -11,11 +11,22 @@ import pytest
 from optio_kimicode.types import AllowedDir, KimiCodeTaskConfig
 
 
+def _cfg(**kw) -> KimiCodeTaskConfig:
+    """Build a config for the validation tests below.
+
+    fs_isolation defaults ON, which makes delivery_type mandatory (inherited from
+    ClaustrumConfigMixin); supply a default so these tests exercise the OTHER
+    validators. The claustrum-triad contract itself is covered directly in
+    test_claustrum_mixin.py. Callers may override delivery_type / fs_isolation."""
+    kw.setdefault("delivery_type", "audit")
+    return KimiCodeTaskConfig(**kw)
+
+
 # --- happy path / defaults -------------------------------------------------
 
 
 def test_minimal_construction_and_defaults():
-    cfg = KimiCodeTaskConfig(consumer_instructions="do the thing")
+    cfg = _cfg(consumer_instructions="do the thing")
     assert cfg.consumer_instructions == "do the thing"
     # kimi-specific / parity defaults
     assert cfg.mode == "iframe"
@@ -30,7 +41,7 @@ def test_minimal_construction_and_defaults():
 
 def test_model_is_an_unvalidated_alias():
     # kimi models are aliases, not raw ids, and are NOT enum-validated.
-    cfg = KimiCodeTaskConfig(consumer_instructions="x", model="kimi-k2-anything")
+    cfg = _cfg(consumer_instructions="x", model="kimi-k2-anything")
     assert cfg.model == "kimi-k2-anything"
 
 
@@ -39,12 +50,12 @@ def test_model_is_an_unvalidated_alias():
 
 def test_bad_mode_rejected():
     with pytest.raises(ValueError, match="mode"):
-        KimiCodeTaskConfig(consumer_instructions="x", mode="tui")  # type: ignore[arg-type]
+        _cfg(consumer_instructions="x", mode="tui")  # type: ignore[arg-type]
 
 
 def test_valid_modes_accepted():
     for m in ("iframe", "conversation"):
-        assert KimiCodeTaskConfig(consumer_instructions="x", mode=m).mode == m
+        assert _cfg(consumer_instructions="x", mode=m).mode == m
 
 
 # --- effort enum (kimi delta) ---------------------------------------------
@@ -52,17 +63,17 @@ def test_valid_modes_accepted():
 
 @pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
 def test_valid_effort_accepted(effort):
-    cfg = KimiCodeTaskConfig(consumer_instructions="x", effort=effort)
+    cfg = _cfg(consumer_instructions="x", effort=effort)
     assert cfg.effort == effort
 
 
 def test_effort_none_ok():
-    assert KimiCodeTaskConfig(consumer_instructions="x").effort is None
+    assert _cfg(consumer_instructions="x").effort is None
 
 
 def test_bad_effort_rejected():
     with pytest.raises(ValueError, match="effort"):
-        KimiCodeTaskConfig(consumer_instructions="x", effort="ultra")
+        _cfg(consumer_instructions="x", effort="ultra")
 
 
 # --- reasoning_effort enum (live graded thinking slider seed) ---------------
@@ -72,23 +83,23 @@ def test_bad_effort_rejected():
     "level", ["off", "low", "medium", "high", "xhigh", "max"]
 )
 def test_valid_reasoning_effort_accepted(level):
-    cfg = KimiCodeTaskConfig(consumer_instructions="x", reasoning_effort=level)
+    cfg = _cfg(consumer_instructions="x", reasoning_effort=level)
     assert cfg.reasoning_effort == level
 
 
 def test_reasoning_effort_none_ok():
-    assert KimiCodeTaskConfig(consumer_instructions="x").reasoning_effort is None
+    assert _cfg(consumer_instructions="x").reasoning_effort is None
 
 
 def test_bad_reasoning_effort_rejected():
     with pytest.raises(ValueError, match="reasoning_effort"):
-        KimiCodeTaskConfig(consumer_instructions="x", reasoning_effort="ultra")
+        _cfg(consumer_instructions="x", reasoning_effort="ultra")
 
 
 def test_reasoning_effort_independent_of_effort():
     # the two effort fields are orthogonal: launch --effort has no 'off',
     # the live slider seed does.
-    cfg = KimiCodeTaskConfig(
+    cfg = _cfg(
         consumer_instructions="x", effort="high", reasoning_effort="off"
     )
     assert cfg.effort == "high" and cfg.reasoning_effort == "off"
@@ -100,11 +111,11 @@ def test_reasoning_effort_independent_of_effort():
 def test_bad_permission_mode_rejected():
     # kimi's modes are yolo/manual/auto — claudecode values are NOT valid here.
     with pytest.raises(ValueError, match="permission_mode"):
-        KimiCodeTaskConfig(consumer_instructions="x", permission_mode="bypassPermissions")  # type: ignore[arg-type]
+        _cfg(consumer_instructions="x", permission_mode="bypassPermissions")  # type: ignore[arg-type]
 
 
 def test_valid_permission_mode_accepted():
-    cfg = KimiCodeTaskConfig(consumer_instructions="x", permission_mode="yolo")
+    cfg = _cfg(consumer_instructions="x", permission_mode="yolo")
     assert cfg.permission_mode == "yolo"
 
 
@@ -113,11 +124,11 @@ def test_valid_permission_mode_accepted():
 
 def test_conversation_ui_requires_conversation_mode():
     with pytest.raises(ValueError, match="conversation_ui"):
-        KimiCodeTaskConfig(consumer_instructions="x", mode="iframe", conversation_ui=True)
+        _cfg(consumer_instructions="x", mode="iframe", conversation_ui=True)
 
 
 def test_conversation_ui_ok_in_conversation_mode():
-    cfg = KimiCodeTaskConfig(
+    cfg = _cfg(
         consumer_instructions="x", mode="conversation", conversation_ui=True
     )
     assert cfg.conversation_ui is True
@@ -125,16 +136,16 @@ def test_conversation_ui_ok_in_conversation_mode():
 
 def test_permission_gate_requires_conversation_mode():
     with pytest.raises(ValueError, match="permission_gate"):
-        KimiCodeTaskConfig(consumer_instructions="x", mode="iframe", permission_gate=True)
+        _cfg(consumer_instructions="x", mode="iframe", permission_gate=True)
 
 
 def test_host_protocol_false_requires_conversation_mode():
     with pytest.raises(ValueError, match="host_protocol"):
-        KimiCodeTaskConfig(consumer_instructions="x", mode="iframe", host_protocol=False)
+        _cfg(consumer_instructions="x", mode="iframe", host_protocol=False)
 
 
 def test_host_protocol_false_ok_in_conversation_mode():
-    cfg = KimiCodeTaskConfig(
+    cfg = _cfg(
         consumer_instructions="x", mode="conversation", host_protocol=False
     )
     assert cfg.host_protocol is False
@@ -156,7 +167,7 @@ def test_no_default_model_field():
 
 def test_model_valid_in_any_mode():
     for mode in ("iframe", "conversation"):
-        cfg = KimiCodeTaskConfig(
+        cfg = _cfg(
             consumer_instructions="x", mode=mode, model="kimi-k2"
         )
         assert cfg.model == "kimi-k2"
@@ -167,34 +178,34 @@ def test_model_valid_in_any_mode():
 
 def test_show_session_controls_requires_conversation_ui():
     with pytest.raises(ValueError, match="show_session_controls"):
-        KimiCodeTaskConfig(
+        _cfg(
             consumer_instructions="x", mode="conversation", show_session_controls=True
         )
 
 
 def test_native_spinner_requires_conversation_ui():
     with pytest.raises(ValueError, match="native_spinner"):
-        KimiCodeTaskConfig(
+        _cfg(
             consumer_instructions="x", mode="conversation", native_spinner=True
         )
 
 
 def test_show_file_upload_requires_conversation_ui():
     with pytest.raises(ValueError, match="show_file_upload"):
-        KimiCodeTaskConfig(
+        _cfg(
             consumer_instructions="x", mode="conversation", show_file_upload=True
         )
 
 
 def test_file_download_requires_conversation_ui():
     with pytest.raises(ValueError, match="file_download"):
-        KimiCodeTaskConfig(
+        _cfg(
             consumer_instructions="x", mode="conversation", file_download=True
         )
 
 
 def test_frontend_parity_flags_ok_with_conversation_ui():
-    cfg = KimiCodeTaskConfig(
+    cfg = _cfg(
         consumer_instructions="x",
         mode="conversation",
         conversation_ui=True,
@@ -211,12 +222,12 @@ def test_frontend_parity_flags_ok_with_conversation_ui():
 
 def test_bad_tool_verbosity_rejected():
     with pytest.raises(ValueError, match="tool_verbosity"):
-        KimiCodeTaskConfig(consumer_instructions="x", tool_verbosity="loud")  # type: ignore[arg-type]
+        _cfg(consumer_instructions="x", tool_verbosity="loud")  # type: ignore[arg-type]
 
 
 def test_bad_thinking_verbosity_rejected():
     with pytest.raises(ValueError, match="thinking_verbosity"):
-        KimiCodeTaskConfig(consumer_instructions="x", thinking_verbosity="loud")  # type: ignore[arg-type]
+        _cfg(consumer_instructions="x", thinking_verbosity="loud")  # type: ignore[arg-type]
 
 
 # --- AllowedDir / extra_allowed_dirs --------------------------------------
@@ -234,7 +245,7 @@ def test_allowed_dir_valid_modes():
 
 
 def test_extra_allowed_dirs_accepted():
-    cfg = KimiCodeTaskConfig(
+    cfg = _cfg(
         consumer_instructions="x",
         extra_allowed_dirs=[
             AllowedDir(path="/opt/tools", mode="ro"),
@@ -253,13 +264,13 @@ def _cipher(b: bytes) -> bytes:
 
 
 def test_session_blob_cipher_defaults_none():
-    cfg = KimiCodeTaskConfig(consumer_instructions="x")
+    cfg = _cfg(consumer_instructions="x")
     assert cfg.session_blob_encrypt is None
     assert cfg.session_blob_decrypt is None
 
 
 def test_session_blob_cipher_pair_accepted():
-    cfg = KimiCodeTaskConfig(
+    cfg = _cfg(
         consumer_instructions="x",
         session_blob_encrypt=_cipher,
         session_blob_decrypt=_cipher,
@@ -270,12 +281,12 @@ def test_session_blob_cipher_pair_accepted():
 
 def test_session_blob_encrypt_without_decrypt_rejected():
     with pytest.raises(ValueError, match="session_blob"):
-        KimiCodeTaskConfig(consumer_instructions="x", session_blob_encrypt=_cipher)
+        _cfg(consumer_instructions="x", session_blob_encrypt=_cipher)
 
 
 def test_session_blob_decrypt_without_encrypt_rejected():
     with pytest.raises(ValueError, match="session_blob"):
-        KimiCodeTaskConfig(consumer_instructions="x", session_blob_decrypt=_cipher)
+        _cfg(consumer_instructions="x", session_blob_decrypt=_cipher)
 
 
 # --- install-dir override must be absolute (C2: renamed from kimi_install_dir)
@@ -283,11 +294,11 @@ def test_session_blob_decrypt_without_encrypt_rejected():
 
 def test_install_dir_must_be_absolute():
     with pytest.raises(ValueError, match="install_dir"):
-        KimiCodeTaskConfig(consumer_instructions="x", install_dir="relative/path")
+        _cfg(consumer_instructions="x", install_dir="relative/path")
 
 
 def test_install_dir_absolute_ok():
-    cfg = KimiCodeTaskConfig(consumer_instructions="x", install_dir="/opt/kimi")
+    cfg = _cfg(consumer_instructions="x", install_dir="/opt/kimi")
     assert cfg.install_dir == "/opt/kimi"
 
 
@@ -313,7 +324,7 @@ def test_shared_aliases_reexported():
 
 
 def test_caller_message_fields_default_off():
-    cfg = KimiCodeTaskConfig(consumer_instructions="x")
+    cfg = _cfg(consumer_instructions="x")
     assert cfg.use_client_messages is False
     assert cfg.on_caller_message is None
 
@@ -322,7 +333,7 @@ def test_caller_message_fields_settable():
     async def _cb(hook_ctx, message):  # pragma: no cover - identity callback
         return None
 
-    cfg = KimiCodeTaskConfig(
+    cfg = _cfg(
         consumer_instructions="x",
         use_client_messages=True,
         on_caller_message=_cb,
@@ -337,12 +348,12 @@ def test_caller_message_fields_settable():
 def test_on_resume_refresh_defaults_to_identity():
     from optio_kimicode.types import _identity_resume_refresh
 
-    cfg = KimiCodeTaskConfig(consumer_instructions="x")
+    cfg = _cfg(consumer_instructions="x")
     assert cfg.on_resume_refresh is _identity_resume_refresh
     # identity returns the same config unchanged
     assert cfg.on_resume_refresh(cfg) is cfg
 
 
 def test_on_resume_refresh_can_be_disabled():
-    cfg = KimiCodeTaskConfig(consumer_instructions="x", on_resume_refresh=None)
+    cfg = _cfg(consumer_instructions="x", on_resume_refresh=None)
     assert cfg.on_resume_refresh is None

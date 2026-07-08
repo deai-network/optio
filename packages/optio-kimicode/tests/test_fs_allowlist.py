@@ -100,7 +100,12 @@ class _FakeHost:
 
 
 def _config(**kw) -> KimiCodeTaskConfig:
-    base = dict(consumer_instructions="do it", mode="conversation", host_protocol=True)
+    # delivery_type is mandatory while fs_isolation is on (inherited from
+    # ClaustrumConfigMixin); supply a default so fs_isolation=True cases build.
+    base = dict(
+        consumer_instructions="do it", mode="conversation", host_protocol=True,
+        delivery_type="audit",
+    )
     base.update(kw)
     return KimiCodeTaskConfig(**base)
 

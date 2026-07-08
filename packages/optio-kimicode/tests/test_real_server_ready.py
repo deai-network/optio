@@ -110,7 +110,9 @@ async def test_real_kimi_server_reaches_ready_under_claustrum(tmp_path, monkeypa
     Path(host.workdir, "home").mkdir(parents=True, exist_ok=True)
     kimi = await host_actions.ensure_kimicode_installed(host)
 
-    config = KimiCodeTaskConfig(consumer_instructions="")  # fs_isolation defaults on
+    # fs_isolation defaults on; delivery_type is then mandatory (routes the
+    # claustrum-update notice) — supply it so the config builds.
+    config = KimiCodeTaskConfig(consumer_instructions="", delivery_type="audit")
     wrap = await host_actions._build_claustrum_wrap(host, config, claustrum)
     assert wrap is not None
 

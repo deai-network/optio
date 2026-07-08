@@ -790,7 +790,7 @@ async def _build_claustrum_wrap(
     only), so the wrap is identical local and remote."""
     if not config.fs_isolation:
         return None
-    from . import fs_allowlist
+    from optio_agents import fs_grants
 
     cache_dir = await _resolve_kimicode_cache_dir(host, config.install_dir)
     # ``~/`` caller extras expand against the REAL host home (the kimi process
@@ -798,13 +798,13 @@ async def _build_claustrum_wrap(
     host_home = (
         await host.resolve_host_home() if config.extra_allowed_dirs else None
     )
-    grants = fs_allowlist.build_grant_flags(
+    grants = fs_grants.build_grant_flags(
         workdir=host.workdir,
-        kimi_cache_dir=cache_dir,
+        engine_cache_dir=cache_dir,
         extra_allowed_dirs=config.extra_allowed_dirs,
         host_home=host_home,
     )
-    return [claustrum_path, "--best-effort", "--abi-min", "1", *grants, "--"]
+    return claustrum.build_claustrum_wrap(claustrum_path, grants)
 
 
 async def claustrum_newer_tag() -> str | None:

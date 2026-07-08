@@ -452,14 +452,16 @@ def test_ui_widget_per_mode():
     conv_task = create_kimicode_task(
         process_id="kk-widget-conv",
         name="Widget conv",
-        config=KimiCodeTaskConfig(consumer_instructions="x", mode="conversation"),
+        config=KimiCodeTaskConfig(
+            consumer_instructions="x", mode="conversation", delivery_type="audit",
+        ),
     )
     assert conv_task.ui_widget is None
 
     iframe_task = create_kimicode_task(
         process_id="kk-widget-iframe",
         name="Widget iframe",
-        config=KimiCodeTaskConfig(consumer_instructions="x"),
+        config=KimiCodeTaskConfig(consumer_instructions="x", delivery_type="audit"),
     )
     assert iframe_task.ui_widget == "iframe"
 

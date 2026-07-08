@@ -17,6 +17,7 @@ from optio_agents import (
     ThinkingVerbosity,
     ToolVerbosity,
 )
+from optio_agents.config_types import ClaustrumConfigMixin
 from optio_agents.protocol.session import (
     DeliverableCallback,
     HookCallback,
@@ -95,12 +96,21 @@ _VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
 _VALID_THINKING_VERBOSITY = {"hidden", "visible"}
 
 
-@dataclass
-class KimiCodeTaskConfig:
+@dataclass(frozen=True, kw_only=True)
+class KimiCodeTaskConfig(ClaustrumConfigMixin):
     """Configuration for one optio-kimicode task instance.
 
     Stage 0 covers iframe (``kimi web``) mode on the local host. Resume,
     seeds, conversation mode, and filesystem isolation arrive in later stages.
+
+    The claustrum filesystem-isolation triad (``fs_isolation`` /
+    ``extra_allowed_dirs`` / ``delivery_type``) is inherited from the shared
+    ``ClaustrumConfigMixin`` — the fields stay top-level (callers write
+    ``fs_isolation=`` / ``delivery_type=`` verbatim). ``delivery_type`` is
+    MANDATORY when ``fs_isolation`` is on (validated in ``__post_init__`` via
+    ``_validate_claustrum``). The config is frozen (immutable) + keyword-only so
+    the mixin's all-defaulted fields can precede the required
+    ``consumer_instructions`` without a field-ordering clash.
     """
 
     consumer_instructions: str
@@ -262,18 +272,16 @@ class KimiCodeTaskConfig:
     max_download_bytes: int = 10_000_000
 
     # --- filesystem isolation (Stage 8) ---------------------------------
-    # Confine the kimi process (and every tool/subprocess it spawns) to the
-    # task workdir + temp dirs + explicit grants, kernel-enforced via the
-    # claustrum Landlock sandbox (Task 5.5). Fail-CLOSED: if claustrum cannot
-    # be provisioned or the kernel lacks Landlock, the task refuses to launch
-    # rather than run unconfined. Requires Landlock (kernel >= 5.13) on the
-    # worker. Default-ON.
-    fs_isolation: bool = True
-    # Additional path grants beyond the workdir + temp dirs. ``~/`` expands
-    # against the real host home at launch. Ignored when fs_isolation=False.
-    extra_allowed_dirs: list[AllowedDir] | None = None
+    # The fs-isolation triad (fs_isolation / extra_allowed_dirs / delivery_type)
+    # is inherited from ClaustrumConfigMixin. Confine the kimi process (and every
+    # tool/subprocess it spawns) to the task workdir + temp dirs + explicit
+    # grants, kernel-enforced via the claustrum Landlock sandbox. Fail-CLOSED and
+    # default-ON; delivery_type is mandatory while fs_isolation is on.
 
     def __post_init__(self) -> None:
+        # The claustrum triad is validated FIRST so a missing delivery_type fails
+        # fast (before the engine-specific checks below).
+        self._validate_claustrum()
         e = self.session_blob_encrypt is not None
         d = self.session_blob_decrypt is not None
         if e != d:
@@ -357,10 +365,9 @@ class KimiCodeTaskConfig:
                 "KimiCodeTaskConfig: file_download=True requires "
                 "mode='conversation' and conversation_ui=True."
             )
-        # extra_allowed_dirs entries are already validated at construction by
-        # the shared AllowedDir.__post_init__ (ro/rw/rox/rwx superset); kimi is
-        # Landlock-only, so rox≡ro and rwx≡rw (claustrum expresses the execute
-        # bit natively). No further per-entry mode check is needed here.
+        # extra_allowed_dirs entries are mode-validated by AllowedDir.__post_init__
+        # and by _validate_claustrum (called first above); kimi is Landlock-only,
+        # so rox≡ro and rwx≡rw (claustrum expresses the execute bit natively).
         for field_name in ("install_dir",):
             val = getattr(self, field_name)
             if val is not None and not val.startswith("/") and not val.startswith("~"):

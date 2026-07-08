@@ -200,7 +200,9 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                 # seed-setup task): kimi writes its login state under the
                 # per-task HOME (<workdir>/home/.kimi), which is inside the
                 # sandbox, and device-auth happens in the host browser — so
-                # isolation does not block login.
+                # isolation does not block login. delivery_type is mandatory
+                # while fs_isolation is on (routes the claustrum-update notice).
+                delivery_type="audit",
                 supports_resume=False,
                 on_seed_saved=_make_on_seed_saved(db, prefix, fw),
             ),
@@ -233,6 +235,8 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     before_execute=_before_execute,
                     after_execute=_after_execute,
                     on_deliverable=_on_deliverable,
+                    # fs_isolation on by default → delivery_type is mandatory.
+                    delivery_type="audit",
                     seed_id=seed_id,
                     supports_resume=True,
                     # Kick the agent off unattended (reads AGENTS.md + executes).
@@ -260,6 +264,8 @@ async def get_tasks(services: dict) -> list[TaskInstance]:
                     permission_gate=True,       # exercises the approve/deny UI
                     host_protocol=False,        # pure conversation gate
                     ssh=ssh,
+                    # fs_isolation on by default → delivery_type is mandatory.
+                    delivery_type="audit",
                     seed_id=seed_id,
                     supports_resume=True,
                 ),

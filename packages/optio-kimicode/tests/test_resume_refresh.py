@@ -48,14 +48,16 @@ def _agents_md_for(cfg: KimiCodeTaskConfig) -> str:
 
 
 async def test_refresh_disabled_returns_empty_no_write():
-    cfg = KimiCodeTaskConfig(consumer_instructions="x", on_resume_refresh=None)
+    cfg = KimiCodeTaskConfig(
+        consumer_instructions="x", on_resume_refresh=None, delivery_type="audit",
+    )
     host, hook = _FakeHost(), _FakeHookCtx(existing="whatever")
     assert await _maybe_refresh_on_resume(host, hook, cfg) == []
     assert host.writes == {}
 
 
 async def test_identity_refresh_rewrites_when_file_absent():
-    cfg = KimiCodeTaskConfig(consumer_instructions="do the task")
+    cfg = KimiCodeTaskConfig(consumer_instructions="do the task", delivery_type="audit")
     host, hook = _FakeHost(), _FakeHookCtx(existing=None)  # FileNotFoundError
     out = await _maybe_refresh_on_resume(host, hook, cfg)
     assert out == ["AGENTS.md"]
@@ -63,7 +65,7 @@ async def test_identity_refresh_rewrites_when_file_absent():
 
 
 async def test_identity_refresh_is_noop_when_unchanged():
-    cfg = KimiCodeTaskConfig(consumer_instructions="do the task")
+    cfg = KimiCodeTaskConfig(consumer_instructions="do the task", delivery_type="audit")
     host = _FakeHost()
     hook = _FakeHookCtx(existing=_agents_md_for(cfg))
     out = await _maybe_refresh_on_resume(host, hook, cfg)
@@ -77,7 +79,9 @@ async def test_mutating_hook_rewrites_and_reports_filename():
             c, consumer_instructions=c.consumer_instructions + " [REFRESHED]",
         )
 
-    cfg = KimiCodeTaskConfig(consumer_instructions="orig", on_resume_refresh=_bump)
+    cfg = KimiCodeTaskConfig(
+        consumer_instructions="orig", on_resume_refresh=_bump, delivery_type="audit",
+    )
     host = _FakeHost()
     # existing == the ORIGINAL rendering; the bumped instructions differ.
     hook = _FakeHookCtx(existing=_agents_md_for(cfg))
@@ -90,7 +94,9 @@ async def test_raising_hook_is_swallowed():
     def _boom(c: KimiCodeTaskConfig) -> KimiCodeTaskConfig:
         raise RuntimeError("nope")
 
-    cfg = KimiCodeTaskConfig(consumer_instructions="x", on_resume_refresh=_boom)
+    cfg = KimiCodeTaskConfig(
+        consumer_instructions="x", on_resume_refresh=_boom, delivery_type="audit",
+    )
     host, hook = _FakeHost(), _FakeHookCtx(existing="x")
     out = await _maybe_refresh_on_resume(host, hook, cfg)
     assert out == []

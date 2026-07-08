@@ -271,6 +271,19 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             claustrum_path = await host_actions.ensure_claustrum_installed(
                 hook_ctx, install_dir=config.install_dir,
             )
+            # Security notice: if a newer claustrum release exists than the pinned
+            # tag, route a one-shot deliverable (via on_deliverable) so the
+            # operator can audit it and consider bumping the pin — a new release
+            # may patch a vulnerability. Best-effort: no-op when on_deliverable is
+            # unset or no newer tag is resolvable (network failure → None).
+            claustrum_newer = await host_actions.claustrum_newer_tag()
+            await host_actions.claustrum.emit_claustrum_update_notice(
+                host, hook_ctx,
+                delivery_type=config.delivery_type,
+                on_deliverable=config.on_deliverable,
+                newer=claustrum_newer,
+                pinned=host_actions.claustrum.CLAUSTRUM_PINNED_TAG,
+            )
 
         snapshot = None
         if getattr(ctx, "resume", False) and config.supports_resume:
