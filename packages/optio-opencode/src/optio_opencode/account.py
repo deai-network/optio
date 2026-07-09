@@ -20,7 +20,7 @@ import json
 import logging
 
 from optio_agents.account import EMPTY, AccountInfo
-from optio_opencode.providers import anthropic, openai, xai
+from optio_opencode.providers import anthropic, deepseek, openai, xai
 
 _LOG = logging.getLogger(__name__)
 
@@ -29,7 +29,8 @@ _LOG = logging.getLogger(__name__)
 _REGISTRY = {
     "anthropic": anthropic.handle,
     "openai": openai.handle,
-    "xai": xai.handle,
+    "xai": xai.handle,           # oauth (grok reuse) + api-key (/v1/api-key) branches
+    "deepseek": deepseek.handle,  # api-key: /user/balance
 }
 
 _AUTH_RELPATH = "home/.local/share/opencode/auth.json"
