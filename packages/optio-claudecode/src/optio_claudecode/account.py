@@ -52,25 +52,6 @@ def _format_plan(profile: dict) -> str | None:
     return " ".join(_PLAN_TOKENS.get(t, t) for t in tier.split("_"))
 
 
-def format_account_summary(profile: dict) -> str | None:
-    """``profile`` dict → ``"Plan: <plan> for <full_name> <<email>>"`` or None.
-
-    Requires a resolvable plan tier and an email; ``full_name`` is optional
-    (omitted form: ``"Plan: <plan> for <<email>>"``)."""
-    if not isinstance(profile, dict):
-        return None
-    plan = _format_plan(profile)
-    account = profile.get("account")
-    account = account if isinstance(account, dict) else {}
-    email = account.get("email")
-    full_name = account.get("full_name")
-    if not plan or not isinstance(email, str) or not email:
-        return None
-    if isinstance(full_name, str) and full_name:
-        return f"Plan: {plan} for {full_name} <{email}>"
-    return f"Plan: {plan} for <{email}>"
-
-
 async def resolve_capture_account(host) -> AccountInfo:
     """Live-host capture variant: read the isolated HOME creds token, then
     ``analyze_account``. Fail-soft → ``EMPTY`` on any failure (no creds file,
