@@ -119,3 +119,12 @@ def test_any_usable(_now=None):
     assert any_usable([maxed, ok], now) is True
     assert any_usable([maxed], now) is False
     assert any_usable([], now) is False
+
+
+def test_account_dicts_from_metadata_keeps_stamped_summary():
+    from optio_agents.account import account_dicts_from_metadata
+    # stamped summary is preserved (from_dict would recompute it to None here)
+    d = {"account_id": "A", "summary": "Plan A"}
+    assert account_dicts_from_metadata({"accounts": [d]}) == [d]
+    assert account_dicts_from_metadata({"account": d}) == [d]   # legacy singular
+    assert account_dicts_from_metadata({}) == []

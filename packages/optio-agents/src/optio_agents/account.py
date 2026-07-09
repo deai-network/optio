@@ -132,6 +132,20 @@ def accounts_from_metadata(meta: dict) -> "list[AccountInfo]":
     return [AccountInfo.from_dict(one)] if isinstance(one, dict) else []
 
 
+def account_dicts_from_metadata(meta: dict) -> list[dict]:
+    """The raw STAMPED account dicts (plural ``metadata.accounts``, with a legacy
+    singular ``metadata.account`` fallback). Use this — not ``accounts_from_metadata``
+    — when you need the stamped ``summary``: ``AccountInfo.from_dict`` recomputes
+    ``summary`` from name/email/plan and loses a stamped summary that had no plan."""
+    if not isinstance(meta, dict):
+        return []
+    raw = meta.get("accounts")
+    if isinstance(raw, list):
+        return [d for d in raw if isinstance(d, dict)]
+    one = meta.get("account")
+    return [one] if isinstance(one, dict) else []
+
+
 def any_usable(accounts, now, models=()) -> bool:
     """A seed with N accounts is usable iff at least ONE account is not limited
     for the required models (opencode: any provider account can serve)."""
