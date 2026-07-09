@@ -1,0 +1,9 @@
+{
+  "id": "000000000000000000000",
+  "email": "user@example.com",
+  "verified_email": true,
+  "name": "Test User",
+  "given_name": "Test",
+  "family_name": "User",
+  "picture": "https://example.com/photo.jpg"
+}
