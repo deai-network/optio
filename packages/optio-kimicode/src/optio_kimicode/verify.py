@@ -58,6 +58,8 @@ from typing import Callable
 from urllib.error import HTTPError, URLError
 
 from optio_agents import seeds
+from optio_agents.account import AccountInfo
+from optio_kimicode.account import analyze_account
 from optio_kimicode.seed_manifest import KIMI_SEED_SUFFIX
 
 _LOG = logging.getLogger(__name__)
@@ -204,8 +206,11 @@ async def verify_and_refresh_seed(
     kimi OAuth token endpoint and writes the rotated
     ``access_token``/``refresh_token``/``expires_at`` back into the seed.
     Returns {alive, account} where alive is True iff the seed is alive (token
-    outside the threshold, or a successful refresh); account is always None (this
-    engine has no analyze_account yet).
+    outside the threshold, or a successful refresh). On the alive path ``account``
+    is the normalized ``optio_agents.account.AccountInfo`` derived (fail-soft)
+    from the seed's token via a read-only ``/coding/v1/usages`` GET, and is also
+    stamped as ``metadata.account``; dead/inconclusive paths return
+    ``account=None``.
 
     Never raises for a dead seed. Marks pool status ``dead`` ONLY on a definitive
     dead signal (no refresh token, malformed creds, or a 401/403/``invalid_grant``
@@ -223,16 +228,25 @@ async def verify_and_refresh_seed(
     if doc is None:
         return {"alive": False, "account": None}
 
-    async def _finish(alive: bool, *, mark_dead: bool) -> dict:
+    async def _finish(
+        alive: bool, *, mark_dead: bool, account: "AccountInfo | None" = None,
+    ) -> dict:
+        now = datetime.now(timezone.utc)
+        metadata: dict = {"verify": {"alive": alive, "checkedAt": now}}
+        # Stamp the normalized account only on the alive path (mirrors codex /
+        # claudecode). Fail-soft analysis may hand us EMPTY; stamp it anyway so
+        # the pool consistently carries a metadata.account for every live seed.
+        if alive and account is not None:
+            metadata["account"] = account.to_dict()
+            metadata["accountFetchedAt"] = now
         await seeds.declare_metadata(
-            db, prefix=prefix, suffix=suffix, seed_id=seed_id,
-            metadata={"verify": {"alive": alive, "checkedAt": datetime.now(timezone.utc)}},
+            db, prefix=prefix, suffix=suffix, seed_id=seed_id, metadata=metadata,
         )
         if alive:
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="alive")
         elif mark_dead:
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="dead")
-        return {"alive": alive, "account": None}
+        return {"alive": alive, "account": account if alive else None}
 
     buf = io.BytesIO()
     await AsyncIOMotorGridFSBucket(db).download_to_stream(doc["blobId"], buf)
@@ -257,7 +271,10 @@ async def verify_and_refresh_seed(
     if not need_refresh:
         # Outside the refresh window → confirmed alive. kimi exposes no userinfo
         # liveness endpoint, so there is nothing further to probe host-free.
-        return await _finish(True, mark_dead=False)
+        # Analyze the (un-rotated) stored token for the account stamp — one
+        # read-only /usages GET, no refresh.
+        account = await analyze_account(creds.get("access_token"))
+        return await _finish(True, mark_dead=False, account=account)
 
     resp = await _in_executor(_refresh_sync, _token_endpoint(), refresh_token, _CLIENT_ID)
     if resp is _DEAD:
@@ -284,4 +301,7 @@ async def verify_and_refresh_seed(
         )
     except Exception:  # noqa: BLE001 — save-back failed; the refresh still rotated
         _LOG.exception("seed %s: refreshed creds save-back failed", seed_id)
-    return await _finish(True, mark_dead=False)
+    # Analyze the freshly-rotated token for the account stamp (read-only GET; the
+    # refresh above is verify's own — no EXTRA refresh here).
+    account = await analyze_account(creds.get("access_token"))
+    return await _finish(True, mark_dead=False, account=account)
