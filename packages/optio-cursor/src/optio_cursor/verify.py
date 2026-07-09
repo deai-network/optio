@@ -50,13 +50,15 @@ async def verify_and_refresh_seed(
     install_dir: str | None = None,
     encrypt: "Callable[[bytes], bytes] | None" = None,
     decrypt: "Callable[[bytes], bytes] | None" = None,
-) -> bool:
+) -> dict:
     """Verify a seed by probing cursor-agent with its credentials; refresh +
     save back.
 
-    Returns True iff cursor answered the challenge (the seed is alive). Never
-    raises for a dead seed. Stamps the verdict as seed metadata and marks the
-    seed's pool status (dead seeds are never handed out by seeds.acquire).
+    Returns {alive, account} where account is always None (no analyze_account
+    for this engine yet). alive is True iff cursor answered the challenge (the
+    seed is alive). Never raises for a dead seed. Stamps the verdict as seed
+    metadata and marks the seed's pool status (dead seeds are never handed out
+    by seeds.acquire).
 
     Call only on a FREE seed, or one whose lease the caller holds: the probe
     may rotate the refresh token, so verifying a seed in use by a live session
@@ -69,7 +71,7 @@ async def verify_and_refresh_seed(
     """
     doc = await seeds.load_seed(db, prefix=prefix, suffix=suffix, seed_id=seed_id)
     if doc is None:
-        return False
+        return {"alive": False, "account": None}
 
     taskdir = task_dir(
         ssh=ssh, process_id=f"seed-verify-{uuid.uuid4().hex[:12]}",
@@ -130,7 +132,7 @@ async def verify_and_refresh_seed(
             db, prefix=prefix, suffix=suffix, seed_id=seed_id,
             status="alive" if alive else "dead",
         )
-        return alive
+        return {"alive": alive, "account": None}
     finally:
         try:
             await host.cleanup_taskdir(aggressive=True)

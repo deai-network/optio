@@ -218,7 +218,7 @@ async def verify_and_refresh_seed(
     seed_id: str,
     encrypt: "Callable[[bytes], bytes] | None" = None,
     decrypt: "Callable[[bytes], bytes] | None" = None,
-) -> bool:
+) -> dict:
     """Verify an antigravity seed host-free and refresh its rotating OAuth token.
 
     Reads the seed's nested token store; if the access token is expired (or a
@@ -226,8 +226,10 @@ async def verify_and_refresh_seed(
     Google's token endpoint (discovered from the fixed Google issuer) as a public
     PKCE client (client_id only) and writes the rotated ``access_token`` /
     ``refresh_token`` / ``expiry`` back into ``store["token"]`` (preserving
-    ``auth_method`` and any other outer keys). Returns True iff the seed is alive
-    (token still valid, or a successful refresh).
+    ``auth_method`` and any other outer keys). Returns ``{"alive": bool,
+    "account": None}`` — ``alive`` is True iff the seed is alive (token still
+    valid, or a successful refresh); ``account`` is always None (this engine has
+    no analyze_account yet).
 
     Never raises for a dead seed. Marks pool status ``dead`` ONLY on a definitive
     dead signal (no refresh token, malformed store, or a ``invalid_grant`` refresh
@@ -243,9 +245,9 @@ async def verify_and_refresh_seed(
 
     doc = await seeds.load_seed(db, prefix=prefix, suffix=suffix, seed_id=seed_id)
     if doc is None:
-        return False
+        return {"alive": False, "account": None}
 
-    async def _finish(alive: bool, *, mark_dead: bool) -> bool:
+    async def _finish(alive: bool, *, mark_dead: bool) -> dict:
         await seeds.declare_metadata(
             db, prefix=prefix, suffix=suffix, seed_id=seed_id,
             metadata={"verify": {"alive": alive, "checkedAt": datetime.now(timezone.utc)}},
@@ -254,7 +256,7 @@ async def verify_and_refresh_seed(
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="alive")
         elif mark_dead:
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="dead")
-        return alive
+        return {"alive": alive, "account": None}
 
     buf = io.BytesIO()
     await AsyncIOMotorGridFSBucket(db).download_to_stream(doc["blobId"], buf)

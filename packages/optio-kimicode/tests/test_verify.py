@@ -112,8 +112,9 @@ async def test_stale_within_threshold_refreshes_and_writes_back(mongo_db, tmp_pa
 
     monkeypatch.setattr(verify, "_refresh_sync", fake_refresh)
 
-    alive = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
-    assert alive is True
+    res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
+    assert res["alive"] is True
+    assert res["account"] is None
     assert refreshed["called"] == (verify._token_endpoint(), "ORIGINAL", verify._CLIENT_ID)
 
     creds = await _seed_creds(mongo_db, seed_id)
@@ -135,8 +136,9 @@ async def test_expired_refreshes(mongo_db, tmp_path, monkeypatch):
         verify, "_refresh_sync",
         lambda *a: {"access_token": "NEW", "refresh_token": "R2", "expires_in": 3600},
     )
-    alive = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
-    assert alive is True
+    res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
+    assert res["alive"] is True
+    assert res["account"] is None
     assert (await _seed_creds(mongo_db, seed_id))["access_token"] == "NEW"
 
 
@@ -150,8 +152,9 @@ async def test_fresh_outside_threshold_does_not_refresh(mongo_db, tmp_path, monk
 
     monkeypatch.setattr(verify, "_refresh_sync", boom)
 
-    alive = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
-    assert alive is True
+    res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
+    assert res["alive"] is True
+    assert res["account"] is None
     creds = await _seed_creds(mongo_db, seed_id)
     assert creds["refresh_token"] == "ORIGINAL"         # untouched
     assert creds["access_token"] == "OLD_ACCESS"
@@ -163,8 +166,9 @@ async def test_refresh_invalid_grant_marks_dead(mongo_db, tmp_path, monkeypatch)
     seed_id = await _make_seed(mongo_db, tmp_path, expires_at=past)
     monkeypatch.setattr(verify, "_refresh_sync", lambda *a: verify._DEAD)
 
-    alive = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
-    assert alive is False
+    res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
+    assert res["alive"] is False
+    assert res["account"] is None
     doc = await _doc(mongo_db, seed_id)
     assert doc["status"] == "dead"
     assert doc["metadata"]["verify"]["alive"] is False
@@ -175,8 +179,9 @@ async def test_transport_failure_is_inconclusive_not_dead(mongo_db, tmp_path, mo
     seed_id = await _make_seed(mongo_db, tmp_path, expires_at=past)
     monkeypatch.setattr(verify, "_refresh_sync", lambda *a: None)  # network/5xx
 
-    alive = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
-    assert alive is False
+    res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
+    assert res["alive"] is False
+    assert res["account"] is None
     # A transient failure must NOT retire a possibly-healthy seed.
     assert (await _doc(mongo_db, seed_id)).get("status") != "dead"
 
@@ -185,14 +190,16 @@ async def test_no_refresh_token_is_dead(mongo_db, tmp_path):
     past = int(time.time()) - 3600
     seed_id = await _make_seed(mongo_db, tmp_path, expires_at=past, refresh_token=None)
 
-    alive = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
-    assert alive is False
+    res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
+    assert res["alive"] is False
+    assert res["account"] is None
     assert (await _doc(mongo_db, seed_id))["status"] == "dead"
 
 
 async def test_unknown_seed(mongo_db):
-    alive = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=str(ObjectId()))
-    assert alive is False
+    res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=str(ObjectId()))
+    assert res["alive"] is False
+    assert res["account"] is None
 
 
 # --- _refresh_sync HTTP status classification (mock urlopen) ----------------
@@ -330,8 +337,9 @@ async def test_real_seed_live_refresh_rotates_token(mongo_db, tmp_path):
         access_token=real.get("access_token", "OLD"),
     )
 
-    alive = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
-    assert alive is True, "live refresh against auth.kimi.com did not confirm the seed"
+    res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
+    assert res["alive"] is True, "live refresh against auth.kimi.com did not confirm the seed"
+    assert res["account"] is None
 
     creds = await _seed_creds(mongo_db, seed_id)
     # The single-use refresh token rotated, and a fresh access token landed.

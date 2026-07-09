@@ -163,14 +163,15 @@ async def verify_and_refresh_seed(
     seed_id: str,
     encrypt: "Callable[[bytes], bytes] | None" = None,
     decrypt: "Callable[[bytes], bytes] | None" = None,
-) -> bool:
+) -> dict:
     """Verify a grok seed host-free and refresh its rotating OIDC token in place.
 
     Reads the seed's ``auth.json``; if the access token is expired (or a userinfo
     liveness check fails) performs an OIDC ``refresh_token`` grant against the xAI
     token endpoint (discovered from the seed's ``oidc_issuer``) and writes the
     rotated ``key``/``refresh_token``/``expires_at`` back into the seed. Returns
-    True iff the seed is alive (token still valid, or a successful refresh).
+    {alive, account} where alive is True iff the seed is alive (token still valid,
+    or a successful refresh) and account is always None (no analyze_account yet).
 
     Never raises for a dead seed. Marks pool status ``dead`` ONLY on a definitive
     dead signal (no refresh token, malformed auth, or a 4xx invalid_grant);
@@ -185,9 +186,9 @@ async def verify_and_refresh_seed(
 
     doc = await seeds.load_seed(db, prefix=prefix, suffix=suffix, seed_id=seed_id)
     if doc is None:
-        return False
+        return {"alive": False, "account": None}
 
-    async def _finish(alive: bool, *, mark_dead: bool) -> bool:
+    async def _finish(alive: bool, *, mark_dead: bool) -> dict:
         await seeds.declare_metadata(
             db, prefix=prefix, suffix=suffix, seed_id=seed_id,
             metadata={"verify": {"alive": alive, "checkedAt": datetime.now(timezone.utc)}},
@@ -196,7 +197,7 @@ async def verify_and_refresh_seed(
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="alive")
         elif mark_dead:
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="dead")
-        return alive
+        return {"alive": alive, "account": None}
 
     buf = io.BytesIO()
     await AsyncIOMotorGridFSBucket(db).download_to_stream(doc["blobId"], buf)
