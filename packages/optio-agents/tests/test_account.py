@@ -94,3 +94,28 @@ def test_public_exports():
     import optio_agents
     assert optio_agents.AccountInfo is not None
     assert optio_agents.is_limited is not None
+
+
+from optio_agents.account import accounts_from_metadata, accounts_to_metadata, any_usable
+
+
+def test_accounts_from_metadata_prefers_plural_falls_back_to_singular():
+    a = AccountInfo(plan="P", email="e@x.com")
+    assert accounts_from_metadata({"accounts": [a.to_dict()]}) == [a]
+    assert accounts_from_metadata({"account": a.to_dict()}) == [a]   # legacy
+    assert accounts_from_metadata({}) == []
+
+
+def test_accounts_to_metadata_roundtrip():
+    a = AccountInfo(plan="P", email="e@x.com")
+    assert accounts_from_metadata({"accounts": accounts_to_metadata([a])}) == [a]
+
+
+def test_any_usable(_now=None):
+    from datetime import datetime, timezone
+    now = datetime(2026, 7, 9, tzinfo=timezone.utc)
+    maxed = AccountInfo(windows=(UsageWindow("w", 100.0, None, None),))
+    ok = AccountInfo(plan="P")
+    assert any_usable([maxed, ok], now) is True
+    assert any_usable([maxed], now) is False
+    assert any_usable([], now) is False
