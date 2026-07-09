@@ -16,8 +16,13 @@ def test_summary_no_name():
     assert info.summary == "Plan: Claude Max 20x for <jane@x.com>"
 
 
-def test_summary_none_when_incomplete():
-    assert AccountInfo(plan="X").summary is None      # no email
+def test_summary_plan_only_when_no_identity():
+    # An identity-less account (plan known, no name/email — e.g. kimicode)
+    # summarizes by plan alone, NOT None: friendlier than the opaque account id.
+    assert AccountInfo(plan="Basic").summary == "Plan: Basic"
+
+
+def test_summary_none_when_no_plan():
     assert AccountInfo(email="jane@x.com").summary is None  # no plan
     assert EMPTY.summary is None
 

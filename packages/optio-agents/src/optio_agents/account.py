@@ -53,11 +53,15 @@ class AccountInfo:
 
     @property
     def summary(self) -> str | None:
-        """``"Plan: <plan> for <name> <<email>>"`` (name optional). Requires a
-        plan and an email, else None. Generalized form of claudecode's
-        ``format_account_summary``."""
-        if not self.plan or not self.email:
+        """``"Plan: <plan> for <name> <<email>>"`` — name and email optional.
+        Requires only a plan; when the vendor exposes no identity (e.g. kimicode
+        has no name/email endpoint) the summary is ``"Plan: <plan>"`` — a
+        human-friendly label to display instead of falling back to the opaque
+        account id. Returns None only when even the plan is unknown."""
+        if not self.plan:
             return None
+        if not self.email:
+            return f"Plan: {self.plan}"
         if self.name:
             return f"Plan: {self.plan} for {self.name} <{self.email}>"
         return f"Plan: {self.plan} for <{self.email}>"
