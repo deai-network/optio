@@ -22,6 +22,7 @@ shared so this module stays self-contained.
 
 import asyncio
 import io
+import json
 import os
 import sys
 import tarfile
@@ -296,6 +297,120 @@ async def test_capture_synthesises_model_into_opencode_json(
     assert cfg["model"] == "xai/grok-4.3"
     # the pre-existing config key planted by _plant_env survives the merge
     assert cfg["theme"] == "dark"
+
+
+async def _extract_seed_member(mongo_db, doc, suffix):
+    """Untar the captured seed blob and return the JSON-parsed member whose
+    tar name ends with ``suffix`` (factored from the untar snippet in
+    ``test_capture_synthesises_model_into_opencode_json``)."""
+    bucket = AsyncIOMotorGridFSBucket(mongo_db)
+    stream = await bucket.open_download_stream(doc["blobId"])
+    blob = await stream.read()
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        member = next(m for m in tar.getmembers() if m.name.endswith(suffix))
+        return json.loads(tar.extractfile(member).read().decode("utf-8"))
+
+
+def _plant_multi_provider_env(auth: dict, cfg: dict):
+    """before_execute hook factory: plant a caller-chosen ``auth.json`` +
+    ``opencode.json`` under the isolated HOME (like ``_plant_env`` but with a
+    multi-provider auth so slim-at-capture behaviour can be exercised).
+
+    ``<workdir>/home`` is the seed manifest's ``home_subdir``; both files are
+    manifest include paths, so they travel in the captured seed."""
+    async def _hook(hook_ctx) -> None:
+        host = hook_ctx._host
+        home = f"{host.workdir.rstrip('/')}/home"
+        await host.run_command(f"mkdir -p '{home}/.local/share/opencode'")
+        await host.run_command(f"mkdir -p '{home}/.config/opencode'")
+        await host.write_text(
+            "home/.local/share/opencode/auth.json", json.dumps(auth),
+        )
+        await host.write_text(
+            "home/.config/opencode/opencode.json", json.dumps(cfg),
+        )
+    return _hook
+
+
+async def test_capture_slims_multi_provider_auth_to_selected(
+    mongo_db, task_root, _supply_scenario, monkeypatch,
+):
+    """A two-provider ``auth.json`` is slimmed to the provider of the
+    configured default model before capture — the stored seed carries only
+    that one provider."""
+    import optio_opencode.session as session_mod
+
+    _supply_scenario["name"] = "happy"
+
+    # Pin the resolved seed model to None so the planted opencode.json (with a
+    # provider-qualified model) is captured verbatim — deterministic slim input.
+    async def _no_model(port, password, session_id):
+        return None
+
+    monkeypatch.setattr(session_mod, "_resolve_session_model", _no_model)
+
+    captured: list[str] = []
+
+    async def _on_seed_saved(seed_id, info=None) -> None:
+        captured.append(seed_id)
+
+    ctx = await _make_ctx(mongo_db, "oc_seed_slim")
+    await run_opencode_session(ctx, OpencodeTaskConfig(
+        consumer_instructions="(seed setup)", fs_isolation=False,
+        supports_resume=False,
+        on_seed_saved=_on_seed_saved,
+        before_execute=_plant_multi_provider_env(
+            {"xai": {"type": "oauth", "access": "A"},
+             "anthropic": {"type": "oauth", "access": "B"}},
+            {"theme": "dark", "model": "xai/grok-4.3"},
+        ),
+    ))
+
+    assert len(captured) == 1
+    doc = await seeds.load_seed(
+        mongo_db, prefix="test", suffix=OPENCODE_SEED_SUFFIX, seed_id=captured[0],
+    )
+    auth = await _extract_seed_member(
+        mongo_db, doc, ".local/share/opencode/auth.json",
+    )
+    assert set(auth) == {"xai"}
+    assert auth["xai"] == {"type": "oauth", "access": "A"}
+
+
+async def test_capture_skipped_when_unsliceable(
+    mongo_db, task_root, _supply_scenario, monkeypatch,
+):
+    """When ``model`` and ``small_model`` resolve to different providers the
+    seed cannot be reduced to one provider — capture is refused and the
+    ``on_seed_saved`` callback never fires."""
+    import optio_opencode.session as session_mod
+
+    _supply_scenario["name"] = "happy"
+
+    async def _no_model(port, password, session_id):
+        return None
+
+    monkeypatch.setattr(session_mod, "_resolve_session_model", _no_model)
+
+    saved: list[str] = []
+
+    async def _on_seed_saved(seed_id, info=None) -> None:
+        saved.append(seed_id)
+
+    ctx = await _make_ctx(mongo_db, "oc_seed_unsliceable")
+    await run_opencode_session(ctx, OpencodeTaskConfig(
+        consumer_instructions="(seed setup)", fs_isolation=False,
+        supports_resume=False,
+        on_seed_saved=_on_seed_saved,
+        before_execute=_plant_multi_provider_env(
+            {"xai": {"type": "oauth", "access": "A"},
+             "anthropic": {"type": "oauth", "access": "B"}},
+            {"model": "xai/grok-4.3",
+             "small_model": "anthropic/claude-haiku-4-5"},
+        ),
+    ))
+
+    assert saved == []
 
 
 async def test_second_session_consumes_seed(
