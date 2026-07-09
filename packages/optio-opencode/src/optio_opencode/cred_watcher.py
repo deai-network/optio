@@ -69,6 +69,64 @@ async def capture_gate_ok(host: Host) -> bool:
     return isinstance(cfg, dict) and bool(cfg.get("model"))
 
 
+class UnsliceableSeed(Exception):
+    """The seed's auth.json holds several providers but cannot be safely
+    reduced to the one backing the configured default model."""
+
+
+def _provider_of(model: str | None) -> str | None:
+    """The provider id of a `provider/model` string, or None if it carries no
+    `provider/` prefix."""
+    if not model or "/" not in model:
+        return None
+    return model.split("/", 1)[0]
+
+
+async def _read_json(host: Host, relpath: str) -> dict | None:
+    path = f"{host.workdir.rstrip('/')}/{relpath}"
+    try:
+        raw = await host.fetch_bytes_from_host(path)
+        data = json.loads(raw.decode("utf-8"))
+    except (FileNotFoundError, ValueError, UnicodeDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+async def slim_auth_to_selected_provider(host: Host) -> bool:
+    """Enforce one-provider-per-seed: prune the live auth.json to the single
+    provider backing the configured default model (`small_model || model`),
+    dropping the rest. Returns True if it rewrote auth.json, False on no-op
+    (auth absent/invalid, or already one provider).
+
+    Raises UnsliceableSeed when the seed cannot be reduced to one provider:
+    the selected model has no `provider/` prefix, `model` and `small_model`
+    resolve to different providers, or the selected provider is absent from
+    auth.json. The caller decides what an un-sliceable seed means (capture
+    refuses it; save-back leaves the seed untouched)."""
+    auth = await _read_json(host, _CRED_RELPATH)
+    if not auth:                      # missing/invalid/empty -> nothing to slim
+        return False
+    if len(auth) <= 1:                # already single-provider
+        return False
+
+    cfg = await _read_json(host, _MODEL_RELPATH) or {}
+    selected = _provider_of(cfg.get("model"))
+    if selected is None:
+        raise UnsliceableSeed("no provider-qualified model in opencode.json")
+    small = _provider_of(cfg.get("small_model"))
+    if small is not None and small != selected:
+        raise UnsliceableSeed(
+            f"model provider {selected!r} != small_model provider {small!r}")
+    if selected not in auth:
+        raise UnsliceableSeed(
+            f"selected provider {selected!r} not in auth.json {sorted(auth)}")
+
+    dropped = sorted(k for k in auth if k != selected)
+    await host.write_text(_CRED_RELPATH, json.dumps({selected: auth[selected]}))
+    _LOG.info("slimmed seed auth to provider %r; dropped %s", selected, dropped)
+    return True
+
+
 async def save_back_if_changed(
     ctx,
     host: Host,
@@ -81,6 +139,11 @@ async def save_back_if_changed(
     """If the live auth.json differs from `baseline` and is valid, save it
     back into the seed and return the new fingerprint. Otherwise return
     `baseline` unchanged. Never raises — save-back is best-effort."""
+    try:
+        await slim_auth_to_selected_provider(host)
+    except UnsliceableSeed as e:
+        _LOG.warning("seed %s: save-back skipped, un-sliceable auth (%s)", seed_id, e)
+        return baseline
     fp = await cred_fingerprint(host)
     if fp is None or fp == baseline:
         return baseline

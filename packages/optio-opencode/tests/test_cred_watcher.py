@@ -13,6 +13,9 @@ from optio_host.host import LocalHost
 
 from optio_agents import seeds
 from optio_opencode import cred_watcher
+from optio_opencode.cred_watcher import (
+    slim_auth_to_selected_provider, UnsliceableSeed,
+)
 from optio_opencode.seed_manifest import OPENCODE_CRED_MANIFEST, OPENCODE_SEED_SUFFIX
 
 
@@ -78,6 +81,65 @@ async def test_capture_gate_requires_auth_and_model(host):
     # auth + model
     _write_model_config(host.workdir, "openai/gpt-5.4-mini")
     assert await cred_watcher.capture_gate_ok(host)
+
+
+# --- slim_auth_to_selected_provider -------------------------------------
+
+async def _write(host, relpath, obj):
+    await host.write_text(relpath, json.dumps(obj))
+
+_AUTH = "home/.local/share/opencode/auth.json"
+_CFG = "home/.config/opencode/opencode.json"
+
+
+@pytest.mark.asyncio
+async def test_slim_drops_unselected_providers(host):
+    await _write(host, _AUTH, {
+        "xai": {"type": "oauth", "access": "A"},
+        "anthropic": {"type": "oauth", "access": "B"},
+    })
+    await _write(host, _CFG, {"model": "xai/grok-4.3"})
+    assert await slim_auth_to_selected_provider(host) is True
+    raw = await host.fetch_bytes_from_host(f"{host.workdir.rstrip('/')}/{_AUTH}")
+    assert json.loads(raw) == {"xai": {"type": "oauth", "access": "A"}}
+
+
+@pytest.mark.asyncio
+async def test_slim_noop_when_single_provider(host):
+    await _write(host, _AUTH, {"xai": {"type": "oauth", "access": "A"}})
+    await _write(host, _CFG, {"model": "xai/grok-4.3"})
+    assert await slim_auth_to_selected_provider(host) is False
+
+
+@pytest.mark.asyncio
+async def test_slim_prefers_small_model_but_refuses_provider_split(host):
+    await _write(host, _AUTH, {"xai": {}, "anthropic": {}})
+    await _write(host, _CFG, {"model": "xai/grok-4.3",
+                              "small_model": "anthropic/claude-haiku-4-5"})
+    with pytest.raises(UnsliceableSeed):
+        await slim_auth_to_selected_provider(host)
+
+
+@pytest.mark.asyncio
+async def test_slim_refuses_when_selected_provider_absent(host):
+    await _write(host, _AUTH, {"anthropic": {}, "openai": {}})
+    await _write(host, _CFG, {"model": "xai/grok-4.3"})
+    with pytest.raises(UnsliceableSeed):
+        await slim_auth_to_selected_provider(host)
+
+
+@pytest.mark.asyncio
+async def test_slim_refuses_malformed_model_with_multi_provider(host):
+    await _write(host, _AUTH, {"xai": {}, "anthropic": {}})
+    await _write(host, _CFG, {"model": "grok-4.3"})  # no provider prefix
+    with pytest.raises(UnsliceableSeed):
+        await slim_auth_to_selected_provider(host)
+
+
+@pytest.mark.asyncio
+async def test_slim_noop_when_auth_missing(host):
+    await _write(host, _CFG, {"model": "xai/grok-4.3"})
+    assert await slim_auth_to_selected_provider(host) is False
 
 
 # --- watcher integration (real Mongo) ------------------------------------

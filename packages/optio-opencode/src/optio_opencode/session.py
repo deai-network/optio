@@ -776,11 +776,21 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                     # Write the model default into the seed's opencode.json
                     # before capture so it travels in the seed.
                     await _write_seed_model_config(host, seed_model)
-                if not await cred_watcher.capture_gate_ok(host):
+                try:
+                    await cred_watcher.slim_auth_to_selected_provider(host)
+                    sliceable = True
+                except cred_watcher.UnsliceableSeed as e:
                     _LOG.warning(
-                        "seed capture skipped: auth.json invalid/absent or no "
-                        "model in opencode.json (unusable seed)",
+                        "seed capture skipped: cannot reduce to one provider "
+                        "(%s) — configure one provider per seed", e,
                     )
+                    sliceable = False
+                if not sliceable or not await cred_watcher.capture_gate_ok(host):
+                    if sliceable:
+                        _LOG.warning(
+                            "seed capture skipped: auth.json invalid/absent or "
+                            "no model in opencode.json (unusable seed)",
+                        )
                 else:
                     seed_id_out = await _seeds.capture_seed(
                         ctx, host,

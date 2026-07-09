@@ -156,6 +156,86 @@ async def _plant_seed_env(hook_ctx) -> None:
     )
 
 
+def _write_multi_provider_hook(providers: dict, model: str):
+    """before_execute hook factory: write a multi-provider auth.json plus an
+    opencode.json whose `model` selects one of those providers, so save-back's
+    slim keeps exactly that provider and drops the rest."""
+    auth = json.dumps(providers)
+    cfg = json.dumps({"model": model})
+
+    async def _hook(hook_ctx) -> None:
+        home = f"{hook_ctx._host.workdir.rstrip('/')}/home"
+        d_auth = f"{home}/.local/share/opencode"
+        d_cfg = f"{home}/.config/opencode"
+        await hook_ctx._host.run_command(
+            f"mkdir -p {shlex.quote(d_auth)} && "
+            f"printf '%s' {shlex.quote(auth)} > {shlex.quote(d_auth + '/auth.json')}"
+        )
+        await hook_ctx._host.run_command(
+            f"mkdir -p {shlex.quote(d_cfg)} && "
+            f"printf '%s' {shlex.quote(cfg)} > {shlex.quote(d_cfg + '/opencode.json')}"
+        )
+
+    return _hook
+
+
+async def test_saveback_slims_added_provider(
+    mongo_db, task_root, _supply_scenario, tmp_path,
+):
+    """A seeded session gains a *second* provider mid-run; save-back slims the
+    auth.json to the provider of the selected model, so the saved-back seed
+    carries only that one provider."""
+    _supply_scenario["name"] = "happy"
+
+    # 1. Capture a single-provider seed (xai) with a model config.
+    captured: list[str] = []
+
+    async def _on_seed_saved(seed_id, info=None) -> None:
+        captured.append(seed_id)
+
+    ctx1 = await _make_ctx(mongo_db, "oc_sb_slim_src")
+    await run_opencode_session(ctx1, OpencodeTaskConfig(
+        consumer_instructions="(seed setup)", fs_isolation=False,
+        supports_resume=False,
+        on_seed_saved=_on_seed_saved,
+        before_execute=_plant_seed_env,
+    ))
+    assert len(captured) == 1
+    seed_id = captured[0]
+
+    # 2. Seeded session whose before_execute rewrites auth.json with a *second*
+    #    provider and an opencode.json selecting the first (xai).
+    async def _seed_provider(process_id: str) -> str:
+        return seed_id
+
+    ctx2 = await _make_ctx(mongo_db, "oc_sb_slim_run")
+    await run_opencode_session(ctx2, OpencodeTaskConfig(
+        consumer_instructions="(seeded, multi-provider)", fs_isolation=False,
+        supports_resume=False,
+        seed_id=_seed_provider,
+        before_execute=_write_multi_provider_hook(
+            {"xai": {"type": "oauth", "refresh": "T2"},
+             "anthropic": {"type": "oauth", "refresh": "B"}},
+            "xai/grok-4.3",
+        ),
+    ))
+
+    # 3. Merge the seed into a fresh LocalHost; only the selected provider must
+    #    survive.
+    dst = LocalHost(taskdir=str(tmp_path / "slim_check"))
+    await dst.setup_workdir()
+    await seeds.merge_seed(
+        ctx2, dst, seed_id=seed_id, manifest=OPENCODE_CRED_MANIFEST,
+        suffix=OPENCODE_SEED_SUFFIX, decrypt=None,
+    )
+    auth_path = os.path.join(
+        dst.workdir, "home", ".local", "share", "opencode", "auth.json",
+    )
+    with open(auth_path) as fh:
+        saved_auth = json.load(fh)
+    assert set(saved_auth) == {"xai"}
+
+
 async def test_rotation_during_session_updates_seed(
     mongo_db, task_root, _supply_scenario, tmp_path,
 ):
