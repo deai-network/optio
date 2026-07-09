@@ -101,6 +101,7 @@ from optio_agents.conversation import (
     PermissionRequest,
 )
 from optio_codex import models as codex_models
+from optio_codex import rollout as codex_rollout
 from optio_codex.info import AGENT_INFO
 
 _LOG = logging.getLogger(__name__)
@@ -259,6 +260,17 @@ class CodexConversation:
         # backfill into on_event after the listener subscribes. thread/start has
         # no prior turns → [].
         self._resume_turns = thread.get("turns") or []
+        if self._resume_thread_id is not None:
+            # Diagnostic: how much history thread/resume actually returned. codex
+            # compacts context on long conversations, so a resume may hand back
+            # TRUNCATED turns — this INFO line lets the next resume confirm
+            # whether that happened (the rollout on disk stays the full-history
+            # source of truth for the fresh-attach replay).
+            total_items = sum(len(t.get("items") or []) for t in self._resume_turns)
+            _LOG.info(
+                "codex thread/resume: %d turns, %d items for thread %s",
+                len(self._resume_turns), total_items, self.thread_id,
+            )
 
     async def replay_history(self) -> int:
         """Backfill on_event with the RESUMED thread's prior turns.
@@ -286,15 +298,19 @@ class CodexConversation:
         for turn in self._resume_turns:
             turn_id = turn.get("id")
             for item in turn.get("items") or []:
-                await self._emit_event({"method": "item/completed", "params": {
-                    "threadId": self.thread_id, "turnId": turn_id, "item": item}})
+                # Build the wire envelope through the SAME helper the rollout
+                # history path uses (optio_codex.rollout) so the two
+                # reconstructions cannot drift.
+                await self._emit_event(
+                    codex_rollout.item_completed_event(self.thread_id, turn_id, item)
+                )
                 count += 1
             # Close this historic turn's bubble and open the next's — a live
             # multi-turn stream ends every turn with turn/completed, so replay
             # must too (else the reducer coalesces all turns into one bubble).
-            await self._emit_event({"method": "turn/completed", "params": {
-                "threadId": self.thread_id,
-                "turn": {"id": turn_id, "status": "completed"}}})
+            await self._emit_event(
+                codex_rollout.turn_completed_event(self.thread_id, turn_id)
+            )
             count += 1
         return count
 

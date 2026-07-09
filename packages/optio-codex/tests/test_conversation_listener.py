@@ -9,12 +9,27 @@ JSON-RPC object to the handler as ``PermissionRequest.raw``).
 import asyncio
 import base64
 import json
+import pathlib
+import shutil
 
 import aiohttp
 import pytest
 
 from optio_agents.conversation import ConversationClosed, PermissionDecision
 from optio_codex.conversation_listener import ConversationListener
+
+FIXTURES = pathlib.Path(__file__).parent / "fixtures"
+SAMPLE_ROLLOUT = FIXTURES / "rollout_sample.jsonl"
+
+
+def _plant_rollout(tmp_path) -> str:
+    """Copy the fixture rollout into a codex_home sessions tree; return the
+    codex_home path."""
+    home = tmp_path / ".codex"
+    sess = home / "sessions" / "2026" / "07" / "06"
+    sess.mkdir(parents=True)
+    shutil.copy(SAMPLE_ROLLOUT, sess / "rollout-2026-07-06T01-00-00-abcd.jsonl")
+    return str(home)
 
 
 class FakeConversation:
@@ -161,6 +176,89 @@ async def test_replay_history_backfills_buffer_for_late_subscriber(listener):
             replay = await _read_events(resp, 2)
             assert replay[0]["params"]["item"]["text"] == "prior-a"
             assert replay[1]["method"] == "turn/completed"
+
+
+async def test_fresh_attach_replays_full_rollout_then_inflight_buffer(tmp_path):
+    # THE fix: a fresh viewer attach (no Last-Event-ID) replays the FULL
+    # conversation reconstructed from the on-disk rollout (authoritative — the
+    # bounded buffer deque has evicted early turns on a long session), THEN the
+    # in-flight turn from the live buffer, deduped against the rollout by turnId.
+    conv = FakeConversation()
+    codex_home = _plant_rollout(tmp_path)
+    lst = ConversationListener(conv, password="pw", codex_home=codex_home)
+    port = await lst.start("127.0.0.1")
+    url = f"http://127.0.0.1:{port}"
+    try:
+        # Buffer holds a COMPLETED turn already captured in the rollout
+        # (turn-aaa) — must be deduped — plus the IN-FLIGHT turn (turn-live,
+        # not yet flushed to the rollout) — must be replayed.
+        conv.fire({"method": "item/completed", "params": {
+            "threadId": "thread-xyz", "turnId": "turn-aaa",
+            "item": {"type": "agentMessage", "id": "dup", "text": "hi there"}}})
+        conv.fire({"method": "item/agentMessage/delta", "params": {
+            "threadId": "thread-xyz", "turnId": "turn-live",
+            "itemId": "i9", "delta": "in-flight"}})
+        async with aiohttp.ClientSession() as s:
+            async with s.get(f"{url}/events", headers=_auth("pw")) as resp:
+                assert resp.status == 200
+                # 9 rollout events (2-turn fixture) + 1 in-flight buffer delta.
+                # The buffered turn-aaa item is suppressed (already in rollout).
+                events = await _read_events(resp, 10)
+        methods = [e.get("method") for e in events]
+        assert methods[:9] == [
+            "item/completed", "item/completed", "item/completed",
+            "item/completed", "item/completed", "turn/completed",
+            "item/completed", "item/completed", "turn/completed",
+        ]
+        # The tail is the in-flight delta — NOT the buffered turn-aaa duplicate.
+        assert events[9]["method"] == "item/agentMessage/delta"
+        assert events[9]["params"]["delta"] == "in-flight"
+        # The rollout's two turns are present exactly once each.
+        tc = [e for e in events if e.get("method") == "turn/completed"]
+        assert [e["params"]["turn"]["id"] for e in tc] == ["turn-aaa", "turn-bbb"]
+    finally:
+        await lst.stop()
+
+
+async def test_reconnect_with_last_event_id_skips_rollout(tmp_path):
+    # An SSE RECONNECT (Last-Event-ID>0) already has the history — it must get
+    # only the buffer tail, never the rollout replay.
+    conv = FakeConversation()
+    codex_home = _plant_rollout(tmp_path)
+    lst = ConversationListener(conv, password="pw", codex_home=codex_home)
+    port = await lst.start("127.0.0.1")
+    url = f"http://127.0.0.1:{port}"
+    try:
+        conv.fire({"n": 1})    # seq 1
+        conv.fire({"n": 2})    # seq 2
+        async with aiohttp.ClientSession() as s:
+            headers = {**_auth("pw"), "Last-Event-ID": "1"}
+            async with s.get(f"{url}/events", headers=headers) as resp:
+                events = await _read_events(resp, 1)
+        # Only the buffer tail (seq 2); no rollout item/completed frames.
+        assert events[0] == {"n": 2}
+    finally:
+        await lst.stop()
+
+
+async def test_fresh_attach_missing_rollout_is_soft(tmp_path):
+    # Fail-soft: a codex_home with no rollout falls back to today's buffer-only
+    # replay (never raises into the SSE handler).
+    conv = FakeConversation()
+    home = tmp_path / ".codex"
+    (home / "sessions").mkdir(parents=True)
+    lst = ConversationListener(conv, password="pw", codex_home=str(home))
+    port = await lst.start("127.0.0.1")
+    url = f"http://127.0.0.1:{port}"
+    try:
+        conv.fire({"method": "item/agentMessage/delta", "params": {
+            "threadId": "t1", "turnId": "turn-1", "itemId": "i1", "delta": "hi"}})
+        async with aiohttp.ClientSession() as s:
+            async with s.get(f"{url}/events", headers=_auth("pw")) as resp:
+                events = await _read_events(resp, 1)
+        assert events[0]["params"]["delta"] == "hi"
+    finally:
+        await lst.stop()
 
 
 async def test_last_event_id_resume(listener):

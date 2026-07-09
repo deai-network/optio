@@ -328,6 +328,37 @@ describe('codex app-server event reducer', () => {
     );
   });
 
+  it('rollout history replay reconstructs distinct turns with their own bubbles', () => {
+    // The exact ordered notifications optio_codex.rollout.read_rollout_events
+    // reconstructs from an on-disk rollout (a fresh viewer attach replays these
+    // before the live tail): item/completed per item, turn/completed per turn.
+    // The reducer must rebuild two separate user prompts + two separate answer
+    // bubbles — not one coalesced conversation.
+    const s = play([
+      itemCompleted({ type: 'userMessage', id: 'u1', text: 'hello' }, 'turn-aaa'),
+      itemCompleted({ type: 'agentMessage', id: 'a1', text: 'hi there' }, 'turn-aaa'),
+      itemCompleted({ type: 'commandExecution', id: 'c1', command: 'ls -la', cwd: '/w', status: 'completed' }, 'turn-aaa'),
+      itemCompleted({ type: 'reasoning', id: 'r1', summary: [] }, 'turn-aaa'),
+      itemCompleted({ type: 'agentMessage', id: 'a2', text: 'done' }, 'turn-aaa'),
+      turnCompleted(),
+      itemCompleted({ type: 'userMessage', id: 'u2', text: 'second question' }, 'turn-bbb'),
+      itemCompleted({ type: 'agentMessage', id: 'a3', text: 'reply two' }, 'turn-bbb'),
+      turnCompleted(),
+    ]);
+    const users = s.items.filter((i) => i.kind === 'user').map((i) => (i as any).text);
+    expect(users).toEqual(['hello', 'second question']);
+    const answers = s.items.filter((i) => i.kind === 'assistant').map((i) => (i as any).text);
+    // turn A: 'hi there' and 'done' are split by the commandExecution tool row
+    // (a hard separator); turn B: 'reply two' in its own bubble.
+    expect(answers).toEqual(['hi there', 'done', 'reply two']);
+    // A replayed history is fully settled — nothing pending, not busy. Tool
+    // rows are ephemeral (dropped at turn/completed like the live path), so the
+    // settled history keeps the message bubbles, not the command row.
+    expect(s.busy).toBe(false);
+    expect(s.items.some((i) => i.kind === 'assistant' && (i as any).pending)).toBe(false);
+    expect(s.items.some((i) => i.kind === 'tool')).toBe(false);
+  });
+
   it('a full turn: local echo → reasoning → tool → answer → turn end', () => {
     const s = play([
       { type: 'x-optio-local-user', text: 'say PONG' },

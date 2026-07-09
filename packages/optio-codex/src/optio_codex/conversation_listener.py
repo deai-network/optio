@@ -36,6 +36,8 @@ from aiohttp import web
 
 from optio_agents.conversation import ConversationClosed, PermissionDecision
 
+from optio_codex import rollout as _rollout
+
 _LOG = logging.getLogger(__name__)
 
 BUFFER_MAXLEN = 1000
@@ -48,16 +50,36 @@ SHUTDOWN_TIMEOUT_S = 2.0
 _STOP = object()
 
 
+def _event_turn_id(event: dict) -> str | None:
+    """The codex turn id an event belongs to, or None (synthetic/handshake
+    events carry no turn). Used to dedup live-buffer events against the rollout
+    history on a fresh attach — the rollout records the SAME turn ids the live
+    wire uses (verified: response_item.internal_chat_message_metadata_passthrough
+    .turn_id == the app-server turn id)."""
+    params = event.get("params")
+    if not isinstance(params, dict):
+        return None
+    turn = params.get("turn")
+    if isinstance(turn, dict) and turn.get("id"):
+        return turn["id"]          # turn/started, turn/completed
+    return params.get("turnId")    # item/*, requestApproval, deltas
+
+
 class ConversationListener:
     def __init__(
         self, conversation, *, password: str,
         download_reader: "Callable[[str], Awaitable[tuple[bytes, str]]] | None" = None,
         max_download_bytes: int = 10_000_000,
+        codex_home: str | None = None,
     ) -> None:
         self._conversation = conversation
         self._password = password
         self._download_reader = download_reader
         self._max_download_bytes = max_download_bytes
+        # CODEX_HOME (=<workdir>/home/.codex) — the on-disk rollout store that is
+        # the AUTHORITATIVE full history a fresh viewer attach replays before the
+        # in-flight live tail. None ⇒ no rollout replay (buffer-only, as before).
+        self._codex_home = codex_home
         self._buffer: deque[tuple[int, dict]] = deque(maxlen=BUFFER_MAXLEN)
         self._seq = 0
         self._subscribers: set[asyncio.Queue] = set()
@@ -99,6 +121,29 @@ class ConversationListener:
         })
         return decision
 
+    # -- rollout history -----------------------------------------------------
+
+    def _load_history(self) -> "tuple[list[dict], set[str]]":
+        """Reconstruct the FULL conversation from the on-disk rollout, and the
+        set of turn ids it covers (the dedup key for the live buffer).
+
+        Fail-soft by contract: any error (no codex_home, no rollout, an
+        unreadable/malformed file) yields ``([], set())`` so a fresh attach
+        silently falls back to today's buffer-only replay — it must NEVER raise
+        into the SSE handler."""
+        if not self._codex_home:
+            return [], set()
+        try:
+            path = _rollout.resolve_latest_rollout(self._codex_home)
+            if path is None:
+                return [], set()
+            events = _rollout.read_rollout_events(path)
+        except Exception:  # noqa: BLE001 — attach must never fail on the rollout
+            _LOG.exception("rollout history reconstruction failed; buffer only")
+            return [], set()
+        turn_ids = {t for e in events if (t := _event_turn_id(e)) is not None}
+        return events, turn_ids
+
     # -- HTTP handlers -------------------------------------------------------
 
     def _authorized(self, request: web.Request) -> bool:
@@ -137,10 +182,38 @@ class ConversationListener:
         self._subscribers.add(queue)
         try:
             sent_through = last_id
-            for seq, event in list(self._buffer):
-                if seq > sent_through:
-                    await send_item(seq, event)
-                    sent_through = seq
+            if last_id == 0:
+                # FRESH attach: replay the FULL history from the on-disk rollout
+                # (authoritative — the bounded buffer deque has evicted early
+                # turns on a long session), THEN the in-flight turn from the live
+                # buffer, deduped against the rollout by turnId.
+                #
+                # SSE-id scheme: history events get ids -N..-1 (a reserved range
+                # strictly below every live seq, which start at 1). They are
+                # per-attach ephemeral — NOT stored in self._buffer and they do
+                # NOT advance self._seq, so live Last-Event-ID resumption is
+                # untouched. A client that saw only history and reconnects sends
+                # a negative Last-Event-ID; ``raw_last.isdigit()`` is False for
+                # it, so last_id falls back to 0 and the full history replays
+                # again (idempotent). A client that reached the live tail sends a
+                # positive id, taking the reconnect branch below (no rollout).
+                history, hist_turn_ids = self._load_history()
+                hid = -len(history)
+                for event in history:
+                    await send_item(hid, event)
+                    hid += 1
+                for seq, event in list(self._buffer):
+                    # Skip buffered events for turns the rollout already covers;
+                    # keep the in-flight turn (and any turn not yet flushed to
+                    # the rollout) plus synthetic events (no turnId).
+                    if _event_turn_id(event) not in hist_turn_ids:
+                        await send_item(seq, event)
+                    sent_through = seq  # buffer is seq-ordered; advance past all
+            else:
+                for seq, event in list(self._buffer):
+                    if seq > sent_through:
+                        await send_item(seq, event)
+                        sent_through = seq
             while True:
                 try:
                     item = await asyncio.wait_for(

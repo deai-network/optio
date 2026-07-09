@@ -520,6 +520,12 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                 conversation, password=listener_password,
                 download_reader=_read_download,
                 max_download_bytes=config.max_download_bytes,
+                # The on-disk rollout store (CODEX_HOME = <workdir>/home/.codex,
+                # the same identity the app-server launched under, see
+                # host_actions._isolation_env) is the authoritative full history
+                # a fresh viewer attach replays before the live tail — so a long
+                # session stays scrollable to its start past the bounded buffer.
+                codex_home=host_actions._isolation_env(host.workdir)["CODEX_HOME"],
             )
             # In-process aiohttp app: binds directly on the widget-tunnel
             # interface, no host tunnel needed.
