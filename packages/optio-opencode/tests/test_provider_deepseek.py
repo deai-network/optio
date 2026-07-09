@@ -45,11 +45,11 @@ async def test_api_entry_maps_balance_to_plan(patched_fetch):
     assert info.name is None
     assert info.email is None
     assert info.account_id is None
-    assert info.plan == "DeepSeek · 5.00 USD"
+    assert info.plan == "Balance 5.00 USD"
     assert info.windows == ()
     assert info.raw == {"balance": _SYNTHETIC_BALANCE}
     # The plain summary renders the balance as the account label.
-    assert info.summary == "Plan: DeepSeek · 5.00 USD"
+    assert info.summary == "Plan: Balance 5.00 USD"
 
 
 async def test_non_api_entry_declines_without_network(monkeypatch):

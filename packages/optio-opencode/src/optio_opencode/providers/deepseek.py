@@ -85,7 +85,7 @@ async def handle(entry: dict) -> "AccountInfo | None":
     total_balance = first.get("total_balance")
     currency = first.get("currency")
     return AccountInfo(
-        plan=f"DeepSeek · {total_balance} {currency}",
+        plan=f"Balance {total_balance} {currency}",
         windows=(),
         raw={"balance": body},
     )

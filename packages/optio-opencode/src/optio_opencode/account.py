@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import replace
 
 from optio_agents.account import EMPTY, AccountInfo
 from optio_opencode.providers import anthropic, deepseek, openai, xai
@@ -37,13 +38,12 @@ _AUTH_RELPATH = "home/.local/share/opencode/auth.json"
 
 
 def _placeholder(provider_id: str, entry: dict) -> AccountInfo:
-    """A stand-in for a provider we do not (yet) analyze. ``plan`` is set to
-    ``"Unknown account · <provider>"`` so the frame's plain ``summary`` property
-    renders ``"Plan: Unknown account · <provider>"`` — no special-casing in the
-    frame required."""
+    """A stand-in for a provider we do not (yet) analyze. Carries the ``provider``
+    so the frame's summary renders ``"<provider> · unknown account"`` — attributed
+    to its provider even though nothing was fetched."""
     return AccountInfo(
+        provider=provider_id,
         account_id=entry.get("accountId"),
-        plan=f"Unknown account · {provider_id}",
         raw={"provider": provider_id, "unanalyzed": True},
     )
 
@@ -69,7 +69,9 @@ async def analyze_accounts(auth: dict) -> "list[AccountInfo]":
                 _LOG.exception("opencode provider handler failed: %s", provider_id)
                 info = None
         if info is not None and info != EMPTY:
-            return info
+            # Attribute every analyzed account to its provider so the summary is
+            # unambiguous across a multi-provider seed ("openai · Plan: …").
+            return replace(info, provider=provider_id)
         return _placeholder(provider_id, entry)
 
     # Providers analyzed CONCURRENTLY — each hits a different vendor with its own

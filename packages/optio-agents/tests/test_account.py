@@ -128,3 +128,14 @@ def test_account_dicts_from_metadata_keeps_stamped_summary():
     assert account_dicts_from_metadata({"accounts": [d]}) == [d]
     assert account_dicts_from_metadata({"account": d}) == [d]   # legacy singular
     assert account_dicts_from_metadata({}) == []
+
+
+def test_summary_provider_prefix():
+    # provider attribution (opencode meta-analyzer): the provider prefixes the
+    # summary so a multi-provider seed is unambiguous. None (single-vendor) = no prefix.
+    assert AccountInfo(provider="openai", plan="Plus", email="a@b.com").summary == "openai · Plan: Plus for <a@b.com>"
+    assert AccountInfo(provider="groq").summary == "groq · unknown account"
+    assert AccountInfo(plan="Max", email="a@b.com").summary == "Plan: Max for <a@b.com>"
+    # provider survives the metadata roundtrip
+    a = AccountInfo(provider="xai", plan="Grok Pro", account_id="u1")
+    assert AccountInfo.from_dict(a.to_dict()) == a

@@ -41,6 +41,11 @@ class AccountInfo:
     email: str | None = None
     plan: str | None = None
     account_id: str | None = None
+    # The vendor/provider this account lives at. None for single-vendor engines
+    # (the pool itself identifies the vendor); set by the opencode meta-analyzer,
+    # where one seed fans out to several providers and the summary would be
+    # ambiguous ("Plan: Free for a@b" — but which provider?) without it.
+    provider: str | None = None
     windows: tuple[UsageWindow, ...] = field(default_factory=tuple)
     raw: dict = field(default_factory=dict)
 
@@ -58,13 +63,20 @@ class AccountInfo:
         has no name/email endpoint) the summary is ``"Plan: <plan>"`` — a
         human-friendly label to display instead of falling back to the opaque
         account id. Returns None only when even the plan is unknown."""
-        if not self.plan:
+        if self.plan:
+            if not self.email:
+                core = f"Plan: {self.plan}"
+            elif self.name:
+                core = f"Plan: {self.plan} for {self.name} <{self.email}>"
+            else:
+                core = f"Plan: {self.plan} for <{self.email}>"
+        elif self.provider:
+            core = None                          # provider-only (unanalyzed / identity-less)
+        else:
             return None
-        if not self.email:
-            return f"Plan: {self.plan}"
-        if self.name:
-            return f"Plan: {self.plan} for {self.name} <{self.email}>"
-        return f"Plan: {self.plan} for <{self.email}>"
+        if self.provider:                        # attribute the provider (opencode)
+            return f"{self.provider} · {core}" if core else f"{self.provider} · unknown account"
+        return core
 
     def next_reset(self) -> datetime | None:
         """Soonest ``resets_at`` among currently-maxed (pct >= 100) windows that
@@ -79,7 +91,8 @@ class AccountInfo:
         # and recomputes from name/email/plan.
         return {
             "name": self.name, "email": self.email, "plan": self.plan,
-            "account_id": self.account_id, "summary": self.summary,
+            "account_id": self.account_id, "provider": self.provider,
+            "summary": self.summary,
             "windows": [w.to_dict() for w in self.windows],
             "raw": self.raw,
         }
@@ -88,7 +101,7 @@ class AccountInfo:
     def from_dict(cls, d: dict) -> "AccountInfo":
         return cls(
             name=d.get("name"), email=d.get("email"), plan=d.get("plan"),
-            account_id=d.get("account_id"),
+            account_id=d.get("account_id"), provider=d.get("provider"),
             windows=tuple(UsageWindow.from_dict(w) for w in d.get("windows") or ()),
             raw=d.get("raw") or {},
         )
