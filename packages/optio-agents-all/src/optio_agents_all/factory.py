@@ -4,6 +4,8 @@ from typing import Callable
 
 from optio_antigravity import create_antigravity_task
 from optio_claudecode import analyze_account as _claudecode_analyze
+from optio_codex import analyze_account as _codex_analyze
+from optio_cursor import analyze_account as _cursor_analyze
 from optio_claudecode import create_claudecode_task
 from optio_codex import create_codex_task
 from optio_cursor import create_cursor_task
@@ -45,6 +47,8 @@ def create_task(
 # ``analyze_account`` (until then they are absent from the registry).
 _ANALYZE_REGISTRY: dict[AgentType, Callable] = {
     "claudecode": _claudecode_analyze,
+    "codex": _codex_analyze,
+    "cursor": _cursor_analyze,
 }
 
 
