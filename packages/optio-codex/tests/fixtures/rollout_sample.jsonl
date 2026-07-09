@@ -1,0 +1,21 @@
+{"timestamp":"2026-07-05T23:03:37.715Z","type":"session_meta","payload":{"session_id":"thread-xyz","id":"thread-xyz","cwd":"/w","originator":"codex-tui","cli_version":"0.142.5"}}
+{"timestamp":"2026-07-05T23:03:37.715Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-aaa","started_at":1783292617,"model_context_window":258400}}
+{"timestamp":"2026-07-05T23:03:37.722Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions instructions>\nsandbox stuff\n</permissions instructions>"}],"internal_chat_message_metadata_passthrough":{"turn_id":"turn-aaa"}}}
+{"timestamp":"2026-07-05T23:03:37.723Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>/w</cwd>\n</environment_context>"}],"internal_chat_message_metadata_passthrough":{"turn_id":"turn-aaa"}}}
+{"timestamp":"2026-07-05T23:03:37.723Z","type":"turn_context","payload":{"turn_id":"turn-aaa","cwd":"/w","approval_policy":"on-request"}}
+{"timestamp":"2026-07-05T23:03:37.727Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}],"internal_chat_message_metadata_passthrough":{"turn_id":"turn-aaa"}}}
+{"timestamp":"2026-07-05T23:03:37.727Z","type":"event_msg","payload":{"type":"user_message","message":"hello","images":[]}}
+{"timestamp":"2026-07-05T23:03:46.885Z","type":"event_msg","payload":{"type":"agent_message","message":"hi there","phase":"commentary"}}
+{"timestamp":"2026-07-05T23:03:46.885Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi there"}],"internal_chat_message_metadata_passthrough":{"turn_id":"turn-aaa"}}}
+{"timestamp":"2026-07-05T23:03:46.888Z","type":"response_item","payload":{"type":"function_call","id":"fc_1","name":"exec_command","arguments":"{\"cmd\":\"ls -la\",\"workdir\":\"/w\",\"yield_time_ms\":10000}","call_id":"call_1","internal_chat_message_metadata_passthrough":{"turn_id":"turn-aaa"}}}
+{"timestamp":"2026-07-05T23:03:46.999Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":"Process exited with code 0\nOutput:\nfile.txt","internal_chat_message_metadata_passthrough":{"turn_id":"turn-aaa"}}}
+{"timestamp":"2026-07-05T23:03:47.002Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":13176}}}}
+{"timestamp":"2026-07-05T23:07:39.219Z","type":"response_item","payload":{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"gAAAA-opaque","internal_chat_message_metadata_passthrough":{"turn_id":"turn-aaa"}}}
+{"timestamp":"2026-07-05T23:04:10.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}],"internal_chat_message_metadata_passthrough":{"turn_id":"turn-aaa"}}}
+{"timestamp":"2026-07-05T23:04:11.455Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-aaa","last_agent_message":"done","duration_ms":33740}}
+{"timestamp":"2026-07-05T23:05:00.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-bbb","started_at":1783292700}}
+{"timestamp":"2026-07-05T23:05:00.100Z","type":"turn_context","payload":{"turn_id":"turn-bbb","cwd":"/w","approval_policy":"on-request"}}
+{"timestamp":"2026-07-05T23:05:00.200Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"second question"}],"internal_chat_message_metadata_passthrough":{"turn_id":"turn-bbb"}}}
+{"timestamp":"2026-07-05T23:05:00.300Z","type":"event_msg","payload":{"type":"user_message","message":"second question"}}
+{"timestamp":"2026-07-05T23:05:05.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"reply two"}],"internal_chat_message_metadata_passthrough":{"turn_id":"turn-bbb"}}}
+{"timestamp":"2026-07-05T23:05:06.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-bbb","last_agent_message":"reply two"}}
