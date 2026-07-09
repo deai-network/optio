@@ -16,6 +16,7 @@ from optio_codex import create_codex_task
 from optio_cursor import create_cursor_task
 from optio_grok import create_grok_task
 from optio_kimicode import create_kimicode_task
+from optio_opencode import analyze_accounts as _opencode_analyze_accounts
 from optio_opencode import create_opencode_task
 
 from optio_agents_all.types import AgentTaskConfig, AgentType
@@ -74,9 +75,9 @@ async def analyze_account(agent_type: AgentType, creds):
 # ``analyze_accounts`` is the plural generalization: a seed may back more than
 # one account (opencode fans out to one account per configured provider). Every
 # single-account engine wraps its singular ``analyze_account`` into a 1-element
-# list, dropping the fail-soft ``EMPTY`` sentinel to an empty list. opencode's
-# real per-provider meta-analyzer lands in Phase 2 (``optio_opencode``); until
-# then it is a stub returning ``[]``.
+# list, dropping the fail-soft ``EMPTY`` sentinel to an empty list. opencode
+# registers its real per-provider meta-analyzer (``optio_opencode``), which maps
+# an ``auth.json`` dict into one AccountInfo per configured provider.
 
 
 def _single(
@@ -92,11 +93,6 @@ def _single(
     return _wrap
 
 
-async def _opencode_accounts(creds) -> list[AccountInfo]:
-    """Stub: the opencode per-provider meta-analyzer lands in Phase 2."""
-    return []
-
-
 _ANALYZE_ACCOUNTS_REGISTRY: dict[
     AgentType, Callable[..., Awaitable[list[AccountInfo]]]
 ] = {
@@ -106,7 +102,9 @@ _ANALYZE_ACCOUNTS_REGISTRY: dict[
     "kimicode": _single(_kimicode_analyze),
     "antigravity": _single(_antigravity_analyze),
     "grok": _single(_grok_analyze),
-    "opencode": _opencode_accounts,
+    # opencode's creds are its ``auth.json`` dict (provider_id -> entry); the
+    # meta-analyzer fans out to one AccountInfo per configured provider.
+    "opencode": _opencode_analyze_accounts,
 }
 
 

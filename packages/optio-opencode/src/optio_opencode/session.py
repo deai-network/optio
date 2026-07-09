@@ -37,7 +37,9 @@ from optio_host.paths import task_dir
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_agents.uploads import materialize, upload_url_token
 from optio_agents import seeds as _seeds
+from optio_agents.account import accounts_to_metadata
 from optio_opencode import cred_watcher, host_actions
+from optio_opencode.account import resolve_capture_accounts
 from optio_opencode import model_probe
 from optio_opencode.info import AGENT_INFO
 from optio_opencode.conversation import OpencodeConversation
@@ -786,6 +788,19 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                         suffix=OPENCODE_SEED_SUFFIX,
                         encrypt=config.session_blob_encrypt,
                     )
+                    # Meta-analyze the live auth.json (still on disk pre-cleanup)
+                    # and stamp metadata.accounts — one account per configured
+                    # provider (analyzed or placeholder). Fail-soft: an analysis
+                    # error never disturbs capture.
+                    try:
+                        accounts = await resolve_capture_accounts(host)
+                        await _seeds.declare_metadata(
+                            ctx._db, prefix=ctx._prefix,
+                            suffix=OPENCODE_SEED_SUFFIX, seed_id=seed_id_out,
+                            metadata={"accounts": accounts_to_metadata(accounts)},
+                        )
+                    except Exception:  # noqa: BLE001
+                        _LOG.exception("opencode account stamp failed")
                     # 2nd arg: the resolved "providerID/modelID" (or None).
                     await _call_maybe_async(
                         config.on_seed_saved, seed_id_out, seed_model,

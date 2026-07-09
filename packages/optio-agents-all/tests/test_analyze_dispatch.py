@@ -54,9 +54,16 @@ async def test_analyze_accounts_all_single_engines_registered():
         assert engine in factory._ANALYZE_ACCOUNTS_REGISTRY
 
 
-async def test_analyze_accounts_opencode_stub_returns_empty():
-    # Real per-provider meta-analysis lands in Phase 2 (optio-opencode).
-    assert await analyze_accounts("opencode", "tok") == []
+async def test_analyze_accounts_opencode_dispatches_to_meta_analyzer():
+    # opencode's real per-provider meta-analyzer: a configured provider yields
+    # exactly one AccountInfo. An unknown provider maps to a placeholder — no
+    # vendor network, so the dispatch stays hermetic — proving the dispatcher
+    # routes opencode to the real analyzer (not the old []-returning stub).
+    auth = {"futureai": {"type": "oauth", "access": "tok", "accountId": "fa-1"}}
+    infos = await analyze_accounts("opencode", auth)
+    assert len(infos) == 1
+    assert infos[0].raw.get("provider") == "futureai"
+    assert infos[0].raw.get("unanalyzed") is True
 
 
 async def test_analyze_accounts_unknown_raises():

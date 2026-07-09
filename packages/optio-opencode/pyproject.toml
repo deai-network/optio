@@ -31,6 +31,12 @@ dependencies = [
     # required for OPTIO_WIDGET_TUNNEL_BIND to work.
     "optio-host>=0.2,<0.3",
     "optio-agents>=0.5,<0.6",
+    # The account meta-analyzer's per-provider handlers reuse the extracted
+    # vendor map helpers (account_from_oauth_token / account_from_openai /
+    # account_from_xai) rather than reimplement each vendor's fetch+map.
+    "optio-claudecode>=0.5,<0.6",
+    "optio-codex>=0.3,<0.4",
+    "optio-grok>=0.3,<0.4",
     "asyncssh>=2.14",
     "aiohttp>=3.9",
 ]
