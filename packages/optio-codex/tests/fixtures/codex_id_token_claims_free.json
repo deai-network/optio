@@ -1,0 +1,27 @@
+{
+  "aud": [
+    "app_EMoamEEZ73f0CkXaXp7hrann"
+  ],
+  "auth_provider": "google",
+  "email": "user@example.com",
+  "email_verified": true,
+  "https://api.openai.com/auth": {
+    "chatgpt_account_id": "00000000-0000-4000-8000-000000000000",
+    "chatgpt_plan_type": "free",
+    "chatgpt_user_id": "user-EXAMPLEEXAMPLEEXAMPLE00",
+    "organizations": [
+      {
+        "id": "org-EXAMPLEEXAMPLEEXAMPLE000",
+        "is_default": true,
+        "role": "owner",
+        "title": "Personal"
+      }
+    ],
+    "user_id": "user-EXAMPLEEXAMPLEEXAMPLE00"
+  },
+  "iss": "https://auth.openai.com",
+  "name": "Ada Lovelace",
+  "sub": "google-oauth2|000000000000000000000",
+  "iat": 1783554050,
+  "exp": 1783557650
+}

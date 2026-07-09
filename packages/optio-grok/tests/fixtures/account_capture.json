@@ -1,0 +1,63 @@
+{
+  "_comment": "PII-scrubbed real capture from a live gm_grok_seeds seed (2026-07-09). Identity+plan captured via GET; usage/limits NOT exposed via GET (see research notes). Numbers/tier/status/dates verbatim; email/name/uuids/stripe-ids scrubbed.",
+  "userinfo": {
+    "sub": "00000000-0000-0000-0000-000000000001",
+    "name": "Test User",
+    "given_name": "Test User",
+    "family_name": "",
+    "picture": "users/00000000-0000-0000-0000-000000000001/SCRUBBEDASSET-profile-picture.webp",
+    "email": "user@example.com",
+    "email_verified": true
+  },
+  "v1_me": {
+    "user_id": "00000000-0000-0000-0000-000000000001",
+    "team_id": "00000000-0000-0000-0000-0000000000a1",
+    "zdr_status": "no_zdr",
+    "team_blocked": false,
+    "oauth": {
+      "client_id": "cccccccc-0000-0000-0000-000000000cli"
+    }
+  },
+  "subscriptions": {
+    "subscriptions": [
+      {
+        "stripe": {
+          "subscriptionId": "sub_SCRUBBED0001",
+          "invoiceId": "in_SCRUBBED0001",
+          "productId": "prod_SCRUBBED01",
+          "currentPeriodEnd": "2026-07-08T02:32:37Z",
+          "cancelAtPeriodEnd": false,
+          "subscriptionType": "MONTHLY"
+        },
+        "xaiUserId": "00000000-0000-0000-0000-000000000001",
+        "tier": "SUBSCRIPTION_TIER_GROK_PRO",
+        "status": "SUBSCRIPTION_STATUS_INACTIVE",
+        "createTime": "2026-06-08T02:33:37.048069Z",
+        "modTime": "2026-07-08T02:33:36.976953Z",
+        "billingInterval": "BILLING_INTERVAL_MONTHLY",
+        "billingPeriodEnd": "2026-07-08T02:32:37Z",
+        "cancelAtPeriodEnd": false,
+        "futureOffers": []
+      },
+      {
+        "stripe": {
+          "subscriptionId": "sub_SCRUBBED0001",
+          "invoiceId": "in_SCRUBBED0001",
+          "productId": "prod_SCRUBBED01",
+          "currentPeriodEnd": "2026-08-08T02:32:37Z",
+          "cancelAtPeriodEnd": false,
+          "subscriptionType": "MONTHLY"
+        },
+        "xaiUserId": "00000000-0000-0000-0000-000000000001",
+        "tier": "SUBSCRIPTION_TIER_GROK_PRO",
+        "status": "SUBSCRIPTION_STATUS_ACTIVE",
+        "createTime": "2026-07-08T02:33:36.976952Z",
+        "modTime": "2026-07-08T02:33:36.976953Z",
+        "billingInterval": "BILLING_INTERVAL_MONTHLY",
+        "billingPeriodEnd": "2026-08-08T02:32:37Z",
+        "cancelAtPeriodEnd": false,
+        "futureOffers": []
+      }
+    ]
+  }
+}
