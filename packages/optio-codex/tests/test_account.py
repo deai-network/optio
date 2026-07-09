@@ -127,6 +127,67 @@ async def test_analyze_account_non_dict_creds_is_empty():
     assert (await analyze_account("not-a-dict")) is EMPTY
 
 
+# --- reusable creds-agnostic map-helper: account_from_openai -----------------
+
+
+async def test_account_from_openai_maps_identity(monkeypatch):
+    """The creds-form-agnostic helper: identity from GET /backend-api/me (NOT
+    the id_token — opencode's openai-oauth stores no id_token), usage from
+    wham/usage. Both fetch seams are monkeypatched to the committed fixtures."""
+    me = _fixture("codex_backend_me.json")
+    usage = _fixture("codex_wham_usage_free.json")
+
+    seen = {}
+
+    async def fake_me(access_token, acct_id):
+        seen["me"] = (access_token, acct_id)
+        return me
+
+    async def fake_usage(access_token, acct_id):
+        seen["usage"] = (access_token, acct_id)
+        return usage
+
+    monkeypatch.setattr(account, "_fetch_me", fake_me)
+    monkeypatch.setattr(account, "_fetch_usage", fake_usage)
+
+    info = await account.account_from_openai("ACCESS-TOKEN", "acct-uuid-1")
+
+    # identity comes from /backend-api/me; plan from live usage
+    assert info.name == "Ada Lovelace"
+    assert info.email == "user@example.com"
+    assert info.plan == "Free"
+    assert info.account_id == "acct-uuid-1"
+    # both fetches received the bearer + the account-id header value
+    assert seen["me"] == ("ACCESS-TOKEN", "acct-uuid-1")
+    assert seen["usage"] == ("ACCESS-TOKEN", "acct-uuid-1")
+
+    # windows: only the primary window is populated on the free seed
+    assert len(info.windows) == 1
+    w = info.windows[0]
+    assert w.label == "primary"
+    assert w.pct == 68.0
+    assert w.model is None
+    assert w.resets_at == datetime.fromtimestamp(1784650946, tz=timezone.utc)
+
+    assert info.summary == "Plan: Free for Ada Lovelace <user@example.com>"
+
+
+async def test_account_from_openai_fail_soft_on_fetch_raise(monkeypatch):
+    """A raising fetch must NOT propagate — the helper returns EMPTY."""
+
+    async def boom(access_token, acct_id):
+        raise RuntimeError("network exploded")
+
+    monkeypatch.setattr(account, "_fetch_me", boom)
+    info = await account.account_from_openai("A", "acct-uuid-1")
+    assert info is EMPTY
+
+
+async def test_account_from_openai_empty_token_is_empty():
+    assert (await account.account_from_openai("", None)) is EMPTY
+    assert (await account.account_from_openai(None, None)) is EMPTY
+
+
 # --- verify integration: the alive path carries the AccountInfo --------------
 
 _DISCO = {
@@ -186,13 +247,15 @@ async def test_verify_alive_stamps_and_returns_account_info(mongo_db, tmp_path, 
 
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is True
-    # the alive return carries the AccountInfo
-    assert res["account"] == known
+    # the alive return carries the AccountInfo wrapped in the plural list
+    assert res["accounts"] == [known]
     # analyze_account was handed the seed's tokens dict (not a bare token)
     assert captured["creds"]["account_id"] == "acct-uuid-1"
 
-    # ...and it was stamped as metadata.account on the seed doc
+    # ...and it was stamped as metadata.accounts (a list) on the seed doc
     doc = await seeds.load_seed(mongo_db, prefix="test", suffix=CODEX_SEED_SUFFIX, seed_id=seed_id)
-    assert doc["metadata"]["account"]["email"] == "user@example.com"
-    assert doc["metadata"]["account"]["plan"] == "Free"
-    assert doc["metadata"]["account"]["summary"] == "Plan: Free for Ada Lovelace <user@example.com>"
+    accounts = doc["metadata"]["accounts"]
+    assert len(accounts) == 1
+    assert accounts[0]["email"] == "user@example.com"
+    assert accounts[0]["plan"] == "Free"
+    assert accounts[0]["summary"] == "Plan: Free for Ada Lovelace <user@example.com>"

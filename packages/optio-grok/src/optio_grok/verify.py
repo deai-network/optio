@@ -40,7 +40,7 @@ from typing import Callable
 from urllib.error import HTTPError, URLError
 
 from optio_agents import seeds
-from optio_agents.account import AccountInfo
+from optio_agents.account import EMPTY, AccountInfo, accounts_to_metadata
 from optio_grok.account import analyze_account
 from optio_grok.seed_manifest import GROK_SEED_SUFFIX
 
@@ -172,10 +172,11 @@ async def verify_and_refresh_seed(
     liveness check fails) performs an OIDC ``refresh_token`` grant against the xAI
     token endpoint (discovered from the seed's ``oidc_issuer``) and writes the
     rotated ``key``/``refresh_token``/``expires_at`` back into the seed. Returns
-    ``{"alive": bool, "account": AccountInfo | None}``: on the alive path
-    ``account`` is the normalized ``optio_agents.account.AccountInfo`` derived
-    (fail-soft) from the seed's creds and also stamped as ``metadata.account``;
-    dead paths return ``account=None``. Grok is accounts-only, so the account's
+    ``{"alive": bool, "accounts": list[AccountInfo]}``: on the alive path
+    ``accounts`` wraps the single normalized ``optio_agents.account.AccountInfo``
+    derived (fail-soft) from the seed's creds in a 1-element list (empty when the
+    analysis degraded to ``EMPTY``) and is also stamped as ``metadata.accounts``;
+    dead paths return ``accounts=[]``. Grok is accounts-only, so the account's
     ``windows`` is always empty (no reachable usage source).
 
     Never raises for a dead seed. Marks pool status ``dead`` ONLY on a definitive
@@ -191,19 +192,22 @@ async def verify_and_refresh_seed(
 
     doc = await seeds.load_seed(db, prefix=prefix, suffix=suffix, seed_id=seed_id)
     if doc is None:
-        return {"alive": False, "account": None}
+        return {"alive": False, "accounts": []}
 
     async def _finish(
         alive: bool, *, mark_dead: bool, account: "AccountInfo | None" = None,
     ) -> dict:
         now = datetime.now(timezone.utc)
         metadata: dict = {"verify": {"alive": alive, "checkedAt": now}}
-        # Stamp the normalized account only on the alive path (mirrors
-        # claudecode/codex). Fail-soft analysis may hand us EMPTY; stamp it
-        # anyway so the pool consistently carries a metadata.account for every
-        # live seed.
-        if alive and account is not None:
-            metadata["account"] = account.to_dict()
+        # Single-account engine: wrap the one analyzed AccountInfo in the plural
+        # ``accounts`` list (mirrors claudecode/codex). A fail-soft ``EMPTY`` (or a
+        # dead path) carries nothing → the empty list, so metadata.accounts is
+        # stamped only when there is a real account to render.
+        accounts: "list[AccountInfo]" = (
+            [account] if alive and account is not None and account != EMPTY else []
+        )
+        if accounts:
+            metadata["accounts"] = accounts_to_metadata(accounts)
             metadata["accountFetchedAt"] = now
         await seeds.declare_metadata(
             db, prefix=prefix, suffix=suffix, seed_id=seed_id, metadata=metadata,
@@ -212,7 +216,7 @@ async def verify_and_refresh_seed(
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="alive")
         elif mark_dead:
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="dead")
-        return {"alive": alive, "account": account if alive else None}
+        return {"alive": alive, "accounts": accounts}
 
     buf = io.BytesIO()
     await AsyncIOMotorGridFSBucket(db).download_to_stream(doc["blobId"], buf)

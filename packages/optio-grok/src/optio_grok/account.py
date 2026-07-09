@@ -34,6 +34,7 @@ import asyncio
 import json
 import logging
 import urllib.request
+from dataclasses import replace
 from urllib.error import HTTPError, URLError
 
 from optio_agents.account import EMPTY, AccountInfo
@@ -126,36 +127,63 @@ def _plan_from_subscriptions(subs) -> "str | None":
     return None
 
 
-def _info_from(creds: dict, userinfo, v1_me, subs) -> AccountInfo:
+def _info_from_payloads(userinfo, v1_me, subs) -> AccountInfo:
+    """Map the three read-only surfaces into an ``AccountInfo`` — identity from
+    the GETs only (no creds fallback; that is ``analyze_account``'s job)."""
     ui = userinfo if isinstance(userinfo, dict) else {}
     return AccountInfo(
-        # userinfo first, then the zero-network creds identity fallback.
-        name=ui.get("name") or creds.get("first_name") or None,
-        email=ui.get("email") or creds.get("email") or None,
-        account_id=ui.get("sub") or creds.get("user_id") or None,
+        name=ui.get("name") or None,
+        email=ui.get("email") or None,
+        account_id=ui.get("sub") or None,
         plan=_plan_from_subscriptions(subs),
         windows=(),  # grok exposes no GET usage source → always empty
         raw={"userinfo": userinfo, "v1_me": v1_me, "subscriptions": subs},
     )
 
 
+def _with_creds_fallback(info: AccountInfo, creds: dict) -> AccountInfo:
+    """Fill any identity the GETs left blank from the zero-network creds fields
+    (``first_name``/``email``/``user_id``), so a fully-failed fetch still yields
+    creds-carried identity rather than EMPTY. Plan/windows/raw are untouched."""
+    return replace(
+        info,
+        name=info.name or creds.get("first_name") or None,
+        email=info.email or creds.get("email") or None,
+        account_id=info.account_id or creds.get("user_id") or None,
+    )
+
+
+async def account_from_xai(access_token: str) -> AccountInfo:
+    """Creds-form-agnostic xAI account map helper: an access token in, a
+    normalized ``AccountInfo`` out. Enriches identity with three read-only Bearer
+    GETs (userinfo / v1_me / subscriptions), each fail-soft; ``windows`` is always
+    empty (grok exposes no reachable usage source). Never raises → EMPTY only on
+    an unexpected backstop error. Identity comes purely from the GETs; the
+    creds-carried zero-network fallback lives in the ``analyze_account`` wrapper."""
+    try:
+        userinfo = v1_me = subs = None
+        if isinstance(access_token, str) and access_token:
+            userinfo = await _try_fetch(_USERINFO_URL, access_token)
+            v1_me = await _try_fetch(_V1_ME_URL, access_token)
+            subs = await _try_fetch(_SUBSCRIPTIONS_URL, access_token)
+        return _info_from_payloads(userinfo, v1_me, subs)
+    except Exception:  # noqa: BLE001 -- fail-soft backstop, never disturbs the caller
+        return EMPTY
+
+
 async def analyze_account(creds) -> AccountInfo:
     """Best-effort grok ``AccountInfo`` from the auth.json inner ``creds`` dict
-    (``store["<issuer>::<client>"]``; access token = ``creds["key"]``). Enriches
-    creds identity with three read-only Bearer GETs (userinfo / v1_me /
-    subscriptions), each fail-soft; ``windows`` is always empty (no reachable
-    usage source). Never raises → EMPTY only for truly empty creds; any HTTP
-    failure degrades to the creds-carried identity, never EMPTY."""
+    (``store["<issuer>::<client>"]``; access token = ``creds["key"]``). Thin
+    wrapper: extracts the token, calls the ``account_from_xai`` map helper, then
+    overlays the zero-network creds identity fallback. Never raises → EMPTY only
+    for truly empty creds; any HTTP failure degrades to the creds-carried
+    identity, never EMPTY. ``windows`` is always empty (no reachable usage source)."""
     try:
         if not isinstance(creds, dict) or not creds:
             return EMPTY
         token = creds.get("key")
-        userinfo = v1_me = subs = None
-        if isinstance(token, str) and token:
-            userinfo = await _try_fetch(_USERINFO_URL, token)
-            v1_me = await _try_fetch(_V1_ME_URL, token)
-            subs = await _try_fetch(_SUBSCRIPTIONS_URL, token)
-        return _info_from(creds, userinfo, v1_me, subs)
+        info = await account_from_xai(token if isinstance(token, str) else "")
+        return _with_creds_fallback(info, creds)
     except Exception:  # noqa: BLE001 -- fail-soft backstop, never disturbs the caller
         return EMPTY
 

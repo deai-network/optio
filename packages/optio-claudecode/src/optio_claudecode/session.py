@@ -44,6 +44,7 @@ from optio_claudecode.info import AGENT_INFO
 from optio_claudecode.conversation import ClaudeCodeConversation
 from optio_claudecode.conversation_listener import ConversationListener
 from optio_claudecode.input_listener import serialized, start_input_listener
+from optio_agents.account import EMPTY, accounts_to_metadata
 from optio_claudecode.account import resolve_capture_account
 from optio_claudecode.oauth_redirect import rewrite_oauth_redirect
 from optio_claudecode.seed_manifest import (
@@ -934,18 +935,23 @@ async def run_claudecode_session(
                         encrypt=config.session_blob_encrypt,
                     )
                     _trace("finally: capture_seed DONE id=%s", seed_id)
-                    # Normalized account from the seeded OAuth token (the
+                    # Normalized account(s) from the seeded OAuth token (the
                     # isolated home creds are still on disk pre-cleanup);
                     # fail-soft → EMPTY, never disturbs capture. Optio owns the
-                    # capture-time stamp: persist metadata.account, then hand
-                    # on_seed_saved the human-readable summary (2nd arg).
+                    # capture-time stamp: persist metadata.accounts (claudecode
+                    # is single-account, so the list holds at most one entry),
+                    # then hand on_seed_saved the first account's human-readable
+                    # summary (2nd arg), or None when there is no account.
                     info = await resolve_capture_account(host)
+                    accounts = [info] if (info is not None and info != EMPTY) else []
                     await _seeds.declare_metadata(
                         ctx._db, prefix=ctx._prefix, suffix=CLAUDE_SEED_SUFFIX,
-                        seed_id=seed_id, metadata={"account": info.to_dict()},
+                        seed_id=seed_id,
+                        metadata={"accounts": accounts_to_metadata(accounts)},
                     )
-                    await _call_maybe_async(config.on_seed_saved, seed_id, info.summary)
-                    _trace("finally: on_seed_saved fired (summary=%s)", info.summary)
+                    summary = accounts[0].summary if accounts else None
+                    await _call_maybe_async(config.on_seed_saved, seed_id, summary)
+                    _trace("finally: on_seed_saved fired (summary=%s)", summary)
                 except Exception:
                     _LOG.exception(
                         "seed capture failed; callback not fired, teardown continues",

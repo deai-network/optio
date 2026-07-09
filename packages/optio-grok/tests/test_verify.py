@@ -31,9 +31,10 @@ from optio_grok.verify import verify_and_refresh_seed
 @pytest.fixture(autouse=True)
 def stub_analyze_account(monkeypatch):
     """Keep verify's account-analysis off the network. Alive paths now call
-    ``analyze_account`` for the metadata.account stamp; stub it to ``EMPTY`` so
-    the refresh/liveness tests stay host-free and deterministic. (The dedicated
-    account-flow test below overrides this with a real AccountInfo.)"""
+    ``analyze_account`` for the metadata.accounts stamp; stub it to ``EMPTY`` so
+    the refresh/liveness tests stay host-free and deterministic. An ``EMPTY``
+    result wraps to the empty ``accounts`` list (nothing to stamp). (The
+    dedicated account-flow test below overrides this with a real AccountInfo.)"""
     async def _empty(creds):
         return EMPTY
 
@@ -118,7 +119,7 @@ async def test_expired_refreshes_and_writes_back(mongo_db, tmp_path, monkeypatch
 
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is True
-    assert res["account"] is EMPTY  # alive path carries the (stubbed) AccountInfo
+    assert res["accounts"] == []  # stubbed EMPTY wraps to no accounts
     assert refreshed["called"] == ("https://auth.x.ai/oauth2/token", "ORIGINAL", _CLIENT)
 
     creds = await _seed_creds(mongo_db, seed_id)
@@ -147,7 +148,7 @@ async def test_not_expired_valid_does_not_refresh(mongo_db, tmp_path, monkeypatc
 
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is True
-    assert res["account"] is EMPTY
+    assert res["accounts"] == []
     creds = await _seed_creds(mongo_db, seed_id)
     assert creds["refresh_token"] == "ORIGINAL"         # untouched
     assert creds["key"] == "OLD_ACCESS"
@@ -162,7 +163,7 @@ async def test_refresh_4xx_marks_dead(mongo_db, tmp_path, monkeypatch):
 
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is False
-    assert res["account"] is None
+    assert res["accounts"] == []
     doc = await _doc(mongo_db, seed_id)
     assert doc["status"] == "dead"
     assert doc["metadata"]["verify"]["alive"] is False
@@ -177,7 +178,7 @@ async def test_transport_failure_is_inconclusive_not_dead(mongo_db, tmp_path, mo
 
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is False
-    assert res["account"] is None
+    assert res["accounts"] == []
     # A transient failure must NOT retire a possibly-healthy seed.
     assert (await _doc(mongo_db, seed_id)).get("status") != "dead"
 
@@ -189,7 +190,7 @@ async def test_discovery_failure_is_inconclusive(mongo_db, tmp_path, monkeypatch
 
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is False
-    assert res["account"] is None
+    assert res["accounts"] == []
     assert (await _doc(mongo_db, seed_id)).get("status") != "dead"
 
 
@@ -199,14 +200,14 @@ async def test_no_refresh_token_is_dead(mongo_db, tmp_path):
 
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is False
-    assert res["account"] is None
+    assert res["accounts"] == []
     assert (await _doc(mongo_db, seed_id))["status"] == "dead"
 
 
-async def test_alive_carries_account_and_stamps_metadata(mongo_db, tmp_path, monkeypatch):
-    # The alive path calls analyze_account(creds) and both returns the resulting
-    # AccountInfo and stamps metadata.account. Override the autouse EMPTY stub
-    # with a real AccountInfo, and assert it flows through end-to-end.
+async def test_alive_carries_accounts_and_stamps_metadata(mongo_db, tmp_path, monkeypatch):
+    # The alive path calls analyze_account(creds), wraps the single AccountInfo in
+    # a 1-element list, returns it as ``accounts`` and stamps metadata.accounts.
+    # Override the autouse EMPTY stub with a real AccountInfo, assert end-to-end.
     future = _iso(datetime.now(timezone.utc) + timedelta(hours=2))
     seed_id = await _make_seed(mongo_db, tmp_path, expires_at=future)
 
@@ -228,20 +229,22 @@ async def test_alive_carries_account_and_stamps_metadata(mongo_db, tmp_path, mon
 
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is True
-    assert res["account"] is info
+    assert res["accounts"] == [info]
     # analyze_account received the live creds dict (bearer key present).
     assert seen["creds"]["key"] == "OLD_ACCESS"
 
     doc = await _doc(mongo_db, seed_id)
-    assert doc["metadata"]["account"]["plan"] == "Grok Pro"
-    assert doc["metadata"]["account"]["name"] == "Test User"
-    assert doc["metadata"]["account"]["email"] == "user@example.com"
-    assert doc["metadata"]["account"]["account_id"] == "00000000-0000-0000-0000-000000000001"
-    assert doc["metadata"]["account"]["summary"] == "Plan: Grok Pro for Test User <user@example.com>"
-    assert doc["metadata"]["account"]["windows"] == []  # grok: always empty
+    accounts = doc["metadata"]["accounts"]
+    assert len(accounts) == 1
+    assert accounts[0]["plan"] == "Grok Pro"
+    assert accounts[0]["name"] == "Test User"
+    assert accounts[0]["email"] == "user@example.com"
+    assert accounts[0]["account_id"] == "00000000-0000-0000-0000-000000000001"
+    assert accounts[0]["summary"] == "Plan: Grok Pro for Test User <user@example.com>"
+    assert accounts[0]["windows"] == []  # grok: always empty
 
 
 async def test_unknown_seed(mongo_db):
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=str(ObjectId()))
     assert res["alive"] is False
-    assert res["account"] is None
+    assert res["accounts"] == []

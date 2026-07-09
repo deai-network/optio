@@ -58,6 +58,26 @@ async def test_maps_fixture_to_account_info(monkeypatch):
     assert info.summary == "Plan: Grok Pro for Test User <user@example.com>"
 
 
+async def test_account_from_xai_maps_identity(monkeypatch):
+    # The creds-form-agnostic map helper: token in → AccountInfo out, over the
+    # same three read-only surfaces. No creds fallback lives here (that is the
+    # thin analyze_account wrapper's job); identity comes purely from the GETs.
+    _patch_fetch(monkeypatch, {
+        account._USERINFO_URL: _FIXTURE["userinfo"],
+        account._V1_ME_URL: _FIXTURE["v1_me"],
+        account._SUBSCRIPTIONS_URL: _FIXTURE["subscriptions"],
+    })
+
+    info = await account.account_from_xai("tok")
+
+    assert info.name == "Test User"
+    assert info.email == "user@example.com"
+    assert info.account_id == "00000000-0000-0000-0000-000000000001"  # userinfo.sub
+    assert info.plan == "Grok Pro"                    # active-row tier prettified
+    assert info.windows == ()                         # grok: no usage source
+    assert info.raw["subscriptions"] is _FIXTURE["subscriptions"]
+
+
 def test_prettify_tier_strips_prefix_and_title_cases():
     assert account._prettify_tier("SUBSCRIPTION_TIER_GROK_PRO") == "Grok Pro"
     assert account._prettify_tier("SUBSCRIPTION_TIER_GROK_HEAVY") == "Grok Heavy"

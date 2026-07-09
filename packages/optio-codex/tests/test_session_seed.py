@@ -83,7 +83,12 @@ async def test_fresh_session_captures_seed(
     coll = mongo_db[f"test{CODEX_SEED_SUFFIX}"]
     assert await coll.count_documents({}) == 1
     from bson import ObjectId
-    assert await coll.find_one({"_id": ObjectId(seed_id)}) is not None
+    doc = await coll.find_one({"_id": ObjectId(seed_id)})
+    assert doc is not None
+    # The capture path stamps the plural metadata.accounts (a list), never the
+    # legacy singular metadata.account.
+    assert isinstance(doc["metadata"]["accounts"], list)
+    assert "account" not in doc["metadata"]
 
 
 async def test_capture_skipped_without_valid_auth(

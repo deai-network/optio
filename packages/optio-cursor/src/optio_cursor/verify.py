@@ -25,7 +25,7 @@ from typing import Callable
 from optio_host.paths import task_dir
 
 from optio_agents import seeds
-from optio_agents.account import EMPTY
+from optio_agents.account import EMPTY, accounts_to_metadata
 from optio_cursor import host_actions
 from optio_cursor.account import analyze_account
 from optio_cursor.seed_manifest import CURSOR_SEED_MANIFEST, CURSOR_SEED_SUFFIX
@@ -56,13 +56,15 @@ async def verify_and_refresh_seed(
     """Verify a seed by probing cursor-agent with its credentials; refresh +
     save back.
 
-    Returns {alive, account} where, on the alive path, account is a normalized
-    ``optio_agents.account.AccountInfo`` derived from the (refreshed) auth.json
-    accessToken (fail-soft → ``EMPTY``, never raises); dead paths carry None.
-    alive is True iff cursor answered the challenge (the seed is alive). Never
-    raises for a dead seed. Stamps the verdict (and, when alive, the normalized
-    account) as seed metadata and marks the seed's pool status (dead seeds are
-    never handed out by seeds.acquire).
+    Returns {alive, accounts} where, on the alive path, accounts is a list of
+    normalized ``optio_agents.account.AccountInfo`` derived from the (refreshed)
+    auth.json accessToken (fail-soft → ``[]``, never raises). Cursor carries a
+    single account, so the list holds at most one element (empty when analysis
+    fails soft to ``EMPTY``); dead paths carry ``[]``. alive is True iff cursor
+    answered the challenge (the seed is alive). Never raises for a dead seed.
+    Stamps the verdict (and, when alive, the normalized accounts) as seed
+    metadata and marks the seed's pool status (dead seeds are never handed out
+    by seeds.acquire).
 
     Account analysis does read-only GETs only -- it triggers no token refresh
     beyond what the probe already performed.
@@ -78,7 +80,7 @@ async def verify_and_refresh_seed(
     """
     doc = await seeds.load_seed(db, prefix=prefix, suffix=suffix, seed_id=seed_id)
     if doc is None:
-        return {"alive": False, "account": None}
+        return {"alive": False, "accounts": []}
 
     taskdir = task_dir(
         ssh=ssh, process_id=f"seed-verify-{uuid.uuid4().hex[:12]}",
@@ -143,23 +145,27 @@ async def verify_and_refresh_seed(
             status="alive" if alive else "dead",
         )
         if not alive:
-            return {"alive": False, "account": None}
+            return {"alive": False, "accounts": []}
 
         # Alive: normalize the account from the fresh accessToken (fail-soft →
         # EMPTY) and stamp it beside the verdict. Read-only GETs; no refresh.
-        account = (
+        # Cursor carries a single account: wrap the analyzer's one result in a
+        # list, dropping EMPTY (unanalyzable) so the plural metadata.accounts
+        # holds only real accounts.
+        info = (
             await analyze_account(access_token)
             if isinstance(access_token, str) and access_token
             else EMPTY
         )
+        accounts = [info] if (info is not None and info != EMPTY) else []
         await seeds.declare_metadata(
             db, prefix=prefix, suffix=suffix, seed_id=seed_id,
             metadata={
-                "account": account.to_dict(),
+                "accounts": accounts_to_metadata(accounts),
                 "accountFetchedAt": datetime.now(timezone.utc),
             },
         )
-        return {"alive": True, "account": account}
+        return {"alive": True, "accounts": accounts}
     finally:
         try:
             await host.cleanup_taskdir(aggressive=True)

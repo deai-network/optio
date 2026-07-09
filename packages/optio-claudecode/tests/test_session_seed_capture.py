@@ -85,7 +85,7 @@ async def test_capture_fires_callback_and_stores_env_only_seed(
     # a seed doc + blob exist, and optio stamped the normalized account metadata
     doc = await seeds.load_seed(mongo_db, prefix="test", suffix=CLAUDE_SEED_SUFFIX, seed_id=seed_id)
     assert doc is not None
-    assert doc["metadata"]["account"]["email"] == "jane@x.com"
+    assert doc["metadata"]["accounts"][0]["email"] == "jane@x.com"
 
     # the seed tar contains ONLY INCLUDE paths, never the transcript
     bucket = AsyncIOMotorGridFSBucket(mongo_db)

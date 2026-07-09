@@ -34,7 +34,7 @@ from optio_codex.verify import verify_and_refresh_seed
 @pytest.fixture(autouse=True)
 def stub_analyze_account(monkeypatch):
     """Keep verify's account-analysis off the network. Alive paths now call
-    ``analyze_account`` for the metadata.account stamp; stub it to ``EMPTY`` so
+    ``analyze_account`` for the metadata.accounts stamp; stub it to ``EMPTY`` so
     these refresh-logic tests never GET chatgpt.com. (A dedicated test in
     test_account.py asserts the real AccountInfo flows through the alive path.)"""
     async def _empty(_creds):
@@ -128,7 +128,7 @@ async def test_stale_chatgpt_refreshes_and_writes_back(mongo_db, tmp_path, monke
 
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is True
-    assert res["account"] is EMPTY  # alive path carries the (stubbed) AccountInfo
+    assert res["accounts"] == []  # stubbed EMPTY → wrapped to an empty list
     assert seen["call"] == ("https://auth.openai.com/oauth/token", "ORIGINAL", _CLIENT)
 
     auth = await _seed_auth(mongo_db, seed_id)
@@ -151,7 +151,7 @@ async def test_fresh_chatgpt_does_not_refresh(mongo_db, tmp_path, monkeypatch):
     monkeypatch.setattr(verify, "_refresh_sync", boom)
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is True
-    assert res["account"] is EMPTY
+    assert res["accounts"] == []
     auth = await _seed_auth(mongo_db, seed_id)
     assert auth["tokens"]["refresh_token"] == "ORIGINAL"   # untouched
 
@@ -168,7 +168,7 @@ async def test_api_key_seed_is_alive_by_presence(mongo_db, tmp_path, monkeypatch
     monkeypatch.setattr(verify, "_refresh_sync", boom)
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is True
-    assert res["account"] is EMPTY  # API-key seed: nothing to fetch → EMPTY
+    assert res["accounts"] == []  # API-key seed: nothing to fetch → EMPTY → []
     assert (await _doc(mongo_db, seed_id))["status"] == "alive"
 
 
@@ -179,7 +179,7 @@ async def test_refresh_4xx_marks_dead(mongo_db, tmp_path, monkeypatch):
     monkeypatch.setattr(verify, "_refresh_sync", lambda *a: verify._DEAD)
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is False
-    assert res["account"] is None
+    assert res["accounts"] == []
     assert (await _doc(mongo_db, seed_id))["status"] == "dead"
 
 
@@ -190,7 +190,7 @@ async def test_transport_failure_is_inconclusive_not_dead(mongo_db, tmp_path, mo
     monkeypatch.setattr(verify, "_refresh_sync", lambda *a: None)  # network err
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is False
-    assert res["account"] is None
+    assert res["accounts"] == []
     assert (await _doc(mongo_db, seed_id)).get("status") != "dead"
 
 
@@ -200,7 +200,7 @@ async def test_no_refresh_token_is_dead(mongo_db, tmp_path):
         mongo_db, tmp_path, last_refresh=old, refresh_token=None)
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is False
-    assert res["account"] is None
+    assert res["accounts"] == []
     assert (await _doc(mongo_db, seed_id))["status"] == "dead"
 
 
@@ -219,7 +219,7 @@ async def test_discovery_unavailable_falls_back_to_agent_probe(
         mongo_db, prefix="test", seed_id=seed_id, install_dir=str(shim_install_dir),
     )
     assert res["alive"] is True
-    assert res["account"] is EMPTY
+    assert res["accounts"] == []
     assert (await _doc(mongo_db, seed_id))["status"] == "alive"
 
 
@@ -227,4 +227,4 @@ async def test_unknown_seed(mongo_db):
     res = await verify_and_refresh_seed(
         mongo_db, prefix="test", seed_id=str(ObjectId()))
     assert res["alive"] is False
-    assert res["account"] is None
+    assert res["accounts"] == []

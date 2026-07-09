@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Callable
+from typing import Awaitable, Callable
+
+from optio_agents.account import EMPTY, AccountInfo
 
 from optio_antigravity import create_antigravity_task
 from optio_claudecode import analyze_account as _claudecode_analyze
@@ -64,4 +66,54 @@ async def analyze_account(agent_type: AgentType, creds):
     fn = _ANALYZE_REGISTRY.get(agent_type)
     if fn is None:
         raise ValueError(f"no analyze_account for agent_type: {agent_type!r}")
+    return await fn(creds)
+
+
+# --- plural account seam ------------------------------------------------------
+#
+# ``analyze_accounts`` is the plural generalization: a seed may back more than
+# one account (opencode fans out to one account per configured provider). Every
+# single-account engine wraps its singular ``analyze_account`` into a 1-element
+# list, dropping the fail-soft ``EMPTY`` sentinel to an empty list. opencode's
+# real per-provider meta-analyzer lands in Phase 2 (``optio_opencode``); until
+# then it is a stub returning ``[]``.
+
+
+def _single(
+    analyze: Callable[..., Awaitable[AccountInfo]],
+) -> Callable[..., Awaitable[list[AccountInfo]]]:
+    """Adapt a singular ``analyze_account`` into the plural shape: a 1-element
+    list, or ``[]`` when analysis failed soft (``None``/``EMPTY``)."""
+
+    async def _wrap(creds) -> list[AccountInfo]:
+        info = await analyze(creds)
+        return [info] if info is not None and info != EMPTY else []
+
+    return _wrap
+
+
+async def _opencode_accounts(creds) -> list[AccountInfo]:
+    """Stub: the opencode per-provider meta-analyzer lands in Phase 2."""
+    return []
+
+
+_ANALYZE_ACCOUNTS_REGISTRY: dict[
+    AgentType, Callable[..., Awaitable[list[AccountInfo]]]
+] = {
+    "claudecode": _single(_claudecode_analyze),
+    "codex": _single(_codex_analyze),
+    "cursor": _single(_cursor_analyze),
+    "kimicode": _single(_kimicode_analyze),
+    "antigravity": _single(_antigravity_analyze),
+    "grok": _single(_grok_analyze),
+    "opencode": _opencode_accounts,
+}
+
+
+async def analyze_accounts(agent_type: AgentType, creds) -> list[AccountInfo]:
+    """Dispatch to the per-engine plural analyzer by agent_type, returning the
+    list of accounts backing the seed. Raises ValueError for an unknown engine."""
+    fn = _ANALYZE_ACCOUNTS_REGISTRY.get(agent_type)
+    if fn is None:
+        raise ValueError(f"no analyze_accounts for agent_type: {agent_type!r}")
     return await fn(creds)

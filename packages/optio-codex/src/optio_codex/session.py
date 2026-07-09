@@ -18,6 +18,7 @@ from optio_agents import HookContext, RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_
 from optio_agents import seeds as _seeds
 from optio_agents.input_listener import serialized, start_input_listener
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
+from optio_agents.account import EMPTY, accounts_to_metadata
 from optio_agents.uploads import materialize, upload_url_token
 from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
 from optio_host.paths import task_dir
@@ -807,14 +808,19 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                     # Normalized account from the just-authed identity (the
                     # isolated home auth.json is still on disk pre-cleanup);
                     # fail-soft → EMPTY, never disturbs capture. Optio owns the
-                    # capture-time stamp: persist metadata.account, then hand
-                    # on_seed_saved the human-readable summary (2nd arg).
+                    # capture-time stamp: persist the plural metadata.accounts
+                    # (a single-account engine wraps its one result in a list;
+                    # EMPTY → []), then hand on_seed_saved the human-readable
+                    # summary of the first account, or None (2nd arg).
                     info = await resolve_capture_account(host)
+                    accounts = [info] if info != EMPTY else []
                     await _seeds.declare_metadata(
                         ctx._db, prefix=ctx._prefix, suffix=CODEX_SEED_SUFFIX,
-                        seed_id=seed_id, metadata={"account": info.to_dict()},
+                        seed_id=seed_id,
+                        metadata={"accounts": accounts_to_metadata(accounts)},
                     )
-                    await _call_maybe_async(config.on_seed_saved, seed_id, info.summary)
+                    summary = accounts[0].summary if accounts else None
+                    await _call_maybe_async(config.on_seed_saved, seed_id, summary)
             except Exception:
                 _LOG.exception(
                     "seed capture failed; callback not fired, teardown continues",

@@ -58,7 +58,7 @@ from typing import Callable
 from urllib.error import HTTPError, URLError
 
 from optio_agents import seeds
-from optio_agents.account import AccountInfo
+from optio_agents.account import EMPTY, AccountInfo, accounts_to_metadata
 from optio_kimicode.account import analyze_account
 from optio_kimicode.seed_manifest import KIMI_SEED_SUFFIX
 
@@ -205,12 +205,13 @@ async def verify_and_refresh_seed(
     performs a ``refresh_token`` grant against the (hardcoded, env-overridable)
     kimi OAuth token endpoint and writes the rotated
     ``access_token``/``refresh_token``/``expires_at`` back into the seed.
-    Returns {alive, account} where alive is True iff the seed is alive (token
-    outside the threshold, or a successful refresh). On the alive path ``account``
-    is the normalized ``optio_agents.account.AccountInfo`` derived (fail-soft)
-    from the seed's token via a read-only ``/coding/v1/usages`` GET, and is also
-    stamped as ``metadata.account``; dead/inconclusive paths return
-    ``account=None``.
+    Returns {alive, accounts} where alive is True iff the seed is alive (token
+    outside the threshold, or a successful refresh). On the alive path
+    ``accounts`` is a list wrapping the single normalized
+    ``optio_agents.account.AccountInfo`` derived (fail-soft) from the seed's token
+    via a read-only ``/coding/v1/usages`` GET — a 1-element list, or ``[]`` when
+    analysis yields ``EMPTY`` — and is also stamped as ``metadata.accounts``;
+    dead/inconclusive paths return ``accounts=[]``.
 
     Never raises for a dead seed. Marks pool status ``dead`` ONLY on a definitive
     dead signal (no refresh token, malformed creds, or a 401/403/``invalid_grant``
@@ -226,19 +227,22 @@ async def verify_and_refresh_seed(
 
     doc = await seeds.load_seed(db, prefix=prefix, suffix=suffix, seed_id=seed_id)
     if doc is None:
-        return {"alive": False, "account": None}
+        return {"alive": False, "accounts": []}
 
     async def _finish(
-        alive: bool, *, mark_dead: bool, account: "AccountInfo | None" = None,
+        alive: bool, *, mark_dead: bool, accounts: "list[AccountInfo] | None" = None,
     ) -> dict:
+        accounts = list(accounts or [])
         now = datetime.now(timezone.utc)
         metadata: dict = {"verify": {"alive": alive, "checkedAt": now}}
-        # Stamp the normalized account only on the alive path (mirrors codex /
-        # claudecode). Fail-soft analysis may hand us EMPTY; stamp it anyway so
-        # the pool consistently carries a metadata.account for every live seed.
-        if alive and account is not None:
-            metadata["account"] = account.to_dict()
-            metadata["accountFetchedAt"] = now
+        # Stamp the normalized accounts only on the alive path (mirrors codex /
+        # claudecode). kimi is single-account, so this is at most a 1-element
+        # list; a fail-soft EMPTY analysis wraps to [] (an alive seed carrying no
+        # accounts). accountFetchedAt only when something was actually analyzed.
+        if alive:
+            metadata["accounts"] = accounts_to_metadata(accounts)
+            if accounts:
+                metadata["accountFetchedAt"] = now
         await seeds.declare_metadata(
             db, prefix=prefix, suffix=suffix, seed_id=seed_id, metadata=metadata,
         )
@@ -246,7 +250,7 @@ async def verify_and_refresh_seed(
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="alive")
         elif mark_dead:
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="dead")
-        return {"alive": alive, "account": account if alive else None}
+        return {"alive": alive, "accounts": accounts if alive else []}
 
     buf = io.BytesIO()
     await AsyncIOMotorGridFSBucket(db).download_to_stream(doc["blobId"], buf)
@@ -273,8 +277,9 @@ async def verify_and_refresh_seed(
         # liveness endpoint, so there is nothing further to probe host-free.
         # Analyze the (un-rotated) stored token for the account stamp — one
         # read-only /usages GET, no refresh.
-        account = await analyze_account(creds.get("access_token"))
-        return await _finish(True, mark_dead=False, account=account)
+        info = await analyze_account(creds.get("access_token"))
+        accounts = [info] if (info is not None and info != EMPTY) else []
+        return await _finish(True, mark_dead=False, accounts=accounts)
 
     resp = await _in_executor(_refresh_sync, _token_endpoint(), refresh_token, _CLIENT_ID)
     if resp is _DEAD:
@@ -303,5 +308,6 @@ async def verify_and_refresh_seed(
         _LOG.exception("seed %s: refreshed creds save-back failed", seed_id)
     # Analyze the freshly-rotated token for the account stamp (read-only GET; the
     # refresh above is verify's own — no EXTRA refresh here).
-    account = await analyze_account(creds.get("access_token"))
-    return await _finish(True, mark_dead=False, account=account)
+    info = await analyze_account(creds.get("access_token"))
+    accounts = [info] if (info is not None and info != EMPTY) else []
+    return await _finish(True, mark_dead=False, accounts=accounts)

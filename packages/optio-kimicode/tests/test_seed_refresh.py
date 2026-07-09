@@ -42,7 +42,7 @@ async def test_refreshes_seed_before_merging(monkeypatch):
 
     async def _verify(db, *, prefix, seed_id, encrypt=None, decrypt=None):
         calls.append(("verify", seed_id, prefix))
-        return {"alive": True, "account": None}
+        return {"alive": True, "accounts": []}
 
     async def _merge(ctx, host, *, seed_id, manifest, suffix, decrypt=None):
         calls.append(("merge", seed_id))
@@ -62,7 +62,7 @@ async def test_spoiled_seed_fails_launch_before_merging(monkeypatch):
 
     async def _verify(db, *, prefix, seed_id, encrypt=None, decrypt=None):
         calls.append("verify")
-        return {"alive": False, "account": None}
+        return {"alive": False, "accounts": []}
 
     async def _load_seed(db, *, prefix, suffix, seed_id):
         return {"_id": seed_id, "status": "dead"}
@@ -87,7 +87,7 @@ async def test_transient_refresh_failure_still_merges(monkeypatch):
 
     async def _verify(db, *, prefix, seed_id, encrypt=None, decrypt=None):
         calls.append("verify")
-        return {"alive": False, "account": None}
+        return {"alive": False, "accounts": []}
 
     async def _load_seed(db, *, prefix, suffix, seed_id):
         return {"_id": seed_id, "status": "alive"}  # not dead → transient

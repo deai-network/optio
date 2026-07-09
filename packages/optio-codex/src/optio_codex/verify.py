@@ -61,7 +61,7 @@ from urllib.error import HTTPError, URLError
 from optio_host.paths import task_dir
 
 from optio_agents import seeds
-from optio_agents.account import EMPTY, AccountInfo
+from optio_agents.account import EMPTY, AccountInfo, accounts_to_metadata
 from optio_codex import host_actions
 from optio_codex.account import analyze_account
 from optio_codex.seed_manifest import CODEX_SEED_MANIFEST, CODEX_SEED_SUFFIX
@@ -196,10 +196,11 @@ async def verify_and_refresh_seed(
     the rotating token in place. Falls back to the billable agent probe only
     when OIDC discovery is unavailable.
 
-    Returns ``{"alive": bool, "account": AccountInfo | None}``: on the alive
-    path ``account`` is the normalized ``optio_agents.account.AccountInfo``
-    derived (fail-soft) from the seed's tokens and also stamped as
-    ``metadata.account``; dead paths return ``account=None``. Never raises for a
+    Returns ``{"alive": bool, "accounts": list[AccountInfo]}``: on the alive
+    path ``accounts`` wraps the single normalized
+    ``optio_agents.account.AccountInfo`` derived (fail-soft) from the seed's
+    tokens (``[]`` when the analysis yields ``EMPTY``) and is also stamped as
+    ``metadata.accounts``; dead paths return ``accounts=[]``. Never raises for a
     dead seed. Marks pool status ``dead`` ONLY on a definitive dead signal
     (no refresh token,
     malformed auth, or a 4xx invalid_grant); a transport/discovery failure is
@@ -210,18 +211,22 @@ async def verify_and_refresh_seed(
 
     doc = await seeds.load_seed(db, prefix=prefix, suffix=suffix, seed_id=seed_id)
     if doc is None:
-        return {"alive": False, "account": None}
+        return {"alive": False, "accounts": []}
 
     async def _finish(
         alive: bool, *, mark_dead: bool, account: "AccountInfo | None" = None,
     ) -> dict:
         now = datetime.now(timezone.utc)
         metadata: dict = {"verify": {"alive": alive, "checkedAt": now}}
-        # Stamp the normalized account only on the alive path (mirrors
-        # claudecode). Fail-soft analysis may hand us EMPTY; stamp it anyway so
-        # the pool consistently carries a metadata.account for every live seed.
-        if alive and account is not None:
-            metadata["account"] = account.to_dict()
+        # Single-account engine: wrap the one analyzer result in the plural
+        # list (empty when analysis yielded EMPTY / nothing). Stamped as
+        # metadata.accounts on the alive path so the pool consistently carries
+        # the plural shape for every live seed.
+        accounts = (
+            [account] if (alive and account is not None and account != EMPTY) else []
+        )
+        if alive:
+            metadata["accounts"] = accounts_to_metadata(accounts)
             metadata["accountFetchedAt"] = now
         await seeds.declare_metadata(
             db, prefix=prefix, suffix=suffix, seed_id=seed_id, metadata=metadata,
@@ -230,7 +235,7 @@ async def verify_and_refresh_seed(
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="alive")
         elif mark_dead:
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="dead")
-        return {"alive": alive, "account": account if alive else None}
+        return {"alive": alive, "accounts": accounts}
 
     buf = io.BytesIO()
     await AsyncIOMotorGridFSBucket(db).download_to_stream(doc["blobId"], buf)

@@ -48,3 +48,36 @@ async def test_failsoft_on_fetch_error(monkeypatch):
     monkeypatch.setattr(acct, "_fetch_profile", boom)
     monkeypatch.setattr(acct, "_fetch_usage", boom)
     assert await acct.analyze_account("tok") == EMPTY
+
+
+async def test_account_from_oauth_token_maps_identity(monkeypatch):
+    # The reusable, creds-form-agnostic map helper: same fetch+map body as
+    # analyze_account, taking a bare OAuth access token (opencode's anthropic
+    # provider reuses this directly).
+    profile = json.loads((FIX / "claude_profile.json").read_text())
+    usage = json.loads((FIX / "claude_usage.json").read_text())
+
+    async def fake_profile(_tok):
+        return profile
+
+    async def fake_usage(_tok):
+        return usage
+
+    monkeypatch.setattr(acct, "_fetch_profile", fake_profile)
+    monkeypatch.setattr(acct, "_fetch_usage", fake_usage)
+
+    info = await acct.account_from_oauth_token("tok")
+    assert isinstance(info, AccountInfo)
+    assert info.email == profile["account"]["email"]
+    assert info.plan == "Claude Max 20x"
+    assert info.account_id == profile["account"]["uuid"]
+    assert info.windows
+
+
+async def test_account_from_oauth_token_failsoft(monkeypatch):
+    async def boom(_tok):
+        raise OSError("network")
+
+    monkeypatch.setattr(acct, "_fetch_profile", boom)
+    monkeypatch.setattr(acct, "_fetch_usage", boom)
+    assert await acct.account_from_oauth_token("tok") == EMPTY
