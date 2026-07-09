@@ -24,6 +24,7 @@ from optio_host.paths import task_dir
 
 from optio_codex import cred_watcher, host_actions
 from optio_codex import models as codex_models
+from optio_codex.account import resolve_capture_account
 from optio_codex.info import AGENT_INFO
 from optio_codex.conversation import CodexConversation
 from optio_codex.conversation_listener import ConversationListener
@@ -791,11 +792,19 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                         ctx, host,
                         manifest=CODEX_SEED_MANIFEST,
                         suffix=CODEX_SEED_SUFFIX,
-                        encrypt=None,
+                        encrypt=config.session_blob_encrypt,
                     )
-                    # 2nd arg (account summary) is resolved in a later
-                    # stage; None for now.
-                    await _call_maybe_async(config.on_seed_saved, seed_id, None)
+                    # Normalized account from the just-authed identity (the
+                    # isolated home auth.json is still on disk pre-cleanup);
+                    # fail-soft → EMPTY, never disturbs capture. Optio owns the
+                    # capture-time stamp: persist metadata.account, then hand
+                    # on_seed_saved the human-readable summary (2nd arg).
+                    info = await resolve_capture_account(host)
+                    await _seeds.declare_metadata(
+                        ctx._db, prefix=ctx._prefix, suffix=CODEX_SEED_SUFFIX,
+                        seed_id=seed_id, metadata={"account": info.to_dict()},
+                    )
+                    await _call_maybe_async(config.on_seed_saved, seed_id, info.summary)
             except Exception:
                 _LOG.exception(
                     "seed capture failed; callback not fired, teardown continues",
