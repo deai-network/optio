@@ -2,6 +2,7 @@ import { createContext, useMemo, useEffect, type ReactNode } from 'react';
 import { createOptioClient, type OptioClient } from '../client.js';
 import { useInstanceDiscovery } from '../hooks/useInstanceDiscovery.js';
 import { startSessionEvents, resetSession, type SessionEventCallbacks } from '../session/sessionEvents.js';
+import { setBrowserOpenHandler, type BrowserOpenHandler } from '../handlers/browserOpen.js';
 
 interface OptioContextValue {
   prefix: string;
@@ -21,6 +22,9 @@ interface OptioProviderProps {
   baseUrl?: string;
   onAttention?: (processId: string, reason: string) => void;
   onClientMessage?: (processId: string, keyword: string, data: unknown) => void;
+  // Override the browser-open handler (agent OAuth "open this URL" requests).
+  // undefined -> optio-ui's default (window.open + notification fallback).
+  onBrowserOpen?: BrowserOpenHandler;
   children: ReactNode;
 }
 
@@ -44,7 +48,7 @@ function OptioProviderInner({ explicitPrefix, explicitDatabase, explicitLive, ba
   );
 }
 
-export function OptioProvider({ prefix, database, live, baseUrl = '', onAttention, onClientMessage, children }: OptioProviderProps) {
+export function OptioProvider({ prefix, database, live, baseUrl = '', onAttention, onClientMessage, onBrowserOpen, children }: OptioProviderProps) {
   const client = useMemo(() => createOptioClient(baseUrl), [baseUrl]);
 
   // Mount the always-on session-events manager once. Re-runs when the
@@ -54,6 +58,13 @@ export function OptioProvider({ prefix, database, live, baseUrl = '', onAttentio
     const callbacks: SessionEventCallbacks = { onAttention, onClientMessage };
     startSessionEvents(baseUrl, prefix, database, callbacks);
   }, [baseUrl, prefix, database, onAttention, onClientMessage]);
+
+  // Install the browser-open handler override (undefined restores the default).
+  // Module-level, mirroring how sessionEvents holds onAttention/onClientMessage.
+  useEffect(() => {
+    setBrowserOpenHandler(onBrowserOpen);
+    return () => setBrowserOpenHandler(undefined);
+  }, [onBrowserOpen]);
 
   return (
     <OptioContext.Provider value={{ prefix: prefix ?? 'optio', database, live: live ?? false, baseUrl, client, resetSession }}>

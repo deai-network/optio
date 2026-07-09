@@ -1,24 +1,24 @@
 import { notification } from 'antd';
 
-interface BrowserOpenRequest {
+export interface BrowserOpenRequest {
   requestId: string;
   url: string;
 }
+
+export type BrowserOpenHandler = (requests: BrowserOpenRequest[] | undefined) => void;
 
 // Module-level dedup across all feed chokepoints. A given requestId fires
 // exactly once per app instance, no matter which feed surfaces it.
 const _seen = new Set<string>();
 
 /**
- * View-scoped browser-open handler. Called from every per-process feed
- * chokepoint with the `browserOpenRequests` each `update` carries. For each
- * not-yet-seen requestId it attempts `window.open(url)` and raises an
- * app-level antd notification with an "Open in a new tab ↗" link — the
- * always-available fallback when window.open is popup-blocked (an SSE
- * callback has no user gesture). Imperative/global; visible regardless of
- * which view is mounted.
+ * Default view-scoped browser-open handler: best-effort `window.open(url)` with
+ * an app-level antd notification fallback ("Open in a new tab ↗") when the popup
+ * is blocked (an SSE callback has no user gesture). Used unless a consumer
+ * injects its own handler via `OptioProvider`'s `onBrowserOpen` prop
+ * (`setBrowserOpenHandler`). Imperative/global.
  */
-export function handleBrowserOpenRequests(requests: BrowserOpenRequest[] | undefined): void {
+export function defaultHandleBrowserOpenRequests(requests: BrowserOpenRequest[] | undefined): void {
   if (!requests || requests.length === 0) return;
   for (const req of requests) {
     if (!req || typeof req.requestId !== 'string') continue;
@@ -48,6 +48,29 @@ export function handleBrowserOpenRequests(requests: BrowserOpenRequest[] | undef
       });
     }
   }
+}
+
+// Active handler — swapped by OptioProvider's `onBrowserOpen` prop. Mirrors how
+// onAttention/onClientMessage feed sessionEvents' module-level `_callbacks`.
+let _handler: BrowserOpenHandler = defaultHandleBrowserOpenRequests;
+
+/**
+ * Inject a custom browser-open handler (or `undefined` to restore the default).
+ * Called by `OptioProvider` from its `onBrowserOpen` prop. A consumer can thus
+ * own the open-or-fallback UX (e.g. detect popup-block and surface an app banner)
+ * without any optio-ui change.
+ */
+export function setBrowserOpenHandler(fn: BrowserOpenHandler | undefined): void {
+  _handler = fn ?? defaultHandleBrowserOpenRequests;
+}
+
+/**
+ * Dispatcher invoked by every per-process feed chokepoint with the
+ * `browserOpenRequests` each `update` carries. Routes to the active handler
+ * (default or injected). The chokepoints call this unchanged.
+ */
+export function handleBrowserOpenRequests(requests: BrowserOpenRequest[] | undefined): void {
+  _handler(requests);
 }
 
 // Test-only reset of the dedup set.
