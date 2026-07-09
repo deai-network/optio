@@ -1,0 +1,41 @@
+{
+  "user": {
+    "userId": "EXAMPLEEXAMPLEEXAMPLE0",
+    "region": "REGION_OVERSEA",
+    "membership": {
+      "level": "LEVEL_BASIC"
+    },
+    "businessId": ""
+  },
+  "usage": {
+    "limit": "100",
+    "used": "2",
+    "remaining": "98",
+    "resetTime": "2026-07-11T20:30:55.151098Z"
+  },
+  "limits": [
+    {
+      "window": {
+        "duration": 300,
+        "timeUnit": "TIME_UNIT_MINUTE"
+      },
+      "detail": {
+        "limit": "100",
+        "remaining": "100",
+        "resetTime": "2026-07-09T10:30:55.151098Z"
+      }
+    }
+  ],
+  "parallel": {
+    "limit": "10"
+  },
+  "totalQuota": {
+    "limit": "100",
+    "remaining": "99"
+  },
+  "authentication": {
+    "method": "METHOD_ACCESS_TOKEN",
+    "scope": "FEATURE_CODING"
+  },
+  "subType": "TYPE_PURCHASE"
+}
