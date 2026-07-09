@@ -5,6 +5,7 @@ Owns the optio.log keyword protocol (parser + session driver), the
 truth for the LLM-facing keyword-protocol documentation.
 """
 
+from optio_agents.account import AccountInfo, UsageWindow, EMPTY, is_limited
 from optio_agents.agent_info import AgentInfo
 from optio_agents.config_types import (
     AllowedDir,
@@ -58,6 +59,10 @@ from optio_agents.input_listener import serialized, start_input_listener
 from optio_agents.tmux_input import NAV_KEYS, send_key_to_tmux, send_text_to_tmux
 
 __all__ = [
+    "AccountInfo",
+    "UsageWindow",
+    "EMPTY",
+    "is_limited",
     "AgentInfo",
     "AllowedDir",
     "ConversationMode",
