@@ -40,13 +40,14 @@ async def test_maps_fixture_into_account_info(monkeypatch):
 
     info = await account.analyze_account("TOK")
 
-    # Identity: account_id + plan present, name/email absent → summary None.
+    # Identity: account_id + plan present, name/email absent → summary is the
+    # plan alone (friendlier than the opaque account id in the pool UI).
     assert isinstance(info, AccountInfo)
     assert info.account_id == "EXAMPLEEXAMPLEEXAMPLE0"
     assert info.plan == "Basic"                      # LEVEL_BASIC humanized
     assert info.name is None
     assert info.email is None
-    assert info.summary is None                      # needs plan + email; email absent
+    assert info.summary == "Plan: Basic"             # no identity → plan-only summary
 
     # Two windows: the top-level account quota + the one 5h limit row.
     assert len(info.windows) == 2
