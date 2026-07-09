@@ -80,6 +80,16 @@ function rewriteResponseHeaders(headers: Record<string, any>): Record<string, an
     if (stripped) out['content-security-policy'] = stripped;
     else delete out['content-security-policy'];
   }
+  // Strip hop-by-hop / connection-specific headers (RFC 7230 §6.1). A proxy must
+  // not forward these, and they are FORBIDDEN under HTTP/2: forwarding e.g. a
+  // `Connection: keep-alive` + `Keep-Alive` from a strict upstream (kimi-code)
+  // to an HTTP/2 frontend (a Vite HTTPS dev server) makes the browser reject the
+  // whole response with ERR_HTTP2_PROTOCOL_ERROR. The proxy re-frames the
+  // response itself (content-length for the rewritten HTML body; Node re-chunks
+  // streamed bodies), so dropping these is correct on HTTP/1.1 too.
+  for (const h of ['connection', 'keep-alive', 'transfer-encoding', 'upgrade', 'proxy-connection', 'te', 'trailer']) {
+    delete out[h];
+  }
   return out;
 }
 

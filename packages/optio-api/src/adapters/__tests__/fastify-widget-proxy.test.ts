@@ -110,6 +110,29 @@ describe('registerWidgetProxy — HTTP path', () => {
     await app.close();
   });
 
+  it('strips hop-by-hop headers so HTTP/2 frontends accept the proxied response', async () => {
+    // A strict upstream (like kimi-code) sends connection-specific headers that
+    // are FORBIDDEN under HTTP/2; forwarding them makes an HTTP/2 frontend reject
+    // the whole response with ERR_HTTP2_PROTOCOL_ERROR. The proxy must drop them.
+    const app = await makeApp(() => 'operator');
+    upstreamResponder = (_req, res) => {
+      res.setHeader('content-type', 'text/plain');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('Keep-Alive', 'timeout=72');
+      res.end('hello');
+    };
+    const oid = await insertProcess({ url: `http://127.0.0.1:${upstreamPort}`, innerAuth: null });
+    const res = await app.inject({ method: 'GET', url: widgetUrl(oid, '/foo') });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toBe('hello');
+    // The distinctive `Keep-Alive: timeout=72` must be gone (light-my-request
+    // re-adds a bare `connection` header to its synthetic response, so asserting
+    // on `connection` would test the harness, not the proxy — the upstream-set
+    // `keep-alive` value is the reliable signal).
+    expect(res.headers['keep-alive']).toBeUndefined();
+    await app.close();
+  });
+
   it('returns 404 when process is unknown', async () => {
     const app = await makeApp();
     const unknownOid = new ObjectId();
