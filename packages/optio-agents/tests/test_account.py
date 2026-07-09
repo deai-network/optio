@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from optio_agents.account import AccountInfo, UsageWindow, EMPTY
+from optio_agents.account import AccountInfo, UsageWindow, EMPTY, is_limited
 
 
 def _dt(h): return datetime(2026, 7, 9, h, 0, tzinfo=timezone.utc)
@@ -45,3 +45,34 @@ def test_roundtrip_to_from_dict():
 
 def test_empty_roundtrips():
     assert AccountInfo.from_dict(EMPTY.to_dict()) == EMPTY
+
+
+def test_limited_global_maxed_unreset():
+    info = AccountInfo(windows=[UsageWindow("seven_day", 100.0, _dt(15), None)])
+    assert is_limited(info, _dt(12)) is True          # resets in future
+
+
+def test_not_limited_when_reset_passed():
+    info = AccountInfo(windows=[UsageWindow("seven_day", 100.0, _dt(9), None)])
+    assert is_limited(info, _dt(12)) is False          # window already reset
+
+
+def test_maxed_no_reset_time_is_limited():
+    info = AccountInfo(windows=[UsageWindow("seven_day", 100.0, None, None)])
+    assert is_limited(info, _dt(12)) is True
+
+
+def test_not_limited_below_100():
+    info = AccountInfo(windows=[UsageWindow("seven_day", 99.9, _dt(15), None)])
+    assert is_limited(info, _dt(12)) is False
+
+
+def test_per_model_gated_only_when_requested():
+    info = AccountInfo(windows=[UsageWindow("seven_day_opus", 100.0, _dt(15), "opus")])
+    assert is_limited(info, _dt(12)) is False               # opus not required
+    assert is_limited(info, _dt(12), ["opus"]) is True       # opus required
+    assert is_limited(info, _dt(12), ["sonnet"]) is False    # different model
+
+
+def test_empty_not_limited():
+    assert is_limited(EMPTY, _dt(12)) is False
