@@ -40,6 +40,8 @@ from typing import Callable
 from urllib.error import HTTPError, URLError
 
 from optio_agents import seeds
+from optio_agents.account import AccountInfo
+from optio_grok.account import analyze_account
 from optio_grok.seed_manifest import GROK_SEED_SUFFIX
 
 _LOG = logging.getLogger(__name__)
@@ -170,8 +172,11 @@ async def verify_and_refresh_seed(
     liveness check fails) performs an OIDC ``refresh_token`` grant against the xAI
     token endpoint (discovered from the seed's ``oidc_issuer``) and writes the
     rotated ``key``/``refresh_token``/``expires_at`` back into the seed. Returns
-    {alive, account} where alive is True iff the seed is alive (token still valid,
-    or a successful refresh) and account is always None (no analyze_account yet).
+    ``{"alive": bool, "account": AccountInfo | None}``: on the alive path
+    ``account`` is the normalized ``optio_agents.account.AccountInfo`` derived
+    (fail-soft) from the seed's creds and also stamped as ``metadata.account``;
+    dead paths return ``account=None``. Grok is accounts-only, so the account's
+    ``windows`` is always empty (no reachable usage source).
 
     Never raises for a dead seed. Marks pool status ``dead`` ONLY on a definitive
     dead signal (no refresh token, malformed auth, or a 4xx invalid_grant);
@@ -188,16 +193,26 @@ async def verify_and_refresh_seed(
     if doc is None:
         return {"alive": False, "account": None}
 
-    async def _finish(alive: bool, *, mark_dead: bool) -> dict:
+    async def _finish(
+        alive: bool, *, mark_dead: bool, account: "AccountInfo | None" = None,
+    ) -> dict:
+        now = datetime.now(timezone.utc)
+        metadata: dict = {"verify": {"alive": alive, "checkedAt": now}}
+        # Stamp the normalized account only on the alive path (mirrors
+        # claudecode/codex). Fail-soft analysis may hand us EMPTY; stamp it
+        # anyway so the pool consistently carries a metadata.account for every
+        # live seed.
+        if alive and account is not None:
+            metadata["account"] = account.to_dict()
+            metadata["accountFetchedAt"] = now
         await seeds.declare_metadata(
-            db, prefix=prefix, suffix=suffix, seed_id=seed_id,
-            metadata={"verify": {"alive": alive, "checkedAt": datetime.now(timezone.utc)}},
+            db, prefix=prefix, suffix=suffix, seed_id=seed_id, metadata=metadata,
         )
         if alive:
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="alive")
         elif mark_dead:
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="dead")
-        return {"alive": alive, "account": None}
+        return {"alive": alive, "account": account if alive else None}
 
     buf = io.BytesIO()
     await AsyncIOMotorGridFSBucket(db).download_to_stream(doc["blobId"], buf)
@@ -232,7 +247,10 @@ async def verify_and_refresh_seed(
         if not await _in_executor(_validate_sync, userinfo_endpoint, creds.get("key") or ""):
             need_refresh = True
     if not need_refresh:
-        return await _finish(True, mark_dead=False)
+        # Token still valid → analyze the (unrotated) creds for the account
+        # stamp (read-only GETs, fail-soft; verify performs no EXTRA refresh).
+        account = await analyze_account(creds)
+        return await _finish(True, mark_dead=False, account=account)
 
     resp = await _in_executor(_refresh_sync, token_endpoint, refresh_token, client_id)
     if resp is _DEAD:
@@ -255,4 +273,7 @@ async def verify_and_refresh_seed(
         )
     except Exception:  # noqa: BLE001 — save-back failed; the refresh still rotated
         _LOG.exception("seed %s: refreshed auth save-back failed", seed_id)
-    return await _finish(True, mark_dead=False)
+    # Analyze the freshly-rotated creds for the account stamp (read-only GETs;
+    # verify's own refresh above is the only rotation — no EXTRA refresh here).
+    account = await analyze_account(creds)
+    return await _finish(True, mark_dead=False, account=account)

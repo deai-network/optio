@@ -64,6 +64,26 @@ async def test_fresh_session_captures_seed(
 ):
     monkeypatch.setenv("FAKE_GROK_SCENARIO", "seed")
 
+    # Capture-time account analysis: stub resolve_capture_account (which would
+    # otherwise hit xAI/grok with the fake token) to a deterministic
+    # AccountInfo, so the wiring — metadata.account stamp + on_seed_saved
+    # summary — is asserted host- and network-free.
+    from optio_agents.account import AccountInfo
+    from optio_grok import session as grok_session
+
+    info_obj = AccountInfo(
+        name="Test User", email="user@example.com", plan="Grok Pro",
+        account_id="00000000-0000-0000-0000-000000000001", windows=(),
+    )
+
+    captured_host = {}
+
+    async def _fake_resolve(host):
+        captured_host["workdir"] = host.workdir
+        return info_obj
+
+    monkeypatch.setattr(grok_session, "resolve_capture_account", _fake_resolve)
+
     saved: list[tuple[str, str | None]] = []
 
     async def on_seed_saved(seed_id: str, info: str | None) -> None:
@@ -72,18 +92,24 @@ async def test_fresh_session_captures_seed(
     ctx = await _make_ctx(mongo_db, "grok_seed_capture", resume=False)
     await run_grok_session(ctx, _cfg(shim_install_dir, on_seed_saved=on_seed_saved))
 
-    # Callback fired exactly once with a non-empty seed id (info is None in
-    # Stage 3).
+    # Callback fired exactly once with a non-empty seed id and the resolved
+    # account's human-readable summary as the 2nd arg.
     assert len(saved) == 1, saved
     seed_id, info = saved[0]
     assert seed_id
-    assert info is None
+    assert info == "Plan: Grok Pro for Test User <user@example.com>"
+    assert captured_host  # resolve_capture_account was called with the live host
 
-    # A seed row exists in the grok seed collection, matching the callback id.
+    # A seed row exists in the grok seed collection, matching the callback id,
+    # with the normalized account stamped as metadata.account.
     coll = mongo_db[f"test{GROK_SEED_SUFFIX}"]
     assert await coll.count_documents({}) == 1
     from bson import ObjectId
-    assert await coll.find_one({"_id": ObjectId(seed_id)}) is not None
+    doc = await coll.find_one({"_id": ObjectId(seed_id)})
+    assert doc is not None
+    assert doc["metadata"]["account"]["plan"] == "Grok Pro"
+    assert doc["metadata"]["account"]["account_id"] == "00000000-0000-0000-0000-000000000001"
+    assert doc["metadata"]["account"]["windows"] == []  # grok: always empty
 
 
 async def test_seeded_fresh_session_plants_identity_before_launch(

@@ -34,6 +34,7 @@ from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
 from optio_host.paths import task_dir
 
 from optio_grok import cred_watcher, host_actions
+from optio_grok.account import resolve_capture_account
 from optio_grok import models as grok_models
 from optio_grok.conversation import GrokConversation
 from optio_grok.info import AGENT_INFO
@@ -901,9 +902,20 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                         suffix=GROK_SEED_SUFFIX,
                         encrypt=config.session_blob_encrypt,
                     )
-                    # 2nd arg (account summary) is resolved in a later stage;
-                    # None in Stage 3.
-                    await _call_maybe_async(config.on_seed_saved, seed_id, None)
+                    # Normalized account from the just-authed identity (the
+                    # isolated home .grok/auth.json is still on disk pre-cleanup);
+                    # fail-soft → EMPTY, never disturbs capture. Optio owns the
+                    # capture-time stamp: persist metadata.account, then hand
+                    # on_seed_saved the human-readable summary (2nd arg). Grok is
+                    # accounts-only, so account.windows is always empty.
+                    info = await resolve_capture_account(host)
+                    await _seeds.declare_metadata(
+                        ctx._db, prefix=ctx._prefix, suffix=GROK_SEED_SUFFIX,
+                        seed_id=seed_id, metadata={"account": info.to_dict()},
+                    )
+                    await _call_maybe_async(
+                        config.on_seed_saved, seed_id, info.summary,
+                    )
                     _trace("finally: capture_seed DONE id=%s", seed_id)
             except Exception:
                 _trace("finally: capture_seed RAISED")

@@ -15,15 +15,29 @@ import os
 import tarfile
 from datetime import datetime, timedelta, timezone
 
+import pytest
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorGridFSBucket
 from optio_core.context import ProcessContext
 from optio_host.host import LocalHost
 
 from optio_agents import seeds
+from optio_agents.account import EMPTY, AccountInfo
 from optio_grok import verify
 from optio_grok.seed_manifest import GROK_SEED_MANIFEST, GROK_SEED_SUFFIX
 from optio_grok.verify import verify_and_refresh_seed
+
+
+@pytest.fixture(autouse=True)
+def stub_analyze_account(monkeypatch):
+    """Keep verify's account-analysis off the network. Alive paths now call
+    ``analyze_account`` for the metadata.account stamp; stub it to ``EMPTY`` so
+    the refresh/liveness tests stay host-free and deterministic. (The dedicated
+    account-flow test below overrides this with a real AccountInfo.)"""
+    async def _empty(creds):
+        return EMPTY
+
+    monkeypatch.setattr(verify, "analyze_account", _empty)
 
 _ISSUER = "https://auth.x.ai"
 _CLIENT = "b1a00492-073a-47ea-816f-4c329264a828"
@@ -104,7 +118,7 @@ async def test_expired_refreshes_and_writes_back(mongo_db, tmp_path, monkeypatch
 
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is True
-    assert res["account"] is None
+    assert res["account"] is EMPTY  # alive path carries the (stubbed) AccountInfo
     assert refreshed["called"] == ("https://auth.x.ai/oauth2/token", "ORIGINAL", _CLIENT)
 
     creds = await _seed_creds(mongo_db, seed_id)
@@ -133,7 +147,7 @@ async def test_not_expired_valid_does_not_refresh(mongo_db, tmp_path, monkeypatc
 
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is True
-    assert res["account"] is None
+    assert res["account"] is EMPTY
     creds = await _seed_creds(mongo_db, seed_id)
     assert creds["refresh_token"] == "ORIGINAL"         # untouched
     assert creds["key"] == "OLD_ACCESS"
@@ -187,6 +201,44 @@ async def test_no_refresh_token_is_dead(mongo_db, tmp_path):
     assert res["alive"] is False
     assert res["account"] is None
     assert (await _doc(mongo_db, seed_id))["status"] == "dead"
+
+
+async def test_alive_carries_account_and_stamps_metadata(mongo_db, tmp_path, monkeypatch):
+    # The alive path calls analyze_account(creds) and both returns the resulting
+    # AccountInfo and stamps metadata.account. Override the autouse EMPTY stub
+    # with a real AccountInfo, and assert it flows through end-to-end.
+    future = _iso(datetime.now(timezone.utc) + timedelta(hours=2))
+    seed_id = await _make_seed(mongo_db, tmp_path, expires_at=future)
+
+    monkeypatch.setattr(verify, "_discover_sync", lambda issuer: _DISCO)
+    monkeypatch.setattr(verify, "_validate_sync", lambda ep, tok: True)
+
+    info = AccountInfo(
+        name="Test User", email="user@example.com", plan="Grok Pro",
+        account_id="00000000-0000-0000-0000-000000000001", windows=(),
+        raw={"userinfo": {"sub": "00000000-0000-0000-0000-000000000001"}},
+    )
+    seen = {}
+
+    async def _analyze(creds):
+        seen["creds"] = creds
+        return info
+
+    monkeypatch.setattr(verify, "analyze_account", _analyze)
+
+    res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
+    assert res["alive"] is True
+    assert res["account"] is info
+    # analyze_account received the live creds dict (bearer key present).
+    assert seen["creds"]["key"] == "OLD_ACCESS"
+
+    doc = await _doc(mongo_db, seed_id)
+    assert doc["metadata"]["account"]["plan"] == "Grok Pro"
+    assert doc["metadata"]["account"]["name"] == "Test User"
+    assert doc["metadata"]["account"]["email"] == "user@example.com"
+    assert doc["metadata"]["account"]["account_id"] == "00000000-0000-0000-0000-000000000001"
+    assert doc["metadata"]["account"]["summary"] == "Plan: Grok Pro for Test User <user@example.com>"
+    assert doc["metadata"]["account"]["windows"] == []  # grok: always empty
 
 
 async def test_unknown_seed(mongo_db):
