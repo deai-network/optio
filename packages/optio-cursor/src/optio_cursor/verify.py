@@ -25,7 +25,9 @@ from typing import Callable
 from optio_host.paths import task_dir
 
 from optio_agents import seeds
+from optio_agents.account import EMPTY
 from optio_cursor import host_actions
+from optio_cursor.account import analyze_account
 from optio_cursor.seed_manifest import CURSOR_SEED_MANIFEST, CURSOR_SEED_SUFFIX
 
 _LOG = logging.getLogger(__name__)
@@ -54,11 +56,16 @@ async def verify_and_refresh_seed(
     """Verify a seed by probing cursor-agent with its credentials; refresh +
     save back.
 
-    Returns {alive, account} where account is always None (no analyze_account
-    for this engine yet). alive is True iff cursor answered the challenge (the
-    seed is alive). Never raises for a dead seed. Stamps the verdict as seed
-    metadata and marks the seed's pool status (dead seeds are never handed out
-    by seeds.acquire).
+    Returns {alive, account} where, on the alive path, account is a normalized
+    ``optio_agents.account.AccountInfo`` derived from the (refreshed) auth.json
+    accessToken (fail-soft → ``EMPTY``, never raises); dead paths carry None.
+    alive is True iff cursor answered the challenge (the seed is alive). Never
+    raises for a dead seed. Stamps the verdict (and, when alive, the normalized
+    account) as seed metadata and marks the seed's pool status (dead seeds are
+    never handed out by seeds.acquire).
+
+    Account analysis does read-only GETs only -- it triggers no token refresh
+    beyond what the probe already performed.
 
     Call only on a FREE seed, or one whose lease the caller holds: the probe
     may rotate the refresh token, so verifying a seed in use by a live session
@@ -104,12 +111,15 @@ async def verify_and_refresh_seed(
             )
 
         # Write back the (possibly rotated) auth.json — valid files only (same
-        # validity bar as the watcher's save-back gate).
+        # validity bar as the watcher's save-back gate). Keep the freshest
+        # accessToken for account analysis on the alive path.
         workdir = host.workdir.rstrip("/")
+        access_token = None
         try:
             auth_raw = await host.fetch_bytes_from_host(f"{workdir}/{_AUTH_RELPATH}")
             auth = json.loads(auth_raw.decode("utf-8"))
             if isinstance(auth, dict) and auth:
+                access_token = auth.get("accessToken")
                 await seeds.overwrite_seed_member(
                     db, prefix=prefix, suffix=suffix, seed_id=seed_id,
                     member_path=_AUTH_MEMBER, content=auth_raw,
@@ -132,7 +142,24 @@ async def verify_and_refresh_seed(
             db, prefix=prefix, suffix=suffix, seed_id=seed_id,
             status="alive" if alive else "dead",
         )
-        return {"alive": alive, "account": None}
+        if not alive:
+            return {"alive": False, "account": None}
+
+        # Alive: normalize the account from the fresh accessToken (fail-soft →
+        # EMPTY) and stamp it beside the verdict. Read-only GETs; no refresh.
+        account = (
+            await analyze_account(access_token)
+            if isinstance(access_token, str) and access_token
+            else EMPTY
+        )
+        await seeds.declare_metadata(
+            db, prefix=prefix, suffix=suffix, seed_id=seed_id,
+            metadata={
+                "account": account.to_dict(),
+                "accountFetchedAt": datetime.now(timezone.utc),
+            },
+        )
+        return {"alive": True, "account": account}
     finally:
         try:
             await host.cleanup_taskdir(aggressive=True)
