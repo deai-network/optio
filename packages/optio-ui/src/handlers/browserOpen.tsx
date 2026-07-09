@@ -3,6 +3,7 @@ import { notification } from 'antd';
 export interface BrowserOpenRequest {
   requestId: string;
   url: string;
+  createdAt?: string | number; // ISO string (or epoch ms) stamped server-side
 }
 
 export type BrowserOpenHandler = (requests: BrowserOpenRequest[] | undefined) => void;
@@ -10,6 +11,25 @@ export type BrowserOpenHandler = (requests: BrowserOpenRequest[] | undefined) =>
 // Module-level dedup across all feed chokepoints. A given requestId fires
 // exactly once per app instance, no matter which feed surfaces it.
 const _seen = new Set<string>();
+
+// Browser-open is an ephemeral "open this now" signal, but the requests
+// accumulate on the process doc and the poller replays the FULL array on every
+// (re)connection's first update. `_seen` dedups within one app instance, but a
+// full page reload starts empty and would re-open the whole history. So ignore
+// any request older than this window: a genuinely-early request (pushed seconds
+// before subscribe) still fires; a reload-replayed one (minutes/hours old) does
+// not. A missing/unparseable timestamp is treated as stale.
+export const BROWSER_OPEN_MAX_AGE_MS = 60_000;
+
+export function isBrowserOpenStale(
+  createdAt: string | number | undefined,
+  nowMs: number = Date.now(),
+): boolean {
+  if (createdAt == null) return true;
+  const t = typeof createdAt === 'number' ? createdAt : Date.parse(createdAt);
+  if (Number.isNaN(t)) return true;
+  return nowMs - t > BROWSER_OPEN_MAX_AGE_MS;
+}
 
 /**
  * Default view-scoped browser-open handler: best-effort `window.open(url)` with
@@ -22,6 +42,7 @@ export function defaultHandleBrowserOpenRequests(requests: BrowserOpenRequest[] 
   if (!requests || requests.length === 0) return;
   for (const req of requests) {
     if (!req || typeof req.requestId !== 'string') continue;
+    if (isBrowserOpenStale(req.createdAt)) continue; // ignore replayed history
     if (_seen.has(req.requestId)) continue;
     _seen.add(req.requestId);
 

@@ -31,6 +31,10 @@ export const LogEntrySchema = z.object({
 export const BrowserOpenRequestSchema = z.object({
   requestId: z.string(),
   url: z.string(),
+  // Server-stamped (optio_core.store.append_browser_open_request); lets consumers
+  // auto-expire stale requests replayed from the doc's accumulated history.
+  // Optional for back-compat with entries pushed before it was added.
+  createdAt: z.coerce.date().optional(),
 });
 
 export const SessionEventSchema = z.discriminatedUnion('type', [

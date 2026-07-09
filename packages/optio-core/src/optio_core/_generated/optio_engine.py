@@ -135,6 +135,7 @@ class BrowserOpenRequest(BaseModel):
     )
     request_id: str = Field(..., alias="requestId")
     url: str
+    created_at: AwareDatetime | None = Field(None, alias="createdAt")
 
 
 class SessionEvents(BaseModel):

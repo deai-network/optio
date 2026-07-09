@@ -500,11 +500,22 @@ async def clear_widget_data(
 async def append_browser_open_request(
     db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId, url: str,
 ) -> str:
-    """$push a {requestId, url} record onto browserOpenRequests; return requestId."""
+    """$push a {requestId, url, createdAt} record onto browserOpenRequests; return requestId.
+
+    createdAt lets consumers auto-expire stale requests: browser-open is an
+    ephemeral "open this now" signal, but the requests accumulate on the doc and
+    the poller replays the full array on every (re)connection's first update. A
+    consumer that opened them once dedups by requestId within its app instance,
+    but a full page reload starts with an empty seen-set and would re-open the
+    whole history. Consumers ignore requests older than a short window instead.
+    """
     request_id = uuid4().hex
     await _collection(db, prefix).update_one(
         {"_id": process_oid},
-        {"$push": {"browserOpenRequests": {"requestId": request_id, "url": url}}},
+        {"$push": {"browserOpenRequests": {
+            "requestId": request_id, "url": url,
+            "createdAt": datetime.now(timezone.utc),
+        }}},
     )
     return request_id
 
