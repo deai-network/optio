@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import asyncio
 import re
 import uuid
 from datetime import datetime, timezone
@@ -32,6 +33,12 @@ _LOG = logging.getLogger(__name__)
 # positive) and must be improbable in error noise (a word, not a digit).
 PROBE_PROMPT = "What is the capital of France? Answer with the city name."
 PROBE_ANSWER_RE = re.compile(r"paris", re.IGNORECASE)
+
+# Whole-seed budget for the (best-effort) account meta-analysis inside verify.
+# verify runs once per free seed in the RPC-bounded verify-free loop; a slow/hung
+# vendor must not stall it. Providers analyze concurrently, so this bounds the
+# slowest single provider, not their sum.
+_ACCOUNT_ANALYSIS_BUDGET_S = 8.0
 
 _AUTH_RELPATH = "home/.local/share/opencode/auth.json"
 _AUTH_MEMBER = ".local/share/opencode/auth.json"
@@ -135,8 +142,23 @@ async def verify_and_refresh_seed(
                     # Meta-analyze the (refreshed) auth.json — one account per
                     # configured provider. Only on the alive path: a dead seed's
                     # tokens are unusable, so its account list is meaningless.
+                    #
+                    # BEST-EFFORT + BOUNDED: account analysis makes live per-
+                    # provider vendor calls. verify runs inside the RPC-bounded
+                    # verify-free loop (once per free seed), so a slow/hung vendor
+                    # must NOT stall it — cap the whole analysis at a tight budget
+                    # and fall back to no accounts (this pass) on timeout. Liveness
+                    # is already decided; accounts are informational and re-stamp
+                    # on the next verify.
                     if alive:
-                        accounts = await analyze_accounts(auth)
+                        try:
+                            accounts = await asyncio.wait_for(
+                                analyze_accounts(auth), timeout=_ACCOUNT_ANALYSIS_BUDGET_S,
+                            )
+                        except asyncio.TimeoutError:
+                            _LOG.warning("seed %s: account analysis exceeded %ss; no accounts this pass",
+                                         seed_id, _ACCOUNT_ANALYSIS_BUDGET_S)
+                            accounts = []
             except (FileNotFoundError, ValueError, UnicodeDecodeError):
                 _LOG.warning("seed %s: no valid auth.json after probe; skipping write-back", seed_id)
 
