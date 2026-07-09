@@ -8,6 +8,7 @@ from optio_codex import analyze_account as _codex_analyze
 from optio_cursor import analyze_account as _cursor_analyze
 from optio_kimicode import analyze_account as _kimicode_analyze
 from optio_antigravity import analyze_account as _antigravity_analyze
+from optio_grok import analyze_account as _grok_analyze
 from optio_claudecode import create_claudecode_task
 from optio_codex import create_codex_task
 from optio_cursor import create_cursor_task
@@ -53,6 +54,7 @@ _ANALYZE_REGISTRY: dict[AgentType, Callable] = {
     "cursor": _cursor_analyze,
     "kimicode": _kimicode_analyze,
     "antigravity": _antigravity_analyze,
+    "grok": _grok_analyze,
 }
 
 
