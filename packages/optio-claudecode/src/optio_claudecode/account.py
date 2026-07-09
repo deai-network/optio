@@ -19,16 +19,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import urllib.request
 from datetime import datetime
-from urllib.error import URLError
 
 from optio_agents.account import EMPTY, AccountInfo, UsageWindow
 
 _LOG = logging.getLogger(__name__)
 
-_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
-_BETA_HEADER = "oauth-2025-04-20"
 # Credentials live under the isolated HOME (HOME=<workdir>/home), the same
 # file Claude Code itself writes; it is in the seed manifest's include list,
 # so at on_seed_saved time (before workdir cleanup) it is still on disk.
@@ -75,51 +71,25 @@ def format_account_summary(profile: dict) -> str | None:
     return f"Plan: {plan} for <{email}>"
 
 
-def _fetch_profile_sync(access_token: str) -> dict:
-    req = urllib.request.Request(
-        _PROFILE_URL,
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "anthropic-beta": _BETA_HEADER,
-        },
-        method="GET",
-    )
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def _resolve_sync(access_token: str) -> str | None:
-    try:
-        profile = _fetch_profile_sync(access_token)
-    except (URLError, ConnectionError, OSError, ValueError):
-        return None
-    return format_account_summary(profile)
-
-
-async def resolve_account_summary(host) -> str | None:
-    """Best-effort account summary from the seeded credentials; None on any
-    failure (no creds file, no token, network/HTTP/parse error).
+async def resolve_capture_account(host) -> AccountInfo:
+    """Live-host capture variant: read the isolated HOME creds token, then
+    ``analyze_account``. Fail-soft → ``EMPTY`` on any failure (no creds file,
+    no token, analysis error).
 
     Reads the OAuth access token from the isolated HOME's
-    ``.claude/.credentials.json`` (``claudeAiOauth.accessToken``) and fetches
-    the profile in an executor (sync urllib off the event loop). No token
+    ``.claude/.credentials.json`` (``claudeAiOauth.accessToken``). No token
     refresh: the operator just minted it, so it is fresh; an expired/invalid
-    token simply yields None."""
+    token simply yields ``EMPTY`` (analysis fail-soft)."""
     path = f"{host.workdir.rstrip('/')}/{_CREDENTIALS_RELPATH}"
     try:
         raw = await host.fetch_bytes_from_host(path)
-    except Exception:  # noqa: BLE001 — missing/unreadable creds → no summary
-        return None
-    try:
         data = json.loads(raw.decode("utf-8"))
-        oauth = data.get("claudeAiOauth") if isinstance(data, dict) else None
-        token = oauth.get("accessToken") if isinstance(oauth, dict) else None
-    except (ValueError, AttributeError):
-        return None
+        token = (data.get("claudeAiOauth") or {}).get("accessToken")
+    except Exception:  # noqa: BLE001 — missing/unreadable/malformed creds → EMPTY
+        return EMPTY
     if not isinstance(token, str) or not token:
-        return None
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _resolve_sync, token)
+        return EMPTY
+    return await analyze_account(token)
 
 
 # --- normalized AccountInfo (shared cross-engine shape) --------------------

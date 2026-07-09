@@ -49,15 +49,16 @@ async def test_capture_fires_callback_and_stores_env_only_seed(
 ):
     monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "seed")
 
-    # The account summary is fetched from api.anthropic.com with the seeded
-    # token; stub it so the test asserts the 2nd callback arg without a network
-    # call. (Resolution itself is unit-tested in test_account_summary.py.)
+    # The account is analyzed from api.anthropic.com with the seeded token; stub
+    # the resolver so the test asserts the stamp + 2nd callback arg without a
+    # network call. (Resolution itself is unit-tested in test_capture_stamp.py.)
     import optio_claudecode.session as session_mod
+    from optio_agents.account import AccountInfo
 
-    async def _fake_summary(host):
-        return "Plan: Claude Max 20x for Jane Doe <jane@x.com>"
+    async def _fake_account(host):
+        return AccountInfo(name="Jane Doe", email="jane@x.com", plan="Claude Max 20x")
 
-    monkeypatch.setattr(session_mod, "resolve_account_summary", _fake_summary)
+    monkeypatch.setattr(session_mod, "resolve_capture_account", _fake_account)
 
     captured: list[tuple[str, str | None]] = []
 
@@ -76,14 +77,15 @@ async def test_capture_fires_callback_and_stores_env_only_seed(
     )
     await run_claudecode_session(ctx, cfg)
 
-    # callback fired with a hex id + the account summary as 2nd arg
+    # callback fired with a hex id + the account summary (info.summary) as 2nd arg
     assert len(captured) == 1
     seed_id, info = captured[0]
     assert info == "Plan: Claude Max 20x for Jane Doe <jane@x.com>"
 
-    # a seed doc + blob exist
+    # a seed doc + blob exist, and optio stamped the normalized account metadata
     doc = await seeds.load_seed(mongo_db, prefix="test", suffix=CLAUDE_SEED_SUFFIX, seed_id=seed_id)
     assert doc is not None
+    assert doc["metadata"]["account"]["email"] == "jane@x.com"
 
     # the seed tar contains ONLY INCLUDE paths, never the transcript
     bucket = AsyncIOMotorGridFSBucket(mongo_db)
