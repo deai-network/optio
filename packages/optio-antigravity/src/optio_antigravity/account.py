@@ -3,8 +3,10 @@
 The per-engine ``analyze_account`` seam every wrapper implements: a live Google
 OAuth access token in, a vendor-agnostic ``optio_agents.account.AccountInfo``
 out. Fail-soft: account analysis is informational (it feeds the optional
-``on_seed_saved`` summary + a stamped ``metadata.account``), never load-bearing,
-so a failure here must never disturb seed capture, verify, or launch.
+``on_seed_saved`` summary + a stamped ``metadata.accounts``), never load-bearing,
+so a failure here must never disturb seed capture, verify, or launch. The
+single ``AccountInfo`` this returns is wrapped by its callers (session capture /
+verify) into the plural ``metadata.accounts`` list (EMPTY → ``[]``).
 
 agy authenticates only against Google (consumer OIDC). ``creds`` is the opaque
 ``ya29.…`` Google OAuth access token from the seed's token store

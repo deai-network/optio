@@ -79,10 +79,10 @@ async def test_alive_and_writes_back_rotated_auth(
         install_dir=str(shim_install_dir),
     )
     assert res["alive"] is True
-    # Alive path carries a normalized AccountInfo. The seed's fake accessToken
-    # is not a decodable JWT, so analysis fails soft to EMPTY (no network) --
-    # an AccountInfo instance, never None.
-    assert isinstance(res["account"], AccountInfo)
+    # Alive path carries a list of normalized AccountInfos. The seed's fake
+    # accessToken is not a decodable JWT, so analysis fails soft to EMPTY (no
+    # network); EMPTY is dropped from the list -> [].
+    assert res["accounts"] == []
 
     auth = await _seed_auth(mongo_db, seed_id)
     assert auth["refreshToken"] == "ROTATED-BY-PROBE", auth
@@ -105,7 +105,7 @@ async def test_dead_on_auth_error(
         install_dir=str(shim_install_dir),
     )
     assert res["alive"] is False
-    assert res["account"] is None
+    assert res["accounts"] == []
 
     doc = await seeds.load_seed(
         mongo_db, prefix="test", suffix=CURSOR_SEED_SUFFIX, seed_id=seed_id,
@@ -127,7 +127,7 @@ async def test_prompt_echo_does_not_false_positive(
         install_dir=str(shim_install_dir),
     )
     assert res["alive"] is False
-    assert res["account"] is None
+    assert res["accounts"] == []
 
 
 async def test_exit_code_carries_no_verdict(
@@ -142,7 +142,8 @@ async def test_exit_code_carries_no_verdict(
         install_dir=str(shim_install_dir),
     )
     assert res["alive"] is True
-    assert isinstance(res["account"], AccountInfo)
+    # Fake accessToken -> analysis fails soft to EMPTY -> dropped -> [].
+    assert res["accounts"] == []
 
 
 async def test_alive_stamps_and_returns_account(
@@ -170,12 +171,12 @@ async def test_alive_stamps_and_returns_account(
         install_dir=str(shim_install_dir),
     )
     assert res["alive"] is True
-    assert res["account"] is info
+    assert res["accounts"] == [info]
 
     doc = await seeds.load_seed(
         mongo_db, prefix="test", suffix=CURSOR_SEED_SUFFIX, seed_id=seed_id,
     )
-    assert doc["metadata"]["account"] == info.to_dict()
+    assert doc["metadata"]["accounts"] == [info.to_dict()]
     assert doc["metadata"]["verify"]["alive"] is True
 
 
@@ -185,4 +186,4 @@ async def test_unknown_seed(mongo_db, task_root, shim_install_dir):
         install_dir=str(shim_install_dir),
     )
     assert res["alive"] is False
-    assert res["account"] is None
+    assert res["accounts"] == []

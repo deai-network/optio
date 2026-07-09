@@ -26,6 +26,7 @@ from optio_core.models import BasicAuth, TaskInstance
 
 from optio_agents import HookContext, RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, claustrum, get_protocol
 from optio_agents import seeds as _seeds
+from optio_agents.account import EMPTY, accounts_to_metadata
 from optio_agents.input_listener import serialized, start_input_listener
 from optio_agents.session_controls import model_control
 from optio_agents.uploads import materialize, upload_url_token
@@ -905,16 +906,22 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                     # Normalized account from the just-authed identity (the
                     # isolated home .grok/auth.json is still on disk pre-cleanup);
                     # fail-soft → EMPTY, never disturbs capture. Optio owns the
-                    # capture-time stamp: persist metadata.account, then hand
-                    # on_seed_saved the human-readable summary (2nd arg). Grok is
+                    # capture-time stamp: wrap the single account in the plural
+                    # metadata.accounts list (empty when analysis degraded to
+                    # EMPTY), then hand on_seed_saved the first account's
+                    # human-readable summary (2nd arg; None when none). Grok is
                     # accounts-only, so account.windows is always empty.
                     info = await resolve_capture_account(host)
+                    accounts = [info] if info is not None and info != EMPTY else []
                     await _seeds.declare_metadata(
                         ctx._db, prefix=ctx._prefix, suffix=GROK_SEED_SUFFIX,
-                        seed_id=seed_id, metadata={"account": info.to_dict()},
+                        seed_id=seed_id,
+                        metadata={"accounts": accounts_to_metadata(accounts)},
                     )
                     await _call_maybe_async(
-                        config.on_seed_saved, seed_id, info.summary,
+                        config.on_seed_saved,
+                        seed_id,
+                        accounts[0].summary if accounts else None,
                     )
                     _trace("finally: capture_seed DONE id=%s", seed_id)
             except Exception:

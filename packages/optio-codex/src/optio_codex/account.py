@@ -4,7 +4,7 @@ The per-engine ``analyze_account`` seam every wrapper implements: live OAuth
 credentials in, a vendor-agnostic ``optio_agents.account.AccountInfo`` out.
 Fail-soft: any error (missing field, HTTP/parse error, malformed token) yields
 ``EMPTY`` -- account analysis is informational (it feeds the ``on_seed_saved``
-2nd arg + a ``metadata.account`` stamp), never load-bearing, so a failure here
+2nd arg + a ``metadata.accounts`` stamp), never load-bearing, so a failure here
 must not disturb seed capture, verify, or launch.
 
 Divergence from claudecode: codex ``creds`` is the whole ``auth.json`` **tokens
@@ -46,6 +46,10 @@ _LOG = logging.getLogger(__name__)
 
 # The ChatGPT backend (NOT api.openai.com). Read-only, non-billable.
 _USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+# Identity endpoint for the creds-form-agnostic helper: the source of name/email
+# when there is no id_token to decode (opencode's openai-oauth stores only an
+# access token). Read-only.
+_ME_URL = "https://chatgpt.com/backend-api/me"
 # A real UA is REQUIRED -- chatgpt.com serves a Cloudflare HTML challenge to a
 # blank/curl User-Agent. Any real codex_cli_rs version string works.
 _USER_AGENT = "codex_cli_rs/0.142.5"
@@ -98,6 +102,32 @@ async def _fetch_usage(access_token: str, account_id: str) -> "dict | None":
     """Async wrapper around the sync wham/usage fetcher (executor)."""
     return await asyncio.get_event_loop().run_in_executor(
         None, _usage_sync, access_token, account_id
+    )
+
+
+def _me_sync(access_token: str, account_id: "str | None") -> "dict | None":
+    """GET /backend-api/me for the ChatGPT identity (name/email). Fail-soft ->
+    None on any error. ``ChatGPT-Account-Id`` is sent when known (mirrors the
+    wham/usage call)."""
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "User-Agent": _USER_AGENT,
+        "Accept": "application/json",
+    }
+    if isinstance(account_id, str) and account_id:
+        headers["ChatGPT-Account-Id"] = account_id
+    req = urllib.request.Request(_ME_URL, headers=headers, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT_S) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (HTTPError, URLError, OSError, ValueError):
+        return None
+
+
+async def _fetch_me(access_token: str, account_id: "str | None") -> "dict | None":
+    """Async wrapper around the sync /backend-api/me fetcher (executor)."""
+    return await asyncio.get_event_loop().run_in_executor(
+        None, _me_sync, access_token, account_id
     )
 
 
@@ -203,6 +233,45 @@ def _info_from(claims: dict, usage: "dict | None", account_id: "str | None") -> 
         windows=tuple(_windows_from_usage(u)),
         raw={"usage": usage, "id_token": claims},
     )
+
+
+def _info_from_me(me: "dict | None", usage: "dict | None", account_id: "str | None") -> AccountInfo:
+    """Map the ``/backend-api/me`` identity + ``wham/usage`` windows into an
+    AccountInfo. Identity (name/email) comes from ``me`` (there is no id_token to
+    decode); the plan comes from the live usage payload."""
+    m = me or {}
+    u = usage or {}
+    return AccountInfo(
+        name=m.get("name") or None,
+        email=m.get("email") or u.get("email") or None,
+        plan=_format_plan(u.get("plan_type")),
+        account_id=account_id or None,
+        windows=tuple(_windows_from_usage(u)),
+        raw={"me": me, "usage": usage},
+    )
+
+
+async def account_from_openai(access_token: str, account_id: "str | None") -> AccountInfo:
+    """Reusable, creds-form-agnostic OpenAI/ChatGPT account map: a bare access
+    token (+ optional ChatGPT account uuid) in, a normalized ``AccountInfo`` out.
+    Identity is fetched from ``GET /backend-api/me`` (NOT an id_token — opencode's
+    openai-oauth stores only the access token); usage windows come from the
+    read-only wham/usage GET (needs the account uuid for the required header).
+    Never raises -> ``EMPTY`` on any failure."""
+    try:
+        if not isinstance(access_token, str) or not access_token:
+            return EMPTY
+        me = await _fetch_me(access_token, account_id)
+        usage = None
+        if isinstance(account_id, str) and account_id:
+            usage = await _fetch_usage(access_token, account_id)
+        return _info_from_me(
+            me if isinstance(me, dict) else None,
+            usage if isinstance(usage, dict) else None,
+            account_id,
+        )
+    except Exception:  # noqa: BLE001 -- fail-soft, never disturbs the caller
+        return EMPTY
 
 
 async def analyze_account(creds) -> AccountInfo:

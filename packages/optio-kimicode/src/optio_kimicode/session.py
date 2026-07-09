@@ -36,6 +36,7 @@ from optio_core.models import BasicAuth, TaskInstance
 from optio_agents import HookContext, get_protocol
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
 from optio_agents import seeds as _seeds
+from optio_agents.account import EMPTY, accounts_to_metadata
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_agents.uploads import materialize, upload_url_token
 from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
@@ -943,16 +944,22 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                     # Normalized account from the seeded token (the isolated home
                     # creds are still on disk pre-cleanup); fail-soft → EMPTY,
                     # never disturbs capture. Optio owns the capture-time stamp:
-                    # persist metadata.account, then hand on_seed_saved the
-                    # human-readable summary (2nd arg — always None for kimi,
-                    # which exposes no email). Mirrors claudecode.
+                    # kimi is single-account, so wrap the analyzer result into the
+                    # plural accounts list ([] when EMPTY), persist
+                    # metadata.accounts, then hand on_seed_saved the first
+                    # account's human-readable summary (2nd arg — None for kimi,
+                    # which exposes no email, or when there is no account).
+                    # Mirrors claudecode.
                     info = await resolve_capture_account(host)
+                    accounts = [info] if (info is not None and info != EMPTY) else []
                     await _seeds.declare_metadata(
                         ctx._db, prefix=ctx._prefix, suffix=KIMI_SEED_SUFFIX,
-                        seed_id=seed_id, metadata={"account": info.to_dict()},
+                        seed_id=seed_id,
+                        metadata={"accounts": accounts_to_metadata(accounts)},
                     )
-                    await _call_maybe_async(config.on_seed_saved, seed_id, info.summary)
-                    _trace("finally: on_seed_saved fired (summary=%s)", info.summary)
+                    summary = accounts[0].summary if accounts else None
+                    await _call_maybe_async(config.on_seed_saved, seed_id, summary)
+                    _trace("finally: on_seed_saved fired (summary=%s)", summary)
             except Exception:
                 _trace("finally: capture_seed RAISED")
                 _LOG.exception(

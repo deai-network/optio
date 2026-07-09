@@ -120,7 +120,7 @@ async def test_stale_within_threshold_refreshes_and_writes_back(mongo_db, tmp_pa
 
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is True
-    assert res["account"] == EMPTY
+    assert res["accounts"] == []                         # EMPTY wraps to no accounts
     assert refreshed["called"] == (verify._token_endpoint(), "ORIGINAL", verify._CLIENT_ID)
 
     creds = await _seed_creds(mongo_db, seed_id)
@@ -147,7 +147,7 @@ async def test_expired_refreshes(mongo_db, tmp_path, monkeypatch):
     monkeypatch.setattr(verify, "analyze_account", _empty)
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is True
-    assert res["account"] == EMPTY
+    assert res["accounts"] == []
     assert (await _seed_creds(mongo_db, seed_id))["access_token"] == "NEW"
 
 
@@ -166,7 +166,7 @@ async def test_fresh_outside_threshold_does_not_refresh(mongo_db, tmp_path, monk
 
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is True
-    assert res["account"] == EMPTY
+    assert res["accounts"] == []
     creds = await _seed_creds(mongo_db, seed_id)
     assert creds["refresh_token"] == "ORIGINAL"         # untouched
     assert creds["access_token"] == "OLD_ACCESS"
@@ -180,7 +180,7 @@ async def test_refresh_invalid_grant_marks_dead(mongo_db, tmp_path, monkeypatch)
 
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is False
-    assert res["account"] is None
+    assert res["accounts"] == []
     doc = await _doc(mongo_db, seed_id)
     assert doc["status"] == "dead"
     assert doc["metadata"]["verify"]["alive"] is False
@@ -193,7 +193,7 @@ async def test_transport_failure_is_inconclusive_not_dead(mongo_db, tmp_path, mo
 
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is False
-    assert res["account"] is None
+    assert res["accounts"] == []
     # A transient failure must NOT retire a possibly-healthy seed.
     assert (await _doc(mongo_db, seed_id)).get("status") != "dead"
 
@@ -204,14 +204,14 @@ async def test_no_refresh_token_is_dead(mongo_db, tmp_path):
 
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is False
-    assert res["account"] is None
+    assert res["accounts"] == []
     assert (await _doc(mongo_db, seed_id))["status"] == "dead"
 
 
 async def test_unknown_seed(mongo_db):
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=str(ObjectId()))
     assert res["alive"] is False
-    assert res["account"] is None
+    assert res["accounts"] == []
 
 
 # --- account analysis stamped on the alive path -----------------------------
@@ -219,8 +219,9 @@ async def test_unknown_seed(mongo_db):
 
 async def test_alive_stamps_account_after_refresh(mongo_db, tmp_path, monkeypatch):
     """On the alive path verify analyzes the (refreshed) token and both returns
-    the normalized AccountInfo AND stamps metadata.account. analyze_account is
-    monkeypatched (no network) to a known account."""
+    the normalized AccountInfo (wrapped in the plural ``accounts`` list) AND
+    stamps metadata.accounts. analyze_account is monkeypatched (no network) to a
+    known account."""
     soon = int(time.time()) + 60  # within threshold → refresh path
     seed_id = await _make_seed(mongo_db, tmp_path, expires_at=soon)
     monkeypatch.setattr(
@@ -242,31 +243,54 @@ async def test_alive_stamps_account_after_refresh(mongo_db, tmp_path, monkeypatc
 
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is True
-    assert res["account"] is info                       # the analyzed account rides back
+    assert res["accounts"] == [info]                    # the analyzed account rides back
     assert seen["token"] == "NEW_ACCESS"                # analyzed the freshly-rotated token
 
     doc = await _doc(mongo_db, seed_id)
-    assert doc["metadata"]["account"] == info.to_dict()  # stamped for the pool
+    assert doc["metadata"]["accounts"] == [info.to_dict()]  # stamped for the pool
     assert doc["metadata"]["accountFetchedAt"] is not None
 
 
-async def test_alive_without_refresh_stamps_account(mongo_db, tmp_path, monkeypatch):
+async def test_alive_without_refresh_analyzes_stored_token(mongo_db, tmp_path, monkeypatch):
     """The fresh-outside-threshold alive path (no refresh) still analyzes the
-    stored token and stamps metadata.account."""
+    stored token. A non-EMPTY account is wrapped into the plural ``accounts``
+    list and stamped as metadata.accounts."""
     far = int(time.time()) + 7200  # outside threshold → no refresh
     seed_id = await _make_seed(mongo_db, tmp_path, expires_at=far)
 
+    info = AccountInfo(account_id="acct-9", plan="Basic")
+    seen = {}
+
     async def _fake_analyze(token):
-        assert token == "OLD_ACCESS"                    # the un-rotated stored token
-        return EMPTY
+        seen["token"] = token
+        return info
 
     monkeypatch.setattr(verify, "analyze_account", _fake_analyze)
 
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is True
-    assert isinstance(res["account"], AccountInfo)
+    assert res["accounts"] == [info]
+    assert seen["token"] == "OLD_ACCESS"                # the un-rotated stored token
     doc = await _doc(mongo_db, seed_id)
-    assert doc["metadata"]["account"] == EMPTY.to_dict()
+    assert doc["metadata"]["accounts"] == [info.to_dict()]
+
+
+async def test_alive_empty_account_stamps_no_accounts(mongo_db, tmp_path, monkeypatch):
+    """A fail-soft EMPTY analysis wraps to an empty plural list: the seed is
+    still alive but carries no accounts (metadata.accounts == [])."""
+    far = int(time.time()) + 7200  # outside threshold → no refresh
+    seed_id = await _make_seed(mongo_db, tmp_path, expires_at=far)
+
+    async def _empty(token):
+        return EMPTY
+
+    monkeypatch.setattr(verify, "analyze_account", _empty)
+
+    res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
+    assert res["alive"] is True
+    assert res["accounts"] == []
+    doc = await _doc(mongo_db, seed_id)
+    assert doc["metadata"]["accounts"] == []
 
 
 async def test_dead_path_carries_no_account(mongo_db, tmp_path, monkeypatch):
@@ -281,10 +305,10 @@ async def test_dead_path_carries_no_account(mongo_db, tmp_path, monkeypatch):
 
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is False
-    assert res["account"] is None
+    assert res["accounts"] == []
     doc = await _doc(mongo_db, seed_id)
     assert doc["status"] == "dead"
-    assert "account" not in doc.get("metadata", {})
+    assert "accounts" not in doc.get("metadata", {})
 
 
 # --- _refresh_sync HTTP status classification (mock urlopen) ----------------
@@ -424,8 +448,10 @@ async def test_real_seed_live_refresh_rotates_token(mongo_db, tmp_path):
 
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is True, "live refresh against auth.kimi.com did not confirm the seed"
-    # Alive path now analyzes the rotated token (fail-soft) → an AccountInfo.
-    assert isinstance(res["account"], AccountInfo)
+    # Alive path now analyzes the rotated token (fail-soft) → a plural accounts
+    # list (empty when analysis yields EMPTY, else a 1-element list).
+    assert isinstance(res["accounts"], list)
+    assert all(isinstance(a, AccountInfo) for a in res["accounts"])
 
     creds = await _seed_creds(mongo_db, seed_id)
     # The single-use refresh token rotated, and a fresh access token landed.

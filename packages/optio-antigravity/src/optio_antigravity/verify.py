@@ -54,7 +54,7 @@ from typing import Callable
 from urllib.error import HTTPError, URLError
 
 from optio_agents import seeds
-from optio_agents.account import AccountInfo
+from optio_agents.account import EMPTY, AccountInfo, accounts_to_metadata
 from optio_antigravity.account import analyze_account
 from optio_antigravity.seed_manifest import (
     ANTIGRAVITY_SEED_SUFFIX,
@@ -229,11 +229,13 @@ async def verify_and_refresh_seed(
     PKCE client (client_id only) and writes the rotated ``access_token`` /
     ``refresh_token`` / ``expiry`` back into ``store["token"]`` (preserving
     ``auth_method`` and any other outer keys). Returns ``{"alive": bool,
-    "account": AccountInfo | None}`` — ``alive`` is True iff the seed is alive
-    (token still valid, or a successful refresh); on the alive path ``account``
-    is the normalized ``optio_agents.account.AccountInfo`` (fail-soft → EMPTY)
-    analyzed from the live/rotated access token and also stamped into
-    ``metadata.account``. Dead/inconclusive paths return ``account=None``.
+    "accounts": list[AccountInfo]}`` — ``alive`` is True iff the seed is alive
+    (token still valid, or a successful refresh); on the alive path ``accounts``
+    is the normalized ``optio_agents.account.AccountInfo`` analyzed from the
+    live/rotated access token, wrapped in a 1-element list (agy has a single
+    Google account) and stamped into ``metadata.accounts``. A fail-soft
+    ``EMPTY`` analysis wraps to ``[]``. Dead/inconclusive paths return
+    ``accounts=[]``.
 
     Never raises for a dead seed. Marks pool status ``dead`` ONLY on a definitive
     dead signal (no refresh token, malformed store, or a ``invalid_grant`` refresh
@@ -249,19 +251,20 @@ async def verify_and_refresh_seed(
 
     doc = await seeds.load_seed(db, prefix=prefix, suffix=suffix, seed_id=seed_id)
     if doc is None:
-        return {"alive": False, "account": None}
+        return {"alive": False, "accounts": []}
 
     async def _finish(
-        alive: bool, *, mark_dead: bool, account: "AccountInfo | None" = None,
+        alive: bool, *, mark_dead: bool, accounts: "list[AccountInfo] | None" = None,
     ) -> dict:
+        accounts = accounts or []
         now = datetime.now(timezone.utc)
         metadata: dict = {"verify": {"alive": alive, "checkedAt": now}}
-        # Stamp the normalized account only on the alive path, so the pool
-        # consistently carries a metadata.account for every live seed (mirrors
-        # optio-codex). Dead paths carry account=None and no stamp.
-        if alive and account is not None:
-            metadata["account"] = account.to_dict()
-            metadata["accountFetchedAt"] = now
+        # Stamp the normalized account(s) only on the alive path, so the pool
+        # consistently carries metadata.accounts for every live seed (mirrors
+        # optio-codex). Dead paths carry accounts=[] and no stamp.
+        if alive and accounts:
+            metadata["accounts"] = accounts_to_metadata(accounts)
+            metadata["accountsFetchedAt"] = now
         await seeds.declare_metadata(
             db, prefix=prefix, suffix=suffix, seed_id=seed_id, metadata=metadata,
         )
@@ -269,7 +272,7 @@ async def verify_and_refresh_seed(
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="alive")
         elif mark_dead:
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="dead")
-        return {"alive": alive, "account": account if alive else None}
+        return {"alive": alive, "accounts": accounts if alive else []}
 
     buf = io.BytesIO()
     await AsyncIOMotorGridFSBucket(db).download_to_stream(doc["blobId"], buf)
@@ -300,10 +303,12 @@ async def verify_and_refresh_seed(
             need_refresh = True
     if not need_refresh:
         # Alive without a refresh: analyze the still-valid access token for the
-        # metadata.account stamp (read-only GET/POSTs; no extra refresh). Fail-soft
-        # → EMPTY, never disturbs the verify result.
-        account = await analyze_account(tok.get("access_token") or "")
-        return await _finish(True, mark_dead=False, account=account)
+        # metadata.accounts stamp (read-only GET/POSTs; no extra refresh). Fail-soft
+        # → EMPTY, never disturbs the verify result. agy has a single Google
+        # account → wrap the analyzer result in a 1-element list (EMPTY → []).
+        info = await analyze_account(tok.get("access_token") or "")
+        accounts = [info] if info is not None and info != EMPTY else []
+        return await _finish(True, mark_dead=False, accounts=accounts)
 
     resp = await _in_executor(
         _refresh_sync, token_endpoint, refresh_token, _AGY_CLIENT_ID,
@@ -327,7 +332,9 @@ async def verify_and_refresh_seed(
         )
     except Exception:  # noqa: BLE001 — save-back failed; the refresh still rotated
         _LOG.exception("seed %s: refreshed token save-back failed", seed_id)
-    # Analyze the freshly-rotated access token for the metadata.account stamp
-    # (read-only; no extra refresh). Fail-soft → EMPTY.
-    account = await analyze_account(tok.get("access_token") or "")
-    return await _finish(True, mark_dead=False, account=account)
+    # Analyze the freshly-rotated access token for the metadata.accounts stamp
+    # (read-only; no extra refresh). Fail-soft → EMPTY. agy has a single Google
+    # account → wrap the analyzer result in a 1-element list (EMPTY → []).
+    info = await analyze_account(tok.get("access_token") or "")
+    accounts = [info] if info is not None and info != EMPTY else []
+    return await _finish(True, mark_dead=False, accounts=accounts)

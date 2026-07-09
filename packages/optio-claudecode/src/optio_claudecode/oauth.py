@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 
 from optio_agents import seeds
+from optio_agents.account import EMPTY, accounts_to_metadata
 
 from optio_claudecode.account import analyze_account
 from optio_claudecode.seed_manifest import CLAUDE_SEED_SUFFIX
@@ -140,9 +141,11 @@ async def verify_and_refresh_seed(
     db, *, prefix, suffix=CLAUDE_SEED_SUFFIX, seed_id, encrypt, decrypt,
 ) -> dict:
     """Verify a seed host-free; refresh + save back if needed; stamp the
-    normalized account as metadata. Returns {alive, account} where account is an
-    ``optio_agents.account.AccountInfo`` (or None when not alive). Never raises
-    for a dead/limited seed -- a dead lineage is alive=False.
+    normalized account(s) as metadata. Returns {alive, accounts} where accounts
+    is a ``list[optio_agents.account.AccountInfo]`` ([] when not alive, or when
+    analysis fails soft). claudecode is single-account, so the list holds at
+    most one entry. Never raises for a dead/limited seed -- a dead lineage is
+    alive=False.
 
     Call only on a FREE seed, or one whose lease the caller holds: a refresh
     rotates the single-use refresh token, so verifying a seed in use by a live
@@ -153,14 +156,14 @@ async def verify_and_refresh_seed(
 
     doc = await seeds.load_seed(db, prefix=prefix, suffix=suffix, seed_id=seed_id)
     if doc is None:
-        return {"alive": False, "account": None}
+        return {"alive": False, "accounts": []}
     buf = io.BytesIO()
     await AsyncIOMotorGridFSBucket(db).download_to_stream(doc["blobId"], buf)
     dec = decrypt or (lambda b: b)
     plain = dec(buf.getvalue())
     oauth = _read_seed_creds(plain)
     if not oauth or not oauth.get("refreshToken"):
-        return {"alive": False, "account": None}
+        return {"alive": False, "accounts": []}
 
     access = oauth.get("accessToken")
     expires_at = oauth.get("expiresAt") or 0
@@ -172,7 +175,7 @@ async def verify_and_refresh_seed(
     if need_refresh:
         resp = await refresh_oauth_token(oauth["refreshToken"])
         if resp is None:
-            return {"alive": False, "account": None}
+            return {"alive": False, "accounts": []}
         await seeds.overwrite_seed_member(
             db, prefix=prefix, suffix=suffix, seed_id=seed_id,
             member_path=_CRED_MEMBER, content=_build_creds_json(oauth, resp),
@@ -180,16 +183,17 @@ async def verify_and_refresh_seed(
         )
         access = resp["access_token"]
 
-    account = await analyze_account(access)
+    info = await analyze_account(access)
+    accounts = [info] if (info is not None and info != EMPTY) else []
     await seeds.declare_metadata(
         db, prefix=prefix, suffix=suffix, seed_id=seed_id,
         metadata={
-            "account": account.to_dict(),
+            "accounts": accounts_to_metadata(accounts),
             "accountFetchedAt": datetime.now(timezone.utc),
             "signature": seed_signature(plain),
         },
     )
-    return {"alive": True, "account": account}
+    return {"alive": True, "accounts": accounts}
 
 
 def seed_signature(blob_plain: bytes) -> dict:

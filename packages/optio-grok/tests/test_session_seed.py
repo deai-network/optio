@@ -66,7 +66,7 @@ async def test_fresh_session_captures_seed(
 
     # Capture-time account analysis: stub resolve_capture_account (which would
     # otherwise hit xAI/grok with the fake token) to a deterministic
-    # AccountInfo, so the wiring — metadata.account stamp + on_seed_saved
+    # AccountInfo, so the wiring — metadata.accounts stamp + on_seed_saved
     # summary — is asserted host- and network-free.
     from optio_agents.account import AccountInfo
     from optio_grok import session as grok_session
@@ -101,15 +101,17 @@ async def test_fresh_session_captures_seed(
     assert captured_host  # resolve_capture_account was called with the live host
 
     # A seed row exists in the grok seed collection, matching the callback id,
-    # with the normalized account stamped as metadata.account.
+    # with the normalized account wrapped in the plural metadata.accounts list.
     coll = mongo_db[f"test{GROK_SEED_SUFFIX}"]
     assert await coll.count_documents({}) == 1
     from bson import ObjectId
     doc = await coll.find_one({"_id": ObjectId(seed_id)})
     assert doc is not None
-    assert doc["metadata"]["account"]["plan"] == "Grok Pro"
-    assert doc["metadata"]["account"]["account_id"] == "00000000-0000-0000-0000-000000000001"
-    assert doc["metadata"]["account"]["windows"] == []  # grok: always empty
+    accounts = doc["metadata"]["accounts"]
+    assert len(accounts) == 1
+    assert accounts[0]["plan"] == "Grok Pro"
+    assert accounts[0]["account_id"] == "00000000-0000-0000-0000-000000000001"
+    assert accounts[0]["windows"] == []  # grok: always empty
 
 
 async def test_seeded_fresh_session_plants_identity_before_launch(

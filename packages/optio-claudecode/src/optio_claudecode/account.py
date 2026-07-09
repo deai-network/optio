@@ -146,9 +146,12 @@ def _info_from(profile: dict, usage: dict | None) -> AccountInfo:
     )
 
 
-async def analyze_account(access_token: str) -> AccountInfo:
-    """Best-effort claude ``AccountInfo`` from a live OAuth access token. Never
-    raises → ``EMPTY`` on any failure."""
+async def account_from_oauth_token(access_token: str) -> AccountInfo:
+    """Reusable, creds-form-agnostic map helper: fetch ``/api/oauth/profile`` +
+    ``/api/oauth/usage`` for a bare OAuth access token and map into the shared
+    ``AccountInfo``. Never raises → ``EMPTY`` on any failure. opencode's
+    anthropic provider reuses this directly (it stores the token differently
+    from claudecode's seed creds, but the vendor fetch+map is identical)."""
     try:
         profile = await _fetch_profile(access_token)
         if not isinstance(profile, dict):
@@ -157,3 +160,10 @@ async def analyze_account(access_token: str) -> AccountInfo:
         return _info_from(profile, usage if isinstance(usage, dict) else None)
     except Exception:  # noqa: BLE001 — fail-soft
         return EMPTY
+
+
+async def analyze_account(access_token: str) -> AccountInfo:
+    """Best-effort claude ``AccountInfo`` from a live OAuth access token. Never
+    raises → ``EMPTY`` on any failure. Thin wrapper: claudecode's creds *are*
+    the OAuth access token, so it delegates straight to the map helper."""
+    return await account_from_oauth_token(access_token)

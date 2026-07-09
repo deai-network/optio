@@ -77,9 +77,9 @@ async def test_verify_fresh_valid_token_no_refresh(mongo_db, tmp_workdir, monkey
         mongo_db, prefix="t", suffix="_cc_seeds", seed_id=sid, encrypt=None, decrypt=None,
     )
     assert res["alive"] is True
-    assert res["account"] == fixed
+    assert res["accounts"] == [fixed]
     doc = await seeds.load_seed(mongo_db, prefix="t", suffix="_cc_seeds", seed_id=sid)
-    assert doc["metadata"]["account"]["account_id"] == "u1"
+    assert doc["metadata"]["accounts"][0]["account_id"] == "u1"
 
 
 async def test_verify_expired_refreshes_and_saves_back(mongo_db, tmp_workdir, monkeypatch):
@@ -150,10 +150,35 @@ async def test_verify_returns_alive_and_account(mongo_db, tmp_workdir, monkeypat
         mongo_db, prefix="t", suffix="_cc_seeds", seed_id=sid, encrypt=None, decrypt=None,
     )
     assert res["alive"] is True
-    assert isinstance(res["account"], AccountInfo)
-    assert res["account"] == fixed
+    assert res["accounts"] == [fixed]
+    assert isinstance(res["accounts"][0], AccountInfo)
     doc = await seeds.load_seed(mongo_db, prefix="t", suffix="_cc_seeds", seed_id=sid)
-    assert doc["metadata"]["account"]["email"] == "jane@example.com"
+    assert doc["metadata"]["accounts"][0]["email"] == "jane@example.com"
+
+
+async def test_verify_empty_account_yields_empty_accounts(mongo_db, tmp_workdir, monkeypatch):
+    # Alive lineage but the analyzer fails soft to EMPTY → an empty accounts
+    # list (the single-account wrapper: [info] only when info != EMPTY).
+    from optio_agents.account import EMPTY
+    future = 9999999999999
+    sid = await _seed_with_creds(mongo_db, tmp_workdir, "vempty", access="AT", refresh="RT", expires_at=future)
+
+    async def fake_validate(t):
+        return True
+    async def fake_analyze(t):
+        return EMPTY
+    async def fail_refresh(rt): raise AssertionError("must not refresh a valid token")
+    monkeypatch.setattr(oauth, "validate_token", fake_validate)
+    monkeypatch.setattr(oauth, "analyze_account", fake_analyze)
+    monkeypatch.setattr(oauth, "refresh_oauth_token", fail_refresh)
+
+    res = await oauth.verify_and_refresh_seed(
+        mongo_db, prefix="t", suffix="_cc_seeds", seed_id=sid, encrypt=None, decrypt=None,
+    )
+    assert res["alive"] is True
+    assert res["accounts"] == []
+    doc = await seeds.load_seed(mongo_db, prefix="t", suffix="_cc_seeds", seed_id=sid)
+    assert doc["metadata"]["accounts"] == []
 
 
 def test_seed_signature_excludes_auth_and_noise(tmp_path):
