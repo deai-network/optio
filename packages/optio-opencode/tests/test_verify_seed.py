@@ -13,9 +13,22 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from optio_host.host import LocalHost
 
 from optio_agents import seeds
-from optio_opencode import host_actions
+from optio_agents.account import AccountInfo
+from optio_opencode import host_actions, verify as verify_module
 from optio_opencode.seed_manifest import OPENCODE_SEED_MANIFEST, OPENCODE_SEED_SUFFIX
 from optio_opencode.verify import verify_and_refresh_seed
+
+
+@pytest.fixture(autouse=True)
+def _stub_accounts(monkeypatch):
+    """Keep verify hermetic: stub the meta-analyzer to [] by default so the
+    liveness tests never reach a vendor network. The account-stamping test
+    overrides this."""
+
+    async def _none(auth):
+        return []
+
+    monkeypatch.setattr(verify_module, "analyze_accounts", _none)
 
 
 @pytest_asyncio.fixture
@@ -108,7 +121,7 @@ async def test_alive_and_writes_back_rotated_auth(mongo_db, tmp_path, _patch_ins
         mongo_db, prefix="test", seed_id=seed_id,
     )
     assert result["alive"] is True
-    assert result["account"] is None
+    assert result["accounts"] == []
     assert result["model"] == "prov/model-1"
     auth = await _seed_auth(mongo_db, seed_id)
     assert auth["xai"]["refresh"] == "ROTATED"
@@ -124,7 +137,7 @@ async def test_dead_on_auth_error(mongo_db, tmp_path, _patch_install, task_root)
     _patch_install(_fake_opencode(tmp_path, "  echo 'Error: Unauthorized'\n  exit 1"))
     result = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert result["alive"] is False
-    assert result["account"] is None
+    assert result["accounts"] == []
     doc = await seeds.load_seed(
         mongo_db, prefix="test", suffix=OPENCODE_SEED_SUFFIX, seed_id=seed_id,
     )
@@ -140,7 +153,7 @@ async def test_prompt_echo_does_not_false_positive(mongo_db, tmp_path, _patch_in
     ))
     result = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert result["alive"] is False
-    assert result["account"] is None
+    assert result["accounts"] == []
 
 
 async def test_exit_code_carries_no_verdict(mongo_db, tmp_path, _patch_install, task_root):
@@ -149,7 +162,7 @@ async def test_exit_code_carries_no_verdict(mongo_db, tmp_path, _patch_install, 
     _patch_install(_fake_opencode(tmp_path, "  echo 'Paris'\n  exit 3"))
     result = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert result["alive"] is True
-    assert result["account"] is None
+    assert result["accounts"] == []
 
 
 async def test_modelless_seed_is_dead_without_probe(mongo_db, tmp_path, _patch_install, task_root):
@@ -158,7 +171,7 @@ async def test_modelless_seed_is_dead_without_probe(mongo_db, tmp_path, _patch_i
     _patch_install(_fake_opencode(tmp_path, f"  touch {shlex.quote(str(marker))}\n  echo Paris"))
     result = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert result["alive"] is False
-    assert result["account"] is None
+    assert result["accounts"] == []
     assert result["model"] is None
     assert not marker.exists()  # probe never ran
 
@@ -167,4 +180,45 @@ async def test_unknown_seed(mongo_db, task_root):
     result = await verify_and_refresh_seed(
         mongo_db, prefix="test", seed_id=str(ObjectId()),
     )
-    assert result == {"alive": False, "account": None, "model": None}
+    assert result == {"alive": False, "accounts": [], "model": None}
+
+
+async def test_alive_stamps_metadata_accounts(
+    mongo_db, tmp_path, _patch_install, task_root, monkeypatch,
+):
+    # On the ALIVE path verify feeds the refreshed auth.json to the meta-analyzer
+    # and stamps metadata.accounts; the accounts also ride the return dict.
+    account = AccountInfo(
+        plan="xAI Team", account_id="xai-1", email="pilot@x.com",
+        raw={"provider": "xai"},
+    )
+    captured = {}
+
+    async def _analyze(auth):
+        captured["auth"] = auth
+        return [account]
+
+    monkeypatch.setattr(verify_module, "analyze_accounts", _analyze)
+
+    seed_id = await _make_seed(mongo_db, tmp_path)
+    _patch_install(_fake_opencode(tmp_path, (
+        '  mkdir -p "$XDG_DATA_HOME/opencode"\n'
+        '  printf %s \'{"xai": {"type": "oauth", "access": "A", "refresh": "R"}}\' '
+        '> "$XDG_DATA_HOME/opencode/auth.json"\n'
+        "  printf 'The capital of France is Paris.\\n'\n"
+        "  exit 0"
+    )))
+    result = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
+
+    assert result["alive"] is True
+    assert result["accounts"] == [account]
+    # the analyzer saw the refreshed auth.json (the rotated access token).
+    assert captured["auth"]["xai"]["access"] == "A"
+
+    doc = await seeds.load_seed(
+        mongo_db, prefix="test", suffix=OPENCODE_SEED_SUFFIX, seed_id=seed_id,
+    )
+    stamped = doc["metadata"]["accounts"]
+    assert len(stamped) == 1
+    assert stamped[0]["account_id"] == "xai-1"
+    assert stamped[0]["summary"] == "Plan: xAI Team for <pilot@x.com>"

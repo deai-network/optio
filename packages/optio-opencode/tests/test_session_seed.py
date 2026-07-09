@@ -199,6 +199,49 @@ async def test_capture_fires_callback_and_stores_env_only_seed(
     assert not any("messages.json" in n for n in names), names
 
 
+async def test_capture_stamps_metadata_accounts(
+    mongo_db, task_root, _supply_scenario, monkeypatch,
+):
+    """Seed capture meta-analyzes the live auth.json and stamps
+    metadata.accounts (one entry per configured provider)."""
+    from optio_agents.account import AccountInfo
+    from optio_opencode import session as session_module
+
+    _supply_scenario["name"] = "happy"
+    account = AccountInfo(
+        plan="xAI Team", account_id="xai-1", email="pilot@x.com",
+        raw={"provider": "xai"},
+    )
+
+    async def _resolve(host):
+        return [account]
+
+    monkeypatch.setattr(session_module, "resolve_capture_accounts", _resolve)
+
+    captured: list[str] = []
+
+    async def _on_seed_saved(seed_id, info=None) -> None:
+        captured.append(seed_id)
+
+    ctx = await _make_ctx(mongo_db, "oc_seed_accts")
+    cfg = OpencodeTaskConfig(
+        consumer_instructions="(seed setup)", fs_isolation=False,
+        supports_resume=False,
+        on_seed_saved=_on_seed_saved,
+        before_execute=_plant_env,
+    )
+    await run_opencode_session(ctx, cfg)
+
+    assert len(captured) == 1
+    doc = await seeds.load_seed(
+        mongo_db, prefix="test", suffix=OPENCODE_SEED_SUFFIX, seed_id=captured[0],
+    )
+    stamped = doc["metadata"]["accounts"]
+    assert len(stamped) == 1
+    assert stamped[0]["account_id"] == "xai-1"
+    assert stamped[0]["summary"] == "Plan: xAI Team for <pilot@x.com>"
+
+
 async def test_capture_synthesises_model_into_opencode_json(
     mongo_db, task_root, _supply_scenario, monkeypatch,
 ):

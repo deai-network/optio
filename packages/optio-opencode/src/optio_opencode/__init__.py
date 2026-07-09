@@ -8,6 +8,7 @@ from optio_host import (
     RunResult,
     SSHConfig,
 )
+from optio_opencode.account import analyze_accounts, resolve_capture_accounts
 from optio_opencode.info import AGENT_INFO
 from optio_opencode.session import create_opencode_task, run_opencode_session
 from optio_opencode.types import (
@@ -58,4 +59,6 @@ __all__ = [
     "ConversationMode",
     "ToolVerbosity",
     "verify_and_refresh_seed",
+    "analyze_accounts",
+    "resolve_capture_accounts",
 ]

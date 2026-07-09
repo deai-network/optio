@@ -18,9 +18,11 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from optio_agents import seeds
+from optio_agents.account import accounts_to_metadata
 from optio_host.paths import task_dir
 
 from optio_opencode import host_actions
+from optio_opencode.account import analyze_accounts
 from optio_opencode.seed_manifest import OPENCODE_SEED_MANIFEST, OPENCODE_SEED_SUFFIX
 
 _LOG = logging.getLogger(__name__)
@@ -49,10 +51,12 @@ async def verify_and_refresh_seed(
 ) -> dict:
     """Verify a seed by probing its default provider; refresh + save back.
 
-    Returns {"alive": bool, "account": AccountInfo | None, "model": str | None}.
-    ``account`` is always None here (no analyze_account yet). Never raises for a dead
-    seed. Stamps the verdict as seed metadata and marks the seed's pool
-    status (dead seeds are never handed out by seeds.acquire).
+    Returns {"alive": bool, "accounts": list[AccountInfo], "model": str | None}.
+    ``accounts`` holds one entry per configured provider on the alive path (via
+    the meta-analyzer over the refreshed auth.json), else ``[]``. Never raises
+    for a dead seed. Stamps the verdict + ``metadata.accounts`` as seed metadata
+    and marks the seed's pool status (dead seeds are never handed out by
+    seeds.acquire).
 
     Call only on a FREE seed, or one whose lease the caller holds: the
     probe rotates single-use refresh tokens, so verifying a seed in use by
@@ -65,7 +69,7 @@ async def verify_and_refresh_seed(
     """
     doc = await seeds.load_seed(db, prefix=prefix, suffix=suffix, seed_id=seed_id)
     if doc is None:
-        return {"alive": False, "account": None, "model": None}
+        return {"alive": False, "accounts": [], "model": None}
 
     taskdir = task_dir(
         ssh=ssh, process_id=f"seed-verify-{uuid.uuid4().hex[:12]}",
@@ -75,6 +79,7 @@ async def verify_and_refresh_seed(
     await host.connect()
     alive = False
     model: str | None = None
+    accounts: list = []
     try:
         await host.setup_workdir()
         opencode_exec = await host_actions.ensure_opencode_installed(
@@ -127,22 +132,30 @@ async def verify_and_refresh_seed(
                         member_path=_AUTH_MEMBER, content=auth_raw,
                         encrypt=encrypt, decrypt=decrypt,
                     )
+                    # Meta-analyze the (refreshed) auth.json — one account per
+                    # configured provider. Only on the alive path: a dead seed's
+                    # tokens are unusable, so its account list is meaningless.
+                    if alive:
+                        accounts = await analyze_accounts(auth)
             except (FileNotFoundError, ValueError, UnicodeDecodeError):
                 _LOG.warning("seed %s: no valid auth.json after probe; skipping write-back", seed_id)
 
         await seeds.declare_metadata(
             db, prefix=prefix, suffix=suffix, seed_id=seed_id,
-            metadata={"verify": {
-                "alive": alive,
-                "checkedAt": datetime.now(timezone.utc),
-                "probedModel": model,
-            }},
+            metadata={
+                "verify": {
+                    "alive": alive,
+                    "checkedAt": datetime.now(timezone.utc),
+                    "probedModel": model,
+                },
+                "accounts": accounts_to_metadata(accounts),
+            },
         )
         await seeds.mark_seed_status(
             db, prefix=prefix, suffix=suffix, seed_id=seed_id,
             status="alive" if alive else "dead",
         )
-        return {"alive": alive, "account": None, "model": model}
+        return {"alive": alive, "accounts": accounts, "model": model}
     finally:
         try:
             await host.cleanup_taskdir(aggressive=True)

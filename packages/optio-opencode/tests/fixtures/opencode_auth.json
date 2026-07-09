@@ -1,0 +1,31 @@
+{
+  "openai": {
+    "type": "oauth",
+    "access": "openai-access-tok",
+    "refresh": "openai-refresh",
+    "expires": 1893456000000,
+    "accountId": "openai-acct-1"
+  },
+  "xai": {
+    "type": "oauth",
+    "access": "xai-access-tok",
+    "refresh": "xai-refresh",
+    "expires": 1893456000000
+  },
+  "anthropic": {
+    "type": "oauth",
+    "access": "anthropic-access-tok",
+    "refresh": "anthropic-refresh",
+    "expires": 1893456000000
+  },
+  "groq": {
+    "type": "api",
+    "key": "groq-api-key"
+  },
+  "unknownprov": {
+    "type": "oauth",
+    "access": "unknown-access-tok",
+    "refresh": "unknown-refresh",
+    "accountId": "unknown-acct-9"
+  }
+}
