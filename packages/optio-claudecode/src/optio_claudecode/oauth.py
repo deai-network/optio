@@ -21,7 +21,7 @@ from urllib.error import HTTPError, URLError
 
 from optio_agents import seeds
 
-from optio_claudecode.account import format_account_summary
+from optio_claudecode.account import analyze_account
 from optio_claudecode.seed_manifest import CLAUDE_SEED_SUFFIX
 
 _LOG = logging.getLogger(__name__)
@@ -111,15 +111,6 @@ async def refresh_oauth_token(refresh_token: str) -> dict | None:
     return await _in_executor(_refresh_sync, refresh_token)
 
 
-async def summarize_profile(access_token: str) -> dict | None:
-    profile = await _in_executor(_profile_sync, access_token)
-    if not isinstance(profile, dict):
-        return None
-    account = profile.get("account") if isinstance(profile.get("account"), dict) else {}
-    uuid = account.get("uuid")
-    return {"uuid": uuid, "summary": format_account_summary(profile)}
-
-
 def _read_seed_creds(blob_plain: bytes) -> dict | None:
     try:
         with tarfile.open(fileobj=io.BytesIO(blob_plain), mode="r:gz") as tar:
@@ -148,9 +139,10 @@ def _build_creds_json(oauth: dict, token_resp: dict) -> bytes:
 async def verify_and_refresh_seed(
     db, *, prefix, suffix=CLAUDE_SEED_SUFFIX, seed_id, encrypt, decrypt,
 ) -> dict:
-    """Verify a seed host-free; refresh + save back if needed; stamp raw usage +
-    account as metadata. Returns {alive, usage, account}. Never raises for a
-    dead/limited seed -- a dead lineage is alive=False.
+    """Verify a seed host-free; refresh + save back if needed; stamp the
+    normalized account as metadata. Returns {alive, account} where account is an
+    ``optio_agents.account.AccountInfo`` (or None when not alive). Never raises
+    for a dead/limited seed -- a dead lineage is alive=False.
 
     Call only on a FREE seed, or one whose lease the caller holds: a refresh
     rotates the single-use refresh token, so verifying a seed in use by a live
@@ -161,14 +153,14 @@ async def verify_and_refresh_seed(
 
     doc = await seeds.load_seed(db, prefix=prefix, suffix=suffix, seed_id=seed_id)
     if doc is None:
-        return {"alive": False, "usage": None, "account": None}
+        return {"alive": False, "account": None}
     buf = io.BytesIO()
     await AsyncIOMotorGridFSBucket(db).download_to_stream(doc["blobId"], buf)
     dec = decrypt or (lambda b: b)
     plain = dec(buf.getvalue())
     oauth = _read_seed_creds(plain)
     if not oauth or not oauth.get("refreshToken"):
-        return {"alive": False, "usage": None, "account": None}
+        return {"alive": False, "account": None}
 
     access = oauth.get("accessToken")
     expires_at = oauth.get("expiresAt") or 0
@@ -180,7 +172,7 @@ async def verify_and_refresh_seed(
     if need_refresh:
         resp = await refresh_oauth_token(oauth["refreshToken"])
         if resp is None:
-            return {"alive": False, "usage": None, "account": None}
+            return {"alive": False, "account": None}
         await seeds.overwrite_seed_member(
             db, prefix=prefix, suffix=suffix, seed_id=seed_id,
             member_path=_CRED_MEMBER, content=_build_creds_json(oauth, resp),
@@ -188,50 +180,16 @@ async def verify_and_refresh_seed(
         )
         access = resp["access_token"]
 
-    usage = await fetch_usage(access)
-    account = await summarize_profile(access)
+    account = await analyze_account(access)
     await seeds.declare_metadata(
         db, prefix=prefix, suffix=suffix, seed_id=seed_id,
         metadata={
-            "usage": usage,
-            "usageFetchedAt": datetime.now(timezone.utc),
-            "account": account,
+            "account": account.to_dict(),
+            "accountFetchedAt": datetime.now(timezone.utc),
             "signature": seed_signature(plain),
         },
     )
-    return {"alive": True, "usage": usage, "account": account}
-
-
-def usage_limited(usage: dict | None, now, models_required: list[str] | None = None) -> bool:
-    """True if a relevant usage bucket is maxed (utilization >= 100) and its
-    window has not reset yet (resets_at in the future). `now` is a timezone-aware
-    datetime. Gates global five_hour + seven_day always, plus seven_day_<model>
-    for each model in `models_required`. `usage` is the raw /api/oauth/usage
-    JSON (utilization is a percentage 0-100)."""
-    from datetime import datetime
-
-    if not isinstance(usage, dict):
-        return False
-    keys = ["five_hour", "seven_day"]
-    for m in models_required or []:
-        keys.append(f"seven_day_{m}")
-    for k in keys:
-        bucket = usage.get(k)
-        if not isinstance(bucket, dict):
-            continue
-        util = bucket.get("utilization")
-        if not isinstance(util, (int, float)) or util < 100:
-            continue
-        resets_at = bucket.get("resets_at")
-        if not resets_at:
-            return True  # maxed, no reset time -> treat as limited
-        try:
-            reset_dt = datetime.fromisoformat(resets_at)
-        except (ValueError, TypeError):
-            return True
-        if reset_dt > now:
-            return True
-    return False
+    return {"alive": True, "account": account}
 
 
 def seed_signature(blob_plain: bytes) -> dict:
