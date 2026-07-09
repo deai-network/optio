@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Callable
 
 from optio_antigravity import create_antigravity_task
+from optio_claudecode import analyze_account as _claudecode_analyze
 from optio_claudecode import create_claudecode_task
 from optio_codex import create_codex_task
 from optio_cursor import create_cursor_task
@@ -37,3 +38,20 @@ def create_task(
     return factory(
         process_id, name, config, description=description, metadata=metadata
     )  # type: ignore[arg-type]
+
+
+# Per-engine account analyzers, keyed by agent_type. claudecode is the reference
+# implementation; the other six land as their follow-up plans give them an
+# ``analyze_account`` (until then they are absent from the registry).
+_ANALYZE_REGISTRY: dict[AgentType, Callable] = {
+    "claudecode": _claudecode_analyze,
+}
+
+
+async def analyze_account(agent_type: AgentType, creds):
+    """Dispatch to the per-engine analyzer by agent_type. Raises ValueError for
+    an unknown/not-yet-implemented engine."""
+    fn = _ANALYZE_REGISTRY.get(agent_type)
+    if fn is None:
+        raise ValueError(f"no analyze_account for agent_type: {agent_type!r}")
+    return await fn(creds)

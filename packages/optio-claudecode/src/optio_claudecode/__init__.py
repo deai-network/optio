@@ -9,6 +9,7 @@ from optio_host import (
     SSHConfig,
 )
 
+from optio_claudecode.account import analyze_account
 from optio_claudecode.info import AGENT_INFO
 from optio_claudecode.session import create_claudecode_task, run_claudecode_session
 from optio_claudecode.types import (
@@ -35,6 +36,7 @@ _logging.getLogger("asyncssh").setLevel(_logging.WARNING)
 
 __all__ = [
     "AGENT_INFO",
+    "analyze_account",
     "create_claudecode_task",
     "run_claudecode_session",
     "AllowedDir",
