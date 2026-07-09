@@ -9,6 +9,7 @@ from optio_host import (
     SSHConfig,
 )
 
+from optio_cursor.account import analyze_account
 from optio_cursor.info import AGENT_INFO
 from optio_cursor.seed_manifest import (
     CURSOR_CRED_MANIFEST,
@@ -36,6 +37,7 @@ _logging.getLogger("asyncssh").setLevel(_logging.WARNING)
 
 __all__ = [
     "AGENT_INFO",
+    "analyze_account",
     "create_cursor_task",
     "run_cursor_session",
     "CursorTaskConfig",

@@ -41,6 +41,7 @@ from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
 from optio_host.paths import task_dir
 
 from optio_cursor import cred_watcher, host_actions
+from optio_cursor.account import resolve_capture_account
 from optio_cursor.info import AGENT_INFO
 from optio_cursor import model_probe
 from optio_cursor import models as cursor_models
@@ -969,11 +970,19 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                         ctx, host,
                         manifest=CURSOR_SEED_MANIFEST,
                         suffix=CURSOR_SEED_SUFFIX,
-                        encrypt=None,
+                        encrypt=config.session_blob_encrypt,
                     )
-                    # 2nd arg (account summary) is resolved in a later stage;
-                    # None in Stage 3.
-                    await _call_maybe_async(config.on_seed_saved, seed_id, None)
+                    # Normalized account from the just-captured cursor identity
+                    # (fail-soft → EMPTY): persist metadata.account, then hand
+                    # on_seed_saved the human-readable summary (2nd arg).
+                    info = await resolve_capture_account(host)
+                    await _seeds.declare_metadata(
+                        ctx._db, prefix=ctx._prefix, suffix=CURSOR_SEED_SUFFIX,
+                        seed_id=seed_id, metadata={"account": info.to_dict()},
+                    )
+                    await _call_maybe_async(
+                        config.on_seed_saved, seed_id, info.summary,
+                    )
             except Exception:
                 _LOG.exception(
                     "seed capture failed; callback not fired, teardown continues",

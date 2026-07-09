@@ -25,6 +25,7 @@ from optio_core.context import ProcessContext
 from optio_host.host import LocalHost
 
 from optio_agents import seeds
+from optio_agents.account import AccountInfo
 from optio_cursor.seed_manifest import CURSOR_SEED_MANIFEST, CURSOR_SEED_SUFFIX
 from optio_cursor.verify import verify_and_refresh_seed
 
@@ -78,7 +79,10 @@ async def test_alive_and_writes_back_rotated_auth(
         install_dir=str(shim_install_dir),
     )
     assert res["alive"] is True
-    assert res["account"] is None
+    # Alive path carries a normalized AccountInfo. The seed's fake accessToken
+    # is not a decodable JWT, so analysis fails soft to EMPTY (no network) --
+    # an AccountInfo instance, never None.
+    assert isinstance(res["account"], AccountInfo)
 
     auth = await _seed_auth(mongo_db, seed_id)
     assert auth["refreshToken"] == "ROTATED-BY-PROBE", auth
@@ -138,7 +142,41 @@ async def test_exit_code_carries_no_verdict(
         install_dir=str(shim_install_dir),
     )
     assert res["alive"] is True
-    assert res["account"] is None
+    assert isinstance(res["account"], AccountInfo)
+
+
+async def test_alive_stamps_and_returns_account(
+    mongo_db, task_root, shim_install_dir, tmp_path, monkeypatch,
+):
+    # Monkeypatch the analyzer (no network) → alive return carries that exact
+    # AccountInfo, and metadata.account is stamped from it.
+    monkeypatch.setenv("FAKE_CURSOR_PROBE", "alive")
+    info = AccountInfo(
+        name="Test User", email="user@example.com", plan="Free",
+        account_id="user_01TEST",
+    )
+
+    async def _fake_analyze(creds):
+        # The post-probe auth.json accessToken (fake probe rotates only the
+        # refreshToken, so the accessToken is the planted one).
+        assert creds == "fake-access-token"
+        return info
+
+    monkeypatch.setattr("optio_cursor.verify.analyze_account", _fake_analyze)
+    seed_id = await _make_seed(mongo_db, tmp_path)
+
+    res = await verify_and_refresh_seed(
+        mongo_db, prefix="test", seed_id=seed_id,
+        install_dir=str(shim_install_dir),
+    )
+    assert res["alive"] is True
+    assert res["account"] is info
+
+    doc = await seeds.load_seed(
+        mongo_db, prefix="test", suffix=CURSOR_SEED_SUFFIX, seed_id=seed_id,
+    )
+    assert doc["metadata"]["account"] == info.to_dict()
+    assert doc["metadata"]["verify"]["alive"] is True
 
 
 async def test_unknown_seed(mongo_db, task_root, shim_install_dir):
