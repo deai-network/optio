@@ -15,6 +15,7 @@ provider handler never breaks the others; empty/unreadable auth → ``[]``.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 
@@ -53,12 +54,11 @@ async def analyze_accounts(auth: dict) -> "list[AccountInfo]":
     registered handler (fail-soft); append the analyzed account, or a
     placeholder when there is no handler / it declines / it fails / it returns
     the ``EMPTY`` sentinel. Empty or non-dict auth → ``[]``."""
-    out: list[AccountInfo] = []
     if not isinstance(auth, dict):
-        return out
-    for provider_id, entry in auth.items():
-        if not isinstance(entry, dict):
-            continue
+        return []
+    items = [(pid, e) for pid, e in auth.items() if isinstance(e, dict)]
+
+    async def _one(provider_id: str, entry: dict) -> AccountInfo:
         handler = _REGISTRY.get(provider_id)
         info: AccountInfo | None = None
         if handler is not None:
@@ -68,10 +68,14 @@ async def analyze_accounts(auth: dict) -> "list[AccountInfo]":
                 _LOG.exception("opencode provider handler failed: %s", provider_id)
                 info = None
         if info is not None and info != EMPTY:
-            out.append(info)
-        else:
-            out.append(_placeholder(provider_id, entry))
-    return out
+            return info
+        return _placeholder(provider_id, entry)
+
+    # Providers analyzed CONCURRENTLY — each hits a different vendor with its own
+    # (up to 15s) HTTP timeout, so a multi-provider seed must not pay the SUM of
+    # those; the verify/verify-free RPC deadline can't absorb it (see the
+    # asyncio.wait_for budget in verify.py).
+    return list(await asyncio.gather(*(_one(pid, e) for pid, e in items)))
 
 
 async def resolve_capture_accounts(host) -> "list[AccountInfo]":
