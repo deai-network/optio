@@ -58,39 +58,43 @@ async def test_verify_fresh_valid_token_no_refresh(mongo_db, tmp_workdir, monkey
     future = 9999999999999
     sid = await _seed_with_creds(mongo_db, tmp_workdir, "v1", access="AT", refresh="RT", expires_at=future)
 
+    from optio_agents.account import AccountInfo
+
+    fixed = AccountInfo(name="A", email="a@b", plan="Max", account_id="u1")
+
     async def fake_validate(t):
         assert t == "AT"
         return True
-    async def fake_usage(t): return {"five_hour": {"utilization": 1.0, "resets_at": None}}
-    async def fake_profile(t): return {"uuid": "u1", "summary": "Plan: Max for <a@b>"}
+    async def fake_analyze(t):
+        assert t == "AT"
+        return fixed
     async def fail_refresh(rt): raise AssertionError("must not refresh a valid token")
     monkeypatch.setattr(oauth, "validate_token", fake_validate)
-    monkeypatch.setattr(oauth, "fetch_usage", fake_usage)
-    monkeypatch.setattr(oauth, "summarize_profile", fake_profile)
+    monkeypatch.setattr(oauth, "analyze_account", fake_analyze)
     monkeypatch.setattr(oauth, "refresh_oauth_token", fail_refresh)
 
     res = await oauth.verify_and_refresh_seed(
         mongo_db, prefix="t", suffix="_cc_seeds", seed_id=sid, encrypt=None, decrypt=None,
     )
     assert res["alive"] is True
-    assert res["account"] == {"uuid": "u1", "summary": "Plan: Max for <a@b>"}
+    assert res["account"] == fixed
     doc = await seeds.load_seed(mongo_db, prefix="t", suffix="_cc_seeds", seed_id=sid)
-    assert "usage" in doc["metadata"] and doc["metadata"]["account"]["uuid"] == "u1"
+    assert doc["metadata"]["account"]["account_id"] == "u1"
 
 
 async def test_verify_expired_refreshes_and_saves_back(mongo_db, tmp_workdir, monkeypatch):
     sid = await _seed_with_creds(mongo_db, tmp_workdir, "v2", access="OLD", refresh="RT", expires_at=1)
 
+    from optio_agents.account import AccountInfo
+
     async def fake_refresh(rt):
         assert rt == "RT"
         return {"access_token": "NEW_AT", "refresh_token": "NEW_RT", "expires_in": 28800, "scope": "user:inference"}
-    async def fake_usage(t):
+    async def fake_analyze(t):
         assert t == "NEW_AT"
-        return {"five_hour": {"utilization": 1.0}}
-    async def fake_profile(t): return {"uuid": "u2", "summary": "s"}
+        return AccountInfo(email="a@b", plan="Max", account_id="u2")
     monkeypatch.setattr(oauth, "refresh_oauth_token", fake_refresh)
-    monkeypatch.setattr(oauth, "fetch_usage", fake_usage)
-    monkeypatch.setattr(oauth, "summarize_profile", fake_profile)
+    monkeypatch.setattr(oauth, "analyze_account", fake_analyze)
 
     res = await oauth.verify_and_refresh_seed(
         mongo_db, prefix="t", suffix="_cc_seeds", seed_id=sid, encrypt=None, decrypt=None,
@@ -121,20 +125,35 @@ async def test_verify_dead_on_invalid_grant(mongo_db, tmp_workdir, monkeypatch):
     assert res["alive"] is False
 
 
-def test_usage_limited():
-    from datetime import datetime, timezone, timedelta
-    now = datetime.now(timezone.utc)
-    future = (now + timedelta(hours=1)).isoformat()
-    past = (now - timedelta(hours=1)).isoformat()
-    from optio_claudecode import oauth
-    assert oauth.usage_limited({"five_hour": {"utilization": 100.0, "resets_at": future}}, now) is True
-    assert oauth.usage_limited({"five_hour": {"utilization": 100.0, "resets_at": past}}, now) is False
-    assert oauth.usage_limited({"five_hour": {"utilization": 16.0, "resets_at": future}}, now) is False
-    assert oauth.usage_limited(None, now) is False
-    # per-model gating
-    u = {"five_hour": {"utilization": 1.0}, "seven_day_opus": {"utilization": 100.0, "resets_at": future}}
-    assert oauth.usage_limited(u, now) is False
-    assert oauth.usage_limited(u, now, models_required=["opus"]) is True
+async def test_verify_returns_alive_and_account(mongo_db, tmp_workdir, monkeypatch):
+    from optio_agents.account import AccountInfo, UsageWindow
+    future = 9999999999999
+    sid = await _seed_with_creds(mongo_db, tmp_workdir, "vacct", access="AT", refresh="RT", expires_at=future)
+
+    fixed = AccountInfo(
+        name="Jane Doe", email="jane@example.com", plan="Claude Max 20x",
+        account_id="u1", windows=(UsageWindow("session", 10.0, None, None),),
+    )
+
+    async def fake_validate(t):
+        assert t == "AT"
+        return True
+    async def fake_analyze(t):
+        assert t == "AT"
+        return fixed
+    async def fail_refresh(rt): raise AssertionError("must not refresh a valid token")
+    monkeypatch.setattr(oauth, "validate_token", fake_validate)
+    monkeypatch.setattr(oauth, "analyze_account", fake_analyze)
+    monkeypatch.setattr(oauth, "refresh_oauth_token", fail_refresh)
+
+    res = await oauth.verify_and_refresh_seed(
+        mongo_db, prefix="t", suffix="_cc_seeds", seed_id=sid, encrypt=None, decrypt=None,
+    )
+    assert res["alive"] is True
+    assert isinstance(res["account"], AccountInfo)
+    assert res["account"] == fixed
+    doc = await seeds.load_seed(mongo_db, prefix="t", suffix="_cc_seeds", seed_id=sid)
+    assert doc["metadata"]["account"]["email"] == "jane@example.com"
 
 
 def test_seed_signature_excludes_auth_and_noise(tmp_path):
