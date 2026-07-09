@@ -33,6 +33,7 @@ from optio_host.host import Host, LocalHost, ProcessHandle
 from optio_host.paths import task_dir
 
 from optio_antigravity import auth_scrape, cred_watcher, host_actions
+from optio_antigravity.account import resolve_capture_account
 from optio_antigravity import models as antigravity_models
 from optio_antigravity.conversation import AntigravityConversation
 from optio_antigravity.info import AGENT_INFO
@@ -758,8 +759,18 @@ async def run_antigravity_session(
                         suffix=ANTIGRAVITY_SEED_SUFFIX,
                         encrypt=config.session_blob_encrypt,
                     )
-                    # 2nd arg (account summary) is resolved in a later stage.
-                    await _call_maybe_async(config.on_seed_saved, seed_id, None)
+                    # Normalized account from the seeded Google OAuth token (the
+                    # isolated home token store is still on disk pre-cleanup);
+                    # fail-soft → EMPTY, never disturbs capture. Optio owns the
+                    # capture-time stamp: persist metadata.account, then hand
+                    # on_seed_saved the human-readable summary (2nd arg). Mirrors
+                    # optio-claudecode.
+                    info = await resolve_capture_account(host)
+                    await _seeds.declare_metadata(
+                        ctx._db, prefix=ctx._prefix, suffix=ANTIGRAVITY_SEED_SUFFIX,
+                        seed_id=seed_id, metadata={"account": info.to_dict()},
+                    )
+                    await _call_maybe_async(config.on_seed_saved, seed_id, info.summary)
             except Exception:
                 _LOG.exception(
                     "seed capture failed; callback not fired, teardown continues",

@@ -54,6 +54,8 @@ from typing import Callable
 from urllib.error import HTTPError, URLError
 
 from optio_agents import seeds
+from optio_agents.account import AccountInfo
+from optio_antigravity.account import analyze_account
 from optio_antigravity.seed_manifest import (
     ANTIGRAVITY_SEED_SUFFIX,
     _TOKEN_STORE_RELPATH as _TOKEN_MEMBER,
@@ -227,9 +229,11 @@ async def verify_and_refresh_seed(
     PKCE client (client_id only) and writes the rotated ``access_token`` /
     ``refresh_token`` / ``expiry`` back into ``store["token"]`` (preserving
     ``auth_method`` and any other outer keys). Returns ``{"alive": bool,
-    "account": None}`` — ``alive`` is True iff the seed is alive (token still
-    valid, or a successful refresh); ``account`` is always None (this engine has
-    no analyze_account yet).
+    "account": AccountInfo | None}`` — ``alive`` is True iff the seed is alive
+    (token still valid, or a successful refresh); on the alive path ``account``
+    is the normalized ``optio_agents.account.AccountInfo`` (fail-soft → EMPTY)
+    analyzed from the live/rotated access token and also stamped into
+    ``metadata.account``. Dead/inconclusive paths return ``account=None``.
 
     Never raises for a dead seed. Marks pool status ``dead`` ONLY on a definitive
     dead signal (no refresh token, malformed store, or a ``invalid_grant`` refresh
@@ -247,16 +251,25 @@ async def verify_and_refresh_seed(
     if doc is None:
         return {"alive": False, "account": None}
 
-    async def _finish(alive: bool, *, mark_dead: bool) -> dict:
+    async def _finish(
+        alive: bool, *, mark_dead: bool, account: "AccountInfo | None" = None,
+    ) -> dict:
+        now = datetime.now(timezone.utc)
+        metadata: dict = {"verify": {"alive": alive, "checkedAt": now}}
+        # Stamp the normalized account only on the alive path, so the pool
+        # consistently carries a metadata.account for every live seed (mirrors
+        # optio-codex). Dead paths carry account=None and no stamp.
+        if alive and account is not None:
+            metadata["account"] = account.to_dict()
+            metadata["accountFetchedAt"] = now
         await seeds.declare_metadata(
-            db, prefix=prefix, suffix=suffix, seed_id=seed_id,
-            metadata={"verify": {"alive": alive, "checkedAt": datetime.now(timezone.utc)}},
+            db, prefix=prefix, suffix=suffix, seed_id=seed_id, metadata=metadata,
         )
         if alive:
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="alive")
         elif mark_dead:
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="dead")
-        return {"alive": alive, "account": None}
+        return {"alive": alive, "account": account if alive else None}
 
     buf = io.BytesIO()
     await AsyncIOMotorGridFSBucket(db).download_to_stream(doc["blobId"], buf)
@@ -286,7 +299,11 @@ async def verify_and_refresh_seed(
         if not await _in_executor(_validate_sync, userinfo_endpoint, tok.get("access_token") or ""):
             need_refresh = True
     if not need_refresh:
-        return await _finish(True, mark_dead=False)
+        # Alive without a refresh: analyze the still-valid access token for the
+        # metadata.account stamp (read-only GET/POSTs; no extra refresh). Fail-soft
+        # → EMPTY, never disturbs the verify result.
+        account = await analyze_account(tok.get("access_token") or "")
+        return await _finish(True, mark_dead=False, account=account)
 
     resp = await _in_executor(
         _refresh_sync, token_endpoint, refresh_token, _AGY_CLIENT_ID,
@@ -310,4 +327,7 @@ async def verify_and_refresh_seed(
         )
     except Exception:  # noqa: BLE001 — save-back failed; the refresh still rotated
         _LOG.exception("seed %s: refreshed token save-back failed", seed_id)
-    return await _finish(True, mark_dead=False)
+    # Analyze the freshly-rotated access token for the metadata.account stamp
+    # (read-only; no extra refresh). Fail-soft → EMPTY.
+    account = await analyze_account(tok.get("access_token") or "")
+    return await _finish(True, mark_dead=False, account=account)
