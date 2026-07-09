@@ -113,3 +113,26 @@ def is_limited(info: AccountInfo, now: datetime, models: list[str] = ()) -> bool
         if w.resets_at is None or w.resets_at > now:
             return True
     return False
+
+
+def accounts_to_metadata(accounts: "list[AccountInfo]") -> list[dict]:
+    return [a.to_dict() for a in accounts]
+
+
+def accounts_from_metadata(meta: dict) -> "list[AccountInfo]":
+    """Read the plural metadata.accounts; fall back to a legacy singular
+    metadata.account (a 1-element list) so pools stamped before the plural
+    migration still render until re-verified. [] when neither present."""
+    if not isinstance(meta, dict):
+        return []
+    raw = meta.get("accounts")
+    if isinstance(raw, list):
+        return [AccountInfo.from_dict(d) for d in raw if isinstance(d, dict)]
+    one = meta.get("account")
+    return [AccountInfo.from_dict(one)] if isinstance(one, dict) else []
+
+
+def any_usable(accounts, now, models=()) -> bool:
+    """A seed with N accounts is usable iff at least ONE account is not limited
+    for the required models (opencode: any provider account can serve)."""
+    return any(not is_limited(a, now, models) for a in accounts)
