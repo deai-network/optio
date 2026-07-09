@@ -24,12 +24,14 @@ import tarfile
 from datetime import datetime, timedelta, timezone
 from urllib.error import HTTPError
 
+import pytest
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorGridFSBucket
 from optio_core.context import ProcessContext
 from optio_host.host import LocalHost
 
 from optio_agents import seeds
+from optio_agents.account import EMPTY, AccountInfo
 from optio_antigravity import verify
 from optio_antigravity.seed_manifest import (
     ANTIGRAVITY_SEED_MANIFEST,
@@ -42,6 +44,19 @@ _DISCO = {
     "token_endpoint": "https://oauth2.googleapis.com/token",
     "userinfo_endpoint": "https://openidconnect.googleapis.com/v1/userinfo",
 }
+
+
+@pytest.fixture(autouse=True)
+def stub_analyze_account(monkeypatch):
+    """Keep verify's account analysis off the network. The alive path now calls
+    ``analyze_account`` (on the live/rotated access token) for the
+    ``metadata.account`` stamp; stub it to ``EMPTY`` so these refresh-logic tests
+    stay hermetic. ``test_account.py`` covers the real mapping;
+    ``test_verify_stamps_account`` overrides this to assert the wiring."""
+    async def _empty(access_token):
+        return EMPTY
+
+    monkeypatch.setattr(verify, "analyze_account", _empty)
 
 
 def _iso(dt: datetime) -> str:
@@ -129,7 +144,7 @@ async def test_expired_refreshes_and_writes_back(mongo_db, tmp_path, monkeypatch
 
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is True
-    assert res["account"] is None
+    assert res["account"] is EMPTY  # alive path carries the (stubbed) AccountInfo
     # PKCE public client → client_id only (no secret), the agy constant.
     assert refreshed["called"][0] == "https://oauth2.googleapis.com/token"
     assert refreshed["called"][1] == "ORIGINAL"
@@ -160,7 +175,7 @@ async def test_refresh_without_rotation_preserves_old_token(mongo_db, tmp_path, 
     )
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is True
-    assert res["account"] is None
+    assert res["account"] is EMPTY  # alive path carries the (stubbed) AccountInfo
     tok = (await _seed_store(mongo_db, seed_id))["token"]
     assert tok["access_token"] == "NEW_ACCESS"
     assert tok["refresh_token"] == "ORIGINAL"           # preserved
@@ -180,7 +195,7 @@ async def test_not_expired_valid_does_not_refresh(mongo_db, tmp_path, monkeypatc
 
     res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert res["alive"] is True
-    assert res["account"] is None
+    assert res["account"] is EMPTY  # alive path carries the (stubbed) AccountInfo
     tok = (await _seed_store(mongo_db, seed_id))["token"]
     assert tok["refresh_token"] == "ORIGINAL"           # untouched
     assert tok["access_token"] == "OLD_ACCESS"
@@ -268,3 +283,43 @@ async def test_unknown_seed(mongo_db):
     )
     assert res["alive"] is False
     assert res["account"] is None
+
+
+async def test_alive_path_analyzes_and_stamps_account(mongo_db, tmp_path, monkeypatch):
+    # The alive path analyzes the live/rotated access token and stamps the
+    # normalized account into metadata.account. Override the autouse EMPTY stub
+    # with a real AccountInfo and assert it flows through the return + the stamp.
+    past = _iso(datetime.now(timezone.utc) - timedelta(hours=1))
+    seed_id = await _make_seed(mongo_db, tmp_path, expiry=past)
+
+    monkeypatch.setattr(verify, "_discover_sync", lambda issuer: _DISCO)
+    monkeypatch.setattr(
+        verify, "_refresh_sync",
+        lambda *a: {"access_token": "NEW_ACCESS", "expires_in": 3600},
+    )
+
+    account_info = AccountInfo(
+        name="Test User", email="user@example.com", plan="Free",
+        account_id="000000000000000000000",
+    )
+    seen = {}
+
+    async def fake_analyze(access_token):
+        seen["token"] = access_token
+        return account_info
+
+    monkeypatch.setattr(verify, "analyze_account", fake_analyze)
+
+    res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
+    assert res["alive"] is True
+    assert res["account"] is account_info
+    # Analyzed the freshly-rotated access token (read-only; no extra refresh).
+    assert seen["token"] == "NEW_ACCESS"
+
+    doc = await _doc(mongo_db, seed_id)
+    assert doc["status"] == "alive"
+    assert doc["metadata"]["account"] == account_info.to_dict()
+    assert doc["metadata"]["account"]["email"] == "user@example.com"
+    assert doc["metadata"]["account"]["summary"] == (
+        "Plan: Free for Test User <user@example.com>"
+    )

@@ -2,6 +2,7 @@
 
 import logging as _logging
 
+from optio_antigravity.account import analyze_account
 from optio_antigravity.info import AGENT_INFO
 from optio_antigravity.seed_manifest import (
     ANTIGRAVITY_CRED_MANIFEST,
@@ -26,6 +27,7 @@ _logging.getLogger("asyncssh").setLevel(_logging.WARNING)
 
 __all__ = [
     "AGENT_INFO",
+    "analyze_account",
     "create_antigravity_task",
     "run_antigravity_session",
     "AntigravityTaskConfig",
