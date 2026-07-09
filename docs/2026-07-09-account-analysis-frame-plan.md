@@ -355,23 +355,13 @@ git commit -m "feat(optio-agents): export account API"
 - Consumes: `optio_agents.account.AccountInfo`, `UsageWindow`, `EMPTY`.
 - Produces: `async analyze_account(access_token: str) -> AccountInfo` in `optio_claudecode.account`; keep `_format_plan`. `format_account_summary` is removed (the shared `AccountInfo.summary` replaces it).
 
-- [ ] **Step 1: Capture real payloads from a live claude seed (real-API rule)**
+- [x] **Step 1: Capture real payloads from a live claude seed (real-API rule) — DONE 2026-07-09**
 
-Pick a **freshly-verified** claude seed from excavator's real db. Decrypt its blob with excavator's real `decrypt` (trace the key), read the OAuth access token from `.claude/.credentials.json` (`claudeAiOauth.accessToken`) **as stored — do not refresh** (read-only; if the token is expired, pick a fresher seed rather than triggering a rotation here), then:
+Already captured against a live claude Max 20x seed (excavator `gm_claudecode_seeds`, decrypted with `~/excavator-trinkets/instance.age`, read-only — stored token, no refresh) and committed:
+- `packages/optio-claudecode/tests/fixtures/claude_profile.json` — PII scrubbed to `Jane Doe`/`jane@example.com`/placeholder uuids; `organization.rate_limit_tier="default_claude_max_20x"` kept verbatim.
+- `packages/optio-claudecode/tests/fixtures/claude_usage.json` — verbatim (no PII): top-level `five_hour`/`seven_day` `{utilization, resets_at}`, all `seven_day_<model>` = `null`, and the authoritative `limits[]` array (see the real-payload note in Step 4).
 
-Run:
-```bash
-TOKEN=<access-token-from-live-seed>
-curl -s https://api.anthropic.com/api/oauth/profile \
-  -H "Authorization: Bearer $TOKEN" -H "anthropic-beta: oauth-2025-04-20" \
-  -H "User-Agent: claude-cli/2.1.165 (external, cli)" \
-  > packages/optio-claudecode/tests/fixtures/claude_profile.json
-curl -s https://api.anthropic.com/api/oauth/usage \
-  -H "Authorization: Bearer $TOKEN" -H "anthropic-beta: oauth-2025-04-20" \
-  -H "User-Agent: claude-cli/2.1.165 (external, cli)" \
-  > packages/optio-claudecode/tests/fixtures/claude_usage.json
-```
-Confirm `claude_profile.json` has `organization.rate_limit_tier`, `account.email`, `account.full_name`, `account.uuid`; `claude_usage.json` has buckets keyed `five_hour`/`seven_day`/`seven_day_<model>`, each with `utilization` (0-100) and `resets_at` (ISO). Scrub the real email/name to placeholders in the committed fixture; keep the structure exact.
+Re-capture only if the vendor shape appears to have changed again; otherwise use these fixtures.
 
 - [ ] **Step 2: Write the failing test**
 
@@ -396,11 +386,17 @@ def test_maps_profile_and_usage(monkeypatch):
     info = anyio_run(acct.analyze_account("tok"))
     assert isinstance(info, AccountInfo)
     assert info.email == profile["account"]["email"]
-    assert info.plan and info.plan.startswith("Claude")
+    assert info.plan == "Claude Max 20x"                       # from rate_limit_tier
     assert info.account_id == profile["account"]["uuid"]
-    assert any(w.label == "five_hour" for w in info.windows)
-    # per-model windows carry a model tag
-    assert all(("seven_day_" not in w.label) or (w.model is not None) for w in info.windows)
+    # windows come from limits[]: at least the global session/weekly windows
+    labels = {w.label for w in info.windows}
+    assert labels & {"session", "weekly_all"}
+    # any window whose source limit had a model scope carries a model tag;
+    # global limits (scope=None) have model=None
+    assert any(w.model is None for w in info.windows)          # global window present
+    scoped = [l for l in usage.get("limits", []) if (l.get("scope") or {}).get("model")]
+    if scoped:
+        assert any(w.model is not None for w in info.windows)
 
 
 def test_failsoft_on_fetch_error(monkeypatch):
@@ -421,32 +417,45 @@ Expected: FAIL — `analyze_account` / `_fetch_profile` / `_fetch_usage` not def
 
 Refactor `account.py`: keep `_format_plan` and the `_PLAN_TOKENS` prettifier; replace the summary-string surface with `analyze_account`. Add `_fetch_profile`/`_fetch_usage` (async wrappers around the existing sync `urllib` calls, reused from `oauth.py`'s `_profile_sync`/`_usage_sync` — import them or move them here; do not duplicate the request builder). Map:
 
+> **Real-payload note (verified 2026-07-09 against a live claude Max 20x seed — see the committed fixtures `tests/fixtures/claude_profile.json` / `claude_usage.json`):** the `/api/oauth/usage` shape has evolved. The legacy top-level `seven_day_<model>` keys are now **`null`** — per-model data lives in a new authoritative **`limits[]`** array: `{kind, group, percent, resets_at, scope:{model:{id, display_name}}|null, is_active, severity}`. The top-level `five_hour`/`seven_day` still carry `{utilization, resets_at}` and mirror the `session`/`weekly_all` limits. **Map from `limits[]`** (parsing the legacy `seven_day_<model>` keys would silently drop all model-aware gating — a regression already live in the old `usage_limited`). Global windows = `scope is None`; per-model windows = `scope.model.id` (fall back to `display_name` lowercased when `id` is null, e.g. the `weekly_scoped`/`Fable` entry).
+
 ```python
 # packages/optio-claudecode/src/optio_claudecode/account.py  (key additions)
 from optio_agents.account import AccountInfo, UsageWindow, EMPTY
 
-_GLOBAL_KEYS = {"five_hour", "seven_day"}
+
+def _parse_reset(ra) -> "datetime | None":
+    if not isinstance(ra, str) or not ra:
+        return None
+    try:
+        return datetime.fromisoformat(ra)
+    except ValueError:
+        return None
 
 
 def _windows_from_usage(usage: dict) -> list[UsageWindow]:
+    """Build windows from the authoritative ``limits[]`` array (current claude
+    usage shape). Each limit → one UsageWindow; ``scope.model`` → per-model tag."""
     out = []
-    for label, bucket in (usage or {}).items():
-        if not isinstance(bucket, dict):
+    for lim in (usage or {}).get("limits") or []:
+        if not isinstance(lim, dict):
             continue
-        util = bucket.get("utilization")
-        if not isinstance(util, (int, float)):
+        pct = lim.get("percent")
+        if not isinstance(pct, (int, float)):
             continue
-        ra = bucket.get("resets_at")
-        resets_at = None
-        if isinstance(ra, str) and ra:
-            try:
-                resets_at = datetime.fromisoformat(ra)
-            except ValueError:
-                resets_at = None
+        scope = lim.get("scope") or {}
+        model_obj = scope.get("model") if isinstance(scope, dict) else None
         model = None
-        if label.startswith("seven_day_"):
-            model = label[len("seven_day_"):]
-        out.append(UsageWindow(label=label, pct=float(util), resets_at=resets_at, model=model))
+        if isinstance(model_obj, dict):
+            model = model_obj.get("id") or (
+                (model_obj.get("display_name") or "").lower() or None
+            )
+        out.append(UsageWindow(
+            label=lim.get("kind") or lim.get("group") or "limit",
+            pct=float(pct),
+            resets_at=_parse_reset(lim.get("resets_at")),
+            model=model,
+        ))
     return out
 
 
