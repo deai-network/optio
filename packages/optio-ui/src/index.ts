@@ -6,6 +6,8 @@ export type { SessionEventCallbacks } from './session/sessionEvents.js';
 export {
   setBrowserOpenHandler,
   defaultHandleBrowserOpenRequests,
+  isBrowserOpenStale,
+  BROWSER_OPEN_MAX_AGE_MS,
 } from './handlers/browserOpen.js';
 export type { BrowserOpenHandler, BrowserOpenRequest } from './handlers/browserOpen.js';
 

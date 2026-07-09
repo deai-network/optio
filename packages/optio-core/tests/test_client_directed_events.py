@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 import pytest
 from optio_core.models import TaskInstance
 from optio_core.store import (
@@ -34,7 +35,10 @@ async def test_append_browser_open_request(mongo_db):
     rid = await append_browser_open_request(mongo_db, "test", proc["_id"], "https://x")
     assert isinstance(rid, str) and len(rid) == 32
     doc = await mongo_db["test_processes"].find_one({"_id": proc["_id"]})
-    assert doc["browserOpenRequests"] == [{"requestId": rid, "url": "https://x"}]
+    assert len(doc["browserOpenRequests"]) == 1
+    entry = doc["browserOpenRequests"][0]
+    assert entry["requestId"] == rid and entry["url"] == "https://x"
+    assert isinstance(entry["createdAt"], datetime)  # stamped for staleness expiry
 
 
 @pytest.mark.asyncio
@@ -59,7 +63,9 @@ async def test_ctx_request_browser_open(mongo_db):
     ctx = _ctx(mongo_db, proc)
     rid = await ctx.request_browser_open("https://repo")
     doc = await mongo_db["test_processes"].find_one({"_id": proc["_id"]})
-    assert doc["browserOpenRequests"][0] == {"requestId": rid, "url": "https://repo"}
+    entry = doc["browserOpenRequests"][0]
+    assert entry["requestId"] == rid and entry["url"] == "https://repo"
+    assert isinstance(entry["createdAt"], datetime)
 
 
 @pytest.mark.asyncio
