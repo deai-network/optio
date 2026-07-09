@@ -87,3 +87,21 @@ class AccountInfo:
 
 
 EMPTY = AccountInfo()
+
+
+def is_limited(info: AccountInfo, now: datetime, models: list[str] = ()) -> bool:
+    """True if a relevant window is maxed (pct >= 100) and not yet reset
+    (``resets_at`` in the future, or absent → treated as limited).
+
+    Gates every global window (``model is None``) always, plus each per-model
+    window whose ``model`` is in ``models``. ``now`` is tz-aware. Returns False
+    on ``EMPTY``/unknown — generalization of claudecode's ``usage_limited``."""
+    wanted = set(models or ())
+    for w in info.windows:
+        if w.model is not None and w.model not in wanted:
+            continue                       # per-model window for a model we don't need
+        if w.pct < 100:
+            continue
+        if w.resets_at is None or w.resets_at > now:
+            return True
+    return False
