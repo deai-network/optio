@@ -1,171 +1,210 @@
 # optio-kimicode `analyze_account` — account-analysis research
 
 **Date:** 2026-07-09
-**Status:** research complete (read-only, CODE + DOCS only). No source built, no code edited.
-**Capture status:** `no_seed` — NO live kimicode seed exists (login currently broken), so the live GET
-capture was SKIPPED per task. Shapes below are derived from the vendor CLI source
-(`~/deai/kimi-code`, the `@moonshot-ai/oauth` package) + Kimi docs. **Live verification is
-pending a working seed.**
-**Companion fixture:** none (no live capture; expected shape documented inline in §3).
+**Status:** research complete + LIVE-VERIFIED (read-only). No source built, no code edited.
+**Capture status:** `captured` — a working kimicode seed now exists (login was fixed) and the live
+`GET /coding/v1/usages` returned **200 with the stored token**. The shapes below are the REAL served
+payload, not code-derived guesses. The earlier revision of this doc (`no_seed`) was code/docs-derived;
+several of its conclusions were WRONG and are corrected below (see the ⚠ markers).
+**Companion fixture:** `packages/optio-kimicode/tests/fixtures/kimi_coding_usages.json` (PII-scrubbed
+capture of the live `/usages` body — window structure + real numbers preserved; `user.userId` redacted).
 **Reference analyzers:** `optio-claudecode/account.py`, `optio-codex/account.py`, `optio-cursor/account.py`.
 
-## TL;DR — kimicode is the INVERSE of grok/cursor
+## 0. Safety confirmation (operator-requested)
 
-- **Usage / limit windows: FULLY available read-only** via the seed's OAuth bearer, and the
-  *only* account-shaped data the CLI token can reach:
-  `GET https://api.kimi.com/coding/v1/usages` → a weekly-quota summary + rolling sub-windows
-  (e.g. 5h), each with absolute `used` / `limit` counts + a reset time. So `AccountInfo.windows`
-  is populated and `is_limited(...)` works for kimicode (unlike grok/cursor, whose windows are empty).
-- **Identity (name / email / plan / account_id): NOT exposed** to the CLI OAuth token by any
-  endpoint. The `/usages` payload carries no identity; the daemon's `GET /v1/auth` auth-summary
-  carries only readiness (no user fields); the access token is treated as **opaque** by the CLI
-  (never decoded for claims). So `AccountInfo.{name,email,plan,account_id}` will all be `None`, and
-  therefore `AccountInfo.summary` (which requires plan AND email) will always be `None`.
+- **Seed ALIVE:** YES. `GET https://api.kimi.com/coding/v1/usages` with the stored access token
+  returned **HTTP 200** and a full usage body (see §3). The seed's Mongo status is `alive`.
+- **READ-ONLY, no seed mutation:** confirmed. The capture performed **only HTTP GET** requests
+  (`/usages` + four 404-probe identity paths). There was **NO Mongo write** (GridFS blob and the
+  seed doc were read via `fs.get(...)` / `find_one(...)` only), **NO token refresh** (the rotating
+  single-use `refresh_token` was never sent to `auth.kimi.com`), and **NO source edit / git commit**.
+  The only files written were the fixture + this doc.
+- **Token validity / expiry:** the stored access token is a **valid, unexpired** ES256 JWT.
+  `exp = 1783585192` → **2026-07-09T08:19:52Z**; at capture (~08:14:39Z) it had **~313 s** of life
+  left and the GET succeeded well inside that. NOTE: 313 s is *inside* kimi's refresh threshold
+  (`max(300, 0.5·900) = 450 s`), i.e. the seed's next verify pass will legitimately rotate it — but
+  **this capture did not**, as mandated. The token was used exactly as stored.
 
-Consequence: kimicode ships **usage gating, no identity summary** — the mirror image of grok/cursor
-(identity + plan, no usage).
+## TL;DR — corrected: kimicode exposes usage AND partial identity
 
-## 1. Credential layout (from the wrapper)
+- **Usage / limit windows: FULLY available read-only** via the seed's OAuth bearer —
+  `GET https://api.kimi.com/coding/v1/usages` → a rolling account quota (`usage`) + a sub-window list
+  (`limits[]`, here one `300 MINUTE` = 5 h window), each with absolute `limit`/`used`/`remaining` +
+  a `resetTime`. So `AccountInfo.windows` is populated and `is_limited(...)` is meaningful. (This part
+  of the prior research held up.)
+- ⚠ **Identity is PARTIALLY exposed — the prior `no_seed` doc was wrong.** The live `/usages` body
+  carries a `user` block: `user.userId` (an account id, **identical to the JWT `sub`**),
+  `user.region`, and `user.membership.level` (a plan/tier, e.g. `"LEVEL_BASIC"`). So
+  `AccountInfo.account_id` and `AccountInfo.plan` **CAN be populated** from the very same read-only
+  GET. What is still absent: **name and email** (no field anywhere in the payload, and no dedicated
+  identity endpoint — `/coding/v1/{auth,me,user,users/me}` all 404).
+- **`AccountInfo.summary` is still `None`** — it requires `plan` AND `email`; `email` is unavailable,
+  so the derived summary stays `None` even though `plan` is now known.
 
-Source: `optio_kimicode/verify.py`, `seed_manifest.py`.
+Consequence: kimicode ships **usage gating + account id + plan tier, but no human-readable summary**
+(no email/name). Not the "no identity at all" of the earlier draft.
 
-- **Seed-blob member holding creds:** `credentials/kimi-code.json` (`_CRED_MEMBER` in `verify.py`;
-  rooted at the manifest `home_subdir="home"`, i.e. `KIMI_CODE_HOME = <workdir>/home`). The full
-  seed tar.gz also carries `config.toml` (the `managed:kimi-code` provider registration — load-bearing
-  for launch but NOT credential-bearing).
-- **`kimi-code.json` shape:** a FLAT snake_case token dict (no `{issuer::client}` wrapper, unlike grok):
-  `access_token` / `refresh_token` / `expires_at` (unix SECONDS) / `scope` / `token_type` / `expires_in`.
-- **Access-token field:** `creds["access_token"]` — this is the bearer to pass to `analyze_account`.
-  Format is **opaque** as far as the CLI is concerned (the vendor `TokenInfo` never decodes it; no
-  identity claims are extracted anywhere). Whether it happens to be a JWT carrying identity claims is
-  **unverified** (needs a real seed to inspect) — the CLI does not rely on it, so neither should the
-  analyzer.
-- **Live-host path (for a `resolve_capture_account` variant):** `<workdir>/home/credentials/kimi-code.json`.
-- **Vendor auth used by verify:** OAuth token endpoint `POST https://auth.kimi.com/api/oauth/token`
-  (public client `17e5f671-d194-4dfb-9706-5516cb48c098`, no secret), form-encoded `refresh_token` grant.
-  **The analyzer must NOT refresh** (single-use rotating refresh token; a refresh without seed save-back
-  strands the seed). kimi exposes no OIDC discovery and no userinfo liveness probe.
+## 1. Credential layout (from the wrapper) — confirmed against the live seed
 
-## 2. Vendor endpoints (reachability with the seed OAuth bearer)
+Source: `optio_kimicode/verify.py`, `seed_manifest.py`; confirmed by extracting the live blob.
 
-The managed provider is `managed:kimi-code`; its base URL is `https://api.kimi.com/coding/v1`
-(env override `KIMI_CODE_BASE_URL`). This host is DISTINCT from the Moonshot open-platform hosts
-(`api.moonshot.ai/v1`, `api.moonshot.cn/v1`), which take a `sk-…` platform API key, NOT the OAuth token.
+- **Seed store:** Mongo `excavator.gm_kimicode_seeds` (prefix `gm`), GridFS blob. The blob is
+  **age-encrypted** (magic `age-`), decrypted with `engine.credentials.decrypt_session_blob`
+  (NOT plain gzip for this seed — the "Header is invalid → plain gzip" fallback was not needed here).
+- **Seed-blob members (live):** `credentials/`, `config.toml`, `credentials/kimi-code.json` — exactly
+  the `KIMI_SEED_MANIFEST` (creds dir + `config.toml` provider registration).
+- **`kimi-code.json` shape (live):** flat snake_case dict with keys
+  `access_token` / `refresh_token` / `expires_at` (unix SECONDS) / `expires_in` (900) / `scope`
+  (`"kimi-code"`) / `token_type` (`"Bearer"`). Confirmed — matches `verify.py`.
+- **Access-token field:** `creds["access_token"]` — the bearer for `analyze_account`.
+  ⚠ It is **NOT opaque**: it is a decodable ES256 JWT. Header `{"alg":"ES256","kid":…,"typ":"JWT"}`;
+  payload carries `sub`/`user_id` (= the account id), `client_id`, `scope` (`"kimi-code"`),
+  `token_id`/`jti`, `iss` (`"kimi-auth"`), `exp`/`nbf`/`iat`, `type` (`"access"`). It carries **NO
+  email/name/plan** claims. Because `/usages` returns the same `userId` (plus the plan tier) directly,
+  the analyzer does **not** need to decode the JWT — prefer the `/usages` `user` block as the source.
+- **Vendor OAuth (refresh):** `POST https://auth.kimi.com/api/oauth/token` (public client
+  `17e5f671-d194-4dfb-9706-5516cb48c098`). **The analyzer must NOT refresh** — single-use rotating
+  refresh token; a refresh without seed save-back strands the seed. Not exercised in this capture.
 
-| Purpose | Method | URL | Reachable with seed token? | Identity? | Usage? |
+## 2. Vendor endpoints (reachability with the seed OAuth bearer) — live-verified
+
+| Purpose | Method | URL | Result | Identity? | Usage? |
 |---|---|---|---|---|---|
-| **Usage / limits** | GET | `https://api.kimi.com/coding/v1/usages` | **YES** (Bearer `access_token`) | no | **YES** |
-| Model list | GET | `https://api.kimi.com/coding/v1/models` | yes | no | no (not needed for account) |
-| Daemon auth summary | GET | `/v1/auth` (local daemon) | n/a (local) | **no** (`ready`, `providers_count`, `default_model`, `managed_provider.{name,status}` only) | no |
-| Platform balance | GET | `https://api.moonshot.ai/v1/users/me/balance` | **NO** — needs a `sk-` platform API key, not the coding OAuth token; also returns only `available_balance`/`voucher_balance`/`cash_balance`, **no identity** | no | no (USD balance, not quota) |
-| OAuth token (refresh) | POST | `https://auth.kimi.com/api/oauth/token` | yes | no | no — **do NOT call** (rotates single-use refresh token) |
+| **Usage / limits (+ partial identity)** | GET | `https://api.kimi.com/coding/v1/usages` | **200** ✅ | **partial** (`user.userId`, `user.membership.level`, `user.region`) | **YES** |
+| Identity summary probe | GET | `https://api.kimi.com/coding/v1/auth` | **404** (`resource_not_found_error`) | — | — |
+| Identity probe | GET | `https://api.kimi.com/coding/v1/me` | **404** | — | — |
+| Identity probe | GET | `https://api.kimi.com/coding/v1/user` | **404** | — | — |
+| Identity probe | GET | `https://api.kimi.com/coding/v1/users/me` | **404** | — | — |
+| OAuth token (refresh) | POST | `https://auth.kimi.com/api/oauth/token` | not called | — | — (do NOT call; rotates single-use token) |
 
-Auth header for the reachable GETs (from `managed-usage.ts` / `managed-kimi-code.ts`):
-`Authorization: Bearer <access_token>`, `Accept: application/json`. A custom UA is NOT required for
-`api.kimi.com` (the CLI sends `X-Msh-*` device headers + a `kimi_code_cli` UA, but those are not
-needed to authorize a GET; a plain UA like `optio-kimicode/account` should suffice — **live-unverified**).
+Auth header used: `Authorization: Bearer <access_token>`, `Accept: application/json`,
+`User-Agent: optio-kimicode/account`. A plain UA authorized the GET fine — no `X-Msh-*` device
+headers or `kimi_code_cli` UA were needed (confirms the prior "custom UA not required" note).
+There is **no dedicated identity endpoint**; identity, such as it is, is bundled INTO `/usages`.
 
-## 3. `/coding/v1/usages` payload shape (from `managed-usage.ts`)
+## 3. `/coding/v1/usages` — REAL live payload
 
-Documented in the vendor parser (`packages/oauth/src/managed-usage.ts`); the parser is deliberately
-loose because field spelling drifted across versions. Canonical shape:
+Captured verbatim (then scrubbed for the fixture). ⚠ Differs from the earlier code-derived guess in
+several load-bearing ways — the analyzer must be written against THIS shape:
 
 ```json
 {
-  "usage": { "name": "Weekly limit", "used": 40, "limit": 1000, "resetAt": "2026-07-16T00:00:00Z" },
+  "user": {
+    "userId": "<opaque account id — == JWT sub>",
+    "region": "REGION_OVERSEA",
+    "membership": { "level": "LEVEL_BASIC" },
+    "businessId": ""
+  },
+  "usage":  { "limit": "100", "used": "2", "remaining": "98",
+              "resetTime": "2026-07-11T20:30:55.151098Z" },
   "limits": [
-    { "detail": {"used": 1, "limit": 100, "name": "5h limit"},
-      "window": {"duration": 300, "timeUnit": "MINUTE"} }
-  ]
+    { "window": { "duration": 300, "timeUnit": "TIME_UNIT_MINUTE" },
+      "detail": { "limit": "100", "remaining": "100",
+                  "resetTime": "2026-07-09T10:30:55.151098Z" } }
+  ],
+  "parallel":       { "limit": "10" },
+  "totalQuota":     { "limit": "100", "remaining": "99" },
+  "authentication": { "method": "METHOD_ACCESS_TOKEN", "scope": "FEATURE_CODING" },
+  "subType":        "TYPE_PURCHASE"
 }
 ```
 
-Field tolerances the parser accepts (mirror these in the analyzer):
+Load-bearing differences vs the prior guess (analyzer must handle these):
 
-- **Counts:** `used` + `limit` are ABSOLUTE integers (NOT percentages — unlike codex/cursor which
-  return `used_percent`). When `used` is absent, derive `used = limit - remaining`.
-  → **pct MUST be computed:** `pct = 100 * used / limit` (guard `limit > 0`).
-- **Name/label:** `name` → else `title` → else, for `limits[]`, a label synthesized from the window
-  `duration` + `timeUnit` (`MINUTE`/`HOUR`/`DAY` → e.g. `300 MINUTE` → `"5h limit"`) → else `"Limit #N"`.
-  The top-level `usage` summary defaults to `"Weekly limit"`.
-- **Reset time:** first string among `reset_at` / `resetAt` / `reset_time` / `resetTime` (ISO-8601, may
-  carry nano precision — trim fractional seconds to ms before parsing); else a relative-seconds field
-  among `reset_in` / `resetIn` / `ttl` / `window` (→ `now + seconds`). May be absent → `resets_at = None`.
-- **Per-model scoping:** NONE. kimi meters an account-wide membership quota shared across all models
-  ("Kimi Code shares quota with the Kimi membership plan"), so every `UsageWindow.model = None`
-  (global). There is no per-model window in this payload.
+- ⚠ **Counts are JSON STRINGS, not integers** (`"100"`, `"2"`). Parse with `int(...)` (tolerate
+  numeric strings). `pct = 100 * used / limit`, guard `limit > 0`.
+- ⚠ **`used` is only present on the top-level `usage`; the `limits[].detail` gives only
+  `limit`+`remaining`** → derive `used = limit - remaining` there (here `100 - 100 = 0` → 0 %).
+- ⚠ **Reset field is `resetTime`** (camelCase), an ISO-8601 string with **microsecond** precision
+  (`.151098Z`). Parse with fractional-second tolerance. (No `resetAt`/`reset_at`/relative-seconds in
+  the live body — the parser's other spellings are defensive only.)
+- ⚠ **`window.timeUnit` is an ENUM string, prefixed `TIME_UNIT_`** (`TIME_UNIT_MINUTE`), not bare
+  `MINUTE`. Strip the `TIME_UNIT_` prefix before mapping to a label. `duration:300` + `MINUTE`
+  = 300 min = **5 h window**.
+- **No `name`/`title` field on any window.** Labels must be synthesized: top-level `usage` →
+  a default like `"Account quota"`; each `limits[]` entry → from its `window` (`300 MINUTE` → `"5h"`).
+- **`parallel`, `totalQuota`, `authentication`, `subType`** are extra top-level blocks not in the
+  prior guess. Not usage windows (parallel-request cap / dup quota / auth method / purchase type);
+  keep them only in `raw`.
+- **Per-model scoping: NONE** (account-wide quota). Every `UsageWindow.model = None`. (Held up.)
 
-## 4. AccountInfo field mapping proposal
+## 4. AccountInfo field mapping — CORRECTED against the live payload
 
-`analyze_account(creds)` where `creds = creds["access_token"]` (the bearer string) — mirror
-cursor's signature (a token string in). One read-only GET (`/usages`), fail-soft to `EMPTY`.
+`analyze_account(token: str)` — a bearer string in (mirror cursor's signature). One read-only GET
+(`/usages`), fail-soft to `EMPTY` on any error/expiry.
 
-| AccountInfo field | Source (JSON path) | Notes |
-|---|---|---|
-| `name` | — | **None.** No identity source reachable by the CLI token. |
-| `email` | — | **None.** Same. |
-| `plan` | — | **None.** No plan/tier/subscription field in any reachable payload. (Could hardcode a static `"Kimi Code"` label, but it carries no real tier and does not help `summary`, which also needs `email` — recommend leaving `None`.) |
-| `account_id` | — | **None.** No account/user id in any reachable payload. |
-| `windows` | from `/usages`: the `usage` summary (one window) + each `limits[]` entry | label per §3; `pct = 100*used/limit`; `resets_at` per §3; `model = None` for all |
-| `raw` | `{"usage": <full /usages json>}` | escape hatch |
+| AccountInfo field | Source (live JSON path) | Value on this seed | Notes |
+|---|---|---|---|
+| `name` | — | `None` | ⚠ still no name field anywhere. |
+| `email` | — | `None` | ⚠ still no email field anywhere; keeps `summary` `None`. |
+| `plan` | `user.membership.level` | `"LEVEL_BASIC"` | ⚠ **now available** (prior doc said None). Humanize `LEVEL_BASIC` → `"Basic"` if desired. |
+| `account_id` | `user.userId` | `<opaque id>` | ⚠ **now available** (prior doc said None). Equals the JWT `sub`; prefer the `/usages` field over decoding the JWT. |
+| `windows` | `usage` (1) + each `limits[].detail` (n) | 2 % account quota; 0 % 5h | see §3: counts are strings, derive `used` from `limit-remaining` in `limits[]`, `resetTime` per row. |
+| `raw` | `{"usage": <full /usages json>}` | — | keep the extra blocks (`parallel`/`totalQuota`/`authentication`/`subType`) here. |
 
-`AccountInfo.summary` → always `None` for kimicode (needs plan + email, both `None`). The
-`on_seed_saved` 2nd arg will therefore be `None`; the value of kimicode's analyzer is the **usage
-windows / `is_limited` gate**, not a human identity string.
+`AccountInfo.summary` → **`None`** for kimicode (needs `plan` + `email`; `email` absent). The value of
+the analyzer is the usage windows + `account_id`/`plan`, not a human summary string.
 
-Window-building sketch (mirror codex `_window_from` but compute pct from counts):
+Window-building sketch (updated for strings + `TIME_UNIT_` prefix + `remaining` fallback):
 
 ```
-for each row in ([usage] + limits[*].detail):
-    used, limit = row.used (or limit - row.remaining), row.limit
-    if limit <= 0: skip
+def _int(x):  # tolerate "100" and 100
+    try: return int(str(x).strip())
+    except (TypeError, ValueError): return None
+
+rows = []
+if isinstance(j.get("usage"), dict):
+    rows.append(("Account quota", j["usage"]))
+for i, e in enumerate(j.get("limits") or []):
+    d = e.get("detail") or {}
+    w = e.get("window") or {}
+    unit = str(w.get("timeUnit","")).removeprefix("TIME_UNIT_")   # MINUTE/HOUR/DAY
+    label = synth_label(w.get("duration"), unit) or f"Limit #{i+1}"   # 300 MINUTE -> "5h"
+    rows.append((label, d))
+
+for label, r in rows:
+    limit = _int(r.get("limit"))
+    if not limit or limit <= 0: continue
+    used = _int(r.get("used"))
+    if used is None:
+        rem = _int(r.get("remaining"));  used = (limit - rem) if rem is not None else None
+    if used is None: continue
     pct = 100.0 * used / limit
-    label = row.name or row.title or synth_from_window(duration,timeUnit) or default
-    resets_at = parse_iso(row.reset_at|resetAt|reset_time|resetTime)  # trim nanos
-               or now + (row.reset_in|resetIn|ttl|window seconds)
-    model = None
+    resets_at = parse_iso(r.get("resetTime"))     # microsecond precision, tz-aware
+    windows.append(UsageWindow(label=label, pct=pct, resets_at=resets_at, model=None))
 ```
 
 ## 5. Usage / limits — exposed?
 
-**YES — read-only and reachable with the stored OAuth access token**, via
-`GET https://api.kimi.com/coding/v1/usages`. This is kimicode's distinguishing strength versus the
-other bearer-only wrappers: real per-account quota utilization + reset windows, so
-`supports_usage_gating` can be **True** for kimicode and `is_limited(...)` is meaningful.
+**YES — read-only, live-verified 200.** kimicode's distinguishing strength among the bearer-only
+wrappers: real per-account quota utilization + reset windows, so `supports_usage_gating` can be
+**True** and `is_limited(...)` is meaningful. On this seed: account quota 2/100 used (2 %, resets
+2026-07-11), 5h window 0/100 (0 %, resets 2026-07-09 10:30). Two windows total.
 
-Caveat: kimi runs **two independent quota systems** (a 7-day weekly membership quota AND a rolling
-~5h frequency window — see MoonshotAI/kimi-cli issue #2150); both surface in `limits[]`/`usage` and
-both should become windows. All are account-wide (no per-model scoping).
+## 6. Blockers / open items — updated
 
-## 6. Blockers / open items
-
-1. **No live seed → nothing captured.** `capture_status = no_seed`. All shapes are code/docs-derived;
-   the exact live `/usages` JSON (field casing actually served today, whether `resetAt` vs `reset_at`,
-   presence of `window.duration/timeUnit`) is **unverified**. First follow-up when a seed exists: one
-   read-only `GET /coding/v1/usages` with the stored token, then write a PII-scrubbed fixture to
-   `packages/optio-kimicode/tests/fixtures/`.
-2. **Identity is fundamentally unavailable** to the CLI OAuth token — no `/me`, no userinfo, no plan
-   field, and the daemon auth-summary carries none. So `name/email/plan/account_id/summary` are all
-   `None` unless a future kimi identity endpoint appears (or the access token turns out to be a JWT
-   with identity claims — inspect a real token to check; the CLI itself never does).
-3. **pct is computed, not read.** Unlike codex/cursor, kimi returns absolute `used`/`limit`; the
-   analyzer must divide (and handle the `remaining` fallback + `limit == 0` guard).
-4. **No token refresh** (single-use rotating refresh token; refresh without seed save-back kills the
-   seed — per task rule). The analyzer uses the stored token as-is; an expired token → `EMPTY`
-   (fail-soft), never a refresh.
-5. **Platform balance endpoint is a red herring** for accounts: it needs a `sk-` platform key (not the
-   coding OAuth token) and returns only USD balances, no identity.
+1. ✅ **Live capture done.** `capture_status = captured`; fixture written. Remaining code/docs-only
+   assumptions are now nailed to the served shape (string counts, `resetTime` camelCase + µs,
+   `TIME_UNIT_MINUTE` enum, `remaining`-only in `limits[]`).
+2. ⚠ **Identity is partially available (corrected):** `account_id` (`user.userId`) and `plan`
+   (`user.membership.level`) ARE reachable read-only via `/usages`; only **name/email** are absent, so
+   `summary` stays `None`. There is NO dedicated identity endpoint (`/auth`,`/me`,`/user`,`/users/me`
+   all 404) — identity rides inside `/usages`.
+3. **pct is computed, not read** (absolute `limit`/`used`/`remaining`, as STRINGS) — divide, handle
+   the `remaining` fallback and the `limit == 0` guard, and `int()`-coerce the strings.
+4. **No token refresh** — single-use rotating refresh token; analyzer uses the stored token as-is;
+   an expired token → `EMPTY` (fail-soft), never a refresh. (Not exercised here.)
+5. **`parallel`/`totalQuota`/`authentication`/`subType`/`user.region`/`user.businessId`** are present
+   but not account fields — park them in `raw` only.
 
 ## 7. Environment / method (reproducibility)
 
-- Vendor source of truth: `~/deai/kimi-code/packages/oauth/src/` — `managed-usage.ts` (usage endpoint +
-  payload parser), `managed-kimi-code.ts` (`DEFAULT_KIMI_CODE_BASE_URL`, models endpoint), `constants.ts`
-  (OAuth host + client id), `open-platform.ts` (moonshot platform hosts), `token-state.ts` (`TokenInfo`
-  shape), `identity.ts` (device/UA headers). Daemon auth summary: `packages/agent-core/src/services/
-  authSummary/authSummary.ts` + `packages/protocol/src/rest/auth.ts`.
-- Docs cited: Kimi API balance (`platform.kimi.ai/docs/api/balance`), Kimi Code usage/limits
-  (`kimi.com/code/docs`, `platform.kimi.ai/docs/pricing/limits`), the two-quota-system UX issue
-  (github.com/MoonshotAI/kimi-cli/issues/2150).
-- No Mongo access, no HTTP calls, no token refresh, no source edits, no commits. Read-only research.
-</content>
-</invoke>
+- **Capture env:** `EXCAVATOR_KEY_DIR=/home/csillag/excavator-trinkets`,
+  `python=/home/csillag/deai/excavator/.venv/bin/python` (pymongo, gridfs, `engine.credentials`,
+  optio wrappers). Mongo `mongodb://localhost:27017` db `excavator` coll `gm_kimicode_seeds`.
+- **Steps (all read-only):** `gridfs.GridFS(db).get(blobId).read()` → `engine.credentials.
+  decrypt_session_blob` (age) → `tarfile r:gz` extract `credentials/kimi-code.json` → use stored
+  `access_token` → `GET /coding/v1/usages` (200) + four identity-endpoint probes (404). No Mongo
+  write, no refresh, no source edit, no commit.
+- **Vendor source of truth (unchanged):** `~/deai/kimi-code/packages/oauth/src/` — `managed-usage.ts`,
+  `managed-kimi-code.ts`, `constants.ts`, `token-state.ts`.
