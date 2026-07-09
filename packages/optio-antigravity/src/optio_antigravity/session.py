@@ -231,7 +231,7 @@ async def run_antigravity_session(
                 seed_id=resolved_seed_id,
                 manifest=ANTIGRAVITY_SEED_MANIFEST,
                 suffix=ANTIGRAVITY_SEED_SUFFIX,
-                decrypt=None,
+                decrypt=config.session_blob_decrypt,
             )
             # Baseline the merged token store so the in-session watcher and the
             # teardown backstop only save back a genuinely rotated token.
@@ -404,8 +404,8 @@ async def run_antigravity_session(
                     ctx, host,
                     seed_id=resolved_seed_id,
                     baseline=cred_baseline,
-                    encrypt=None,
-                    decrypt=None,
+                    encrypt=config.session_blob_encrypt,
+                    decrypt=config.session_blob_decrypt,
                     lease_holder=lease_holder,
                 )
             )
@@ -717,8 +717,8 @@ async def run_antigravity_session(
                     ctx, host,
                     seed_id=resolved_seed_id,
                     baseline=cred_baseline,
-                    encrypt=None,
-                    decrypt=None,
+                    encrypt=config.session_blob_encrypt,
+                    decrypt=config.session_blob_decrypt,
                 )
             except Exception:
                 _LOG.exception("final credential save-back failed")
@@ -756,7 +756,7 @@ async def run_antigravity_session(
                         ctx, host,
                         manifest=ANTIGRAVITY_SEED_MANIFEST,
                         suffix=ANTIGRAVITY_SEED_SUFFIX,
-                        encrypt=None,
+                        encrypt=config.session_blob_encrypt,
                     )
                     # 2nd arg (account summary) is resolved in a later stage.
                     await _call_maybe_async(config.on_seed_saved, seed_id, None)
