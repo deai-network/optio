@@ -107,6 +107,33 @@ describe('codex app-server event reducer', () => {
     expect(s.busy).toBe(true);
   });
 
+  it('a tool between two agentMessage bubbles splits them into SEPARATE bubbles', () => {
+    // Real codex turns interleave: assistant text -> function_call (tool) ->
+    // agent_message -> assistant text. A hidden/ephemeral tool still separated
+    // the two answers, so they must be two bubbles, not one coalesced blob.
+    const s = play([delta('before'), itemStarted(cmdItem), delta('after')]);
+    const bubbles = s.items.filter((i) => i.kind === 'assistant');
+    expect(bubbles.map((b) => (b as any).text)).toEqual(['before', 'after']);
+    // the pre-tool bubble is finalized; only the latest stays pending
+    expect((bubbles[0] as any).pending).toBe(false);
+    expect((bubbles[1] as any).pending).toBe(true);
+  });
+
+  it('a permanent System notice between two agentMessage bubbles splits them', () => {
+    const sys = itemCompleted({ type: 'userMessage', id: 'i-u', text: 'System: heads up' });
+    const s = play([delta('before'), sys, delta('after')]);
+    const bubbles = s.items.filter((i) => i.kind === 'assistant');
+    expect(bubbles.map((b) => (b as any).text)).toEqual(['before', 'after']);
+    expect((bubbles[0] as any).pending).toBe(false);
+  });
+
+  it('an error row between two agentMessage bubbles splits them', () => {
+    const err = { type: 'x-optio-local-error', text: 'upload failed' };
+    const s = play([delta('before'), err, delta('after')]);
+    const bubbles = s.items.filter((i) => i.kind === 'assistant');
+    expect(bubbles.map((b) => (b as any).text)).toEqual(['before', 'after']);
+  });
+
   it('item/completed updates the same tool row by item id (status merged)', () => {
     const s = play([
       itemStarted(cmdItem),

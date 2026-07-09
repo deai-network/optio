@@ -130,14 +130,14 @@ function reduce(st: CodexChatState, ev: any, seq: number): CodexChatState {
   if (synthetic === 'x-optio-local-user') {
     const text = typeof ev.text === 'string' ? ev.text : '';
     if (text === '') return st;
-    return { ...st, busy: true, items: [...st.items, { kind: 'user', text, seq, local: true }] };
+    return { ...st, busy: true, items: [...finalizePending(st.items), { kind: 'user', text, seq, local: true }] };
   }
   if (synthetic === 'x-optio-local-error') {
     // A client-side upload failure the view surfaces immediately (transient —
     // not replayed on resume, unlike the successful-filename activity rows).
     const text = typeof ev.text === 'string' ? ev.text : '';
     if (text === '') return st;
-    return { ...st, items: [...st.items, { kind: 'error', text, seq }] };
+    return { ...st, items: [...finalizePending(st.items), { kind: 'error', text, seq }] };
   }
   if (synthetic === 'x-optio-permission-answered') {
     const requestId = String(ev.request_id);
@@ -152,7 +152,7 @@ function reduce(st: CodexChatState, ev: any, seq: number): CodexChatState {
   }
   if (synthetic === 'x-optio-closed') {
     const item: ChatItem = { kind: 'closed', reason: String(ev.reason ?? ''), seq };
-    return { ...st, items: [...dropTools(st.items), item], busy: false, closed: true };
+    return { ...st, items: [...dropTools(finalizePending(st.items)), item], busy: false, closed: true };
   }
   if (synthetic === 'x-optio-control-update') {
     // Session-control value change (model picker). Codex switches the model
@@ -182,8 +182,9 @@ function reduce(st: CodexChatState, ev: any, seq: number): CodexChatState {
       seq,
     };
     // busy stays true — the agent is parked on the gate. The request
-    // supersedes any in-flight tool announcement.
-    return { ...st, busy: true, items: [...dropTools(st.items), item] };
+    // supersedes any in-flight tool announcement, and separates any in-flight
+    // answer bubble from what follows.
+    return { ...st, busy: true, items: [...dropTools(finalizePending(st.items)), item] };
   }
   if (method !== undefined && hasId) return st; // other server requests: engine answers -32601
 
@@ -214,9 +215,12 @@ function reduce(st: CodexChatState, ev: any, seq: number): CodexChatState {
       // Tool rows are ephemeral only w.r.t. new text/permission/close (see the
       // Task-7 design note) — NOT w.r.t. each other. Concurrent codex items
       // (commandExecution + fileChange + webSearch …) each keep their own row.
+      // A tool is a HARD separator: finalize the in-flight answer bubble so the
+      // next agentMessage delta opens a NEW bubble instead of coalescing across
+      // the tool (which, being ephemeral, would otherwise merge two answers).
       return {
         ...st, busy: true,
-        items: [...st.items, chat],
+        items: [...finalizePending(st.items), chat],
         toolSeqs: { ...st.toolSeqs, [id]: seq },
       };
     }
@@ -256,28 +260,34 @@ function reduce(st: CodexChatState, ev: any, seq: number): CodexChatState {
         // this same userMessage item, so the row re-renders from history.
         const { text, uploads } = parseUploadNotice(userMessageText(item));
         if (text === '' && uploads.length === 0) return st;
+        // A user/system message is a HARD separator: finalize the in-flight
+        // answer bubble so a later agentMessage delta opens a NEW bubble rather
+        // than coalescing across the (permanent) notice. finalizePending only
+        // flips a pending assistant's flag — it preserves order/length, so the
+        // optimistic-user index lookup below stays valid.
+        const base = finalizePending(st.items);
         const attach: ChatItem | null =
           uploads.length > 0 ? { kind: 'activity', text: uploadNoticeActivityText(uploads), seq } : null;
         // A pure harness message (resume notice, auto-start prompt), or an upload
         // with no prompt body — the attachment row (if any) then the muted System
         // row; never a user bubble (mirrors claudecode's HARNESS_PREFIX handling).
         if (text === '' || text.startsWith(HARNESS_PREFIX)) {
-          let items = attach ? [...st.items, attach] : st.items;
+          let items = attach ? [...base, attach] : base;
           if (text !== '') items = [...items, { kind: 'activity', text, seq }];
           return items === st.items ? st : { ...st, items };
         }
-        const idx = st.items.findIndex(
+        const idx = base.findIndex(
           (i) => i.kind === 'user' && i.local && i.text === text,
         );
         if (idx !== -1) {
-          const cur = st.items[idx] as Extract<ChatItem, { kind: 'user' }>;
+          const cur = base[idx] as Extract<ChatItem, { kind: 'user' }>;
           const confirmed = { ...cur, local: false };
           const items = attach
-            ? [...st.items.slice(0, idx), attach, confirmed, ...st.items.slice(idx + 1)]
-            : [...st.items.slice(0, idx), confirmed, ...st.items.slice(idx + 1)];
+            ? [...base.slice(0, idx), attach, confirmed, ...base.slice(idx + 1)]
+            : [...base.slice(0, idx), confirmed, ...base.slice(idx + 1)];
           return { ...st, items };
         }
-        const appended = attach ? [...st.items, attach] : st.items;
+        const appended = attach ? [...base, attach] : base;
         return { ...st, items: [...appended, { kind: 'user', text, seq }] };
       }
       const row = toolRow(item);
@@ -296,11 +306,11 @@ function reduce(st: CodexChatState, ev: any, seq: number): CodexChatState {
         return { ...st, items: [...st.items.slice(0, idx), next, ...st.items.slice(idx + 1)] };
       }
       // Completion for an untracked item (e.g. replay gap): render it. Like
-      // item/started, it coexists with other tool rows.
+      // item/started, it coexists with other tool rows and is a hard separator.
       const chat: ChatItem = { kind: 'tool', name: row.name, input: finalInput, seq };
       return {
         ...st, busy: true,
-        items: [...st.items, chat],
+        items: [...finalizePending(st.items), chat],
         toolSeqs: { ...st.toolSeqs, [id]: seq },
       };
     }
