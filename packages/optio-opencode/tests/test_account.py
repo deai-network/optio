@@ -67,7 +67,7 @@ async def test_analyze_accounts_dispatches_and_placeholders(patched_vendors):
     for pid in ("groq", "unknownprov"):
         ph = by_provider[pid]
         assert ph.raw.get("unanalyzed") is True
-        assert ph.summary.startswith("Plan: Unknown account")
+        assert ph.summary.endswith("· unknown account")
         assert pid in ph.summary
     # placeholder carries the accountId when the entry has one.
     assert by_provider["unknownprov"].account_id == "unknown-acct-9"
@@ -94,7 +94,7 @@ async def test_handler_raising_yields_placeholder_others_unaffected(monkeypatch)
     by_provider = {i.raw.get("provider"): i for i in infos}
     # The raising provider degrades to a placeholder.
     assert by_provider["anthropic"].raw.get("unanalyzed") is True
-    assert by_provider["anthropic"].summary.startswith("Plan: Unknown account")
+    assert by_provider["anthropic"].summary.endswith("· unknown account")
     # The others are untouched.
     assert by_provider["openai"].plan == "ChatGPT Pro"
     assert by_provider["xai"].plan == "xAI Team"
@@ -110,7 +110,7 @@ async def test_empty_vendor_result_becomes_placeholder(monkeypatch):
     infos = await acct.analyze_accounts(auth)
     assert len(infos) == 1
     assert infos[0].raw.get("unanalyzed") is True
-    assert infos[0].summary.startswith("Plan: Unknown account")
+    assert infos[0].summary.endswith("· unknown account")
 
 
 async def test_missing_access_token_declines_without_network():
