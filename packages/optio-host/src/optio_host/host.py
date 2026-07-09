@@ -209,6 +209,13 @@ class Host(Protocol):
 
     async def resolve_host_home(self) -> str: ...
 
+    async def glob(self, pattern: str) -> list[str]:
+        """Absolute paths on the host matching a shell glob ``pattern``, sorted
+        ascending. Empty list when nothing matches. Per-segment ``*`` only (no
+        recursive ``**``). Routes file discovery through the host abstraction so
+        it works identically for local and SSH workers."""
+        ...
+
     def archive_workdir(
         self, exclude: list[str] | None,
     ) -> AsyncIterator[bytes]: ...
@@ -611,6 +618,11 @@ class LocalHost:
     async def resolve_host_home(self) -> str:
         return os.path.expanduser("~")
 
+    async def glob(self, pattern: str) -> list[str]:
+        import glob as _glob
+
+        return await asyncio.to_thread(lambda: sorted(_glob.glob(pattern)))
+
 
 def _write_bytes_sync(dest_path: str, data: bytes) -> None:
     with open(dest_path, "wb") as fh:
@@ -894,6 +906,20 @@ class RemoteHost:
             if progress_cb is not None:
                 progress_cb(100.0, None)
             return data
+        finally:
+            sftp.exit()
+
+    async def glob(self, pattern: str) -> list[str]:
+        assert self._conn is not None
+        sftp = await self._conn.start_sftp_client()
+        try:
+            try:
+                matches = await sftp.glob(pattern)
+            except (asyncssh.SFTPError, asyncssh.SFTPNoSuchFile):
+                return []  # no match / missing intermediate dir → empty
+            return sorted(
+                m.decode() if isinstance(m, bytes) else str(m) for m in matches
+            )
         finally:
             sftp.exit()
 

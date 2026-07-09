@@ -228,22 +228,22 @@ def _turn_id_of(payload: dict) -> str | None:
 # -- public API ---------------------------------------------------------------
 
 
-def read_rollout_events(path: str) -> list[dict]:
-    """Parse a codex rollout JSONL and reduce it to the ordered app-server
+def parse_rollout_events(text: str) -> list[dict]:
+    """Parse codex rollout JSONL *text* and reduce it to the ordered app-server
     ``item/completed`` + ``turn/completed`` notifications the live listener / UI
     reducer consume (mirroring ``CodexConversation.replay_history``).
 
     Renderable ``response_item`` entries are grouped into turns by their codex
     ``turn_id`` (contiguous in the file); a ``turn/completed`` is emitted after
     each turn's items — exactly like a live multi-turn stream, so the reducer
-    closes each turn's bubble and opens the next. PURE and fail-soft: a missing,
-    unreadable, or malformed rollout yields ``[]`` (unparseable lines skipped).
+    closes each turn's bubble and opens the next.
+
+    PURE — no I/O. The caller fetches the rollout bytes through the host
+    abstraction (``host.fetch_bytes_from_host``) and passes the decoded text
+    here; unparseable lines are skipped, so a malformed rollout yields at most a
+    partial (never raising) event list.
     """
-    try:
-        with open(path, "r", encoding="utf-8") as fh:
-            lines = fh.readlines()
-    except OSError:
-        return []
+    lines = text.splitlines()
 
     thread_id: str | None = None
     events: list[dict] = []
@@ -291,25 +291,27 @@ def read_rollout_events(path: str) -> list[dict]:
     return events
 
 
-def resolve_latest_rollout(codex_home: str) -> str | None:
-    """Path of the newest ``rollout-*.jsonl`` under ``<codex_home>/sessions``,
-    or None when the sessions tree is absent/empty.
+async def resolve_latest_rollout(host, codex_home: str) -> str | None:
+    """Path of the newest ``rollout-*.jsonl`` under ``<codex_home>/sessions`` on
+    the HOST (local or SSH — discovery routes through ``host.glob``), or None
+    when the sessions tree is absent/empty.
 
     Newest by FILENAME (lexicographic): rollout names embed an ISO-ordered
     timestamp, so a name sort is a chronological sort — and unlike mtime it
     survives a workdir tar restore (mirrors host_actions.read_latest_session_id).
+    The rollout lives at ``sessions/YYYY/MM/DD/rollout-*.jsonl`` — a fixed
+    three-level date tree, so one non-recursive glob finds them all. Fail-soft:
+    returns None on any host error.
     """
-    sessions = os.path.join(codex_home, "sessions")
-    best: str | None = None
-    best_key: str | None = None
+    pattern = (
+        f"{codex_home.rstrip('/')}/sessions/*/*/*/"
+        f"{_ROLLOUT_PREFIX}*{_ROLLOUT_SUFFIX}"
+    )
     try:
-        walker = os.walk(sessions)
-    except OSError:
+        matches = await host.glob(pattern)
+    except Exception:  # noqa: BLE001 — discovery must never raise into attach
         return None
-    for dirpath, _dirs, files in walker:
-        for name in files:
-            if name.startswith(_ROLLOUT_PREFIX) and name.endswith(_ROLLOUT_SUFFIX):
-                if best_key is None or name > best_key:
-                    best_key = name
-                    best = os.path.join(dirpath, name)
-    return best
+    if not matches:
+        return None
+    # Sort by basename (the ISO-timestamped filename), not full path.
+    return max(matches, key=lambda p: p.rsplit("/", 1)[-1])

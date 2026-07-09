@@ -329,7 +329,7 @@ describe('codex app-server event reducer', () => {
   });
 
   it('rollout history replay reconstructs distinct turns with their own bubbles', () => {
-    // The exact ordered notifications optio_codex.rollout.read_rollout_events
+    // The exact ordered notifications optio_codex.rollout.parse_rollout_events
     // reconstructs from an on-disk rollout (a fresh viewer attach replays these
     // before the live tail): item/completed per item, turn/completed per turn.
     // The reducer must rebuild two separate user prompts + two separate answer

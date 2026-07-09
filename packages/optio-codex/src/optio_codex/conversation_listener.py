@@ -70,12 +70,18 @@ class ConversationListener:
         self, conversation, *, password: str,
         download_reader: "Callable[[str], Awaitable[tuple[bytes, str]]] | None" = None,
         max_download_bytes: int = 10_000_000,
+        host=None,
         codex_home: str | None = None,
     ) -> None:
         self._conversation = conversation
         self._password = password
         self._download_reader = download_reader
         self._max_download_bytes = max_download_bytes
+        # The Host (local or SSH worker) the codex session runs on — rollout
+        # discovery + reads route through it (host.glob / fetch_bytes_from_host),
+        # never a bare local open(), so full-history replay works for remote
+        # workers too. None ⇒ no rollout replay (buffer-only, as before).
+        self._host = host
         # CODEX_HOME (=<workdir>/home/.codex) — the on-disk rollout store that is
         # the AUTHORITATIVE full history a fresh viewer attach replays before the
         # in-flight live tail. None ⇒ no rollout replay (buffer-only, as before).
@@ -123,21 +129,24 @@ class ConversationListener:
 
     # -- rollout history -----------------------------------------------------
 
-    def _load_history(self) -> "tuple[list[dict], set[str]]":
+    async def _load_history(self) -> "tuple[list[dict], set[str]]":
         """Reconstruct the FULL conversation from the on-disk rollout, and the
         set of turn ids it covers (the dedup key for the live buffer).
 
-        Fail-soft by contract: any error (no codex_home, no rollout, an
-        unreadable/malformed file) yields ``([], set())`` so a fresh attach
-        silently falls back to today's buffer-only replay — it must NEVER raise
-        into the SSE handler."""
-        if not self._codex_home:
+        Discovery + read route through the HOST abstraction (host.glob +
+        fetch_bytes_from_host) so it works for a remote SSH worker, not just a
+        local workdir. Fail-soft by contract: any error (no host/codex_home, no
+        rollout, an unreadable/malformed file) yields ``([], set())`` so a fresh
+        attach silently falls back to buffer-only replay — NEVER raises into the
+        SSE handler."""
+        if not self._codex_home or self._host is None:
             return [], set()
         try:
-            path = _rollout.resolve_latest_rollout(self._codex_home)
+            path = await _rollout.resolve_latest_rollout(self._host, self._codex_home)
             if path is None:
                 return [], set()
-            events = _rollout.read_rollout_events(path)
+            data = await self._host.fetch_bytes_from_host(path)
+            events = _rollout.parse_rollout_events(data.decode("utf-8", "replace"))
         except Exception:  # noqa: BLE001 — attach must never fail on the rollout
             _LOG.exception("rollout history reconstruction failed; buffer only")
             return [], set()
@@ -197,7 +206,7 @@ class ConversationListener:
                 # it, so last_id falls back to 0 and the full history replays
                 # again (idempotent). A client that reached the live tail sends a
                 # positive id, taking the reconnect branch below (no rollout).
-                history, hist_turn_ids = self._load_history()
+                history, hist_turn_ids = await self._load_history()
                 hid = -len(history)
                 for event in history:
                     await send_item(hid, event)

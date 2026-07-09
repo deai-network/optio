@@ -520,6 +520,10 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                 conversation, password=listener_password,
                 download_reader=_read_download,
                 max_download_bytes=config.max_download_bytes,
+                # Rollout discovery + reads route through this host (local or SSH
+                # worker), never a bare open() — so full-history replay works
+                # remotely too.
+                host=host,
                 # The on-disk rollout store (CODEX_HOME = <workdir>/home/.codex,
                 # the same identity the app-server launched under, see
                 # host_actions._isolation_env) is the authoritative full history
