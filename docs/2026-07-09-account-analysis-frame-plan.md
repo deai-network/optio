@@ -18,6 +18,11 @@
 - **Real-API rule:** the claudecode analyzer's mapping is validated against a **real payload captured from a live claude seed** (Task 4 step 1), not an assumed shape.
 - **Per-package venv:** run tests via each package's `.venv`, never global Python.
 - **Commits:** no `Co-Authored-By` trailer.
+- **Seed source + safety (live seeds):** the seed source is **excavator's real MongoDB** (`~/deai/excavator`; has all agents but kimi). **Never copy a seed into a throwaway db and refresh it** — a refresh rotates the single-use refresh token **upstream at the vendor**, so save-back to any db other than the real one kills the original seed. Rules for every mutating step:
+  - Any `verify_and_refresh_seed` runs **against excavator's real db**, wired with excavator's real `encrypt`/`decrypt` (trace `session_blob_encrypt`/`session_blob_decrypt` / key), so a rotation immediately saves back to the real db and the seed stays alive — mirroring the production gimme path.
+  - **Lease the seed first, operate, release** (the function's own contract: FREE seed or one whose lease you hold). Leasing keeps concurrent excavator work off it.
+  - **Prefer freshly-verified seeds** so the stored access token is still valid and `verify_and_refresh_seed` skips the refresh (only stamps `metadata.account` → zero rotation). Refresh fires only when unavoidable, and save-back to the real db protects it.
+  - **Read-only capture** uses the stored access token as-is (no refresh) — safe against the real db.
 
 ---
 
@@ -352,7 +357,7 @@ git commit -m "feat(optio-agents): export account API"
 
 - [ ] **Step 1: Capture real payloads from a live claude seed (real-API rule)**
 
-Pick a claude seed known alive. Extract its OAuth access token from the seed blob's `.claude/.credentials.json` (`claudeAiOauth.accessToken`), then:
+Pick a **freshly-verified** claude seed from excavator's real db. Decrypt its blob with excavator's real `decrypt` (trace the key), read the OAuth access token from `.claude/.credentials.json` (`claudeAiOauth.accessToken`) **as stored — do not refresh** (read-only; if the token is expired, pick a fresher seed rather than triggering a rotation here), then:
 
 Run:
 ```bash
@@ -513,7 +518,9 @@ async def test_verify_returns_alive_and_account(seeded_live_claude_db):
     assert doc["metadata"]["account"]["email"]  # stamped normalized shape
 ```
 
-If no live-seed db fixture exists, add one that loads a real captured seed blob (same source as Task 4 step 1) into an ephemeral mongodb-memory-server / Docker mongo, mirroring existing `optio-claudecode` seed-test setup.
+**Do NOT copy the seed into an ephemeral db for this test** — `verify_and_refresh_seed` may rotate the single-use refresh token, and a save-back to anywhere but the real db kills the seed (see Global Constraints). Two safe options:
+- **Preferred (no rotation):** unit-test the tail in isolation — monkeypatch `analyze_account` to return a fixed `AccountInfo`, monkeypatch the refresh path to be skipped (fresh/valid token), and assert the return shape + `declare_metadata` payload. No live vendor call, no rotation.
+- **Full integration:** run against **excavator's real db** with its real `encrypt`/`decrypt`, on a **leased** freshly-verified seed (valid token → refresh skipped), then release. This writes `metadata.account` to the real doc (the feature) and does not rotate. Mirror the existing `optio-claudecode` seed-test setup for db/lease wiring.
 
 - [ ] **Step 2: Run test to verify it fails**
 
