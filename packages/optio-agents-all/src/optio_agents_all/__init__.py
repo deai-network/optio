@@ -15,7 +15,7 @@ from optio_grok import create_grok_task
 from optio_kimicode import create_kimicode_task
 from optio_opencode import create_opencode_task
 
-from optio_agents_all.factory import create_task
+from optio_agents_all.factory import analyze_account, create_task
 from optio_agents_all.info import AGENTS, get_agent_info
 from optio_agents_all.types import (
     AgentTaskConfig,
@@ -31,6 +31,7 @@ from optio_agents_all.types import (
 
 __all__ = [
     "create_task",
+    "analyze_account",
     "AGENTS",
     "get_agent_info",
     "AgentType",
