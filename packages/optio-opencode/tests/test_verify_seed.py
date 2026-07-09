@@ -108,6 +108,7 @@ async def test_alive_and_writes_back_rotated_auth(mongo_db, tmp_path, _patch_ins
         mongo_db, prefix="test", seed_id=seed_id,
     )
     assert result["alive"] is True
+    assert result["account"] is None
     assert result["model"] == "prov/model-1"
     auth = await _seed_auth(mongo_db, seed_id)
     assert auth["xai"]["refresh"] == "ROTATED"
@@ -123,6 +124,7 @@ async def test_dead_on_auth_error(mongo_db, tmp_path, _patch_install, task_root)
     _patch_install(_fake_opencode(tmp_path, "  echo 'Error: Unauthorized'\n  exit 1"))
     result = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert result["alive"] is False
+    assert result["account"] is None
     doc = await seeds.load_seed(
         mongo_db, prefix="test", suffix=OPENCODE_SEED_SUFFIX, seed_id=seed_id,
     )
@@ -138,6 +140,7 @@ async def test_prompt_echo_does_not_false_positive(mongo_db, tmp_path, _patch_in
     ))
     result = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert result["alive"] is False
+    assert result["account"] is None
 
 
 async def test_exit_code_carries_no_verdict(mongo_db, tmp_path, _patch_install, task_root):
@@ -146,6 +149,7 @@ async def test_exit_code_carries_no_verdict(mongo_db, tmp_path, _patch_install, 
     _patch_install(_fake_opencode(tmp_path, "  echo 'Paris'\n  exit 3"))
     result = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert result["alive"] is True
+    assert result["account"] is None
 
 
 async def test_modelless_seed_is_dead_without_probe(mongo_db, tmp_path, _patch_install, task_root):
@@ -154,6 +158,7 @@ async def test_modelless_seed_is_dead_without_probe(mongo_db, tmp_path, _patch_i
     _patch_install(_fake_opencode(tmp_path, f"  touch {shlex.quote(str(marker))}\n  echo Paris"))
     result = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
     assert result["alive"] is False
+    assert result["account"] is None
     assert result["model"] is None
     assert not marker.exists()  # probe never ran
 
@@ -162,4 +167,4 @@ async def test_unknown_seed(mongo_db, task_root):
     result = await verify_and_refresh_seed(
         mongo_db, prefix="test", seed_id=str(ObjectId()),
     )
-    assert result == {"alive": False, "model": None}
+    assert result == {"alive": False, "account": None, "model": None}

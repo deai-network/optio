@@ -189,12 +189,13 @@ async def verify_and_refresh_seed(
     install_dir: str | None = None,
     encrypt: "Callable[[bytes], bytes] | None" = None,
     decrypt: "Callable[[bytes], bytes] | None" = None,
-) -> bool:
+) -> dict:
     """Verify a codex seed host-free via OpenAI's OIDC token endpoint; refresh
     the rotating token in place. Falls back to the billable agent probe only
     when OIDC discovery is unavailable.
 
-    Returns True iff the seed is alive. Never raises for a dead seed. Marks pool
+    Returns ``{"alive": bool, "account": None}`` (``account`` is always ``None``
+    here — codex has no analyze_account yet). Never raises for a dead seed. Marks pool
     status ``dead`` ONLY on a definitive dead signal (no refresh token,
     malformed auth, or a 4xx invalid_grant); a transport/discovery failure is
     inconclusive and leaves status untouched. Call only on a FREE seed or one
@@ -204,9 +205,9 @@ async def verify_and_refresh_seed(
 
     doc = await seeds.load_seed(db, prefix=prefix, suffix=suffix, seed_id=seed_id)
     if doc is None:
-        return False
+        return {"alive": False, "account": None}
 
-    async def _finish(alive: bool, *, mark_dead: bool) -> bool:
+    async def _finish(alive: bool, *, mark_dead: bool) -> dict:
         await seeds.declare_metadata(
             db, prefix=prefix, suffix=suffix, seed_id=seed_id,
             metadata={"verify": {"alive": alive, "checkedAt": datetime.now(timezone.utc)}},
@@ -215,7 +216,7 @@ async def verify_and_refresh_seed(
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="alive")
         elif mark_dead:
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="dead")
-        return alive
+        return {"alive": alive, "account": None}
 
     buf = io.BytesIO()
     await AsyncIOMotorGridFSBucket(db).download_to_stream(doc["blobId"], buf)
@@ -287,7 +288,7 @@ async def verify_and_refresh_seed(
 
 async def _verify_via_probe(
     db, *, prefix, suffix, seed_id, ssh, install_dir, encrypt, decrypt, finish,
-) -> bool:
+) -> dict:
     """Fallback: plant the seed and run one billable ``codex exec`` challenge
     probe; verdict from stdout, rotated auth.json saved back. The previous
     behavior, retained for when OIDC discovery is unavailable.

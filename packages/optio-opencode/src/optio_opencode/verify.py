@@ -49,7 +49,8 @@ async def verify_and_refresh_seed(
 ) -> dict:
     """Verify a seed by probing its default provider; refresh + save back.
 
-    Returns {"alive": bool, "model": str | None}. Never raises for a dead
+    Returns {"alive": bool, "account": AccountInfo | None, "model": str | None}.
+    ``account`` is always None here (no analyze_account yet). Never raises for a dead
     seed. Stamps the verdict as seed metadata and marks the seed's pool
     status (dead seeds are never handed out by seeds.acquire).
 
@@ -64,7 +65,7 @@ async def verify_and_refresh_seed(
     """
     doc = await seeds.load_seed(db, prefix=prefix, suffix=suffix, seed_id=seed_id)
     if doc is None:
-        return {"alive": False, "model": None}
+        return {"alive": False, "account": None, "model": None}
 
     taskdir = task_dir(
         ssh=ssh, process_id=f"seed-verify-{uuid.uuid4().hex[:12]}",
@@ -141,7 +142,7 @@ async def verify_and_refresh_seed(
             db, prefix=prefix, suffix=suffix, seed_id=seed_id,
             status="alive" if alive else "dead",
         )
-        return {"alive": alive, "model": model}
+        return {"alive": alive, "account": None, "model": model}
     finally:
         try:
             await host.cleanup_taskdir(aggressive=True)

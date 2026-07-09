@@ -190,13 +190,14 @@ async def _merge_seed_with_refresh(
     surface the auth error. Only the model/refresh network call is made here; no
     kimi process, no inference."""
     try:
-        alive = await verify.verify_and_refresh_seed(
+        res = await verify.verify_and_refresh_seed(
             ctx._db,
             prefix=ctx._prefix,
             seed_id=seed_id,
             encrypt=config.session_blob_encrypt,
             decrypt=config.session_blob_decrypt,
         )
+        alive = res["alive"]
     except Exception:  # noqa: BLE001 — a transport bug is inconclusive, not dead
         _LOG.exception("kimi seed %s pre-merge refresh failed", seed_id)
         alive = None

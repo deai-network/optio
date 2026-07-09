@@ -73,11 +73,12 @@ async def test_alive_and_writes_back_rotated_auth(
     monkeypatch.setenv("FAKE_CURSOR_PROBE", "alive")
     seed_id = await _make_seed(mongo_db, tmp_path)
 
-    alive = await verify_and_refresh_seed(
+    res = await verify_and_refresh_seed(
         mongo_db, prefix="test", seed_id=seed_id,
         install_dir=str(shim_install_dir),
     )
-    assert alive is True
+    assert res["alive"] is True
+    assert res["account"] is None
 
     auth = await _seed_auth(mongo_db, seed_id)
     assert auth["refreshToken"] == "ROTATED-BY-PROBE", auth
@@ -95,11 +96,12 @@ async def test_dead_on_auth_error(
     monkeypatch.setenv("FAKE_CURSOR_PROBE", "dead")
     seed_id = await _make_seed(mongo_db, tmp_path)
 
-    alive = await verify_and_refresh_seed(
+    res = await verify_and_refresh_seed(
         mongo_db, prefix="test", seed_id=seed_id,
         install_dir=str(shim_install_dir),
     )
-    assert alive is False
+    assert res["alive"] is False
+    assert res["account"] is None
 
     doc = await seeds.load_seed(
         mongo_db, prefix="test", suffix=CURSOR_SEED_SUFFIX, seed_id=seed_id,
@@ -116,11 +118,12 @@ async def test_prompt_echo_does_not_false_positive(
     monkeypatch.setenv("FAKE_CURSOR_PROBE", "echo")
     seed_id = await _make_seed(mongo_db, tmp_path)
 
-    alive = await verify_and_refresh_seed(
+    res = await verify_and_refresh_seed(
         mongo_db, prefix="test", seed_id=seed_id,
         install_dir=str(shim_install_dir),
     )
-    assert alive is False
+    assert res["alive"] is False
+    assert res["account"] is None
 
 
 async def test_exit_code_carries_no_verdict(
@@ -130,16 +133,18 @@ async def test_exit_code_carries_no_verdict(
     monkeypatch.setenv("FAKE_CURSOR_PROBE", "alive_badexit")
     seed_id = await _make_seed(mongo_db, tmp_path)
 
-    alive = await verify_and_refresh_seed(
+    res = await verify_and_refresh_seed(
         mongo_db, prefix="test", seed_id=seed_id,
         install_dir=str(shim_install_dir),
     )
-    assert alive is True
+    assert res["alive"] is True
+    assert res["account"] is None
 
 
 async def test_unknown_seed(mongo_db, task_root, shim_install_dir):
-    alive = await verify_and_refresh_seed(
+    res = await verify_and_refresh_seed(
         mongo_db, prefix="test", seed_id=str(ObjectId()),
         install_dir=str(shim_install_dir),
     )
-    assert alive is False
+    assert res["alive"] is False
+    assert res["account"] is None

@@ -127,8 +127,9 @@ async def test_expired_refreshes_and_writes_back(mongo_db, tmp_path, monkeypatch
 
     monkeypatch.setattr(verify, "_refresh_sync", fake_refresh)
 
-    alive = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
-    assert alive is True
+    res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
+    assert res["alive"] is True
+    assert res["account"] is None
     # PKCE public client → client_id only (no secret), the agy constant.
     assert refreshed["called"][0] == "https://oauth2.googleapis.com/token"
     assert refreshed["called"][1] == "ORIGINAL"
@@ -157,8 +158,9 @@ async def test_refresh_without_rotation_preserves_old_token(mongo_db, tmp_path, 
         verify, "_refresh_sync",
         lambda *a: {"access_token": "NEW_ACCESS", "expires_in": 3600},
     )
-    alive = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
-    assert alive is True
+    res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
+    assert res["alive"] is True
+    assert res["account"] is None
     tok = (await _seed_store(mongo_db, seed_id))["token"]
     assert tok["access_token"] == "NEW_ACCESS"
     assert tok["refresh_token"] == "ORIGINAL"           # preserved
@@ -176,8 +178,9 @@ async def test_not_expired_valid_does_not_refresh(mongo_db, tmp_path, monkeypatc
 
     monkeypatch.setattr(verify, "_refresh_sync", boom)
 
-    alive = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
-    assert alive is True
+    res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
+    assert res["alive"] is True
+    assert res["account"] is None
     tok = (await _seed_store(mongo_db, seed_id))["token"]
     assert tok["refresh_token"] == "ORIGINAL"           # untouched
     assert tok["access_token"] == "OLD_ACCESS"
@@ -197,8 +200,9 @@ async def test_refresh_invalid_grant_marks_dead(mongo_db, tmp_path, monkeypatch)
 
     monkeypatch.setattr(verify.urllib.request, "urlopen", raise_invalid_grant)
 
-    alive = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
-    assert alive is False
+    res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
+    assert res["alive"] is False
+    assert res["account"] is None
     doc = await _doc(mongo_db, seed_id)
     assert doc["status"] == "dead"
     assert doc["metadata"]["verify"]["alive"] is False
@@ -217,8 +221,9 @@ async def test_refresh_non_invalid_grant_http_error_is_inconclusive(mongo_db, tm
 
     monkeypatch.setattr(verify.urllib.request, "urlopen", raise_invalid_client)
 
-    alive = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
-    assert alive is False
+    res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
+    assert res["alive"] is False
+    assert res["account"] is None
     assert (await _doc(mongo_db, seed_id)).get("status") != "dead"
 
 
@@ -229,8 +234,9 @@ async def test_transport_failure_is_inconclusive_not_dead(mongo_db, tmp_path, mo
     monkeypatch.setattr(verify, "_discover_sync", lambda issuer: _DISCO)
     monkeypatch.setattr(verify, "_refresh_sync", lambda *a: None)  # network error
 
-    alive = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
-    assert alive is False
+    res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
+    assert res["alive"] is False
+    assert res["account"] is None
     # A transient failure must NOT retire a possibly-healthy seed.
     assert (await _doc(mongo_db, seed_id)).get("status") != "dead"
 
@@ -240,8 +246,9 @@ async def test_discovery_failure_is_inconclusive(mongo_db, tmp_path, monkeypatch
     seed_id = await _make_seed(mongo_db, tmp_path, expiry=past)
     monkeypatch.setattr(verify, "_discover_sync", lambda issuer: None)
 
-    alive = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
-    assert alive is False
+    res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
+    assert res["alive"] is False
+    assert res["account"] is None
     assert (await _doc(mongo_db, seed_id)).get("status") != "dead"
 
 
@@ -249,13 +256,15 @@ async def test_no_refresh_token_is_dead(mongo_db, tmp_path):
     past = _iso(datetime.now(timezone.utc) - timedelta(hours=1))
     seed_id = await _make_seed(mongo_db, tmp_path, expiry=past, refresh_token=None)
 
-    alive = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
-    assert alive is False
+    res = await verify_and_refresh_seed(mongo_db, prefix="test", seed_id=seed_id)
+    assert res["alive"] is False
+    assert res["account"] is None
     assert (await _doc(mongo_db, seed_id))["status"] == "dead"
 
 
 async def test_unknown_seed(mongo_db):
-    alive = await verify_and_refresh_seed(
+    res = await verify_and_refresh_seed(
         mongo_db, prefix="test", seed_id=str(ObjectId()),
     )
-    assert alive is False
+    assert res["alive"] is False
+    assert res["account"] is None

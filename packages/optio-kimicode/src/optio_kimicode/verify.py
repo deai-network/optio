@@ -195,7 +195,7 @@ async def verify_and_refresh_seed(
     seed_id: str,
     encrypt: "Callable[[bytes], bytes] | None" = None,
     decrypt: "Callable[[bytes], bytes] | None" = None,
-) -> bool:
+) -> dict:
     """Verify a kimi seed host-free and refresh its rotating token in place.
 
     Reads the seed's ``kimi-code.json``; if the access token is within kimi's
@@ -203,8 +203,9 @@ async def verify_and_refresh_seed(
     performs a ``refresh_token`` grant against the (hardcoded, env-overridable)
     kimi OAuth token endpoint and writes the rotated
     ``access_token``/``refresh_token``/``expires_at`` back into the seed.
-    Returns True iff the seed is alive (token outside the threshold, or a
-    successful refresh).
+    Returns {alive, account} where alive is True iff the seed is alive (token
+    outside the threshold, or a successful refresh); account is always None (this
+    engine has no analyze_account yet).
 
     Never raises for a dead seed. Marks pool status ``dead`` ONLY on a definitive
     dead signal (no refresh token, malformed creds, or a 401/403/``invalid_grant``
@@ -220,9 +221,9 @@ async def verify_and_refresh_seed(
 
     doc = await seeds.load_seed(db, prefix=prefix, suffix=suffix, seed_id=seed_id)
     if doc is None:
-        return False
+        return {"alive": False, "account": None}
 
-    async def _finish(alive: bool, *, mark_dead: bool) -> bool:
+    async def _finish(alive: bool, *, mark_dead: bool) -> dict:
         await seeds.declare_metadata(
             db, prefix=prefix, suffix=suffix, seed_id=seed_id,
             metadata={"verify": {"alive": alive, "checkedAt": datetime.now(timezone.utc)}},
@@ -231,7 +232,7 @@ async def verify_and_refresh_seed(
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="alive")
         elif mark_dead:
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="dead")
-        return alive
+        return {"alive": alive, "account": None}
 
     buf = io.BytesIO()
     await AsyncIOMotorGridFSBucket(db).download_to_stream(doc["blobId"], buf)
