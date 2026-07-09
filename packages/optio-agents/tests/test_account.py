@@ -47,6 +47,13 @@ def test_empty_roundtrips():
     assert AccountInfo.from_dict(EMPTY.to_dict()) == EMPTY
 
 
+def test_to_dict_includes_derived_summary():
+    # JSON/TS consumers read metadata.account.summary directly; it must be stamped.
+    info = AccountInfo(name="Jane Doe", email="jane@x.com", plan="Claude Max 20x")
+    assert info.to_dict()["summary"] == "Plan: Claude Max 20x for Jane Doe <jane@x.com>"
+    assert EMPTY.to_dict()["summary"] is None
+
+
 def test_limited_global_maxed_unreset():
     info = AccountInfo(windows=[UsageWindow("seven_day", 100.0, _dt(15), None)])
     assert is_limited(info, _dt(12)) is True          # resets in future

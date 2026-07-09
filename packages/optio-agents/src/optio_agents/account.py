@@ -69,9 +69,13 @@ class AccountInfo:
         return min(candidates) if candidates else None
 
     def to_dict(self) -> dict:
+        # ``summary`` is a derived field, included so JSON/JS/TS consumers of the
+        # stamped ``metadata.account`` (which cannot call the Python property) get
+        # the human-readable identity string directly. ``from_dict`` ignores it
+        # and recomputes from name/email/plan.
         return {
             "name": self.name, "email": self.email, "plan": self.plan,
-            "account_id": self.account_id,
+            "account_id": self.account_id, "summary": self.summary,
             "windows": [w.to_dict() for w in self.windows],
             "raw": self.raw,
         }
