@@ -61,7 +61,9 @@ from urllib.error import HTTPError, URLError
 from optio_host.paths import task_dir
 
 from optio_agents import seeds
+from optio_agents.account import EMPTY, AccountInfo
 from optio_codex import host_actions
+from optio_codex.account import analyze_account
 from optio_codex.seed_manifest import CODEX_SEED_MANIFEST, CODEX_SEED_SUFFIX
 
 _LOG = logging.getLogger(__name__)
@@ -194,9 +196,12 @@ async def verify_and_refresh_seed(
     the rotating token in place. Falls back to the billable agent probe only
     when OIDC discovery is unavailable.
 
-    Returns ``{"alive": bool, "account": None}`` (``account`` is always ``None``
-    here — codex has no analyze_account yet). Never raises for a dead seed. Marks pool
-    status ``dead`` ONLY on a definitive dead signal (no refresh token,
+    Returns ``{"alive": bool, "account": AccountInfo | None}``: on the alive
+    path ``account`` is the normalized ``optio_agents.account.AccountInfo``
+    derived (fail-soft) from the seed's tokens and also stamped as
+    ``metadata.account``; dead paths return ``account=None``. Never raises for a
+    dead seed. Marks pool status ``dead`` ONLY on a definitive dead signal
+    (no refresh token,
     malformed auth, or a 4xx invalid_grant); a transport/discovery failure is
     inconclusive and leaves status untouched. Call only on a FREE seed or one
     whose lease the caller holds (a refresh rotates the single-use token).
@@ -207,16 +212,25 @@ async def verify_and_refresh_seed(
     if doc is None:
         return {"alive": False, "account": None}
 
-    async def _finish(alive: bool, *, mark_dead: bool) -> dict:
+    async def _finish(
+        alive: bool, *, mark_dead: bool, account: "AccountInfo | None" = None,
+    ) -> dict:
+        now = datetime.now(timezone.utc)
+        metadata: dict = {"verify": {"alive": alive, "checkedAt": now}}
+        # Stamp the normalized account only on the alive path (mirrors
+        # claudecode). Fail-soft analysis may hand us EMPTY; stamp it anyway so
+        # the pool consistently carries a metadata.account for every live seed.
+        if alive and account is not None:
+            metadata["account"] = account.to_dict()
+            metadata["accountFetchedAt"] = now
         await seeds.declare_metadata(
-            db, prefix=prefix, suffix=suffix, seed_id=seed_id,
-            metadata={"verify": {"alive": alive, "checkedAt": datetime.now(timezone.utc)}},
+            db, prefix=prefix, suffix=suffix, seed_id=seed_id, metadata=metadata,
         )
         if alive:
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="alive")
         elif mark_dead:
             await seeds.mark_seed_status(db, prefix=prefix, suffix=suffix, seed_id=seed_id, status="dead")
-        return {"alive": alive, "account": None}
+        return {"alive": alive, "account": account if alive else None}
 
     buf = io.BytesIO()
     await AsyncIOMotorGridFSBucket(db).download_to_stream(doc["blobId"], buf)
@@ -226,10 +240,11 @@ async def verify_and_refresh_seed(
         return await _finish(False, mark_dead=True)
 
     tokens = auth.get("tokens")
-    # API-key seed: no rotating token → alive by presence.
+    # API-key seed: no rotating token → alive by presence. No OAuth identity or
+    # usage to fetch (research §1) → EMPTY account.
     if not tokens:
         if auth.get("OPENAI_API_KEY"):
-            return await _finish(True, mark_dead=False)
+            return await _finish(True, mark_dead=False, account=EMPTY)
         return await _finish(False, mark_dead=True)  # neither tokens nor key
 
     refresh_token = tokens.get("refresh_token") if isinstance(tokens, dict) else None
@@ -259,8 +274,10 @@ async def verify_and_refresh_seed(
     if not need_refresh:
         # Fresh (codex hasn't hit its proactive-refresh window) → trust alive,
         # do not rotate. (Codex tokens carry no cheap userinfo scope like grok;
-        # freshness is the liveness signal — documented divergence.)
-        return await _finish(True, mark_dead=False)
+        # freshness is the liveness signal — documented divergence.) Analyze the
+        # (unrotated) tokens for the account stamp — read-only, no refresh.
+        account = await analyze_account(tokens)
+        return await _finish(True, mark_dead=False, account=account)
 
     resp = await _in_executor(_refresh_sync, _REFRESH_URL, refresh_token, _CLIENT_ID)
     if resp is _DEAD:
@@ -283,7 +300,10 @@ async def verify_and_refresh_seed(
         )
     except Exception:  # noqa: BLE001 — save-back failed; the refresh still rotated
         _LOG.exception("seed %s: refreshed auth save-back failed", seed_id)
-    return await _finish(True, mark_dead=False)
+    # Analyze the freshly-rotated tokens for the account stamp (read-only GET;
+    # the refresh above is verify's own, no EXTRA refresh here).
+    account = await analyze_account(tokens)
+    return await _finish(True, mark_dead=False, account=account)
 
 
 async def _verify_via_probe(
@@ -324,8 +344,10 @@ async def _verify_via_probe(
                 seed_id, exit_code, stdout[:200],
             )
         # Write back the (possibly rotated) auth.json — valid files only (tokens
-        # or OPENAI_API_KEY non-null).
+        # or OPENAI_API_KEY non-null) — and analyze the read-back tokens for the
+        # account stamp when alive (read-only GET; no extra refresh).
         workdir = host.workdir.rstrip("/")
+        account: "AccountInfo | None" = None
         try:
             auth_raw = await host.fetch_bytes_from_host(f"{workdir}/{_AUTH_RELPATH}")
             auth = json.loads(auth_raw.decode("utf-8"))
@@ -337,11 +359,14 @@ async def _verify_via_probe(
                     member_path=_AUTH_MEMBER, content=auth_raw,
                     encrypt=encrypt, decrypt=decrypt,
                 )
+            if alive and isinstance(auth, dict):
+                tokens = auth.get("tokens")
+                account = await analyze_account(tokens) if isinstance(tokens, dict) else EMPTY
         except (FileNotFoundError, ValueError, UnicodeDecodeError):
             _LOG.warning("seed %s: no valid auth.json after probe; skipping write-back", seed_id)
         # Probe failure is a definitive dead signal (the seed's own creds were
         # exercised end-to-end), so mark_dead=True here (unlike a transport error).
-        return await finish(alive, mark_dead=not alive)
+        return await finish(alive, mark_dead=not alive, account=account)
     finally:
         try:
             await host.cleanup_taskdir(aggressive=True)

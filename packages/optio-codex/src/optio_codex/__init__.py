@@ -9,6 +9,7 @@ from optio_host import (
     SSHConfig,
 )
 
+from optio_codex.account import analyze_account
 from optio_codex.info import AGENT_INFO
 from optio_codex.seed_manifest import (
     CODEX_CRED_MANIFEST,
@@ -40,6 +41,7 @@ _logging.getLogger("asyncssh").setLevel(_logging.WARNING)
 
 __all__ = [
     "AGENT_INFO",
+    "analyze_account",
     "create_codex_task",
     "run_codex_session",
     "AllowedDir",
