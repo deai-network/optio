@@ -285,7 +285,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                 seed_id=resolved_seed_id,
                 manifest=CODEX_SEED_MANIFEST,
                 suffix=CODEX_SEED_SUFFIX,
-                decrypt=None,
+                decrypt=config.session_blob_decrypt,
             )
             await host_actions.ensure_workdir_trusted(host)
             # Baseline the merged auth.json so the in-session watcher and
@@ -421,8 +421,8 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                     ctx, host,
                     seed_id=resolved_seed_id,
                     baseline=cred_baseline,
-                    encrypt=None,
-                    decrypt=None,
+                    encrypt=config.session_blob_encrypt,
+                    decrypt=config.session_blob_decrypt,
                     lease_holder=lease_holder,
                 )
             )
@@ -752,8 +752,8 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                     ctx, host,
                     seed_id=resolved_seed_id,
                     baseline=cred_baseline,
-                    encrypt=None,
-                    decrypt=None,
+                    encrypt=config.session_blob_encrypt,
+                    decrypt=config.session_blob_decrypt,
                 )
             except Exception:
                 _LOG.exception("final credential save-back failed")

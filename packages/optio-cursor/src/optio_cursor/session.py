@@ -405,7 +405,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                 seed_id=resolved_seed_id,
                 manifest=CURSOR_SEED_MANIFEST,
                 suffix=CURSOR_SEED_SUFFIX,
-                decrypt=None,
+                decrypt=config.session_blob_decrypt,
             )
             # Baseline the merged auth.json so the in-session watcher and the
             # teardown backstop only save back a genuinely rotated token.
@@ -529,8 +529,8 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                     ctx, host,
                     seed_id=resolved_seed_id,
                     baseline=cred_baseline,
-                    encrypt=None,
-                    decrypt=None,
+                    encrypt=config.session_blob_encrypt,
+                    decrypt=config.session_blob_decrypt,
                     lease_holder=lease_holder,
                 )
             )
@@ -762,8 +762,8 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                     ctx, host,
                     seed_id=resolved_seed_id,
                     baseline=cred_baseline,
-                    encrypt=None,
-                    decrypt=None,
+                    encrypt=config.session_blob_encrypt,
+                    decrypt=config.session_blob_decrypt,
                     lease_holder=lease_holder,
                 )
             )
@@ -931,8 +931,8 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                     ctx, host,
                     seed_id=resolved_seed_id,
                     baseline=cred_baseline,
-                    encrypt=None,
-                    decrypt=None,
+                    encrypt=config.session_blob_encrypt,
+                    decrypt=config.session_blob_decrypt,
                 )
             except Exception:
                 _LOG.exception("final credential save-back failed")
