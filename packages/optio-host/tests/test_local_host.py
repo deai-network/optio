@@ -50,3 +50,21 @@ async def test_launch_subprocess_merge_stderr_true_explicit_keeps_stderr_none(lo
     )
     _ = await _drain(handle.stdout)
     assert handle.stderr is None
+
+
+async def test_glob_matches_date_tree_and_reads(localhost, tmp_path):
+    # The rollout-discovery primitive: a multi-level `*` glob over a fixed date
+    # tree, sorted; then read a match back through the host (fetch_bytes_from_host).
+    root = tmp_path / "sessions"
+    (root / "2026" / "07" / "02").mkdir(parents=True)
+    (root / "2026" / "07" / "06").mkdir(parents=True)
+    a = root / "2026" / "07" / "02" / "rollout-a.jsonl"
+    b = root / "2026" / "07" / "06" / "rollout-b.jsonl"
+    a.write_text("A")
+    b.write_bytes(b"B")
+    (root / "2026" / "07" / "06" / "not-a-rollout.txt").write_text("x")
+
+    got = await localhost.glob(f"{root}/*/*/*/rollout-*.jsonl")
+    assert got == [str(a), str(b)]                      # sorted, .txt excluded
+    assert await localhost.glob(f"{root}/nope/*.jsonl") == []
+    assert await localhost.fetch_bytes_from_host(str(b)) == b"B"

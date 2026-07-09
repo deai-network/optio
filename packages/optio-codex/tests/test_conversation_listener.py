@@ -22,6 +22,20 @@ FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 SAMPLE_ROLLOUT = FIXTURES / "rollout_sample.jsonl"
 
 
+class _LocalGlobHost:
+    """Host stand-in for rollout discovery/read — mirrors LocalHost (glob.glob +
+    read_bytes). The listener routes rollout access through the host abstraction,
+    never a bare open(), so it works for remote SSH workers too."""
+
+    async def glob(self, pattern: str) -> list[str]:
+        import glob as _g
+
+        return sorted(_g.glob(pattern))
+
+    async def fetch_bytes_from_host(self, path: str, *, progress_cb=None) -> bytes:
+        return pathlib.Path(path).read_bytes()
+
+
 def _plant_rollout(tmp_path) -> str:
     """Copy the fixture rollout into a codex_home sessions tree; return the
     codex_home path."""
@@ -185,7 +199,7 @@ async def test_fresh_attach_replays_full_rollout_then_inflight_buffer(tmp_path):
     # in-flight turn from the live buffer, deduped against the rollout by turnId.
     conv = FakeConversation()
     codex_home = _plant_rollout(tmp_path)
-    lst = ConversationListener(conv, password="pw", codex_home=codex_home)
+    lst = ConversationListener(conv, password="pw", host=_LocalGlobHost(), codex_home=codex_home)
     port = await lst.start("127.0.0.1")
     url = f"http://127.0.0.1:{port}"
     try:
@@ -225,7 +239,7 @@ async def test_reconnect_with_last_event_id_skips_rollout(tmp_path):
     # only the buffer tail, never the rollout replay.
     conv = FakeConversation()
     codex_home = _plant_rollout(tmp_path)
-    lst = ConversationListener(conv, password="pw", codex_home=codex_home)
+    lst = ConversationListener(conv, password="pw", host=_LocalGlobHost(), codex_home=codex_home)
     port = await lst.start("127.0.0.1")
     url = f"http://127.0.0.1:{port}"
     try:
@@ -247,7 +261,7 @@ async def test_fresh_attach_missing_rollout_is_soft(tmp_path):
     conv = FakeConversation()
     home = tmp_path / ".codex"
     (home / "sessions").mkdir(parents=True)
-    lst = ConversationListener(conv, password="pw", codex_home=str(home))
+    lst = ConversationListener(conv, password="pw", host=_LocalGlobHost(), codex_home=str(home))
     port = await lst.start("127.0.0.1")
     url = f"http://127.0.0.1:{port}"
     try:
