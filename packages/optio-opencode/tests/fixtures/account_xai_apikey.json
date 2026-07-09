@@ -1,0 +1,19 @@
+{
+  "_comment": "REAL live capture, PII-scrubbed. Source: GET https://api.x.ai/v1/api-key with Authorization: Bearer <xai api-key> from a live gm_opencode_seeds seed (provider 'xai', auth type 'api'). UUIDs and redacted key replaced with placeholders; structure + boolean/acl fields verbatim. This is the ONLY identity surface reachable for an xAI *api-key* provider credential: no name, no email, no plan, no usage windows. team_blocked=true here means the team is out of credits (a live 403 'permission-denied' on /v1/models confirmed it), but /v1/api-key itself still returns 200.",
+  "redacted_api_key": "xai-...XXXX",
+  "user_id": "00000000-0000-0000-0000-000000000001",
+  "name": "Default",
+  "create_time": "",
+  "modify_time": "",
+  "modified_by": "00000000-0000-0000-0000-000000000001",
+  "team_id": "00000000-0000-0000-0000-000000000002",
+  "acls": [
+    "api-key:model:*",
+    "api-key:endpoint:*",
+    ""
+  ],
+  "api_key_id": "00000000-0000-0000-0000-000000000003",
+  "team_blocked": true,
+  "api_key_blocked": false,
+  "api_key_disabled": false
+}
