@@ -42,6 +42,7 @@ from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
 from optio_host.paths import task_dir
 
 from optio_kimicode import cred_watcher, host_actions, verify
+from optio_kimicode.account import resolve_capture_account
 from optio_kimicode.info import AGENT_INFO
 from optio_kimicode import models as kimi_models
 from optio_kimicode.conversation import KimiCodeConversation
@@ -938,8 +939,20 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                         suffix=KIMI_SEED_SUFFIX,
                         encrypt=config.session_blob_encrypt,
                     )
-                    await _call_maybe_async(config.on_seed_saved, seed_id, None)
                     _trace("finally: capture_seed DONE id=%s", seed_id)
+                    # Normalized account from the seeded token (the isolated home
+                    # creds are still on disk pre-cleanup); fail-soft → EMPTY,
+                    # never disturbs capture. Optio owns the capture-time stamp:
+                    # persist metadata.account, then hand on_seed_saved the
+                    # human-readable summary (2nd arg — always None for kimi,
+                    # which exposes no email). Mirrors claudecode.
+                    info = await resolve_capture_account(host)
+                    await _seeds.declare_metadata(
+                        ctx._db, prefix=ctx._prefix, suffix=KIMI_SEED_SUFFIX,
+                        seed_id=seed_id, metadata={"account": info.to_dict()},
+                    )
+                    await _call_maybe_async(config.on_seed_saved, seed_id, info.summary)
+                    _trace("finally: on_seed_saved fired (summary=%s)", info.summary)
             except Exception:
                 _trace("finally: capture_seed RAISED")
                 _LOG.exception(
