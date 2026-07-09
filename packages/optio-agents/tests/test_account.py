@@ -76,3 +76,9 @@ def test_per_model_gated_only_when_requested():
 
 def test_empty_not_limited():
     assert is_limited(EMPTY, _dt(12)) is False
+
+
+def test_public_exports():
+    import optio_agents
+    assert optio_agents.AccountInfo is not None
+    assert optio_agents.is_limited is not None
