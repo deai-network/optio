@@ -35,10 +35,9 @@
     "mermaid": "^11.4.0",
     "optio-agents-ui": "workspace:*",
     "optio-ui": "workspace:*",
-    "react-markdown": "^10.1.0",
     "rehype-katex": "^7.0.1",
-    "remark-gfm": "^4.0.1",
-    "remark-math": "^6.0.0"
+    "remark-math": "^6.0.0",
+    "vultus-antd": "workspace:*"
   },
   "peerDependencies": {
     "antd": ">=5",
