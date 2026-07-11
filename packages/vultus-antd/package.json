@@ -1,0 +1,36 @@
+{
+  "name": "vultus-antd",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "description": "Ant Design action-button + markdown components for vultus (depends on and re-exports vultus-core)",
+  "repository": { "type": "git", "url": "git+https://github.com/deai-network/optio.git", "directory": "packages/vultus-antd" },
+  "author": "Kristof Csillag <kristof.csillag@deai-labs.com>",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./markdown": "./src/Markdown.tsx"
+  },
+  "files": ["src", "!src/**/__tests__", "!src/**/*.test.ts", "!src/**/*.test.tsx", "README.md"],
+  "scripts": { "build": "tsc", "test": "vitest run" },
+  "dependencies": {
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "vultus-core": "workspace:*"
+  },
+  "peerDependencies": { "antd": ">=5", "react": ">=18", "react-dom": ">=18", "react-i18next": ">=15" },
+  "devDependencies": {
+    "@ant-design/v5-patch-for-react-19": "^1.0.3",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "antd": "^5.29.3",
+    "i18next": "^25.0.0",
+    "jsdom": "^29.0.1",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-i18next": "^17.0.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.2.4"
+  }
+}
