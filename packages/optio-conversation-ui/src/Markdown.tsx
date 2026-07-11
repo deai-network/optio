@@ -1,7 +1,6 @@
 import { memo, useContext } from 'react';
-import ReactMarkdown, { type Components, defaultUrlTransform } from 'react-markdown';
+import { Markdown as MarkdownBase, type Components, defaultUrlTransform } from 'vultus-antd/markdown';
 import { FileDownloadContext } from './FileDownloadContext.js';
-import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import { Typography, theme } from 'antd';
@@ -172,7 +171,9 @@ const COMPONENTS: Components = {
   ol: ({ children }) => <ol style={{ margin: '4px 0', paddingLeft: 20 }}>{children}</ol>,
 };
 
-const REMARK_PLUGINS = [remarkGfm, remarkMath];
+// The vultus <Markdown> base already prepends remark-gfm; supply only the
+// conversation-specific extras here.
+const REMARK_PLUGINS = [remarkMath];
 const REHYPE_PLUGINS = [rehypeKatex];
 
 // react-markdown's defaultUrlTransform sanitizes URLs and drops unknown
@@ -183,10 +184,11 @@ function urlTransform(url: string): string {
   return url.startsWith('optio-file:') ? url : defaultUrlTransform(url);
 }
 
-// Markdown renderer for assistant bubbles. Matches the Excavator frontend's
-// setup (react-markdown + remark-gfm, no rehype-raw → embedded HTML is ignored,
-// so model output cannot inject markup) and maps block elements onto Ant Design
-// Typography for visual consistency with the rest of the dashboard.
+// Markdown renderer for assistant bubbles. Builds on the shared vultus
+// <Markdown> base (react-markdown + remark-gfm, injectable links, no rehype-raw
+// → embedded HTML is ignored, so model output cannot inject markup) and layers
+// on conversation-specific rendering: KaTeX math, Mermaid diagrams, file-download
+// links, and Ant Design Typography for visual consistency with the dashboard.
 //
 // Streaming-safe: react-markdown renders whatever parses from a partial string,
 // so mid-stream fragments degrade gracefully. memo'd on `children` so a widget
@@ -195,14 +197,14 @@ export const Markdown = memo(function Markdown({ children }: { children: string 
   ensureMarkdownStyle();
   return (
     <div className="optio-cc-md">
-      <ReactMarkdown
+      <MarkdownBase
         remarkPlugins={REMARK_PLUGINS}
         rehypePlugins={REHYPE_PLUGINS}
         urlTransform={urlTransform}
         components={COMPONENTS}
       >
         {children}
-      </ReactMarkdown>
+      </MarkdownBase>
     </div>
   );
 });
