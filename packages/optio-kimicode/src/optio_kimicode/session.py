@@ -593,6 +593,26 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                 ) from exc
             raise
 
+        # Deterministically pin kimi's permission mode over ACP right after
+        # session/new, rather than relying on config.toml's
+        # ``default_permission_mode``. That config path silently NO-OPs when kimi
+        # doesn't have it loaded at session-create: agent-core only calls
+        # ``permission.setMode`` when ``config.defaultPermissionMode`` is defined
+        # (rpc/core-impl.ts) and the manager otherwise defaults to ``manual`` — so
+        # a requested ``yolo`` would leak a ``session/request_permission`` that the
+        # gate-off path then defensively DENIES (the 404 phantom-card bug).
+        # ``set_control("mode", …)`` sends ``session/set_config_option
+        # {configId:"mode"}`` → ``AcpSession.setMode`` (LIVE-VERIFIED against
+        # acp-adapter/src/server.ts), which is immune to config-load timing/path.
+        # Only when the gate is OFF (auto-approve wanted); with the gate ON kimi
+        # must ASK so the conversation's permission handler can gate it.
+        if not config.permission_gate:
+            acp_mode = {"yolo": "yolo", "auto": "auto"}.get(config.permission_mode or "", "yolo")
+            try:
+                await conversation.set_control("mode", acp_mode)
+            except Exception:  # noqa: BLE001 — best-effort; falls back to config.toml
+                _LOG.exception("kimi: pinning ACP permission mode %r failed", acp_mode)
+
         ctx.publish_result(conversation)
         ctx.report_progress(None, f"{AGENT_INFO.name} conversation is live")
 
