@@ -30,6 +30,7 @@ from optio_agents import (
     SeedProvider,
     SeedUnavailableError,
     ThinkingVerbosity,
+    TOOL_VERBOSITIES,
     ToolVerbosity,
 )
 from optio_agents.config_types import ClaustrumConfigMixin
@@ -67,7 +68,7 @@ _VALID_MODES = {"iframe", "conversation"}
 # Validation sets mirroring the shared ``ToolVerbosity`` / ``ThinkingVerbosity``
 # Literals (used by ``__post_init__``; the aliases themselves are imported
 # above from optio_agents).
-_VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
+_VALID_TOOL_VERBOSITY = TOOL_VERBOSITIES
 _VALID_THINKING_VERBOSITY = {"hidden", "visible"}
 
 ApprovalPolicy = Literal["untrusted", "on-failure", "on-request", "never"]

@@ -15,6 +15,7 @@ from optio_agents import (
     SeedProvider,
     SeedUnavailableError,
     ThinkingVerbosity,
+    TOOL_VERBOSITIES,
     ToolVerbosity,
 )
 from optio_agents.config_types import ClaustrumConfigMixin
@@ -32,7 +33,7 @@ from optio_host.types import SSHConfig
 # and imported above; re-exported here so existing
 # ``from optio_opencode.types import ConversationMode, AllowedDir, …`` sites
 # keep working unchanged.
-_VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
+_VALID_TOOL_VERBOSITY = TOOL_VERBOSITIES
 _VALID_THINKING_VERBOSITY = {"hidden", "visible"}
 
 # opencode grades reasoning effort per-prompt via a model's named ``variant``

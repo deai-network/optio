@@ -19,6 +19,7 @@ from optio_agents import (
     SeedProvider,
     SeedUnavailableError,
     ThinkingVerbosity,
+    TOOL_VERBOSITIES,
     ToolVerbosity,
 )
 from optio_agents.config_types import ClaustrumConfigMixin
@@ -76,7 +77,7 @@ _VALID_PERMISSION_MODES = {
 
 # Local-validation supersets for the shared ``ToolVerbosity``/``ThinkingVerbosity``
 # Literals (the aliases themselves are imported from ``optio_agents`` above).
-_VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
+_VALID_TOOL_VERBOSITY = TOOL_VERBOSITIES
 _VALID_THINKING_VERBOSITY = {"hidden", "visible"}
 
 

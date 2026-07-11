@@ -5,12 +5,21 @@ the 4-value superset mode; Landlock-only sandboxes treat rox==ro, rwx==rw."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Literal
+from typing import Awaitable, Callable, Literal, get_args
 
 ConversationMode = Literal["iframe", "conversation"]
-ToolVerbosity = Literal["silent", "description-only", "verbose"]
+# Tool-use reporting level (ascending). "description-while-active" shows a tool's
+# one-line description WHILE it runs, then hides it once finished (the analysis
+# default); "description-only" keeps a persistent one-line row; "verbose" adds the
+# args/result detail.
+ToolVerbosity = Literal["silent", "description-while-active", "description-only", "verbose"]
 ThinkingVerbosity = Literal["hidden", "visible"]
 SeedProvider = Callable[[str], Awaitable[str]]
+
+# SSOT validation set, derived from the Literal so it can never drift. Every
+# wrapper's TaskConfig validates ``tool_verbosity`` against this (was previously
+# a hardcoded copy per wrapper).
+TOOL_VERBOSITIES: frozenset[str] = frozenset(get_args(ToolVerbosity))
 
 
 class SeedUnavailableError(Exception):

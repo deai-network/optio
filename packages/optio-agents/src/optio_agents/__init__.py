@@ -13,6 +13,7 @@ from optio_agents.config_types import (
     SeedProvider,
     SeedUnavailableError,
     ThinkingVerbosity,
+    TOOL_VERBOSITIES,
     ToolVerbosity,
 )
 from optio_agents.context import HookContext, HookContextProtocol, SYSTEM_MESSAGE_PREFIX
@@ -69,6 +70,7 @@ __all__ = [
     "SeedProvider",
     "SeedUnavailableError",
     "ThinkingVerbosity",
+    "TOOL_VERBOSITIES",
     "ToolVerbosity",
     "input_listener",
     "tmux_input",
