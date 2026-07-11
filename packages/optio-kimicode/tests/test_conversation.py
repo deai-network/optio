@@ -167,6 +167,37 @@ async def test_send_receive_and_on_event_transparent(convo):
 
 
 @pytest.mark.asyncio
+async def test_send_while_turn_active_is_queued_then_flushed(convo):
+    """kimi rejects a session/prompt while a turn is active (turn.agent_busy), so
+    the conversation SERIALIZES: a mid-turn send is buffered and dispatched on
+    turn-end — not written concurrently (which would error)."""
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)
+
+    await c.send("first")
+    p1 = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert p1["params"]["prompt"][0]["text"] == "first"
+    assert c.is_pending()
+
+    # Second send while the first turn is in flight → queued, NOT written.
+    await c.send("second")
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(handle.stdin.lines.get(), 0.3)
+
+    # End the first turn → the queued "second" is flushed as its own prompt.
+    handle.stdout.feed({"jsonrpc": "2.0", "id": p1["id"],
+                        "result": {"stopReason": "end_turn"}})
+    p2 = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert p2["method"] == "session/prompt"
+    assert p2["params"]["prompt"][0]["text"] == "second"
+    assert p2["id"] != p1["id"]
+
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
 async def test_bootstrap_surfaces_session_new_error(convo):
     """When session/new returns a JSON-RPC error (e.g. an invalid/rejected
     credential, so kimi refuses to create a session), bootstrap must raise with
