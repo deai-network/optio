@@ -1,6 +1,16 @@
 packages:
   - 'packages/*'
   - 'packages/optio-demo/interop'
+  # vultus lives in the sibling `unitas` repo (its presentation-engine
+  # component). Dev-linked here so optio-conversation-ui resolves its
+  # `vultus-antd: ^x` semver dep to the local checkout (HMR); Docker/registry
+  # builds fall back to the published package when this path is absent.
+  - '../unitas/packages/vultus-core'
+  - '../unitas/packages/vultus-antd'
+# Resolve semver-range deps against workspace packages when present (needed for
+# the external vultus link above; pnpm 10+ defaults these to false).
+linkWorkspacePackages: true
+preferWorkspacePackages: true
 # pnpm 11 requires explicit opt-in for transitive postinstall scripts.
 # Allowed:
 #   esbuild — fetches per-platform native bundler binary

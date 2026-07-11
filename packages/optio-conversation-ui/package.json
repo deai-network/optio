@@ -37,7 +37,7 @@
     "optio-ui": "workspace:*",
     "rehype-katex": "^7.0.1",
     "remark-math": "^6.0.0",
-    "vultus-antd": "workspace:*"
+    "vultus-antd": "^0.1.0"
   },
   "peerDependencies": {
     "antd": ">=5",
