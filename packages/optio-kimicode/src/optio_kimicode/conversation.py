@@ -127,6 +127,12 @@ class KimiCodeConversation:
         self.session_config_options: list | None = None
         self.current_model_id: str | None = None
         self._pending = 0                    # user turns awaiting their result
+        # kimi's ACP REJECTS a session/prompt while a turn is active
+        # ("Cannot launch a new turn while another turn is active" — turn.agent_busy;
+        # kimi is Tier 3 in the steer-probe). Serialize client-side: buffer sends
+        # that arrive mid-turn here, flush one on each turn-end. Agents that queue
+        # or steer natively (grok / cursor / claudecode) do NOT do this.
+        self._send_queue: list[str] = []
         self._closed = asyncio.Event()
         self._close_reason: str | None = None
         # Cooperative-shutdown request towards the owning task body.
@@ -246,6 +252,8 @@ class KimiCodeConversation:
                 text = "".join(self._answer_parts)
                 self._answer_parts = []
                 self._fire_message(text)
+                # Turn done → send the next buffered message (turn-serialization).
+                self._flush_send_queue()
         elif method is not None and rid is not None:
             # Agent -> client REQUEST that we must answer.
             if method == "session/request_permission":
@@ -404,6 +412,17 @@ class KimiCodeConversation:
             raise ConversationClosed(self._close_reason or "conversation closed")
         if self._session_id is None:
             raise RuntimeError("KimiCodeConversation.send before bootstrap() completed")
+        # Turn-serialization gate: a session/prompt while a turn is in flight would
+        # be rejected by kimi (turn.agent_busy). Buffer it; the turn-end handler
+        # (_route: session/prompt response) flushes the next queued send.
+        if self._pending > 0:
+            self._send_queue.append(text)
+            return
+        await self._dispatch(text)
+
+    async def _dispatch(self, text: str) -> None:
+        """Actually write a session/prompt (a new turn). Callers must ensure no
+        turn is in flight (send() gate / turn-end flush)."""
         self._next_id += 1
         rid = self._next_id
         self._prompt_ids.add(rid)
@@ -421,6 +440,13 @@ class KimiCodeConversation:
             self._pending = max(0, self._pending - 1)
             await self._finish("stdin write failed")
             raise
+
+    def _flush_send_queue(self) -> None:
+        """On turn-end, dispatch the next buffered send (one per turn) so queued
+        operator/harness messages land as their own turns instead of erroring."""
+        if self._pending == 0 and self._send_queue and not self._closed.is_set():
+            nxt = self._send_queue.pop(0)
+            asyncio.ensure_future(self._dispatch(nxt))
 
     def on_event(self, handler):
         self._event_handlers.append(handler)
