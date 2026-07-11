@@ -17,7 +17,11 @@ export interface ConversationViewProps {
   state: ChatState;
   closed: boolean;
   busy: boolean;
-  toolVerbosity: 'silent' | 'description-only' | 'verbose';
+  // 'silent' → no tool rows. 'description-while-active' → one line WHILE the
+  // tool runs, hidden once finished (used by analysis tasks). 'description-only'
+  // → a persistent one-line row (⟳/✓/✗). 'verbose' → the line plus the args/
+  // result detail; a finished tool collapses to the line (click to expand).
+  toolVerbosity: 'silent' | 'description-while-active' | 'description-only' | 'verbose';
   // Reasoning/thinking traces (e.g. grok's agent_thought_chunk). 'hidden' → not
   // rendered; 'visible' → shown in a distinct reasoning style. Task-level, set
   // by the engine via widgetData — the view never decides visibility itself.
@@ -120,6 +124,46 @@ function renderInputKV(input: unknown, token: GlobalToken): React.ReactNode {
       {JSON.stringify(input)}
     </div>
   );
+}
+
+// Render a tool/permission's detail: the `input` KV table when it has fields,
+// else the `content`-derived text `preview`. kimi/cursor permission cards and
+// lazy/pending tool_calls carry NO rawInput — their detail lives only in the
+// ACP `content` text (see acp/events.ts acpContentText), so without this the
+// card shows just the tool name (the empty-card bug). Null when neither exists.
+function renderDetail(
+  input: unknown,
+  preview: string | undefined,
+  token: GlobalToken,
+): React.ReactNode {
+  const kv = renderInputKV(input, token);
+  if (kv) return kv;
+  if (preview) {
+    return (
+      <div style={{ fontFamily: 'monospace', fontSize: 12, color: token.colorTextSecondary, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+        {preview}
+      </div>
+    );
+  }
+  return null;
+}
+
+// Unified tool lifecycle across reducers that report completion differently:
+//  - ACP (grok/cursor/kimi): the ChatItem `status` field (running|done|failed).
+//  - codex: folds item/completed `status` + `exitCode` into `input`.
+//  - antigravity (and any result-folding reducer): `input.result`.
+// None present → still running (a just-announced tool). This is what lets the
+// verbosity rules (hide-when-finished / collapse-when-finished) work uniformly
+// for all 7 agents from the single shared render.
+function toolLifecycle(item: Extract<ChatItem, { kind: 'tool' }>): { finished: boolean; failed: boolean } {
+  if (item.status) return { finished: item.status !== 'running', failed: item.status === 'failed' };
+  const input = item.input && typeof item.input === 'object' ? (item.input as Record<string, unknown>) : null;
+  if (!input) return { finished: false, failed: false };
+  const s = typeof input.status === 'string' ? input.status.toLowerCase() : '';
+  const exit = input.exitCode;
+  const failed = s === 'failed' || s === 'error' || (typeof exit === 'number' && exit !== 0);
+  const finished = failed || s === 'completed' || s === 'success' || 'result' in input;
+  return { finished, failed };
 }
 
 // For description-only verbosity: pick a one-line summary from the tool input —
@@ -280,6 +324,16 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   const [error, setError] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [wide, setWide] = useState(false);
+  // Verbose mode collapses a FINISHED tool to its one-line summary; the seqs in
+  // here are the finished tools the operator re-expanded (click to toggle).
+  const [expandedTools, setExpandedTools] = useState<Set<number>>(() => new Set());
+  const toggleTool = (seq: number) =>
+    setExpandedTools((prev) => {
+      const next = new Set(prev);
+      if (next.has(seq)) next.delete(seq);
+      else next.add(seq);
+      return next;
+    });
   const inputRef = useRef<TextAreaRef>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -484,19 +538,29 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
       }
       case 'tool': {
         if (toolVerbosity === 'silent') return null;
-        const summary = toolVerbosity === 'description-only' ? toolSummary(item.input) : '';
-        // A completed tool call (its result folded into the row) is history, not
-        // in-flight — don't label it "running". Engines whose tool rows never
-        // carry a result keep the "running" prefix unchanged.
-        const done =
-          !!item.input && typeof item.input === 'object' && 'result' in (item.input as Record<string, unknown>);
+        const { finished, failed } = toolLifecycle(item);
+        // description-while-active: only render WHILE the tool runs.
+        if (toolVerbosity === 'description-while-active' && finished) return null;
+
+        let summary = toolSummary(item.input);
+        if (!summary && item.preview) summary = item.preview.split('\n')[0].slice(0, 120);
+        const glyph = !finished ? '⟳' : failed ? '✗' : '✓';
+
+        // verbose shows the args/result detail; a FINISHED verbose tool collapses
+        // to its line (click to re-expand). Non-verbose levels are line-only.
+        const collapsible = toolVerbosity === 'verbose' && finished;
+        const open = toolVerbosity === 'verbose' && (!finished || expandedTools.has(item.seq));
         return (
-          <div key={item.seq} data-testid="tool-call" style={{ color: token.colorTextTertiary, fontSize: 12 }}>
-            <div style={{ fontFamily: 'monospace' }}>
-              {done ? '' : 'running '}<strong>{item.name}</strong>
-              {summary ? `: ${summary}` : (done ? '' : ':')}
+          <div key={item.seq} data-testid="tool-call" data-tool-status={finished ? (failed ? 'failed' : 'done') : 'running'}
+               style={{ color: token.colorTextTertiary, fontSize: 12 }}>
+            <div
+              style={{ fontFamily: 'monospace', cursor: collapsible ? 'pointer' : 'default' }}
+              onClick={collapsible ? () => toggleTool(item.seq) : undefined}
+            >
+              {glyph} <strong>{item.name}</strong>{summary ? `: ${summary}` : ''}
+              {collapsible ? <span style={{ marginLeft: 6 }}>{expandedTools.has(item.seq) ? '▾' : '▸'}</span> : null}
             </div>
-            {toolVerbosity === 'verbose' ? renderInputKV(item.input, token) : null}
+            {open ? renderDetail(item.input, item.preview, token) : null}
           </div>
         );
       }
@@ -521,7 +585,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             <div>
               Permission requested: <strong>{item.toolName}</strong>
             </div>
-            {renderInputKV(item.input, token)}
+            {renderDetail(item.input, item.preview, token)}
             <div style={{ display: 'flex', gap: 8 }}>
               <Button
                 size="small"

@@ -7,7 +7,19 @@ export type ChatItem =
   | { kind: 'assistant'; text: string; pending: boolean; seq: number; msgId: string | null }
   | { kind: 'activity'; text: string; seq: number }
   | { kind: 'thinking'; text: string; seq: number }
-  | { kind: 'tool'; name: string; input: unknown; seq: number }
+  | {
+      kind: 'tool';
+      name: string;
+      input: unknown;
+      seq: number;
+      preview?: string;
+      // Lifecycle from the ACP `status` (pending/in_progress → running;
+      // completed → done; failed → failed). Drives the ⟳/✓/✗ glyph and the
+      // verbosity rules (description-while-active hides a tool once it is no
+      // longer running; verbose collapses a finished tool). Absent → treated as
+      // running (back-compat with engines that don't report status).
+      status?: 'running' | 'done' | 'failed';
+    }
   | {
       kind: 'permission';
       requestId: string;
@@ -15,6 +27,10 @@ export type ChatItem =
       input: unknown;
       answered: 'allow' | 'deny' | null;
       seq: number;
+      // Human-readable detail derived from the ACP `toolCall.content` text when
+      // `rawInput` is absent (kimi/cursor permission cards + lazy tool_calls
+      // carry the detail only in `content`). Rendered when the input KV is empty.
+      preview?: string;
     }
   | { kind: 'error'; text: string; seq: number }
   | { kind: 'closed'; reason: string; seq: number };

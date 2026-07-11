@@ -169,9 +169,22 @@ function reduce(
       return { ...st, partTypes, items: upsertAssistant(st.items, msgId, seq, () => ({ text: part.text ?? '', pending: true })) };
     }
     if (part.type === 'tool') {
+      // opencode SST part.state.status ∈ pending|running|completed|error. Fold
+      // it onto the ChatItem so the shared render's verbosity rules see a real
+      // lifecycle (description-while-active hides a finished tool). NOTE: tool
+      // rows here are still ephemeral (dropped on the next tool/message and at
+      // turn end) — persistent finished rows for description-only/verbose need a
+      // tool-model upgrade (upsert-by-id, no turn-end clear) backed by real
+      // opencode captures. Tracked as a follow-up.
+      const ostatus = part.state?.status;
+      const status: 'running' | 'done' | 'failed' | undefined =
+        ostatus === 'completed' ? 'done'
+          : ostatus === 'error' ? 'failed'
+            : ostatus === 'pending' || ostatus === 'running' ? 'running'
+              : undefined;
       return {
         ...st, partTypes,
-        items: [...dropTools(st.items), { kind: 'tool', name: part.tool ?? 'tool', input: part.state?.input ?? {}, seq }],
+        items: [...dropTools(st.items), { kind: 'tool', name: part.tool ?? 'tool', input: part.state?.input ?? {}, status, seq }],
       };
     }
     // reasoning / step-start / step-finish / unknown: remember the type
