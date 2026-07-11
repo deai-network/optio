@@ -15,6 +15,7 @@ from optio_agents import (
     SeedProvider,
     SeedUnavailableError,
     ThinkingVerbosity,
+    TOOL_VERBOSITIES,
     ToolVerbosity,
 )
 from optio_agents.config_types import ClaustrumConfigMixin
@@ -92,7 +93,7 @@ _VALID_REASONING_EFFORTS = {"off", "low", "medium", "high", "xhigh", "max"}
 # ``ToolVerbosity`` (tool-call rendering detail) and ``ThinkingVerbosity``
 # (reasoning-trace visibility) are imported from optio_agents; the validation
 # sets stay local (consumed by __post_init__).
-_VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
+_VALID_TOOL_VERBOSITY = TOOL_VERBOSITIES
 _VALID_THINKING_VERBOSITY = {"hidden", "visible"}
 
 

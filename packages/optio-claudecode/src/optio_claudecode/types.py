@@ -16,6 +16,7 @@ from optio_agents import (
     SeedProvider,
     SeedUnavailableError,
     ThinkingVerbosity,
+    TOOL_VERBOSITIES,
     ToolVerbosity,
 )
 from optio_agents.config_types import ClaustrumConfigMixin
@@ -66,7 +67,7 @@ _HEADLESS_SAFE_PERMISSION_MODES = {"acceptEdits", "bypassPermissions", "dontAsk"
 ReasoningEffort = Literal["low", "medium", "high", "xhigh", "max"]
 _VALID_REASONING_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 
-_VALID_TOOL_VERBOSITY = {"silent", "description-only", "verbose"}
+_VALID_TOOL_VERBOSITY = TOOL_VERBOSITIES
 
 # Visibility of reasoning/thinking traces in the conversation widget. Task-level,
 # mirrors ToolVerbosity; the UI never decides. (Claude reasoning is not yet wired
