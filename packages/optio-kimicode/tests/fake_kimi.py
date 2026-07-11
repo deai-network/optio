@@ -503,6 +503,12 @@ def _run_acp_stdio() -> int:
                 }]}})
         elif method == "session/set_model":
             _acp_send({"jsonrpc": "2.0", "id": mid, "result": {}})
+        elif method == "session/set_config_option":
+            # Model / mode / thinking config change (real kimi routes configId to
+            # setModel/setMode/setThinking). The optio conversation pins the
+            # permission mode via {configId:"mode"} right after session/new — ack
+            # it so the awaited request resolves (else startup hangs).
+            _acp_send({"jsonrpc": "2.0", "id": mid, "result": {}})
         elif method == "session/prompt":
             turn += 1
             prompt = (msg.get("params") or {}).get("prompt") or []
