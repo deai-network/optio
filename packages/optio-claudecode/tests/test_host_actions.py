@@ -224,7 +224,6 @@ async def test_plant_home_files_credentials_dict():
     await host_actions.plant_home_files(
         host,
         credentials_json={"oauth_token": "secret"},
-        claude_config=None,
     )
 
     paths_written = [c.args[0] for c in host.write_text.call_args_list]
@@ -246,7 +245,7 @@ async def test_plant_home_files_credentials_bytes_kept_verbatim():
 
     raw = b'{"opaque":"blob"}'
     await host_actions.plant_home_files(
-        host, credentials_json=raw, claude_config=None,
+        host, credentials_json=raw,
     )
 
     cred_call = [c for c in host.write_text.call_args_list
@@ -254,22 +253,55 @@ async def test_plant_home_files_credentials_bytes_kept_verbatim():
     assert cred_call.args[1] == raw.decode("utf-8")
 
 
-async def test_plant_home_files_settings_json():
+async def test_apply_claude_settings_creates_when_absent():
+    # No pre-existing settings.json (cat returns empty) -> caller config written
+    # verbatim.
     host = MagicMock()
     host.write_text = AsyncMock()
     host.run_command = AsyncMock(return_value=RunResult(stdout="", stderr="", exit_code=0))
     host.workdir = "/tmp/x"
 
     settings = {"permissions": {"allow": ["Read"]}}
-    await host_actions.plant_home_files(
-        host, credentials_json=None, claude_config=settings,
-    )
+    await host_actions.apply_claude_settings(host, settings)
 
-    paths_written = [c.args[0] for c in host.write_text.call_args_list]
-    assert "home/.claude/settings.json" in paths_written
     settings_call = [c for c in host.write_text.call_args_list
                      if c.args[0] == "home/.claude/settings.json"][0]
     assert json.loads(settings_call.args[1]) == settings
+
+
+async def test_apply_claude_settings_deep_merges_over_seed():
+    # A seed-populated settings.json already exists (cat returns it). Caller keys
+    # WIN per key; nested dicts merge; the seed's other keys are preserved.
+    host = MagicMock()
+    host.write_text = AsyncMock()
+    seed_settings = {
+        "model": "opus",
+        "disableClaudeAiConnectors": False,
+        "permissions": {"allow": ["Read"], "deny": ["Write"]},
+    }
+
+    async def _run(cmd):
+        if cmd.startswith("cat "):
+            return RunResult(stdout=json.dumps(seed_settings), stderr="", exit_code=0)
+        return RunResult(stdout="", stderr="", exit_code=0)
+
+    host.run_command = AsyncMock(side_effect=_run)
+    host.workdir = "/tmp/x"
+
+    await host_actions.apply_claude_settings(
+        host,
+        {"disableClaudeAiConnectors": True, "permissions": {"allow": ["Bash"]}},
+    )
+
+    settings_call = [c for c in host.write_text.call_args_list
+                     if c.args[0] == "home/.claude/settings.json"][0]
+    written = json.loads(settings_call.args[1])
+    # caller key wins
+    assert written["disableClaudeAiConnectors"] is True
+    # nested dict merges: caller overrides allow, seed's deny preserved
+    assert written["permissions"] == {"allow": ["Bash"], "deny": ["Write"]}
+    # untouched seed key preserved
+    assert written["model"] == "opus"
 
 
 async def test_plant_home_files_none_writes_nothing():
@@ -279,7 +311,7 @@ async def test_plant_home_files_none_writes_nothing():
     host.workdir = "/tmp/x"
 
     await host_actions.plant_home_files(
-        host, credentials_json=None, claude_config=None,
+        host, credentials_json=None,
     )
 
     # No files written; mkdir -p still runs for home/.claude

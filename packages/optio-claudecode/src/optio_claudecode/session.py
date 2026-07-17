@@ -1079,7 +1079,6 @@ async def _plant_session_content(
         await host_actions.plant_home_files(
             host,
             credentials_json=config.credentials_json,
-            claude_config=effective_claude_config,
         )
         if resolved_seed_id is not None:
             # Seeded fresh: overlay the stored environment on top of
@@ -1124,6 +1123,12 @@ async def _plant_session_content(
             )
         cred_baseline = await cred_watcher.cred_fingerprint(host)
         refreshed_files = await _maybe_refresh_on_resume(host, hook_ctx, config)
+    # Install the caller's Claude Code settings LAST — after the seed (fresh) or
+    # the restored snapshot (resume) — so they WIN over whatever settings the
+    # seed/snapshot carried, while preserving every other key. focus_mode knobs
+    # are already folded into effective_claude_config by build_focus_mode.
+    if effective_claude_config is not None:
+        await host_actions.apply_claude_settings(host, effective_claude_config)
     if config.supports_resume:
         await _append_resume_log_entry(host, refreshed=refreshed_files)
     if config.before_execute is not None:

@@ -403,15 +403,16 @@ async def plant_home_files(
     host: "Host",
     *,
     credentials_json: dict[str, Any] | bytes | str | None,
-    claude_config: dict[str, Any] | None,
 ) -> None:
-    """Plant per-task claude state under <workdir>/home/.claude/.
+    """Plant per-task claude credentials under <workdir>/home/.claude/.
 
     Creates <workdir>/home/.claude/ (mkdir -p), writes the credentials
-    payload and settings.json when supplied, and chmod-600s the
-    credentials file. ``credentials_json`` accepts a dict (re-encoded as
-    JSON), bytes (decoded as UTF-8 verbatim), or a string (written
-    verbatim).
+    payload, and chmod-600s it. ``credentials_json`` accepts a dict (re-encoded
+    as JSON), bytes (decoded as UTF-8 verbatim), or a string (written verbatim).
+
+    settings.json is NOT written here: caller `claude_config` is applied by
+    ``apply_claude_settings`` AFTER the seed/snapshot restore, so it wins over
+    the seed's own settings (see there).
     """
     workdir = host.workdir.rstrip("/")
     home_claude_rel = "home/.claude"
@@ -441,9 +442,55 @@ async def plant_home_files(
                 f"{r.stderr.strip()[:200]}"
             )
 
-    if claude_config is not None:
-        settings_rel = f"{home_claude_rel}/settings.json"
-        await host.write_text(settings_rel, json.dumps(claude_config, indent=2))
+
+def _deep_merge(base: dict, over: dict) -> dict:
+    """Recursively merge ``over`` onto ``base``. Nested dicts merge key-by-key;
+    every other value (scalar/list) from ``over`` replaces ``base``'s. Returns a
+    new dict; inputs are not mutated."""
+    out = dict(base)
+    for k, v in over.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+async def apply_claude_settings(
+    host: "Host", claude_config: dict[str, Any]
+) -> None:
+    """Deep-merge caller ``claude_config`` into <workdir>/home/.claude/settings.json.
+
+    Called AFTER the seed/snapshot restore so the caller's keys win over the
+    seed's (or the resumed snapshot's) own settings, while every OTHER key the
+    seed carried is preserved. Read-modify-write (create-if-absent); mirrors
+    optio-opencode's ``_write_seed_model_config``, which bakes the operator model
+    into the seed's opencode.json the same way.
+    """
+    workdir = host.workdir.rstrip("/")
+    home_claude_abs = f"{workdir}/home/.claude"
+    settings_rel = "home/.claude/settings.json"
+    settings_abs = f"{workdir}/{settings_rel}"
+
+    r = await host.run_command(f"mkdir -p {shlex.quote(home_claude_abs)}")
+    if r.exit_code != 0:
+        raise RuntimeError(
+            f"mkdir -p {home_claude_abs!r} failed (exit {r.exit_code}): "
+            f"{r.stderr.strip()[:200]}"
+        )
+
+    existing: dict[str, Any] = {}
+    r = await host.run_command(f"cat {shlex.quote(settings_abs)}")
+    if r.exit_code == 0 and r.stdout.strip():
+        try:
+            parsed = json.loads(r.stdout)
+            if isinstance(parsed, dict):
+                existing = parsed
+        except ValueError:
+            existing = {}
+
+    merged = _deep_merge(existing, claude_config)
+    await host.write_text(settings_rel, json.dumps(merged, indent=2))
 
 
 def _build_claude_shell_command(
