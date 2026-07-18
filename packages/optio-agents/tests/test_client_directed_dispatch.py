@@ -63,6 +63,7 @@ async def test_dispatch_routes_browser_attention_client_caller():
         get_protocol(
             browser="redirect", client_messages=True, caller_messages=True,
         ).parse_log_line,
+        _hook_ctx_with_sender(ctx, []),
     )
     assert ctx.browser == ["https://x"]
     assert ctx.attention == ["help me"]
@@ -83,6 +84,7 @@ async def test_dispatch_ignores_browser_under_suppress():
     await _tail_and_dispatch(
         host, ctx, asyncio.Queue(), asyncio.Queue(), done, [],
         get_protocol(browser="suppress").parse_log_line,
+        _hook_ctx_with_sender(ctx, []),
     )
     assert ctx.browser == []                 # BROWSER line was inert (UnknownLine)
     assert ctx.attention == ["help me"]      # ATTENTION still routed
@@ -102,6 +104,7 @@ async def test_dispatch_messages_inert_when_disabled():
     await _tail_and_dispatch(
         host, ctx, asyncio.Queue(), caller_queue, done, [],
         get_protocol().parse_log_line,
+        _hook_ctx_with_sender(ctx, []),
     )
     assert ctx.client == []
     assert caller_queue.empty()

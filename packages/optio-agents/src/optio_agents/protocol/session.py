@@ -273,7 +273,8 @@ async def run_log_protocol_session(
             tail_task = asyncio.create_task(
                 _tail_and_dispatch(
                     host, ctx, deliverable_queue, caller_queue, done_flag,
-                    error_flag, protocol.parse_log_line, browser_url_rewrite,
+                    error_flag, protocol.parse_log_line, hook_ctx,
+                    browser_url_rewrite,
                 ),
             )
         body_task = asyncio.create_task(body(host, hook_ctx))
@@ -352,6 +353,20 @@ async def run_log_protocol_session(
 # --- private helpers ---------------------------------------------------
 
 
+async def _reply_to_agent(hook_ctx: HookContext, display: str, reply: str) -> None:
+    """Send the mandatory single ``deliverable <name>: <reply>`` acknowledgment
+    to the agent.
+
+    One place for BOTH outcomes so the invariant holds: every DELIVERABLE line
+    gets exactly one reply. Accepted deliverables (and content-level revision
+    requests from on_deliverable) go through here from the fetch loop; mechanical
+    rejections the harness catches BEFORE the callback (bad path, not under
+    deliverables/, unreadable file) route through here too — otherwise the agent,
+    told to wait after every DELIVERABLE line, hangs on a silently-dropped one."""
+    name = os.path.basename(display) or display
+    await hook_ctx.send_to_agent(f"deliverable {name}: {reply}")
+
+
 async def _tail_and_dispatch(
     host: Host,
     ctx: "ProcessContext",
@@ -360,6 +375,7 @@ async def _tail_and_dispatch(
     done_flag: asyncio.Event,
     error_flag: list,
     parse_line: "Callable[[str], LogEvent]",
+    hook_ctx: HookContext,
     browser_url_rewrite: "Callable[[str], str] | None" = None,
 ) -> None:
     """Consume tail_file(optio.log), parse each line, dispatch by keyword."""
@@ -374,6 +390,12 @@ async def _tail_and_dispatch(
                 ctx.report_progress(
                     None, f"invalid deliverable path {ev.path!r}, skipping",
                 )
+                await _reply_to_agent(
+                    hook_ctx, ev.path,
+                    f"rejected — {ev.path!r} is not a valid deliverable path. "
+                    "Place the file under ./deliverables/ and re-announce it, "
+                    "e.g. DELIVERABLE: ./deliverables/<name>.",
+                )
                 continue
             try:
                 display = relativize_deliverable_path(absolute, host.workdir)
@@ -382,6 +404,12 @@ async def _tail_and_dispatch(
                     None,
                     f"deliverable {ev.path!r}: not under deliverables/, "
                     "skipping (malfunction)",
+                )
+                await _reply_to_agent(
+                    hook_ctx, ev.path,
+                    f"rejected — {ev.path!r} is not under ./deliverables/. Move "
+                    "the file there and re-announce it, e.g. "
+                    "DELIVERABLE: ./deliverables/<name>.",
                 )
                 continue
             ctx.report_progress(None, f"Deliverable: {display}")
@@ -436,14 +464,29 @@ async def _deliverable_fetch_loop(
                     None,
                     f"Deliverable {display}: not valid UTF-8, skipping callback",
                 )
+                await _reply_to_agent(
+                    hook_ctx, display,
+                    "rejected — the file is not valid UTF-8 text. Re-write it as "
+                    "UTF-8 and re-announce it.",
+                )
                 continue
             except FileNotFoundError:
                 ctx.report_progress(None, f"Deliverable {display}: not found")
+                await _reply_to_agent(
+                    hook_ctx, display,
+                    "rejected — no file exists at the announced path. Write it "
+                    "first, then re-announce it.",
+                )
                 continue
             except Exception as exc:  # noqa: BLE001
                 ctx.report_progress(
                     None,
                     f"Deliverable {display}: fetch failed: {exc!r}, skipping",
+                )
+                await _reply_to_agent(
+                    hook_ctx, display,
+                    "could not be read on the harness side. Please re-announce "
+                    "it; if it keeps failing, a human may need to help.",
                 )
                 continue
 
@@ -453,7 +496,6 @@ async def _deliverable_fetch_loop(
             #   - no callback / None / "" / "ok"  -> accepted
             #   - any other returned string       -> that string (revision msg)
             #   - callback raised                 -> harness-side trouble note
-            name = os.path.basename(display) or display
             if callback is None:
                 reply = "accepted. thanks for the good work."
             else:
@@ -478,7 +520,7 @@ async def _deliverable_fetch_loop(
                         reply = feedback.strip()
                     else:
                         reply = "accepted. thanks for the good work."
-            await hook_ctx.send_to_agent(f"deliverable {name}: {reply}")
+            await _reply_to_agent(hook_ctx, display, reply)
         finally:
             queue.task_done()
 
