@@ -115,6 +115,11 @@ class OpencodeTaskConfig(ClaustrumConfigMixin):
     # raises a config error: asymmetric usage is always a mistake.
     session_blob_encrypt: Callable[[bytes], bytes] | None = None
     session_blob_decrypt: Callable[[bytes], bytes] | None = None
+    # Separate pair wrapping the SEED tar (the shared pool account, distinct
+    # from this process's session snapshot). Falls back to the session_blob
+    # pair when unset (single-key callers); split-key callers set both.
+    seed_blob_encrypt: Callable[[bytes], bytes] | None = None
+    seed_blob_decrypt: Callable[[bytes], bytes] | None = None
     # Hook fired on resume only (never on fresh start). Receives the original
     # task config; returns a (possibly mutated/replaced) config. The harness
     # re-renders AGENTS.md from the returned config and writes it back only
@@ -236,6 +241,13 @@ class OpencodeTaskConfig(ClaustrumConfigMixin):
                 "OpencodeTaskConfig: session_blob_encrypt and "
                 "session_blob_decrypt must be set together (both callables) "
                 "or both left as None; one without the other is a config error."
+            )
+        se = self.seed_blob_encrypt is not None
+        sd = self.seed_blob_decrypt is not None
+        if se != sd:
+            raise ValueError(
+                "OpencodeTaskConfig: seed_blob_encrypt and seed_blob_decrypt "
+                "must be set together or both left as None."
             )
         if self.mode not in ("iframe", "conversation"):
             raise ValueError(

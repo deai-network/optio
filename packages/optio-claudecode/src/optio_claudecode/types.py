@@ -160,6 +160,12 @@ class ClaudeCodeTaskConfig(ClaustrumConfigMixin):
     # config error (asymmetric usage is always a mistake).
     session_blob_encrypt: Callable[[bytes], bytes] | None = None
     session_blob_decrypt: Callable[[bytes], bytes] | None = None
+    # Separate pair wrapping the SEED tar (the shared pool account, distinct
+    # from this process's session snapshot). Seeds and session snapshots live
+    # in different key scopes, so they need different transforms. Falls back to
+    # the session_blob pair when unset (back-compat / single-key callers).
+    seed_blob_encrypt: Callable[[bytes], bytes] | None = None
+    seed_blob_decrypt: Callable[[bytes], bytes] | None = None
     # Hook fired on resume only (never on fresh start). Receives the original
     # config; returns a (possibly mutated) config. The harness re-renders
     # CLAUDE.md from the returned config and writes it back only when it
@@ -290,6 +296,13 @@ class ClaudeCodeTaskConfig(ClaustrumConfigMixin):
                 "ClaudeCodeTaskConfig: session_blob_encrypt and "
                 "session_blob_decrypt must be set together (both callables) "
                 "or both left as None; one without the other is a config error."
+            )
+        se = self.seed_blob_encrypt is not None
+        sd = self.seed_blob_decrypt is not None
+        if se != sd:
+            raise ValueError(
+                "ClaudeCodeTaskConfig: seed_blob_encrypt and seed_blob_decrypt "
+                "must be set together or both left as None."
             )
         if self.mode not in ("iframe", "conversation"):
             raise ValueError(

@@ -355,7 +355,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                     seed_id=resolved_seed_id,
                     manifest=OPENCODE_SEED_MANIFEST,
                     suffix=OPENCODE_SEED_SUFFIX,
-                    decrypt=config.session_blob_decrypt,
+                    decrypt=config.seed_blob_decrypt or config.session_blob_decrypt,
                 )
             cred_baseline = await cred_watcher.cred_fingerprint(host)
             # Note: do NOT call ctx.clear_has_saved_state() here. The spec
@@ -379,7 +379,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                     seed_id=resolved_seed_id,
                     manifest=OPENCODE_CRED_MANIFEST,
                     suffix=OPENCODE_SEED_SUFFIX,
-                    decrypt=config.session_blob_decrypt,
+                    decrypt=config.seed_blob_decrypt or config.session_blob_decrypt,
                 )
             cred_baseline = await cred_watcher.cred_fingerprint(host)
             # Resume: when on_resume_refresh is wired, recompute AGENTS.md
@@ -579,8 +579,8 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                 ctx, host,
                 seed_id=resolved_seed_id,
                 baseline=cred_baseline,
-                encrypt=config.session_blob_encrypt,
-                decrypt=config.session_blob_decrypt,
+                encrypt=config.seed_blob_encrypt or config.session_blob_encrypt,
+                decrypt=config.seed_blob_decrypt or config.session_blob_decrypt,
                 lease_holder=lease_holder,
             ))
 
@@ -750,8 +750,8 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                     ctx, host,
                     seed_id=resolved_seed_id,
                     baseline=cred_baseline,
-                    encrypt=config.session_blob_encrypt,
-                    decrypt=config.session_blob_decrypt,
+                    encrypt=config.seed_blob_encrypt or config.session_blob_encrypt,
+                    decrypt=config.seed_blob_decrypt or config.session_blob_decrypt,
                 )
             except Exception:  # noqa: BLE001
                 _LOG.exception("final credential save-back failed")
@@ -784,7 +784,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                         ctx, host,
                         manifest=OPENCODE_SEED_MANIFEST,
                         suffix=OPENCODE_SEED_SUFFIX,
-                        encrypt=config.session_blob_encrypt,
+                        encrypt=config.seed_blob_encrypt or config.session_blob_encrypt,
                     )
                     # 2nd arg: the resolved "providerID/modelID" (or None).
                     await _call_maybe_async(
