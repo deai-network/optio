@@ -257,7 +257,7 @@ async def test_capture_synthesises_model_into_opencode_json(
 
     _supply_scenario["name"] = "happy"
 
-    async def _fake_resolve(port, password, session_id):
+    async def _fake_resolve(port, password, session_id, directory):
         return "xai/grok-4.3"
 
     monkeypatch.setattr(session_mod, "_resolve_session_model", _fake_resolve)
@@ -607,10 +607,14 @@ def test_resolve_session_model_returns_last_assistant_model(monkeypatch):
         return _Resp()
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    model = session_mod._resolve_session_model_sync(4096, "pw", "ses_abc")
+    model = session_mod._resolve_session_model_sync(
+        4096, "pw", "ses_abc", "/tmp/isolated workdir",
+    )
 
     assert model == "xai/grok-4.3"
-    assert captured["url"].endswith("/session/ses_abc/message")
+    assert captured["url"].endswith(
+        "/session/ses_abc/message?directory=%2Ftmp%2Fisolated%20workdir",
+    )
     assert captured["method"] == "GET"
 
 
@@ -636,7 +640,68 @@ def test_resolve_session_model_none_when_no_assistant(monkeypatch):
             return json.dumps(messages).encode("utf-8")
 
     monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: _Resp())
-    assert session_mod._resolve_session_model_sync(4096, "pw", "ses_x") is None
+    assert session_mod._resolve_session_model_sync(
+        4096, "pw", "ses_x", "/tmp/workdir",
+    ) is None
+
+
+def test_resolve_session_model_accepts_nested_model_shape(monkeypatch):
+    """Compatibility with builds that nest the selected model under info.model."""
+    import json
+    import urllib.request
+    from optio_opencode import session as session_mod
+
+    messages = [{
+        "info": {
+            "role": "assistant",
+            "model": {"providerID": "xai", "modelID": "grok-4.3"},
+        },
+        "parts": [{"type": "text", "text": "SECRET RESPONSE"}],
+    }]
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(messages).encode("utf-8")
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: _Resp())
+    assert session_mod._resolve_session_model_sync(
+        4096, "pw", "ses_x", "/tmp/workdir",
+    ) == "xai/grok-4.3"
+
+
+def test_unresolved_model_diagnostics_do_not_log_message_content(monkeypatch, caplog):
+    import json
+    import urllib.request
+    from optio_opencode import session as session_mod
+
+    messages = [{
+        "info": {"role": "assistant", "unexpectedModelField": "SECRET MODEL"},
+        "parts": [{"type": "text", "text": "SECRET RESPONSE"}],
+    }]
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(messages).encode("utf-8")
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: _Resp())
+    assert session_mod._resolve_session_model_sync(
+        4096, "pw", "ses_x", "/tmp/workdir",
+    ) is None
+    assert "SECRET MODEL" not in caplog.text
+    assert "SECRET RESPONSE" not in caplog.text
+    assert "unexpectedModelField" in caplog.text
 
 
 async def test_write_seed_model_config_creates_and_merges(tmp_path):

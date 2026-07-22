@@ -721,7 +721,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         ):
             try:
                 seed_model = await _resolve_session_model(
-                    worker_port, password, session_id,
+                    worker_port, password, session_id, host.workdir,
                 )
             except Exception:  # noqa: BLE001
                 _LOG.exception(
@@ -785,12 +785,10 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                         "(%s) — configure one provider per seed", e,
                     )
                     sliceable = False
-                if not sliceable or not await cred_watcher.capture_gate_ok(host):
+                gate = await cred_watcher.inspect_capture_gate(host)
+                if not sliceable or not gate.ok:
                     if sliceable:
-                        _LOG.warning(
-                            "seed capture skipped: auth.json invalid/absent or "
-                            "no model in opencode.json (unusable seed)",
-                        )
+                        cred_watcher.log_capture_gate_status(gate)
                 else:
                     seed_id_out = await _seeds.capture_seed(
                         ctx, host,
@@ -1191,16 +1189,18 @@ async def _post_opencode_prompt(
 
 
 def _resolve_session_model_sync(
-    port: int, password: str, session_id: str,
+    port: int, password: str, session_id: str, directory: str,
 ) -> str | None:
     """Best-effort: return the operator's last-used model as
     ``"providerID/modelID"``, or None.
 
     GETs opencode's ``/session/:sessionID/message`` (the same ``/session``
     prefix as :func:`_create_opencode_session_sync`) and walks the message
-    list; each ``info.role == "assistant"`` message carries ``providerID`` /
-    ``modelID``. The LAST such message wins — the operator may switch models
-    mid-session, and their final choice is the one to seed.
+    list; assistant messages normally carry ``providerID`` / ``modelID``
+    directly, while some builds nest them under ``info.model``. The LAST such
+    message wins — the operator may switch models mid-session, and their final
+    choice is the one to seed. Session routes are project-scoped, so the
+    isolated workdir is always sent as the ``directory`` query parameter.
 
     Used at seed-capture time (opencode must still be alive) to synthesise the
     model default into the seed's ``opencode.json``. Returns None on any
@@ -1208,39 +1208,70 @@ def _resolve_session_model_sync(
     skips writing a default, leaving opencode's own resolution in place (no
     worse than before)."""
     import base64 as _b64
+    import urllib.parse
     import urllib.request
     from urllib.error import URLError
 
     auth_token = _b64.b64encode(f"opencode:{password}".encode("utf-8")).decode("ascii")
-    url = f"http://127.0.0.1:{port}/session/{session_id}/message"
+    url = (
+        f"http://127.0.0.1:{port}/session/{session_id}/message"
+        f"?directory={urllib.parse.quote(directory, safe='')}"
+    )
     req = urllib.request.Request(
         url, method="GET", headers={"authorization": f"Basic {auth_token}"},
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-    except (URLError, ConnectionError, OSError, ValueError):
+    except (URLError, ConnectionError, OSError, ValueError) as exc:
+        _LOG.warning(
+            "seed model resolution failed before message inspection: error_type=%s",
+            type(exc).__name__,
+        )
         return None
     if not isinstance(data, list):
+        _LOG.warning(
+            "seed model unresolved: message_response_type=%s",
+            type(data).__name__,
+        )
         return None
 
     model: str | None = None
+    roles: set[str] = set()
+    assistant_shapes: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
     for item in data:
         info = item.get("info", item) if isinstance(item, dict) else {}
-        if not isinstance(info, dict) or info.get("role") != "assistant":
+        if not isinstance(info, dict):
             continue
-        prov, mod = info.get("providerID"), info.get("modelID")
+        role = info.get("role")
+        if isinstance(role, str):
+            roles.add(role)
+        if role != "assistant":
+            continue
+        nested = info.get("model") if isinstance(info.get("model"), dict) else {}
+        assistant_shapes.add((tuple(sorted(info)), tuple(sorted(nested))))
+        prov = info.get("providerID") or nested.get("providerID")
+        mod = info.get("modelID") or nested.get("modelID")
         if isinstance(prov, str) and prov and isinstance(mod, str) and mod:
             model = f"{prov}/{mod}"
+    if model is None:
+        _LOG.warning(
+            "seed model unresolved: message_roles=%s assistant_shapes=%s",
+            sorted(roles),
+            [
+                {"info_keys": list(info_keys), "model_keys": list(model_keys)}
+                for info_keys, model_keys in sorted(assistant_shapes)
+            ],
+        )
     return model
 
 
 async def _resolve_session_model(
-    port: int, password: str, session_id: str,
+    port: int, password: str, session_id: str, directory: str,
 ) -> str | None:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
-        None, _resolve_session_model_sync, port, password, session_id
+        None, _resolve_session_model_sync, port, password, session_id, directory
     )
 
 

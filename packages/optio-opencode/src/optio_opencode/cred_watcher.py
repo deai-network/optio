@@ -18,6 +18,8 @@ import asyncio
 import hashlib
 import json
 import logging
+import shlex
+from dataclasses import dataclass
 from typing import Callable
 
 from optio_agents import seeds
@@ -30,6 +32,21 @@ _LOG = logging.getLogger(__name__)
 CRED_WATCH_INTERVAL_S = 10.0
 _CRED_RELPATH = "home/.local/share/opencode/auth.json"
 _MODEL_RELPATH = "home/.config/opencode/opencode.json"
+
+
+@dataclass(frozen=True)
+class CaptureGateStatus:
+    """Secret-free description of the two seed-capture prerequisites."""
+
+    auth: str
+    model: str
+    auth_paths: tuple[str, ...] = ()
+    auth_keys: tuple[str, ...] = ()
+    model_keys: tuple[str, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        return self.auth == "valid" and self.model == "valid"
 
 
 async def cred_fingerprint(host: Host) -> str | None:
@@ -51,22 +68,76 @@ async def cred_fingerprint(host: Host) -> str | None:
     return hashlib.sha256(raw).hexdigest()
 
 
-async def capture_gate_ok(host: Host) -> bool:
-    """Stricter gate for seed CAPTURE: valid auth.json (cred_fingerprint)
-    AND a non-empty `model` in the live opencode.json. A model-less seed is
-    unusable — a consuming task gets no default and verify has nothing to
-    probe. Save-back deliberately does NOT use this gate: save-back only
-    replaces auth.json (the seed's opencode.json is untouched), and blocking
-    it over an unrelated field would drop a rotated refresh token."""
-    if await cred_fingerprint(host) is None:
-        return False
-    path = f"{host.workdir.rstrip('/')}/{_MODEL_RELPATH}"
+async def _json_dict_status(host: Host, relpath: str) -> tuple[str, dict | None]:
+    path = f"{host.workdir.rstrip('/')}/{relpath}"
     try:
         raw = await host.fetch_bytes_from_host(path)
-        cfg = json.loads(raw.decode("utf-8"))
-    except (FileNotFoundError, ValueError, UnicodeDecodeError):
-        return False
-    return isinstance(cfg, dict) and bool(cfg.get("model"))
+    except FileNotFoundError:
+        return "missing", None
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return "malformed", None
+    if not isinstance(data, dict):
+        return "malformed", None
+    if not data:
+        return "empty", data
+    return "valid", data
+
+
+async def _discover_auth_paths(host: Host) -> tuple[str, ...]:
+    """Find auth.json files under the isolated HOME without reading them."""
+    workdir = host.workdir.rstrip("/")
+    home = f"{workdir}/home"
+    result = await host.run_command(
+        f"find {shlex.quote(home)} -type f -name auth.json -print",
+    )
+    if result.exit_code != 0:
+        return ()
+    prefix = f"{workdir}/"
+    paths = {
+        line[len(prefix):] if line.startswith(prefix) else line
+        for line in result.stdout.splitlines()
+        if line
+    }
+    return tuple(sorted(paths))
+
+
+async def inspect_capture_gate(host: Host) -> CaptureGateStatus:
+    """Inspect capture prerequisites without exposing any JSON values."""
+    auth_state, auth = await _json_dict_status(host, _CRED_RELPATH)
+    if auth_state == "valid" and not auth:
+        auth_state = "empty"
+
+    model_state, cfg = await _json_dict_status(host, _MODEL_RELPATH)
+    if model_state in {"empty", "valid"}:
+        model_state = "valid" if cfg and cfg.get("model") else "missing-model"
+
+    return CaptureGateStatus(
+        auth=auth_state,
+        model=model_state,
+        auth_paths=await _discover_auth_paths(host),
+        auth_keys=tuple(sorted(auth)) if auth else (),
+        model_keys=tuple(sorted(cfg)) if cfg else (),
+    )
+
+
+def log_capture_gate_status(status: CaptureGateStatus) -> None:
+    """Log capture failure structure only; never credential/config values."""
+    _LOG.warning(
+        "seed capture gate rejected: auth=%s model=%s auth_paths=%s "
+        "auth_keys=%s model_keys=%s",
+        status.auth,
+        status.model,
+        list(status.auth_paths),
+        list(status.auth_keys),
+        list(status.model_keys),
+    )
+
+
+async def capture_gate_ok(host: Host) -> bool:
+    """True for valid auth plus a configured model; retained for callers."""
+    return (await inspect_capture_gate(host)).ok
 
 
 class UnsliceableSeed(Exception):

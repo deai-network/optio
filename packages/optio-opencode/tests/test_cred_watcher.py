@@ -83,6 +83,60 @@ async def test_capture_gate_requires_auth_and_model(host):
     assert await cred_watcher.capture_gate_ok(host)
 
 
+async def test_capture_gate_diagnostics_distinguish_failures(host):
+    status = await cred_watcher.inspect_capture_gate(host)
+    assert status.auth == "missing"
+    assert status.model == "missing"
+    assert not status.ok
+
+    _write_auth(host.workdir, "not json")
+    _write_model_config(host.workdir, None)
+    status = await cred_watcher.inspect_capture_gate(host)
+    assert status.auth == "malformed"
+    assert status.model == "missing-model"
+    assert status.auth_keys == ()
+    assert status.model_keys == ()
+
+    _write_auth(host.workdir, {})
+    status = await cred_watcher.inspect_capture_gate(host)
+    assert status.auth == "empty"
+
+    _write_auth(host.workdir, {"xai": {"type": "oauth", "refresh": "SECRET"}})
+    _write_model_config(host.workdir, "xai/grok-4.3")
+    status = await cred_watcher.inspect_capture_gate(host)
+    assert status.auth == "valid"
+    assert status.model == "valid"
+    assert status.ok
+    assert status.auth_keys == ("xai",)
+    assert status.model_keys == ("model",)
+
+
+async def test_capture_gate_diagnostics_find_alternate_auth_path(host):
+    alternate = os.path.join(
+        host.workdir, "home", ".local", "state", "opencode", "auth.json",
+    )
+    os.makedirs(os.path.dirname(alternate), exist_ok=True)
+    with open(alternate, "w") as fh:
+        json.dump({"xai": {"type": "oauth", "refresh": "SECRET"}}, fh)
+
+    status = await cred_watcher.inspect_capture_gate(host)
+
+    assert status.auth == "missing"
+    assert status.auth_paths == ("home/.local/state/opencode/auth.json",)
+
+
+async def test_capture_gate_diagnostics_never_log_secret_values(host, caplog):
+    _write_auth(host.workdir, {"xai": {"type": "oauth", "refresh": "SECRET"}})
+    _write_model_config(host.workdir, None)
+
+    status = await cred_watcher.inspect_capture_gate(host)
+    cred_watcher.log_capture_gate_status(status)
+
+    assert "SECRET" not in caplog.text
+    assert "auth=valid" in caplog.text
+    assert "model=missing-model" in caplog.text
+
+
 # --- slim_auth_to_selected_provider -------------------------------------
 
 async def _write(host, relpath, obj):
