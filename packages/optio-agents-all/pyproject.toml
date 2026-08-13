@@ -31,7 +31,7 @@ dependencies = [
     "optio-claudecode>=0.6,<0.7",
     "optio-grok>=0.4,<0.5",
     "optio-codex>=0.4,<0.5",
-    "optio-cursor>=0.3,<0.4",
+    "optio-cursor>=0.4,<0.5",
     "optio-kimicode>=0.2,<0.3",
     "optio-antigravity>=0.2,<0.3",
 ]
