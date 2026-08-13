@@ -188,6 +188,55 @@ def test_cli_config_rules():
     assert build_cli_config(allowed_tools=None, disallowed_tools=None) is None
 
 
+async def test_apply_cli_config_caller_wins_and_other_keys_survive(tmp_path):
+    """apply_cli_config is a read-modify-write deep-merge: the caller's keys
+    (permissions, approvalMode) replace the seed's, while every OTHER key the
+    seed's cli-config.json carried (editor prefs, …) survives. Guards the
+    post-seed ordering fix — the old pre-seed whole-file write was
+    overlay-overwritten by seed extraction (caller rules lost)."""
+    import os
+    from optio_cursor import host_actions as ha
+
+    h = ha.build_host(None, str(tmp_path / "wd"))
+    rel = "home/.cursor/cli-config.json"
+    os.makedirs(os.path.dirname(f"{h.workdir}/{rel}"), exist_ok=True)
+    # What a seed merge just landed: its own permissions + an editor pref.
+    with open(f"{h.workdir}/{rel}", "w") as fh:
+        json.dump({
+            "version": 1,
+            "permissions": {"allow": ["Shell(rm)"], "deny": []},
+            "approvalMode": "seed-mode",
+            "editor": {"vimMode": True},
+        }, fh)
+
+    await ha.apply_cli_config(h, build_cli_config(
+        allowed_tools=["Shell(ls)"], disallowed_tools=["Shell(rm)"],
+    ))
+
+    with open(f"{h.workdir}/{rel}") as fh:
+        merged = json.load(fh)
+    # Caller wins per key…
+    assert merged["permissions"]["allow"] == ["Shell(ls)"]
+    assert merged["permissions"]["deny"] == ["Shell(rm)"]
+    assert merged["approvalMode"] == "allowlist"
+    # …and the seed's other keys survive the merge.
+    assert merged["editor"] == {"vimMode": True}
+
+
+async def test_apply_cli_config_creates_when_absent(tmp_path):
+    """No seed / no snapshot → create-if-absent lands the caller's rules."""
+    from optio_cursor import host_actions as ha
+
+    h = ha.build_host(None, str(tmp_path / "wd"))
+    await ha.apply_cli_config(h, build_cli_config(
+        allowed_tools=["Shell(ls)"], disallowed_tools=None,
+    ))
+    with open(f"{h.workdir}/home/.cursor/cli-config.json") as fh:
+        written = json.load(fh)
+    assert written["permissions"]["allow"] == ["Shell(ls)"]
+    assert written["approvalMode"] == "allowlist"
+
+
 # --- Stage 8: fail-closed fs isolation (claustrum) ---------------------------
 
 

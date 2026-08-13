@@ -127,3 +127,143 @@ async def test_seeded_fresh_session_plants_identity_before_launch(
     # CURSOR_DATA_DIR must be a short symlink into the workdir, else cursor's
     # socket/temp dir falls back to an ungranted /tmp/.cursor under claustrum.
     assert any(p.endswith("datadir_present.txt") for p in delivered), delivered
+
+
+# Two DISTINCT involutions so the routing test below can assert callable
+# identity: seed ops must receive the seed pair, snapshot ops the session pair.
+def _rev(b: bytes) -> bytes:
+    return b[::-1]
+
+
+def _xor(b: bytes) -> bytes:
+    return bytes(x ^ 0xFF for x in b)
+
+
+async def test_seed_ops_use_seed_pair_snapshot_ops_session_pair(
+    mongo_db, task_root, shim_install_dir, monkeypatch,
+):
+    """Crypto routing (BlobCryptoConfigMixin): with distinct seed_blob vs
+    session_blob pairs configured, the SEED ops (capture_seed / merge_seed)
+    receive the seed pair via the ``seed_encrypt``/``seed_decrypt`` accessors,
+    while the resume-snapshot capture keeps the session pair."""
+    monkeypatch.setenv("FAKE_CURSOR_SCENARIO", "seed")
+
+    from optio_agents import seeds as _seeds
+    from optio_cursor import session as session_mod
+
+    used: dict[str, object] = {}
+    real_capture, real_merge = _seeds.capture_seed, _seeds.merge_seed
+    real_snapshot = session_mod._capture_snapshot
+
+    async def spy_capture(ctx, host, *, manifest, suffix, encrypt):
+        used["capture_encrypt"] = encrypt
+        return await real_capture(
+            ctx, host, manifest=manifest, suffix=suffix, encrypt=encrypt,
+        )
+
+    async def spy_merge(ctx, host, *, seed_id, manifest, suffix, decrypt):
+        used["merge_decrypt"] = decrypt
+        return await real_merge(
+            ctx, host, seed_id=seed_id, manifest=manifest, suffix=suffix,
+            decrypt=decrypt,
+        )
+
+    async def spy_snapshot(ctx, host, **kw):
+        used["snapshot_encrypt"] = kw.get("session_blob_encrypt")
+        return await real_snapshot(ctx, host, **kw)
+
+    monkeypatch.setattr(_seeds, "capture_seed", spy_capture)
+    monkeypatch.setattr(_seeds, "merge_seed", spy_merge)
+    monkeypatch.setattr(session_mod, "_capture_snapshot", spy_snapshot)
+
+    crypto = dict(
+        session_blob_encrypt=_xor, session_blob_decrypt=_xor,
+        seed_blob_encrypt=_rev, seed_blob_decrypt=_rev,
+    )
+    captured: list[str] = []
+
+    async def on_seed_saved(seed_id: str, info: str | None) -> None:
+        captured.append(seed_id)
+
+    ctx1 = await _make_ctx(mongo_db, "cursor_route_src")
+    await run_cursor_session(
+        ctx1, _cfg(shim_install_dir, on_seed_saved=on_seed_saved, **crypto),
+    )
+    assert used["capture_encrypt"] is _rev      # SEED op → seed pair
+    assert used["snapshot_encrypt"] is _xor     # SNAPSHOT op → session pair
+    assert len(captured) == 1
+
+    ctx2 = await _make_ctx(mongo_db, "cursor_route_dst")
+    await run_cursor_session(
+        ctx2, _cfg(shim_install_dir, seed_id=captured[0], **crypto),
+    )
+    assert used["merge_decrypt"] is _rev        # SEED op → seed pair
+
+
+async def test_seeded_fresh_caller_cli_config_wins_seed_keys_survive(
+    mongo_db, task_root, shim_install_dir, monkeypatch,
+):
+    """A seeded FRESH start must not lose the caller's allowed/disallowed_tools:
+    cli-config.json is applied AFTER merge_seed as a read-modify-write
+    deep-merge, so the caller's permission keys win over the seed's own
+    cli-config.json while the seed's other keys (the fake plants
+    ``editor.vimMode``) survive. Guards against the old pre-seed whole-file
+    write, which the overlay-overwrite seed extraction clobbered."""
+    monkeypatch.setenv("FAKE_CURSOR_SCENARIO", "seed")
+
+    # 1) Capture a seed whose cli-config.json carries a non-permission key
+    #    (fake_cursor writes {"version": 1, "editor": {"vimMode": false}}).
+    captured: list[str] = []
+
+    async def on_seed_saved(seed_id: str, info: str | None) -> None:
+        captured.append(seed_id)
+
+    ctx1 = await _make_ctx(mongo_db, "cursor_cli_src")
+    await run_cursor_session(
+        ctx1, _cfg(shim_install_dir, on_seed_saved=on_seed_saved),
+    )
+    assert len(captured) == 1
+
+    # 2) Consume it with caller rules set. Spy the ordering (apply must run
+    #    AFTER merge_seed) and read the merged document back while the workdir
+    #    still exists (teardown wipes it).
+    import json as _json
+    import os
+
+    from optio_agents import seeds as _seeds
+    from optio_cursor import host_actions as _ha
+
+    order: list[str] = []
+    final: dict = {}
+    real_merge = _seeds.merge_seed
+    real_apply = _ha.apply_cli_config
+
+    async def spy_merge(*args, **kw):
+        order.append("merge_seed")
+        return await real_merge(*args, **kw)
+
+    async def spy_apply(host, cli_config):
+        order.append("apply_cli_config")
+        await real_apply(host, cli_config)
+        with open(os.path.join(host.workdir, "home/.cursor/cli-config.json")) as fh:
+            final.update(_json.load(fh))
+
+    monkeypatch.setattr(_seeds, "merge_seed", spy_merge)
+    monkeypatch.setattr(_ha, "apply_cli_config", spy_apply)
+
+    ctx2 = await _make_ctx(mongo_db, "cursor_cli_dst")
+    await run_cursor_session(
+        ctx2,
+        _cfg(
+            shim_install_dir, seed_id=captured[0],
+            allowed_tools=["Shell(ls)"], disallowed_tools=["Shell(rm)"],
+        ),
+    )
+
+    assert order == ["merge_seed", "apply_cli_config"]
+    # Caller wins per key…
+    assert final["permissions"]["allow"] == ["Shell(ls)"]
+    assert final["permissions"]["deny"] == ["Shell(rm)"]
+    assert final["approvalMode"] == "allowlist"
+    # …and the seed's other cli-config keys survive the merge.
+    assert final["editor"] == {"vimMode": False}

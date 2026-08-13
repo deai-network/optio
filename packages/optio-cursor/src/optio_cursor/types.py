@@ -17,7 +17,7 @@ from optio_agents import (
     TOOL_VERBOSITIES,
     ToolVerbosity,
 )
-from optio_agents.config_types import ClaustrumConfigMixin
+from optio_agents.config_types import BlobCryptoConfigMixin, ClaustrumConfigMixin
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -64,17 +64,19 @@ def _identity_resume_refresh(config: "CursorTaskConfig") -> "CursorTaskConfig":
 
 
 @dataclass(frozen=True, kw_only=True)
-class CursorTaskConfig(ClaustrumConfigMixin):
+class CursorTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
     """Configuration for one optio-cursor task instance (Stage 0).
 
     Stage 0 covers iframe/ttyd mode on the local host. Resume, seeds,
     conversation mode, and filesystem isolation arrive in later stages.
 
     The ``fs_isolation`` / ``extra_allowed_dirs`` / ``delivery_type`` triad is
-    inherited from :class:`optio_agents.config_types.ClaustrumConfigMixin`
-    (top-level fields, so callers keep writing ``fs_isolation=`` /
-    ``delivery_type=`` verbatim). Frozen + keyword-only so the required
-    ``consumer_instructions`` can follow the mixin's defaulted triad fields.
+    inherited from :class:`optio_agents.config_types.ClaustrumConfigMixin`,
+    and the ``session_blob_*`` / ``seed_blob_*`` at-rest crypto pairs from
+    :class:`optio_agents.config_types.BlobCryptoConfigMixin` (top-level
+    fields, so callers keep writing ``fs_isolation=`` /
+    ``session_blob_encrypt=`` verbatim). Frozen + keyword-only so the required
+    ``consumer_instructions`` can follow the mixins' defaulted fields.
     """
 
     consumer_instructions: str
@@ -164,13 +166,12 @@ class CursorTaskConfig(ClaustrumConfigMixin):
     # None → the framework defaults (see optio_host.archive). Keep home/.cursor
     # OUT of this list: it carries the cursor chat state --continue needs.
     workdir_exclude: list[str] | None = None
-    # Optional pair of synchronous bytes->bytes transforms wrapping the resume
-    # snapshot's workdir tar at GridFS write/read (cursor persists its whole
-    # session — including home/.cursor chat state — in that single tar). Both
-    # set → encrypted at rest; both None (default) → plaintext. Setting only one
-    # is a config error (asymmetric usage is always a mistake).
-    session_blob_encrypt: Callable[[bytes], bytes] | None = None
-    session_blob_decrypt: Callable[[bytes], bytes] | None = None
+    # The at-rest crypto pairs are inherited from BlobCryptoConfigMixin:
+    # ``session_blob_encrypt``/``session_blob_decrypt`` wrap the resume
+    # snapshot's workdir tar (cursor persists its whole session — including
+    # home/.cursor chat state — in that single tar); ``seed_blob_*`` wrap the
+    # seed tar (falling back to the session pair when unset — seed ops read
+    # them via the ``seed_encrypt``/``seed_decrypt`` accessors).
     # Hook fired on resume only (never on fresh start). Receives the original
     # config; returns a (possibly mutated) config. The harness re-renders
     # AGENTS.md from the returned config and writes it back only when it differs
@@ -242,6 +243,9 @@ class CursorTaskConfig(ClaustrumConfigMixin):
         # (mandatory when fs_isolation is on) fails fast. Also validates the
         # extra_allowed_dirs modes (was a local loop here).
         self._validate_claustrum()
+        # Shared blob-crypto pairing validation (each encrypt/decrypt pair must
+        # be set together) — see BlobCryptoConfigMixin.
+        self._validate_blob_crypto()
         if self.sandbox is not None and self.sandbox not in _VALID_SANDBOX_MODES:
             raise ValueError(
                 f"CursorTaskConfig.sandbox={self.sandbox!r} "
@@ -308,11 +312,3 @@ class CursorTaskConfig(ClaustrumConfigMixin):
                     f"CursorTaskConfig.{field_name}={val!r} must be an "
                     f"absolute path (start with '/' or '~')."
                 )
-        e = self.session_blob_encrypt is not None
-        d = self.session_blob_decrypt is not None
-        if e != d:
-            raise ValueError(
-                "CursorTaskConfig: session_blob_encrypt and "
-                "session_blob_decrypt must be set together (both callables) "
-                "or both left as None; one without the other is a config error."
-            )

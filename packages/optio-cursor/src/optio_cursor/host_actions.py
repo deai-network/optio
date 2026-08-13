@@ -909,7 +909,8 @@ def build_cli_config(
     Returns the config dict when any rules are set, else None (nothing to
     plant; cursor's defaults apply). Empty lists are treated as None.
     ``approvalMode: "allowlist"`` makes the planted rules authoritative.
-    Planted by session ``_prepare`` at ``<workdir>/home/.cursor/cli-config.json``.
+    Applied by session ``_prepare`` via :func:`apply_cli_config` at
+    ``<workdir>/home/.cursor/cli-config.json``.
     """
     if not allowed_tools and not disallowed_tools:
         return None
@@ -921,6 +922,48 @@ def build_cli_config(
         },
         "approvalMode": "allowlist",
     }
+
+
+def _deep_merge(base: dict, over: dict) -> dict:
+    """Recursively merge ``over`` onto ``base``. Nested dicts merge key-by-key;
+    every other value (scalar/list) from ``over`` replaces ``base``'s. Returns
+    a new dict; inputs are not mutated."""
+    out = dict(base)
+    for k, v in over.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = _deep_merge(out[k], v)
+        else:
+            out[k] = v
+    return out
+
+
+async def apply_cli_config(host: "Host", cli_config: dict) -> None:
+    """Deep-merge caller rules into ``<workdir>/home/.cursor/cli-config.json``.
+
+    Called AFTER the seed merge (fresh) / workdir restore (resume) so the
+    caller's keys (``permissions``, ``approvalMode``) win over a
+    cli-config.json the seed or snapshot carried, while every OTHER key of
+    that document (editor prefs, …) is preserved. Read-modify-write,
+    create-if-absent; mirrors optio-claudecode's ``apply_claude_settings``.
+    (The old pre-seed whole-file write here was overlay-overwritten by seed
+    extraction, losing the caller's allowed/disallowed_tools.)
+    """
+    workdir = host.workdir.rstrip("/")
+    config_rel = "home/.cursor/cli-config.json"
+    config_abs = f"{workdir}/{config_rel}"
+
+    existing: dict = {}
+    r = await host.run_command(f"cat {shlex.quote(config_abs)}")
+    if r.exit_code == 0 and r.stdout.strip():
+        try:
+            parsed = json.loads(r.stdout)
+            if isinstance(parsed, dict):
+                existing = parsed
+        except ValueError:
+            existing = {}
+
+    merged = _deep_merge(existing, cli_config)
+    await host.write_text(config_rel, json.dumps(merged, indent=2) + "\n")
 
 
 # Positional prompt appended to the cursor launch when ``auto_start`` is set —

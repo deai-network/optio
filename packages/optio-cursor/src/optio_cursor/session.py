@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import json
 import logging
 import mimetypes
 import os
@@ -354,22 +353,6 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             # DIRECTLY (skipping the session/list heuristic).
             resume_session_id = snapshot.get("sessionId")
 
-        # Permission rules are config-planted (cursor-agent has no
-        # --allow/--deny argv): write cli-config.json under the per-task HOME
-        # BEFORE launch so cursor reads it on startup. Planted BEFORE any seed
-        # merge, so a seeded cli-config.json overlays it (seed wins — the
-        # claudecode plant-then-merge pattern); when the seed carries none,
-        # the generated rules survive.
-        cli_config = host_actions.build_cli_config(
-            allowed_tools=config.allowed_tools,
-            disallowed_tools=config.disallowed_tools,
-        )
-        if cli_config is not None:
-            await host.write_text(
-                "home/.cursor/cli-config.json",
-                json.dumps(cli_config, indent=2) + "\n",
-            )
-
         # Pre-authorize the workspace. cursor-agent gates a fresh directory
         # behind an interactive "Do you trust this directory?" prompt that
         # --force does not bypass; an unattended auto_start launch would hang
@@ -406,11 +389,25 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                 seed_id=resolved_seed_id,
                 manifest=CURSOR_SEED_MANIFEST,
                 suffix=CURSOR_SEED_SUFFIX,
-                decrypt=config.session_blob_decrypt,
+                decrypt=config.seed_decrypt,
             )
             # Baseline the merged auth.json so the in-session watcher and the
             # teardown backstop only save back a genuinely rotated token.
             cred_baseline = await cred_watcher.cred_fingerprint(host)
+
+        # Permission rules are config-planted (cursor-agent has no
+        # --allow/--deny argv): land cli-config.json under the per-task HOME
+        # BEFORE launch so cursor reads it on startup. Applied AFTER the
+        # resume restore / seed merge above so the caller's rules win over a
+        # cli-config.json the snapshot or seed carried, while that document's
+        # other keys survive (read-modify-write deep-merge, create-if-absent
+        # — see host_actions.apply_cli_config).
+        cli_config = host_actions.build_cli_config(
+            allowed_tools=config.allowed_tools,
+            disallowed_tools=config.disallowed_tools,
+        )
+        if cli_config is not None:
+            await host_actions.apply_cli_config(host, cli_config)
 
         await host.write_text(
             "AGENTS.md",
@@ -530,8 +527,8 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                     ctx, host,
                     seed_id=resolved_seed_id,
                     baseline=cred_baseline,
-                    encrypt=config.session_blob_encrypt,
-                    decrypt=config.session_blob_decrypt,
+                    encrypt=config.seed_encrypt,
+                    decrypt=config.seed_decrypt,
                     lease_holder=lease_holder,
                 )
             )
@@ -763,8 +760,8 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                     ctx, host,
                     seed_id=resolved_seed_id,
                     baseline=cred_baseline,
-                    encrypt=config.session_blob_encrypt,
-                    decrypt=config.session_blob_decrypt,
+                    encrypt=config.seed_encrypt,
+                    decrypt=config.seed_decrypt,
                     lease_holder=lease_holder,
                 )
             )
@@ -932,8 +929,8 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                     ctx, host,
                     seed_id=resolved_seed_id,
                     baseline=cred_baseline,
-                    encrypt=config.session_blob_encrypt,
-                    decrypt=config.session_blob_decrypt,
+                    encrypt=config.seed_encrypt,
+                    decrypt=config.seed_decrypt,
                 )
             except Exception:
                 _LOG.exception("final credential save-back failed")
@@ -971,7 +968,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                         ctx, host,
                         manifest=CURSOR_SEED_MANIFEST,
                         suffix=CURSOR_SEED_SUFFIX,
-                        encrypt=config.session_blob_encrypt,
+                        encrypt=config.seed_encrypt,
                     )
                     # Normalized account from the just-captured cursor identity
                     # (fail-soft → EMPTY): wrap cursor's single result in a list
