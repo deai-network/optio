@@ -22,7 +22,7 @@ from optio_agents import (
     TOOL_VERBOSITIES,
     ToolVerbosity,
 )
-from optio_agents.config_types import ClaustrumConfigMixin
+from optio_agents.config_types import BlobCryptoConfigMixin, ClaustrumConfigMixin
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -91,7 +91,7 @@ def _identity_resume_refresh(
 
 
 @dataclass(frozen=True, kw_only=True)
-class AntigravityTaskConfig(ClaustrumConfigMixin):
+class AntigravityTaskConfig(BlobCryptoConfigMixin, ClaustrumConfigMixin):
     """Configuration for one optio-antigravity task instance (Stage 0).
 
     Stage 0 covers iframe/ttyd mode on the local host. Resume, seeds,
@@ -99,10 +99,12 @@ class AntigravityTaskConfig(ClaustrumConfigMixin):
 
     The claustrum filesystem-isolation triad (``fs_isolation`` /
     ``extra_allowed_dirs`` / ``delivery_type``) is inherited from the shared
-    ``ClaustrumConfigMixin`` — those fields stay top-level here, so callers still
-    write ``fs_isolation=`` / ``delivery_type=`` verbatim. The base is a frozen,
-    keyword-only dataclass, so this config is too (all construction is by keyword,
-    which every caller already does).
+    ``ClaustrumConfigMixin``, and the GridFS blob-crypto quartet
+    (``session_blob_encrypt/decrypt``, ``seed_blob_encrypt/decrypt``) from
+    ``BlobCryptoConfigMixin`` — those fields stay top-level here, so callers
+    still write ``fs_isolation=`` / ``session_blob_encrypt=`` verbatim. The
+    bases are frozen, keyword-only dataclasses, so this config is too (all
+    construction is by keyword, which every caller already does).
     """
 
     consumer_instructions: str
@@ -176,13 +178,11 @@ class AntigravityTaskConfig(ClaustrumConfigMixin):
     # ~/.gemini state OUT of this list: it carries the transcript + settings
     # that --continue/--conversation need.
     workdir_exclude: list[str] | None = None
-    # Optional pair of synchronous bytes->bytes transforms wrapping the resume
-    # workdir tar (which carries agy's ~/.gemini conversation state, so it IS
-    # the session blob here) at the GridFS write/read. Both set → encrypted at
-    # rest; both None (default) → plaintext streamed unchanged. Setting only one
-    # is a config error (asymmetric usage is always a mistake).
-    session_blob_encrypt: Callable[[bytes], bytes] | None = None
-    session_blob_decrypt: Callable[[bytes], bytes] | None = None
+    # At-rest blob crypto (``session_blob_encrypt/decrypt``,
+    # ``seed_blob_encrypt/decrypt``) is inherited from ``BlobCryptoConfigMixin``.
+    # Here the resume workdir tar carries agy's ~/.gemini conversation state, so
+    # it IS the session blob; seed tars ride the seed pair (falling back to the
+    # session pair via the mixin's ``seed_encrypt``/``seed_decrypt`` accessors).
     # Hook fired on resume only (never on fresh start). Receives the original
     # config; returns a (possibly mutated) config. The harness re-renders
     # AGENTS.md from the returned config and writes it back only when it differs
@@ -264,8 +264,10 @@ class AntigravityTaskConfig(ClaustrumConfigMixin):
 
     def __post_init__(self) -> None:
         # Fail fast on a missing delivery_type (or a bad extra_allowed_dirs mode)
-        # before any other check.
+        # before any other check; blob transforms are all-or-nothing per pair
+        # (shared mixin validation).
         self._validate_claustrum()
+        self._validate_blob_crypto()
         if (
             self.permission_mode is not None
             and self.permission_mode not in _VALID_PERMISSION_MODES
@@ -339,12 +341,3 @@ class AntigravityTaskConfig(ClaustrumConfigMixin):
                     f"AntigravityTaskConfig.{field_name}={val!r} must be an "
                     f"absolute path (start with '/' or '~')."
                 )
-        # Session-blob transforms are all-or-nothing (mirrors optio-claudecode).
-        e = self.session_blob_encrypt is not None
-        d = self.session_blob_decrypt is not None
-        if e != d:
-            raise ValueError(
-                "AntigravityTaskConfig: session_blob_encrypt and "
-                "session_blob_decrypt must be set together or both left None; "
-                "one without the other is a config error."
-            )

@@ -233,7 +233,7 @@ async def run_antigravity_session(
                 seed_id=resolved_seed_id,
                 manifest=ANTIGRAVITY_SEED_MANIFEST,
                 suffix=ANTIGRAVITY_SEED_SUFFIX,
-                decrypt=config.session_blob_decrypt,
+                decrypt=config.seed_decrypt,
             )
             # Baseline the merged token store so the in-session watcher and the
             # teardown backstop only save back a genuinely rotated token.
@@ -406,8 +406,8 @@ async def run_antigravity_session(
                     ctx, host,
                     seed_id=resolved_seed_id,
                     baseline=cred_baseline,
-                    encrypt=config.session_blob_encrypt,
-                    decrypt=config.session_blob_decrypt,
+                    encrypt=config.seed_encrypt,
+                    decrypt=config.seed_decrypt,
                     lease_holder=lease_holder,
                 )
             )
@@ -719,8 +719,8 @@ async def run_antigravity_session(
                     ctx, host,
                     seed_id=resolved_seed_id,
                     baseline=cred_baseline,
-                    encrypt=config.session_blob_encrypt,
-                    decrypt=config.session_blob_decrypt,
+                    encrypt=config.seed_encrypt,
+                    decrypt=config.seed_decrypt,
                 )
             except Exception:
                 _LOG.exception("final credential save-back failed")
@@ -758,7 +758,7 @@ async def run_antigravity_session(
                         ctx, host,
                         manifest=ANTIGRAVITY_SEED_MANIFEST,
                         suffix=ANTIGRAVITY_SEED_SUFFIX,
-                        encrypt=config.session_blob_encrypt,
+                        encrypt=config.seed_encrypt,
                     )
                     # Normalized account from the seeded Google OAuth token (the
                     # isolated home token store is still on disk pre-cleanup);

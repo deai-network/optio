@@ -110,3 +110,91 @@ async def test_seeded_fresh_session_plants_identity_before_launch(
     )
 
     assert any(p.endswith("seed_present.txt") for p in delivered), delivered
+
+
+async def test_seed_ops_use_seed_pair_snapshot_ops_use_session_pair(
+    mongo_db, task_root, shim_install_dir, monkeypatch,
+):
+    """Crypto routing: with DISTINCT seed_blob vs session_blob transforms
+    configured, every SEED op (merge, credential watcher, final save-back,
+    capture) must receive the seed pair via the ``seed_encrypt``/``seed_decrypt``
+    mixin accessors, while the session-snapshot capture keeps the session pair.
+    The seed/watcher plumbing is spied out so no real seed row is needed."""
+    import optio_antigravity.session as session_mod
+
+    monkeypatch.setenv("FAKE_AGY_SCENARIO", "seed")
+
+    def sess_enc(b: bytes) -> bytes:
+        return b
+
+    def sess_dec(b: bytes) -> bytes:
+        return b
+
+    def seed_enc(b: bytes) -> bytes:
+        return b
+
+    def seed_dec(b: bytes) -> bytes:
+        return b
+
+    seen: dict[str, object] = {}
+
+    async def spy_merge(ctx, host, **kw):
+        seen["merge_decrypt"] = kw["decrypt"]
+
+    async def spy_watcher(ctx, host, **kw):
+        seen["watch_encrypt"] = kw["encrypt"]
+        seen["watch_decrypt"] = kw["decrypt"]
+        await asyncio.Event().wait()  # parked until teardown cancels us
+
+    async def spy_save_back(ctx, host, **kw):
+        seen["save_encrypt"] = kw["encrypt"]
+        seen["save_decrypt"] = kw["decrypt"]
+        return kw["baseline"]
+
+    async def spy_capture(ctx, host, **kw):
+        seen["capture_encrypt"] = kw["encrypt"]
+        return str(ObjectId())
+
+    async def spy_declare(db, **kw):
+        pass  # fake seed id — keep the metadata write away from the db
+
+    async def spy_snapshot(ctx, host, **kw):
+        seen["snapshot_encrypt"] = kw["session_blob_encrypt"]
+
+    monkeypatch.setattr(session_mod._seeds, "merge_seed", spy_merge)
+    monkeypatch.setattr(session_mod._seeds, "capture_seed", spy_capture)
+    monkeypatch.setattr(session_mod._seeds, "declare_metadata", spy_declare)
+    monkeypatch.setattr(
+        session_mod.cred_watcher, "run_credential_watcher", spy_watcher,
+    )
+    monkeypatch.setattr(
+        session_mod.cred_watcher, "save_back_if_changed", spy_save_back,
+    )
+    monkeypatch.setattr(session_mod, "_capture_snapshot", spy_snapshot)
+
+    async def on_seed_saved(seed_id: str, info: str | None) -> None:
+        pass  # presence enables the capture path
+
+    ctx = await _make_ctx(mongo_db, "agy_crypto_routing", resume=False)
+    await run_antigravity_session(
+        ctx,
+        _cfg(
+            shim_install_dir,
+            seed_id="0" * 24,  # plain string: no lease, merge is spied out
+            on_seed_saved=on_seed_saved,
+            session_blob_encrypt=sess_enc,
+            session_blob_decrypt=sess_dec,
+            seed_blob_encrypt=seed_enc,
+            seed_blob_decrypt=seed_dec,
+        ),
+    )
+
+    # Seed ops got the seed pair (not the session pair)…
+    assert seen["merge_decrypt"] is seed_dec
+    assert seen["watch_encrypt"] is seed_enc
+    assert seen["watch_decrypt"] is seed_dec
+    assert seen["save_encrypt"] is seed_enc
+    assert seen["save_decrypt"] is seed_dec
+    assert seen["capture_encrypt"] is seed_enc
+    # …while the snapshot capture kept the session pair.
+    assert seen["snapshot_encrypt"] is sess_enc
