@@ -218,3 +218,247 @@ def test_vendor_install_command_construction(tmp_path: pathlib.Path):
     assert "-fsS" in cmd
     assert "| bash" in cmd
     assert f"HOME={cache}/staging" in cmd
+
+
+# --- cache-HIT staleness refresh (launch-time freshness check) ---------------
+#
+# Freshness is provisioning-owned: claustrum grants the cache --rox to confined
+# sessions, so only this unconfined path can ever refresh it. The upstream
+# version source is the vendor install script itself (server-rendered with the
+# latest version baked in — no separate version endpoint exists; see the
+# _CURSOR_INSTALL_URL provenance comment). The fixture below mirrors the REAL
+# script's shape as fetched 2026-08-13 (literal version token in
+# DOWNLOAD_URL/FINAL_DIR lines).
+
+_INSTALL_SCRIPT_UPSTREAM = (
+    '#!/usr/bin/env bash\n'
+    'TEMP_EXTRACT_DIR="$HOME/.local/share/cursor-agent/versions/'
+    '.tmp-2026.08.11-e8db854-$(date +%s)"\n'
+    'DOWNLOAD_URL="https://downloads.cursor.com/lab/2026.08.11-e8db854/'
+    '${OS}/${ARCH}/agent-cli-package.tar.gz"\n'
+    'FINAL_DIR="$HOME/.local/share/cursor-agent/versions/2026.08.11-e8db854"\n'
+)
+
+
+class _ScriptedHost:
+    """Recording fake host: dispatches --version and curl commands."""
+
+    def __init__(
+        self,
+        *,
+        version_stdout: str = "2026.07.01-41b2de7\n",
+        version_exit: int = 0,
+        curl_stdout: str = _INSTALL_SCRIPT_UPSTREAM,
+        curl_exit: int = 0,
+    ) -> None:
+        self.commands: list[str] = []
+        self._version = (version_exit, version_stdout)
+        self._curl = (curl_exit, curl_stdout)
+
+    async def run_command(self, cmd: str):  # noqa: ANN001
+        from types import SimpleNamespace
+
+        self.commands.append(cmd)
+        if "--version" in cmd:
+            code, out = self._version
+        elif "curl" in cmd:
+            code, out = self._curl
+        else:
+            raise AssertionError(f"unexpected command: {cmd}")
+        return SimpleNamespace(exit_code=code, stdout=out, stderr="fail-detail")
+
+
+@pytest.mark.asyncio
+async def test_cursor_update_target_returns_upstream_when_newer():
+    """Cached 2026.07.01 vs upstream 2026.08.11 → the upstream token, probed
+    as cached-version-first (HOME pinned into the cache dir) then curl of the
+    install script."""
+    h = _ScriptedHost()
+    target = await host_actions._cursor_update_target(
+        h, "/cache/cursor-agent", cache_dir="/cache",
+    )
+    assert target == "2026.08.11-e8db854"
+    assert len(h.commands) == 2
+    # Version probe runs the CACHED binary under HOME = the cache dir (its
+    # incidental state writes must never touch the operator's home).
+    assert "--version" in h.commands[0]
+    assert "/cache/cursor-agent" in h.commands[0]
+    assert "HOME=/cache" in h.commands[0]
+    # Upstream resolution fetches the vendor install script (the version is
+    # baked into it; it doubles as the exact refresh installer).
+    assert "curl" in h.commands[1]
+    assert host_actions._CURSOR_INSTALL_URL in h.commands[1]
+
+
+@pytest.mark.asyncio
+async def test_cursor_update_target_none_when_current():
+    h = _ScriptedHost(
+        version_stdout="2026.08.11-e8db854\n",
+    )
+    assert await host_actions._cursor_update_target(
+        h, "/cache/cursor-agent", cache_dir="/cache",
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_cursor_update_target_none_on_same_day_hash_drift():
+    """Two same-day builds with different hashes carry no discoverable
+    ordering — conservatively treated as current (no refresh churn)."""
+    h = _ScriptedHost(version_stdout="2026.08.11-aaaa111\n")
+    assert await host_actions._cursor_update_target(
+        h, "/cache/cursor-agent", cache_dir="/cache",
+    ) is None
+
+
+@pytest.mark.asyncio
+async def test_cursor_update_target_bails_before_network_on_bad_cached_version():
+    """An unreadable cached version (failed probe OR unparseable output — e.g.
+    a test shim printing 'fake-cursor') bails BEFORE any curl: offline/test
+    environments never see a network round-trip."""
+    for h in (
+        _ScriptedHost(version_exit=1, version_stdout=""),
+        _ScriptedHost(version_stdout="fake-cursor\n"),
+    ):
+        assert await host_actions._cursor_update_target(
+            h, "/cache/cursor-agent", cache_dir="/cache",
+        ) is None
+        assert len(h.commands) == 1  # --version only, no curl
+        assert "--version" in h.commands[0]
+
+
+@pytest.mark.asyncio
+async def test_cursor_update_target_best_effort_on_upstream_failure():
+    """curl failure (offline) or a script with no version token → None: the
+    probe must never block a launch."""
+    for h in (
+        _ScriptedHost(curl_exit=22, curl_stdout=""),
+        _ScriptedHost(curl_stdout="<html>maintenance</html>"),
+    ):
+        assert await host_actions._cursor_update_target(
+            h, "/cache/cursor-agent", cache_dir="/cache",
+        ) is None
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_stale_refreshes_via_vendor_installer(
+    tmp_path: pathlib.Path, monkeypatch,
+):
+    """A cache HIT whose binary is behind upstream is refreshed via the
+    EXISTING vendor staging install BEFORE it is linked into the task."""
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    _write_exe(cache / "cursor-agent")
+
+    async def _stale(host, cached, *, cache_dir):  # noqa: ANN001
+        return "2026.08.11-e8db854"
+
+    refreshed: dict[str, str] = {}
+
+    async def _fake_vendor(host, cache_dir):  # noqa: ANN001
+        refreshed["cache_dir"] = cache_dir
+        _write_exe(cache / "cursor-agent", body="#!/bin/bash\necho fresh\n")
+        return f"{cache_dir.rstrip('/')}/cursor-agent"
+
+    async def _no_seed(*a, **k):  # noqa: ANN002, ANN003
+        raise AssertionError("must not seed from host install on a cache hit")
+
+    monkeypatch.setattr(host_actions, "_cursor_update_target", _stale)
+    monkeypatch.setattr(host_actions, "_vendor_install_cursor", _fake_vendor)
+    monkeypatch.setattr(host_actions, "resolve_cursor", _no_seed)
+    ctx = await _local_ctx(tmp_path)
+
+    result = await host_actions.ensure_cursor_installed(ctx, install_dir=str(cache))
+    assert refreshed["cache_dir"] == str(cache)
+    assert result == _task_path(ctx)
+    assert os.path.realpath(result) == str((cache / "cursor-agent").resolve())
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_refresh_failure_still_links_cached(
+    tmp_path: pathlib.Path, monkeypatch,
+):
+    """A stale HIT whose refresh fails (network flake mid-install) still links
+    the existing cached binary — a failed refresh never blocks the launch."""
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    _write_exe(cache / "cursor-agent")
+
+    async def _stale(host, cached, *, cache_dir):  # noqa: ANN001
+        return "2026.08.11-e8db854"
+
+    async def _vendor_fails(host, cache_dir):  # noqa: ANN001
+        return None
+
+    monkeypatch.setattr(host_actions, "_cursor_update_target", _stale)
+    monkeypatch.setattr(host_actions, "_vendor_install_cursor", _vendor_fails)
+    ctx = await _local_ctx(tmp_path)
+
+    result = await host_actions.ensure_cursor_installed(ctx, install_dir=str(cache))
+    assert result == _task_path(ctx)
+    assert os.path.realpath(result) == str((cache / "cursor-agent").resolve())
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_current_does_not_refresh(
+    tmp_path: pathlib.Path, monkeypatch,
+):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    _write_exe(cache / "cursor-agent")
+
+    async def _current(host, cached, *, cache_dir):  # noqa: ANN001
+        return None
+
+    monkeypatch.setattr(host_actions, "_cursor_update_target", _current)
+    _forbid_vendor_installer(monkeypatch)
+    ctx = await _local_ctx(tmp_path)
+
+    result = await host_actions.ensure_cursor_installed(ctx, install_dir=str(cache))
+    assert result == _task_path(ctx)
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_skips_update_probe_when_check_update_false(
+    tmp_path: pathlib.Path, monkeypatch,
+):
+    """check_update=False (the resume re-link call) re-links the cache WITHOUT
+    the network update probe: the earlier ensure_cursor_installed on the same
+    resume already validated/refreshed the cache."""
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    _write_exe(cache / "cursor-agent")
+
+    async def _no_probe(*a, **k):  # noqa: ANN002, ANN003
+        raise AssertionError("update probe must be skipped when check_update=False")
+
+    monkeypatch.setattr(host_actions, "_cursor_update_target", _no_probe)
+    _forbid_vendor_installer(monkeypatch)
+    ctx = await _local_ctx(tmp_path)
+
+    result = await host_actions.ensure_cursor_installed(
+        ctx, install_dir=str(cache), check_update=False,
+    )
+    assert result == _task_path(ctx)
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_stale_not_checked_when_install_disabled(
+    tmp_path: pathlib.Path, monkeypatch,
+):
+    """install_if_missing=False: a HIT links the existing cache and never
+    triggers a network update-check or install (pinned/offline worker)."""
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    _write_exe(cache / "cursor-agent")
+
+    async def _no_check(*a, **k):  # noqa: ANN002, ANN003
+        raise AssertionError("update-check must be skipped when installs are off")
+
+    monkeypatch.setattr(host_actions, "_cursor_update_target", _no_check)
+    _forbid_vendor_installer(monkeypatch)
+    ctx = await _local_ctx(tmp_path)
+
+    result = await host_actions.ensure_cursor_installed(
+        ctx, install_dir=str(cache), install_if_missing=False,
+    )
+    assert result == _task_path(ctx)

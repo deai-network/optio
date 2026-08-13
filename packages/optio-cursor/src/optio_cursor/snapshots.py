@@ -46,12 +46,15 @@ SNAPSHOT_RETENTION = 5
 
 # Default snapshot exclude list (used when ``CursorTaskConfig.workdir_exclude``
 # is None): the framework defaults plus cursor-agent's self-update binary dir.
-# cursor sets no self-update disable, and its update-write target
+# Every launch now suppresses the in-session updater (``--disable-auto-update``,
+# a hidden-but-real flag verified against the real binary — see
+# host_actions.build_cursor_flags; freshness is provisioning-owned instead),
+# but this exclusion stays as defense-in-depth: the update-write target
 # ``home/.local/share/cursor-agent/versions/<v>`` sits INSIDE the snapshotted
-# workdir. If cursor-agent ever self-updates in-session, ~150 MB of binary would
-# land in the snapshot and blow the cancel-grace. The binary is a regenerable,
-# out-of-tree cache (re-seeded on resume), so excluding it is free and defends
-# regardless of whether the self-update fires. MUST NOT exclude ``home/.cursor``
+# workdir. If cursor-agent ever self-updated in-session anyway, ~150 MB of
+# binary would land in the snapshot and blow the cancel-grace. The binary is a
+# regenerable, out-of-tree cache (re-seeded on resume), so excluding it is free
+# and defends regardless. MUST NOT exclude ``home/.cursor``
 # — that is cursor's chat/session store and the resume source. Pattern semantics
 # (optio_host.archive): fnmatch against the full workdir-relative path AND
 # against every single path segment, so the multi-segment entry prunes exactly

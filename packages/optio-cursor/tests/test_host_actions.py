@@ -270,6 +270,25 @@ def test_explicit_sandbox_overrides_fs_isolation_default():
     assert flags[i + 1] == "enabled"
 
 
+def test_flags_always_suppress_self_update():
+    """Every iframe launch passes ``--disable-auto-update`` (hidden-but-real
+    flag, verified against the real binary — see build_cursor_flags): binary
+    freshness is owned by the unconfined provisioning path, and the in-session
+    updater's write could only land in the pruned per-task workdir anyway."""
+    assert "--disable-auto-update" in _flags()
+    assert "--disable-auto-update" in _flags(
+        force=True, auto_review=True, fs_isolation=True, resuming=True,
+    )
+
+
+def test_conversation_argv_always_suppresses_self_update():
+    """The ACP path carries the same suppression; as a top-level flag it must
+    precede the ``acp`` subcommand."""
+    argv = build_conversation_argv("/x/cursor-agent")
+    assert "--disable-auto-update" in argv
+    assert argv.index("--disable-auto-update") < argv.index("acp")
+
+
 def test_conversation_argv_disables_native_sandbox_under_fs_isolation():
     """--sandbox is a TOP-LEVEL cursor-agent flag, so it must precede the
     ``acp`` subcommand (mirrors grok's build_conversation_argv fs_isolation)."""

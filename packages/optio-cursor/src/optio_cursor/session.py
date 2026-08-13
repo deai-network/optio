@@ -333,13 +333,16 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             # lives INSIDE the workdir and was wiped by the restore;
             # re-establish it against the cache (which lives OUTSIDE the workdir
             # and survives). Idempotent: cache hit → just relinks, no
-            # reinstall/redownload. ttyd survives untouched (real host home,
-            # outside the workdir).
+            # reinstall/redownload; check_update=False because the FIRST
+            # ensure_cursor_installed above already ran the freshness probe on
+            # this same resume — one network probe per resume, not two. ttyd
+            # survives untouched (real host home, outside the workdir).
             cursor_path = await host_actions.ensure_cursor_installed(
                 hook_ctx,
                 install_if_missing=config.install_if_missing,
                 install_dir=config.install_dir,
                 progress_label="Restoring cursor-agent runtime…",
+                check_update=False,
             )
             await host_actions._rotate_optio_log(host)
             # A restored snapshot means cursor persisted a chat for this cwd;

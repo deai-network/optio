@@ -39,6 +39,23 @@ keep their fields top-level, so callers write them verbatim:
   mixin's `seed_encrypt` / `seed_decrypt` accessors — the ONLY home of the
   seed→session fallback; snapshot capture/restore keeps `session_blob_*`.
 
+## Binary provisioning + freshness
+
+`host_actions.ensure_cursor_installed` owns the `cursor-agent` binary: an
+optio-owned worker cache (`${CURSOR_CACHE_DIR:-~/.cache}/optio-cursor`, whole
+`versions/<v>/` dist trees) linked per task at
+`<workdir>/home/.local/bin/cursor-agent`. Freshness is provisioning-owned —
+claustrum grants the cache `--rox`, so no confined in-session write can ever
+land there: on a cache hit the cached `cursor-agent --version` is compared
+against the latest version baked into the served `https://cursor.com/install`
+script (there is no separate public version endpoint; the vendor bakes the
+version into the script, which is also exactly what `_vendor_install_cursor`
+executes on refresh). Best-effort — probe/refresh failure launches the cached
+binary (offline workers still work); resume's second `ensure_cursor_installed`
+passes `check_update=False` (one probe per resume). Every launch (iframe +
+conversation) passes `--disable-auto-update`, a hidden-but-real flag verified
+against the real binary, so the in-session updater never fires.
+
 ## Seed lifecycle + permission rules
 
 Capture: fresh session + `on_seed_saved` set + valid

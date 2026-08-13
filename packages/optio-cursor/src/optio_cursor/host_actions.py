@@ -75,7 +75,28 @@ _CURSOR_CACHE_DIR_SHELL_DEFAULT = (
 
 # Confirmed vendor bootstrap installer (``curl https://cursor.com/install
 # -fsS | bash``); installs under ``$HOME/.local/{bin,share/cursor-agent}``.
+#
+# This URL is ALSO the upstream version-resolution endpoint: the served script
+# is server-rendered with the latest release version baked into it (verified by
+# fetching the real script 2026-08-13 — it contains literal lines like
+#   DOWNLOAD_URL="https://downloads.cursor.com/lab/2026.08.11-e8db854/..."
+#   FINAL_DIR="$HOME/.local/share/cursor-agent/versions/2026.08.11-e8db854"
+# ), and it consults NO separate version endpoint. cursor-agent's own update
+# check is no alternative: it goes through the authenticated dashboard RPC
+# ``getCliDownloadUrl`` (real dist ``versions/2026.07.01-41b2de7/1596.index.js``;
+# the only update env var there, AGENT_CLI_UPDATE_CHECK_URL, is a check-URL
+# override for internal builds, not a public endpoint). Using the install
+# script as the version source has a correctness bonus: it is the EXACT script
+# ``_vendor_install_cursor`` executes, so the compared version and the
+# installed version can never disagree.
 _CURSOR_INSTALL_URL = "https://cursor.com/install"
+
+# Version token of a cursor-agent release: calendar date + short commit hash,
+# e.g. ``2026.07.01-41b2de7``. Shape verified against the real cached binary
+# (2026-08-13): ``~/.cache/optio-cursor/cursor-agent --version`` prints exactly
+# ``2026.07.01-41b2de7``; the same token appears in the install script's
+# DOWNLOAD_URL/FINAL_DIR lines (see _CURSOR_INSTALL_URL provenance above).
+_CURSOR_VERSION_RE = re.compile(r"\b(\d{4}\.\d{2}\.\d{2})-([0-9a-f]{4,40})\b")
 
 
 async def _resolve_install_dir(host: "Host", install_dir: str | None) -> str:
@@ -344,12 +365,98 @@ async def _seed_cache_from_host(host: "Host", cache_dir: str, source: str) -> st
     return cached
 
 
+def _parse_cursor_version(text: str) -> str | None:
+    """First cursor version token in ``text`` (``YYYY.MM.DD-hash``), or None."""
+    m = _CURSOR_VERSION_RE.search(text or "")
+    return m.group(0) if m else None
+
+
+def _cursor_version_date(token: str) -> tuple[int, ...]:
+    """The calendar-date part of a version token as a comparable int tuple."""
+    return tuple(int(x) for x in token.split("-", 1)[0].split("."))
+
+
+async def _cached_cursor_version(
+    host: "Host", cached: str, *, cache_dir: str,
+) -> str | None:
+    """Best-effort version of the cached binary via ``cursor-agent --version``.
+
+    Runs under ``HOME`` = the cache dir so the probe's incidental state writes
+    land in the optio-owned cache, never the operator's home (verified against
+    the real binary 2026-08-13: a ``--version`` run creates
+    ``$HOME/.cursor/cli-config.json`` and ``$HOME/.cache/cursor-compile-cache``;
+    the version itself prints as a bare ``2026.07.01-41b2de7`` line, exit 0).
+    Returns None on a non-zero exit or unparseable output.
+    """
+    r = await host.run_command(
+        f"env HOME={shlex.quote(cache_dir)} {shlex.quote(cached)} --version"
+    )
+    if r.exit_code != 0:
+        _LOG.warning(
+            "cached cursor-agent --version failed (exit %s): %s",
+            r.exit_code, (r.stderr or "").strip()[:200],
+        )
+        return None
+    return _parse_cursor_version(r.stdout or "")
+
+
+async def _upstream_cursor_version(host: "Host") -> str | None:
+    """Best-effort latest upstream version, read out of the vendor install
+    script (the version is baked into the served script; see the
+    ``_CURSOR_INSTALL_URL`` provenance comment — no separate public version
+    endpoint exists). Returns None on network failure or unparseable script.
+    """
+    r = await host.run_command(
+        f"curl -fsS --max-time 15 {shlex.quote(_CURSOR_INSTALL_URL)}"
+    )
+    if r.exit_code != 0:
+        _LOG.info(
+            "upstream cursor version check failed (exit %s); keeping cached "
+            "binary: %s", r.exit_code, (r.stderr or "").strip()[:200],
+        )
+        return None
+    version = _parse_cursor_version(r.stdout or "")
+    if version is None:
+        _LOG.warning(
+            "no version token found in the cursor install script; keeping "
+            "cached binary (script head: %r)", (r.stdout or "")[:120],
+        )
+    return version
+
+
+async def _cursor_update_target(
+    host: "Host", cached: str, *, cache_dir: str,
+) -> str | None:
+    """Best-effort: the version to refresh the cached binary to, or ``None``.
+
+    Mirrors grok's ``_grok_update_target`` probe-then-refresh shape. The cached
+    binary is probed FIRST: when its version is unreadable (a shim, a broken
+    cache) the check bails before any network round-trip, so offline/test
+    environments never see a curl. Upstream is "newer" only when its calendar
+    date is STRICTLY later than the cached one — two same-day builds with
+    different hashes carry no discoverable ordering, so they are conservatively
+    treated as current (self-heals with the next dated release). The probe must
+    never block a launch: every failure path returns None (stale-but-working
+    beats no engine).
+    """
+    cached_version = await _cached_cursor_version(host, cached, cache_dir=cache_dir)
+    if cached_version is None:
+        return None
+    upstream = await _upstream_cursor_version(host)
+    if upstream is None or upstream == cached_version:
+        return None
+    if _cursor_version_date(upstream) > _cursor_version_date(cached_version):
+        return upstream
+    return None
+
+
 async def ensure_cursor_installed(
     hook_ctx: "HookContextProtocol",
     *,
     install_if_missing: bool = True,
     install_dir: str | None = None,
     progress_label: str = "Locating cursor-agent…",
+    check_update: bool = True,
 ) -> str:
     """Provision ``cursor-agent`` for this task from the optio-owned binary cache.
 
@@ -363,8 +470,8 @@ async def ensure_cursor_installed(
     claudecode's ``home/.local/bin/claude``). Population order:
 
     1. **cache hit** — ``<cache>/cursor-agent`` is already executable →
-       link it into the task path (the stable path every task launches,
-       decoupled from the host's autoupdater).
+       freshness-check it (below), then link it into the task path (the stable
+       path every task launches, decoupled from the host's autoupdater).
     2. **vendor installer** — cursor HAS a confirmed bootstrap installer
        (unlike grok): run it with ``HOME=<cache>/staging`` and adopt the
        installed ``versions/<v>`` tree into the cache
@@ -374,6 +481,20 @@ async def ensure_cursor_installed(
        into the cache (:func:`_seed_cache_from_host`).
     4. Nothing worked → raise naming both failed routes. With
        ``install_if_missing=False`` a cache miss raises immediately.
+
+    On a cache HIT the cached binary is version-checked against upstream
+    (:func:`_cursor_update_target`) and, when stale, refreshed via the vendor
+    staging install (:func:`_vendor_install_cursor`) BEFORE it is linked.
+    Freshness MUST be owned by this unconfined provisioning path: claustrum
+    grants the cache ``--rox`` to confined sessions (fs_allowlist), so no
+    in-session self-update write into the cache can ever succeed (the
+    claudecode frozen-cache bug class), and the in-session updater is
+    suppressed anyway (``--disable-auto-update``, see
+    :func:`build_cursor_flags`). Best-effort: probe/refresh failure keeps the
+    cached binary — offline workers must still launch. ``check_update=False``
+    skips the probe: the resume flow calls this twice (once up front, once to
+    re-link after ``restore_workdir`` wipes the symlink); the second call
+    passes it so a resume runs the network probe once, not twice.
 
     Uses only generic Host primitives. Idempotent on a re-call (cache hit → it
     just re-links the task path), which is how resume re-establishes the launch
@@ -390,6 +511,27 @@ async def ensure_cursor_installed(
     )
     if "OK" in (probe.stdout or ""):
         _LOG.info("ensure_cursor_installed: cache HIT (%s)", cached)
+        # Refresh a STALE cache to the latest release before linking. Gated on
+        # install_if_missing (a pinned/offline worker keeps the binary it has)
+        # and check_update (resume's second, re-link-only call skips it).
+        target = None
+        if check_update and install_if_missing:
+            target = await _cursor_update_target(host, cached, cache_dir=cache_dir)
+        if target:
+            hook_ctx.report_progress(None, f"Updating cursor-agent to {target}…")
+            refreshed = await _vendor_install_cursor(host, cache_dir)
+            if refreshed is None:
+                # Best-effort: a failed refresh (network flake mid-install)
+                # never blocks the launch — the stale cached binary still runs.
+                _LOG.warning(
+                    "cursor-agent cache refresh to %s failed; launching the "
+                    "cached (stale) binary", target,
+                )
+            else:
+                _LOG.info(
+                    "ensure_cursor_installed: cache stale -> refreshed to %s (%s)",
+                    target, cached,
+                )
         return await _link_cursor_into_task(host, cached)
 
     if not install_if_missing:
@@ -882,8 +1024,23 @@ def build_cursor_flags(
     recent one). ``fs_isolation`` couples to the native ``--sandbox`` toggle
     (see :func:`_effective_sandbox`). Validation of ``sandbox`` lives in
     ``CursorTaskConfig.__post_init__``.
+
+    ``--disable-auto-update`` is ALWAYS passed: binary freshness is owned by
+    the unconfined provisioning path (``ensure_cursor_installed``); the
+    in-session updater's write would only land in the pruned per-task workdir
+    (the launch binary is a symlink into the ``--rox`` cache). The flag is
+    hidden but REAL — verified against the real binary (2026-08-14,
+    ``~/.cache/optio-cursor/versions/2026.07.01-41b2de7``): its dist
+    ``index.js`` registers ``--disable-auto-update`` ("Disable auto-updates",
+    ``hideHelp()``); ``cursor-agent --disable-auto-update status`` is accepted
+    (proceeds to "Not logged in") while ``--no-such-flag status`` fails with
+    "error: unknown option", so the flag is parsed, not ignored. No env-var or
+    config-key equivalent exists in the dist (the only update env var,
+    ``AGENT_CLI_UPDATE_CHECK_URL``, overrides the check URL — it is not a
+    kill-switch), which is why suppression is argv-shaped rather than a
+    ``_isolation_env`` entry.
     """
-    out: list[str] = []
+    out: list[str] = ["--disable-auto-update"]
     if force:
         out += ["--force"]
     if auto_review:
@@ -1022,9 +1179,11 @@ def build_conversation_argv(
     in — see the wire-facts block in conversation.py); the fallback seam is
     answering session/request_permission allow-all client-side. No tmux/ttyd:
     the subprocess IS the agent. Adapted from optio-grok's
-    build_conversation_argv.
+    build_conversation_argv. ``--disable-auto-update`` is always passed —
+    same confirmed-against-the-real-binary suppression as the iframe path
+    (see the :func:`build_cursor_flags` docstring for the evidence).
     """
-    argv = [cursor_path]
+    argv = [cursor_path, "--disable-auto-update"]
     if model:
         argv += ["--model", model]
     effective_sandbox = _effective_sandbox(sandbox, fs_isolation)
