@@ -365,18 +365,38 @@ async def ensure_claude_installed(
         f"{shlex.quote(f'curl -fsSL {_CLAUDE_INSTALL_URL} | bash')}"
     )
     result = await host.run_command(install_cmd)
-    if result.exit_code != 0:
-        raise RuntimeError(
-            f"claude install failed on host (exit {result.exit_code}): "
-            f"{result.stderr.strip()[:300]}"
+    if result.exit_code == 0 and await _claude_version_ok(host, bin_claude):
+        return bin_claude
+    failure = (
+        f"exit {result.exit_code}: {result.stderr.strip()[:300]}"
+        if result.exit_code != 0
+        else f"reported success but {bin_claude!r} is still not executable"
+    )
+    if update_target is not None:
+        # REFRESH failure is non-fatal: the cache still holds the version-ok
+        # binary the freshness probe compared against, and a stale-but-working
+        # engine beats a failed start (transient installer/network/disk
+        # hiccups must not take down launches — seen live 2026-08-14: vendor
+        # install.sh checksum step failed under disk pressure). Relink the
+        # previously-cached version and launch with it; the next launch
+        # re-probes and retries the refresh.
+        _LOG.warning(
+            "ensure_claude_installed: refresh %s -> %s FAILED (%s); falling "
+            "back to cached %s",
+            newest, update_target, failure, newest,
         )
-    if not await _claude_version_ok(host, bin_claude):
-        raise RuntimeError(
-            f"claude install reported success but {bin_claude!r} is still not "
-            f"executable. Inspect the cache {cache_dir!r} and "
-            f"{versions_link!r} on the host for diagnostics."
+        await host.run_command(
+            f"ln -sfn {shlex.quote(versions_link + '/' + newest)} "
+            f"{shlex.quote(bin_claude)}"
         )
-    return bin_claude
+        if await _claude_version_ok(host, bin_claude):
+            return bin_claude
+        # Cached binary gone/broken too (e.g. the failed install clobbered
+        # it) — now it IS fatal, fall through to raise.
+    raise RuntimeError(
+        f"claude install failed on host ({failure}). Inspect the cache "
+        f"{cache_dir!r} and {versions_link!r} on the host for diagnostics."
+    )
 
 
 async def _ttyd_present(host: "Host", ttyd_path: str) -> bool:

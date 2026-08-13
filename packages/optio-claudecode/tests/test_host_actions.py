@@ -225,6 +225,51 @@ async def test_prep_install_failure_propagates():
     assert "22" in str(exc.value) or "404" in str(exc.value)
 
 
+async def test_prep_refresh_failure_falls_back_to_cached():
+    """A stale-cache REFRESH that fails (transient installer/network/disk —
+    seen live: install.sh checksum failure under disk pressure) is non-fatal:
+    relink the previously-cached version-ok binary and launch with it."""
+    host = _FakeHost([
+        _resolve_cache(),
+        _EMPTY,                                                 # mkdir + ln
+        RunResult(stdout="2.1.185\n", stderr="", exit_code=0),   # newest cached
+        _EMPTY,                                                 # ln bin
+        _OK,                                                    # --version
+        _upstream("2.1.231"),                                   # upstream newer
+        RunResult(stdout="", stderr="Checksum verification failed",
+                  exit_code=1),                                 # install.sh FAILS
+        _EMPTY,                                                 # relink cached
+        _OK,                                                    # --version (cached ok)
+    ])
+    ctx = _hook_ctx(host)
+    path = await host_actions.ensure_claude_installed(ctx, install_if_missing=True)
+    assert path == "/wd/home/.local/bin/claude"
+    # fell back: the last ln re-points at the cached 2.1.185
+    relinks = [c for c in host.commands if "ln -sfn" in c and "2.1.185" in c]
+    assert len(relinks) == 2  # initial link + fallback relink
+
+
+async def test_prep_refresh_failure_with_broken_cache_raises():
+    """Refresh failed AND the cached binary no longer answers --version (the
+    failed install clobbered it) → fatal, with the install failure surfaced."""
+    host = _FakeHost([
+        _resolve_cache(),
+        _EMPTY,                                                 # mkdir + ln
+        RunResult(stdout="2.1.185\n", stderr="", exit_code=0),   # newest cached
+        _EMPTY,                                                 # ln bin
+        _OK,                                                    # --version
+        _upstream("2.1.231"),                                   # upstream newer
+        RunResult(stdout="", stderr="Checksum verification failed",
+                  exit_code=1),                                 # install.sh FAILS
+        _EMPTY,                                                 # relink cached
+        RunResult(stdout="", stderr="not found", exit_code=127),  # --version FAILS
+    ])
+    ctx = _hook_ctx(host)
+    with pytest.raises(RuntimeError) as exc:
+        await host_actions.ensure_claude_installed(ctx, install_if_missing=True)
+    assert "Checksum verification failed" in str(exc.value)
+
+
 async def test_ensure_ttyd_installed_present():
     host = _FakeHost([
         RunResult(stdout="ttyd version 1.7.7-9d2", stderr="", exit_code=0),
