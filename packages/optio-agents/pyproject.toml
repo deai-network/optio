@@ -26,7 +26,7 @@ classifiers = [
 ]
 dependencies = [
     "optio-core>=0.4,<0.5",
-    "optio-host>=0.2,<0.3",
+    "optio-host>=0.3,<0.4",
 ]
 
 [project.optional-dependencies]
