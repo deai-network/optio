@@ -18,7 +18,7 @@ from optio_agents import (
     TOOL_VERBOSITIES,
     ToolVerbosity,
 )
-from optio_agents.config_types import ClaustrumConfigMixin
+from optio_agents.config_types import BlobCryptoConfigMixin, ClaustrumConfigMixin
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -73,15 +73,18 @@ def _identity_resume_refresh(config: "OpencodeTaskConfig") -> "OpencodeTaskConfi
 
 
 @dataclass(frozen=True, kw_only=True)
-class OpencodeTaskConfig(ClaustrumConfigMixin):
+class OpencodeTaskConfig(BlobCryptoConfigMixin, ClaustrumConfigMixin):
     """Configuration for one optio-opencode task instance.
 
     Inherits the claustrum filesystem-isolation triad (``fs_isolation`` /
-    ``extra_allowed_dirs`` / ``delivery_type``) from ``ClaustrumConfigMixin``;
-    those fields stay top-level here (callers write ``fs_isolation=`` /
-    ``delivery_type=`` verbatim). Frozen because the mixin is frozen; ``kw_only``
-    so the required ``consumer_instructions`` can follow the mixin's defaulted
-    triad without a field-ordering conflict (all callers pass by keyword)."""
+    ``extra_allowed_dirs`` / ``delivery_type``) from ``ClaustrumConfigMixin``
+    and the blob-crypto quad (``session_blob_encrypt/decrypt`` /
+    ``seed_blob_encrypt/decrypt``) from ``BlobCryptoConfigMixin``; all mixin
+    fields stay top-level here (callers write ``fs_isolation=`` /
+    ``session_blob_encrypt=`` verbatim). Frozen because the mixins are frozen;
+    ``kw_only`` so the required ``consumer_instructions`` can follow the
+    mixins' defaulted fields without a field-ordering conflict (all callers
+    pass by keyword)."""
     consumer_instructions: str
     agent_type: Literal["opencode"] = "opencode"
     opencode_config: dict[str, Any] = field(default_factory=dict)
@@ -109,18 +112,16 @@ class OpencodeTaskConfig(ClaustrumConfigMixin):
     supports_resume: bool = True
     before_execute: HookCallback | None = None
     after_execute: HookCallback | None = None
-    # Optional pair of synchronous bytes->bytes transforms wrapping the
-    # opencode session JSON blob at GridFS write/read. When both are set,
-    # the snapshot session blob is encrypted at rest. When both are None
-    # (default), plaintext is used (backward-compatible). Setting only one
-    # raises a config error: asymmetric usage is always a mistake.
-    session_blob_encrypt: Callable[[bytes], bytes] | None = None
-    session_blob_decrypt: Callable[[bytes], bytes] | None = None
-    # Separate pair wrapping the SEED tar (the shared pool account, distinct
-    # from this process's session snapshot). Falls back to the session_blob
-    # pair when unset (single-key callers); split-key callers set both.
-    seed_blob_encrypt: Callable[[bytes], bytes] | None = None
-    seed_blob_decrypt: Callable[[bytes], bytes] | None = None
+
+    # --- blob crypto (BlobCryptoConfigMixin) ----------------------------
+    # session_blob_encrypt/decrypt and seed_blob_encrypt/decrypt are
+    # inherited from BlobCryptoConfigMixin: the session pair wraps the
+    # opencode session JSON blob at GridFS write/read (this process's
+    # snapshot, ds-scoped key); the seed pair wraps the SEED tar (the
+    # shared pool account, pool-scoped key) and falls back to the session
+    # pair via the mixin's ``seed_encrypt`` / ``seed_decrypt`` accessors.
+    # Validated (per-pair symmetry) by _validate_blob_crypto() below.
+
     # Hook fired on resume only (never on fresh start). Receives the original
     # task config; returns a (possibly mutated/replaced) config. The harness
     # re-renders AGENTS.md from the returned config and writes it back only
@@ -235,21 +236,7 @@ class OpencodeTaskConfig(ClaustrumConfigMixin):
         # Claustrum triad first: a missing delivery_type (fs_isolation on)
         # fails fast before the opencode-specific checks below.
         self._validate_claustrum()
-        e = self.session_blob_encrypt is not None
-        d = self.session_blob_decrypt is not None
-        if e != d:
-            raise ValueError(
-                "OpencodeTaskConfig: session_blob_encrypt and "
-                "session_blob_decrypt must be set together (both callables) "
-                "or both left as None; one without the other is a config error."
-            )
-        se = self.seed_blob_encrypt is not None
-        sd = self.seed_blob_decrypt is not None
-        if se != sd:
-            raise ValueError(
-                "OpencodeTaskConfig: seed_blob_encrypt and seed_blob_decrypt "
-                "must be set together or both left as None."
-            )
+        self._validate_blob_crypto()
         if self.mode not in ("iframe", "conversation"):
             raise ValueError(
                 f"OpencodeTaskConfig.mode={self.mode!r} is not one of "

@@ -467,6 +467,77 @@ async def test_second_session_consumes_seed(
     assert observed["storage"] is False
 
 
+async def test_seed_ops_use_seed_pair_snapshot_ops_session_pair(
+    mongo_db, task_root, _supply_scenario, monkeypatch,
+):
+    """Blob-crypto routing: with DISTINCT seed_blob_* and session_blob_* pairs
+    configured, every SEED op (merge_seed, the credential watcher, the final
+    save-back, capture_seed) receives the SEED pair — via the mixin's
+    ``seed_encrypt`` / ``seed_decrypt`` accessors — while the SNAPSHOT capture
+    receives the session pair. Asserts callable identity on lightweight fakes;
+    the crypto round-trip itself is covered by test_session_blob_hooks.py."""
+    import optio_opencode.session as session_mod
+
+    _supply_scenario["name"] = "happy"
+
+    def _seed_enc(b: bytes) -> bytes: return b
+    def _seed_dec(b: bytes) -> bytes: return b
+    def _sess_enc(b: bytes) -> bytes: return b
+    def _sess_dec(b: bytes) -> bytes: return b
+
+    seen: dict = {}
+
+    async def _fake_merge(ctx, host, *, seed_id, manifest, suffix, decrypt=None):
+        seen["merge_decrypt"] = decrypt
+
+    async def _fake_capture(ctx, host, *, manifest, suffix, encrypt=None):
+        seen["capture_encrypt"] = encrypt
+        return "seed-routing-1"
+
+    monkeypatch.setattr(session_mod._seeds, "merge_seed", _fake_merge)
+    monkeypatch.setattr(session_mod._seeds, "capture_seed", _fake_capture)
+
+    async def _fake_watch(
+        ctx, host, *, seed_id, baseline, encrypt, decrypt, lease_holder=None,
+    ):
+        seen["watcher"] = (encrypt, decrypt)
+
+    async def _fake_saveback(ctx, host, *, seed_id, baseline, encrypt, decrypt):
+        seen["saveback"] = (encrypt, decrypt)
+        return baseline
+
+    monkeypatch.setattr(
+        session_mod.cred_watcher, "run_credential_watcher", _fake_watch,
+    )
+    monkeypatch.setattr(
+        session_mod.cred_watcher, "save_back_if_changed", _fake_saveback,
+    )
+
+    async def _fake_snapshot(ctx, host, **kwargs):
+        seen["snapshot_encrypt"] = kwargs.get("session_blob_encrypt")
+
+    monkeypatch.setattr(session_mod, "_capture_snapshot", _fake_snapshot)
+
+    async def _on_seed_saved(seed_id, info=None) -> None:
+        pass
+
+    ctx = await _make_ctx(mongo_db, "oc_crypto_routing")
+    await run_opencode_session(ctx, OpencodeTaskConfig(
+        consumer_instructions="(scenario: happy)", fs_isolation=False,
+        seed_id="routing-seed",
+        on_seed_saved=_on_seed_saved,
+        before_execute=_plant_env,
+        session_blob_encrypt=_sess_enc, session_blob_decrypt=_sess_dec,
+        seed_blob_encrypt=_seed_enc, seed_blob_decrypt=_seed_dec,
+    ))
+
+    assert seen["merge_decrypt"] is _seed_dec
+    assert seen["watcher"] == (_seed_enc, _seed_dec)
+    assert seen["saveback"] == (_seed_enc, _seed_dec)
+    assert seen["capture_encrypt"] is _seed_enc
+    assert seen["snapshot_encrypt"] is _sess_enc
+
+
 async def test_auto_start_posts_on_fresh_and_not_on_resume(
     mongo_db, task_root, _supply_scenario, monkeypatch,
 ):

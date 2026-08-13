@@ -1,6 +1,7 @@
 """Full-cycle resume test for optio-opencode against fake_opencode.py."""
 
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -199,6 +200,42 @@ async def test_resume_with_no_prior_snapshot_falls_back_to_fresh_launch(mongo_db
     await _run_one_cycle(mongo_db, pid, resume=True)  # nothing to resume; takes fresh path
     snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=pid)
     assert snap is not None  # the fresh-start cycle still captures a terminal snapshot
+
+
+async def test_resume_reapplies_changed_opencode_config(mongo_db, task_root):
+    """The opencode.json build+write runs on the resume path too (after the
+    workdir restore): a caller whose ``opencode_config`` changed between the
+    fresh run and the resume sees the NEW document in the workdir, not the
+    first launch's file frozen into the snapshot."""
+    pid = "oc_resume_cfg_reapply"
+
+    # Fresh run with config A.
+    ctx, _ = await _make_ctx(mongo_db, pid, resume=False)
+    await run_opencode_session(ctx, OpencodeTaskConfig(
+        consumer_instructions=f"(scenario: happy {pid})", fs_isolation=False,
+        opencode_config={"theme": "dark"},
+        before_execute=_plant_auth_json,
+    ))
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=pid)
+    assert snap is not None  # the resume leg below must actually restore
+
+    # Resume with config B; probe the workdir file from before_execute, which
+    # fires after the restore + rewrite and before launch.
+    observed: dict = {}
+
+    async def _probe(hook_ctx) -> None:
+        observed["opencode_json"] = json.loads(
+            await hook_ctx.read_text_from_host("opencode.json")
+        )
+
+    ctx2, _ = await _make_ctx(mongo_db, pid, resume=True)
+    await run_opencode_session(ctx2, OpencodeTaskConfig(
+        consumer_instructions=f"(scenario: happy {pid})", fs_isolation=False,
+        opencode_config={"theme": "light", "share": "disabled"},
+        before_execute=_probe,
+    ))
+
+    assert observed["opencode_json"] == {"theme": "light", "share": "disabled"}
 
 
 async def test_resume_appends_second_line_to_resume_log(mongo_db, task_root):

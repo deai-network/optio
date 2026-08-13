@@ -32,6 +32,9 @@ The returned `TaskInstance` has `ui_widget="iframe"` and `supports_resume=True` 
 
 - `consumer_instructions: str` — prepended with optio-opencode's base prompt.
 - `opencode_config: dict | None` — passthrough to `opencode.json` on the host.
+  The file is wholly optio-generated and (re)written on EVERY session start —
+  fresh launch and resume alike — so a changed `opencode_config` reaches a
+  resumed session instead of freezing at first launch.
 - `ssh: SSHConfig | None` — `None` = local subprocess.
 - `install_if_missing: bool` — default `True`; when `smart-install.sh --check` says opencode is missing or stale, download + install the release zip into `<opencode_install_dir>/opencode`. When `False`, raise `RuntimeError` instead.
 - `opencode_install_dir: str | None` — default `None` → `~/.local/bin` on the host (resolved at task start). Absolute path of the directory that holds (or will hold) the opencode binary. The same directory is used for installation, for smart-install's PATH lookup, and for the post-"ok" `command -v` resolution, so an explicit override stays consistent across all three. Must be an absolute path when set.
@@ -54,6 +57,16 @@ The returned `TaskInstance` has `ui_widget="iframe"` and `supports_resume=True` 
   snapshot capture, omits the resume-detection prompt section, and
   doesn't write `resume.log`. The task launches fresh every time.
   Default `True` preserves current behavior.
+- `session_blob_encrypt/decrypt`, `seed_blob_encrypt/decrypt:
+  Callable[[bytes], bytes] | None` — at-rest crypto for the two GridFS blob
+  channels, inherited from `optio_agents.config_types.BlobCryptoConfigMixin`
+  (shared by every engine config). The session pair wraps the opencode
+  session JSON snapshot blob (per-process, ds-scoped key); the seed pair
+  wraps the SEED tar (shared pool account, pool-scoped key) and falls back
+  to the session pair when unset — seed ops read the transforms only through
+  the mixin's `seed_encrypt`/`seed_decrypt` accessors. Per pair: both set →
+  encrypted at rest; both `None` (default) → plaintext; one without the
+  other raises `ValueError`.
 
 ### OpencodeTaskConfig.workdir_exclude
 

@@ -108,6 +108,30 @@ def _fold_tool_permissions(
     return cfg
 
 
+def _compose_opencode_config(config: OpencodeTaskConfig) -> dict:
+    """Build the ``opencode.json`` document from the CURRENT task config.
+
+    Starts from the caller's raw ``opencode_config`` and folds in the
+    harmonized default model (opencode's ``defaultModel()`` reads the
+    top-level ``"model"`` key first, so an unattended/iframe run uses it
+    instead of the first-provider fallback; an explicit
+    ``opencode_config["model"]`` operator override wins), the
+    conversation-mode question-tool disable (multi-choice asks have no
+    conversation-mode answering path yet — see design doc "Non-goals"),
+    and the allowed/disallowed_tools permission map. Pure — returns a new
+    dict — so the resume re-apply path can be unit-tested."""
+    opencode_cfg = dict(config.opencode_config)
+    if config.model is not None and "model" not in opencode_cfg:
+        opencode_cfg["model"] = config.model
+    if config.mode == "conversation":
+        opencode_cfg["tools"] = {**opencode_cfg.get("tools", {}), "question": False}
+    return _fold_tool_permissions(
+        opencode_cfg,
+        allowed_tools=config.allowed_tools,
+        disallowed_tools=config.disallowed_tools,
+    )
+
+
 async def _build_claustrum_wrap(
     host: Host, config: OpencodeTaskConfig, claustrum_path: str | None,
 ) -> list[str] | None:
@@ -311,8 +335,8 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             # Fresh start: the protocol driver has already created the
             # workdir, deliverables/ subdir, and empty optio.log. Ensure
             # any stale opencode db from a prior crashed run is gone, then
-            # write the fresh AGENTS.md and opencode.json that the agent
-            # consumes.
+            # write the fresh AGENTS.md that the agent consumes
+            # (opencode.json is written below, on both paths).
             await host.remove_file(opencode_db)
             await host.write_text(
                 "AGENTS.md",
@@ -326,27 +350,6 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                     file_download=config.file_download,
                 ),
             )
-            opencode_cfg = dict(config.opencode_config)
-            if config.model is not None and "model" not in opencode_cfg:
-                # The harmonized default-model field takes effect in EVERY
-                # mode via opencode.json's top-level "model" key (opencode's
-                # defaultModel() reads it first), so an unattended/iframe run
-                # uses this model instead of the first-provider fallback. An
-                # explicit opencode_config["model"] (operator raw) wins.
-                opencode_cfg["model"] = config.model
-            if config.mode == "conversation":
-                # Questions (multi-choice asks) have no conversation-mode
-                # answering path yet — disable the tool so a session can
-                # never block on one. See design doc "Non-goals".
-                opencode_cfg["tools"] = {**opencode_cfg.get("tools", {}), "question": False}
-            opencode_cfg = _fold_tool_permissions(
-                opencode_cfg,
-                allowed_tools=config.allowed_tools,
-                disallowed_tools=config.disallowed_tools,
-            )
-            await host.write_text(
-                "opencode.json", json.dumps(opencode_cfg, indent=2),
-            )
             if resolved_seed_id is not None:
                 # Seeded fresh: overlay the stored environment into
                 # <workdir>/home, where the launch's XDG_DATA_HOME /
@@ -357,7 +360,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                     seed_id=resolved_seed_id,
                     manifest=OPENCODE_SEED_MANIFEST,
                     suffix=OPENCODE_SEED_SUFFIX,
-                    decrypt=config.seed_blob_decrypt or config.session_blob_decrypt,
+                    decrypt=config.seed_decrypt,
                 )
             cred_baseline = await cred_watcher.cred_fingerprint(host)
             # Note: do NOT call ctx.clear_has_saved_state() here. The spec
@@ -381,13 +384,24 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                     seed_id=resolved_seed_id,
                     manifest=OPENCODE_CRED_MANIFEST,
                     suffix=OPENCODE_SEED_SUFFIX,
-                    decrypt=config.seed_blob_decrypt or config.session_blob_decrypt,
+                    decrypt=config.seed_decrypt,
                 )
             cred_baseline = await cred_watcher.cred_fingerprint(host)
             # Resume: when on_resume_refresh is wired, recompute AGENTS.md
             # from the refreshed config and overwrite the workdir copy if
             # the rendered text differs from the snapshot-restored file.
             refreshed_files = await _maybe_refresh_on_resume(host, hook_ctx, config)
+
+        # opencode.json is wholly optio-generated (the seed never carries the
+        # workdir-root copy — its manifest only includes files under home/),
+        # so build + whole-file-write it on BOTH paths, fresh AND resume. On
+        # resume the snapshot restored the FIRST launch's file; without this
+        # rewrite a changed caller ``opencode_config`` would never reach a
+        # resumed session (mirrors the AGENTS.md resume refresh above).
+        await host.write_text(
+            "opencode.json",
+            json.dumps(_compose_opencode_config(config), indent=2),
+        )
 
         if config.supports_resume:
             await _append_resume_log_entry(host, refreshed=refreshed_files)
@@ -581,8 +595,8 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                 ctx, host,
                 seed_id=resolved_seed_id,
                 baseline=cred_baseline,
-                encrypt=config.seed_blob_encrypt or config.session_blob_encrypt,
-                decrypt=config.seed_blob_decrypt or config.session_blob_decrypt,
+                encrypt=config.seed_encrypt,
+                decrypt=config.seed_decrypt,
                 lease_holder=lease_holder,
             ))
 
@@ -752,8 +766,8 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                     ctx, host,
                     seed_id=resolved_seed_id,
                     baseline=cred_baseline,
-                    encrypt=config.seed_blob_encrypt or config.session_blob_encrypt,
-                    decrypt=config.seed_blob_decrypt or config.session_blob_decrypt,
+                    encrypt=config.seed_encrypt,
+                    decrypt=config.seed_decrypt,
                 )
             except Exception:  # noqa: BLE001
                 _LOG.exception("final credential save-back failed")
@@ -796,7 +810,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                         ctx, host,
                         manifest=OPENCODE_SEED_MANIFEST,
                         suffix=OPENCODE_SEED_SUFFIX,
-                        encrypt=config.seed_blob_encrypt or config.session_blob_encrypt,
+                        encrypt=config.seed_encrypt,
                     )
                     # Meta-analyze the live auth.json (still on disk pre-cleanup)
                     # and stamp metadata.accounts — one account per configured
