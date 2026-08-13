@@ -63,16 +63,25 @@ a manual bump).
 3. **Release changed packages in dependency order** — a package must be
    published AFTER its workspace/sibling deps and BEFORE its consumers:
    - **Python:** `wire` (core) → `optio-host` → `optio-agents` →
-     `optio-opencode` → `optio-claudecode` → `optio-grok` → `optio-codex` →
-     `optio-cursor` → `optio-kimicode` → `optio-antigravity` →
+     `optio-claudecode` → `optio-grok` → `optio-codex` → `optio-cursor` →
+     `optio-kimicode` → `optio-antigravity` → `optio-opencode` →
      `optio-agents-all` → `optio-demo`
-     (the agent wrappers `optio-grok` / `optio-codex` / `optio-cursor` /
-     `optio-kimicode` / `optio-antigravity` all depend on `optio-agents`+
-     `optio-host`; `optio-agents-all` re-exports ALL seven wrappers so it must
-     come AFTER every wrapper; `optio-demo` consumes `optio-agents-all` so it is
-     last. This matches `PY_PUBLISHABLE` in `run.py` verbatim.)
-     First publishes (no prior tag, `BUMP=none`): `optio-kimicode`,
-     `optio-antigravity`, `optio-agents-all`.
+     (the agent wrappers all depend on `optio-agents`+`optio-host`;
+     **`optio-opencode` additionally depends on `optio-claudecode` /
+     `optio-codex` / `optio-grok`** — its account meta-analyzer reuses their
+     vendor map-helpers — so it must come AFTER those three (learned the hard
+     way: `optio-agents-all 0.2.0` shipped unresolvable on PyPI because
+     opencode lagged the wave); `optio-agents-all` re-exports ALL seven
+     wrappers so it must come AFTER every wrapper; `optio-demo` consumes
+     `optio-agents-all` so it is last. This matches `PY_PUBLISHABLE` in
+     `run.py` verbatim.)
+
+   **Wave rule:** a minor ("band-moving") bump of any package REQUIRES
+   re-releasing every already-published sibling whose pins the orchestrator
+   rewrote — check `git status` after each release; a dirty sibling
+   `pyproject.toml` means that sibling needs a release too. Before announcing
+   a wave done, smoke the resolver:
+   `python -m venv /tmp/rsmoke && /tmp/rsmoke/bin/pip install --dry-run optio-agents-all==<new>`.
    - **TS:** `wire` (contracts) → `optio-ui` → `optio-api` →
      `optio-conversation-ui` → `optio-dashboard`
      (`filtrum-core`, `filtrum-mongo` are independent)
