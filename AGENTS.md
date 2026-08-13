@@ -565,6 +565,27 @@ Full details: `packages/optio-opencode/AGENTS.md`.
 
 ---
 
+## Python: engine wrappers — shared config mixins
+
+All 7 engine `TaskConfig` dataclasses (claudecode, opencode, codex, cursor,
+grok, kimicode, antigravity) inherit their common field sets from mixins in
+`optio_agents.config_types` — fields stay top-level on each config:
+
+- **`ClaustrumConfigMixin`** — the claustrum filesystem-isolation triad
+  (`fs_isolation`, `extra_allowed_dirs`, `delivery_type`).
+- **`BlobCryptoConfigMixin`** — at-rest crypto for the two GridFS blob
+  channels, uniform across all 7 engines: `session_blob_encrypt`/`decrypt`
+  wrap this process's session snapshot (ds-scoped key);
+  `seed_blob_encrypt`/`decrypt` wrap the shared pool-account SEED tar
+  (pool-scoped key), falling back to the session pair when unset. Setting one
+  member of a pair without the other raises `ValueError` at construction.
+
+`optio-agents-all` guards this uniformity with a union-wide test; its
+`create_task` passes configs through verbatim. Details:
+`packages/optio-agents/AGENTS.md`, `packages/optio-agents-all/AGENTS.md`.
+
+---
+
 ## TypeScript: optio-contracts
 
 Package: `optio-contracts`
