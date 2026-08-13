@@ -159,3 +159,84 @@ async def test_seeded_fresh_session_plants_identity_and_trust_before_launch(
     assert "codex_seed_dst" in config_toml     # the CONSUMER's workdir, not the source's
     # And the seed's own content survived the append-if-absent edit.
     assert 'model = "gpt-5.5"' in config_toml
+
+
+async def test_seed_ops_use_seed_pair_snapshot_ops_session_pair(
+    mongo_db, task_root, shim_install_dir, monkeypatch,
+):
+    """Crypto routing (BlobCryptoConfigMixin): with DISTINCT seed_blob vs
+    session_blob transforms configured, the SEED ops (capture_seed,
+    merge_seed, save_back_if_changed) receive the seed pair while the
+    teardown snapshot receives the session pair — asserted by callable
+    IDENTITY on pass-through spies."""
+    import optio_codex.session as session_mod
+
+    monkeypatch.setenv("FAKE_CODEX_SCENARIO", "seed")
+
+    # Identity transforms (so the real blob round-trips still work), but four
+    # DISTINCT objects so `is` proves which pair each op was handed.
+    def seed_enc(b: bytes) -> bytes: return b
+    def seed_dec(b: bytes) -> bytes: return b
+    def sess_enc(b: bytes) -> bytes: return b
+    def sess_dec(b: bytes) -> bytes: return b
+
+    seen: dict[str, object] = {}
+
+    real_capture = session_mod._seeds.capture_seed
+    real_merge = session_mod._seeds.merge_seed
+    real_save_back = session_mod.cred_watcher.save_back_if_changed
+    real_snapshot = session_mod._capture_snapshot
+
+    async def spy_capture(ctx, host, **kw):
+        seen["capture_encrypt"] = kw["encrypt"]
+        return await real_capture(ctx, host, **kw)
+
+    async def spy_merge(ctx, host, **kw):
+        seen["merge_decrypt"] = kw["decrypt"]
+        return await real_merge(ctx, host, **kw)
+
+    async def spy_save_back(ctx, host, **kw):
+        seen["save_back_encrypt"] = kw["encrypt"]
+        seen["save_back_decrypt"] = kw["decrypt"]
+        return await real_save_back(ctx, host, **kw)
+
+    async def spy_snapshot(ctx, host, **kw):
+        seen["snapshot_encrypt"] = kw["session_blob_encrypt"]
+        return await real_snapshot(ctx, host, **kw)
+
+    monkeypatch.setattr(session_mod._seeds, "capture_seed", spy_capture)
+    monkeypatch.setattr(session_mod._seeds, "merge_seed", spy_merge)
+    monkeypatch.setattr(
+        session_mod.cred_watcher, "save_back_if_changed", spy_save_back,
+    )
+    monkeypatch.setattr(session_mod, "_capture_snapshot", spy_snapshot)
+
+    crypto = dict(
+        session_blob_encrypt=sess_enc, session_blob_decrypt=sess_dec,
+        seed_blob_encrypt=seed_enc, seed_blob_decrypt=seed_dec,
+    )
+
+    # 1) Fresh capture session: capture_seed rides the SEED pair, the
+    #    teardown snapshot the SESSION pair.
+    captured: list[str] = []
+
+    async def on_seed_saved(seed_id: str, info: str | None) -> None:
+        captured.append(seed_id)
+
+    ctx1 = await _make_ctx(mongo_db, "codex_crypto_src")
+    await run_codex_session(
+        ctx1, _cfg(shim_install_dir, on_seed_saved=on_seed_saved, **crypto),
+    )
+    assert len(captured) == 1
+    assert seen["capture_encrypt"] is seed_enc
+    assert seen["snapshot_encrypt"] is sess_enc
+
+    # 2) Fresh consume session: merge_seed decrypts with the SEED pair; the
+    #    final teardown save-back rides the seed pair too.
+    ctx2 = await _make_ctx(mongo_db, "codex_crypto_dst")
+    await run_codex_session(
+        ctx2, _cfg(shim_install_dir, seed_id=captured[0], **crypto),
+    )
+    assert seen["merge_decrypt"] is seed_dec
+    assert seen["save_back_encrypt"] is seed_enc
+    assert seen["save_back_decrypt"] is seed_dec

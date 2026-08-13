@@ -33,7 +33,7 @@ from optio_agents import (
     TOOL_VERBOSITIES,
     ToolVerbosity,
 )
-from optio_agents.config_types import ClaustrumConfigMixin
+from optio_agents.config_types import BlobCryptoConfigMixin, ClaustrumConfigMixin
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -93,14 +93,16 @@ def _identity_resume_refresh(config: "CodexTaskConfig") -> "CodexTaskConfig":
 
 
 @dataclass(frozen=True, kw_only=True)
-class CodexTaskConfig(ClaustrumConfigMixin):
+class CodexTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
     """Configuration for one optio-codex task instance.
 
     Inherits the claustrum filesystem-isolation triad (``fs_isolation`` /
-    ``extra_allowed_dirs`` / ``delivery_type``) from ``ClaustrumConfigMixin``;
-    those fields stay top-level here (callers write ``fs_isolation=`` /
-    ``delivery_type=`` verbatim). Frozen because the mixin is frozen;
-    ``kw_only`` because the mixin contributes defaulted fields ahead of the
+    ``extra_allowed_dirs`` / ``delivery_type``) from ``ClaustrumConfigMixin``
+    and the at-rest blob-crypto quartet (``session_blob_encrypt/decrypt`` /
+    ``seed_blob_encrypt/decrypt``) from ``BlobCryptoConfigMixin``; those
+    fields stay top-level here (callers write ``fs_isolation=`` /
+    ``session_blob_encrypt=`` verbatim). Frozen because the mixins are frozen;
+    ``kw_only`` because the mixins contribute defaulted fields ahead of the
     required ``consumer_instructions``.
     """
 
@@ -255,13 +257,16 @@ class CodexTaskConfig(ClaustrumConfigMixin):
     # + CODEX_HOME junk: packages/, *.sqlite*, cache/, tmp/, …). MUST NOT be
     # set to exclude home/.codex/sessions — that is the resume source.
     workdir_exclude: list[str] | None = None
-    # Optional pair of synchronous bytes->bytes transforms wrapping the resume
-    # workdir tar (which carries home/.codex — sessions, auth, config) at
-    # GridFS write/read. Both set → encrypted at rest; both None (default) →
-    # plaintext. Setting only one is a config error (asymmetric usage is always
-    # a mistake, cross-checked in __post_init__).
-    session_blob_encrypt: Callable[[bytes], bytes] | None = None
-    session_blob_decrypt: Callable[[bytes], bytes] | None = None
+    # --- blob crypto at rest ---------------------------------------------
+    # session_blob_encrypt/decrypt + seed_blob_encrypt/decrypt are INHERITED
+    # from BlobCryptoConfigMixin. The session pair wraps the resume workdir
+    # tar (which carries home/.codex — sessions, auth, config) at GridFS
+    # write/read; the seed pair wraps the shared pool-account SEED tar and
+    # falls back to the session pair when unset (seed ops read it through the
+    # ``seed_encrypt``/``seed_decrypt`` accessors). Per pair: both set →
+    # encrypted at rest; both None (default) → plaintext; one without the
+    # other is a config error (cross-checked in __post_init__).
+
     # Hook fired on resume only (never on fresh start). Receives the original
     # config; returns a (possibly mutated) config. The harness re-renders
     # AGENTS.md from the returned config and writes it back only when it differs
@@ -291,6 +296,7 @@ class CodexTaskConfig(ClaustrumConfigMixin):
 
     def __post_init__(self) -> None:
         self._validate_claustrum()
+        self._validate_blob_crypto()
         if self.mode not in _VALID_MODES:
             raise ValueError(
                 f"CodexTaskConfig.mode={self.mode!r} is not one of "
@@ -402,11 +408,3 @@ class CodexTaskConfig(ClaustrumConfigMixin):
                     f"CodexTaskConfig.{field_name}={val!r} must be an "
                     f"absolute path (start with '/' or '~')."
                 )
-        e = self.session_blob_encrypt is not None
-        d = self.session_blob_decrypt is not None
-        if e != d:
-            raise ValueError(
-                "CodexTaskConfig: session_blob_encrypt and session_blob_decrypt "
-                "must be set together or both left None; one without the other "
-                "is a config error."
-            )
