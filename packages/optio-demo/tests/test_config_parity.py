@@ -30,7 +30,8 @@ CORE = {
     "tool_verbosity", "thinking_verbosity", "model", "show_session_controls",
     "show_file_upload", "on_upload", "max_upload_bytes", "file_download",
     "max_download_bytes", "auto_start", "native_spinner", "install_dir",
-    "session_blob_encrypt", "session_blob_decrypt", "on_resume_refresh",
+    "session_blob_encrypt", "session_blob_decrypt",
+    "seed_blob_encrypt", "seed_blob_decrypt", "on_resume_refresh",
     "use_client_messages", "on_caller_message",
 }
 
