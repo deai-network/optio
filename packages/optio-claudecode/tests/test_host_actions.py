@@ -48,20 +48,28 @@ def _resolve_cache(path="/home/u/.cache/optio-claudecode/versions"):
     return RunResult(stdout=path, stderr="", exit_code=0)
 
 
+def _upstream(version="9.9.9"):
+    """Scripted result for the launch-time upstream version probe (the
+    downloads.claude.ai `/latest` endpoint returns a bare version string)."""
+    return RunResult(stdout=f"{version}\n", stderr="", exit_code=0)
+
+
 async def test_prep_cache_hit_relinks_no_install():
-    # resolve cache, setup mkdir/ln, newest=9.9.9, relink bin, --version OK
+    # resolve cache, setup mkdir/ln, newest=9.9.9, relink bin, --version OK,
+    # upstream probe → same version (cache current)
     host = _FakeHost([
         _resolve_cache(),
         _EMPTY,                                              # mkdir + ln
         RunResult(stdout="9.9.9\n", stderr="", exit_code=0),  # ls|sort|tail
         _EMPTY,                                              # ln bin -> versions/9.9.9
         _OK,                                                 # --version
+        _upstream("9.9.9"),                                  # freshness probe
     ])
     ctx = _hook_ctx(host)
     path = await host_actions.ensure_claude_installed(ctx, install_if_missing=True)
     assert path == "/wd/home/.local/bin/claude"
     joined = " ".join(host.commands)
-    assert "curl" not in joined and "install.sh" not in joined  # no install
+    assert "install.sh" not in joined  # no install (probe uses curl, install doesn't run)
     assert "ln -sfn" in joined and "versions" in joined
 
 
@@ -71,6 +79,7 @@ async def test_prep_cache_override_skips_resolve():
         RunResult(stdout="9.9.9\n", stderr="", exit_code=0),  # newest
         _EMPTY,                                              # relink
         _OK,                                                 # --version
+        _upstream("9.9.9"),                                  # freshness probe
     ])
     ctx = _hook_ctx(host)
     path = await host_actions.ensure_claude_installed(
@@ -94,6 +103,100 @@ async def test_prep_cache_miss_runs_install_through_symlink():
     assert path == "/wd/home/.local/bin/claude"
     install = next(c for c in host.commands if "install.sh" in c)
     assert "HOME=/wd/home" in install and "curl" in install and "bash" in install
+
+
+async def test_prep_cache_hit_upstream_newer_runs_install():
+    """Stale cache: upstream reports a newer version → the existing unconfined
+    install.sh branch refreshes the cache (writes through the versions symlink)."""
+    host = _FakeHost([
+        _resolve_cache(),
+        _EMPTY,                                                 # mkdir + ln
+        RunResult(stdout="2.1.185\n", stderr="", exit_code=0),   # newest cached
+        _EMPTY,                                                 # ln bin
+        _OK,                                                    # --version
+        _upstream("2.1.231"),                                   # upstream newer
+        _EMPTY,                                                 # install.sh
+        _OK,                                                    # --version after install
+    ])
+    ctx = _hook_ctx(host)
+    path = await host_actions.ensure_claude_installed(ctx, install_if_missing=True)
+    assert path == "/wd/home/.local/bin/claude"
+    install = next(c for c in host.commands if "install.sh" in c)
+    assert "HOME=/wd/home" in install and "curl" in install and "bash" in install
+    # the operator sees an "Updating … to <version>" progress label
+    labels = [c.args[1] for c in ctx.report_progress.call_args_list]
+    assert any("2.1.231" in lab for lab in labels)
+
+
+@pytest.mark.parametrize("probe_result,why", [
+    (RunResult(stdout="2.1.185\n", stderr="", exit_code=0), "upstream equal"),
+    (RunResult(stdout="2.1.100\n", stderr="", exit_code=0), "upstream older"),
+    (RunResult(stdout="", stderr="curl: (6) could not resolve", exit_code=6),
+     "endpoint unreachable (offline worker)"),
+    (RunResult(stdout="<html>region blocked</html>", stderr="", exit_code=0),
+     "non-version payload"),
+])
+async def test_prep_cache_hit_no_refresh(probe_result, why):
+    """Best-effort freshness: current cache, unreachable endpoint, or an
+    unparsable payload all keep the cached binary — no install, no raise."""
+    host = _FakeHost([
+        _resolve_cache(),
+        _EMPTY,                                                 # mkdir + ln
+        RunResult(stdout="2.1.185\n", stderr="", exit_code=0),   # newest cached
+        _EMPTY,                                                 # ln bin
+        _OK,                                                    # --version
+        probe_result,                                           # freshness probe
+    ])
+    ctx = _hook_ctx(host)
+    path = await host_actions.ensure_claude_installed(ctx, install_if_missing=True)
+    assert path == "/wd/home/.local/bin/claude", why
+    assert not any("install.sh" in c for c in host.commands), why
+
+
+async def test_prep_cache_hit_check_update_false_skips_probe():
+    """check_update=False (resume's second, re-link-only call): no network
+    probe at all — exactly the pre-freshness command sequence."""
+    host = _FakeHost([
+        _resolve_cache(),
+        _EMPTY,                                                 # mkdir + ln
+        RunResult(stdout="2.1.185\n", stderr="", exit_code=0),   # newest cached
+        _EMPTY,                                                 # ln bin
+        _OK,                                                    # --version
+    ])
+    ctx = _hook_ctx(host)
+    path = await host_actions.ensure_claude_installed(
+        ctx, install_if_missing=True, check_update=False,
+    )
+    assert path == "/wd/home/.local/bin/claude"
+    assert not any("downloads.claude.ai" in c for c in host.commands)
+
+
+async def test_prep_cache_hit_install_disabled_skips_probe():
+    """install_if_missing=False gates the probe too: a pinned/offline worker
+    keeps the binary it has, and a cache HIT must not raise."""
+    host = _FakeHost([
+        _resolve_cache(),
+        _EMPTY,                                                 # mkdir + ln
+        RunResult(stdout="2.1.185\n", stderr="", exit_code=0),   # newest cached
+        _EMPTY,                                                 # ln bin
+        _OK,                                                    # --version
+    ])
+    ctx = _hook_ctx(host)
+    path = await host_actions.ensure_claude_installed(ctx, install_if_missing=False)
+    assert path == "/wd/home/.local/bin/claude"
+    assert not any("downloads.claude.ai" in c for c in host.commands)
+
+
+def test_version_key_parses_and_rejects():
+    assert host_actions._version_key("2.1.231") == (2, 1, 231)
+    assert host_actions._version_key("2.1.231\n") == (2, 1, 231)
+    # prerelease suffix: numeric prefix still compares (install.sh's own
+    # version regex allows a -suffix)
+    assert host_actions._version_key("2.1.231-beta") == (2, 1, 231)
+    assert host_actions._version_key("<html>err</html>") is None
+    assert host_actions._version_key("") is None
+    # numeric compare, not lexicographic: 2.1.9 < 2.1.10
+    assert host_actions._version_key("2.1.9") < host_actions._version_key("2.1.10")
 
 
 async def test_prep_cache_miss_install_disabled_raises():
@@ -729,6 +832,26 @@ async def test_launch_returns_handle_port_socket_session(monkeypatch):
     assert session == "optio"
     # a detached tmux new-session was started before ttyd
     assert any("new-session -d" in c or "new-session" in c for c in host.commands)
+
+
+def test_tmux_launch_env_disables_autoupdater(monkeypatch):
+    """iframe/tmux path: the in-session autoupdater can only EACCES against the
+    --rox cache (freshness is provisioning-owned), so it must be off."""
+    monkeypatch.delenv("OPTIO_CLAUDECODE_NETNS", raising=False)
+    env, cmd = host_actions._build_claude_shell_command(
+        claude_path="/wd/home/.local/bin/claude",
+        workdir="/wd",
+        extra_env=None,
+        claude_flags=[],
+    )
+    assert "DISABLE_AUTOUPDATER=1" in env
+    assert "DISABLE_AUTOUPDATER=1" in cmd
+
+
+def test_conversation_launch_env_disables_autoupdater():
+    """conversation (headless) path: same kill-switch."""
+    env = host_actions.conversation_launch_env("/wd", None)
+    assert env["DISABLE_AUTOUPDATER"] == "1"
 
 
 def test_build_claude_flags_model():

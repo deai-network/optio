@@ -44,6 +44,21 @@ _TTYD_READY_RE = re.compile(
 
 _CLAUDE_INSTALL_URL = "https://claude.ai/install.sh"
 
+# Upstream release-version endpoint, extracted from the vendor installer
+# (https://claude.ai/install.sh, fetched read-only 2026-08-13):
+#     DOWNLOAD_BASE_URL="https://downloads.claude.ai/claude-code-releases"
+#     version=$(download_file "$DOWNLOAD_BASE_URL/latest")
+# It returns a bare version string (probed live: "2.1.231"). `/latest` — not
+# the sibling `/stable` endpoint — is deliberate: the install branch below
+# runs install.sh, whose `claude install` (no target) resolves to the
+# "latest" channel on a fresh config (verified against the real 2.1.185
+# binary: its channel default returns "latest", and install-target
+# resolution is `target ? target : channel==="stable" ? "stable" :
+# "latest"`). Comparing the cache against `/stable` — which lags `/latest`
+# (2.1.223 vs 2.1.231 when probed) — would re-run the installer every launch
+# without ever closing the gap.
+_CLAUDE_LATEST_URL = "https://downloads.claude.ai/claude-code-releases/latest"
+
 # Settle (seconds) between pasting a message into the claude TUI and sending
 # Enter. Without it the Enter is glued to the paste and claude treats the CR
 # as a newline inside the input box instead of a submit (see
@@ -161,10 +176,12 @@ async def _claude_version_ok(host: "Host", claude_path: str) -> bool:
 async def _newest_cached_version(host: "Host", cache_dir: str) -> str | None:
     """Return the highest-semver *valid* version filename in the cache, or None.
 
-    Only non-empty, executable regular files count: claude's autoupdater (active
-    in a session) can leave a 0-byte partial when killed at teardown, and a stub
-    named like the newest version must not be picked as a cache hit (it fails
-    `claude --version` and triggers a full reinstall every launch)."""
+    Only non-empty, executable regular files count: a writer killed mid-download
+    (historically claude's in-session autoupdater — now disabled via
+    DISABLE_AUTOUPDATER, leaving the provisioning-path installer as the only
+    cache writer) can leave a 0-byte partial, and a stub named like the newest
+    version must not be picked as a cache hit (it fails `claude --version` and
+    triggers a full reinstall every launch)."""
     # -L: follow symlinks, so a version entry that is a symlink to the real
     # binary (as the test cache and some real installs use) still matches
     # -type f / -size / -perm on its target.
@@ -176,28 +193,95 @@ async def _newest_cached_version(host: "Host", cache_dir: str) -> str | None:
     return name or None
 
 
+def _version_key(version: str) -> tuple[int, ...] | None:
+    """Numeric compare key for a ``MAJOR.MINOR.PATCH``-prefixed version string,
+    or ``None`` when it does not start with one (mirrors install.sh's own
+    ``^[0-9]+\\.[0-9]+\\.[0-9]+`` guard against non-version payloads such as an
+    HTML error page)."""
+    m = re.match(r"^(\d+)\.(\d+)\.(\d+)", version.strip())
+    if m is None:
+        return None
+    return tuple(int(x) for x in m.groups())
+
+
+async def _claude_update_target(
+    host: "Host", cached_version: str,
+) -> str | None:
+    """Best-effort: the upstream version to refresh the cache to, or ``None``.
+
+    Fetches :data:`_CLAUDE_LATEST_URL` (the endpoint the vendor install.sh
+    itself consults) FROM THE WORKER — the refresh install also runs there, so
+    this probes the network that matters. ``--max-time`` bounds the round-trip
+    so a hung network cannot stall a launch.
+
+    Returns the upstream version string only when it is strictly newer than
+    ``cached_version``. Returns ``None`` when the cache is current, on curl
+    failure (offline worker), or on an unparsable payload from either side —
+    the probe must never block a launch; a stale-but-working cache beats a
+    failed start. Mirrors grok's ``_grok_update_target`` shape.
+    """
+    r = await host.run_command(
+        f"curl -fsSL --max-time 10 {shlex.quote(_CLAUDE_LATEST_URL)}"
+    )
+    upstream = (r.stdout or "").strip()
+    if r.exit_code != 0:
+        _LOG.warning(
+            "claude upstream version check failed (exit %s); keeping cached "
+            "%s: %s", r.exit_code, cached_version, (r.stderr or "").strip()[:200],
+        )
+        return None
+    upstream_key = _version_key(upstream)
+    if upstream_key is None:
+        _LOG.warning(
+            "claude upstream version check returned unparsable payload; "
+            "keeping cached %s: %r", cached_version, upstream[:200],
+        )
+        return None
+    cached_key = _version_key(cached_version)
+    # An unparsable CACHED name is kept too (never loop-reinstall over a
+    # cache entry we cannot compare against).
+    if cached_key is None or upstream_key <= cached_key:
+        return None
+    return upstream
+
+
 async def ensure_claude_installed(
     hook_ctx: "HookContextProtocol",
     *,
     install_if_missing: bool = True,
     install_dir: str | None = None,
     progress_label: str = f"Preparing {AGENT_INFO.name}…",
+    check_update: bool = True,
 ) -> str:
     """Provision claude for this task from the shared, optio-owned version cache.
 
     The binary lives in an optio cache dir on the worker (never the host
     ~/.local/~/.claude). Per task we symlink the isolated home's
-    ``.local/share/claude/versions`` at that cache, so claude's installer and
-    autoupdater write version binaries *through* the symlink into the cache.
+    ``.local/share/claude/versions`` at that cache, so the vendor installer —
+    run UNCONFINED by this provisioning path — writes version binaries
+    *through* the symlink into the cache.
+
+    Freshness is owned HERE, not by claude's in-session autoupdater: under
+    claustrum fs isolation the cache is granted ``--rox`` (fs_grants.py), so
+    any in-session update write EACCESes — the session env therefore sets
+    ``DISABLE_AUTOUPDATER=1`` and this function compares the cache against
+    upstream on every launch instead.
 
     - cache miss (+ install_if_missing) → run vendor install.sh with
       HOME=<workdir>/home, which writes through the symlink into the cache and
       creates home/.local/bin/claude.
-    - cache hit → point home/.local/bin/claude at the newest cached version
-      (no reinstall).
+    - cache hit → point home/.local/bin/claude at the newest cached version;
+      then (best-effort, gated on ``check_update`` and ``install_if_missing``)
+      compare it against upstream (:func:`_claude_update_target`) and, when
+      upstream is newer, run the same unconfined install.sh path to refresh
+      the cache. Probe failure (offline worker) → keep the cached version.
     - cache miss + install disabled → raise.
 
     ``install_dir`` is the cache-dir override (config.install_dir).
+    ``check_update=False`` skips the upstream probe: the resume flow calls
+    this twice (once up front, once to re-link after ``restore_workdir``
+    wipes the symlink), and the second call passes it so a resume runs the
+    network probe once, not twice (mirrors grok).
     Returns the per-task launch path ``<workdir>/home/.local/bin/claude``.
     """
     host = hook_ctx._host
@@ -228,6 +312,7 @@ async def ensure_claude_installed(
 
     newest = await _newest_cached_version(host, cache_dir)
     _LOG.info("ensure_claude_installed: newest cached version in %s = %r", cache_dir, newest)
+    update_target: str | None = None
     if newest is not None:
         # Cache hit — point the per-task bin at the newest cached version.
         # Path goes through the versions symlink so it resolves into the cache.
@@ -235,13 +320,28 @@ async def ensure_claude_installed(
             f"ln -sfn {shlex.quote(versions_link + '/' + newest)} {shlex.quote(bin_claude)}"
         )
         if await _claude_version_ok(host, bin_claude):
-            _LOG.info("ensure_claude_installed: cache HIT (%s) -> no download", newest)
-            return bin_claude
-        _LOG.warning(
-            "ensure_claude_installed: cached version %s present but _claude_version_ok "
-            "FAILED -> falling through to reinstall", newest,
-        )
-        # Fall through to (re)install if the cached version is unusable.
+            # Freshness check (best-effort): the in-session autoupdater can
+            # never refresh the --rox cache, so this launch-time probe is the
+            # ONLY thing keeping the cache current. Gated on install_if_missing
+            # (a pinned/offline worker keeps the binary it has).
+            if check_update and install_if_missing:
+                update_target = await _claude_update_target(host, newest)
+            if update_target is None:
+                _LOG.info("ensure_claude_installed: cache HIT (%s) -> no download", newest)
+                return bin_claude
+            _LOG.info(
+                "ensure_claude_installed: cache STALE (cached=%s upstream=%s) -> "
+                "refreshing via vendor install.sh", newest, update_target,
+            )
+            # Fall through to the install branch: install.sh writes the new
+            # version through the symlink into the cache and repoints
+            # home/.local/bin/claude at it.
+        else:
+            _LOG.warning(
+                "ensure_claude_installed: cached version %s present but _claude_version_ok "
+                "FAILED -> falling through to reinstall", newest,
+            )
+        # Fall through to (re)install if the cached version is unusable/stale.
 
     if not install_if_missing:
         raise RuntimeError(
@@ -249,12 +349,17 @@ async def ensure_claude_installed(
             f"install_if_missing=False; nothing to do."
         )
 
-    _LOG.warning(
-        "ensure_claude_installed: cache MISS (cache_dir=%s newest=%r) -> running vendor "
-        "install.sh (downloads, ~1min). If this repeats every launch, the cache_dir is "
-        "wrong/ephemeral or being wiped.", cache_dir, newest,
-    )
-    hook_ctx.report_progress(None, f"Installing {AGENT_INFO.name}…")
+    if update_target is not None:
+        hook_ctx.report_progress(
+            None, f"Updating {AGENT_INFO.name} to {update_target}…",
+        )
+    else:
+        _LOG.warning(
+            "ensure_claude_installed: cache MISS (cache_dir=%s newest=%r) -> running vendor "
+            "install.sh (downloads, ~1min). If this repeats every launch, the cache_dir is "
+            "wrong/ephemeral or being wiped.", cache_dir, newest,
+        )
+        hook_ctx.report_progress(None, f"Installing {AGENT_INFO.name}…")
     install_cmd = (
         f"env HOME={shlex.quote(home)} sh -c "
         f"{shlex.quote(f'curl -fsSL {_CLAUDE_INSTALL_URL} | bash')}"
@@ -541,6 +646,16 @@ def _build_claude_shell_command(
         # the host operator's global ~/.claude/CLAUDE.md, settings, etc. leak
         # into the sandboxed task. Point it at the planted per-task dir.
         f"CLAUDE_CONFIG_DIR={home_dir}/.claude",
+        # The in-session autoupdater can NEVER succeed: under claustrum the
+        # shared version cache is granted --rox (fs_grants.py), so its write
+        # through the versions symlink EACCESes every session. Freshness is
+        # owned by the unconfined provisioning path (ensure_claude_installed);
+        # this stops the doomed attempts (and their 0-byte partials).
+        # DISABLE_AUTOUPDATER is Claude Code's documented kill-switch,
+        # verified present in the real 2.1.185 binary's env-var registry
+        # (strings ~/.cache/optio-claudecode/versions/2.1.185 | grep
+        # DISABLE_AUTOUPDATER → registered alongside CLAUDE_CODE_* env knobs).
+        "DISABLE_AUTOUPDATER=1",
     ]
     for k, v in extra.items():
         env_assignments.append(f"{k}={v}")
@@ -1060,6 +1175,9 @@ def conversation_launch_env(
     return {
         "HOME": home_dir,
         "PATH": f"{home_local_bin}:{base_path}",
+        # Same rationale as _build_claude_shell_command: the autoupdater can
+        # only EACCES against the --rox cache; provisioning owns freshness.
+        "DISABLE_AUTOUPDATER": "1",
         **extra,
     }
 

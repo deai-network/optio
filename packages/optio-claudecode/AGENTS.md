@@ -228,10 +228,20 @@ DONE / ERROR terminate the session.
 
 ## Binary install
 
-* claude — `curl -fsSL https://claude.ai/install.sh | bash`. Vendor
-  script places binaries under `~/.local/share/claude/versions/<v>/`
-  and a symlink at `~/.local/bin/claude`. The framework always exec's
-  the absolute symlink path; no PATH mutation needed.
+* claude — provisioned from a shared, optio-owned version cache
+  (`${OPTIO_CLAUDECODE_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/optio-claudecode/versions}`);
+  the per-task home gets `home/.local/share/claude/versions` symlinked at the
+  cache and `home/.local/bin/claude` pointed at the newest cached version.
+  Cache miss → vendor `curl -fsSL https://claude.ai/install.sh | bash`
+  (unconfined, `HOME=<workdir>/home`) writes through the symlink into the
+  cache. Cache hit → launch-time freshness check against the upstream
+  `latest` endpoint install.sh consults
+  (`https://downloads.claude.ai/claude-code-releases/latest`); upstream newer
+  → same install.sh path refreshes the cache; probe failure keeps the cached
+  binary (best-effort). Sessions run with `DISABLE_AUTOUPDATER=1` — under
+  claustrum the cache is `--rox`, so in-session self-update can only EACCES;
+  freshness is owned by this unconfined provisioning path. See the addendum
+  in `docs/2026-05-31-optio-claudecode-runtime-cache-design.md`.
 * ttyd — downloaded from `tsl0922/ttyd` GitHub Releases (pinned
   version). Linux x86_64/aarch64/armv7l only in v1.
 

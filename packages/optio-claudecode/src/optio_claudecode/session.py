@@ -244,11 +244,16 @@ async def run_claudecode_session(
             # bin/claude — they live IN the workdir now, unlike the old real-home
             # install). Re-establish it on the restored tree so launch finds claude.
             # Idempotent: cache hit → just relinks; no reinstall.
+            # check_update=False: the first ensure_claude_installed call above
+            # already ran the upstream freshness probe (and any refresh); this
+            # re-link pass must not repeat the network round-trip (mirrors
+            # grok's resume flow).
             await host_actions.ensure_claude_installed(
                 hook_ctx,
                 install_if_missing=config.install_if_missing,
                 install_dir=config.install_dir,
                 progress_label=f"Restoring {AGENT_INFO.name} runtime…",
+                check_update=False,
             )
             payload = await _read_blob_bytes(ctx, snapshot["sessionBlobId"])
             decrypt = config.session_blob_decrypt or (lambda b: b)

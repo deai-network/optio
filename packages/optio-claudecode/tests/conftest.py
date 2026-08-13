@@ -161,14 +161,25 @@ async def ctx_and_captures(mongo_db, monkeypatch):
 
 
 @pytest.fixture
-def claude_cache_dir(tmp_path: pathlib.Path) -> pathlib.Path:
+def claude_cache_dir(tmp_path: pathlib.Path, monkeypatch) -> pathlib.Path:
     """A pre-populated fake claude version cache.
 
     Contains a single version file ``9.9.9`` symlinked to the claude shim, so
     ``ensure_claude_installed`` takes the cache-hit path (points
     home/.local/bin/claude at it) and never runs the real install.sh. Pass as
     ``install_dir`` in ClaudeCodeTaskConfig.
+
+    The cache-hit upstream freshness probe (``_claude_update_target``) is
+    stubbed to "cache is current": tests must never depend on the network,
+    and the probe's own behavior is unit-tested in test_host_actions.py
+    against a scripted FakeHost.
     """
+    from optio_claudecode import host_actions
+
+    async def _no_update(host, cached_version):
+        return None
+
+    monkeypatch.setattr(host_actions, "_claude_update_target", _no_update)
     cache = tmp_path / "claude-cache"
     cache.mkdir()
     version_file = cache / "9.9.9"

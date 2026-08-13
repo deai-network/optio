@@ -233,3 +233,37 @@ re-establishes the symlink and reinstalls if the cache was evicted.
 - Cache GC / pruning of accumulated version files.
 - Cross-worker / shared-network cache.
 - opencode HOME/XDG isolation (separate effort).
+
+## Addendum (2026-08-13): autoupdater freshness invalidated by claustrum `--rox`; freshness now provisioning-owned
+
+The "Autoupdate: left **on**" decision above (and the Goals bullet "claude's
+native autoupdater maintains the cache") was invalidated by the later claustrum
+filesystem-isolation work: `fs_grants.build_grant_flags` grants the shared
+version cache `--rox` (read+execute, no write), so every in-session autoupdate
+write through the `versions` symlink fails with EACCES. Confirmed live: a
+worker's cache stayed frozen at the first-ever installed version (2.1.185,
+June 2026) while upstream moved on — no launch-time upstream check existed to
+compensate. Granting `--rwx` on the cache was rejected: a confined task could
+poison the shared binary later tasks execute.
+
+Superseding design (implemented in `ensure_claude_installed`, branch
+`csillag/agent-binary-freshness`):
+
+- **Freshness is owned by the unconfined provisioning path.** On a cache hit,
+  `ensure_claude_installed` compares the newest cached version against the
+  upstream `latest` endpoint the vendor install.sh itself consults
+  (`https://downloads.claude.ai/claude-code-releases/latest` — a bare version
+  string; `claude install` with no target resolves to the "latest" channel, so
+  this is the channel the install branch actually lands). Upstream newer → the
+  existing unconfined install.sh branch refreshes the cache through the
+  symlink. Best-effort: probe failure / unparsable payload keeps the cached
+  binary (offline workers still launch). The resume flow's second, re-link-only
+  call passes `check_update=False` so the probe runs once per resume.
+- **`DISABLE_AUTOUPDATER=1` in every session env** (both the tmux/iframe and
+  the headless conversation launch paths): the in-session updater can never
+  succeed under the `--rox` grant, so the doomed attempts (and their 0-byte
+  partial downloads — the reason for `_newest_cached_version`'s validity
+  guard, now belt-and-suspenders) are stopped at the source. The env var is
+  Claude Code's documented kill-switch, verified present in the real 2.1.185
+  binary's env-var registry.
+- The cache keeps its `--rox` grant; per-task state isolation is unchanged.
