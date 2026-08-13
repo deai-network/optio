@@ -34,7 +34,7 @@ dependencies = [
     # The account meta-analyzer's per-provider handlers reuse the extracted
     # vendor map helpers (account_from_oauth_token / account_from_openai /
     # account_from_xai) rather than reimplement each vendor's fetch+map.
-    "optio-claudecode>=0.5,<0.6",
+    "optio-claudecode>=0.6,<0.7",
     "optio-codex>=0.3,<0.4",
     "optio-grok>=0.3,<0.4",
     "asyncssh>=2.14",
