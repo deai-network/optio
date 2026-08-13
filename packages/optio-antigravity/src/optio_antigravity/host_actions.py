@@ -187,6 +187,95 @@ def _manifest_url(platform: str) -> str:
     return f"{_ANTIGRAVITY_UPDATER_BASE}/manifests/{platform}.json"
 
 
+# ``agy --version`` output: a bare dotted semver. Real-binary evidence
+# (2026-08-13, ~/.cache/optio-antigravity/bin/agy):
+#   $ agy --version
+#   1.0.16          (exit 0, stdout, nothing else)
+# ``agy version`` (no dashes) is a bubbletea TUI subcommand — it needs
+# /dev/tty and is unusable headless, so the probe MUST use ``--version``.
+# The regex takes the first dotted-number token so a future banner around
+# the number stays parseable.
+_AGY_VERSION_RE = re.compile(r"\b(\d+(?:\.\d+)+)\b")
+
+
+def _parse_agy_version(blob: str) -> str | None:
+    """Extract the dotted version from ``agy --version`` output (or any blob).
+
+    Returns ``None`` when no dotted-number token is present (see
+    :data:`_AGY_VERSION_RE` for the verified real output shape)."""
+    m = _AGY_VERSION_RE.search(blob or "")
+    return m.group(1) if m else None
+
+
+def _version_tuple(version: str) -> tuple[int, ...]:
+    """``"1.1.12"`` → ``(1, 1, 12)`` for semver-style comparison."""
+    return tuple(int(part) for part in version.split("."))
+
+
+async def _antigravity_update_target(host: "Host", cached: str) -> str | None:
+    """Best-effort: the manifest version to refresh the cached agy to, or ``None``.
+
+    Freshness is owned by this trusted, UNCONFINED provisioning path — the
+    confined session sees the cache ``--rox`` (claustrum) and has its
+    self-update disabled twice (env + settings), so it can never keep the cache
+    current itself. On a cache HIT this probes the cached binary's version
+    (``agy --version`` → a bare semver, see :data:`_AGY_VERSION_RE`) and fetches
+    the SAME per-platform updater manifest Tier-2 installs from
+    (:func:`_manifest_url`, live shape verified 2026-08-13:
+    ``{"version": "1.1.12", "url": ..., "sha512": ...}``); the manifest fetch is
+    a plain bounded ``curl`` (no child download task — this is a version peek,
+    not a download).
+
+    Returns ``manifest["version"]`` when it is semver-newer than the cached
+    binary (so the caller can NAME the target in its progress label). Returns
+    ``None`` when current — or on ANY failure (version probe unparseable,
+    unsupported platform, manifest unreachable/malformed): the probe must never
+    block a launch, and a stale-but-working cache beats a failed start
+    (offline workers must still launch). Mirrors grok's
+    ``_grok_update_target``."""
+    probe = await host.run_command(
+        f"timeout 10 {shlex.quote(cached)} --version"
+    )
+    current = _parse_agy_version(probe.stdout) if probe.exit_code == 0 else None
+    if current is None:
+        _LOG.warning(
+            "agy --version probe failed (exit %s, stdout %r); "
+            "skipping freshness check, keeping cached binary",
+            probe.exit_code, (probe.stdout or "")[:100],
+        )
+        return None
+
+    try:
+        platform = await _antigravity_platform(host)
+    except RuntimeError as exc:
+        # e.g. a Tier-1-seeded cache on a platform the updater doesn't serve.
+        _LOG.warning(
+            "cannot resolve agy manifest platform (%s); keeping cached binary",
+            exc,
+        )
+        return None
+
+    r = await host.run_command(
+        f"curl -fsSL --max-time 10 {shlex.quote(_manifest_url(platform))}"
+    )
+    if r.exit_code != 0:
+        _LOG.warning(
+            "agy manifest fetch failed (exit %s); keeping cached binary: %s",
+            r.exit_code, (r.stderr or "").strip()[:200],
+        )
+        return None
+    try:
+        latest = str(json.loads((r.stdout or "").strip())["version"]).strip()
+        newer = _version_tuple(latest) > _version_tuple(current)
+    except (ValueError, KeyError, TypeError):
+        _LOG.warning(
+            "agy manifest is malformed/unparseable; keeping cached binary: %r",
+            (r.stdout or "")[:200],
+        )
+        return None
+    return latest if newer else None
+
+
 def _platform_slug(uname_s: str, uname_m: str, *, is_musl: bool) -> str:
     """Manifest platform slug for a ``uname -s`` / ``uname -m`` pair.
 
@@ -417,6 +506,7 @@ async def ensure_antigravity_installed(
     *,
     install_if_missing: bool = True,
     install_dir: str | None = None,
+    check_update: bool = True,
     progress_label: str = f"Preparing {AGENT_INFO.name}…",
 ) -> str:
     """Provision ``agy`` for this task from the optio-owned binary cache and
@@ -438,11 +528,22 @@ async def ensure_antigravity_installed(
       binary into the cache.
 
     A cache HIT is adopted only after :func:`_is_agy` (functional identity), so a
-    poisoned/name-colliding cached binary is invalidated and repopulated. Uses
-    only generic Host primitives. Idempotent on a re-call (hit → it just re-links
-    the task path), which is how resume re-establishes the launch symlink after
-    ``restore_workdir`` wipes it. Raises only when the cache needs populating AND
-    ``install_if_missing=False``.
+    poisoned/name-colliding cached binary is invalidated and repopulated. On a
+    HIT the cached binary is then freshness-checked against the updater manifest
+    (:func:`_antigravity_update_target`) and, when the manifest is newer,
+    refreshed via the Tier-2 vendor install BEFORE it is linked — the confined
+    session can never update the ``--rox`` cache itself (self-update disabled
+    twice: env + settings), so freshness is owned here, by the unconfined
+    provisioning path. The check is best-effort (manifest unreachable → keep
+    cached) and gated on ``install_if_missing``. ``check_update=False`` skips
+    the probe: the resume flow calls this twice (once up front, once to re-link
+    after ``restore_workdir`` wipes the symlink) and passes it on the second
+    call so a resume runs one network probe, not two.
+
+    Uses only generic Host primitives. Idempotent on a re-call (hit → it just
+    re-links the task path), which is how resume re-establishes the launch
+    symlink after ``restore_workdir`` wipes it. Raises only when the cache needs
+    populating AND ``install_if_missing=False``.
     """
     host = hook_ctx._host
     hook_ctx.report_progress(None, progress_label)
@@ -456,6 +557,25 @@ async def ensure_antigravity_installed(
     executable = "OK" in (probe.stdout or "")
     if executable and await _is_agy(host, cached):
         _LOG.info("ensure_antigravity_installed: cache HIT (%s)", cached)
+        # Refresh a STALE cache to the manifest version. The claustrum-confined
+        # session sees the cache dir ``--rox`` and has agy's self-update
+        # disabled (env + settings), so without this launch-time check the
+        # cache would stay frozen at whatever was first installed (the
+        # claudecode freezing bug, 2026-08-13). Best-effort + gated on
+        # install_if_missing (an offline/pinned worker keeps the binary it
+        # has; the probe never blocks a launch).
+        target = None
+        if check_update and install_if_missing:
+            target = await _antigravity_update_target(host, cached)
+        if target:
+            hook_ctx.report_progress(None, f"Updating {AGENT_INFO.name} to {target}…")
+            await _install_antigravity_into_cache(
+                hook_ctx, host, cache_dir=cache_dir, cached=cached,
+            )
+            _LOG.info(
+                "ensure_antigravity_installed: cache stale -> refreshed to %s (%s)",
+                target, cached,
+            )
     elif not install_if_missing:
         raise RuntimeError(
             f"agy not present (or not functional) in cache at {cached!r} and "

@@ -197,12 +197,15 @@ async def run_antigravity_session(
             # The agy launch symlink (home/.local/bin/agy) lives INSIDE the
             # workdir and was wiped by the restore; re-establish it against the
             # cache (which lives OUTSIDE the workdir and survives). Idempotent:
-            # cache hit → just relinks, no reinstall/redownload. ttyd survives
-            # untouched (real host home, outside the workdir).
+            # cache hit → just relinks, no reinstall/redownload.
+            # check_update=False: the ensure call above already ran the
+            # manifest freshness probe for this resume — one probe, not two.
+            # ttyd survives untouched (real host home, outside the workdir).
             agy_path = await host_actions.ensure_antigravity_installed(
                 hook_ctx,
                 install_if_missing=config.install_if_missing,
                 install_dir=config.install_dir,
+                check_update=False,
                 progress_label=f"Restoring {AGENT_INFO.name} runtime…",
             )
             await host_actions._rotate_optio_log(host)

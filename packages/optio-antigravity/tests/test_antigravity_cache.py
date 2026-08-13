@@ -6,7 +6,10 @@ returns a per-task launch symlink into that cache
 (``<workdir>/home/.local/bin/agy``):
 
 * cache HIT — ``<cache>/agy`` already executable AND functionally an ``agy``
-  (``_is_agy``) → linked into the task path, no seed/install.
+  (``_is_agy``) → freshness-checked against the updater manifest
+  (``_antigravity_update_target``; best-effort, gated on ``install_if_missing``
+  and ``check_update``) and Tier-2-refreshed when the manifest is newer, then
+  linked into the task path.
 * cache MISS, host ``agy`` present — the host ``agy`` is copied (deref) into the
   cache (Tier-1, fast), then linked.
 * cache MISS, no host ``agy`` — Tier-2: fetch the platform manifest from the
@@ -31,6 +34,7 @@ import json
 import os
 import pathlib
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 from optio_host.host import LocalHost
@@ -287,6 +291,217 @@ async def test_tier2_install_rejects_sha512_mismatch(tmp_path: pathlib.Path):
             ctx, ctx._host, cache_dir=str(cache), cached=cached,
         )
     assert not os.path.exists(cached)
+
+
+# --- cache-HIT staleness refresh (manifest-version-gated) -------------------
+
+
+# The REAL probe output (captured 2026-08-13 against
+# ~/.cache/optio-antigravity/bin/agy): ``agy --version`` prints exactly the
+# bare dotted semver on stdout, exit 0. (``agy version`` is a TUI subcommand —
+# bubbletea, needs /dev/tty — and is NOT usable for the probe.)
+_REAL_AGY_VERSION_OUTPUT = "1.0.16\n"
+
+# The REAL manifest shape (captured 2026-08-13 from
+# .../manifests/linux_amd64.json on the auto-updater host).
+_REAL_MANIFEST = {
+    "version": "1.1.12",
+    "url": (
+        "https://storage.googleapis.com/antigravity-public/antigravity-cli/"
+        "1.1.12-5877618327814144/linux-x64/cli_linux_x64.tar.gz"
+    ),
+    "sha512": "c1ee7b8a" + "0" * 120,
+}
+
+
+def test_parse_agy_version_real_output_shape():
+    parse = host_actions._parse_agy_version
+    assert parse(_REAL_AGY_VERSION_OUTPUT) == "1.0.16"
+    # Defensive: a future build wrapping the number in a banner still parses.
+    assert parse("agy version 2.3.4 (linux/amd64)") == "2.3.4"
+    # No dotted-number token → None (e.g. the fake identity script's output).
+    assert parse("agy running") is None
+    assert parse("") is None
+
+
+class _ScriptedHost:
+    """Fake host for ``_antigravity_update_target``: dispatches run_command by
+    command content (version probe → uname → musl → curl) and records the
+    commands so tests can assert the manifest URL that was fetched."""
+
+    def __init__(self, *, version_out: str, curl_exit: int = 0, curl_out: str = ""):
+        self._version_out = version_out
+        self._curl_exit = curl_exit
+        self._curl_out = curl_out
+        self.commands: list[str] = []
+
+    async def run_command(self, cmd: str):
+        self.commands.append(cmd)
+        if "--version" in cmd:
+            return SimpleNamespace(exit_code=0, stdout=self._version_out, stderr="")
+        if "uname -s" in cmd:
+            return SimpleNamespace(exit_code=0, stdout="Linux\n", stderr="")
+        if "uname -m" in cmd:
+            return SimpleNamespace(exit_code=0, stdout="x86_64\n", stderr="")
+        if "musl" in cmd:
+            return SimpleNamespace(exit_code=1, stdout="", stderr="")  # glibc
+        if cmd.startswith("curl"):
+            return SimpleNamespace(
+                exit_code=self._curl_exit, stdout=self._curl_out, stderr="down",
+            )
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+
+@pytest.mark.asyncio
+async def test_antigravity_update_target_returns_manifest_version_when_newer():
+    """Cached 1.0.16 vs manifest 1.1.12 (both the REAL captured shapes) →
+    returns the manifest version, fetched from the underscore-slug URL."""
+    h = _ScriptedHost(
+        version_out=_REAL_AGY_VERSION_OUTPUT, curl_out=json.dumps(_REAL_MANIFEST),
+    )
+    target = await host_actions._antigravity_update_target(h, "/cache/bin/agy")
+    assert target == "1.1.12"
+    assert "/cache/bin/agy" in h.commands[0] and "--version" in h.commands[0]
+    curl = h.commands[-1]
+    assert curl.startswith("curl")
+    assert curl.endswith("/manifests/linux_amd64.json")
+
+
+@pytest.mark.asyncio
+async def test_antigravity_update_target_none_when_current():
+    """Manifest version equal to (or behind) the cached binary → None."""
+    for manifest_version in ("1.0.16", "1.0.2"):
+        doc = dict(_REAL_MANIFEST, version=manifest_version)
+        h = _ScriptedHost(
+            version_out=_REAL_AGY_VERSION_OUTPUT, curl_out=json.dumps(doc),
+        )
+        assert await host_actions._antigravity_update_target(
+            h, "/cache/bin/agy",
+        ) is None
+
+
+@pytest.mark.asyncio
+async def test_antigravity_update_target_best_effort_on_failure():
+    """Manifest unreachable / malformed → None (a stale-but-working cache must
+    still launch); an unparseable version probe → None WITHOUT any fetch."""
+    unreachable = _ScriptedHost(version_out=_REAL_AGY_VERSION_OUTPUT, curl_exit=22)
+    assert await host_actions._antigravity_update_target(
+        unreachable, "/c/agy",
+    ) is None
+
+    garbage = _ScriptedHost(version_out=_REAL_AGY_VERSION_OUTPUT, curl_out="not json")
+    assert await host_actions._antigravity_update_target(garbage, "/c/agy") is None
+
+    no_version = _ScriptedHost(version_out="agy running\n")
+    assert await host_actions._antigravity_update_target(
+        no_version, "/c/agy",
+    ) is None
+    # Version probe failed → the probe stops before uname/curl (no network).
+    assert len(no_version.commands) == 1
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_stale_refreshes_via_tier2_install(
+    tmp_path: pathlib.Path, monkeypatch,
+):
+    """A cache HIT whose binary is behind the manifest is refreshed via the
+    existing Tier-2 vendor install BEFORE it is linked into the task (the
+    confined session sees the cache --rox and can never refresh it itself)."""
+    cache = tmp_path / "cache"
+    _write_exe(cache / "agy")
+
+    async def _stale(host, cached):  # noqa: ANN001
+        return "1.1.12"
+
+    refreshed: dict[str, str] = {}
+
+    async def _fake_install(hook_ctx, host, *, cache_dir, cached):  # noqa: ANN001
+        refreshed["cached"] = cached
+        _write_exe(pathlib.Path(cached))  # the refreshed agy replaces the stale one
+
+    async def _no_seed(*a, **k):  # noqa: ANN002, ANN003
+        raise AssertionError("must not run the miss-population path on a hit")
+
+    monkeypatch.setattr(host_actions, "_antigravity_update_target", _stale)
+    monkeypatch.setattr(host_actions, "_install_antigravity_into_cache", _fake_install)
+    monkeypatch.setattr(host_actions, "_populate_antigravity_cache", _no_seed)
+    ctx = await _local_ctx(tmp_path)
+
+    result = await host_actions.ensure_antigravity_installed(ctx, install_dir=str(cache))
+    assert refreshed["cached"] == str(cache / "agy")
+    assert result == _task_path(ctx)
+    assert os.path.realpath(result) == str((cache / "agy").resolve())
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_current_does_not_refresh(tmp_path: pathlib.Path, monkeypatch):
+    cache = tmp_path / "cache"
+    _write_exe(cache / "agy")
+
+    async def _current(host, cached):  # noqa: ANN001
+        return None
+
+    async def _boom(*a, **k):  # noqa: ANN002, ANN003
+        raise AssertionError("must not refresh a current cache")
+
+    monkeypatch.setattr(host_actions, "_antigravity_update_target", _current)
+    monkeypatch.setattr(host_actions, "_install_antigravity_into_cache", _boom)
+    ctx = await _local_ctx(tmp_path)
+
+    result = await host_actions.ensure_antigravity_installed(ctx, install_dir=str(cache))
+    assert result == _task_path(ctx)
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_skips_update_probe_when_check_update_false(
+    tmp_path: pathlib.Path, monkeypatch,
+):
+    """check_update=False (the resume re-link call) re-links the cache WITHOUT
+    the network probe: the earlier ensure call on the same resume already
+    validated/refreshed the cache — one probe per resume, not two."""
+    cache = tmp_path / "cache"
+    _write_exe(cache / "agy")
+
+    async def _no_probe(*a, **k):  # noqa: ANN002, ANN003
+        raise AssertionError("update probe must be skipped when check_update=False")
+
+    async def _boom(*a, **k):  # noqa: ANN002, ANN003
+        raise AssertionError("must not refresh when check_update=False")
+
+    monkeypatch.setattr(host_actions, "_antigravity_update_target", _no_probe)
+    monkeypatch.setattr(host_actions, "_install_antigravity_into_cache", _boom)
+    ctx = await _local_ctx(tmp_path)
+
+    result = await host_actions.ensure_antigravity_installed(
+        ctx, install_dir=str(cache), check_update=False,
+    )
+    assert result == _task_path(ctx)
+    assert os.path.realpath(result) == str((cache / "agy").resolve())
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_stale_not_refreshed_when_install_disabled(
+    tmp_path: pathlib.Path, monkeypatch,
+):
+    """install_if_missing=False: a HIT links the existing cache and never runs
+    the network update-check or an install (offline/pinned workers)."""
+    cache = tmp_path / "cache"
+    _write_exe(cache / "agy")
+
+    async def _no_check(*a, **k):  # noqa: ANN002, ANN003
+        raise AssertionError("update-check must be skipped when installs are off")
+
+    async def _boom(*a, **k):  # noqa: ANN002, ANN003
+        raise AssertionError("must not install when install_if_missing=False")
+
+    monkeypatch.setattr(host_actions, "_antigravity_update_target", _no_check)
+    monkeypatch.setattr(host_actions, "_install_antigravity_into_cache", _boom)
+    ctx = await _local_ctx(tmp_path)
+
+    result = await host_actions.ensure_antigravity_installed(
+        ctx, install_dir=str(cache), install_if_missing=False,
+    )
+    assert result == _task_path(ctx)
 
 
 # --- launch environment: isolation + self-update off ------------------------
