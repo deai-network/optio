@@ -17,7 +17,7 @@ create_claudecode_task(
     config=ClaudeCodeTaskConfig(
         consumer_instructions="...",
         credentials_json=...,        # opaque dict/bytes/str → ~/.claude/.credentials.json
-        claude_config=...,           # dict → ~/.claude/settings.json
+        claude_config=...,           # dict, deep-merged into ~/.claude/settings.json
         env={"ANTHROPIC_BASE_URL": "..."},
         permission_mode=None,        # default | plan | acceptEdits | bypassPermissions
         allowed_tools=None,
@@ -46,10 +46,24 @@ claude's argv. See `docs/2026-05-29-optio-claudecode-resume-design.md`.
   `<workdir>/home/.claude/.credentials.json` with mode 0600. dict →
   JSON-encoded; bytes → UTF-8 decoded verbatim; str → written
   verbatim.
-* `claude_config` — JSON-encoded to
-  `<workdir>/home/.claude/settings.json`.
+* `claude_config` — deep-merged into
+  `<workdir>/home/.claude/settings.json` via a post-seed
+  read-modify-write (`host_actions.apply_claude_settings`): applied
+  AFTER the seed (fresh) or restored snapshot (resume) on all paths, so
+  the caller's keys win per key while every other key the seed/snapshot
+  carried is preserved.
 * `permission_mode` — forwarded verbatim to `claude
   --permission-mode`. Validation happens in `__post_init__`.
+* `session_blob_encrypt/decrypt`, `seed_blob_encrypt/decrypt` —
+  inherited from `optio_agents.config_types.BlobCryptoConfigMixin`
+  (alongside the `ClaustrumConfigMixin` triad). Optional synchronous
+  bytes→bytes transforms at GridFS write/read: the `session_blob` pair
+  wraps this process's home/.claude session tar (ds-scoped key), the
+  `seed_blob` pair wraps the shared pool-account SEED tar (pool-scoped
+  key). Per pair both-or-neither (validated by `_validate_blob_crypto`
+  in `__post_init__`); the seed pair falls back to the session pair
+  when unset — seed ops read the transforms only through the mixin's
+  `seed_encrypt` / `seed_decrypt` accessors.
 * HOME isolation: every task sees `HOME=<workdir>/home` so concurrent
   tasks on one host never share `~/.claude/` state.
 

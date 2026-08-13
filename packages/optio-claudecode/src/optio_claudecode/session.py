@@ -406,8 +406,8 @@ async def run_claudecode_session(
                 ctx, host,
                 seed_id=resolved_seed_id,
                 baseline=cred_baseline,
-                encrypt=config.seed_blob_encrypt or config.session_blob_encrypt,
-                decrypt=config.seed_blob_decrypt or config.session_blob_decrypt,
+                encrypt=config.seed_encrypt,
+                decrypt=config.seed_decrypt,
                 lease_holder=lease_holder,
             ))
 
@@ -662,8 +662,8 @@ async def run_claudecode_session(
                 ctx, host,
                 seed_id=resolved_seed_id,
                 baseline=cred_baseline,
-                encrypt=config.seed_blob_encrypt or config.session_blob_encrypt,
-                decrypt=config.seed_blob_decrypt or config.session_blob_decrypt,
+                encrypt=config.seed_encrypt,
+                decrypt=config.seed_decrypt,
                 lease_holder=lease_holder,
             ))
 
@@ -907,8 +907,8 @@ async def run_claudecode_session(
                     ctx, host,
                     seed_id=resolved_seed_id,
                     baseline=cred_baseline,
-                    encrypt=config.seed_blob_encrypt or config.session_blob_encrypt,
-                    decrypt=config.seed_blob_decrypt or config.session_blob_decrypt,
+                    encrypt=config.seed_encrypt,
+                    decrypt=config.seed_decrypt,
                 )
             except Exception:
                 _LOG.exception("final credential save-back failed")
@@ -932,7 +932,7 @@ async def run_claudecode_session(
                         ctx, host,
                         manifest=CLAUDE_SEED_MANIFEST,
                         suffix=CLAUDE_SEED_SUFFIX,
-                        encrypt=config.seed_blob_encrypt or config.session_blob_encrypt,
+                        encrypt=config.seed_encrypt,
                     )
                     _trace("finally: capture_seed DONE id=%s", seed_id)
                     # Normalized account(s) from the seeded OAuth token (the
@@ -1103,7 +1103,7 @@ async def _plant_session_content(
                 seed_id=resolved_seed_id,
                 manifest=CLAUDE_SEED_MANIFEST,
                 suffix=CLAUDE_SEED_SUFFIX,
-                decrypt=config.seed_blob_decrypt or config.session_blob_decrypt,
+                decrypt=config.seed_decrypt,
             )
             _trace("body: merge_seed DONE")
             cred_baseline = await cred_watcher.cred_fingerprint(host)
@@ -1131,7 +1131,7 @@ async def _plant_session_content(
                 seed_id=resolved_seed_id,
                 manifest=CLAUDE_CRED_MANIFEST,
                 suffix=CLAUDE_SEED_SUFFIX,
-                decrypt=config.seed_blob_decrypt or config.session_blob_decrypt,
+                decrypt=config.seed_decrypt,
             )
         cred_baseline = await cred_watcher.cred_fingerprint(host)
         refreshed_files = await _maybe_refresh_on_resume(host, hook_ctx, config)

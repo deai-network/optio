@@ -19,7 +19,7 @@ from optio_agents import (
     TOOL_VERBOSITIES,
     ToolVerbosity,
 )
-from optio_agents.config_types import ClaustrumConfigMixin
+from optio_agents.config_types import BlobCryptoConfigMixin, ClaustrumConfigMixin
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -83,18 +83,20 @@ def _identity_resume_refresh(config: "ClaudeCodeTaskConfig") -> "ClaudeCodeTaskC
 
 
 @dataclass(frozen=True, kw_only=True)
-class ClaudeCodeTaskConfig(ClaustrumConfigMixin):
+class ClaudeCodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
     """Configuration for one optio-claudecode task instance.
 
     See ``docs/2026-05-28-optio-claudecode-design.md`` for full field
     semantics.
 
     Inherits the claustrum filesystem-isolation triad (``fs_isolation`` /
-    ``extra_allowed_dirs`` / ``delivery_type``) from ``ClaustrumConfigMixin``;
-    those fields stay top-level here (callers write ``fs_isolation=`` /
-    ``delivery_type=`` verbatim). Frozen because the mixin is frozen; ``kw_only``
-    because the mixin's defaulted triad would otherwise precede the required
-    ``consumer_instructions``.
+    ``extra_allowed_dirs`` / ``delivery_type``) from ``ClaustrumConfigMixin``
+    and the blob-crypto quartet (``session_blob_encrypt/decrypt`` /
+    ``seed_blob_encrypt/decrypt``) from ``BlobCryptoConfigMixin``; those
+    fields stay top-level here (callers write ``fs_isolation=`` /
+    ``session_blob_encrypt=`` verbatim). Frozen because the mixins are frozen;
+    ``kw_only`` because their defaulted fields would otherwise precede the
+    required ``consumer_instructions``.
     """
 
     consumer_instructions: str
@@ -155,18 +157,11 @@ class ClaudeCodeTaskConfig(ClaustrumConfigMixin):
     # --- resume surface (mirrors OpencodeTaskConfig) --------------------
     supports_resume: bool = True
     workdir_exclude: list[str] | None = None
-    # Optional pair of synchronous bytes->bytes transforms wrapping the
-    # home/.claude session tar at GridFS write/read. Both set → encrypted
-    # at rest; both None (default) → plaintext. Setting only one is a
-    # config error (asymmetric usage is always a mistake).
-    session_blob_encrypt: Callable[[bytes], bytes] | None = None
-    session_blob_decrypt: Callable[[bytes], bytes] | None = None
-    # Separate pair wrapping the SEED tar (the shared pool account, distinct
-    # from this process's session snapshot). Seeds and session snapshots live
-    # in different key scopes, so they need different transforms. Falls back to
-    # the session_blob pair when unset (back-compat / single-key callers).
-    seed_blob_encrypt: Callable[[bytes], bytes] | None = None
-    seed_blob_decrypt: Callable[[bytes], bytes] | None = None
+    # session_blob_encrypt/decrypt (home/.claude session tar) and
+    # seed_blob_encrypt/decrypt (shared pool-account SEED tar, falls back to
+    # the session pair via the seed_encrypt/seed_decrypt accessors) are
+    # inherited from BlobCryptoConfigMixin; validated by
+    # _validate_blob_crypto(), called from __post_init__ below.
     # Hook fired on resume only (never on fresh start). Receives the original
     # config; returns a (possibly mutated) config. The harness re-renders
     # CLAUDE.md from the returned config and writes it back only when it
@@ -273,6 +268,7 @@ class ClaudeCodeTaskConfig(ClaustrumConfigMixin):
         # Validate the inherited claustrum triad first, so a missing
         # delivery_type (with fs_isolation on) fails fast.
         self._validate_claustrum()
+        self._validate_blob_crypto()
         if self.permission_mode is not None and self.permission_mode not in _VALID_PERMISSION_MODES:
             raise ValueError(
                 f"ClaudeCodeTaskConfig.permission_mode={self.permission_mode!r} "
@@ -290,21 +286,6 @@ class ClaudeCodeTaskConfig(ClaustrumConfigMixin):
                     f"ClaudeCodeTaskConfig.{field_name}={val!r} must be an "
                     f"absolute path (start with '/' or '~')."
                 )
-        e = self.session_blob_encrypt is not None
-        d = self.session_blob_decrypt is not None
-        if e != d:
-            raise ValueError(
-                "ClaudeCodeTaskConfig: session_blob_encrypt and "
-                "session_blob_decrypt must be set together (both callables) "
-                "or both left as None; one without the other is a config error."
-            )
-        se = self.seed_blob_encrypt is not None
-        sd = self.seed_blob_decrypt is not None
-        if se != sd:
-            raise ValueError(
-                "ClaudeCodeTaskConfig: seed_blob_encrypt and seed_blob_decrypt "
-                "must be set together or both left as None."
-            )
         if self.mode not in ("iframe", "conversation"):
             raise ValueError(
                 f"ClaudeCodeTaskConfig.mode={self.mode!r} is not one of "
