@@ -53,4 +53,5 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "serial: spawn-heavy, timing-fragile test that must run in a final non-parallel phase",
+    "freshness_probe: exercises _antigravity_update_target itself; opts out of the conftest stub",
 ]

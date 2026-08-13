@@ -35,6 +35,26 @@ from optio_core.context import ProcessContext
 TESTS_DIR = pathlib.Path(__file__).parent
 
 
+@pytest.fixture(autouse=True)
+def _no_live_freshness_probe(request, monkeypatch):
+    """Suppress the cache-hit freshness probe everywhere but its own tests.
+
+    ``_antigravity_update_target`` fetches the LIVE updater manifest; unit
+    tests must never touch the network — and the fake agy's ``1.0.16`` version
+    would compare stale against the real manifest, sending session tests into
+    a real Tier-2 install (``ctx.download_file`` → no executor → crash). Tests
+    marked ``freshness_probe`` (the probe's own, driven by scripted hosts) opt
+    out."""
+    if request.node.get_closest_marker("freshness_probe"):
+        return
+    from optio_antigravity import host_actions
+
+    async def _current(host, cached):
+        return None
+
+    monkeypatch.setattr(host_actions, "_antigravity_update_target", _current)
+
+
 @pytest.fixture
 def shim_install_dir(tmp_path: pathlib.Path) -> pathlib.Path:
     """Tmp dir containing symlinks to the agy + ttyd shims."""

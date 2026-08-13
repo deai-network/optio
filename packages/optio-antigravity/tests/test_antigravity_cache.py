@@ -353,6 +353,7 @@ class _ScriptedHost:
 
 
 @pytest.mark.asyncio
+@pytest.mark.freshness_probe
 async def test_antigravity_update_target_returns_manifest_version_when_newer():
     """Cached 1.0.16 vs manifest 1.1.12 (both the REAL captured shapes) →
     returns the manifest version, fetched from the underscore-slug URL."""
@@ -368,6 +369,7 @@ async def test_antigravity_update_target_returns_manifest_version_when_newer():
 
 
 @pytest.mark.asyncio
+@pytest.mark.freshness_probe
 async def test_antigravity_update_target_none_when_current():
     """Manifest version equal to (or behind) the cached binary → None."""
     for manifest_version in ("1.0.16", "1.0.2"):
@@ -381,6 +383,7 @@ async def test_antigravity_update_target_none_when_current():
 
 
 @pytest.mark.asyncio
+@pytest.mark.freshness_probe
 async def test_antigravity_update_target_best_effort_on_failure():
     """Manifest unreachable / malformed → None (a stale-but-working cache must
     still launch); an unparseable version probe → None WITHOUT any fetch."""
