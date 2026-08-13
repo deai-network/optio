@@ -35,6 +35,20 @@ docstrings (`src/optio_codex/types.py`).
   the session pair directly. Per pair, setting one member without the other
   is a `ValueError` at construction (`_validate_blob_crypto`).
 
+## Binary provisioning (PINNED-BY-DESIGN)
+
+`ensure_codex_installed` fills a worker-shared cache
+(`OPTIO_CODEX_CACHE_DIR` / `~/.cache/optio-codex/bin`) from either a host
+codex (`cp -L`) or the pinned GitHub release (`_CODEX_VERSION` — bumped
+deliberately, re-probing wire shapes). Both tiers stamp
+`<cache>/codex.version`; a cache hit compares the stamp against the pin and
+re-downloads the pinned release on mismatch/missing stamp (pin
+authoritative; host-copy never serves a refresh). Download failure with an
+executable cached binary falls back to the cached one (offline workers
+launch on a stale pin). Freshness lives entirely in this unconfined
+provisioning path: the cache is claustrum-`--rox` to sessions, so nothing
+in-session can (or should) write it.
+
 ## Seed surface
 
 `seed_id` (str, or a leasing `SeedProvider`) merges a stored codex identity

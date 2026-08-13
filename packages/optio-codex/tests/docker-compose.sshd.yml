@@ -14,6 +14,10 @@ services:
       - ./ssh-keys:/keys:ro
       - ./fake_codex.py:/usr/local/bin/fake_codex.py:ro
       - ./codex-shim.sh:/usr/local/bin/codex:ro
+      # Pin-match stamp beside the shim: without it the session flow's
+      # cache-hit freshness check would attempt a real pinned re-download.
+      # A guard test asserts this file tracks host_actions._CODEX_VERSION.
+      - ./codex.version:/usr/local/bin/codex.version:ro
       - ./ttyd-shim.sh:/usr/local/bin/ttyd:ro
     ports:
       # Ephemeral host port; the harness reads it back via `docker compose port`.

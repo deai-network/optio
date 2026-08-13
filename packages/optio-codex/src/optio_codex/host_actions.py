@@ -63,6 +63,24 @@ _CODEX_RELEASE_BASE = (
     f"https://github.com/openai/codex/releases/download/rust-v{_CODEX_VERSION}"
 )
 
+# Version stamp recording which codex version the cache holds, written by
+# BOTH install tiers (pinned download stamps _CODEX_VERSION; host-copy
+# stamps the copied binary's probed version). The cache-hit path compares
+# it against _CODEX_VERSION so a pin bump actually reaches warm caches —
+# the cache is claustrum-``--rox`` to sessions, so freshness is owned
+# entirely by this unconfined provisioning path (agent-binary-freshness
+# plan, 2026-08-13).
+_CODEX_VERSION_STAMP_NAME = "codex.version"
+
+# ``codex --version`` output shape, verified against the REAL binary
+# (2026-08-13, ~/.cache/optio-codex/bin/codex, v0.142.5):
+#   $ env HOME=<empty-dir> ~/.cache/optio-codex/bin/codex --version
+#   stdout: ``codex-cli 0.142.5``   (exactly; version only on stdout)
+#   stderr: PATH-alias WARNING when $HOME/.codex is absent (harmless)
+#   exit 0; no files written under HOME.
+# Parse by regex, never by line position — stderr noise must not matter.
+_CODEX_VERSION_OUTPUT_RE = re.compile(r"codex-cli\s+(\S+)")
+
 
 async def _expand_user_path(host: "Host", path: str) -> str:
     """Expand a leading ``~``/``~/`` against the HOST's home directory.
@@ -207,6 +225,73 @@ async def claustrum_newer_tag() -> str | None:
     return newest if key(newest) > key(claustrum.CLAUSTRUM_PINNED_TAG) else None
 
 
+async def _probe_codex_version(host: "Host", codex_path: str) -> str | None:
+    """Best-effort: the version string a codex binary reports, or ``None``.
+
+    Runs ``<codex_path> --version`` with ``HOME`` pointed at the cache ROOT
+    (grok's ``_grok_update_target`` pattern) so the probe can never touch
+    the operator's ``~/.codex``. Real-binary evidence (2026-08-13, v0.142.5):
+    the probe writes nothing under HOME and prints ``codex-cli <semver>`` on
+    stdout (stderr may carry a PATH-alias warning) — parsed via
+    :data:`_CODEX_VERSION_OUTPUT_RE`. Non-zero exit / unmatched output →
+    ``None`` (never raises; a stamp-less cache just refreshes to the pin on
+    the next launch).
+    """
+    # HOME = the parent of the cache dir (…/optio-codex for …/optio-codex/bin).
+    cache_root = os.path.dirname(os.path.dirname(codex_path.rstrip("/"))) or "/"
+    r = await host.run_command(
+        f"env HOME={shlex.quote(cache_root)} {shlex.quote(codex_path)} --version"
+    )
+    if r.exit_code != 0:
+        _LOG.warning(
+            "codex --version probe failed (exit %s): %s",
+            r.exit_code, (r.stderr or "").strip()[:200],
+        )
+        return None
+    m = _CODEX_VERSION_OUTPUT_RE.search(r.stdout or "")
+    if m is None:
+        _LOG.warning(
+            "codex --version output unparseable; no version stamp: %r",
+            (r.stdout or "")[:200],
+        )
+        return None
+    return m.group(1)
+
+
+async def _read_version_stamp(host: "Host", *, cache_dir: str) -> str | None:
+    """The cache's ``codex.version`` stamp content, or ``None`` when absent
+    (legacy warm cache filled before stamping existed)."""
+    stamp = f"{cache_dir}/{_CODEX_VERSION_STAMP_NAME}"
+    r = await host.run_command(f"cat {shlex.quote(stamp)} 2>/dev/null || true")
+    content = (r.stdout or "").strip()
+    return content or None
+
+
+async def _write_version_stamp(
+    host: "Host", *, cache_dir: str, version: str,
+) -> None:
+    """Record ``version`` as ``<cache>/codex.version``, atomically.
+
+    Written AFTER the binary lands, via a per-invocation temp + ``mv -f``
+    (same concurrency discipline as the binary install): a concurrent
+    launch never reads a half-written stamp, and racers writing identical
+    content are last-writer-wins. Best-effort — a failed stamp write only
+    costs a redundant pinned re-download on the next launch, never a launch.
+    """
+    stamp = f"{cache_dir}/{_CODEX_VERSION_STAMP_NAME}"
+    tmp = f"{stamp}.{os.getpid()}-{uuid.uuid4().hex}"
+    r = await host.run_command(
+        f"printf %s {shlex.quote(version)} > {shlex.quote(tmp)} "
+        f"&& mv -f {shlex.quote(tmp)} {shlex.quote(stamp)}"
+    )
+    if r.exit_code != 0:
+        _LOG.warning(
+            "writing codex version stamp %r failed (exit %s): %s",
+            stamp, r.exit_code, (r.stderr or "").strip()[:200],
+        )
+        await host.run_command(f"rm -f {shlex.quote(tmp)}")
+
+
 async def ensure_codex_installed(
     hook_ctx: "HookContextProtocol",
     *,
@@ -219,12 +304,24 @@ async def ensure_codex_installed(
     any task workdir and never the operator's autoupdating ``~/.codex`` — so
     it stays shared, evictable, and unsnapshotted. Resolution order:
 
-    - **cache hit** — ``<cache>/codex`` is already executable.
+    - **cache hit, stamp == pin** — ``<cache>/codex`` is executable and its
+      ``codex.version`` stamp matches :data:`_CODEX_VERSION`.
+    - **cache hit, stamp missing/stale** — the ``_CODEX_VERSION`` pin is
+      authoritative: re-download the pinned release into the cache (never
+      host-copy on a refresh) and stamp it. Best-effort: a failed download
+      with an executable cached binary logs and uses the cached one (a
+      stale pin beats no engine — offline workers must still launch).
+      Gated on ``install_if_missing`` (an offline/pinned worker keeps the
+      binary it has; mirrors grok's update-probe gate).
     - **cache miss** — seed the cache from the resolved host ``codex``
       (login-shell ``command -v codex`` via :func:`resolve_codex`), copying
       it into ``<cache>/codex`` (``cp -L`` deref + chmod + re-verify).
     - **no host codex** — download the pinned GitHub-release tarball
       (:func:`_download_codex_into_cache`) and install it into the cache.
+
+    Both install tiers write the ``codex.version`` stamp, so pin bumps
+    become EFFECTIVE on warm caches (the cache is claustrum-``--rox`` to
+    confined sessions; freshness is owned here, by unconfined provisioning).
 
     Whatever fills the cache, the RETURNED path is always the per-task
     ``<workdir>/home/.local/bin/codex`` symlink (via
@@ -243,7 +340,38 @@ async def ensure_codex_installed(
         f"[ -x {shlex.quote(cached)} ] && echo OK || true"
     )
     if "OK" in (probe.stdout or ""):
-        _LOG.info("ensure_codex_installed: cache HIT (%s)", cached)
+        stamp = await _read_version_stamp(host, cache_dir=cache_dir)
+        if stamp == _CODEX_VERSION:
+            _LOG.info("ensure_codex_installed: cache HIT (%s, %s)", cached, stamp)
+            return await _provision_task_home(host, shared_codex_path=cached)
+        if not install_if_missing:
+            _LOG.warning(
+                "ensure_codex_installed: cache stamp %r != pin %r but "
+                "install_if_missing=False; keeping cached binary (%s)",
+                stamp, _CODEX_VERSION, cached,
+            )
+            return await _provision_task_home(host, shared_codex_path=cached)
+        # Stamp missing (legacy warm cache) or != pin: the pin is
+        # authoritative on refresh — always the pinned release, never a
+        # host-copy (an operator's codex tracks upstream, not the pin).
+        _LOG.info(
+            "ensure_codex_installed: cache stamp %r != pin %r -> "
+            "re-downloading pinned release (%s)",
+            stamp, _CODEX_VERSION, cached,
+        )
+        hook_ctx.report_progress(None, f"Updating codex to {_CODEX_VERSION}…")
+        try:
+            await _download_codex_into_cache(
+                hook_ctx, cache_dir=cache_dir, cached=cached,
+            )
+        except Exception:  # noqa: BLE001
+            # Offline fallback: the cached binary is known-executable
+            # (probe above), so a failed refresh logs and launches on it.
+            _LOG.warning(
+                "ensure_codex_installed: pinned refresh to %s failed; "
+                "keeping cached binary (%s)",
+                _CODEX_VERSION, cached, exc_info=True,
+            )
         return await _provision_task_home(host, shared_codex_path=cached)
 
     if not install_if_missing:
@@ -301,6 +429,12 @@ async def _install_into_cache_from_host(
             f"codex cache seed completed but {cached!r} is still not "
             f"executable on the host. Check the seed source {source!r}."
         )
+    # Stamp the COPIED binary's own reported version (a host codex tracks
+    # upstream, so it need not equal the pin). Unprobeable → no stamp,
+    # and the next launch refreshes the cache to the authoritative pin.
+    version = await _probe_codex_version(host, cached)
+    if version is not None:
+        await _write_version_stamp(host, cache_dir=cache_dir, version=version)
     _LOG.info("ensure_codex_installed: cache MISS -> seeded from %s", source)
 
 
@@ -411,8 +545,14 @@ async def _download_codex_into_cache(
                 f"codex download completed but {cached!r} is still not "
                 f"executable on the host."
             )
+        # Stamp AFTER the binary: a stamp must never claim a version the
+        # cached binary is not. This tier only ever installs the pin.
+        await _write_version_stamp(
+            host, cache_dir=cache_dir, version=_CODEX_VERSION,
+        )
+        # Serves both the cold-cache fill and the stale-stamp pinned refresh.
         _LOG.info(
-            "ensure_codex_installed: cache MISS -> downloaded %s", url,
+            "ensure_codex_installed: downloaded pinned release %s", url,
         )
     finally:
         await host.run_command(

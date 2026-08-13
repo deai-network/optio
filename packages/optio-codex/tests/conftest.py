@@ -62,6 +62,12 @@ def shim_install_dir(tmp_path: pathlib.Path) -> pathlib.Path:
         link = target / name
         os.symlink(source, link)
         os.chmod(source, 0o755)
+    # Stamp the fake cache as CURRENT (== the _CODEX_VERSION pin) so
+    # ensure_codex_installed's pin-stamp freshness check treats the shim as
+    # a warm, up-to-date cache — a stamp-less dir would trigger a REAL
+    # pinned re-download in the fast (offline) suite. The remote sshd suite
+    # gets the same treatment via the tests/codex.version compose mount.
+    (target / "codex.version").write_text(host_actions._CODEX_VERSION)
     return target
 
 

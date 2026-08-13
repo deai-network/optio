@@ -53,10 +53,17 @@ def _per_task_path(ctx: _FakeHookCtx) -> str:
     return f"{ctx._host.workdir}/home/.local/bin/codex"
 
 
+def _stamp(cache: pathlib.Path, version: str | None = None) -> None:
+    """Plant a ``codex.version`` stamp (defaults to the current pin)."""
+    cache.mkdir(parents=True, exist_ok=True)
+    (cache / "codex.version").write_text(version or host_actions._CODEX_VERSION)
+
+
 @pytest.mark.asyncio
 async def test_cache_hit_returns_per_task_symlink_into_cache(tmp_path, monkeypatch):
     cache = tmp_path / "cache"
     _write_exe(cache / "codex")
+    _stamp(cache)  # stamp == pin → plain hit
 
     # A cache hit must not consult the host codex at all.
     async def _boom(*a, **k):  # noqa: ANN002, ANN003
@@ -117,6 +124,7 @@ async def test_default_cache_dir_from_env(tmp_path, monkeypatch):
     cache dir — never the workdir, never the operator's ~/.codex."""
     cache = tmp_path / "oai-cache" / "bin"
     _write_exe(cache / "codex")
+    _stamp(cache)
     monkeypatch.setenv("OPTIO_CODEX_CACHE_DIR", str(cache))
     ctx = await _local_ctx(tmp_path)
 
@@ -181,10 +189,15 @@ async def test_cache_miss_no_host_codex_downloads_release(tmp_path, monkeypatch)
     assert (cache / "codex").is_file()
     assert os.access(cache / "codex", os.X_OK)
     assert (cache / "codex").read_bytes().startswith(b"#!/bin/bash")
+    # …the pinned version was stamped alongside it…
+    assert (cache / "codex.version").read_text() == host_actions._CODEX_VERSION
     # …behind the per-task launch symlink, and no temp litter remains.
     assert result == _per_task_path(ctx)
     assert os.path.realpath(result) == os.path.realpath(str(cache / "codex"))
-    leftovers = [p.name for p in cache.iterdir() if p.name != "codex"]
+    leftovers = [
+        p.name for p in cache.iterdir()
+        if p.name not in {"codex", "codex.version"}
+    ]
     assert leftovers == [], leftovers
 
 
@@ -258,7 +271,11 @@ async def test_concurrent_cold_cache_downloads_do_not_corrupt(
     assert (cache / "codex").is_file()
     assert os.access(cache / "codex", os.X_OK)
     assert (cache / "codex").read_bytes().startswith(b"#!/bin/bash")
-    leftovers = [p.name for p in cache.iterdir() if p.name != "codex"]
+    assert (cache / "codex.version").read_text() == host_actions._CODEX_VERSION
+    leftovers = [
+        p.name for p in cache.iterdir()
+        if p.name not in {"codex", "codex.version"}
+    ]
     assert leftovers == [], leftovers
 
 
@@ -322,3 +339,209 @@ async def test_download_multi_member_tarball_rejected(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="exactly one"):
         await host_actions.ensure_codex_installed(ctx, install_dir=str(cache))
+
+
+# --- pin-stamp freshness (agent-binary-freshness plan Task 4) ---------------
+#
+# The cache is claustrum---rox to confined sessions, so freshness is owned by
+# this unconfined provisioning path: both install tiers stamp
+# <cache>/codex.version, and a cache hit compares the stamp against the
+# _CODEX_VERSION pin — a pin bump becomes effective on warm caches.
+
+
+class _NoDownloadCtx(_FakeHookCtx):
+    """Fake hook_ctx that must never be asked to download."""
+
+    async def download_file(self, url: str, dest: str) -> None:
+        raise AssertionError(f"download_file must not be called (url={url})")
+
+
+class _FailingDownloadCtx(_FakeHookCtx):
+    """Fake hook_ctx whose download always fails (offline worker)."""
+
+    def __init__(self, host) -> None:  # noqa: ANN001
+        super().__init__(host)
+        self.attempts = 0
+
+    async def download_file(self, url: str, dest: str) -> None:
+        self.attempts += 1
+        raise RuntimeError("network down")
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_matching_stamp_skips_download(tmp_path, monkeypatch):
+    """Warm cache whose stamp equals the pin → no download, no host-copy."""
+    cache = tmp_path / "cache"
+    _write_exe(cache / "codex")
+    _stamp(cache)
+
+    async def _boom(*a, **k):  # noqa: ANN002, ANN003
+        raise AssertionError("resolve_codex must not be called on a stamped hit")
+
+    monkeypatch.setattr(host_actions, "resolve_codex", _boom)
+    host = LocalHost(taskdir=str(tmp_path / "task"))
+    await host.setup_workdir()
+    ctx = _NoDownloadCtx(host)
+
+    result = await host_actions.ensure_codex_installed(ctx, install_dir=str(cache))
+    assert result == _per_task_path(ctx)
+    assert os.path.realpath(result) == os.path.realpath(str(cache / "codex"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stale_stamp", [None, "0.1.0"])
+async def test_cache_hit_stale_or_missing_stamp_redownloads_pin(
+    tmp_path, monkeypatch, stale_stamp,
+):
+    """Stamp missing (legacy warm cache) or != pin → the pinned release is
+    re-downloaded into the cache (never host-copied: the pin is
+    authoritative on refresh) and the stamp is rewritten to the pin."""
+    cache = tmp_path / "cache"
+    _write_exe(cache / "codex", body="#!/bin/bash\necho stale-codex\n")
+    if stale_stamp is not None:
+        _stamp(cache, stale_stamp)
+
+    async def _boom(*a, **k):  # noqa: ANN002, ANN003
+        raise AssertionError("refresh must never host-copy; pin is authoritative")
+
+    monkeypatch.setattr(host_actions, "resolve_codex", _boom)
+    host = LocalHost(taskdir=str(tmp_path / "task"))
+    await host.setup_workdir()
+    ctx = _DownloadingHookCtx(host, _fake_release_tarball())
+
+    result = await host_actions.ensure_codex_installed(ctx, install_dir=str(cache))
+
+    # The pinned release was fetched and installed over the stale binary…
+    assert len(ctx.urls) == 1
+    assert host_actions._CODEX_VERSION in ctx.urls[0]
+    assert (cache / "codex").read_bytes().startswith(b"#!/bin/bash")
+    assert b"downloaded-codex" in (cache / "codex").read_bytes()
+    # …the stamp now records the pin…
+    assert (cache / "codex.version").read_text() == host_actions._CODEX_VERSION
+    # …and the per-task symlink resolves into the refreshed cache.
+    assert result == _per_task_path(ctx)
+    assert os.path.realpath(result) == os.path.realpath(str(cache / "codex"))
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_refresh_download_failure_falls_back_to_cached(
+    tmp_path, monkeypatch,
+):
+    """Offline fallback: a failed pinned refresh with an executable cached
+    binary logs and launches on the cached one (stale pin beats no engine)."""
+    cache = tmp_path / "cache"
+    _write_exe(cache / "codex", body="#!/bin/bash\necho stale-codex\n")
+    _stamp(cache, "0.1.0")
+
+    async def _boom(*a, **k):  # noqa: ANN002, ANN003
+        raise AssertionError("refresh must never host-copy")
+
+    monkeypatch.setattr(host_actions, "resolve_codex", _boom)
+    host = LocalHost(taskdir=str(tmp_path / "task"))
+    await host.setup_workdir()
+    ctx = _FailingDownloadCtx(host)
+
+    result = await host_actions.ensure_codex_installed(ctx, install_dir=str(cache))
+
+    assert ctx.attempts == 1  # the refresh WAS attempted…
+    # …but the launch proceeds on the untouched cached binary,
+    assert result == _per_task_path(ctx)
+    assert b"stale-codex" in (cache / "codex").read_bytes()
+    # and the stamp stays stale so the NEXT launch retries the refresh.
+    assert (cache / "codex.version").read_text() == "0.1.0"
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_stale_stamp_install_if_missing_false_keeps_cached(
+    tmp_path, monkeypatch,
+):
+    """install_if_missing=False means no network ever: a stale stamp keeps
+    the cached binary without attempting the pinned refresh (mirrors grok's
+    install_if_missing gate on its update probe)."""
+    cache = tmp_path / "cache"
+    _write_exe(cache / "codex", body="#!/bin/bash\necho stale-codex\n")
+    _stamp(cache, "0.1.0")
+
+    async def _boom(*a, **k):  # noqa: ANN002, ANN003
+        raise AssertionError("must not resolve host codex")
+
+    monkeypatch.setattr(host_actions, "resolve_codex", _boom)
+    host = LocalHost(taskdir=str(tmp_path / "task"))
+    await host.setup_workdir()
+    ctx = _NoDownloadCtx(host)
+
+    result = await host_actions.ensure_codex_installed(
+        ctx, install_dir=str(cache), install_if_missing=False,
+    )
+    assert result == _per_task_path(ctx)
+    assert b"stale-codex" in (cache / "codex").read_bytes()
+    assert (cache / "codex.version").read_text() == "0.1.0"
+
+
+# A fake host codex whose --version mimics the REAL binary's output shape
+# (verified 2026-08-13 against ~/.cache/optio-codex/bin/codex: stdout is
+# exactly ``codex-cli <semver>``; stderr may carry a PATH-alias warning).
+_VERSIONED_FAKE = (
+    "#!/bin/bash\n"
+    'if [ "$1" = "--version" ]; then\n'
+    '  echo "WARNING: could not create PATH aliases" >&2\n'
+    '  echo "codex-cli 9.9.9"\n'
+    "  exit 0\n"
+    "fi\n"
+    "echo fake-codex\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_host_copy_seed_stamps_probed_version(tmp_path, monkeypatch):
+    """The host-copy tier stamps the COPIED binary's own reported version
+    (which need not equal the pin — a host codex tracks upstream)."""
+    cache = tmp_path / "cache"
+    cache.mkdir()  # empty → miss
+    source = _write_exe(tmp_path / "hostbin" / "codex", body=_VERSIONED_FAKE)
+
+    async def _resolve(host, *, install_dir=None, install_if_missing=True):  # noqa: ANN001
+        return str(source)
+
+    monkeypatch.setattr(host_actions, "resolve_codex", _resolve)
+    ctx = await _local_ctx(tmp_path)
+
+    result = await host_actions.ensure_codex_installed(ctx, install_dir=str(cache))
+    assert result == _per_task_path(ctx)
+    assert (cache / "codex.version").read_text() == "9.9.9"
+
+
+@pytest.mark.asyncio
+async def test_host_copy_unprobeable_version_writes_no_stamp(
+    tmp_path, monkeypatch,
+):
+    """A copied binary whose --version output does not parse gets NO stamp —
+    the next launch then refreshes the cache to the authoritative pin."""
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    source = _write_exe(tmp_path / "hostbin" / "codex")  # echoes fake-codex
+
+    async def _resolve(host, *, install_dir=None, install_if_missing=True):  # noqa: ANN001
+        return str(source)
+
+    monkeypatch.setattr(host_actions, "resolve_codex", _resolve)
+    ctx = await _local_ctx(tmp_path)
+
+    result = await host_actions.ensure_codex_installed(ctx, install_dir=str(cache))
+    assert result == _per_task_path(ctx)
+    assert not (cache / "codex.version").exists()
+
+
+def test_version_output_regex_matches_real_binary_shape():
+    """Anchor the parse to the REAL ``codex --version`` stdout (v0.142.5)."""
+    m = host_actions._CODEX_VERSION_OUTPUT_RE.search("codex-cli 0.142.5\n")
+    assert m is not None and m.group(1) == "0.142.5"
+    assert host_actions._CODEX_VERSION_OUTPUT_RE.search("fake-codex\n") is None
+
+
+def test_sshd_mount_stamp_tracks_pin():
+    """tests/codex.version is compose-mounted beside the remote shim as its
+    cache stamp; it must track the _CODEX_VERSION pin, or the remote suite
+    would attempt a real pinned re-download. Update it on every pin bump."""
+    stamp = pathlib.Path(__file__).parent / "codex.version"
+    assert stamp.read_text().strip() == host_actions._CODEX_VERSION
