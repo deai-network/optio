@@ -69,3 +69,50 @@ class ClaustrumConfigMixin:
                     f"{type(self).__name__}.extra_allowed_dirs: mode={ad.mode!r} "
                     "must be ro/rw/rox/rwx."
                 )
+
+
+@dataclass(frozen=True)
+class BlobCryptoConfigMixin:
+    """At-rest crypto for the two GridFS blob channels, shared by every engine
+    TaskConfig via inheritance. Fields stay top-level on each config (no
+    nesting) so callers write ``session_blob_encrypt=`` verbatim.
+
+    Each field is an optional synchronous bytes->bytes transform applied at
+    GridFS write/read. The ``session_blob`` pair wraps this process's session
+    snapshot (the per-task home tar, ds-scoped key); the ``seed_blob`` pair
+    wraps the SEED tar (the shared pool account, pool-scoped key) — seeds and
+    session snapshots live in different key scopes, so they need different
+    transforms. Per pair: both set → encrypted at rest; both None (default) →
+    plaintext; one without the other is a config error. The seed pair falls
+    back to the session pair when unset (back-compat / single-key callers) —
+    engines read seed transforms ONLY through the ``seed_encrypt`` /
+    ``seed_decrypt`` accessors, the single place that fallback rule lives."""
+    session_blob_encrypt: Callable[[bytes], bytes] | None = None
+    session_blob_decrypt: Callable[[bytes], bytes] | None = None
+    seed_blob_encrypt: Callable[[bytes], bytes] | None = None
+    seed_blob_decrypt: Callable[[bytes], bytes] | None = None
+
+    @property
+    def seed_encrypt(self) -> Callable[[bytes], bytes] | None:
+        """Transform for SEED-tar writes: the seed pair, else the session pair."""
+        return self.seed_blob_encrypt or self.session_blob_encrypt
+
+    @property
+    def seed_decrypt(self) -> Callable[[bytes], bytes] | None:
+        """Transform for SEED-tar reads: the seed pair, else the session pair."""
+        return self.seed_blob_decrypt or self.session_blob_decrypt
+
+    def _validate_blob_crypto(self) -> None:
+        """Raise if either crypto pair is asymmetric. Call from each engine
+        config's ``__post_init__``."""
+        if (self.session_blob_encrypt is None) != (self.session_blob_decrypt is None):
+            raise ValueError(
+                f"{type(self).__name__}: session_blob_encrypt and "
+                "session_blob_decrypt must be set together (both callables) "
+                "or both left as None; one without the other is a config error."
+            )
+        if (self.seed_blob_encrypt is None) != (self.seed_blob_decrypt is None):
+            raise ValueError(
+                f"{type(self).__name__}: seed_blob_encrypt and seed_blob_decrypt "
+                "must be set together or both left as None."
+            )

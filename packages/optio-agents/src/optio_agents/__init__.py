@@ -9,6 +9,7 @@ from optio_agents.account import AccountInfo, UsageWindow, EMPTY, is_limited
 from optio_agents.agent_info import AgentInfo
 from optio_agents.config_types import (
     AllowedDir,
+    BlobCryptoConfigMixin,
     ConversationMode,
     SeedProvider,
     SeedUnavailableError,
@@ -66,6 +67,7 @@ __all__ = [
     "is_limited",
     "AgentInfo",
     "AllowedDir",
+    "BlobCryptoConfigMixin",
     "ConversationMode",
     "SeedProvider",
     "SeedUnavailableError",
