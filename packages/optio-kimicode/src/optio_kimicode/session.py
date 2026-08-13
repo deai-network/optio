@@ -196,8 +196,8 @@ async def _merge_seed_with_refresh(
             ctx._db,
             prefix=ctx._prefix,
             seed_id=seed_id,
-            encrypt=config.session_blob_encrypt,
-            decrypt=config.session_blob_decrypt,
+            encrypt=config.seed_encrypt,
+            decrypt=config.seed_decrypt,
         )
         alive = res["alive"]
     except Exception:  # noqa: BLE001 — a transport bug is inconclusive, not dead
@@ -229,7 +229,7 @@ async def _merge_seed_with_refresh(
         seed_id=seed_id,
         manifest=KIMI_SEED_MANIFEST,
         suffix=KIMI_SEED_SUFFIX,
-        decrypt=config.session_blob_decrypt,
+        decrypt=config.seed_decrypt,
     )
 
 
@@ -493,8 +493,8 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                     ctx, host,
                     seed_id=resolved_seed_id,
                     baseline=cred_baseline,
-                    encrypt=config.session_blob_encrypt,
-                    decrypt=config.session_blob_decrypt,
+                    encrypt=config.seed_encrypt,
+                    decrypt=config.seed_decrypt,
                     lease_holder=lease_holder,
                 )
             )
@@ -748,8 +748,8 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                     ctx, host,
                     seed_id=resolved_seed_id,
                     baseline=cred_baseline,
-                    encrypt=config.session_blob_encrypt,
-                    decrypt=config.session_blob_decrypt,
+                    encrypt=config.seed_encrypt,
+                    decrypt=config.seed_decrypt,
                     lease_holder=lease_holder,
                 )
             )
@@ -917,8 +917,8 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                     ctx, host,
                     seed_id=resolved_seed_id,
                     baseline=cred_baseline,
-                    encrypt=config.session_blob_encrypt,
-                    decrypt=config.session_blob_decrypt,
+                    encrypt=config.seed_encrypt,
+                    decrypt=config.seed_decrypt,
                 )
             except Exception:
                 _LOG.exception("final credential save-back failed")
@@ -958,7 +958,7 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                         ctx, host,
                         manifest=KIMI_SEED_MANIFEST,
                         suffix=KIMI_SEED_SUFFIX,
-                        encrypt=config.session_blob_encrypt,
+                        encrypt=config.seed_encrypt,
                     )
                     _trace("finally: capture_seed DONE id=%s", seed_id)
                     # Normalized account from the seeded token (the isolated home

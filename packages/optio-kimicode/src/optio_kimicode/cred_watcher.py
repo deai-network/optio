@@ -101,7 +101,8 @@ async def save_back_if_changed(
 
     The write goes through ``seeds.overwrite_seed_member`` (host-free: it takes
     the raw file bytes and rewrites GridFS directly), using ``encrypt``/
-    ``decrypt`` for the seed blob (Task 3.0's ``session_blob_*`` callables)."""
+    ``decrypt`` for the seed blob (the config's ``seed_encrypt``/``seed_decrypt``
+    accessors)."""
     raw = await _read_cred_bytes(host)
     if raw is None:
         return baseline

@@ -18,7 +18,7 @@ from optio_agents import (
     TOOL_VERBOSITIES,
     ToolVerbosity,
 )
-from optio_agents.config_types import ClaustrumConfigMixin
+from optio_agents.config_types import BlobCryptoConfigMixin, ClaustrumConfigMixin
 from optio_agents.protocol.session import (
     DeliverableCallback,
     HookCallback,
@@ -98,7 +98,7 @@ _VALID_THINKING_VERBOSITY = {"hidden", "visible"}
 
 
 @dataclass(frozen=True, kw_only=True)
-class KimiCodeTaskConfig(ClaustrumConfigMixin):
+class KimiCodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
     """Configuration for one optio-kimicode task instance.
 
     Stage 0 covers iframe (``kimi web``) mode on the local host. Resume,
@@ -109,8 +109,10 @@ class KimiCodeTaskConfig(ClaustrumConfigMixin):
     ``ClaustrumConfigMixin`` — the fields stay top-level (callers write
     ``fs_isolation=`` / ``delivery_type=`` verbatim). ``delivery_type`` is
     MANDATORY when ``fs_isolation`` is on (validated in ``__post_init__`` via
-    ``_validate_claustrum``). The config is frozen (immutable) + keyword-only so
-    the mixin's all-defaulted fields can precede the required
+    ``_validate_claustrum``). The at-rest blob-crypto quartet
+    (``session_blob_*`` / ``seed_blob_*``) is likewise inherited from the
+    shared ``BlobCryptoConfigMixin``. The config is frozen (immutable) +
+    keyword-only so the mixins' all-defaulted fields can precede the required
     ``consumer_instructions`` without a field-ordering clash.
     """
 
@@ -175,14 +177,11 @@ class KimiCodeTaskConfig(ClaustrumConfigMixin):
     # back to the agent as feedback. Off (None) by default.
     on_caller_message: CallerMessageCallback | None = None
 
-    # Optional pair of synchronous bytes->bytes transforms wrapping the kimi
-    # session subtree tar at GridFS write/read (the two-blob snapshot's
-    # sessionBlobId, mirrors optio-opencode/optio-claudecode). When both are
-    # set, the session blob is encrypted AT REST; when both are None (default),
-    # plaintext is used (backward-compatible). Setting only one raises a config
-    # error: asymmetric usage is always a mistake.
-    session_blob_encrypt: "Callable[[bytes], bytes] | None" = None
-    session_blob_decrypt: "Callable[[bytes], bytes] | None" = None
+    # The at-rest blob-crypto quartet (``session_blob_encrypt/decrypt`` for the
+    # snapshot tar, ``seed_blob_encrypt/decrypt`` for the shared pool-account
+    # seed tar, with seed→session fallback) is inherited from the shared
+    # ``BlobCryptoConfigMixin`` — fields stay top-level, paired-symmetry is
+    # validated in ``__post_init__`` via ``_validate_blob_crypto``.
 
     # --- seed surface (start fresh from a stored environment) -----------
     # Consumed (default/fallback): merge this seed's environment (kimi
@@ -283,14 +282,7 @@ class KimiCodeTaskConfig(ClaustrumConfigMixin):
         # The claustrum triad is validated FIRST so a missing delivery_type fails
         # fast (before the engine-specific checks below).
         self._validate_claustrum()
-        e = self.session_blob_encrypt is not None
-        d = self.session_blob_decrypt is not None
-        if e != d:
-            raise ValueError(
-                "KimiCodeTaskConfig: session_blob_encrypt and "
-                "session_blob_decrypt must be set together (both callables) "
-                "or both left as None; one without the other is a config error."
-            )
+        self._validate_blob_crypto()
         if (
             self.permission_mode is not None
             and self.permission_mode not in _VALID_PERMISSION_MODES

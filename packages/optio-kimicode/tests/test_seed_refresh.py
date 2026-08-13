@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import pytest
 
+from optio_agents.config_types import BlobCryptoConfigMixin
+
 from optio_kimicode import session as kc
 
 
@@ -24,9 +26,10 @@ class _Ctx:
     _prefix = "pfx"
 
 
-class _Cfg:
-    session_blob_encrypt = None
-    session_blob_decrypt = None
+class _Cfg(BlobCryptoConfigMixin):
+    """Config stub carrying the real blob-crypto fields + seed_encrypt /
+    seed_decrypt accessors (session accesses seed transforms only through
+    them)."""
 
 
 def _patch(monkeypatch, *, verify, merge, load_seed=None):
@@ -117,3 +120,68 @@ async def test_merge_proceeds_when_refresh_raises(monkeypatch):
     await kc._merge_seed_with_refresh(_Ctx(), object(), _Cfg(), seed_id="s9")
 
     assert calls == ["merge"]
+
+
+@pytest.mark.asyncio
+async def test_seed_ops_route_the_seed_blob_pair(monkeypatch):
+    """With DISTINCT seed_blob vs session_blob callables configured, the seed
+    ops (pre-merge refresh + merge) must receive the SEED pair — routed through
+    the config's ``seed_encrypt``/``seed_decrypt`` accessors — never the
+    snapshot's session pair."""
+    got: dict = {}
+
+    def _seed_enc(b: bytes) -> bytes:
+        return b
+
+    def _seed_dec(b: bytes) -> bytes:
+        return b
+
+    def _sess_enc(b: bytes) -> bytes:
+        return b
+
+    def _sess_dec(b: bytes) -> bytes:
+        return b
+
+    async def _verify(db, *, prefix, seed_id, encrypt=None, decrypt=None):
+        got["verify"] = (encrypt, decrypt)
+        return {"alive": True, "accounts": []}
+
+    async def _merge(ctx, host, *, seed_id, manifest, suffix, decrypt=None):
+        got["merge"] = decrypt
+
+    _patch(monkeypatch, verify=_verify, merge=_merge)
+    cfg = _Cfg(
+        session_blob_encrypt=_sess_enc, session_blob_decrypt=_sess_dec,
+        seed_blob_encrypt=_seed_enc, seed_blob_decrypt=_seed_dec,
+    )
+    await kc._merge_seed_with_refresh(_Ctx(), object(), cfg, seed_id="s9")
+
+    assert got["verify"] == (_seed_enc, _seed_dec)
+    assert got["merge"] is _seed_dec
+
+
+@pytest.mark.asyncio
+async def test_seed_ops_fall_back_to_the_session_pair(monkeypatch):
+    """Single-key callers set only ``session_blob_*``: the accessors fall back
+    to the session pair, so seed ops keep decrypting (back-compat)."""
+    got: dict = {}
+
+    def _sess_enc(b: bytes) -> bytes:
+        return b
+
+    def _sess_dec(b: bytes) -> bytes:
+        return b
+
+    async def _verify(db, *, prefix, seed_id, encrypt=None, decrypt=None):
+        got["verify"] = (encrypt, decrypt)
+        return {"alive": True, "accounts": []}
+
+    async def _merge(ctx, host, *, seed_id, manifest, suffix, decrypt=None):
+        got["merge"] = decrypt
+
+    _patch(monkeypatch, verify=_verify, merge=_merge)
+    cfg = _Cfg(session_blob_encrypt=_sess_enc, session_blob_decrypt=_sess_dec)
+    await kc._merge_seed_with_refresh(_Ctx(), object(), cfg, seed_id="s9")
+
+    assert got["verify"] == (_sess_enc, _sess_dec)
+    assert got["merge"] is _sess_dec
