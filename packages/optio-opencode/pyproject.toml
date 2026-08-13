@@ -36,7 +36,7 @@ dependencies = [
     # account_from_xai) rather than reimplement each vendor's fetch+map.
     "optio-claudecode>=0.6,<0.7",
     "optio-codex>=0.3,<0.4",
-    "optio-grok>=0.3,<0.4",
+    "optio-grok>=0.4,<0.5",
     "asyncssh>=2.14",
     "aiohttp>=3.9",
 ]
