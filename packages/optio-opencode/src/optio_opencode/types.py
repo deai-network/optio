@@ -73,7 +73,7 @@ def _identity_resume_refresh(config: "OpencodeTaskConfig") -> "OpencodeTaskConfi
 
 
 @dataclass(frozen=True, kw_only=True)
-class OpencodeTaskConfig(BlobCryptoConfigMixin, ClaustrumConfigMixin):
+class OpencodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
     """Configuration for one optio-opencode task instance.
 
     Inherits the claustrum filesystem-isolation triad (``fs_isolation`` /

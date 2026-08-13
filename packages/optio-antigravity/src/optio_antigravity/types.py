@@ -91,7 +91,7 @@ def _identity_resume_refresh(
 
 
 @dataclass(frozen=True, kw_only=True)
-class AntigravityTaskConfig(BlobCryptoConfigMixin, ClaustrumConfigMixin):
+class AntigravityTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
     """Configuration for one optio-antigravity task instance (Stage 0).
 
     Stage 0 covers iframe/ttyd mode on the local host. Resume, seeds,
