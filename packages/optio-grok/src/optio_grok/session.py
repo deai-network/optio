@@ -298,7 +298,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                 seed_id=resolved_seed_id,
                 manifest=GROK_SEED_MANIFEST,
                 suffix=GROK_SEED_SUFFIX,
-                decrypt=config.session_blob_decrypt,
+                decrypt=config.seed_decrypt,
             )
             # Baseline the merged auth.json so the in-session watcher and the
             # teardown backstop only save back a genuinely rotated token.
@@ -440,8 +440,8 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                     ctx, host,
                     seed_id=resolved_seed_id,
                     baseline=cred_baseline,
-                    encrypt=config.session_blob_encrypt,
-                    decrypt=config.session_blob_decrypt,
+                    encrypt=config.seed_encrypt,
+                    decrypt=config.seed_decrypt,
                     lease_holder=lease_holder,
                 )
             )
@@ -860,8 +860,8 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                     ctx, host,
                     seed_id=resolved_seed_id,
                     baseline=cred_baseline,
-                    encrypt=config.session_blob_encrypt,
-                    decrypt=config.session_blob_decrypt,
+                    encrypt=config.seed_encrypt,
+                    decrypt=config.seed_decrypt,
                 )
             except Exception:
                 _LOG.exception("final credential save-back failed")
@@ -901,7 +901,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                         ctx, host,
                         manifest=GROK_SEED_MANIFEST,
                         suffix=GROK_SEED_SUFFIX,
-                        encrypt=config.session_blob_encrypt,
+                        encrypt=config.seed_encrypt,
                     )
                     # Normalized account from the just-authed identity (the
                     # isolated home .grok/auth.json is still on disk pre-cleanup);

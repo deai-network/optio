@@ -22,7 +22,7 @@ from optio_agents import (
     TOOL_VERBOSITIES,
     ToolVerbosity,
 )
-from optio_agents.config_types import ClaustrumConfigMixin
+from optio_agents.config_types import BlobCryptoConfigMixin, ClaustrumConfigMixin
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -82,14 +82,16 @@ def _identity_resume_refresh(config: "GrokTaskConfig") -> "GrokTaskConfig":
 
 
 @dataclass(frozen=True, kw_only=True)
-class GrokTaskConfig(ClaustrumConfigMixin):
+class GrokTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
     """Configuration for one optio-grok task instance.
 
     Inherits the claustrum filesystem-isolation triad (``fs_isolation`` /
-    ``extra_allowed_dirs`` / ``delivery_type``) from ``ClaustrumConfigMixin``;
-    those fields stay top-level (callers write ``fs_isolation=`` /
-    ``delivery_type=`` verbatim). Frozen because the mixin is frozen;
-    ``kw_only`` because the mixin contributes defaulted fields ahead of the
+    ``extra_allowed_dirs`` / ``delivery_type``) from ``ClaustrumConfigMixin``
+    and the GridFS blob-crypto quartet (``session_blob_encrypt/decrypt`` /
+    ``seed_blob_encrypt/decrypt``) from ``BlobCryptoConfigMixin``; those
+    fields stay top-level (callers write ``fs_isolation=`` /
+    ``session_blob_encrypt=`` verbatim). Frozen because the mixins are frozen;
+    ``kw_only`` because the mixins contribute defaulted fields ahead of the
     required ``consumer_instructions``.
     """
 
@@ -172,14 +174,13 @@ class GrokTaskConfig(ClaustrumConfigMixin):
     # None → the framework defaults (see optio_host.archive). Keep home/.grok
     # OUT of this list: it carries the grok session state that --continue needs.
     workdir_exclude: list[str] | None = None
-    # Optional pair of synchronous bytes->bytes transforms wrapping the resume
-    # snapshot's workdir tar at GridFS write/read. grok's session store lives
-    # under home/.grok INSIDE the workdir, so this one tar IS the session blob
-    # (unlike claudecode's separate home/.claude blob). Both set → encrypted at
-    # rest; both None (default) → plaintext. Setting only one is a config error
-    # (asymmetric usage is always a mistake).
-    session_blob_encrypt: Callable[[bytes], bytes] | None = None
-    session_blob_decrypt: Callable[[bytes], bytes] | None = None
+    # The blob-crypto transforms (``session_blob_encrypt/decrypt`` wrapping the
+    # resume snapshot's workdir tar, ``seed_blob_encrypt/decrypt`` wrapping the
+    # shared pool-account seed tar, seed falling back to session when unset) are
+    # inherited from BlobCryptoConfigMixin. grok's session store lives under
+    # home/.grok INSIDE the workdir, so that one tar IS the session blob
+    # (unlike claudecode's separate home/.claude blob). Seed ops read the seed
+    # transforms only through the ``seed_encrypt`` / ``seed_decrypt`` accessors.
     # Hook fired on resume only (never on fresh start). Receives the original
     # config; returns a (possibly mutated) config. The harness re-renders
     # AGENTS.md from the returned config and writes it back only when it differs
@@ -256,8 +257,10 @@ class GrokTaskConfig(ClaustrumConfigMixin):
 
     def __post_init__(self) -> None:
         # Validate the claustrum triad first so a missing delivery_type fails
-        # fast (before the other, engine-specific checks below).
+        # fast (before the other, engine-specific checks below), then the
+        # blob-crypto pairing (both session and seed pairs all-or-nothing).
         self._validate_claustrum()
+        self._validate_blob_crypto()
         if (
             self.permission_mode is not None
             and self.permission_mode not in _VALID_PERMISSION_MODES
@@ -304,16 +307,6 @@ class GrokTaskConfig(ClaustrumConfigMixin):
             raise ValueError(
                 f"GrokTaskConfig.thinking_verbosity={self.thinking_verbosity!r} "
                 f"is not one of {sorted(_VALID_THINKING_VERBOSITY)}"
-            )
-        # Session-blob transforms are all-or-nothing: encrypting on write with
-        # no matching decrypt on read (or vice versa) always corrupts resume.
-        e = self.session_blob_encrypt is not None
-        d = self.session_blob_decrypt is not None
-        if e != d:
-            raise ValueError(
-                "GrokTaskConfig: session_blob_encrypt and session_blob_decrypt "
-                "must be set together or both left None; one without the other "
-                "is a config error."
             )
         # Frontend-parity features are opt-in flags that only make sense with
         # the conversation UI wired (mirrors optio-claudecode).

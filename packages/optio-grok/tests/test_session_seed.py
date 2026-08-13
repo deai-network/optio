@@ -145,3 +145,87 @@ async def test_seeded_fresh_session_plants_identity_before_launch(
     )
 
     assert any(p.endswith("seed_present.txt") for p in delivered), delivered
+
+
+async def test_seed_ops_use_seed_pair_snapshot_ops_session_pair(
+    mongo_db, task_root, shim_install_dir, monkeypatch,
+):
+    """Crypto routing: with DISTINCT seed_blob vs session_blob transforms
+    configured, every seed op (merge_seed, in-session credential watcher,
+    teardown save-back backstop, capture_seed) receives the seed pair via the
+    ``config.seed_encrypt`` / ``seed_decrypt`` accessors, while the snapshot
+    capture keeps the session pair. The ops themselves are mocked; the
+    assertion is callable identity."""
+    monkeypatch.setenv("FAKE_GROK_SCENARIO", "seed")
+
+    from optio_grok import cred_watcher
+    from optio_grok import session as grok_session
+
+    seed_enc, seed_dec = (lambda b: b), (lambda b: b)
+    sess_enc, sess_dec = (lambda b: b), (lambda b: b)
+
+    used: dict[str, object] = {}
+
+    async def _merge_seed(ctx, host, *, seed_id, manifest, suffix, decrypt):
+        used["merge_seed.decrypt"] = decrypt
+
+    async def _run_watcher(
+        ctx, host, *, seed_id, baseline, encrypt, decrypt, lease_holder=None,
+    ):
+        used["watcher.encrypt"] = encrypt
+        used["watcher.decrypt"] = decrypt
+        await asyncio.Event().wait()  # parked until teardown cancels it
+
+    async def _save_back(ctx, host, *, seed_id, baseline, encrypt, decrypt):
+        used["save_back.encrypt"] = encrypt
+        used["save_back.decrypt"] = decrypt
+        return baseline
+
+    async def _capture_seed(ctx, host, *, manifest, suffix, encrypt):
+        used["capture_seed.encrypt"] = encrypt
+        return "0" * 24
+
+    async def _declare_metadata(db, *, prefix, suffix, seed_id, metadata):
+        pass  # the captured id is fake; skip the metadata stamp
+
+    async def _capture_snapshot(
+        ctx, host, *, end_state, workdir_exclude, session_blob_encrypt,
+        session_id=None,
+    ):
+        used["snapshot.encrypt"] = session_blob_encrypt
+
+    async def _resolve(host):
+        return None  # keep capture-time account analysis network-free
+
+    monkeypatch.setattr(grok_session._seeds, "merge_seed", _merge_seed)
+    monkeypatch.setattr(grok_session._seeds, "capture_seed", _capture_seed)
+    monkeypatch.setattr(grok_session._seeds, "declare_metadata", _declare_metadata)
+    monkeypatch.setattr(cred_watcher, "run_credential_watcher", _run_watcher)
+    monkeypatch.setattr(cred_watcher, "save_back_if_changed", _save_back)
+    monkeypatch.setattr(grok_session, "_capture_snapshot", _capture_snapshot)
+    monkeypatch.setattr(grok_session, "resolve_capture_account", _resolve)
+
+    async def on_seed_saved(seed_id: str, info: str | None) -> None:
+        pass  # presence enables the capture path
+
+    ctx = await _make_ctx(mongo_db, "grok_seed_routing", resume=False)
+    await run_grok_session(
+        ctx,
+        _cfg(
+            shim_install_dir,
+            seed_id="00" * 12,
+            on_seed_saved=on_seed_saved,
+            session_blob_encrypt=sess_enc,
+            session_blob_decrypt=sess_dec,
+            seed_blob_encrypt=seed_enc,
+            seed_blob_decrypt=seed_dec,
+        ),
+    )
+
+    assert used["merge_seed.decrypt"] is seed_dec
+    assert used["watcher.encrypt"] is seed_enc
+    assert used["watcher.decrypt"] is seed_dec
+    assert used["save_back.encrypt"] is seed_enc
+    assert used["save_back.decrypt"] is seed_dec
+    assert used["capture_seed.encrypt"] is seed_enc
+    assert used["snapshot.encrypt"] is sess_enc
