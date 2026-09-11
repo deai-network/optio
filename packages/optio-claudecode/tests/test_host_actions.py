@@ -720,6 +720,39 @@ async def test_require_tmux_raises_clear_error_when_missing():
         await host_actions._require_tmux(_RequireTmuxFakeHost(tmux_ok=False))
 
 
+class _RemoteLikeTmuxHost:
+    """Emulates RemoteHost: commands run as ``cd <cwd or workdir> && <cmd>``."""
+
+    def __init__(self, workdir):
+        self.workdir = workdir
+
+    async def run_command(self, cmd, *, cwd=None, env=None):
+        run_cwd = cwd if cwd is not None else self.workdir
+        if not os.path.isdir(run_cwd):
+            return _RequireTmuxFakeResult(
+                1, "", f"bash: line 1: cd: {run_cwd}: No such file or directory",
+            )
+        if "command -v tmux" in cmd:
+            return _RequireTmuxFakeResult(0, "/usr/bin/tmux\n")
+        return _RequireTmuxFakeResult(0, "")
+
+
+async def test_require_tmux_does_not_depend_on_workdir(tmp_path):
+    # Resume's orphan rescue calls this before setup_workdir, when the workdir
+    # may not exist yet; the lookup must not run inside it.
+    host = _RemoteLikeTmuxHost(str(tmp_path / "missing"))
+    assert await host_actions._require_tmux(host) == "/usr/bin/tmux"
+
+
+async def test_require_tmux_error_includes_lookup_stderr():
+    class _FailingHost(_RequireTmuxFakeHost):
+        async def run_command(self, cmd, **kwargs):
+            return _RequireTmuxFakeResult(1, "", "bash: something broke")
+
+    with pytest.raises(RuntimeError, match="something broke"):
+        await host_actions._require_tmux(_FailingHost(tmux_ok=True))
+
+
 def test_build_tmux_session_argv_shape(monkeypatch):
     monkeypatch.delenv("OPTIO_CLAUDECODE_NETNS", raising=False)
     argv = host_actions.build_tmux_session_argv(

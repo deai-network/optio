@@ -1251,6 +1251,15 @@ async def _marker_present(host: "Host", marker_path: str) -> bool:
     return "YES" in r.stdout
 
 
+async def _workdir_present(host: "Host") -> bool:
+    # cwd="/": the workdir itself may be missing, and RemoteHost runs every
+    # command as `cd <cwd> && ...`.
+    r = await host.run_command(
+        f"test -d {shlex.quote(host.workdir)} && echo YES || true", cwd="/",
+    )
+    return "YES" in r.stdout
+
+
 async def _rescue_orphan_if_present(
     ctx: ProcessContext, host: Host, config: ClaudeCodeTaskConfig,
 ) -> None:
@@ -1270,6 +1279,11 @@ async def _rescue_orphan_if_present(
     if not getattr(config, "supports_resume", True):
         return
     if not bool(getattr(ctx, "resume", False)):
+        return
+    # A gracefully stopped task was already snapshotted and its workdir
+    # removed; a crash leaves the workdir in place. No workdir, no orphan —
+    # and every probe below would otherwise run inside the missing workdir.
+    if not await _workdir_present(host):
         return
 
     socket = host_actions._tmux_socket_path(host)

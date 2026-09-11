@@ -1,13 +1,16 @@
+import os
+import shlex
+
 import pytest
 
 import optio_claudecode.session as S
 
 
 class _Result:
-    def __init__(self, stdout=""):
+    def __init__(self, stdout="", exit_code=0, stderr=""):
         self.stdout = stdout
-        self.stderr = ""
-        self.exit_code = 0
+        self.stderr = stderr
+        self.exit_code = exit_code
 
 
 class _Host:
@@ -22,6 +25,11 @@ class _Host:
 
     async def run_command(self, cmd, **kwargs):
         self.commands.append(cmd)
+        # Emulate the `test -d <workdir> && echo YES || true` probe against the
+        # real filesystem (tests pass an existing tmp_path as the workdir).
+        if cmd.startswith("test -d "):
+            path = shlex.split(cmd)[2]
+            return _Result("YES\n" if os.path.isdir(path) else "")
         # Emulate `test -e <path> && echo YES || true` marker probes.
         if cmd.startswith("test -e "):
             path = cmd.split("test -e ", 1)[1].split(" ", 1)[0].strip("'\"")
@@ -142,6 +150,58 @@ async def test_skipped_when_not_resuming(patched, tmp_path):
     assert patched["capture"] == []
 
 
+class _RemoteLikeHost:
+    """Emulates ``RemoteHost.run_command``, which runs every command as
+    ``cd <cwd or workdir> && <cmd>``: with the workdir missing, any command
+    relying on the default cwd fails the ``cd``."""
+
+    def __init__(self, workdir):
+        self.workdir = workdir
+        self.commands = []
+
+    async def run_command(self, cmd, *, cwd=None, env=None):
+        run_cwd = cwd if cwd is not None else self.workdir
+        self.commands.append((cmd, run_cwd))
+        if not os.path.isdir(run_cwd):
+            return _Result(
+                exit_code=1,
+                stderr=f"bash: line 1: cd: {run_cwd}: No such file or directory",
+            )
+        if "command -v tmux" in cmd:
+            return _Result("/usr/bin/tmux\n")
+        if cmd.startswith("test -d "):
+            path = shlex.split(cmd)[2]
+            return _Result("YES\n" if os.path.isdir(path) else "")
+        return _Result()
+
+    async def write_text(self, rel, text):
+        raise AssertionError("rescue must not write into a missing workdir")
+
+
+@pytest.mark.asyncio
+async def test_noop_when_workdir_missing_on_remote_worker(monkeypatch, tmp_path):
+    # Resume after a graceful stop: the stop snapshotted the task and removed
+    # its workdir, so there is nothing to rescue. On an SSH worker the probes
+    # used to run inside the missing workdir, the `cd` failed, and
+    # _require_tmux misreported it as "tmux is required".
+    calls = []
+
+    async def _teardown(host, **kw):
+        calls.append("teardown")
+
+    async def _capture(ctx, host, **kw):
+        calls.append("capture")
+
+    monkeypatch.setattr(S.host_actions, "teardown_session_tree", _teardown)
+    monkeypatch.setattr(S, "_capture_snapshot", _capture)
+
+    host = _RemoteLikeHost(str(tmp_path / "gone" / "workdir"))
+    await S._rescue_orphan_if_present(_Ctx(), host, _Config())
+    assert calls == []
+    # No probe relied on the missing workdir as its cwd.
+    assert all(cwd != host.workdir for _, cwd in host.commands)
+
+
 # --------------------------------------------------------------------------
 # Integration: real (shim) detached session -> orphan -> rescue.
 #
@@ -153,7 +213,6 @@ async def test_skipped_when_not_resuming(patched, tmp_path):
 # cleared. Mirrors the launch scaffolding in test_tmux_persistence.py.
 # --------------------------------------------------------------------------
 
-import os  # noqa: E402
 import shutil  # noqa: E402
 
 from optio_claudecode import ClaudeCodeTaskConfig  # noqa: E402

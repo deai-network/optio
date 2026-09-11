@@ -413,16 +413,20 @@ async def _require_tmux(host: "Host") -> str:
 
     claudecode runs claude inside a detached tmux session (so the agent
     survives viewer disconnects); tmux is a worker prerequisite. Resolved via a
-    login shell so PATH additions from the worker profile apply. No
-    auto-install: a missing tmux fails fast with an actionable message.
+    login shell so PATH additions from the worker profile apply. Runs from
+    ``/``, not the workdir: resume's orphan rescue calls this before
+    setup_workdir, and RemoteHost runs every command as ``cd <cwd> && ...``.
+    No auto-install: a missing tmux fails fast with an actionable message.
     """
-    result = await host.run_command("bash -lc 'command -v tmux'")
+    result = await host.run_command("bash -lc 'command -v tmux'", cwd="/")
     path = (result.stdout or "").strip()
     if result.exit_code != 0 or not path:
+        detail = (result.stderr or "").strip()
         raise RuntimeError(
             "tmux is required on the worker for optio-claudecode (claude runs "
             "inside a detached tmux session). Install tmux (e.g. apt-get install "
             "tmux) or add it to the worker/container image."
+            + (f" Lookup failed (exit {result.exit_code}): {detail[:300]}" if detail else "")
         )
     return path
 
