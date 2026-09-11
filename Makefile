@@ -52,6 +52,12 @@ check-tooling:  ## Verify node + pnpm match repo pins; clear errors if missing
 	   echo "  Run once: corepack enable"; \
 	   exit 1; \
 	 fi
+	@if ! pnpm_version=$$(pnpm --version) || [ -z "$$pnpm_version" ]; then \
+	   echo "ERROR: pnpm is on PATH but fails to run ('pnpm --version' failed)."; \
+	   echo "  Known cause: an old corepack (e.g. Debian node-corepack 0.24.0) cannot start pnpm 11;"; \
+	   echo "  corepack 0.35.0 works. Upgrade corepack, or run with DISABLE_V8_COMPILE_CACHE=1."; \
+	   exit 1; \
+	 fi
 	@echo "OK: node $$(node --version), pnpm $$(pnpm --version) (managed via corepack against package.json packageManager pin)"
 
 install: check-tooling $(VENV)/bin/python  ## Install dependencies (TS workspace + Python packages)
