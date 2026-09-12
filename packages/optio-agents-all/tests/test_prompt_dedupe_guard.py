@@ -27,7 +27,9 @@ SHARED_ONLY_PHRASES = (
 @pytest.mark.parametrize("pkg", WRAPPERS)
 def test_wrapper_prompt_module_has_no_shared_prompt_text(pkg):
     mod = importlib.import_module(f"{pkg}.prompt")
-    src = inspect.getsource(mod)
+    # Normalize whitespace so that template phrases wrapped across source lines match
+    # a copy-pasted version that may be re-wrapped.
+    src = " ".join(inspect.getsource(mod).split())
     for phrase in SHARED_ONLY_PHRASES:
         assert phrase not in src, f"{pkg}.prompt carries shared prompt text: {phrase!r}"
     assert hasattr(mod, "PROFILE") and hasattr(mod, "compose_agents_md")
