@@ -150,10 +150,13 @@ iframe/tmux launch is unchanged.
   "echo DONE" row would not linger above the "conversation ended" divider; with
   real rows that is ordinary, finished history.)
 - The shared tool item gains optional fields: `callId` (the `tool_use` `id`),
-  `startedAt` and `endedAt` (epoch ms), and `background` (boolean).
+  `result` (the call's output), `startedAt` and `endedAt` (epoch ms), and
+  `background` (boolean). The existing `preview` keeps its meaning (the ACP
+  engines' content-derived detail): `renderDetail` shows either the args table
+  or `preview`, never both, so the output needs its own field.
 - A `tool_result` in a later `user` event, matched by `tool_use_id`:
   - sets `status: "done"`, or `"failed"` when `is_error` is true;
-  - sets `preview` to the result text (string content, or the text of its text
+  - sets `result` to the result text (string content, or the text of its text
     blocks), trimmed to 2000 characters;
   - sets `endedAt` from the event `timestamp`.
 
@@ -167,7 +170,8 @@ iframe/tmux launch is unchanged.
 - The generic `ConversationView` rendering already implements the levels:
   `silent` hides rows, `description-while-active` hides finished rows,
   `description-only` keeps one line per call, `verbose` shows args and result and
-  collapses when finished. No change is needed there beyond section 5.
+  collapses when finished. Beyond section 5, the view only adds a result block
+  under the args (shown while the verbose row is open).
 
 ### 5. Elapsed-time counter (`ConversationView.tsx`)
 
@@ -196,7 +200,7 @@ iframe/tmux launch is unchanged.
   `tool_result` ("running in background with ID …") does not finish it: status
   stays running and the counter keeps going.
 - `system/task_notification` finishes that row: `status` "completed" -> `done`,
-  "failed" -> `failed`; `preview` is the summary; `endedAt` is the event
+  "failed" -> `failed`; `result` is the summary; `endedAt` is the event
   timestamp, or the arrival time when absent.
 - A `user` event whose text is a `<task-notification>` element, or whose
   `origin.kind` is `"task-notification"`, never becomes a user bubble. The reducer
@@ -204,10 +208,13 @@ iframe/tmux launch is unchanged.
   exactly like `system/task_notification`.
 - Each `task_id` is applied once, whichever route delivers it first. The reducer
   keeps the set of finished task ids.
-- When no matching row exists (verbosity `silent`, or a replay that lacks the
-  Bash call), a muted activity row is added instead:
-  `✓ Background task finished: <summary>` (or `✗ … failed: …`). With `silent`,
-  that row is still shown: a finished background job is an event, not tool noise.
+- When no matching row exists (a replay that lacks the Bash call), a muted
+  activity row is added instead: `✓ Background task finished: <summary>` (or
+  `✗ Background task failed: <summary>`).
+- With verbosity `silent` the row exists but is hidden, and the reducer does not
+  know the verbosity. So the view renders a finished background row as that same
+  muted line (plus its duration) instead of hiding it: a finished background job
+  is an event, not tool noise.
 
 ## Edge cases
 
