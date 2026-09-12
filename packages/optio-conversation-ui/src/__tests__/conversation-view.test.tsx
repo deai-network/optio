@@ -74,6 +74,10 @@ function renderView(props: ConversationViewProps): ReturnType<typeof render> {
   return render(<ConfigProvider>{(<ConversationView {...props} />) as ReactElement}</ConfigProvider>);
 }
 
+function rerenderView(r: ReturnType<typeof render>, props: ConversationViewProps): void {
+  r.rerender(<ConfigProvider>{(<ConversationView {...props} />) as ReactElement}</ConfigProvider>);
+}
+
 describe('ConversationView item rendering', () => {
   it('renders each ChatItem kind', () => {
     renderView(makeProps({ state: makeState(ALL_KINDS) }));
@@ -366,5 +370,109 @@ describe('ConversationView tool rows: elapsed time, results, background jobs', (
     const line = screen.getByTestId('background-finished').textContent!;
     expect(line).toContain('⏹ Background task stopped: Lean-verify all 15');
     expect(line).toContain('6m 12s');
+  });
+
+  it('silent keeps a failed background job as one muted failed line', () => {
+    const state = makeState([
+      { kind: 'tool', name: 'Bash', input: { command: './build.sh' }, seq: 1, status: 'failed', background: true, result: 'Build test venv', startedAt: 0, endedAt: 65_000 },
+    ]);
+    renderView(makeProps({ state, toolVerbosity: 'silent' }));
+    expect(screen.queryByTestId('tool-call')).toBeNull();
+    const line = screen.getByTestId('background-finished').textContent!;
+    expect(line).toContain('✗ Background task failed: Build test venv');
+    expect(line).toContain('1m 05s');
+  });
+
+  it('a background line with an empty summary names the tool instead', () => {
+    const state = makeState([
+      { kind: 'tool', name: 'Bash', input: {}, seq: 1, status: 'done', background: true, result: '', startedAt: 0, endedAt: 9_000 },
+    ]);
+    renderView(makeProps({ state, toolVerbosity: 'silent' }));
+    expect(screen.getByTestId('background-finished').textContent).toBe('✓ Background task finished: Bash · 9s');
+  });
+
+  it('description-while-active keeps a finished background job as the muted line, hiding other finished rows', () => {
+    const state = makeState([
+      { kind: 'tool', name: 'Bash', input: { command: 'ls' }, seq: 1, status: 'done', startedAt: 0, endedAt: 1000 },
+      { kind: 'tool', name: 'Bash', input: { command: './harness.sh' }, seq: 2, status: 'done', background: true, result: 'Lean-verify all 15', startedAt: 0, endedAt: 372_000 },
+      { kind: 'tool', name: 'Read', input: { file_path: '/x' }, seq: 3, status: 'running' },
+    ]);
+    renderView(makeProps({ state, toolVerbosity: 'description-while-active' }));
+    const rows = screen.getAllByTestId('tool-call');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain('/x');
+    const line = screen.getByTestId('background-finished').textContent!;
+    expect(line).toContain('✓ Background task finished: Lean-verify all 15');
+    expect(line).toContain('6m 12s');
+  });
+
+  it('silent and description-while-active render the same background line', () => {
+    for (const status of ['done', 'failed', 'stopped'] as const) {
+      const row: ChatItem = { kind: 'tool', name: 'Bash', input: { command: 'x' }, seq: 1, status, background: true, result: 'job', startedAt: 0, endedAt: 3_000 };
+      const silent = renderView(makeProps({ state: makeState([row]), toolVerbosity: 'silent' }));
+      const html = screen.getByTestId('background-finished').outerHTML;
+      silent.unmount();
+      const active = renderView(makeProps({ state: makeState([row]), toolVerbosity: 'description-while-active' }));
+      expect(screen.getByTestId('background-finished').outerHTML).toBe(html);
+      active.unmount();
+    }
+  });
+});
+
+describe('ConversationView elapsed-counter interval', () => {
+  afterEach(() => vi.useRealTimers());
+
+  // The mount effect schedules one-shot focus timers (up to 1000 ms); let them
+  // fire so that only the counter interval is left to count.
+  function settle(): void {
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+  }
+  const runningRow = (seq: number, startedAt: number): ChatItem => ({ kind: 'tool', name: 'Bash', input: { command: 'sleep 99' }, seq, status: 'running', startedAt });
+  const doneRow = (seq: number): ChatItem => ({ kind: 'tool', name: 'Bash', input: { command: 'ls' }, seq, status: 'done', startedAt: 0, endedAt: 2_000 });
+  const props = (items: ChatItem[]) => makeProps({ state: makeState(items), toolVerbosity: 'description-only' });
+
+  it('runs one interval while a timed row runs and none once every row has finished', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    const r = renderView(props([runningRow(1, 90_000)]));
+    settle();
+    expect(vi.getTimerCount()).toBe(1);
+    rerenderView(r, props([{ ...(runningRow(1, 90_000) as any), status: 'done', endedAt: 95_000 }]));
+    expect(vi.getTimerCount()).toBe(0);
+    expect(screen.getByTestId('tool-elapsed').textContent).toBe(' · 5s');
+  });
+
+  it('clears the interval on unmount', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    const r = renderView(props([runningRow(1, 90_000)]));
+    settle();
+    expect(vi.getTimerCount()).toBe(1);
+    r.unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('starts no interval for running rows without startedAt', () => {
+    vi.useFakeTimers();
+    renderView(props([{ kind: 'tool', name: 'Bash', input: {}, seq: 1, status: 'running' }]));
+    settle();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(screen.queryByTestId('tool-elapsed')).toBeNull();
+  });
+
+  it('restarts counting when a new timed row arrives after all rows finished', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    const r = renderView(props([doneRow(1)]));
+    settle();
+    expect(vi.getTimerCount()).toBe(0);
+    rerenderView(r, props([doneRow(1), runningRow(2, 101_000)]));
+    expect(vi.getTimerCount()).toBe(1);
+    act(() => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(screen.getAllByTestId('tool-elapsed')[1].textContent).toBe(' · 2s');
   });
 });

@@ -209,4 +209,87 @@ describe('ConversationWidget', () => {
     expect(screen.queryByText(/task-notification/)).toBeNull();
     expect(screen.getByTestId('tool-call').getAttribute('data-tool-status')).toBe('done');
   });
+
+  // Wire times of the session below: a foreground call that finished, a
+  // background job that ran 12 s (task_updated end_time) and a call still
+  // running. System events carry no timestamp, as on the wire.
+  const at = (s: number) => new Date(Date.UTC(2026, 8, 12, 10, 0, s)).toISOString();
+  function fireSession(summary = 'Lean-verify all 15') {
+    fire({ type: 'assistant', timestamp: at(0), message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls', description: 'list files' } }] } });
+    fire({ type: 'user', timestamp: at(1), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'a b', is_error: false }] } });
+    fire({ type: 'assistant', timestamp: at(2), message: { role: 'assistant', content: [{ type: 'tool_use', id: 't2', name: 'Bash', input: { command: './harness.sh', run_in_background: true } }] } });
+    fire({ type: 'system', subtype: 'task_started', task_id: 'b2', tool_use_id: 't2', is_backgrounded: true });
+    fire({ type: 'user', timestamp: at(3), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't2', content: 'Command running in background with ID: b2', is_error: false }] } });
+    fire({ type: 'system', subtype: 'task_updated', task_id: 'b2', patch: { status: 'completed', end_time: Date.parse(at(14)) } });
+    fire({ type: 'system', subtype: 'task_notification', task_id: 'b2', tool_use_id: 't2', status: 'completed', summary });
+    fire({ type: 'assistant', timestamp: at(20), message: { role: 'assistant', content: [{ type: 'tool_use', id: 't3', name: 'Read', input: { file_path: '/x' } }] } });
+  }
+  const statuses = () => screen.queryAllByTestId('tool-call').map((r) => r.getAttribute('data-tool-status'));
+
+  it('tool verbosity silent: no tool rows, one muted line for the finished background job', () => {
+    render(<ConversationWidget {...propsV('silent')} />);
+    fireSession();
+    expect(statuses()).toEqual([]);
+    expect(screen.getByTestId('background-finished').textContent).toBe('✓ Background task finished: Lean-verify all 15 · 12s');
+  });
+
+  it('tool verbosity description-while-active: the running call, plus the background job line', () => {
+    render(<ConversationWidget {...propsV('description-while-active')} />);
+    fireSession();
+    expect(statuses()).toEqual(['running']);
+    expect(screen.getByTestId('tool-call').textContent).toContain('/x');
+    expect(screen.getByTestId('background-finished').textContent).toBe('✓ Background task finished: Lean-verify all 15 · 12s');
+  });
+
+  it('tool verbosity description-only: one line per call, the background job with its summary and duration', () => {
+    render(<ConversationWidget {...propsV('description-only')} />);
+    fireSession();
+    expect(statuses()).toEqual(['done', 'done', 'running']);
+    const bg = screen.getAllByTestId('tool-call')[1].textContent!;
+    expect(bg).toContain('Lean-verify all 15');
+    expect(bg).toContain('12s');
+    expect(screen.queryByTestId('background-finished')).toBeNull();
+    expect(screen.queryByTestId('tool-result')).toBeNull();
+  });
+
+  it('tool verbosity verbose: finished calls collapse and expand to their result; the running call shows its args', () => {
+    render(<ConversationWidget {...propsV('verbose')} />);
+    fireSession();
+    expect(statuses()).toEqual(['done', 'done', 'running']);
+    expect(screen.getByText('file_path')).toBeTruthy();
+    expect(screen.queryByTestId('tool-result')).toBeNull();
+    fireEvent.click(screen.getAllByTestId('tool-call')[0].firstElementChild!);
+    expect(screen.getByTestId('tool-result').textContent).toBe('a b');
+  });
+
+  it('an empty background summary shows the tool name in the silent line', () => {
+    render(<ConversationWidget {...propsV('silent')} />);
+    fireSession('');
+    expect(screen.getByTestId('background-finished').textContent).toBe('✓ Background task finished: Bash · 12s');
+  });
+
+  it('a call still running when the session closes shows as stopped', () => {
+    render(<ConversationWidget {...propsV('description-only')} />);
+    fire({ type: 'assistant', timestamp: at(0), message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'sleep 99' } }] } });
+    fire({ type: 'x-optio-closed', reason: 'process ended' });
+    const row = screen.getByTestId('tool-call');
+    expect(row.getAttribute('data-tool-status')).toBe('stopped');
+    expect(row.textContent).toContain('⏹');
+  });
+
+  it('a background job the resumed run lost shows as stopped after the resume marker', () => {
+    render(<ConversationWidget {...propsV('description-only')} />);
+    fire({ type: 'assistant', timestamp: at(0), message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: './harness.sh' } }] } });
+    fire({ type: 'system', subtype: 'task_started', task_id: 'b1', tool_use_id: 't1', is_backgrounded: true });
+    fire({ type: 'user', timestamp: at(1), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'Command running in background with ID: b1', is_error: false }] } });
+    fire({ type: 'x-optio-resumed' });
+    expect(screen.getByTestId('tool-call').getAttribute('data-tool-status')).toBe('stopped');
+    expect(screen.queryByTestId('conversation-closed')).toBeNull();
+  });
+
+  it('a new call whose input has a result key still shows as running', () => {
+    render(<ConversationWidget {...propsV('description-only')} />);
+    fire({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Write', input: { file_path: '/x', result: 'draft' } }] } });
+    expect(screen.getByTestId('tool-call').getAttribute('data-tool-status')).toBe('running');
+  });
 });

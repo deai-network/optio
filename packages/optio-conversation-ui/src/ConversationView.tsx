@@ -19,8 +19,9 @@ export interface ConversationViewProps {
   closed: boolean;
   busy: boolean;
   // 'silent' → no tool rows. 'description-while-active' → one line WHILE the
-  // tool runs, hidden once finished (used by analysis tasks). 'description-only'
-  // → a persistent one-line row (⟳/✓/✗). 'verbose' → the line plus the args/
+  // tool runs, hidden once finished (used by analysis tasks). At both, a
+  // finished background job keeps one muted outcome line. 'description-only'
+  // → a persistent one-line row (⟳/✓/✗/⏹). 'verbose' → the line plus the args/
   // result detail; a finished tool collapses to the line (click to expand).
   toolVerbosity: 'silent' | 'description-while-active' | 'description-only' | 'verbose';
   // Reasoning/thinking traces (e.g. grok's agent_thought_chunk). 'hidden' → not
@@ -183,6 +184,26 @@ function toolSummary(input: unknown): string {
     }
   }
   return '';
+}
+
+// The muted one-line outcome of a finished background job. The quiet levels
+// (silent, description-while-active) render it instead of the tool row: the
+// job ending is an event, not tool noise. An empty summary shows the tool name.
+function renderBackgroundLine(
+  item: Extract<ChatItem, { kind: 'tool' }>,
+  failed: boolean,
+  elapsed: string | null,
+  token: GlobalToken,
+): React.ReactNode {
+  const stopped = item.status === 'stopped';
+  const glyph = stopped ? '⏹' : failed ? '✗' : '✓';
+  const label = stopped ? 'stopped' : failed ? 'failed' : 'finished';
+  return (
+    <div key={item.seq} data-testid="background-finished" style={{ color: token.colorTextTertiary, fontSize: 12 }}>
+      {glyph} Background task {label}: {item.result || item.name}
+      {elapsed ? ` · ${elapsed}` : ''}
+    </div>
+  );
 }
 
 // Capitalize a level label ("high" -> "High") for the segmented/slider marks.
@@ -555,21 +576,12 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
         const stopped = item.status === 'stopped';
         const elapsed =
           item.startedAt !== undefined ? formatDuration((item.endedAt ?? now) - item.startedAt) : null;
-        if (toolVerbosity === 'silent') {
-          // A finished background job is an event, not tool noise: keep one
-          // muted line for it even when tool rows are hidden.
-          if (!(item.background && finished)) return null;
-          const bgGlyph = stopped ? '⏹' : failed ? '✗' : '✓';
-          const bgLabel = stopped ? 'stopped' : failed ? 'failed' : 'finished';
-          return (
-            <div key={item.seq} data-testid="background-finished" style={{ color: token.colorTextTertiary, fontSize: 12 }}>
-              {bgGlyph} Background task {bgLabel}: {item.result ?? item.name}
-              {elapsed ? ` · ${elapsed}` : ''}
-            </div>
-          );
+        if (toolVerbosity === 'silent' || toolVerbosity === 'description-while-active') {
+          if (item.background && finished) return renderBackgroundLine(item, failed, elapsed, token);
+          // silent: no other tool rows. description-while-active: only WHILE
+          // the tool runs.
+          if (toolVerbosity === 'silent' || finished) return null;
         }
-        // description-while-active: only render WHILE the tool runs.
-        if (toolVerbosity === 'description-while-active' && finished) return null;
 
         let summary = toolSummary(item.input);
         if (!summary && item.preview) summary = item.preview.split('\n')[0].slice(0, 120);

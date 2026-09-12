@@ -18,7 +18,7 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
 export function ClaudeCodeView(props: WidgetProps) {
   const toolVerbosity = ((props.process.widgetData as any)?.toolVerbosity ?? 'description-only') as
-    'silent' | 'description-only' | 'verbose';
+    'silent' | 'description-while-active' | 'description-only' | 'verbose';
   const thinkingVerbosity = ((props.process.widgetData as any)?.thinkingVerbosity ?? 'hidden') as
     'hidden' | 'visible';
   const initialControls = ((props.process.widgetData as any)?.controls ?? []) as SessionControl[];
