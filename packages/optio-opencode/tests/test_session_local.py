@@ -537,6 +537,49 @@ async def test_maybe_refresh_on_resume_unchanged_content_skips_write(tmp_workdir
     assert mtime_after == mtime_before  # write was skipped
 
 
+async def test_maybe_refresh_on_resume_conversation_defaults_match_fresh(tmp_workdir):
+    """Identity refresh of a conversation-mode session with empty instructions
+    must default/omit-task-frame exactly like the fresh-start path, so an
+    unchanged config produces no rewrite on resume."""
+    import os
+    from optio_agents import get_protocol
+    from optio_host.host import LocalHost
+    from optio_opencode.prompt import DEFAULT_CONVERSATION_INSTRUCTIONS, compose_agents_md
+    from optio_opencode.session import _maybe_refresh_on_resume
+    from optio_opencode.types import OpencodeTaskConfig
+
+    host = LocalHost(taskdir=tmp_workdir)
+    await host.setup_workdir()
+    # Identity on_resume_refresh (the default), conversation mode, no instructions.
+    config = OpencodeTaskConfig(
+        consumer_instructions="", mode="conversation", host_protocol=False,
+        fs_isolation=False,
+    )
+    # What the fresh-start path would have written for this config.
+    expected = compose_agents_md(
+        DEFAULT_CONVERSATION_INSTRUCTIONS,
+        workdir_exclude=config.workdir_exclude,
+        supports_resume=config.supports_resume,
+        host_protocol=config.host_protocol,
+        omit_task_framing=True,
+    )
+    await host.write_text("AGENTS.md", expected)
+
+    class _FakeHookCtx:
+        async def read_text_from_host(self, path, *, silent=False):
+            full = os.path.join(host.workdir, path)
+            with open(full) as f:
+                return f.read()
+
+    refreshed = await _maybe_refresh_on_resume(
+        host, _FakeHookCtx(), config, get_protocol(browser="suppress"),
+    )
+
+    assert refreshed == []
+    with open(os.path.join(host.workdir, "AGENTS.md")) as f:
+        assert f.read() == expected
+
+
 async def test_maybe_refresh_on_resume_changed_content_writes(tmp_workdir):
     """Hook returns new instructions → AGENTS.md rewritten, ['AGENTS.md']."""
     import os

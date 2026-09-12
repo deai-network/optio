@@ -1055,14 +1055,22 @@ async def _maybe_refresh_on_resume(
             "on_resume_refresh raised; keeping existing AGENTS.md from snapshot",
         )
         return []
+    # Mode-aware prompt kwargs, recomputed from the refreshed config (same
+    # defaulting as the fresh-start composition above).
+    instructions = new_config.consumer_instructions
+    omit_task_framing = False
+    if new_config.mode == "conversation" and not instructions:
+        instructions = DEFAULT_CONVERSATION_INSTRUCTIONS
+        omit_task_framing = True
     new_agents_md = compose_agents_md(
-        new_config.consumer_instructions,
+        instructions,
         documentation=protocol.documentation if new_config.host_protocol else None,
         workdir_exclude=new_config.workdir_exclude,
         supports_resume=new_config.supports_resume,
         # Reflect the refreshed config so a resume keeps the downloadables block
         # (with the right wording — host_protocol drives comparative vs standalone).
         host_protocol=new_config.host_protocol,
+        omit_task_framing=omit_task_framing,
         fs_isolation_dirs=fs_isolation_dirs(new_config, host.workdir),
         file_download=new_config.file_download,
     )
