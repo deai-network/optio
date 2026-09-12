@@ -1,6 +1,12 @@
 """Tests for the claudecode resume prompt section."""
 
+from types import SimpleNamespace
+
+from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
+
 from optio_claudecode.prompt import _render_resume_section, compose_agents_md
+
+_POLL_RULE = "At the start of every new incoming user message"
 
 
 def test_render_mentions_resume_log():
@@ -51,3 +57,31 @@ def test_compose_omits_resume_section_when_disabled():
 def test_compose_appends_consumer_instructions_verbatim():
     out = compose_agents_md("compute 2+2", workdir_exclude=None, supports_resume=True)
     assert out.endswith("compute 2+2\n")
+
+
+def test_render_polls_resume_log_every_message_by_default():
+    assert _POLL_RULE in _render_resume_section(None)
+
+
+def test_render_without_polling_relies_on_the_resume_notice():
+    out = _render_resume_section(None, check_resume_log_every_message=False)
+    assert _POLL_RULE not in out
+    assert "slips past unnoticed" not in out
+    assert f"`{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}`" in out
+    # resume.log is still read when the notice arrives, for REFRESHED:.
+    assert "read the latest line of `./resume.log`" in out
+    assert "re-read each\n  listed file" in out
+    assert "Then resume the work you were doing." in out
+
+
+def test_compose_passes_polling_flag_through():
+    assert _POLL_RULE in compose_agents_md("hi")
+    out = compose_agents_md("hi", check_resume_log_every_message=False)
+    assert _POLL_RULE not in out
+    assert f"`{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}`" in out
+
+
+def test_session_polls_resume_log_only_without_host_protocol():
+    from optio_claudecode.session import _checks_resume_log_every_message
+    assert _checks_resume_log_every_message(SimpleNamespace(host_protocol=False))
+    assert not _checks_resume_log_every_message(SimpleNamespace(host_protocol=True))

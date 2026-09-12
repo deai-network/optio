@@ -5,8 +5,11 @@ Renders the claudecode resume section and forwards to the shared
 to optio-opencode's, with one added bullet: ``home/.claude/`` (credentials,
 settings, conversation transcript) is preserved across resumes — claudecode
 needs this because all sensitive agent-continuity state lives there.
+With ``check_resume_log_every_message=False`` the per-message ``resume.log``
+poll is replaced by the ``System:`` resume notice the session sends.
 """
 
+from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
 from optio_agents.prompt import (
     BASE_PROMPT_POST,
     compose_agents_md as _compose_agents_md_host,
@@ -72,12 +75,10 @@ harness rewrote the listed files on that resume (e.g.
 `2026-05-28T13:15:42Z REFRESHED:CLAUDE.md`) — your in-memory copy of
 those files is stale and must be re-read before continuing.
 
-**At the start of every new incoming user message, read
-`./resume.log` first.** Compare the latest line to the value you
-remembered last time you checked. If a new line has appeared, treat
-the situation as a resume:
+{detection_clause}"""
 
-- Verify any tools, processes, or files you previously gathered
+# What the agent does once it knows it was resumed (either detection style).
+_RESUME_STEPS = """- Verify any tools, processes, or files you previously gathered
   outside the workdir are still where you left them.
 - Re-establish anything that's gone (re-launch a server, re-fetch a
   file, etc.) before continuing.
@@ -86,7 +87,16 @@ the situation as a resume:
   since your last context snapshot and the version you remember is
   out of date.
 - Then resume the work you were doing.
+"""
 
+# Pull: poll resume.log on every user message, for sessions the harness may
+# resume without telling the agent.
+_DETECT_BY_POLLING = """**At the start of every new incoming user message, read
+`./resume.log` first.** Compare the latest line to the value you
+remembered last time you checked. If a new line has appeared, treat
+the situation as a resume:
+
+""" + _RESUME_STEPS + """
 If a resume slips past unnoticed, a failing tool call is the
 next-best signal — re-check `./resume.log` then.
 
@@ -94,9 +104,26 @@ You may also be notified of a resume by a `System:` message on your input
 channel; when you see one, follow the `resume.log` procedure above.
 """
 
+# Push: every resume is announced by the resume notice, so resume.log is read
+# only when it arrives (for its REFRESHED: suffix).
+_DETECT_BY_NOTICE = f"""The harness tells you about every resume with a
+`{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}` message on your input channel, so you do
+not need to check `./resume.log` before each message. When that message
+arrives, read the latest line of `./resume.log` and treat the situation
+as a resume:
 
-def _render_resume_section(workdir_exclude: list[str] | None) -> str:
-    """Render the RESUME_SECTION_TEMPLATE with the effective exclude list."""
+""" + _RESUME_STEPS
+
+
+def _render_resume_section(
+    workdir_exclude: list[str] | None,
+    check_resume_log_every_message: bool = True,
+) -> str:
+    """Render the RESUME_SECTION_TEMPLATE with the effective exclude list.
+
+    ``check_resume_log_every_message`` picks how the agent detects a resume:
+    by polling ``resume.log`` on every user message (default), or by waiting
+    for the ``System:`` resume notice (only when every resume sends one)."""
     from optio_host.archive import DEFAULT_WORKDIR_EXCLUDES
     effective = workdir_exclude if workdir_exclude is not None else DEFAULT_WORKDIR_EXCLUDES
     if not effective:
@@ -121,6 +148,9 @@ def _render_resume_section(workdir_exclude: list[str] | None) -> str:
     return RESUME_SECTION_TEMPLATE.format(
         excludes_clause=excludes_clause,
         outside_clause=outside_clause,
+        detection_clause=(
+            _DETECT_BY_POLLING if check_resume_log_every_message else _DETECT_BY_NOTICE
+        ),
     )
 
 
@@ -134,6 +164,7 @@ def compose_agents_md(
     omit_task_framing: bool = False,
     fs_isolation_dirs: list[tuple[str, str]] | None = None,
     file_download: bool = False,
+    check_resume_log_every_message: bool = True,
 ) -> str:
     """Render <workdir>/CLAUDE.md for an optio-claudecode task.
 
@@ -151,6 +182,10 @@ def compose_agents_md(
 
     ``omit_task_framing=True`` drops the ``## Task`` framing block
     (used when the conversation instructions were defaulted).
+
+    ``check_resume_log_every_message=False`` tells the agent to rely on the
+    ``System:`` resume notice instead of reading ``resume.log`` before every
+    message. Pass it only when every resume sends that notice.
     """
     if file_download:
         consumer_instructions = (
@@ -178,7 +213,10 @@ def compose_agents_md(
             documentation = build_log_channel_prompt(ProtocolFeatures(browser="redirect"))
     else:
         documentation = None
-    resume_section = _render_resume_section(workdir_exclude) if supports_resume else None
+    resume_section = (
+        _render_resume_section(workdir_exclude, check_resume_log_every_message)
+        if supports_resume else None
+    )
     if resume_section is not None and not host_protocol:
         resume_section = resume_section + _SYSTEM_PREFIX_EXPLAINER
     if omit_task_framing:

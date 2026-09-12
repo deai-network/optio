@@ -1123,6 +1123,7 @@ async def _plant_session_content(
                 omit_task_framing=omit_task_framing,
                 fs_isolation_dirs=_fs_isolation_dirs(config, host),
                 file_download=config.file_download,
+                check_resume_log_every_message=_checks_resume_log_every_message(config),
             ),
         )
     else:
@@ -1477,6 +1478,20 @@ async def _rotate_optio_log(host: Host) -> None:
     await host.write_text("optio.log", "")
 
 
+def _checks_resume_log_every_message(config: ClaudeCodeTaskConfig) -> bool:
+    """Whether CLAUDE.md tells the agent to poll resume.log on every message.
+
+    With host_protocol on, every resume that continues a transcript sends the
+    System: resume notice (the --continue positional in iframe mode, the first
+    stdin message in conversation mode), so the agent can rely on it. With
+    host_protocol off (conversation mode only) the notice is suppressed and the
+    agent must poll. A resume without a transcript starts a new conversation
+    with no remembered resume.log line to compare against, so polling would
+    not help there either.
+    """
+    return not config.host_protocol
+
+
 async def _append_resume_log_entry(
     host, *, refreshed: list[str] | None = None,
 ) -> None:
@@ -1532,6 +1547,7 @@ async def _maybe_refresh_on_resume(
         omit_task_framing=omit_task_framing,
         fs_isolation_dirs=_fs_isolation_dirs(new_config, hook_ctx._host),
         file_download=new_config.file_download,
+        check_resume_log_every_message=_checks_resume_log_every_message(new_config),
     )
     try:
         existing = await hook_ctx.read_text_from_host("CLAUDE.md", silent=True)
