@@ -52,6 +52,9 @@ See `src/AnswerBlock.tsx` for the authoritative list.
 - `registerConversationWidget(opts?)`, `ConversationWidget` — the widget + its registration.
 - `AnswerBlock` — the standalone markdown/answer renderer.
 - `reduceClaudecodeEvent`, `reduceOpencodeEvent`, `historyToChatItems`, `initialChatState`, `ChatItem`, `ChatState` — the engine-neutral chat model and per-engine reducers, for embedding outside the default widget.
+  - Tool items (`kind: 'tool'`) may carry `callId` (the call's wire id), `result` (its output, trimmed), `startedAt` / `endedAt` (epoch ms; the view shows a live elapsed counter until `endedAt` is set), `background` (a backgrounded shell command) and `taskId` (its background task id). All are optional and set by the claudecode reducer only.
+  - A tool item's `status` may also be `'stopped'`: stopped rather than completed or failed (a background task stopped or killed, or a call still running when the session closed or a resumed run replaced it). It renders as finished, not failed.
+  - `reduceClaudecodeEvent(state, ev, seq, now?)`: `now` (epoch ms, default `Date.now()`) is the clock used only until the stream has shown a user/assistant timestamp; pass it for deterministic replays and tests.
 
 ## License
 

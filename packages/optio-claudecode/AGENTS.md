@@ -100,6 +100,9 @@ The `Conversation` surface (abstract Protocol in
   stdout NDJSON object as a dict, unmodified. Live events only.
   Synthetic `{"type": "x-optio-unparseable", ...}` /
   `{"type": "x-optio-closed", ...}` events use the `x-optio-` prefix.
+  The conversation listener keeps `x-optio-closed` out of the persisted
+  replay buffer and marks a resume with its own `x-optio-resumed` instead
+  (see Replay-buffer semantics).
 * `on_message(handler) -> unsubscribe` — simplified tier: one final
   answer text per completed turn (the `result` event's `result` field).
 * `on_permission_request(handler) -> unsubscribe` — the permission
@@ -187,11 +190,20 @@ Replay-buffer semantics:
   never buffered. Everything else — `system`, `user`, `assistant`,
   `result`, `control_request`, `x-optio-*` — is buffered.
 * The engine channels raw stream-json events through untouched; all
-  interpretation happens client-side in `optio-conversation-ui`. The one
-  synthetic listener event is
+  interpretation happens client-side in `optio-conversation-ui`. The
+  listener adds two synthetic events of its own:
   `{"type": "x-optio-permission-answered", "request_id": ..., "behavior": ...}`,
   broadcast (and buffered) when a permission is answered so every
-  viewer sees the card resolve.
+  viewer sees the card resolve; and `{"type": "x-optio-resumed"}` (below).
+* Resume: `export_buffer()` persists the buffer with the snapshot, minus
+  the terminal `x-optio-closed` (replayed, it would close the live resumed
+  session in the UI). When a resumed run re-primes the listener from it,
+  the listener appends exactly one `{"type": "x-optio-resumed"}` after the
+  restored history. It marks where the earlier run ended, since nothing
+  else does: the widget stops the rows that run left running (a background
+  task, a call with no result) as `stopped`, at the latest wire timestamp.
+  The marker is persisted like any event, so a later resume replays it in
+  place and appends its own.
 
 **Handler-slot rule**: `conversation_ui=True` occupies the single
 `on_permission_request` slot (the listener registers the handler and
@@ -242,6 +254,13 @@ DONE / ERROR terminate the session.
   claustrum the cache is `--rox`, so in-session self-update can only EACCES;
   freshness is owned by this unconfined provisioning path. See the addendum
   in `docs/2026-05-31-optio-claudecode-runtime-cache-design.md`.
+  Conversation mode also pins `CLAUDE_CODE_THINKING_DISPLAY_UPDATES=1`
+  (`conversation_launch_env`, set before `extra_env`, which can still
+  override it). Since CLI 2.1.267 the model's between-tool narration arrives
+  as text-bearing thinking blocks ("thinking updates"), which the widget
+  renders as ordinary replies; the pin keeps a CLI default change from
+  silently dropping that channel. See
+  `docs/2026-09-12-claudecode-conversation-rendering-design.md`.
 * ttyd — downloaded from `tsl0922/ttyd` GitHub Releases (pinned
   version). Linux x86_64/aarch64/armv7l only in v1.
 

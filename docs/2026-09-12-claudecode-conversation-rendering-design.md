@@ -170,8 +170,10 @@ iframe/tmux launch is unchanged.
 - The generic `ConversationView` rendering already implements the levels:
   `silent` hides rows, `description-while-active` hides finished rows,
   `description-only` keeps one line per call, `verbose` shows args and result and
-  collapses when finished. Beyond section 5, the view only adds a result block
-  under the args (shown while the verbose row is open).
+  collapses when finished. At `silent` and `description-while-active` a finished
+  background job keeps one muted outcome line instead of its row. Beyond
+  section 5, the view only adds a result block under the args (shown while the
+  verbose row is open).
 
 ### 5. Elapsed-time counter (`ConversationView.tsx`)
 
@@ -185,10 +187,18 @@ iframe/tmux launch is unchanged.
   (`✓ Bash: … · 3m 04s`), when:
   - the row gets its result or background completion (`endedAt`);
   - the turn ends (`result`): running rows that are not `background` freeze at
-    the result's timestamp but keep their glyph. Background rows keep counting:
+    the result's time but keep their glyph. Background rows keep counting:
     their task usually outlives the turn that started it;
   - the conversation closes (`x-optio-closed`): every running row freezes,
-    background rows included.
+    background rows included, with status `stopped`;
+  - a resumed run starts: the listener appends `{"type": "x-optio-resumed"}`
+    after the restored history (`x-optio-closed` is not persisted), and the
+    rows the earlier run left running stop as on a close.
+- Only `user` and `assistant` events carry a `timestamp` (CLI 2.1.269). For
+  `result`, `x-optio-closed`, `x-optio-resumed` and task notifications the
+  reducer uses the latest user/assistant timestamp it has seen (its clock only
+  before any), and a background row ends at `system/task_updated`'s
+  `patch.end_time`, so a replay shows the live durations.
 - Duration format: `Ns` under a minute, `Mm SSs` under an hour, `Hh MMm` above.
 - Only claudecode rows get `startedAt` in this change; other engines show no
   counter until their reducers provide one.
@@ -199,9 +209,13 @@ iframe/tmux launch is unchanged.
   equals `tool_use_id` as `background: true`. For a background row, the immediate
   `tool_result` ("running in background with ID …") does not finish it: status
   stays running and the counter keeps going.
+- `system/task_started` also records `task_id` on the row (`taskId`);
+  `system/task_updated` with `patch.end_time` (epoch ms) sets that row's
+  `endedAt`.
 - `system/task_notification` finishes that row: `status` "completed" -> `done`,
-  "failed" -> `failed`; `result` is the summary; `endedAt` is the event
-  timestamp, or the arrival time when absent.
+  "failed" -> `failed`, anything else -> `stopped`; `result` is the summary;
+  `endedAt` keeps the `task_updated` end time, else the latest user/assistant
+  timestamp (the notification carries none).
 - A `user` event whose text is a `<task-notification>` element, or whose
   `origin.kind` is `"task-notification"`, never becomes a user bubble. The reducer
   parses `task-id`, `tool-use-id`, `status` and `summary` from it and applies them
@@ -210,15 +224,22 @@ iframe/tmux launch is unchanged.
   keeps the set of finished task ids.
 - When no matching row exists (a replay that lacks the Bash call), a muted
   activity row is added instead: `✓ Background task finished: <summary>` (or
-  `✗ Background task failed: <summary>`).
-- With verbosity `silent` the row exists but is hidden, and the reducer does not
-  know the verbosity. So the view renders a finished background row as that same
-  muted line (plus its duration) instead of hiding it: a finished background job
-  is an event, not tool noise.
+  `✗ Background task failed: <summary>`, `⏹ Background task stopped: <summary>`;
+  the task id when the summary is empty).
+- With verbosity `silent` or `description-while-active` the finished row would
+  be hidden, and the reducer does not know the verbosity. So the view renders a
+  finished background row as that same muted line (plus its duration; the tool
+  name when the summary is empty) instead of hiding it: a finished background
+  job is an event, not tool noise.
+- `busy` follows `system/session_state_changed` (`running` -> true, `idle` ->
+  false). On CLI 2.1.269 a finished job starts a follow-up turn with no injected
+  user event on stdout; these events bracket it. An injected notification turn
+  (older CLIs) also sets `busy`; `system/task_notification` itself never does.
 
 ## Edge cases
 
-- Missing `timestamp` on any event: fall back to arrival time.
+- Missing `timestamp` on a `user` or `assistant` event: fall back to arrival
+  time. Other events never carry one; see section 5.
 - Duplicate `assistant` events for the same block (live final event after
   deltas): handled by the open-part replace.
 - A message whose only thinking block is empty and whose next block is a
