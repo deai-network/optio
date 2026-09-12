@@ -131,10 +131,14 @@ function parseTaskNotification(text: string): TaskNotice | null {
 // A background task ended (system/task_notification or an injected
 // <task-notification> turn): finish its Bash row, or add a muted activity row
 // when no row exists (e.g. a replay without the call). Each task applies once.
+// Only 'completed' is a success; 'failed' is a failure; anything else (e.g.
+// 'stopped', 'killed') is treated as stopped — not a failure, but not a
+// finished-successfully row either.
 function applyTaskNotice(state: ChatState, n: TaskNotice, at: number, seq: number): ChatState {
   const seen = state.finishedTaskIds ?? [];
   if (seen.includes(n.taskId)) return state;
-  const failed = n.status === 'failed';
+  const toolStatus: 'done' | 'failed' | 'stopped' =
+    n.status === 'completed' ? 'done' : n.status === 'failed' ? 'failed' : 'stopped';
   const idx = n.toolUseId
     ? state.items.findIndex((i) => i.kind === 'tool' && i.callId === n.toolUseId)
     : -1;
@@ -144,14 +148,17 @@ function applyTaskNotice(state: ChatState, n: TaskNotice, at: number, seq: numbe
     items = replaceAt(state.items, idx, {
       ...row,
       background: true,
-      status: failed ? 'failed' : 'done',
+      status: toolStatus,
       result: trimResult(n.summary),
       endedAt: at,
     });
   } else {
-    const text = failed
-      ? `✗ Background task failed: ${n.summary}`
-      : `✓ Background task finished: ${n.summary}`;
+    const text =
+      toolStatus === 'done'
+        ? `✓ Background task finished: ${n.summary}`
+        : toolStatus === 'failed'
+          ? `✗ Background task failed: ${n.summary}`
+          : `⏹ Background task stopped: ${n.summary}`;
     items = [...state.items, { kind: 'activity', text, seq }];
   }
   return { ...state, items, finishedTaskIds: [...seen, n.taskId] };
@@ -300,10 +307,23 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       if (withResults !== state.items) state = { ...state, items: withResults };
       // A background command ended and the CLI injected its notification as a
       // user turn: apply it to the Bash row; never render it as a user bubble.
+      // Trust `origin` when the CLI sends it: only an origin explicitly tagged
+      // task-notification is treated as one, so a genuine user prompt that
+      // happens to start with the literal text renders normally. Fall back to
+      // the text-prefix sniff only for older replays that carry no origin.
       const rawText = extractText(ev.message?.content);
-      if (ev.origin?.kind === 'task-notification' || rawText.trimStart().startsWith('<task-notification>')) {
+      const isInjectedNotification =
+        ev.origin && typeof ev.origin === 'object'
+          ? ev.origin.kind === 'task-notification'
+          : rawText.trimStart().startsWith('<task-notification>');
+      if (isInjectedNotification) {
         const notice = parseTaskNotification(rawText);
-        return notice ? applyTaskNotice(state, notice, eventTime(ev, now), seq) : state;
+        if (!notice) return state;
+        // The CLI starts a model turn right after this notification; mark the
+        // agent busy so the working indicator and interrupt/Escape work. The
+        // system/task_notification route (below) must NOT touch busy — the CLI
+        // does not start a new turn for that route.
+        return { ...applyTaskNotice(state, notice, eventTime(ev, now), seq), busy: true };
       }
       const { text, uploads } = parseUploadNotice(rawText);
       if (text === '' && uploads.length === 0) return state;

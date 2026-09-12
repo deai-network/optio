@@ -621,4 +621,101 @@ describe('background tasks', () => {
     const s = run([{ type: 'system', subtype: 'status' }, { type: 'system', subtype: 'thinking_tokens' }]);
     expect(s).toEqual(initialChatState);
   });
+
+  it('an injected notification marks the agent busy for the CLI-follow-up model turn', () => {
+    const s = run([...started, result('started it'), injectedNotification('b1', 't1', 'completed', 'Rewrite harness')]);
+    expect(s.busy).toBe(true);
+  });
+
+  it('a result following an injected notification clears busy again', () => {
+    const s = run([
+      ...started,
+      result('started it'),
+      injectedNotification('b1', 't1', 'completed', 'Rewrite harness'),
+      result('final answer'),
+    ]);
+    expect(s.busy).toBe(false);
+  });
+
+  it('system/task_notification leaves busy unchanged, whether true or false', () => {
+    const wasBusy = run(started, { ...initialChatState, busy: true });
+    expect(wasBusy.busy).toBe(true);
+    const stillBusy = reduceEvent(wasBusy, taskNotification('b1', 't1', 'completed', 'done'), 4, 1234);
+    expect(stillBusy.busy).toBe(true);
+
+    const wasIdle = run(started, { ...initialChatState, busy: false });
+    expect(wasIdle.busy).toBe(false);
+    const stillIdle = reduceEvent(wasIdle, taskNotification('b1', 't1', 'completed', 'done'), 4, 1234);
+    expect(stillIdle.busy).toBe(false);
+  });
+
+  it('a user event whose origin is not task-notification renders normally even if its text starts with <task-notification>', () => {
+    const genuine = {
+      type: 'user',
+      origin: { kind: 'user' },
+      message: { role: 'user', content: [{ type: 'text', text: '<task-notification> what does this mean?' }] },
+    };
+    const s = run([...started, genuine]);
+    expect(ofKind(s, 'user')).toEqual([{ kind: 'user', text: '<task-notification> what does this mean?', seq: 4 }]);
+    expect(ofKind(s, 'tool')[0]).toMatchObject({ status: 'running' });
+  });
+
+  it('an injected notification with no origin (an older replay) is still consumed', () => {
+    const legacy = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content:
+          '<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>t1</tool-use-id>\n<status>completed</status>\n<summary>legacy replay</summary>\n</task-notification>',
+      },
+    };
+    const s = run([...started, legacy]);
+    expect(ofKind(s, 'user')).toEqual([]);
+    expect(ofKind(s, 'tool')[0]).toMatchObject({ status: 'done', result: 'legacy replay' });
+  });
+
+  it('a "stopped" task_notification marks the row stopped, not done or failed', () => {
+    const s = run([...started, taskNotification('b1', 't1', 'stopped', 'Killed by operator')]);
+    expect(ofKind(s, 'tool')[0]).toMatchObject({ status: 'stopped', result: 'Killed by operator' });
+  });
+
+  it('a "stopped" outcome with no matching row reports a muted activity line', () => {
+    const s = run([taskNotification('b9', 't9', 'killed', 'Nightly export')]);
+    expect(ofKind(s, 'activity').map((a) => a.text)).toEqual(['⏹ Background task stopped: Nightly export']);
+  });
+
+  it('the same "stopped" outcome through the injected-turn route matches', () => {
+    const withRow = run([...started, injectedNotification('b1', 't1', 'stopped', 'Killed by operator')]);
+    expect(ofKind(withRow, 'tool')[0]).toMatchObject({ status: 'stopped', result: 'Killed by operator' });
+    const noRow = run([injectedNotification('b9', 't9', 'killed', 'Nightly export')]);
+    expect(ofKind(noRow, 'activity').map((a) => a.text)).toEqual(['⏹ Background task stopped: Nightly export']);
+  });
+
+  it('a late task_started arriving after the task already finished does not reopen the row', () => {
+    const s = run([...started, taskNotification('b1', 't1', 'completed', 'already done'), taskStarted('b1', 't1')]);
+    const [row] = ofKind(s, 'tool');
+    expect(row).toMatchObject({ status: 'done', result: 'already done' });
+    expect(row.endedAt).toBeDefined();
+  });
+
+  it('a summary over 2000 characters is trimmed to exactly 2000 characters ending in an ellipsis', () => {
+    const long = 'x'.repeat(2500);
+    const s = run([...started, taskNotification('b1', 't1', 'completed', long)]);
+    const result = ofKind(s, 'tool')[0].result!;
+    expect(result).toHaveLength(2000);
+    expect(result.endsWith('…')).toBe(true);
+  });
+
+  it('a malformed <task-notification> with no <task-id> leaves state unchanged and adds no bubble', () => {
+    const malformed = {
+      type: 'user',
+      origin: { kind: 'task-notification' },
+      message: {
+        role: 'user',
+        content: '<task-notification>\n<status>completed</status>\n<summary>oops</summary>\n</task-notification>',
+      },
+    };
+    const s = run([malformed]);
+    expect(s).toEqual(initialChatState);
+  });
 });
