@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from optio_agents import get_protocol
+from optio_agents.fs_grants import fs_isolation_dirs
 from optio_codex.prompt import compose_agents_md
 from optio_codex.types import CodexTaskConfig
 
@@ -239,7 +240,7 @@ async def test_restore_workdir_blob_decrypts(monkeypatch):
 # --- P2 unit: _maybe_refresh_on_resume -------------------------------------
 
 
-def _resume_fakes(existing_agents_md: str):
+def _resume_fakes(existing_agents_md: str, workdir: str = "/workdir"):
     """Build (host, hook_ctx) fakes whose read returns ``existing_agents_md``
     and whose write records the rewritten body."""
     written: dict[str, str] = {}
@@ -249,6 +250,7 @@ def _resume_fakes(existing_agents_md: str):
 
     fake_host = MagicMock()
     fake_host.write_text = _write_text
+    fake_host.workdir = workdir
 
     fake_hook = MagicMock()
     fake_hook.read_text_from_host = AsyncMock(return_value=existing_agents_md)
@@ -260,6 +262,7 @@ async def test_maybe_refresh_identity_unchanged_is_noop():
 
     protocol = get_protocol(browser="redirect")
     cfg = _cfg(consumer_instructions="orig")
+    workdir = "/workdir"
     existing = compose_agents_md(
         cfg.consumer_instructions,
         documentation=protocol.documentation if cfg.host_protocol else None,
@@ -267,8 +270,9 @@ async def test_maybe_refresh_identity_unchanged_is_noop():
         workdir_exclude=cfg.workdir_exclude,
         supports_resume=cfg.supports_resume,
         file_download=cfg.file_download,
+        fs_isolation_dirs=fs_isolation_dirs(cfg, workdir),
     )
-    host, hook, written = _resume_fakes(existing)
+    host, hook, written = _resume_fakes(existing, workdir=workdir)
 
     refreshed = await _maybe_refresh_on_resume(host, hook, cfg, protocol)
     assert refreshed == []
@@ -285,12 +289,14 @@ async def test_maybe_refresh_mutating_hook_rewrites_agents_md():
         return dataclasses.replace(c, consumer_instructions="UPDATED INSTRUCTIONS")
 
     cfg = _cfg(consumer_instructions="orig", on_resume_refresh=_bump)
+    workdir = "/workdir"
     stale = compose_agents_md(
         "orig",
         documentation=protocol.documentation,
         host_protocol=True,
+        fs_isolation_dirs=fs_isolation_dirs(cfg, workdir),
     )
-    host, hook, written = _resume_fakes(stale)
+    host, hook, written = _resume_fakes(stale, workdir=workdir)
 
     refreshed = await _maybe_refresh_on_resume(host, hook, cfg, protocol)
     assert refreshed == ["AGENTS.md"]

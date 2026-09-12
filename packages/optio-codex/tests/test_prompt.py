@@ -84,3 +84,13 @@ def test_host_protocol_false_keeps_resume_section_and_explainer():
     # passing; same caveat as test_host_protocol_false_adds_system_explainer.)
     assert get_protocol(browser="redirect").documentation not in md
     assert "## Log channel" not in md
+
+
+def test_sandbox_note_and_no_prompt_text_of_its_own():
+    import inspect
+    import optio_codex.prompt as m
+    out = compose_agents_md("x", fs_isolation_dirs=[("/wd", "rwx")])
+    assert "**Filesystem access:**" in out
+    src = inspect.getsource(m)
+    assert "This harness may pause your session" not in src
+    assert "originate from the harness" not in src

@@ -16,6 +16,7 @@ from optio_core.models import BasicAuth, TaskInstance
 
 from optio_agents import HookContext, RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
 from optio_agents import seeds as _seeds
+from optio_agents.fs_grants import fs_isolation_dirs
 from optio_agents.input_listener import serialized, start_input_listener
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_agents.account import EMPTY, accounts_to_metadata
@@ -303,6 +304,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                     workdir_exclude=config.workdir_exclude,
                     supports_resume=config.supports_resume,
                     file_download=config.file_download,
+                    fs_isolation_dirs=fs_isolation_dirs(config, host.workdir),
                 ),
             )
         else:
@@ -891,6 +893,7 @@ async def _maybe_refresh_on_resume(
         workdir_exclude=new_config.workdir_exclude,
         supports_resume=new_config.supports_resume,
         file_download=new_config.file_download,
+        fs_isolation_dirs=fs_isolation_dirs(new_config, host.workdir),
     )
     try:
         existing = await hook_ctx.read_text_from_host("AGENTS.md", silent=True)
