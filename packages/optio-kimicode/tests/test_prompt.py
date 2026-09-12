@@ -45,3 +45,14 @@ def test_agents_md_file_download_appends_downloadables_block():
     with_dl = compose_agents_md("task", host_protocol=True, file_download=True)
     assert "optio-file:" in with_dl
     assert "optio-file:" not in plain
+
+
+def test_sandbox_note_and_no_prompt_text_of_its_own():
+    import inspect
+    import optio_kimicode.prompt as m
+    out = compose_agents_md("x", fs_isolation_dirs=[("/wd", "rwx")])
+    assert "**Your `home/.kimi-code/` directory" in out
+    assert "**Filesystem access:**" in out
+    src = inspect.getsource(m)
+    assert "This harness may pause your session" not in src
+    assert "You are running inside a coordination harness" not in src

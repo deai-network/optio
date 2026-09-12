@@ -9,12 +9,19 @@ from __future__ import annotations
 
 import dataclasses
 
+from optio_agents import get_protocol
+from optio_agents.fs_grants import fs_isolation_dirs
+
 from optio_kimicode.prompt import compose_agents_md
 from optio_kimicode.session import _maybe_refresh_on_resume
 from optio_kimicode.types import KimiCodeTaskConfig
 
+PROTOCOL = get_protocol(browser="redirect")
+
 
 class _FakeHost:
+    workdir = "/tmp/fake-wd"
+
     def __init__(self) -> None:
         self.writes: dict[str, str] = {}
 
@@ -40,9 +47,11 @@ class _FakeHookCtx:
 def _agents_md_for(cfg: KimiCodeTaskConfig) -> str:
     return compose_agents_md(
         cfg.consumer_instructions,
+        documentation=PROTOCOL.documentation if cfg.host_protocol else None,
         host_protocol=cfg.host_protocol,
         workdir_exclude=cfg.workdir_exclude,
         supports_resume=cfg.supports_resume,
+        fs_isolation_dirs=fs_isolation_dirs(cfg, "/tmp/fake-wd"),
         file_download=cfg.file_download,
     )
 
@@ -52,14 +61,14 @@ async def test_refresh_disabled_returns_empty_no_write():
         consumer_instructions="x", on_resume_refresh=None, delivery_type="audit",
     )
     host, hook = _FakeHost(), _FakeHookCtx(existing="whatever")
-    assert await _maybe_refresh_on_resume(host, hook, cfg) == []
+    assert await _maybe_refresh_on_resume(host, hook, cfg, PROTOCOL) == []
     assert host.writes == {}
 
 
 async def test_identity_refresh_rewrites_when_file_absent():
     cfg = KimiCodeTaskConfig(consumer_instructions="do the task", delivery_type="audit")
     host, hook = _FakeHost(), _FakeHookCtx(existing=None)  # FileNotFoundError
-    out = await _maybe_refresh_on_resume(host, hook, cfg)
+    out = await _maybe_refresh_on_resume(host, hook, cfg, PROTOCOL)
     assert out == ["AGENTS.md"]
     assert host.writes["AGENTS.md"] == _agents_md_for(cfg)
 
@@ -68,7 +77,7 @@ async def test_identity_refresh_is_noop_when_unchanged():
     cfg = KimiCodeTaskConfig(consumer_instructions="do the task", delivery_type="audit")
     host = _FakeHost()
     hook = _FakeHookCtx(existing=_agents_md_for(cfg))
-    out = await _maybe_refresh_on_resume(host, hook, cfg)
+    out = await _maybe_refresh_on_resume(host, hook, cfg, PROTOCOL)
     assert out == []
     assert host.writes == {}
 
@@ -85,7 +94,7 @@ async def test_mutating_hook_rewrites_and_reports_filename():
     host = _FakeHost()
     # existing == the ORIGINAL rendering; the bumped instructions differ.
     hook = _FakeHookCtx(existing=_agents_md_for(cfg))
-    out = await _maybe_refresh_on_resume(host, hook, cfg)
+    out = await _maybe_refresh_on_resume(host, hook, cfg, PROTOCOL)
     assert out == ["AGENTS.md"]
     assert "[REFRESHED]" in host.writes["AGENTS.md"]
 
@@ -98,6 +107,18 @@ async def test_raising_hook_is_swallowed():
         consumer_instructions="x", on_resume_refresh=_boom, delivery_type="audit",
     )
     host, hook = _FakeHost(), _FakeHookCtx(existing="x")
-    out = await _maybe_refresh_on_resume(host, hook, cfg)
+    out = await _maybe_refresh_on_resume(host, hook, cfg, PROTOCOL)
     assert out == []
     assert host.writes == {}
+
+
+async def test_refresh_threads_session_docs():
+    cfg = KimiCodeTaskConfig(
+        consumer_instructions="original", delivery_type="audit", use_client_messages=True,
+        on_resume_refresh=lambda c: dataclasses.replace(c, consumer_instructions="UPDATED"),
+    )
+    host, hook = _FakeHost(), _FakeHookCtx(existing="stale")
+    protocol = get_protocol(browser="redirect", client_messages=True)
+    assert await _maybe_refresh_on_resume(host, hook, cfg, protocol) == ["AGENTS.md"]
+    (text,) = host.writes.values()
+    assert "CLIENT_MESSAGE:" in text and "`/tmp/fake-wd`" in text

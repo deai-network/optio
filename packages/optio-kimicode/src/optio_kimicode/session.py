@@ -37,6 +37,7 @@ from optio_agents import HookContext, get_protocol
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
 from optio_agents import seeds as _seeds
 from optio_agents.account import EMPTY, accounts_to_metadata
+from optio_agents.fs_grants import fs_isolation_dirs
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_agents.uploads import materialize, upload_url_token
 from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
@@ -383,9 +384,11 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                 "AGENTS.md",
                 compose_agents_md(
                     config.consumer_instructions,
+                    documentation=protocol.documentation if config.host_protocol else None,
                     host_protocol=config.host_protocol,
                     workdir_exclude=config.workdir_exclude,
                     supports_resume=config.supports_resume,
+                    fs_isolation_dirs=fs_isolation_dirs(config, host.workdir),
                     file_download=config.file_download,
                 ),
             )
@@ -409,7 +412,7 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
         # re-reads. Fresh start: nothing to refresh.
         refreshed_files: list[str] = []
         if resuming:
-            refreshed_files = await _maybe_refresh_on_resume(host, hook_ctx, config)
+            refreshed_files = await _maybe_refresh_on_resume(host, hook_ctx, config, protocol)
 
         if config.supports_resume:
             await host_actions.append_resume_log_entry(
@@ -1180,9 +1183,12 @@ async def _recover_session_id(host: Host) -> str | None:
 
 
 async def _maybe_refresh_on_resume(
-    host: Host, hook_ctx: HookContext, config: KimiCodeTaskConfig,
+    host: Host, hook_ctx: HookContext, config: KimiCodeTaskConfig, protocol,
 ) -> list[str]:
     """Run ``on_resume_refresh`` (if any) and rewrite AGENTS.md when changed.
+
+    ``protocol`` is the session's protocol; its documentation is rendered so
+    the refreshed file matches the fresh-start composition.
 
     Returns the list of filenames rewritten (currently at most ``["AGENTS.md"]``)
     so the caller can tag the resume.log line. A hook that raises is logged and
@@ -1201,9 +1207,11 @@ async def _maybe_refresh_on_resume(
         return []
     new_agents_md = compose_agents_md(
         new_config.consumer_instructions,
+        documentation=protocol.documentation if new_config.host_protocol else None,
         host_protocol=new_config.host_protocol,
         workdir_exclude=new_config.workdir_exclude,
         supports_resume=new_config.supports_resume,
+        fs_isolation_dirs=fs_isolation_dirs(new_config, host.workdir),
         file_download=new_config.file_download,
     )
     try:
