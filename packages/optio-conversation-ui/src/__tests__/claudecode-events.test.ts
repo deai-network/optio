@@ -273,8 +273,8 @@ describe('reduceEvent', () => {
   });
 
   it('still inserts the user echo before the pending bubble when it is the tail behind a tool row', () => {
-    // Live streaming with an in-flight tool announcement after the pending
-    // bubble: tool rows are ephemeral and do not break the "tail" notion.
+    // Live streaming with a tool row after the pending bubble: tool rows count
+    // as progress, not newer content (isTail), so the bubble is still the tail.
     const s = run([
       delta('working on it'),
       toolUse('Bash', { command: 'ls' }),
@@ -407,7 +407,52 @@ describe('real tool rows', () => {
     const [a, b] = ofKind(s, 'tool');
     expect(a.endedAt).toBe(Date.parse(T5));
     expect(b.endedAt).toBe(Date.parse(T9));
-    expect(b.status).toBeUndefined();
+    expect(b.status).toBe('running');
+  });
+
+  it('a new call starts as running', () => {
+    // Without a status the view sniffs the input, and an input carrying a
+    // `result` key would read as a finished call.
+    const [row] = ofKind(run([toolCall('t1', 'Write', { file_path: '/x', result: 'draft' })]), 'tool');
+    expect(row.status).toBe('running');
+  });
+
+  it('two tool_result blocks in one user event finish both rows', () => {
+    const both = {
+      type: 'user',
+      timestamp: T5,
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 't1', content: 'one', is_error: false },
+          { type: 'tool_result', tool_use_id: 't2', content: 'two', is_error: true },
+        ],
+      },
+    };
+    const s = run([toolCall('t1', 'Read', {}, T0), toolCall('t2', 'Read', {}, T0), both]);
+    expect(ofKind(s, 'tool').map((t) => [t.status, t.result, t.endedAt])).toEqual([
+      ['done', 'one', Date.parse(T5)],
+      ['failed', 'two', Date.parse(T5)],
+    ]);
+    expect(ofKind(s, 'user')).toEqual([]);
+  });
+
+  it('a user event with a tool_result and text finishes the row and shows the text', () => {
+    const mixed = {
+      type: 'user',
+      timestamp: T5,
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 't1', content: 'ok', is_error: false },
+          { type: 'text', text: 'also check the logs' },
+        ],
+      },
+    };
+    const s = run([toolCall('t1', 'Bash', {}, T0), mixed]);
+    expect(ofKind(s, 'tool')[0]).toMatchObject({ status: 'done', result: 'ok' });
+    expect(ofKind(s, 'user').map((u) => u.text)).toEqual(['also check the logs']);
+    expect(s.items.map((i) => i.kind)).toEqual(['tool', 'user']);
   });
 
   it('before any wire time has been seen, the reducer clock is the fallback', () => {
@@ -470,6 +515,13 @@ describe('narration from thinking blocks', () => {
     const bubbles = ofKind(s, 'assistant');
     expect(bubbles.map((b) => b.text)).toEqual(['Checking the log.\n\nAll good.']);
     expect(bubbles[0].pending).toBe(false);
+  });
+
+  it('result keeps narration when its text differs from the bubble only in surrounding whitespace', () => {
+    const a = run([user('q'), thinking('Checking the log.', 'm1'), assistantText('All good.\n', 'm1'), result('All good.')]);
+    expect(ofKind(a, 'assistant').map((b) => b.text)).toEqual(['Checking the log.\n\nAll good.\n']);
+    const b = run([user('q'), thinking('Checking the log.', 'm1'), assistantText('All good.', 'm1'), result('\nAll good.\n\n')]);
+    expect(ofKind(b, 'assistant').map((x) => x.text)).toEqual(['Checking the log.\n\nAll good.']);
   });
 
   it('narration in different messages stays in separate bubbles', () => {
@@ -774,6 +826,16 @@ describe('background tasks', () => {
     const s = run([...started, legacy]);
     expect(ofKind(s, 'user')).toEqual([]);
     expect(ofKind(s, 'tool')[0]).toMatchObject({ status: 'done', result: 'legacy replay' });
+  });
+
+  it('an empty summary falls back to the task id in the activity text; the row result stays empty', () => {
+    expect(ofKind(run([taskNotification('b9', 't9', 'completed', '')]), 'activity').map((a) => a.text)).toEqual([
+      '✓ Background task finished: b9',
+    ]);
+    expect(ofKind(run([injectedNotification('b8', 't8', 'failed', '')]), 'activity').map((a) => a.text)).toEqual([
+      '✗ Background task failed: b8',
+    ]);
+    expect(ofKind(run([...started, taskNotification('b1', 't1', 'completed', '  ')]), 'tool')[0].result).toBe('');
   });
 
   it('a "stopped" task_notification marks the row stopped, not done or failed', () => {

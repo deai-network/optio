@@ -76,7 +76,9 @@ function toolResultText(content: unknown): string {
 }
 
 function toolRow(block: any, seq: number, at: number): ChatItem {
-  const row: ToolItem = { kind: 'tool', name: String(block.name ?? ''), input: block.input, seq, startedAt: at };
+  // An explicit status: without one the view sniffs the input, and an input
+  // with a `result` key would read as a finished call.
+  const row: ToolItem = { kind: 'tool', name: String(block.name ?? ''), input: block.input, seq, status: 'running', startedAt: at };
   if (typeof block.id === 'string') row.callId = block.id;
   return row;
 }
@@ -177,12 +179,14 @@ function applyTaskNotice(state: ChatState, n: TaskNotice, at: number, seq: numbe
       endedAt: row.background && row.endedAt !== undefined ? row.endedAt : at,
     });
   } else {
+    // An empty summary names the task instead.
+    const what = n.summary.trim() || n.taskId;
     const text =
       toolStatus === 'done'
-        ? `✓ Background task finished: ${n.summary}`
+        ? `✓ Background task finished: ${what}`
         : toolStatus === 'failed'
-          ? `✗ Background task failed: ${n.summary}`
-          : `⏹ Background task stopped: ${n.summary}`;
+          ? `✗ Background task failed: ${what}`
+          : `⏹ Background task stopped: ${what}`;
     items = [...state.items, { kind: 'activity', text, seq }];
   }
   return { ...state, items, finishedTaskIds: [...seen, n.taskId] };
@@ -268,8 +272,9 @@ function applyBlockText(items: ChatItem[], seq: number, text: string, msgId?: st
 }
 
 // Finalize the in-flight assistant bubble (pending -> false). The result text
-// replaces the bubble's text unless the bubble already ends with it: narration
-// parts earlier in the same message must survive the end of the turn. Creates
+// replaces the bubble's text unless the bubble already ends with it (ignoring
+// surrounding whitespace): narration parts earlier in the same message must
+// survive the end of the turn. Creates
 // a finalized bubble if there is result text but no pending bubble (e.g. a
 // replay that skipped partials).
 function finalizePending(items: ChatItem[], seq: number, resultText: string | null): ChatItem[] {
@@ -279,7 +284,7 @@ function finalizePending(items: ChatItem[], seq: number, resultText: string | nu
     return [...items, { kind: 'assistant', text: resultText, pending: false, seq, msgId: null }];
   }
   const current = items[idx] as AssistantItem;
-  const keep = resultText === null || resultText === '' || current.text.endsWith(resultText);
+  const keep = resultText === null || current.text.trimEnd().endsWith(resultText.trim());
   const next: AssistantItem = { ...current, text: keep ? current.text : resultText, pending: false };
   delete next.openPart;
   return replaceAt(items, idx, next);
@@ -292,7 +297,8 @@ function finalizePending(items: ChatItem[], seq: number, resultText: string | nu
 // — or appending on arrival — would therefore render the answer above the
 // question. Conversation order is what we want, so the echoed user turn slots
 // in front of the in-flight assistant bubble — but ONLY while that bubble is
-// the conversation's tail (modulo ephemeral tool rows). A stale pending
+// the conversation's tail (tool rows after it count as progress, not newer
+// content: see isTail). A stale pending
 // bubble (e.g. replayed from a buffer captured mid-turn, never finalized)
 // must not pull later, unrelated user events above newer content.
 function insertBeforePending(items: ChatItem[], rows: ChatItem[]): ChatItem[] {
