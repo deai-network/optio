@@ -29,6 +29,7 @@ from optio_core.context import ProcessContext
 from optio_core.models import BasicAuth, TaskInstance
 
 from optio_agents.context import HookContext
+from optio_agents.fs_grants import fs_isolation_dirs
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_host.host import Host, LocalHost, ProcessHandle, RemoteHost, proc_wait
 from optio_host.paths import task_dir
@@ -95,19 +96,6 @@ def _build_host(config: ClaudeCodeTaskConfig, process_id: str) -> Host:
         os.makedirs(host.workdir, exist_ok=True)
         return host
     return RemoteHost(ssh_config=config.ssh, taskdir=taskdir)
-
-
-def _fs_isolation_dirs(
-    config: ClaudeCodeTaskConfig, host: Host,
-) -> list[tuple[str, str]] | None:
-    """The agent-facing (path, mode) list of directories it may touch under fs
-    isolation (its workdir + caller extras), or None when isolation is off.
-    Used to tell the agent its sandbox bounds in CLAUDE.md. Paths stay
-    verbatim (incl. ``~/``): the agent's own $HOME view is what it needs."""
-    if not config.fs_isolation:
-        return None
-    extras = [(ad.path, ad.mode) for ad in (config.extra_allowed_dirs or [])]
-    return [(host.workdir.rstrip("/"), "rwx"), *extras]
 
 
 async def _build_claustrum_wrap(
@@ -1121,7 +1109,7 @@ async def _plant_session_content(
                 supports_resume=config.supports_resume,
                 host_protocol=config.host_protocol,
                 omit_task_framing=omit_task_framing,
-                fs_isolation_dirs=_fs_isolation_dirs(config, host),
+                fs_isolation_dirs=fs_isolation_dirs(config, host.workdir),
                 file_download=config.file_download,
                 check_resume_log_every_message=_checks_resume_log_every_message(config),
             ),
@@ -1140,7 +1128,7 @@ async def _plant_session_content(
                 decrypt=config.seed_decrypt,
             )
         cred_baseline = await cred_watcher.cred_fingerprint(host)
-        refreshed_files = await _maybe_refresh_on_resume(host, hook_ctx, config)
+        refreshed_files = await _maybe_refresh_on_resume(host, hook_ctx, config, protocol)
     # Install the caller's Claude Code settings LAST — after the seed (fresh) or
     # the restored snapshot (resume) — so they WIN over whatever settings the
     # seed/snapshot carried, while preserving every other key. focus_mode knobs
@@ -1516,9 +1504,12 @@ async def _append_resume_log_entry(
 
 
 async def _maybe_refresh_on_resume(
-    host, hook_ctx, config: ClaudeCodeTaskConfig,
+    host, hook_ctx, config: ClaudeCodeTaskConfig, protocol,
 ) -> list[str]:
     """Run on_resume_refresh (if any) and rewrite CLAUDE.md when changed.
+
+    ``protocol`` is the session's protocol; its documentation is rendered so
+    the refreshed file matches the fresh-start composition.
 
     Returns the list of filenames rewritten (currently at most
     ``["CLAUDE.md"]``). A hook that raises is logged and ignored.
@@ -1541,11 +1532,12 @@ async def _maybe_refresh_on_resume(
         omit_task_framing = True
     new_claude_md = compose_agents_md(
         instructions,
+        documentation=protocol.documentation if new_config.host_protocol else None,
         workdir_exclude=new_config.workdir_exclude,
         supports_resume=new_config.supports_resume,
         host_protocol=new_config.host_protocol,
         omit_task_framing=omit_task_framing,
-        fs_isolation_dirs=_fs_isolation_dirs(new_config, hook_ctx._host),
+        fs_isolation_dirs=fs_isolation_dirs(new_config, host.workdir),
         file_download=new_config.file_download,
         check_resume_log_every_message=_checks_resume_log_every_message(new_config),
     )
