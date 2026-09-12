@@ -284,20 +284,6 @@ def compose_instructions_file(
     return f"{profile.preamble}{pre}{resume_block}{delivery}{framing}{body}\n"
 
 
-def compose_agents_md(
-    consumer_instructions: str,
-    *,
-    documentation: str | None,
-    resume_section: str | None = None,
-) -> str:
-    """Old outer-framing composer. Kept until every wrapper is on
-    ``compose_instructions_file``; removed in the same change set."""
-    pre = (_INTRO + documentation + "\n") if documentation else ""
-    body = consumer_instructions.rstrip()
-    resume_block = (resume_section + "\n") if resume_section else ""
-    return f"{pre}{resume_block}{BASE_PROMPT_POST}\n{body}\n"
-
-
 def downloadables_block(comparative: bool) -> str:
     """Instruction paragraph teaching the agent to offer a file to the human as
     a one-click download via a sentinel markdown link. Two wordings:
