@@ -25,3 +25,15 @@ def test_agents_md_advertises_browser_redirect_keyword():
     to ``suppress`` (which no-op'd the login with no operator feedback)."""
     md = compose_agents_md("BUILD THE THING", host_protocol=True)
     assert "BROWSER:" in md
+
+
+def test_identity_line_comes_first_and_no_prompt_text_of_its_own():
+    import inspect
+    import optio_grok.prompt as m
+    out = compose_agents_md("x", fs_isolation_dirs=[("/wd", "rwx")])
+    assert out.startswith("You are running inside **Grok Build**")
+    assert "**Your `home/.grok/` directory" in out
+    assert "**Filesystem access:**" in out
+    src = inspect.getsource(m)
+    assert "This harness may pause your session" not in src
+    assert "You are running inside a coordination harness" not in src
