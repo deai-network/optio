@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from optio_agents.config_types import AllowedDir
 from optio_agents import fs_grants
 
@@ -27,3 +29,22 @@ def test_extra_baseline_appended_to_system_baseline():
         extra_baseline=[("--ro", "/opt/opencode")],
     )
     assert "/opt/opencode" in flags
+
+
+def test_fs_isolation_dirs_none_when_isolation_off():
+    cfg = SimpleNamespace(fs_isolation=False, extra_allowed_dirs=[AllowedDir("/x", "ro")])
+    assert fs_grants.fs_isolation_dirs(cfg, "/wd") is None
+
+
+def test_fs_isolation_dirs_workdir_then_extras_verbatim():
+    cfg = SimpleNamespace(
+        fs_isolation=True, extra_allowed_dirs=[AllowedDir("~/tools", "rox"), AllowedDir("/tmp", "rw")],
+    )
+    assert fs_grants.fs_isolation_dirs(cfg, "/wd/") == [
+        ("/wd", "rwx"), ("~/tools", "rox"), ("/tmp", "rw"),
+    ]
+
+
+def test_fs_isolation_dirs_no_extras():
+    cfg = SimpleNamespace(fs_isolation=True, extra_allowed_dirs=None)
+    assert fs_grants.fs_isolation_dirs(cfg, "/wd") == [("/wd", "rwx")]

@@ -51,3 +51,15 @@ def build_grant_flags(
             path = host_home.rstrip("/") + path[1:]
         flags += [_MODE_FLAG[ad.mode], path.rstrip("/")]
     return flags
+
+
+def fs_isolation_dirs(config, workdir: str) -> "list[tuple[str, str]] | None":
+    """The agent-facing (path, mode) list of directories it may touch under fs
+    isolation (its workdir + caller extras), or None when isolation is off.
+    Used for the sandbox note in the instructions file. Paths stay verbatim
+    (incl. ``~/``): the agent's own $HOME view is what it needs. ``config`` is
+    any ``ClaustrumConfigMixin`` subclass."""
+    if not config.fs_isolation:
+        return None
+    extras = [(ad.path, ad.mode) for ad in (config.extra_allowed_dirs or [])]
+    return [(workdir.rstrip("/"), "rwx"), *extras]
