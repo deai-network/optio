@@ -6,6 +6,8 @@ optio-api widget proxy (which injects the basic-auth credential):
   GET  /events     — SSE: replay buffer first, then live tail (live includes
                      partial-message events; the buffer never does). SSE id:
                      is a monotonic seq; Last-Event-ID resumes without dupes.
+                     After a resume the restored history is followed by one
+                     {"type": "x-optio-resumed"} marker.
   POST /send       — {text}                      -> conversation.send
   POST /interrupt  — {}                          -> conversation.interrupt
   POST /control    — {id, value}                  -> conversation.set_control
@@ -33,6 +35,9 @@ from optio_agents.conversation import ConversationClosed, PermissionDecision
 _LOG = logging.getLogger(__name__)
 
 BUFFER_MAXLEN = 1000
+# Synthetic marker appended after a re-primed (resumed) history: the prior
+# run's process is gone, so anything it left running will never report.
+RESUMED_EVENT_TYPE = "x-optio-resumed"
 UNBUFFERED_TYPES = {"stream_event"}
 PING_INTERVAL_S = 15.0
 # Bound aiohttp's graceful-shutdown wait. The /events SSE handler is a
@@ -65,6 +70,12 @@ class ConversationListener:
             for seq, event in initial_events:
                 self._buffer.append((seq, event))
             self._seq = max(seq for seq, _ in initial_events)
+            # Mark where the prior run's history ends, so the widget stops the
+            # rows that run left running (a background task, a call with no
+            # result). Buffered and persisted like any event, so a later
+            # resume replays it at this point.
+            self._seq += 1
+            self._buffer.append((self._seq, {"type": RESUMED_EVENT_TYPE}))
         self._subscribers: set[asyncio.Queue] = set()
         self._pending_permissions: dict[str, asyncio.Future] = {}
         self._runner: web.AppRunner | None = None
@@ -78,7 +89,8 @@ class ConversationListener:
         Excludes the terminal ``x-optio-closed`` marker: it records the END of
         this run, not conversation content. Persisting it would replay on resume
         and make the UI treat the live resumed session as already closed
-        (disabling the input)."""
+        (disabling the input). The ``x-optio-resumed`` marker is kept: it
+        records where an earlier run ended inside the history."""
         return [
             [seq, event] for seq, event in self._buffer
             if event.get("type") != "x-optio-closed"

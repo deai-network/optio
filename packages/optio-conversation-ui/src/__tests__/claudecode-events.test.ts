@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { initialChatState, reduceEvent } from '../claudecode/events.js';
 import type { ChatItem, ChatState } from '../chat.js';
+import { reduceAcpEvent } from '../acp/events.js';
+import { reduceAntigravityEvent } from '../antigravity/events.js';
+import { reduceCodexEvent } from '../codex/events.js';
+import { reduceCursorEvent } from '../cursor/events.js';
+import { reduceGrokEvent } from '../grok/events.js';
+import { reduceKimiCodeEvent } from '../kimicode/events.js';
+import { reduceOpencodeEvent } from '../opencode/events.js';
 
 // -- raw stream-json event builders (wire shapes verified in Phase I) --------
 
@@ -118,6 +125,7 @@ const cases: { name: string; events: any[]; check: (s: ChatState) => void }[] = 
     check: (s) => {
       expect(ofKind(s, 'tool')).toHaveLength(1);
       expect(ofKind(s, 'tool')[0].endedAt).toBeTypeOf('number');
+      expect(ofKind(s, 'tool')[0].status).toBe('stopped');
       expect(ofKind(s, 'closed')).toHaveLength(1);
     },
   },
@@ -127,6 +135,8 @@ const cases: { name: string; events: any[]; check: (s: ChatState) => void }[] = 
     check: (s) => {
       expect(ofKind(s, 'tool')).toHaveLength(1);
       expect(ofKind(s, 'tool')[0].endedAt).toBeTypeOf('number');
+      // The end of a turn only stops the counter; it sets no outcome.
+      expect(ofKind(s, 'tool')[0].status).not.toBe('stopped');
     },
   },
   {
@@ -660,7 +670,7 @@ describe('background tasks', () => {
     const mid = run([...started, result('started it')]);
     expect(ofKind(mid, 'tool')[0].endedAt).toBeUndefined();
     const closed = reduceEvent(mid, { type: 'x-optio-closed', reason: 'stopped' }, 99, HOURS_LATER);
-    expect(ofKind(closed, 'tool')[0].endedAt).toBe(Date.parse(T5));
+    expect(ofKind(closed, 'tool')[0]).toMatchObject({ status: 'stopped', endedAt: Date.parse(T5) });
   });
 
   it('task_started arriving after the tool_result reopens the row', () => {
@@ -809,5 +819,50 @@ describe('background tasks', () => {
     };
     const s = run([malformed]);
     expect(s).toEqual(initialChatState);
+  });
+});
+
+describe('resume marker (x-optio-resumed)', () => {
+  // The listener appends it after a resumed run's restored history: the prior
+  // run's process is gone, so rows it left running will never report.
+  const resumed = { type: 'x-optio-resumed' };
+  const bgStarted = [
+    toolCall('t1', 'Bash', { command: './harness.sh --lean' }, T0),
+    taskStarted('b1', 't1'),
+    toolResult('t1', 'Command running in background with ID: b1', false, T5),
+  ];
+
+  it('stops a background row the dead run left running, at the latest wire time', () => {
+    const s = run([...bgStarted, result('started it'), resumed], initialChatState, HOURS_LATER);
+    const [row] = ofKind(s, 'tool');
+    expect(row).toMatchObject({ background: true, status: 'stopped', startedAt: Date.parse(T0), endedAt: Date.parse(T5) });
+    // No closed divider: the resumed session is live.
+    expect(s.items.map((i) => i.kind)).toEqual(['tool', 'assistant']);
+    expect(s.closed).toBe(false);
+  });
+
+  it('stops a call that never got its result, keeping the time the turn end froze it at', () => {
+    const s = run(
+      [toolCall('t2', 'Bash', {}, T0), { ...assistantText('waiting'), timestamp: T5 }, result('x'), resumed],
+      initialChatState,
+      HOURS_LATER,
+    );
+    expect(ofKind(s, 'tool')[0]).toMatchObject({ status: 'stopped', endedAt: Date.parse(T5) });
+  });
+
+  it('leaves finished rows alone', () => {
+    const s = run([toolCall('t1', 'Bash', {}, T0), toolResult('t1', 'ok', false, T5), resumed], initialChatState, HOURS_LATER);
+    expect(ofKind(s, 'tool')[0]).toMatchObject({ status: 'done', endedAt: Date.parse(T5) });
+  });
+
+  it('clears a busy flag the dead run left behind', () => {
+    expect(run([user('q'), resumed]).busy).toBe(false);
+  });
+
+  it('other engines ignore it (unknown event type)', () => {
+    for (const reduce of [reduceAcpEvent, reduceAntigravityEvent, reduceCodexEvent, reduceCursorEvent, reduceGrokEvent, reduceKimiCodeEvent]) {
+      expect(reduce(initialChatState, resumed, 1)).toEqual(initialChatState);
+    }
+    expect(reduceOpencodeEvent(initialChatState, resumed, 1, 'ses_1')).toEqual(initialChatState);
   });
 });

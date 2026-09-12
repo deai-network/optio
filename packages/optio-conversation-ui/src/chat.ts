@@ -28,9 +28,10 @@ export type ChatItem =
       // verbosity rules (description-while-active hides a tool once it is no
       // longer running; verbose collapses a finished tool). Absent → treated as
       // running (back-compat with engines that don't report status).
-      // 'stopped' (claudecode background tasks only): the job was stopped or
-      // killed rather than completing or failing; treated as finished, not
-      // failed.
+      // 'stopped': the call was stopped rather than completing or failing;
+      // treated as finished, not failed. claudecode sets it for a background
+      // task reported stopped or killed, and for every row still running when
+      // the session closes or a resumed run replaces the one that started it.
       status?: 'running' | 'done' | 'failed' | 'stopped';
       // Wire id of the call (claudecode tool_use.id): matches its tool_result
       // and background-task events.

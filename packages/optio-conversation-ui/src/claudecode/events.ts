@@ -102,16 +102,25 @@ function applyToolResults(items: ChatItem[], content: unknown, at: number): Chat
   return out;
 }
 
-// Stop the counters of rows still running: at the end of a turn (background
-// rows keep counting: their task outlives the turn) or at session close (all).
-function freezeRunning(items: ChatItem[], at: number, includeBackground: boolean): ChatItem[] {
+// Stop rows still running. At the end of a turn ('turn') only the counter
+// stops, and background rows keep counting: their task outlives the turn. When
+// the session ends ('session': x-optio-closed, or x-optio-resumed for the run
+// that produced the replayed history) nothing will report on them any more:
+// every running row, background included, becomes 'stopped', keeping an end
+// time it already has.
+function freezeRunning(items: ChatItem[], at: number, scope: 'turn' | 'session'): ChatItem[] {
   let changed = false;
   const out = items.map((i) => {
-    if (i.kind !== 'tool' || i.startedAt === undefined || i.endedAt !== undefined) return i;
-    if (i.status === 'done' || i.status === 'failed') return i;
-    if (i.background && !includeBackground) return i;
+    if (i.kind !== 'tool' || (i.status !== undefined && i.status !== 'running')) return i;
+    if (scope === 'turn') {
+      if (i.background || i.startedAt === undefined || i.endedAt !== undefined) return i;
+      changed = true;
+      return { ...i, endedAt: at };
+    }
     changed = true;
-    return { ...i, endedAt: at };
+    const next: ToolItem = { ...i, status: 'stopped' };
+    if (next.startedAt !== undefined && next.endedAt === undefined) next.endedAt = at;
+    return next;
   });
   return changed ? out : items;
 }
@@ -443,7 +452,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
 
     case 'result': {
       const resultText = typeof ev.result === 'string' ? ev.result : null;
-      const items = freezeRunning(state.items, eventTime(ev, lastWireTime(state, now)), false);
+      const items = freezeRunning(state.items, eventTime(ev, lastWireTime(state, now)), 'turn');
       // An API/model error arrives as a result with is_error — surface it as a
       // distinct, explained error item instead of a plain agent bubble.
       if (ev.is_error) {
@@ -482,10 +491,20 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
     }
 
     case 'x-optio-closed': {
-      // Session ended: stop every running counter, background rows included.
+      // Session ended: stop every running row, background rows included.
       const item: ChatItem = { kind: 'closed', reason: String(ev.reason ?? ''), seq };
-      const items = freezeRunning(state.items, lastWireTime(state, now), true);
+      const items = freezeRunning(state.items, lastWireTime(state, now), 'session');
       return { ...state, items: [...items, item], busy: false, closed: true };
+    }
+
+    case 'x-optio-resumed': {
+      // Synthetic, listener-emitted after a resumed run's restored history
+      // (x-optio-closed is not persisted, so nothing else ends that run here).
+      // Its process is gone: stop what it left running, background rows
+      // included, and drop a busy flag its unfinished turn left behind. The
+      // session itself stays open.
+      const items = freezeRunning(state.items, lastWireTime(state, now), 'session');
+      return { ...state, items, busy: false };
     }
 
     case 'system': {

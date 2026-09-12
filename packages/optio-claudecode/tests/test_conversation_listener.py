@@ -190,7 +190,9 @@ async def test_buffer_export_reprime_continues_seq():
     lst2 = ConversationListener(
         conv2, password="pw", initial_events=[(x[0], x[1]) for x in exported],
     )
-    assert [e["n"] for _, e in lst2._buffer] == [1, 2]
+    # The re-prime appends one resume marker after the restored history.
+    assert [e.get("n") for _, e in lst2._buffer] == [1, 2, None]
+    assert lst2._buffer[-1] == (exported[-1][0] + 1, {"type": "x-optio-resumed"})
     conv2.fire({"type": "user", "n": 3})
     assert lst2._buffer[-1][0] > exported[-1][0]
 
@@ -208,3 +210,45 @@ async def test_export_buffer_excludes_terminal_closed():
     types = [e.get("type") for _, e in [(x[0], x[1]) for x in exported]]
     assert "x-optio-closed" not in types
     assert types == ["user", "result"]
+
+
+async def test_reprime_appends_one_resumed_marker():
+    # A resumed run's process is new: whatever the prior run left running (a
+    # background task, an unanswered tool call) will never report. The
+    # re-prime appends exactly one x-optio-resumed marker after the restored
+    # history so the widget can stop those rows; live events follow it.
+    conv = FakeConversation()
+    lst = ConversationListener(
+        conv, password="pw",
+        initial_events=[(1, {"type": "user"}), (2, {"type": "result"})],
+    )
+    assert list(lst._buffer) == [
+        (1, {"type": "user"}), (2, {"type": "result"}),
+        (3, {"type": "x-optio-resumed"}),
+    ]
+    conv.fire({"type": "assistant"})
+    assert lst._buffer[-1] == (4, {"type": "assistant"})
+
+
+async def test_resumed_marker_persists_and_is_added_once_per_reprime():
+    # The marker is persisted with the buffer (unlike x-optio-closed), so a
+    # second resume replays the first marker where the first run ended and
+    # appends its own.
+    first = ConversationListener(
+        FakeConversation(), password="pw", initial_events=[(1, {"type": "user"})],
+    )
+    exported = first.export_buffer()
+    assert [e["type"] for _, e in exported] == ["user", "x-optio-resumed"]
+    second = ConversationListener(
+        FakeConversation(), password="pw",
+        initial_events=[(x[0], x[1]) for x in exported],
+    )
+    assert [(seq, e["type"]) for seq, e in second._buffer] == [
+        (1, "user"), (2, "x-optio-resumed"), (3, "x-optio-resumed"),
+    ]
+
+
+async def test_fresh_start_has_no_resumed_marker():
+    assert list(ConversationListener(FakeConversation(), password="pw")._buffer) == []
+    empty = ConversationListener(FakeConversation(), password="pw", initial_events=[])
+    assert list(empty._buffer) == []
