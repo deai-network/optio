@@ -63,6 +63,16 @@ def test_explainer_present_without_resume_section_when_host_protocol_off():
     assert "originate from the harness" in " ".join(out.split())
 
 
+def test_no_leading_blank_line_before_lone_explainer():
+    out = _c(host_protocol=False, supports_resume=False)
+    assert out.startswith("(Messages prefixed")
+    out = _c(
+        profile=AgentPromptProfile(preamble="P\n\n"),
+        host_protocol=False, supports_resume=False,
+    )
+    assert out.startswith("P\n\n(Messages prefixed")
+
+
 def test_explainer_absent_when_host_protocol_on():
     assert "originate from the harness" not in " ".join(_c().split())
 

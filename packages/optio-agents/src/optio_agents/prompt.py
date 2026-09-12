@@ -20,6 +20,7 @@ from __future__ import annotations
 import textwrap
 from dataclasses import dataclass
 
+from optio_agents.browser_shims import BrowserMode
 from optio_agents.context import SYSTEM_MESSAGE_PREFIX
 from optio_agents.protocol.features import ProtocolFeatures
 from optio_agents.protocol.prompt import RESUME_NOTICE, build_log_channel_prompt
@@ -33,7 +34,7 @@ class AgentPromptProfile:
     state_dir: str | None = None           # e.g. "home/.claude/"; None = no bullet
     state_dir_contents: str = ""           # e.g. "credentials, settings, and ..."
     preamble: str = ""                     # rendered first (grok's identity line)
-    browser: str = "redirect"              # fallback docs only, see module doc
+    browser: BrowserMode = "redirect"      # fallback docs only, see module doc
     delivery_section: str = ""             # rendered just before the task framing
 
 
@@ -274,7 +275,10 @@ def compose_instructions_file(
         if supports_resume else ""
     )
     if not host_protocol:
-        resume_block += _SYSTEM_PREFIX_EXPLAINER
+        resume_block += (
+            _SYSTEM_PREFIX_EXPLAINER if resume_block
+            else _SYSTEM_PREFIX_EXPLAINER.lstrip("\n")
+        )
     if resume_block:
         resume_block += "\n"
     delivery = (
