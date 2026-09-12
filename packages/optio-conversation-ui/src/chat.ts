@@ -29,6 +29,19 @@ export type ChatItem =
       // longer running; verbose collapses a finished tool). Absent → treated as
       // running (back-compat with engines that don't report status).
       status?: 'running' | 'done' | 'failed';
+      // Wire id of the call (claudecode tool_use.id): matches its tool_result
+      // and background-task events.
+      callId?: string;
+      // The call's output (claudecode: tool_result text, or a background task's
+      // summary), trimmed; rendered under the args in verbose.
+      result?: string;
+      // Epoch ms. startedAt drives the live elapsed counter; endedAt freezes it
+      // (result, background completion, end of turn, session close).
+      startedAt?: number;
+      endedAt?: number;
+      // A backgrounded shell command: its immediate tool_result does not finish
+      // the row; the background-task notification does.
+      background?: boolean;
     }
   | {
       kind: 'permission';

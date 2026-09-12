@@ -12,6 +12,10 @@ const messageStart = (msgId: string) => ({ type: 'stream_event', event: { type: 
 const result = (text: string) => ({ type: 'result', subtype: 'success', result: text });
 const thinking = (text: string, msgId?: string) => ({ type: 'assistant', message: { role: 'assistant', id: msgId, content: [{ type: 'thinking', thinking: text, signature: 'sig' }] } });
 const thinkingDelta = (text: string) => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: text } } });
+const T0 = '2026-09-12T10:00:00.000Z';
+const T5 = '2026-09-12T10:00:05.000Z';
+const toolCall = (id: string, name: string, input: unknown, timestamp?: string) => ({ type: 'assistant', timestamp, message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] } });
+const toolResult = (id: string, content: unknown, isError = false, timestamp?: string) => ({ type: 'user', timestamp, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, is_error: isError }] } });
 const controlRequest = (requestId: string, toolName: string, input: unknown) => ({
   type: 'control_request',
   request_id: requestId,
@@ -66,46 +70,45 @@ const cases: { name: string; events: any[]; check: (s: ChatState) => void }[] = 
     },
   },
   {
-    name: 'a new tool announcement supersedes the previous one (ephemeral)',
+    name: 'a new tool call adds a row; earlier rows stay',
     events: [toolUse('ToolSearch', { query: 'x' }), toolUse('WebSearch', { query: 'y' })],
     check: (s) => {
-      const tools = ofKind(s, 'tool');
-      expect(tools).toHaveLength(1);
-      expect(tools[0].name).toBe('WebSearch');
+      expect(ofKind(s, 'tool').map((t) => t.name)).toEqual(['ToolSearch', 'WebSearch']);
     },
   },
   {
-    name: 'a permission request clears any in-flight tool announcement',
+    name: 'a permission request keeps the earlier tool row',
     events: [
       toolUse('WebSearch', { query: 'y' }),
       controlRequest('perm-1', 'WebSearch', { query: 'y' }),
     ],
     check: (s) => {
-      expect(ofKind(s, 'tool')).toHaveLength(0);
+      expect(ofKind(s, 'tool')).toHaveLength(1);
       expect(ofKind(s, 'permission')).toHaveLength(1);
     },
   },
   {
-    name: 'assistant answer text clears the in-flight tool announcement',
+    name: 'an assistant answer keeps the tool row above it',
     events: [toolUse('Read', { file_path: '/x' }), assistantText('here is the answer')],
     check: (s) => {
-      expect(ofKind(s, 'tool')).toHaveLength(0);
-      expect(ofKind(s, 'assistant')).toHaveLength(1);
+      expect(s.items.map((i) => i.kind)).toEqual(['tool', 'assistant']);
     },
   },
   {
-    name: 'a trailing tool use (e.g. echo DONE) is cleared by session close',
+    name: 'a trailing tool use stays, frozen, at session close',
     events: [toolUse('Bash', { command: 'echo DONE >> ./optio.log' }), { type: 'x-optio-closed', reason: 'process ended' }],
     check: (s) => {
-      expect(ofKind(s, 'tool')).toHaveLength(0);
+      expect(ofKind(s, 'tool')).toHaveLength(1);
+      expect(ofKind(s, 'tool')[0].endedAt).toBeTypeOf('number');
       expect(ofKind(s, 'closed')).toHaveLength(1);
     },
   },
   {
-    name: 'result clears a lingering tool announcement',
+    name: 'result keeps a running tool row and freezes it',
     events: [toolUse('Bash', { command: 'x' }), result('done')],
     check: (s) => {
-      expect(ofKind(s, 'tool')).toHaveLength(0);
+      expect(ofKind(s, 'tool')).toHaveLength(1);
+      expect(ofKind(s, 'tool')[0].endedAt).toBeTypeOf('number');
     },
   },
   {
@@ -315,6 +318,63 @@ describe('reduceEvent', () => {
     s = reduceEvent(s, user('q'), 1);
     s = reduceEvent(s, result('a'), 2);
     expect(s.items.map((i) => i.kind)).toEqual(['user', 'assistant']);
+  });
+});
+
+describe('real tool rows', () => {
+  it('tool rows persist across later tool calls and replies', () => {
+    const s = run([toolCall('t1', 'Bash', { command: 'ls' }), toolCall('t2', 'Read', { file_path: '/x' }), assistantText('done reading')]);
+    expect(ofKind(s, 'tool').map((t) => t.name)).toEqual(['Bash', 'Read']);
+    expect(ofKind(s, 'tool').map((t) => t.callId)).toEqual(['t1', 't2']);
+    expect(ofKind(s, 'assistant')).toHaveLength(1);
+  });
+
+  it('a tool_result finishes its row with status, result and endedAt', () => {
+    const s = run([toolCall('t1', 'Bash', { command: 'ls' }, T0), toolResult('t1', 'file1\nfile2\n', false, T5)]);
+    const [row] = ofKind(s, 'tool');
+    expect(row).toMatchObject({ status: 'done', result: 'file1\nfile2', startedAt: Date.parse(T0), endedAt: Date.parse(T5) });
+    expect(ofKind(s, 'user')).toEqual([]);
+  });
+
+  it('an error tool_result marks the row failed', () => {
+    const s = run([toolCall('t1', 'Bash', { command: 'false' }), toolResult('t1', 'exit 1', true)]);
+    expect(ofKind(s, 'tool')[0].status).toBe('failed');
+  });
+
+  it('block-list result content contributes its text blocks', () => {
+    const s = run([toolCall('t1', 'Read', {}), toolResult('t1', [{ type: 'text', text: 'a' }, { type: 'image' }, { type: 'text', text: 'b' }])]);
+    expect(ofKind(s, 'tool')[0].result).toBe('a\nb');
+  });
+
+  it('long results are trimmed to 2000 characters', () => {
+    const s = run([toolCall('t1', 'Bash', {}), toolResult('t1', 'x'.repeat(5000))]);
+    const r = ofKind(s, 'tool')[0].result!;
+    expect(r).toHaveLength(2000);
+    expect(r.endsWith('…')).toBe(true);
+  });
+
+  it('a tool_result for an unknown id changes nothing', () => {
+    const before = run([toolCall('t1', 'Bash', {})]);
+    const after = reduceEvent(before, toolResult('nope', 'x'), 9);
+    expect(after.items).toEqual(before.items);
+  });
+
+  it('startedAt falls back to the reducer clock when the event has no timestamp', () => {
+    const s = reduceEvent(initialChatState, toolCall('t1', 'Bash', {}), 1, 12_345);
+    expect(ofKind(s, 'tool')[0].startedAt).toBe(12_345);
+  });
+
+  it('result freezes a running row at the result time and leaves finished rows alone', () => {
+    const s = run([
+      toolCall('t1', 'Bash', {}, T0),
+      toolResult('t1', 'ok', false, T5),
+      toolCall('t2', 'Bash', {}, T5),
+      { type: 'result', subtype: 'success', result: 'done', timestamp: '2026-09-12T10:00:09.000Z' },
+    ]);
+    const [a, b] = ofKind(s, 'tool');
+    expect(a.endedAt).toBe(Date.parse(T5));
+    expect(b.endedAt).toBe(Date.parse('2026-09-12T10:00:09.000Z'));
+    expect(b.status).toBeUndefined();
   });
 });
 

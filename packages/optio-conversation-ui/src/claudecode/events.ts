@@ -36,6 +36,73 @@ function replaceAt(items: ChatItem[], idx: number, item: ChatItem): ChatItem[] {
   return [...items.slice(0, idx), item, ...items.slice(idx + 1)];
 }
 
+type ToolItem = Extract<ChatItem, { kind: 'tool' }>;
+
+const RESULT_MAX = 2000;
+
+// Epoch ms of an event (stream-json events carry an ISO `timestamp`), else the
+// reducer's clock.
+function eventTime(ev: any, now: number): number {
+  const t = typeof ev?.timestamp === 'string' ? Date.parse(ev.timestamp) : NaN;
+  return Number.isFinite(t) ? t : now;
+}
+
+function trimResult(s: string): string {
+  const t = s.trim();
+  return t.length > RESULT_MAX ? t.slice(0, RESULT_MAX - 1) + '…' : t;
+}
+
+// tool_result content is a string or a list of blocks; keep the text blocks.
+function toolResultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content
+    .filter((b: any) => b?.type === 'text' && typeof b.text === 'string')
+    .map((b: any) => b.text)
+    .join('\n');
+}
+
+function toolRow(block: any, seq: number, at: number): ChatItem {
+  const row: ToolItem = { kind: 'tool', name: String(block.name ?? ''), input: block.input, seq, startedAt: at };
+  if (typeof block.id === 'string') row.callId = block.id;
+  return row;
+}
+
+// Apply tool_result blocks to their rows (matched by tool_use_id). A background
+// row ignores its immediate result: the task notification finishes it.
+function applyToolResults(items: ChatItem[], content: unknown, at: number): ChatItem[] {
+  if (!Array.isArray(content)) return items;
+  let out = items;
+  for (const b of content) {
+    if (b?.type !== 'tool_result' || typeof b.tool_use_id !== 'string') continue;
+    const idx = out.findIndex((i) => i.kind === 'tool' && i.callId === b.tool_use_id);
+    if (idx === -1) continue;
+    const row = out[idx] as ToolItem;
+    if (row.background) continue;
+    out = replaceAt(out, idx, {
+      ...row,
+      status: b.is_error ? 'failed' : 'done',
+      result: trimResult(toolResultText(b.content)),
+      endedAt: at,
+    });
+  }
+  return out;
+}
+
+// Stop the counters of rows still running: at the end of a turn (background
+// rows keep counting: their task outlives the turn) or at session close (all).
+function freezeRunning(items: ChatItem[], at: number, includeBackground: boolean): ChatItem[] {
+  let changed = false;
+  const out = items.map((i) => {
+    if (i.kind !== 'tool' || i.startedAt === undefined || i.endedAt !== undefined) return i;
+    if (i.status === 'done' || i.status === 'failed') return i;
+    if (i.background && !includeBackground) return i;
+    changed = true;
+    return { ...i, endedAt: at };
+  });
+  return changed ? out : items;
+}
+
 // message.content is either a plain string or an array of content blocks;
 // join the text blocks with a newline. Separate blocks are logically distinct
 // messages (e.g. several harness "System:" notices claude coalesced into one
@@ -54,8 +121,8 @@ function pendingIndex(items: ChatItem[]): number {
 }
 
 // The pending bubble may keep absorbing the in-flight turn only while it is
-// the conversation's tail. Ephemeral tool rows don't count: they are dropped
-// by the next text anyway. Anything else after the bubble (activity rows,
+// the conversation's tail. Tool rows don't count: they are progress rows, not
+// newer conversation content. Anything else after the bubble (activity rows,
 // permission cards, user turns) means newer content has been appended — the
 // bubble is stale and must not act as an anchor anymore.
 function isTail(items: ChatItem[], idx: number): boolean {
@@ -143,20 +210,13 @@ function finalizePending(items: ChatItem[], seq: number, resultText: string | nu
 // the conversation's tail (modulo ephemeral tool rows). A stale pending
 // bubble (e.g. replayed from a buffer captured mid-turn, never finalized)
 // must not pull later, unrelated user events above newer content.
-// Tool announcements are ephemeral progress indicators: only the in-flight one
-// is interesting. A new tool announcement or a permission request supersedes
-// any prior tool rows, so drop them when either arrives.
-function withoutTools(items: ChatItem[]): ChatItem[] {
-  return items.filter((i) => i.kind !== 'tool');
-}
-
 function insertBeforePending(items: ChatItem[], rows: ChatItem[]): ChatItem[] {
   const idx = pendingIndex(items);
   if (idx === -1 || !isTail(items, idx)) return [...items, ...rows];
   return [...items.slice(0, idx), ...rows, ...items.slice(idx)];
 }
 
-export function reduceEvent(state: ChatState, ev: any, seq: number): ChatState {
+export function reduceEvent(state: ChatState, ev: any, seq: number, now: number = Date.now()): ChatState {
   // Sniff the runtime model and fold it into the model control. Claude Code
   // reports the model at top level on `system`/`init` (fires immediately at
   // launch) and on each assistant `message.model`. The stream uses the
@@ -180,6 +240,10 @@ export function reduceEvent(state: ChatState, ev: any, seq: number): ChatState {
       // `.text` is the real prompt, `.uploads` drives a persistent muted
       // "attached files" row that re-renders on resume (Claude replays the user
       // message under --replay-user-messages).
+      // Tool results arrive as user events; finish their rows first. Such an
+      // event carries no text, so it adds no bubble below.
+      const withResults = applyToolResults(state.items, ev.message?.content, eventTime(ev, now));
+      if (withResults !== state.items) state = { ...state, items: withResults };
       const { text, uploads } = parseUploadNotice(extractText(ev.message?.content));
       if (text === '' && uploads.length === 0) return state;
       const attach: ChatItem | null =
@@ -238,18 +302,18 @@ export function reduceEvent(state: ChatState, ev: any, seq: number): ChatState {
     case 'assistant': {
       const blocks = Array.isArray(ev.message?.content) ? ev.message.content : [];
       const msgId = typeof ev.message?.id === 'string' ? ev.message.id : undefined;
+      const at = eventTime(ev, now);
       let items = state.items;
       for (const block of blocks) {
         const text = blockText(block);
         if (text !== null) {
-          // The agent is answering (or narrating) — clear any in-flight tool
-          // announcement, then complete this block's part of the bubble.
-          items = applyBlockText(withoutTools(items), seq, text, msgId);
+          // The agent is answering (or narrating) — complete this block's
+          // part of the bubble.
+          items = applyBlockText(items, seq, text, msgId);
         } else if (block?.type === 'tool_use') {
-          // Carry the structured input so the widget can render it as a
-          // key→value table (same treatment as the permission card). Ephemeral:
-          // supersede any prior tool announcement.
-          items = [...withoutTools(items), { kind: 'tool', name: String(block.name ?? ''), input: block.input, seq }];
+          // A persistent row per call; its tool_result (a later user event)
+          // finishes it.
+          items = [...items, toolRow(block, seq, at)];
         }
       }
       return items === state.items ? state : { ...state, items };
@@ -269,24 +333,19 @@ export function reduceEvent(state: ChatState, ev: any, seq: number): ChatState {
       const d = ev.event?.delta;
       const delta = d?.type === 'thinking_delta' ? d.thinking : d?.text;
       if (typeof delta !== 'string' || delta === '') return state;
-      // The answer is streaming — clear any in-flight tool announcement.
-      return { ...state, items: appendDelta(withoutTools(state.items), seq, delta) };
+      return { ...state, items: appendDelta(state.items, seq, delta) };
     }
 
     case 'result': {
       const resultText = typeof ev.result === 'string' ? ev.result : null;
+      const items = freezeRunning(state.items, eventTime(ev, now), false);
       // An API/model error arrives as a result with is_error — surface it as a
       // distinct, explained error item instead of a plain agent bubble.
       if (ev.is_error) {
         const msg = explainApiError(resultText ?? '', ev.api_error_status);
-        return {
-          ...state,
-          items: [...withoutTools(state.items), { kind: 'error', text: msg, seq }],
-          busy: false,
-        };
+        return { ...state, items: [...items, { kind: 'error', text: msg, seq }], busy: false };
       }
-      // Turn complete — drop any lingering tool announcement.
-      return { ...state, items: finalizePending(withoutTools(state.items), seq, resultText), busy: false };
+      return { ...state, items: finalizePending(items, seq, resultText), busy: false };
     }
 
     case 'control_request': {
@@ -299,9 +358,8 @@ export function reduceEvent(state: ChatState, ev: any, seq: number): ChatState {
         answered: null,
         seq,
       };
-      // busy stays true — the agent is parked on the gate. The permission
-      // request supersedes any in-flight tool announcement.
-      return { ...state, items: [...withoutTools(state.items), item] };
+      // busy stays true — the agent is parked on the gate.
+      return { ...state, items: [...state.items, item] };
     }
 
     case 'x-optio-permission-answered': {
@@ -319,11 +377,10 @@ export function reduceEvent(state: ChatState, ev: any, seq: number): ChatState {
     }
 
     case 'x-optio-closed': {
-      // Session ended — a trailing tool announcement (e.g. the agent echoing
-      // DONE to optio.log) should not linger above the "conversation ended"
-      // divider.
+      // Session ended: stop every running counter, background rows included.
       const item: ChatItem = { kind: 'closed', reason: String(ev.reason ?? ''), seq };
-      return { ...state, items: [...withoutTools(state.items), item], busy: false, closed: true };
+      const items = freezeRunning(state.items, eventTime(ev, now), true);
+      return { ...state, items: [...items, item], busy: false, closed: true };
     }
 
     default:
