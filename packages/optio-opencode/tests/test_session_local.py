@@ -481,6 +481,7 @@ async def test_append_resume_log_entry_empty_refreshed_omits_tag(tmp_workdir):
 async def test_maybe_refresh_on_resume_no_hook(tmp_workdir):
     """on_resume_refresh=None → returns [] and does not write AGENTS.md."""
     import os
+    from optio_agents import get_protocol
     from optio_host.host import LocalHost
     from optio_opencode.session import _maybe_refresh_on_resume
     from optio_opencode.types import OpencodeTaskConfig
@@ -492,7 +493,9 @@ async def test_maybe_refresh_on_resume_no_hook(tmp_workdir):
         consumer_instructions="x", on_resume_refresh=None, fs_isolation=False,
     )
 
-    refreshed = await _maybe_refresh_on_resume(host, None, config)
+    refreshed = await _maybe_refresh_on_resume(
+        host, None, config, get_protocol(browser="suppress"),
+    )
 
     assert refreshed == []
     assert not os.path.exists(os.path.join(host.workdir, "AGENTS.md"))
@@ -501,6 +504,7 @@ async def test_maybe_refresh_on_resume_no_hook(tmp_workdir):
 async def test_maybe_refresh_on_resume_unchanged_content_skips_write(tmp_workdir):
     """Hook return identical to existing AGENTS.md → no write, [] returned."""
     import os
+    from optio_agents import get_protocol
     from optio_host.host import LocalHost
     from optio_opencode.prompt import compose_agents_md
     from optio_opencode.session import _maybe_refresh_on_resume
@@ -524,7 +528,9 @@ async def test_maybe_refresh_on_resume_unchanged_content_skips_write(tmp_workdir
             with open(full) as f:
                 return f.read()
 
-    refreshed = await _maybe_refresh_on_resume(host, _FakeHookCtx(), config)
+    refreshed = await _maybe_refresh_on_resume(
+        host, _FakeHookCtx(), config, get_protocol(browser="suppress"),
+    )
 
     assert refreshed == []
     mtime_after = os.path.getmtime(os.path.join(host.workdir, "AGENTS.md"))
@@ -535,6 +541,7 @@ async def test_maybe_refresh_on_resume_changed_content_writes(tmp_workdir):
     """Hook returns new instructions → AGENTS.md rewritten, ['AGENTS.md']."""
     import os
     from dataclasses import replace
+    from optio_agents import get_protocol
     from optio_host.host import LocalHost
     from optio_opencode.prompt import compose_agents_md
     from optio_opencode.session import _maybe_refresh_on_resume
@@ -560,7 +567,9 @@ async def test_maybe_refresh_on_resume_changed_content_writes(tmp_workdir):
             with open(full) as f:
                 return f.read()
 
-    refreshed = await _maybe_refresh_on_resume(host, _FakeHookCtx(), config)
+    refreshed = await _maybe_refresh_on_resume(
+        host, _FakeHookCtx(), config, get_protocol(browser="suppress"),
+    )
 
     assert refreshed == ["AGENTS.md"]
     with open(os.path.join(host.workdir, "AGENTS.md")) as f:
@@ -572,6 +581,7 @@ async def test_maybe_refresh_on_resume_changed_content_writes(tmp_workdir):
 async def test_maybe_refresh_on_resume_hook_raises_keeps_existing(tmp_workdir):
     """Hook that raises → returns [] and leaves existing AGENTS.md alone."""
     import os
+    from optio_agents import get_protocol
     from optio_host.host import LocalHost
     from optio_opencode.session import _maybe_refresh_on_resume
     from optio_opencode.types import OpencodeTaskConfig
@@ -586,11 +596,43 @@ async def test_maybe_refresh_on_resume_hook_raises_keeps_existing(tmp_workdir):
         consumer_instructions="x", on_resume_refresh=_boom, fs_isolation=False,
     )
 
-    refreshed = await _maybe_refresh_on_resume(host, None, config)
+    refreshed = await _maybe_refresh_on_resume(
+        host, None, config, get_protocol(browser="suppress"),
+    )
 
     assert refreshed == []
     with open(os.path.join(host.workdir, "AGENTS.md")) as f:
         assert f.read() == "existing content"
+
+
+async def test_maybe_refresh_on_resume_threads_session_docs(tmp_workdir):
+    """The refreshed AGENTS.md carries the SESSION's protocol docs (client
+    messages documented when the task enables them), not rebuilt defaults."""
+    import os
+    from dataclasses import replace
+    from optio_agents import get_protocol
+    from optio_host.host import LocalHost
+    from optio_opencode.session import _maybe_refresh_on_resume
+    from optio_opencode.types import OpencodeTaskConfig
+
+    host = LocalHost(taskdir=tmp_workdir)
+    await host.setup_workdir()
+    config = OpencodeTaskConfig(
+        consumer_instructions="task X", fs_isolation=False, use_client_messages=True,
+        on_resume_refresh=lambda c: replace(c, consumer_instructions="task Y"),
+    )
+    await host.write_text("AGENTS.md", "stale")
+
+    class _FakeHookCtx:
+        async def read_text_from_host(self, path, *, silent=False):
+            with open(os.path.join(host.workdir, path)) as f:
+                return f.read()
+
+    protocol = get_protocol(browser="suppress", client_messages=True)
+    assert await _maybe_refresh_on_resume(host, _FakeHookCtx(), config, protocol) == ["AGENTS.md"]
+    with open(os.path.join(host.workdir, "AGENTS.md")) as f:
+        text = f.read()
+    assert "task Y" in text and "CLIENT_MESSAGE:" in text
 
 
 async def test_session_local_supports_resume_false_skips_resume_log(

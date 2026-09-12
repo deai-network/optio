@@ -1,7 +1,5 @@
 """Tests for prompt composition."""
 
-import pytest
-
 from optio_opencode.prompt import compose_agents_md
 
 
@@ -40,12 +38,6 @@ def test_compose_agents_md_appends_consumer_instructions_verbatim():
 def test_compose_agents_md_empty_consumer_still_ends_cleanly():
     out = _compose("")
     assert out.endswith("\n")
-
-
-def test_compose_agents_md_workdir_exclude_required():
-    """workdir_exclude is mandatory — calling without it raises TypeError."""
-    with pytest.raises(TypeError):
-        compose_agents_md("hi")  # type: ignore[call-arg]
 
 
 def test_compose_agents_md_includes_resume_section_by_default():
@@ -146,3 +138,21 @@ def test_default_composition_unchanged():
     out = compose_agents_md("body", workdir_exclude=None)
     assert "## Task" in out
     assert "optio.log" in out
+
+
+def test_sandbox_note_and_threaded_docs():
+    from optio_agents import get_protocol
+    docs = get_protocol(browser="suppress", client_messages=True).documentation
+    out = compose_agents_md(
+        "x", documentation=docs, fs_isolation_dirs=[("/wd", "rwx")],
+    )
+    assert "CLIENT_MESSAGE:" in out
+    assert "**Filesystem access:**" in out and "`/wd`" in out
+
+
+def test_no_prompt_text_of_its_own():
+    import inspect
+    import optio_opencode.prompt as m
+    src = inspect.getsource(m)
+    assert "This harness may pause your session" not in src
+    assert "You are running inside a coordination harness" not in src

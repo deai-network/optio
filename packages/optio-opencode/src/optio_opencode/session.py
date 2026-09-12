@@ -32,6 +32,7 @@ from optio_core.models import BasicAuth, TaskInstance
 
 from optio_agents import HookContext
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
+from optio_agents.fs_grants import fs_isolation_dirs
 from optio_host.host import Host, LocalHost, ProcessHandle
 from optio_host.paths import task_dir
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
@@ -347,6 +348,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                     supports_resume=config.supports_resume,
                     host_protocol=config.host_protocol,
                     omit_task_framing=omit_task_framing,
+                    fs_isolation_dirs=fs_isolation_dirs(config, host.workdir),
                     file_download=config.file_download,
                 ),
             )
@@ -390,7 +392,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
             # Resume: when on_resume_refresh is wired, recompute AGENTS.md
             # from the refreshed config and overwrite the workdir copy if
             # the rendered text differs from the snapshot-restored file.
-            refreshed_files = await _maybe_refresh_on_resume(host, hook_ctx, config)
+            refreshed_files = await _maybe_refresh_on_resume(host, hook_ctx, config, protocol)
 
         # opencode.json is wholly optio-generated (the seed never carries the
         # workdir-root copy — its manifest only includes files under home/),
@@ -1031,10 +1033,13 @@ async def _append_resume_log_entry(
 
 
 async def _maybe_refresh_on_resume(
-    host, hook_ctx, config: OpencodeTaskConfig,
+    host, hook_ctx, config: OpencodeTaskConfig, protocol,
 ) -> list[str]:
     """Run the on_resume_refresh hook (if any) and rewrite AGENTS.md when
     the rendered content differs from the workdir copy.
+
+    ``protocol`` is the session's protocol; its documentation is rendered so
+    the refreshed file matches the fresh-start composition.
 
     Returns the list of filenames the harness rewrote (currently at most
     ``["AGENTS.md"]``), suitable for tagging the next ``resume.log`` line.
@@ -1052,11 +1057,13 @@ async def _maybe_refresh_on_resume(
         return []
     new_agents_md = compose_agents_md(
         new_config.consumer_instructions,
+        documentation=protocol.documentation if new_config.host_protocol else None,
         workdir_exclude=new_config.workdir_exclude,
         supports_resume=new_config.supports_resume,
         # Reflect the refreshed config so a resume keeps the downloadables block
         # (with the right wording — host_protocol drives comparative vs standalone).
         host_protocol=new_config.host_protocol,
+        fs_isolation_dirs=fs_isolation_dirs(new_config, host.workdir),
         file_download=new_config.file_download,
     )
     try:
