@@ -22,6 +22,17 @@ const controlRequest = (requestId: string, toolName: string, input: unknown) => 
   request: { subtype: 'can_use_tool', tool_name: toolName, input },
 });
 
+const taskStarted = (taskId: string, toolUseId: string) => ({ type: 'system', subtype: 'task_started', task_id: taskId, tool_use_id: toolUseId, description: 'bg job', is_backgrounded: true, task_type: 'local_bash' });
+const taskNotification = (taskId: string, toolUseId: string, status: string, summary: string, timestamp?: string) => ({ type: 'system', subtype: 'task_notification', task_id: taskId, tool_use_id: toolUseId, status, output_file: '/tmp/x.output', summary, timestamp });
+const injectedNotification = (taskId: string, toolUseId: string, status: string, summary: string) => ({
+  type: 'user',
+  origin: { kind: 'task-notification' },
+  message: {
+    role: 'user',
+    content: `<task-notification>\n<task-id>${taskId}</task-id>\n<tool-use-id>${toolUseId}</tool-use-id>\n<output-file>/tmp/x.output</output-file>\n<status>${status}</status>\n<summary>${summary}</summary>\n</task-notification>`,
+  },
+});
+
 function run(events: any[], from: ChatState = initialChatState): ChatState {
   return events.reduce((s, ev, i) => reduceEvent(s, ev, i + 1), from);
 }
@@ -535,5 +546,79 @@ describe('claudecode upload notice → attachment row', () => {
     const s = run([{ type: 'x-optio-local-error', text: 'Upload failed: big.png — exceeds the size limit' }]);
     const e = s.items.find((i) => i.kind === 'error');
     expect(e && e.kind === 'error' && e.text).toBe('Upload failed: big.png — exceeds the size limit');
+  });
+});
+
+describe('background tasks', () => {
+  const started = [
+    toolCall('t1', 'Bash', { command: './harness.sh --lean' }, T0),
+    taskStarted('b1', 't1'),
+    toolResult('t1', 'Command running in background with ID: b1', false, T5),
+  ];
+
+  it('a backgrounded call stays running after its immediate tool_result', () => {
+    const [row] = ofKind(run(started), 'tool');
+    expect(row.background).toBe(true);
+    expect(row.status).toBe('running');
+    expect(row.endedAt).toBeUndefined();
+  });
+
+  it('task_notification finishes the row with the summary and its time', () => {
+    const s = run([...started, taskNotification('b1', 't1', 'completed', 'Lean-verify all 15', '2026-09-12T10:06:12.000Z')]);
+    const [row] = ofKind(s, 'tool');
+    expect(row).toMatchObject({ status: 'done', result: 'Lean-verify all 15', endedAt: Date.parse('2026-09-12T10:06:12.000Z') });
+  });
+
+  it('a failed task marks the row failed', () => {
+    const s = run([...started, taskNotification('b1', 't1', 'failed', 'Build test venv')]);
+    expect(ofKind(s, 'tool')[0].status).toBe('failed');
+  });
+
+  it('an injected <task-notification> turn finishes the row and adds no user bubble', () => {
+    const s = run([...started, injectedNotification('b1', 't1', 'completed', 'Rewrite harness')]);
+    expect(ofKind(s, 'user')).toEqual([]);
+    expect(ofKind(s, 'tool')[0]).toMatchObject({ status: 'done', result: 'Rewrite harness' });
+  });
+
+  it('the same task reported by both routes applies once', () => {
+    const s = run([
+      ...started,
+      taskNotification('b1', 't1', 'completed', 'first report'),
+      injectedNotification('b1', 't1', 'completed', 'second report'),
+    ]);
+    expect(ofKind(s, 'tool')[0].result).toBe('first report');
+    expect(ofKind(s, 'activity')).toEqual([]);
+    expect(s.finishedTaskIds).toEqual(['b1']);
+  });
+
+  it('without a matching row, a muted activity row reports the finished task', () => {
+    const ok = run([taskNotification('b9', 't9', 'completed', 'Nightly export')]);
+    expect(ofKind(ok, 'activity').map((a) => a.text)).toEqual(['✓ Background task finished: Nightly export']);
+    const bad = run([injectedNotification('b8', 't8', 'failed', 'Nightly import')]);
+    expect(ofKind(bad, 'activity').map((a) => a.text)).toEqual(['✗ Background task failed: Nightly import']);
+  });
+
+  it('the end of the turn does not freeze a background row; session close does', () => {
+    const mid = run([...started, result('started it')]);
+    expect(ofKind(mid, 'tool')[0].endedAt).toBeUndefined();
+    const closed = reduceEvent(mid, { type: 'x-optio-closed', reason: 'stopped' }, 99, 777);
+    expect(ofKind(closed, 'tool')[0].endedAt).toBe(777);
+  });
+
+  it('task_started arriving after the tool_result reopens the row', () => {
+    const s = run([
+      toolCall('t1', 'Bash', {}, T0),
+      toolResult('t1', 'Command running in background with ID: b1', false, T5),
+      taskStarted('b1', 't1'),
+    ]);
+    const [row] = ofKind(s, 'tool');
+    expect(row).toMatchObject({ background: true, status: 'running' });
+    expect(row.endedAt).toBeUndefined();
+    expect(row.result).toBeUndefined();
+  });
+
+  it('other system events are still ignored', () => {
+    const s = run([{ type: 'system', subtype: 'status' }, { type: 'system', subtype: 'thinking_tokens' }]);
+    expect(s).toEqual(initialChatState);
   });
 });

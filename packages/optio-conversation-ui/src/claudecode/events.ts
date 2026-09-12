@@ -103,6 +103,60 @@ function freezeRunning(items: ChatItem[], at: number, includeBackground: boolean
   return changed ? out : items;
 }
 
+interface TaskNotice {
+  taskId: string;
+  toolUseId: string | null;
+  status: string;
+  summary: string;
+}
+
+function tagValue(xml: string, tag: string): string | null {
+  const m = xml.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`));
+  return m ? m[1].trim() : null;
+}
+
+// The <task-notification> element the CLI injects as a user turn when a
+// background command ends.
+function parseTaskNotification(text: string): TaskNotice | null {
+  const taskId = tagValue(text, 'task-id');
+  if (!taskId) return null;
+  return {
+    taskId,
+    toolUseId: tagValue(text, 'tool-use-id'),
+    status: tagValue(text, 'status') ?? '',
+    summary: tagValue(text, 'summary') ?? '',
+  };
+}
+
+// A background task ended (system/task_notification or an injected
+// <task-notification> turn): finish its Bash row, or add a muted activity row
+// when no row exists (e.g. a replay without the call). Each task applies once.
+function applyTaskNotice(state: ChatState, n: TaskNotice, at: number, seq: number): ChatState {
+  const seen = state.finishedTaskIds ?? [];
+  if (seen.includes(n.taskId)) return state;
+  const failed = n.status === 'failed';
+  const idx = n.toolUseId
+    ? state.items.findIndex((i) => i.kind === 'tool' && i.callId === n.toolUseId)
+    : -1;
+  let items: ChatItem[];
+  if (idx !== -1) {
+    const row = state.items[idx] as ToolItem;
+    items = replaceAt(state.items, idx, {
+      ...row,
+      background: true,
+      status: failed ? 'failed' : 'done',
+      result: trimResult(n.summary),
+      endedAt: at,
+    });
+  } else {
+    const text = failed
+      ? `✗ Background task failed: ${n.summary}`
+      : `✓ Background task finished: ${n.summary}`;
+    items = [...state.items, { kind: 'activity', text, seq }];
+  }
+  return { ...state, items, finishedTaskIds: [...seen, n.taskId] };
+}
+
 // message.content is either a plain string or an array of content blocks;
 // join the text blocks with a newline. Separate blocks are logically distinct
 // messages (e.g. several harness "System:" notices claude coalesced into one
@@ -244,7 +298,14 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // event carries no text, so it adds no bubble below.
       const withResults = applyToolResults(state.items, ev.message?.content, eventTime(ev, now));
       if (withResults !== state.items) state = { ...state, items: withResults };
-      const { text, uploads } = parseUploadNotice(extractText(ev.message?.content));
+      // A background command ended and the CLI injected its notification as a
+      // user turn: apply it to the Bash row; never render it as a user bubble.
+      const rawText = extractText(ev.message?.content);
+      if (ev.origin?.kind === 'task-notification' || rawText.trimStart().startsWith('<task-notification>')) {
+        const notice = parseTaskNotification(rawText);
+        return notice ? applyTaskNotice(state, notice, eventTime(ev, now), seq) : state;
+      }
+      const { text, uploads } = parseUploadNotice(rawText);
       if (text === '' && uploads.length === 0) return state;
       const attach: ChatItem | null =
         uploads.length > 0 ? { kind: 'activity', text: uploadNoticeActivityText(uploads), seq } : null;
@@ -383,8 +444,38 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       return { ...state, items: [...items, item], busy: false, closed: true };
     }
 
+    case 'system': {
+      // Background shell commands: task_started marks the Bash row (its
+      // immediate tool_result then does not finish it); task_notification ends
+      // it. Other system subtypes (init, status, thinking_tokens, ...) are
+      // ignored; the model fold above already read init's model.
+      if (ev.subtype === 'task_started' && ev.is_backgrounded && typeof ev.tool_use_id === 'string') {
+        if (state.finishedTaskIds?.includes(String(ev.task_id))) return state;
+        const idx = state.items.findIndex((i) => i.kind === 'tool' && i.callId === ev.tool_use_id);
+        if (idx === -1) return state;
+        const next: ToolItem = { ...(state.items[idx] as ToolItem), background: true, status: 'running' };
+        delete next.endedAt;
+        delete next.result;
+        return { ...state, items: replaceAt(state.items, idx, next) };
+      }
+      if (ev.subtype === 'task_notification' && typeof ev.task_id === 'string') {
+        return applyTaskNotice(
+          state,
+          {
+            taskId: ev.task_id,
+            toolUseId: typeof ev.tool_use_id === 'string' ? ev.tool_use_id : null,
+            status: String(ev.status ?? ''),
+            summary: String(ev.summary ?? ''),
+          },
+          eventTime(ev, now),
+          seq,
+        );
+      }
+      return state;
+    }
+
     default:
-      // system, x-optio-unparseable, unknown control traffic, etc.
+      // x-optio-unparseable, unknown control traffic, etc.
       return state;
   }
 }

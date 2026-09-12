@@ -88,6 +88,9 @@ export interface ChatState {
   busy: boolean;
   closed: boolean;
   controls: SessionControl[];
+  // Reducer-private (claudecode): background task ids already applied, so the
+  // system event and the injected notification turn for one task apply once.
+  finishedTaskIds?: string[];
 }
 
 export const initialChatState: ChatState = {
