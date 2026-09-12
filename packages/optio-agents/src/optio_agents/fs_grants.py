@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .config_types import AllowedDir
+    from .config_types import AllowedDir, ClaustrumConfigMixin
 
 # Ordered (flag, path) system baseline. --rox = read+execute (binaries/libs),
 # --ro = read-only, --rw = read-write.
@@ -53,7 +53,9 @@ def build_grant_flags(
     return flags
 
 
-def fs_isolation_dirs(config, workdir: str) -> "list[tuple[str, str]] | None":
+def fs_isolation_dirs(
+    config: "ClaustrumConfigMixin", workdir: str,
+) -> "list[tuple[str, str]] | None":
     """The agent-facing (path, mode) list of directories it may touch under fs
     isolation (its workdir + caller extras), or None when isolation is off.
     Used for the sandbox note in the instructions file. Paths stay verbatim
