@@ -269,11 +269,23 @@ funnel through the same `ConversationViewProps` (`onControlChange`, etc.).
 **Goal.** Produce the agent's memory file (`CLAUDE.md`, `AGENTS.md`, or the
 target's equivalent) that teaches it the coordination protocol and the task.
 
-**Interface to implement.** Compose the file from: the shared keyword-protocol docs
-(`build_log_channel_prompt(features)` — the single source of truth), a
-resume-awareness section, the task framing, and the consumer's verbatim
-instructions. Honor `host_protocol=False` (omit keyword docs, add the `System:`
-message explainer instead).
+**Interface to implement.** Do not write prompt text. Declare an
+`AgentPromptProfile` (`optio_agents.prompt`) with what is specific to your agent
+— the instructions filename, the state directory that survives a resume and
+what it holds, an optional preamble, an optional extra section — and expose a
+thin `compose_agents_md(consumer_instructions, *, workdir_exclude=None,
+documentation=None, supports_resume=True, host_protocol=True,
+omit_task_framing=False, fs_isolation_dirs=None, file_download=False,
+check_resume_log_every_message=True)` that resolves your effective exclude list
+and calls `compose_instructions_file(..., profile=PROFILE, ...)`. The shared
+composer owns the intro, the keyword-protocol docs, the resume section, the
+`System:` explainer, the task framing, the downloads note and the sandbox note.
+At both places the session writes the file (fresh start and
+`_maybe_refresh_on_resume`, which takes the session's `protocol`), pass
+`documentation=protocol.documentation if config.host_protocol else None` and
+`fs_isolation_dirs=fs_isolation_dirs(config, host.workdir)`
+(`optio_agents.fs_grants`). A guard test in optio-agents-all fails if your
+`prompt.py` contains shared prompt text.
 
 **Resume awareness has two halves — ship BOTH.** Shipping only one is a silent
 parity gap.
@@ -289,8 +301,11 @@ parity gap.
    surface; gate it only if the agent isn't taught the `System:` convention in
    that mode.
 
-**Reference.** `optio-agents/…/protocol/prompt.py` (`build_log_channel_prompt`,
-`RESUME_NOTICE`); wrappers' `prompt.py` (`compose_agents_md`) in both packages.
+**Reference.** `optio-agents/…/prompt.py` (`AgentPromptProfile`,
+`compose_instructions_file`), `optio-agents/…/protocol/prompt.py`
+(`build_log_channel_prompt`, `RESUME_NOTICE`); any wrapper's `prompt.py` for
+the profile shape (grok's has a preamble, claudecode's an extra section, codex
+resolves its own exclude defaults).
 
 ---
 
@@ -320,7 +335,7 @@ session-state blob, with retention); `workdir_exclude`; optional at-rest encrypt
 `on_resume_refresh`; **both halves of resume awareness** — the `resume.log` pull doc
 AND the pushed `System: you have been resumed` notice on relaunch (Part 2D), in
 *every* launch mode. **Reference.** `snapshots.py` + `_capture_snapshot`/`_prepare`
-in either wrapper; the resume section in `prompt.py`; `build_resume_notice_args`
+in either wrapper; the resume section in `optio-agents/…/prompt.py` (rendered by `compose_instructions_file`); `build_resume_notice_args`
 (iframe positional) and the conversation-body `RESUME_NOTICE` send. **Done when.**
 Relaunch by process id restores the session AND the agent receives the resume
 notice; decrypt failure fails loud (never silent fresh-start). **Verified against the
@@ -873,7 +888,7 @@ A finished wrapper covers this surface. `req` = expected for any wrapper;
 | 15 | binary cache (evictable, unsnapshotted) + auto-install on miss + symlink into task path; **identity-verified** (reject name collisions) + **self-update off** | req | `_resolve_install_dir` / `ensure_<agent>_installed` (vendor installer); kimi `_is_kimicode` + `KIMI_CODE_NO_AUTO_UPDATE` |
 | 16 | HOME/XDG per-task isolation | req | `_isolation_env` / launch env |
 | 17 | hooks (before/after execute, on_deliverable, …) | req | config fields; `HookContext` |
-| 18 | prompt composition from SSOT | req | `prompt.py`, `optio-agents/protocol/prompt.py` |
+| 18 | prompt composition from SSOT (profile + thin wrapper; session docs and sandbox dirs at both write sites) | req | `prompt.py` (`PROFILE`, `compose_agents_md`), `optio-agents/…/prompt.py` |
 | 19 | permission gating | opt | `conversation.py`, `permission_gate` |
 | 20 | session controls (model + any engine extras: thinking/mode/…) | opt | `SessionControl` + `set_control`; kimi thinking/mode |
 | 21 | file upload | opt | listener/server upload path |
@@ -904,6 +919,8 @@ died on first real launch, all with a green suite.
 | `ProtocolFeatures` | `optio-agents/…/protocol/features.py` |
 | `get_protocol`, `Protocol` | `optio-agents/…/protocol/protocol.py` |
 | `build_log_channel_prompt`, `RESUME_NOTICE` | `optio-agents/…/protocol/prompt.py` |
+| `AgentPromptProfile`, `compose_instructions_file`, `DEFAULT_CONVERSATION_INSTRUCTIONS` | `optio-agents/…/prompt.py` |
+| `fs_isolation_dirs` (sandbox note input), `build_grant_flags` | `optio-agents/…/fs_grants.py` |
 | `Conversation`, `PermissionRequest`, `PermissionDecision`, `ConversationClosed` | `optio-agents/…/conversation.py` |
 | `HookContext`, `HookContextProtocol` | `optio-agents/…/context.py` |
 | `SessionControl`, `ControlOption`, `ControlKind`, `model_control`, `effort_control`, `Conversation.set_control` | `optio-agents/…/session_controls.py` + `…/conversation.py` |
