@@ -4,7 +4,7 @@ from optio_opencode.prompt import compose_agents_md
 
 
 def _compose(consumer="say hi", workdir_exclude=None, supports_resume=True):
-    """Helper: call compose_agents_md with the new mandatory args."""
+    """Helper: call compose_agents_md with a default workdir_exclude/supports_resume."""
     return compose_agents_md(
         consumer,
         workdir_exclude=workdir_exclude,
