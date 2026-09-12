@@ -1,0 +1,61 @@
+{"type":"system","subtype":"session_state_changed","state":"running"}
+{"type":"system","subtype":"init","model":"claude-opus-5","claude_code_version":"2.1.269","permissionMode":"default"}
+{"type":"system","subtype":"status","status":"requesting"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Test of background tasks. Using the Bash tool with run_in_background set to true, run: sleep 8; echo bg-finished. Do not poll it and do not run anything else; just wait for the background task notification to arrive, then reply with the single word: done."}]},"parent_tool_use_id":null,"timestamp":"2026-09-12T04:10:34.498Z","isReplay":true}
+{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-opus-5","id":"msg_011Cextd7ht3ZiY6ZSaHv27K","type":"message","role":"assistant","content":[],"stop_reason":null}},"parent_tool_use_id":null,"ttft_ms":1309}
+{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01BiRw4UnL6rHcwo8d7y16HU","name":"Bash","input":{}}},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":""}},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"command\": \"s"}},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"leep 8; echo b"}},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"g-finished"}},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\", \"description\": \"Sleep 8 se"}},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"conds then print"}},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":" a"}},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":" message"}},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\", \"run_in_background\": true"}},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"}"}},"parent_tool_use_id":null}
+{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_011Cextd7ht3ZiY6ZSaHv27K","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_01BiRw4UnL6rHcwo8d7y16HU","name":"Bash","input":{"command":"sleep 8; echo bg-finished","description":"Sleep 8 seconds then print a message","run_in_background":true}}],"stop_reason":null},"parent_tool_use_id":null,"timestamp":"2026-09-12T04:10:38.160Z","request_id":"req_011Cextd78eWkuzPW4wGBG4z"}
+{"type":"stream_event","event":{"type":"content_block_stop","index":0},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"container":null}},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"message_stop"},"parent_tool_use_id":null}
+{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"bul7pbajt","task_type":"local_bash","description":"Sleep 8 seconds then print a message"}]}
+{"type":"system","subtype":"task_started","task_id":"bul7pbajt","tool_use_id":"toolu_01BiRw4UnL6rHcwo8d7y16HU","description":"Sleep 8 seconds then print a message","is_backgrounded":true,"task_type":"local_bash"}
+{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_01BiRw4UnL6rHcwo8d7y16HU","type":"tool_result","content":"Command running in background with ID: bul7pbajt. Output is being written to: /tmp/claude-1000/-tmp-thinksum-test-run-bgtask-Rr3j/f64ba910-a746-4888-824b-13ab6bfb8042/tasks/bul7pbajt.output. You will be notified when it completes. To check interim output, use Read on that file path.","is_error":false}]},"parent_tool_use_id":null,"timestamp":"2026-09-12T04:10:39.255Z"}
+{"type":"system","subtype":"status","status":"requesting"}
+{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-opus-5","id":"msg_011CextdP85rsFe8UhMPP1JQ","type":"message","role":"assistant","content":[],"stop_reason":null}},"parent_tool_use_id":null,"ttft_ms":1146}
+{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}},"parent_tool_use_id":null}
+{"type":"system","subtype":"thinking_tokens","estimated_tokens":50,"estimated_tokens_delta":50}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"","estimated_tokens":50}},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"","estimated_tokens":null}},"parent_tool_use_id":null}
+{"type":"system","subtype":"thinking_tokens","estimated_tokens":207,"estimated_tokens_delta":157}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"CAQStAYKEAgRGAI4AUIIdGhp"}},"parent_tool_use_id":null}
+{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_011CextdP85rsFe8UhMPP1JQ","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"","signature":"CAQStAYKEAgRGAI4AUIIdGhp"}],"stop_reason":null},"parent_tool_use_id":null,"timestamp":"2026-09-12T04:10:42.107Z","request_id":"req_011CextdNGj7M2g511S3qho4"}
+{"type":"stream_event","event":{"type":"content_block_stop","index":0},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"The command"}},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" is running in the background. I'"}},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ll"}},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" re"}},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"ply once its"}},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" completion notification arrives."}},"parent_tool_use_id":null}
+{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_011CextdP85rsFe8UhMPP1JQ","type":"message","role":"assistant","content":[{"type":"text","text":"The command is running in the background. I'll reply once its completion notification arrives."}],"stop_reason":null},"parent_tool_use_id":null,"timestamp":"2026-09-12T04:10:42.198Z","request_id":"req_011CextdNGj7M2g511S3qho4"}
+{"type":"stream_event","event":{"type":"content_block_stop","index":1},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null,"container":null}},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"message_stop"},"parent_tool_use_id":null}
+{"type":"result","subtype":"success","is_error":false,"result":"The command is running in the background. I'll reply once its completion notification arrives.","duration_ms":8561,"num_turns":2,"stop_reason":"end_turn"}
+{"type":"system","subtype":"session_state_changed","state":"idle"}
+{"type":"system","subtype":"background_tasks_changed","tasks":[]}
+{"type":"system","subtype":"task_updated","task_id":"bul7pbajt","patch":{"status":"completed","end_time":1789186247223}}
+{"type":"system","subtype":"task_notification","task_id":"bul7pbajt","tool_use_id":"toolu_01BiRw4UnL6rHcwo8d7y16HU","status":"completed","output_file":"/tmp/claude/tasks/bul7pbajt.output","summary":"Background command \"Sleep 8 seconds then print a message\" completed (exit code 0)"}
+{"type":"system","subtype":"session_state_changed","state":"running"}
+{"type":"system","subtype":"init","model":"claude-opus-5","claude_code_version":"2.1.269","permissionMode":"default"}
+{"type":"system","subtype":"status","status":"requesting"}
+{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-opus-5","id":"msg_011CextdyGQSneBcF4iqvNnz","type":"message","role":"assistant","content":[],"stop_reason":null}},"parent_tool_use_id":null,"ttft_ms":1052}
+{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"done"}},"parent_tool_use_id":null}
+{"type":"assistant","message":{"model":"claude-opus-5","id":"msg_011CextdyGQSneBcF4iqvNnz","type":"message","role":"assistant","content":[{"type":"text","text":"done"}],"stop_reason":null},"parent_tool_use_id":null,"timestamp":"2026-09-12T04:10:48.609Z","request_id":"req_011CextdxbicRJyXQVXUet8k"}
+{"type":"stream_event","event":{"type":"content_block_stop","index":0},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null,"container":null}},"parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"message_stop"},"parent_tool_use_id":null}
+{"type":"result","subtype":"success","is_error":false,"result":"done","duration_ms":1412,"num_turns":1,"stop_reason":"end_turn"}
+{"type":"system","subtype":"session_state_changed","state":"idle"}
