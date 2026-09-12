@@ -206,12 +206,18 @@ class ClaudeCodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
     # as widgetUpstream. The published Conversation object remains the
     # default gate; this is a deliberate parallel path. Conversation mode only.
     conversation_ui: bool = False
-    # Conversation-UI tool-call rendering: "verbose" = full input table,
-    # "description-only" = one summary line, "silent" = nothing. Carried to the
-    # widget via widgetData; only affects conversation_ui rendering.
+    # Conversation-UI tool-call rendering, one row per call with a live elapsed
+    # time: "silent" = no rows (a finished background job still gets one muted
+    # line), "description-while-active" = a line while the call runs,
+    # "description-only" = a persistent line, "verbose" = the line plus the
+    # args and the result (collapsed once finished). Carried to the widget via
+    # widgetData; only affects conversation_ui rendering.
     tool_verbosity: ToolVerbosity = "description-only"
     # Whether the conversation widget shows the agent's reasoning/thinking traces.
-    # Default hidden — thinking is noisy; opt in per task.
+    # Default hidden — thinking is noisy; opt in per task. No effect for Claude
+    # Code in conversation mode: its text-bearing thinking blocks are the
+    # between-tool narration and always render as replies, and the real
+    # reasoning is not available in -p mode.
     thinking_verbosity: ThinkingVerbosity = "hidden"
     # Show the generic session controls (currently the model picker) in the
     # conversation widget. Requires mode="conversation" and

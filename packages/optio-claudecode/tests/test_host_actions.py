@@ -932,6 +932,21 @@ def test_conversation_launch_env_disables_autoupdater():
     assert env["DISABLE_AUTOUPDATER"] == "1"
 
 
+def test_conversation_launch_env_pins_thinking_display_updates():
+    """Since CLI 2.1.267 the model's between-tool narration arrives as thinking
+    updates; pin the switch that requests them so a CLI default change cannot
+    silently drop the narration channel."""
+    env = host_actions.conversation_launch_env("/wd", None)
+    assert env["CLAUDE_CODE_THINKING_DISPLAY_UPDATES"] == "1"
+
+
+def test_conversation_launch_env_extra_env_overrides_thinking_display_pin():
+    env = host_actions.conversation_launch_env(
+        "/wd", {"CLAUDE_CODE_THINKING_DISPLAY_UPDATES": "0"},
+    )
+    assert env["CLAUDE_CODE_THINKING_DISPLAY_UPDATES"] == "0"
+
+
 def test_build_claude_flags_model():
     from optio_claudecode.host_actions import build_claude_flags
     flags = build_claude_flags(

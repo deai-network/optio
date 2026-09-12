@@ -1202,6 +1202,13 @@ def conversation_launch_env(
         # Same rationale as _build_claude_shell_command: the autoupdater can
         # only EACCES against the --rox cache; provisioning owns freshness.
         "DISABLE_AUTOUPDATER": "1",
+        # Since CLI 2.1.267 the model writes its between-tool narration as
+        # "thinking updates" (text-bearing thinking blocks); this switch (on by
+        # default) requests them. Pinned so a default change cannot silently
+        # drop the narration. Never enable showThinkingSummaries alongside it:
+        # in -p mode that returns no thinking text at all, narration included
+        # (docs/2026-09-12-claudecode-conversation-rendering-design.md).
+        "CLAUDE_CODE_THINKING_DISPLAY_UPDATES": "1",
         **extra,
     }
 
