@@ -4,7 +4,17 @@
 
 export type ChatItem =
   | { kind: 'user'; text: string; seq: number; local?: boolean }
-  | { kind: 'assistant'; text: string; pending: boolean; seq: number; msgId: string | null }
+  | {
+      kind: 'assistant';
+      text: string;
+      pending: boolean;
+      seq: number;
+      msgId: string | null;
+      // Reducer-private (claudecode): start offset in `text` of the content
+      // block currently streaming via deltas; absent when none is open. Not
+      // rendered.
+      openPart?: number;
+    }
   | { kind: 'activity'; text: string; seq: number }
   | { kind: 'thinking'; text: string; seq: number }
   | {

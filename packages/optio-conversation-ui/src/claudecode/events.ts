@@ -14,6 +14,28 @@ export { initialChatState } from '../chat.js';
 
 const HARNESS_PREFIX = 'System: ';
 
+// Parts of one assistant message (narration, then the answer) render in one
+// bubble, separated by a blank line.
+const PART_SEPARATOR = '\n\n';
+
+type AssistantItem = Extract<ChatItem, { kind: 'assistant' }>;
+
+// Text a content block contributes to the reply bubble: a text block's text,
+// or the narration a text-bearing thinking block carries. Since CLI 2.1.267
+// the model writes its between-tool narration as such "thinking updates"; the
+// real reasoning arrives as a separate thinking block with empty text.
+function blockText(block: any): string | null {
+  if (block?.type === 'text' && typeof block.text === 'string') return block.text;
+  if (block?.type === 'thinking' && typeof block.thinking === 'string' && block.thinking.trim() !== '') {
+    return block.thinking;
+  }
+  return null;
+}
+
+function replaceAt(items: ChatItem[], idx: number, item: ChatItem): ChatItem[] {
+  return [...items.slice(0, idx), item, ...items.slice(idx + 1)];
+}
+
 // message.content is either a plain string or an array of content blocks;
 // join the text blocks with a newline. Separate blocks are logically distinct
 // messages (e.g. several harness "System:" notices claude coalesced into one
@@ -43,59 +65,72 @@ function isTail(items: ChatItem[], idx: number): boolean {
 // Finalize the bubble at idx in place (text kept), used when newer content
 // has to open a fresh bubble after it.
 function finalizeAt(items: ChatItem[], idx: number): ChatItem[] {
-  const current = items[idx] as Extract<ChatItem, { kind: 'assistant' }>;
+  const current = items[idx] as AssistantItem;
   if (!current.pending) return items;
-  return [...items.slice(0, idx), { ...current, pending: false }, ...items.slice(idx + 1)];
+  const next: AssistantItem = { ...current, pending: false };
+  delete next.openPart;
+  return replaceAt(items, idx, next);
 }
 
-// Upsert the in-flight assistant bubble: replace (or append to) its text,
-// creating the bubble if absent. Invariant kept: a pending bubble only
-// absorbs text while it is the tail AND belongs to the same assistant
-// message — otherwise it is finalized where it stands and a fresh pending
-// bubble opens at the end. (The full-text `replace` dedups accumulated
-// stream deltas WITHIN one message; across messages it would swallow
-// earlier replies.)
-function upsertPending(
-  items: ChatItem[],
-  seq: number,
-  text: string,
-  mode: 'replace' | 'append',
-  msgId?: string,
-): ChatItem[] {
+// A streamed delta (text_delta or thinking_delta) extends the open part of the
+// pending bubble; the first delta of a block opens a new part, separated from
+// earlier parts by a blank line. A pending bubble that is no longer the tail is
+// finalized where it stands and a fresh bubble opens at the end.
+function appendDelta(items: ChatItem[], seq: number, delta: string): ChatItem[] {
+  const idx = pendingIndex(items);
+  if (idx !== -1 && isTail(items, idx)) {
+    const cur = items[idx] as AssistantItem;
+    if (cur.openPart !== undefined) return replaceAt(items, idx, { ...cur, text: cur.text + delta });
+    const sep = cur.text === '' ? '' : PART_SEPARATOR;
+    return replaceAt(items, idx, {
+      ...cur,
+      text: cur.text + sep + delta,
+      openPart: cur.text.length + sep.length,
+    });
+  }
+  if (idx !== -1) items = finalizeAt(items, idx);
+  return [...items, { kind: 'assistant', text: delta, pending: true, seq, msgId: null, openPart: 0 }];
+}
+
+// A content block's final assistant event (it carries the block's full text).
+// Within the same message it replaces the part its deltas streamed, or appends
+// a new part when nothing streamed (replays hold no stream_events). A different
+// message, or a pending bubble that is no longer the tail, opens a fresh bubble.
+function applyBlockText(items: ChatItem[], seq: number, text: string, msgId?: string): ChatItem[] {
   const idx = pendingIndex(items);
   if (idx !== -1) {
-    const current = items[idx] as Extract<ChatItem, { kind: 'assistant' }>;
-    const sameMessage =
-      mode === 'append' || current.msgId === null || msgId == null || current.msgId === msgId;
+    const cur = items[idx] as AssistantItem;
+    const sameMessage = cur.msgId === null || msgId == null || cur.msgId === msgId;
     if (isTail(items, idx) && sameMessage) {
-      const next: ChatItem = {
-        ...current,
-        text: mode === 'append' ? current.text + text : text,
-        msgId: msgId ?? current.msgId,
-      };
-      return [...items.slice(0, idx), next, ...items.slice(idx + 1)];
+      const base =
+        cur.openPart !== undefined
+          ? cur.text.slice(0, cur.openPart)
+          : cur.text + (cur.text === '' ? '' : PART_SEPARATOR);
+      const next: AssistantItem = { ...cur, text: base + text, msgId: msgId ?? cur.msgId };
+      delete next.openPart;
+      return replaceAt(items, idx, next);
     }
     items = finalizeAt(items, idx);
   }
   return [...items, { kind: 'assistant', text, pending: true, seq, msgId: msgId ?? null }];
 }
 
-// Finalize the in-flight assistant bubble (pending -> false), replacing its
-// text when the result carries one. Creates a finalized bubble if there is
-// result text but no pending bubble (e.g. a replay that skipped partials).
+// Finalize the in-flight assistant bubble (pending -> false). The result text
+// replaces the bubble's text unless the bubble already ends with it: narration
+// parts earlier in the same message must survive the end of the turn. Creates
+// a finalized bubble if there is result text but no pending bubble (e.g. a
+// replay that skipped partials).
 function finalizePending(items: ChatItem[], seq: number, resultText: string | null): ChatItem[] {
   const idx = pendingIndex(items);
   if (idx === -1) {
     if (resultText === null || resultText === '') return items;
     return [...items, { kind: 'assistant', text: resultText, pending: false, seq, msgId: null }];
   }
-  const current = items[idx] as Extract<ChatItem, { kind: 'assistant' }>;
-  const next: ChatItem = {
-    ...current,
-    text: resultText !== null ? resultText : current.text,
-    pending: false,
-  };
-  return [...items.slice(0, idx), next, ...items.slice(idx + 1)];
+  const current = items[idx] as AssistantItem;
+  const keep = resultText === null || resultText === '' || current.text.endsWith(resultText);
+  const next: AssistantItem = { ...current, text: keep ? current.text : resultText, pending: false };
+  delete next.openPart;
+  return replaceAt(items, idx, next);
 }
 
 // Insert a user message before the assistant bubble it triggered. With
@@ -205,12 +240,11 @@ export function reduceEvent(state: ChatState, ev: any, seq: number): ChatState {
       const msgId = typeof ev.message?.id === 'string' ? ev.message.id : undefined;
       let items = state.items;
       for (const block of blocks) {
-        if (block?.type === 'text' && typeof block.text === 'string') {
-          // The agent is answering now — clear any in-flight tool announcement,
-          // then replace the pending bubble's text (the event carries the full
-          // text so far, so accumulated stream_event deltas aren't double-counted
-          // — within one message; a different message id opens a new bubble).
-          items = upsertPending(withoutTools(items), seq, block.text, 'replace', msgId);
+        const text = blockText(block);
+        if (text !== null) {
+          // The agent is answering (or narrating) — clear any in-flight tool
+          // announcement, then complete this block's part of the bubble.
+          items = applyBlockText(withoutTools(items), seq, text, msgId);
         } else if (block?.type === 'tool_use') {
           // Carry the structured input so the widget can render it as a
           // key→value table (same treatment as the permission card). Ephemeral:
@@ -229,10 +263,14 @@ export function reduceEvent(state: ChatState, ev: any, seq: number): ChatState {
         const idx = pendingIndex(state.items);
         return idx === -1 ? state : { ...state, items: finalizeAt(state.items, idx) };
       }
-      const delta = ev.event?.delta?.text;
+      // text_delta carries `text`; thinking_delta carries `thinking` (narration;
+      // the hidden reasoning block streams no text). signature/input_json deltas
+      // carry neither.
+      const d = ev.event?.delta;
+      const delta = d?.type === 'thinking_delta' ? d.thinking : d?.text;
       if (typeof delta !== 'string' || delta === '') return state;
       // The answer is streaming — clear any in-flight tool announcement.
-      return { ...state, items: upsertPending(withoutTools(state.items), seq, delta, 'append') };
+      return { ...state, items: appendDelta(withoutTools(state.items), seq, delta) };
     }
 
     case 'result': {

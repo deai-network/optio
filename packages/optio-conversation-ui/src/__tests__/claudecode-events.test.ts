@@ -10,6 +10,8 @@ const toolUse = (name: string, input: unknown) => ({ type: 'assistant', message:
 const delta = (text: string) => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } });
 const messageStart = (msgId: string) => ({ type: 'stream_event', event: { type: 'message_start', message: { id: msgId } } });
 const result = (text: string) => ({ type: 'result', subtype: 'success', result: text });
+const thinking = (text: string, msgId?: string) => ({ type: 'assistant', message: { role: 'assistant', id: msgId, content: [{ type: 'thinking', thinking: text, signature: 'sig' }] } });
+const thinkingDelta = (text: string) => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: text } } });
 const controlRequest = (requestId: string, toolName: string, input: unknown) => ({
   type: 'control_request',
   request_id: requestId,
@@ -313,6 +315,64 @@ describe('reduceEvent', () => {
     s = reduceEvent(s, user('q'), 1);
     s = reduceEvent(s, result('a'), 2);
     expect(s.items.map((i) => i.kind)).toEqual(['user', 'assistant']);
+  });
+});
+
+describe('narration from thinking blocks', () => {
+  // Since CLI 2.1.267 the model writes its between-tool narration as a
+  // text-bearing thinking block; the real reasoning is an empty thinking block.
+
+  it('a text-bearing thinking block becomes an assistant bubble', () => {
+    const s = run([user('q'), thinking("I'll check the VPN first.", 'm1')]);
+    const bubbles = ofKind(s, 'assistant');
+    expect(bubbles.map((b) => b.text)).toEqual(["I'll check the VPN first."]);
+    expect(bubbles[0].pending).toBe(true);
+  });
+
+  it('an empty thinking block (hidden reasoning) is ignored', () => {
+    const s = run([thinking('', 'm1'), thinking('   ', 'm1')]);
+    expect(s.items).toEqual([]);
+  });
+
+  it('thinking_delta streams narration and the final thinking event does not duplicate it', () => {
+    const mid = run([messageStart('m1'), thinkingDelta("I'll "), thinkingDelta('check.')]);
+    expect(ofKind(mid, 'assistant').map((b) => b.text)).toEqual(["I'll check."]);
+    const s = reduceEvent(mid, thinking("I'll check.", 'm1'), 4);
+    expect(ofKind(s, 'assistant').map((b) => b.text)).toEqual(["I'll check."]);
+  });
+
+  it('narration and text in one message form one bubble with two parts (live)', () => {
+    const s = run([
+      messageStart('m1'),
+      thinking('', 'm1'),
+      thinkingDelta('Checking the log.'),
+      thinking('Checking the log.', 'm1'),
+      delta('All good.'),
+      assistantText('All good.', 'm1'),
+    ]);
+    expect(ofKind(s, 'assistant').map((b) => b.text)).toEqual(['Checking the log.\n\nAll good.']);
+  });
+
+  it('narration and text in one message form one bubble with two parts (replay, no deltas)', () => {
+    const s = run([thinking('Checking the log.', 'm1'), assistantText('All good.', 'm1')]);
+    expect(ofKind(s, 'assistant').map((b) => b.text)).toEqual(['Checking the log.\n\nAll good.']);
+  });
+
+  it('result keeps narration that precedes the result text in the same message', () => {
+    const s = run([user('q'), thinking('Checking the log.', 'm1'), assistantText('All good.', 'm1'), result('All good.')]);
+    const bubbles = ofKind(s, 'assistant');
+    expect(bubbles.map((b) => b.text)).toEqual(['Checking the log.\n\nAll good.']);
+    expect(bubbles[0].pending).toBe(false);
+  });
+
+  it('narration in different messages stays in separate bubbles', () => {
+    const s = run([thinking('Step one.', 'm1'), thinking('Step two.', 'm2')]);
+    expect(ofKind(s, 'assistant').map((b) => b.text)).toEqual(['Step one.', 'Step two.']);
+  });
+
+  it('finalized bubbles carry no openPart bookkeeping', () => {
+    const s = run([messageStart('m1'), delta('10'), messageStart('m2'), delta('9'), result('9')]);
+    for (const b of ofKind(s, 'assistant')) expect('openPart' in b).toBe(false);
   });
 });
 
