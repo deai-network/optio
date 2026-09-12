@@ -341,10 +341,12 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       if (isInjectedNotification) {
         const notice = parseTaskNotification(rawText);
         if (!notice) return state;
-        // The CLI starts a model turn right after this notification; mark the
-        // agent busy so the working indicator and interrupt/Escape work. The
-        // system/task_notification route (below) must NOT touch busy — the CLI
-        // does not start a new turn for that route.
+        // Older CLIs start a model turn right after this notification; mark
+        // the agent busy so the working indicator and interrupt/Escape work.
+        // (CLI 2.1.269 sends no such user event on stdout: its follow-up turn
+        // is bracketed by system/session_state_changed running/idle, which
+        // drive busy below.) The system/task_notification route itself never
+        // touches busy: the turn, not the notice, makes the agent busy.
         return { ...applyTaskNotice(state, notice, eventTime(ev, lastWireTime(state, now)), seq), busy: true };
       }
       const { text, uploads } = parseUploadNotice(rawText);
@@ -487,6 +489,14 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
     }
 
     case 'system': {
+      // The CLI brackets every turn with session_state_changed running/idle,
+      // including the follow-up turn it starts on its own when a background
+      // job finishes (CLI 2.1.269), so busy follows it.
+      if (ev.subtype === 'session_state_changed') {
+        if (ev.state === 'running') return state.busy ? state : { ...state, busy: true };
+        if (ev.state === 'idle') return state.busy ? { ...state, busy: false } : state;
+        return state;
+      }
       // Background shell commands: task_started marks the Bash row (its
       // immediate tool_result then does not finish it); task_updated carries
       // the exact end time; task_notification ends it. Other system subtypes

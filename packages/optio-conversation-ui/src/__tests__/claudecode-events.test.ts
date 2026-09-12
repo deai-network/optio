@@ -30,6 +30,7 @@ const taskStarted = (taskId: string, toolUseId: string) => ({ type: 'system', su
 // user and assistant events do.
 const taskNotification = (taskId: string, toolUseId: string, status: string, summary: string) => ({ type: 'system', subtype: 'task_notification', task_id: taskId, tool_use_id: toolUseId, status, output_file: '/tmp/x.output', summary });
 const taskUpdated = (taskId: string, endTime: number) => ({ type: 'system', subtype: 'task_updated', task_id: taskId, patch: { status: 'completed', end_time: endTime } });
+const sessionState = (state: string) => ({ type: 'system', subtype: 'session_state_changed', state });
 const injectedNotification = (taskId: string, toolUseId: string, status: string, summary: string) => ({
   type: 'user',
   origin: { kind: 'task-notification' },
@@ -704,6 +705,40 @@ describe('background tasks', () => {
     expect(wasIdle.busy).toBe(false);
     const stillIdle = reduceEvent(wasIdle, taskNotification('b1', 't1', 'completed', 'done'), 4, 1234);
     expect(stillIdle.busy).toBe(false);
+  });
+
+  it('busy follows session_state_changed: running sets it, idle clears it, other states leave it', () => {
+    const running = run([sessionState('running')]);
+    expect(running.busy).toBe(true);
+    expect(reduceEvent(running, sessionState('requires_action'), 2).busy).toBe(true);
+    expect(reduceEvent(running, sessionState('idle'), 2).busy).toBe(false);
+    expect(run([sessionState('requires_action')]).busy).toBe(false);
+  });
+
+  it('the follow-up turn CLI 2.1.269 starts after a background job is busy (recorded sequence)', () => {
+    // run-bgtask capture, lines 46-62: the turn ends, the job finishes while
+    // idle (task_updated + task_notification, no injected user event on
+    // stdout), then the CLI runs a follow-up turn bracketed by
+    // session_state_changed running/idle.
+    const busyAfter: boolean[] = [];
+    let s = run([...started, sessionState('running')]);
+    for (const ev of [
+      result('The command is running in the background.'),
+      sessionState('idle'),
+      { type: 'system', subtype: 'background_tasks_changed', tasks: [] },
+      taskUpdated('b1', Date.parse(T0) + 9_063),
+      taskNotification('b1', 't1', 'completed', 'Background command completed (exit code 0)'),
+      sessionState('running'),
+      { type: 'system', subtype: 'init', model: 'claude-opus-5' },
+      { ...assistantText('done', 'm2'), timestamp: T9 },
+      result('done'),
+      sessionState('idle'),
+    ]) {
+      s = reduceEvent(s, ev, 100 + busyAfter.length, HOURS_LATER);
+      busyAfter.push(s.busy);
+    }
+    expect(busyAfter).toEqual([false, false, false, false, false, true, true, true, false, false]);
+    expect(ofKind(s, 'user')).toEqual([]);
   });
 
   it('a user event whose origin is not task-notification renders normally even if its text starts with <task-notification>', () => {
