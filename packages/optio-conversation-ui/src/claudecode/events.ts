@@ -40,11 +40,24 @@ type ToolItem = Extract<ChatItem, { kind: 'tool' }>;
 
 const RESULT_MAX = 2000;
 
-// Epoch ms of an event (stream-json events carry an ISO `timestamp`), else the
-// reducer's clock.
-function eventTime(ev: any, now: number): number {
+// Epoch ms of an event's ISO `timestamp`, or null. On the wire (CLI 2.1.269)
+// only user and assistant events carry one; system and result events don't.
+function wireTime(ev: any): number | null {
   const t = typeof ev?.timestamp === 'string' ? Date.parse(ev.timestamp) : NaN;
-  return Number.isFinite(t) ? t : now;
+  return Number.isFinite(t) ? t : null;
+}
+
+// Epoch ms of an event: its own timestamp, else `fallback`.
+function eventTime(ev: any, fallback: number): number {
+  return wireTime(ev) ?? fallback;
+}
+
+// The time base for events without a timestamp (system, result, optio's
+// synthetic events): the latest user/assistant wire time, so a replay hours
+// later shows the live durations. The reducer clock only until a wire time has
+// been seen.
+function lastWireTime(state: ChatState, now: number): number {
+  return state.lastEventAt ?? now;
 }
 
 function trimResult(s: string): string {
@@ -150,7 +163,9 @@ function applyTaskNotice(state: ChatState, n: TaskNotice, at: number, seq: numbe
       background: true,
       status: toolStatus,
       result: trimResult(n.summary),
-      endedAt: at,
+      // A background row that already ended keeps its time: task_updated's
+      // end_time is exact, the notice's time is not.
+      endedAt: row.background && row.endedAt !== undefined ? row.endedAt : at,
     });
   } else {
     const text =
@@ -292,6 +307,13 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       state = foldControlUpdate(state, { id: 'model', value: rawModel.replace(/\[[^\]]*\]$/, '') });
     }
   }
+  // Track the latest wire time (see lastWireTime).
+  if (ev?.type === 'user' || ev?.type === 'assistant') {
+    const t = wireTime(ev);
+    if (t !== null && (state.lastEventAt === undefined || t > state.lastEventAt)) {
+      state = { ...state, lastEventAt: t };
+    }
+  }
   switch (ev?.type) {
     case 'x-optio-control-update':
       return foldControlUpdate(state, ev);
@@ -323,7 +345,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
         // agent busy so the working indicator and interrupt/Escape work. The
         // system/task_notification route (below) must NOT touch busy — the CLI
         // does not start a new turn for that route.
-        return { ...applyTaskNotice(state, notice, eventTime(ev, now), seq), busy: true };
+        return { ...applyTaskNotice(state, notice, eventTime(ev, lastWireTime(state, now)), seq), busy: true };
       }
       const { text, uploads } = parseUploadNotice(rawText);
       if (text === '' && uploads.length === 0) return state;
@@ -419,7 +441,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
 
     case 'result': {
       const resultText = typeof ev.result === 'string' ? ev.result : null;
-      const items = freezeRunning(state.items, eventTime(ev, now), false);
+      const items = freezeRunning(state.items, eventTime(ev, lastWireTime(state, now)), false);
       // An API/model error arrives as a result with is_error — surface it as a
       // distinct, explained error item instead of a plain agent bubble.
       if (ev.is_error) {
@@ -460,23 +482,34 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
     case 'x-optio-closed': {
       // Session ended: stop every running counter, background rows included.
       const item: ChatItem = { kind: 'closed', reason: String(ev.reason ?? ''), seq };
-      const items = freezeRunning(state.items, eventTime(ev, now), true);
+      const items = freezeRunning(state.items, lastWireTime(state, now), true);
       return { ...state, items: [...items, item], busy: false, closed: true };
     }
 
     case 'system': {
       // Background shell commands: task_started marks the Bash row (its
-      // immediate tool_result then does not finish it); task_notification ends
-      // it. Other system subtypes (init, status, thinking_tokens, ...) are
-      // ignored; the model fold above already read init's model.
+      // immediate tool_result then does not finish it); task_updated carries
+      // the exact end time; task_notification ends it. Other system subtypes
+      // (init, status, thinking_tokens, ...) are ignored; the model fold above
+      // already read init's model.
       if (ev.subtype === 'task_started' && ev.is_backgrounded && typeof ev.tool_use_id === 'string') {
         if (state.finishedTaskIds?.includes(String(ev.task_id))) return state;
         const idx = state.items.findIndex((i) => i.kind === 'tool' && i.callId === ev.tool_use_id);
         if (idx === -1) return state;
         const next: ToolItem = { ...(state.items[idx] as ToolItem), background: true, status: 'running' };
+        if (typeof ev.task_id === 'string') next.taskId = ev.task_id;
         delete next.endedAt;
         delete next.result;
         return { ...state, items: replaceAt(state.items, idx, next) };
+      }
+      if (ev.subtype === 'task_updated' && typeof ev.task_id === 'string') {
+        // patch.end_time (epoch ms) is the only exact end time the CLI reports
+        // for a background task: the notification carries no timestamp.
+        const end = ev.patch?.end_time;
+        if (typeof end !== 'number' || !Number.isFinite(end)) return state;
+        const idx = state.items.findIndex((i) => i.kind === 'tool' && i.taskId === ev.task_id);
+        if (idx === -1) return state;
+        return { ...state, items: replaceAt(state.items, idx, { ...(state.items[idx] as ToolItem), endedAt: end }) };
       }
       if (ev.subtype === 'task_notification' && typeof ev.task_id === 'string') {
         return applyTaskNotice(
@@ -487,7 +520,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
             status: String(ev.status ?? ''),
             summary: String(ev.summary ?? ''),
           },
-          eventTime(ev, now),
+          eventTime(ev, lastWireTime(state, now)),
           seq,
         );
       }

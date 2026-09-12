@@ -45,6 +45,9 @@ export type ChatItem =
       // A backgrounded shell command: its immediate tool_result does not finish
       // the row; the background-task notification does.
       background?: boolean;
+      // The background task's id (claudecode system/task_started task_id):
+      // matches its system/task_updated events.
+      taskId?: string;
     }
   | {
       kind: 'permission';
@@ -94,6 +97,10 @@ export interface ChatState {
   // Reducer-private (claudecode): background task ids already applied, so the
   // system event and the injected notification turn for one task apply once.
   finishedTaskIds?: string[];
+  // Reducer-private (claudecode): the latest user/assistant wire timestamp seen
+  // (epoch ms). The time base for events that carry none (system, result,
+  // optio's synthetic events), so a replay shows the live durations.
+  lastEventAt?: number;
 }
 
 export const initialChatState: ChatState = {

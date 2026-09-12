@@ -14,6 +14,9 @@ const thinking = (text: string, msgId?: string) => ({ type: 'assistant', message
 const thinkingDelta = (text: string) => ({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: text } } });
 const T0 = '2026-09-12T10:00:00.000Z';
 const T5 = '2026-09-12T10:00:05.000Z';
+const T9 = '2026-09-12T10:00:09.000Z';
+// A reload long after the session: the reducer clock is far from the wire times.
+const HOURS_LATER = Date.parse('2026-09-13T17:49:00.000Z');
 const toolCall = (id: string, name: string, input: unknown, timestamp?: string) => ({ type: 'assistant', timestamp, message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] } });
 const toolResult = (id: string, content: unknown, isError = false, timestamp?: string) => ({ type: 'user', timestamp, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content, is_error: isError }] } });
 const controlRequest = (requestId: string, toolName: string, input: unknown) => ({
@@ -23,7 +26,10 @@ const controlRequest = (requestId: string, toolName: string, input: unknown) => 
 });
 
 const taskStarted = (taskId: string, toolUseId: string) => ({ type: 'system', subtype: 'task_started', task_id: taskId, tool_use_id: toolUseId, description: 'bg job', is_backgrounded: true, task_type: 'local_bash' });
-const taskNotification = (taskId: string, toolUseId: string, status: string, summary: string, timestamp?: string) => ({ type: 'system', subtype: 'task_notification', task_id: taskId, tool_use_id: toolUseId, status, output_file: '/tmp/x.output', summary, timestamp });
+// System and result events carry no timestamp on the wire (CLI 2.1.269); only
+// user and assistant events do.
+const taskNotification = (taskId: string, toolUseId: string, status: string, summary: string) => ({ type: 'system', subtype: 'task_notification', task_id: taskId, tool_use_id: toolUseId, status, output_file: '/tmp/x.output', summary });
+const taskUpdated = (taskId: string, endTime: number) => ({ type: 'system', subtype: 'task_updated', task_id: taskId, patch: { status: 'completed', end_time: endTime } });
 const injectedNotification = (taskId: string, toolUseId: string, status: string, summary: string) => ({
   type: 'user',
   origin: { kind: 'task-notification' },
@@ -33,8 +39,8 @@ const injectedNotification = (taskId: string, toolUseId: string, status: string,
   },
 });
 
-function run(events: any[], from: ChatState = initialChatState): ChatState {
-  return events.reduce((s, ev, i) => reduceEvent(s, ev, i + 1), from);
+function run(events: any[], from: ChatState = initialChatState, now?: number): ChatState {
+  return events.reduce((s, ev, i) => reduceEvent(s, ev, i + 1, now), from);
 }
 
 function ofKind<K extends ChatItem['kind']>(state: ChatState, kind: K): Extract<ChatItem, { kind: K }>[] {
@@ -375,17 +381,36 @@ describe('real tool rows', () => {
     expect(ofKind(s, 'tool')[0].startedAt).toBe(12_345);
   });
 
-  it('result freezes a running row at the result time and leaves finished rows alone', () => {
-    const s = run([
-      toolCall('t1', 'Bash', {}, T0),
-      toolResult('t1', 'ok', false, T5),
-      toolCall('t2', 'Bash', {}, T5),
-      { type: 'result', subtype: 'success', result: 'done', timestamp: '2026-09-12T10:00:09.000Z' },
-    ]);
+  it('result freezes a running row at the latest wire time and leaves finished rows alone', () => {
+    const s = run(
+      [
+        toolCall('t1', 'Bash', {}, T0),
+        toolResult('t1', 'ok', false, T5),
+        toolCall('t2', 'Bash', {}, T5),
+        { ...assistantText('still waiting'), timestamp: T9 },
+        result('done'),
+      ],
+      initialChatState,
+      HOURS_LATER,
+    );
     const [a, b] = ofKind(s, 'tool');
     expect(a.endedAt).toBe(Date.parse(T5));
-    expect(b.endedAt).toBe(Date.parse('2026-09-12T10:00:09.000Z'));
+    expect(b.endedAt).toBe(Date.parse(T9));
     expect(b.status).toBeUndefined();
+  });
+
+  it('before any wire time has been seen, the reducer clock is the fallback', () => {
+    const s = run([toolUse('Bash', {}), result('x')], initialChatState, 4242);
+    expect(ofKind(s, 'tool')[0].endedAt).toBe(4242);
+  });
+
+  it('lastEventAt keeps the latest user/assistant timestamp and ignores other events', () => {
+    const s = run([
+      toolCall('t1', 'Bash', {}, T5),
+      toolResult('t1', 'ok', false, T0),
+      { type: 'system', subtype: 'status', timestamp: '2030-01-01T00:00:00.000Z' },
+    ]);
+    expect(s.lastEventAt).toBe(Date.parse(T5));
   });
 });
 
@@ -563,10 +588,42 @@ describe('background tasks', () => {
     expect(row.endedAt).toBeUndefined();
   });
 
-  it('task_notification finishes the row with the summary and its time', () => {
-    const s = run([...started, taskNotification('b1', 't1', 'completed', 'Lean-verify all 15', '2026-09-12T10:06:12.000Z')]);
+  it('task_started records the task id on the row', () => {
+    expect(ofKind(run(started), 'tool')[0].taskId).toBe('b1');
+  });
+
+  it('task_updated end_time ends the row, and the notification keeps that time', () => {
+    const end = Date.parse('2026-09-12T10:06:12.000Z');
+    const s = run(
+      [...started, taskUpdated('b1', end), taskNotification('b1', 't1', 'completed', 'Lean-verify all 15')],
+      initialChatState,
+      HOURS_LATER,
+    );
     const [row] = ofKind(s, 'tool');
-    expect(row).toMatchObject({ status: 'done', result: 'Lean-verify all 15', endedAt: Date.parse('2026-09-12T10:06:12.000Z') });
+    expect(row).toMatchObject({ status: 'done', result: 'Lean-verify all 15', startedAt: Date.parse(T0), endedAt: end });
+  });
+
+  it('without task_updated, a notification ends the row at the latest wire time, not the reducer clock', () => {
+    const s = run([...started, taskNotification('b1', 't1', 'completed', 'Lean-verify all 15')], initialChatState, HOURS_LATER);
+    expect(ofKind(s, 'tool')[0].endedAt).toBe(Date.parse(T5));
+  });
+
+  it('task_updated without an end_time, or for an unknown task, changes nothing', () => {
+    const base = run(started);
+    const noEnd = { type: 'system', subtype: 'task_updated', task_id: 'b1', patch: { status: 'running' } };
+    expect(reduceEvent(base, noEnd, 9).items).toBe(base.items);
+    expect(reduceEvent(base, taskUpdated('nope', 1), 9).items).toBe(base.items);
+  });
+
+  it('a replay hours later shows the real duration of a background job', () => {
+    const events = [
+      ...started,
+      result('started it'),
+      taskUpdated('b1', Date.parse(T0) + 9_063),
+      taskNotification('b1', 't1', 'completed', 'done'),
+    ];
+    const [row] = ofKind(run(events, initialChatState, HOURS_LATER), 'tool');
+    expect(row.endedAt! - row.startedAt!).toBe(9_063);
   });
 
   it('a failed task marks the row failed', () => {
@@ -601,8 +658,8 @@ describe('background tasks', () => {
   it('the end of the turn does not freeze a background row; session close does', () => {
     const mid = run([...started, result('started it')]);
     expect(ofKind(mid, 'tool')[0].endedAt).toBeUndefined();
-    const closed = reduceEvent(mid, { type: 'x-optio-closed', reason: 'stopped' }, 99, 777);
-    expect(ofKind(closed, 'tool')[0].endedAt).toBe(777);
+    const closed = reduceEvent(mid, { type: 'x-optio-closed', reason: 'stopped' }, 99, HOURS_LATER);
+    expect(ofKind(closed, 'tool')[0].endedAt).toBe(Date.parse(T5));
   });
 
   it('task_started arriving after the tool_result reopens the row', () => {
