@@ -34,3 +34,14 @@ def test_agents_md_omits_resume_section_when_not_supported():
     """supports_resume=False drops the resume-awareness section entirely."""
     md = compose_agents_md("x", host_protocol=True, supports_resume=False)
     assert "resume.log" not in md
+
+
+def test_sandbox_note_and_no_prompt_text_of_its_own():
+    import inspect
+    import optio_antigravity.prompt as m
+    out = compose_agents_md("x", fs_isolation_dirs=[("/wd", "rwx")])
+    assert "**Your `home/.gemini/antigravity/` directory" in out
+    assert "**Filesystem access:**" in out
+    src = inspect.getsource(m)
+    assert "This harness may pause your session" not in src
+    assert "You are running inside a coordination harness" not in src

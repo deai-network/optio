@@ -26,6 +26,7 @@ from optio_core.models import BasicAuth, TaskInstance
 from optio_agents import HookContext, RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, get_protocol
 from optio_agents import seeds as _seeds
 from optio_agents.account import EMPTY, accounts_to_metadata
+from optio_agents.fs_grants import fs_isolation_dirs
 from optio_agents.input_listener import serialized, start_input_listener
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_agents.session_controls import model_control
@@ -272,15 +273,17 @@ async def run_antigravity_session(
         # tagged REFRESHED:AGENTS.md (mirrors optio-claudecode).
         refreshed_files: list[str] = []
         if resuming:
-            refreshed_files = await _maybe_refresh_on_resume(host, hook_ctx, config)
+            refreshed_files = await _maybe_refresh_on_resume(host, hook_ctx, config, protocol)
         else:
             await host.write_text(
                 "AGENTS.md",
                 compose_agents_md(
                     config.consumer_instructions,
+                    documentation=protocol.documentation if config.host_protocol else None,
                     host_protocol=config.host_protocol,
                     workdir_exclude=config.workdir_exclude,
                     supports_resume=config.supports_resume,
+                    fs_isolation_dirs=fs_isolation_dirs(config, host.workdir),
                     file_download=config.file_download,
                 ),
             )
@@ -850,9 +853,12 @@ async def _stream_restore_blob(
 
 
 async def _maybe_refresh_on_resume(
-    host: Host, hook_ctx: HookContext, config: AntigravityTaskConfig,
+    host: Host, hook_ctx: HookContext, config: AntigravityTaskConfig, protocol,
 ) -> list[str]:
     """Run ``on_resume_refresh`` (if any) and rewrite AGENTS.md when changed.
+
+    ``protocol`` is the session's protocol; its documentation is rendered so
+    the refreshed file matches the fresh-start composition.
 
     Returns the list of filenames rewritten (currently at most
     ``["AGENTS.md"]``). A hook that raises is logged and ignored, keeping the
@@ -869,9 +875,11 @@ async def _maybe_refresh_on_resume(
         return []
     new_agents_md = compose_agents_md(
         new_config.consumer_instructions,
+        documentation=protocol.documentation if new_config.host_protocol else None,
         host_protocol=new_config.host_protocol,
         workdir_exclude=new_config.workdir_exclude,
         supports_resume=new_config.supports_resume,
+        fs_isolation_dirs=fs_isolation_dirs(new_config, host.workdir),
         file_download=new_config.file_download,
     )
     try:

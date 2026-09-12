@@ -21,9 +21,14 @@ import contextlib
 
 import pytest
 
+from optio_agents import get_protocol
+from optio_agents.fs_grants import fs_isolation_dirs
+
 from optio_antigravity import session as agy_session
 from optio_antigravity.prompt import compose_agents_md
 from optio_antigravity.types import AntigravityTaskConfig
+
+PROTOCOL = get_protocol(browser="redirect")
 
 
 # --- fakes ------------------------------------------------------------------
@@ -73,6 +78,8 @@ class _FakeCtx:
 
 
 class _FakeHost:
+    workdir = "/tmp/fake-wd"
+
     def __init__(self, *, archive: bytes = b"", existing_text: dict | None = None):
         self._archive = archive
         self.written: dict[str, str] = {}
@@ -170,9 +177,11 @@ def _cfg(**kw) -> AntigravityTaskConfig:
 def _rendered(config: AntigravityTaskConfig) -> str:
     return compose_agents_md(
         config.consumer_instructions,
+        documentation=PROTOCOL.documentation if config.host_protocol else None,
         host_protocol=config.host_protocol,
         workdir_exclude=config.workdir_exclude,
         supports_resume=config.supports_resume,
+        fs_isolation_dirs=fs_isolation_dirs(config, "/tmp/fake-wd"),
         file_download=config.file_download,
     )
 
@@ -182,7 +191,7 @@ async def test_resume_refresh_no_rewrite_when_unchanged():
     host = _FakeHost()
     host.written["AGENTS.md"] = _rendered(config)  # restored == recomposed
     hook_ctx = _FakeHookCtx(host)
-    refreshed = await agy_session._maybe_refresh_on_resume(host, hook_ctx, config)
+    refreshed = await agy_session._maybe_refresh_on_resume(host, hook_ctx, config, PROTOCOL)
     assert refreshed == []
 
 
@@ -191,7 +200,7 @@ async def test_resume_refresh_rewrites_when_changed():
     host = _FakeHost()
     host.written["AGENTS.md"] = "STALE CONTENT"
     hook_ctx = _FakeHookCtx(host)
-    refreshed = await agy_session._maybe_refresh_on_resume(host, hook_ctx, config)
+    refreshed = await agy_session._maybe_refresh_on_resume(host, hook_ctx, config, PROTOCOL)
     assert refreshed == ["AGENTS.md"]
     assert host.written["AGENTS.md"] == _rendered(config)
 
@@ -200,7 +209,7 @@ async def test_resume_refresh_disabled_returns_empty():
     config = _cfg(on_resume_refresh=None)
     host = _FakeHost()
     hook_ctx = _FakeHookCtx(host)
-    refreshed = await agy_session._maybe_refresh_on_resume(host, hook_ctx, config)
+    refreshed = await agy_session._maybe_refresh_on_resume(host, hook_ctx, config, PROTOCOL)
     assert refreshed == []
     assert "AGENTS.md" not in host.written
 
@@ -212,7 +221,7 @@ async def test_resume_refresh_swallows_hook_error():
     config = _cfg(on_resume_refresh=_boom)
     host = _FakeHost()
     hook_ctx = _FakeHookCtx(host)
-    refreshed = await agy_session._maybe_refresh_on_resume(host, hook_ctx, config)
+    refreshed = await agy_session._maybe_refresh_on_resume(host, hook_ctx, config, PROTOCOL)
     assert refreshed == []
     assert "AGENTS.md" not in host.written
 
