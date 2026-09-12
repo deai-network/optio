@@ -6,6 +6,7 @@ import type { ChatItem, ChatState, SessionControl } from './chat.js';
 import { AnswerBlock } from './AnswerBlock.js';
 import { type Attachment, toAttachment, withinCap } from './attachments.js';
 import { FileDownloadContext } from './FileDownloadContext.js';
+import { formatDuration } from './duration.js';
 
 // Shared conversation chrome for every engine view. Each engine view reduces
 // its native wire events into the engine-neutral ChatState, then hands the
@@ -334,6 +335,19 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
       else next.add(seq);
       return next;
     });
+
+  // Live elapsed counters: tick once a second while any timed tool row is
+  // still running (no endedAt); no interval otherwise.
+  const [now, setNow] = useState(() => Date.now());
+  const counting = state.items.some(
+    (i) => i.kind === 'tool' && i.startedAt !== undefined && i.endedAt === undefined,
+  );
+  useEffect(() => {
+    if (!counting) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [counting]);
   const inputRef = useRef<TextAreaRef>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -537,30 +551,55 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
         );
       }
       case 'tool': {
-        if (toolVerbosity === 'silent') return null;
         const { finished, failed } = toolLifecycle(item);
+        const stopped = item.status === 'stopped';
+        const elapsed =
+          item.startedAt !== undefined ? formatDuration((item.endedAt ?? now) - item.startedAt) : null;
+        if (toolVerbosity === 'silent') {
+          // A finished background job is an event, not tool noise: keep one
+          // muted line for it even when tool rows are hidden.
+          if (!(item.background && finished)) return null;
+          const bgGlyph = stopped ? '⏹' : failed ? '✗' : '✓';
+          const bgLabel = stopped ? 'stopped' : failed ? 'failed' : 'finished';
+          return (
+            <div key={item.seq} data-testid="background-finished" style={{ color: token.colorTextTertiary, fontSize: 12 }}>
+              {bgGlyph} Background task {bgLabel}: {item.result ?? item.name}
+              {elapsed ? ` · ${elapsed}` : ''}
+            </div>
+          );
+        }
         // description-while-active: only render WHILE the tool runs.
         if (toolVerbosity === 'description-while-active' && finished) return null;
 
         let summary = toolSummary(item.input);
         if (!summary && item.preview) summary = item.preview.split('\n')[0].slice(0, 120);
-        const glyph = !finished ? '⟳' : failed ? '✗' : '✓';
+        const glyph = !finished ? '⟳' : stopped ? '⏹' : failed ? '✗' : '✓';
 
         // verbose shows the args/result detail; a FINISHED verbose tool collapses
         // to its line (click to re-expand). Non-verbose levels are line-only.
         const collapsible = toolVerbosity === 'verbose' && finished;
         const open = toolVerbosity === 'verbose' && (!finished || expandedTools.has(item.seq));
         return (
-          <div key={item.seq} data-testid="tool-call" data-tool-status={finished ? (failed ? 'failed' : 'done') : 'running'}
+          <div key={item.seq} data-testid="tool-call" data-tool-status={finished ? (stopped ? 'stopped' : failed ? 'failed' : 'done') : 'running'}
                style={{ color: token.colorTextTertiary, fontSize: 12 }}>
             <div
               style={{ fontFamily: 'monospace', cursor: collapsible ? 'pointer' : 'default' }}
               onClick={collapsible ? () => toggleTool(item.seq) : undefined}
             >
               {glyph} <strong>{item.name}</strong>{summary ? `: ${summary}` : ''}
+              {item.background && finished && item.result ? ` · ${item.result}` : ''}
+              {elapsed ? <span data-testid="tool-elapsed">{` · ${elapsed}`}</span> : null}
               {collapsible ? <span style={{ marginLeft: 6 }}>{expandedTools.has(item.seq) ? '▾' : '▸'}</span> : null}
             </div>
             {open ? renderDetail(item.input, item.preview, token) : null}
+            {open && item.result ? (
+              <div
+                data-testid="tool-result"
+                style={{ fontFamily: 'monospace', fontSize: 12, color: token.colorTextSecondary, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', marginTop: 4 }}
+              >
+                {item.result}
+              </div>
+            ) : null}
           </div>
         );
       }

@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { ConfigProvider } from 'antd';
 import type { ReactElement } from 'react';
 import { ConversationView, type ConversationViewProps } from '../ConversationView.js';
@@ -288,5 +288,83 @@ describe('ConversationView theme toggle', () => {
     expect(screen.queryByTestId('theme-toggle')).toBeNull();
     // The wide toggle is always present in the header regardless.
     expect(screen.getByTestId('wide-toggle')).toBeTruthy();
+  });
+});
+
+describe('ConversationView tool rows: elapsed time, results, background jobs', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('a running timed row shows a live elapsed counter', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    const state = makeState([{ kind: 'tool', name: 'Bash', input: { command: 'sleep 99' }, seq: 1, startedAt: 88_000 }]);
+    renderView(makeProps({ state, toolVerbosity: 'description-only' }));
+    expect(screen.getByTestId('tool-elapsed').textContent).toContain('12s');
+    act(() => {
+      vi.advanceTimersByTime(3000);
+    });
+    expect(screen.getByTestId('tool-elapsed').textContent).toContain('15s');
+  });
+
+  it('a finished row shows its final duration and stops counting', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(500_000);
+    const state = makeState([
+      { kind: 'tool', name: 'Bash', input: { command: 'make' }, seq: 1, status: 'done', startedAt: 0, endedAt: 184_000 },
+    ]);
+    renderView(makeProps({ state, toolVerbosity: 'description-only' }));
+    expect(screen.getByTestId('tool-elapsed').textContent).toContain('3m 04s');
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+    expect(screen.getByTestId('tool-elapsed').textContent).toContain('3m 04s');
+  });
+
+  it('rows without startedAt show no counter', () => {
+    renderView(makeProps({ state: makeState([{ kind: 'tool', name: 'Bash', input: {}, seq: 1 }]) }));
+    expect(screen.queryByTestId('tool-elapsed')).toBeNull();
+  });
+
+  it('verbose shows the result under the args once the row is expanded', () => {
+    const state = makeState([
+      { kind: 'tool', name: 'Bash', input: { command: 'ls' }, seq: 1, status: 'done', result: 'file1', startedAt: 0, endedAt: 1000 },
+    ]);
+    renderView(makeProps({ state, toolVerbosity: 'verbose' }));
+    expect(screen.queryByTestId('tool-result')).toBeNull(); // finished -> collapsed
+    fireEvent.click(screen.getByText('Bash'));
+    expect(screen.getByTestId('tool-result').textContent).toBe('file1');
+  });
+
+  it('silent hides tool rows but keeps a finished background job as one muted line', () => {
+    const state = makeState([
+      { kind: 'tool', name: 'Bash', input: { command: 'ls' }, seq: 1, status: 'done', startedAt: 0, endedAt: 1000 },
+      { kind: 'tool', name: 'Bash', input: { command: './harness.sh' }, seq: 2, status: 'done', background: true, result: 'Lean-verify all 15', startedAt: 0, endedAt: 372_000 },
+    ]);
+    renderView(makeProps({ state, toolVerbosity: 'silent' }));
+    expect(screen.queryByTestId('tool-call')).toBeNull();
+    const line = screen.getByTestId('background-finished').textContent!;
+    expect(line).toContain('Background task finished: Lean-verify all 15');
+    expect(line).toContain('6m 12s');
+  });
+
+  it('a stopped tool row shows the stopped glyph and status', () => {
+    const state = makeState([
+      { kind: 'tool', name: 'Bash', input: { command: './harness.sh' }, seq: 1, status: 'stopped', background: true, startedAt: 0, endedAt: 1000 },
+    ]);
+    renderView(makeProps({ state, toolVerbosity: 'description-only' }));
+    const row = screen.getByTestId('tool-call');
+    expect(row.getAttribute('data-tool-status')).toBe('stopped');
+    expect(row.textContent).toContain('⏹');
+  });
+
+  it('silent hides tool rows but keeps a stopped background job as one muted line', () => {
+    const state = makeState([
+      { kind: 'tool', name: 'Bash', input: { command: './harness.sh' }, seq: 1, status: 'stopped', background: true, result: 'Lean-verify all 15', startedAt: 0, endedAt: 372_000 },
+    ]);
+    renderView(makeProps({ state, toolVerbosity: 'silent' }));
+    expect(screen.queryByTestId('tool-call')).toBeNull();
+    const line = screen.getByTestId('background-finished').textContent!;
+    expect(line).toContain('⏹ Background task stopped: Lean-verify all 15');
+    expect(line).toContain('6m 12s');
   });
 });

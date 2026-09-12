@@ -182,4 +182,31 @@ describe('ConversationWidget', () => {
     // there caused a forced-reflow-per-frame CPU loop).
     expect(screen.getByTestId('conversation-content').textContent).not.toContain('working…');
   });
+
+  it('narration from a thinking block renders as a reply even with thinkingVerbosity hidden', () => {
+    render(<ConversationWidget {...makeProps({ process: { _id: 'p1', name: 'n', widgetData: { thinkingVerbosity: 'hidden' }, status: { state: 'running' } } })} />);
+    fire({ type: 'assistant', message: { role: 'assistant', id: 'm1', content: [{ type: 'thinking', thinking: '', signature: 's' }] } });
+    fire({ type: 'assistant', message: { role: 'assistant', id: 'm1', content: [{ type: 'thinking', thinking: 'Checking the VPN before the harness run.', signature: 's' }] } });
+    expect(screen.getByText('Checking the VPN before the harness run.')).toBeTruthy();
+  });
+
+  it('description-only keeps one row per call and marks finished calls', () => {
+    render(<ConversationWidget {...propsV('description-only')} />);
+    fire({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }] } });
+    fire({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'a b', is_error: false }] } });
+    fire({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't2', name: 'Read', input: { file_path: '/x' } }] } });
+    const rows = screen.getAllByTestId('tool-call');
+    expect(rows).toHaveLength(2);
+    expect(rows[0].getAttribute('data-tool-status')).toBe('done');
+    expect(rows[1].getAttribute('data-tool-status')).toBe('running');
+  });
+
+  it('a background task notification never renders as a user bubble', () => {
+    render(<ConversationWidget {...propsV('description-only')} />);
+    fire({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: './harness.sh' } }] } });
+    fire({ type: 'system', subtype: 'task_started', task_id: 'b1', tool_use_id: 't1', is_backgrounded: true });
+    fire({ type: 'user', origin: { kind: 'task-notification' }, message: { role: 'user', content: '<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>t1</tool-use-id>\n<status>completed</status>\n<summary>Rewrite harness</summary>\n</task-notification>' } });
+    expect(screen.queryByText(/task-notification/)).toBeNull();
+    expect(screen.getByTestId('tool-call').getAttribute('data-tool-status')).toBe('done');
+  });
 });
