@@ -346,6 +346,30 @@ def _mib_per_s(num_bytes: int, elapsed_s: float) -> float:
 # while streaming the remote tar.
 _ARCHIVE_TRACE_PROGRESS_INTERVAL_S = 10.0
 
+# archive_workdir reads the remote archive in blocks of this size. asyncssh's
+# `async for` over stdout is a readline() loop, which cuts a gzip stream into
+# ~300-byte pieces, each one a GridFS write in the snapshot consumer (~1 MiB/s
+# overall). asyncssh returns at most ~200 KiB per read() however much is asked
+# for, so anything >= 256 KiB behaves the same. See
+# docs/2026-09-13-snapshot-archive-throughput-design.md.
+_ARCHIVE_READ_BLOCK = 256 * 1024
+
+
+def _archive_command(workdir: str, patterns: list[str], compressor: str) -> str:
+    """Shell command that writes a gzip tar of ``workdir`` to stdout.
+
+    ``compressor`` is ``"pigz -1"`` or ``"gzip -1"``; both emit gzip, so
+    ``restore_workdir``'s ``tar xzf -`` reads either. Runs under ``bash``
+    explicitly (the remote login shell may be dash) so ``pipefail`` carries a
+    tar failure through the pipe into the exit status.
+    """
+    excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in patterns)
+    script = (
+        f"set -o pipefail; cd {shlex.quote(workdir)} && "
+        f"tar cf - {excludes} . | {compressor}"
+    )
+    return f"bash -c {shlex.quote(script)}"
+
 
 def _scrub_env(proc_env: dict, patterns: "list[str] | None") -> None:
     """Remove every env var whose NAME matches any glob pattern (in place).
@@ -770,8 +794,10 @@ class RemoteHost:
         self._tail_proc: asyncssh.SSHClientProcess | None = None
         self._forward: asyncssh.SSHListener | None = None
         self._host_home_cache: str | None = None
+        self._compressor: str | None = None
 
     async def connect(self) -> None:
+        self._compressor = None
         self._conn = await asyncssh.connect(
             host=self._ssh.host,
             username=self._ssh.user,
@@ -942,35 +968,44 @@ class RemoteHost:
             proc.kill()
             await proc.wait()
 
+    async def _archive_compressor(self) -> str:
+        """``pigz -1`` when the host has pigz, else ``gzip -1``. Probed once
+        per connection."""
+        if self._compressor is None:
+            assert self._conn is not None
+            probe = await self._conn.run("command -v pigz", check=False)
+            self._compressor = "pigz -1" if probe.exit_status == 0 else "gzip -1"
+        return self._compressor
+
     def archive_workdir(
         self, exclude: list[str] | None,
     ) -> "AsyncIterator[bytes]":
         from optio_host.archive import DEFAULT_WORKDIR_EXCLUDES
         assert self._conn is not None
         patterns = list(DEFAULT_WORKDIR_EXCLUDES) if exclude is None else list(exclude)
-        excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in patterns)
-        cmd = f"cd {shlex.quote(self.workdir)} && tar czf - {excludes} ."
 
         async def _gen() -> "AsyncIterator[bytes]":
             assert self._conn is not None
+            cmd = _archive_command(
+                self.workdir, patterns, await self._archive_compressor(),
+            )
             _trace("archive_workdir START cmd=%r excludes=%r", cmd, patterns)
             t0 = _time.monotonic()
             total = 0
             chunk_count = 0
             last_report = t0
             proc = await self._conn.create_process(cmd, encoding=None)
-            async for chunk in proc.stdout:
-                if chunk:
-                    total += len(chunk)
-                    chunk_count += 1
-                    yield chunk
-                    now = _time.monotonic()
-                    if now - last_report >= _ARCHIVE_TRACE_PROGRESS_INTERVAL_S:
-                        last_report = now
-                        _trace(
-                            "archive_workdir progress bytes=%d rate=%.1fMiB/s",
-                            total, _mib_per_s(total, now - t0),
-                        )
+            while chunk := await proc.stdout.read(_ARCHIVE_READ_BLOCK):
+                total += len(chunk)
+                chunk_count += 1
+                yield chunk
+                now = _time.monotonic()
+                if now - last_report >= _ARCHIVE_TRACE_PROGRESS_INTERVAL_S:
+                    last_report = now
+                    _trace(
+                        "archive_workdir progress bytes=%d rate=%.1fMiB/s",
+                        total, _mib_per_s(total, now - t0),
+                    )
             await proc.wait()
             elapsed = _time.monotonic() - t0
             _trace(
@@ -983,7 +1018,9 @@ class RemoteHost:
                 _trace(
                     "archive_workdir RAISED RuntimeError (exit %s)", proc.exit_status,
                 )
-                raise RuntimeError(f"remote tar czf - failed (exit {proc.exit_status})")
+                raise RuntimeError(
+                    f"remote workdir archive failed (exit {proc.exit_status})"
+                )
 
         return _gen()
 
