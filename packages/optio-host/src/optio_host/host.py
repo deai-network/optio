@@ -1014,6 +1014,7 @@ class RemoteHost:
             stderr_task = asyncio.create_task(
                 _read_tail(proc.stderr, _ARCHIVE_STDERR_TAIL_BYTES),
             )
+            completed = False
             try:
                 while chunk := await proc.stdout.read(_ARCHIVE_READ_BLOCK):
                     total += len(chunk)
@@ -1026,13 +1027,17 @@ class RemoteHost:
                             "archive_workdir progress bytes=%d rate=%.1fMiB/s",
                             total, _mib_per_s(total, now - t0),
                         )
-                await proc.wait()
+                # Collect stderr before wait(): asyncssh's wait() discards
+                # output still unread when the channel closes.
                 stderr_tail = await stderr_task
+                await proc.wait()
+                completed = True
             finally:
-                if proc.returncode is None:
+                if not completed:
                     # Abandoned mid-stream (consumer closed or cancelled):
                     # closing the channel makes the remote pipeline die of
-                    # SIGPIPE instead of blocking on a full SSH window.
+                    # SIGPIPE instead of blocking on a full SSH window, and
+                    # frees whatever it still buffers. Idempotent.
                     proc.close()
                 stderr_task.cancel()
             elapsed = _time.monotonic() - t0
