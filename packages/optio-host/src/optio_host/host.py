@@ -354,6 +354,18 @@ _ARCHIVE_TRACE_PROGRESS_INTERVAL_S = 10.0
 # docs/2026-09-13-snapshot-archive-throughput-design.md.
 _ARCHIVE_READ_BLOCK = 256 * 1024
 
+# How much of the remote archive pipeline's stderr archive_workdir keeps for
+# its error message.
+_ARCHIVE_STDERR_TAIL_BYTES = 4096
+
+
+async def _read_tail(reader, limit: int) -> bytes:
+    """Read ``reader`` to EOF, keeping only its last ``limit`` bytes."""
+    tail = b""
+    while chunk := await reader.read(_ARCHIVE_READ_BLOCK):
+        tail = (tail + chunk)[-limit:]
+    return tail
+
 
 def _archive_command(workdir: str, patterns: list[str], compressor: str) -> str:
     """Shell command that writes a gzip tar of ``workdir`` to stdout.
@@ -986,27 +998,43 @@ class RemoteHost:
 
         async def _gen() -> "AsyncIterator[bytes]":
             assert self._conn is not None
-            cmd = _archive_command(
-                self.workdir, patterns, await self._archive_compressor(),
+            compressor = await self._archive_compressor()
+            cmd = _archive_command(self.workdir, patterns, compressor)
+            _trace(
+                "archive_workdir START workdir=%s compressor=%s excludes=%r",
+                self.workdir, compressor, patterns,
             )
-            _trace("archive_workdir START cmd=%r excludes=%r", cmd, patterns)
             t0 = _time.monotonic()
             total = 0
             chunk_count = 0
             last_report = t0
             proc = await self._conn.create_process(cmd, encoding=None)
-            while chunk := await proc.stdout.read(_ARCHIVE_READ_BLOCK):
-                total += len(chunk)
-                chunk_count += 1
-                yield chunk
-                now = _time.monotonic()
-                if now - last_report >= _ARCHIVE_TRACE_PROGRESS_INTERVAL_S:
-                    last_report = now
-                    _trace(
-                        "archive_workdir progress bytes=%d rate=%.1fMiB/s",
-                        total, _mib_per_s(total, now - t0),
-                    )
-            await proc.wait()
+            # Read stderr alongside stdout: asyncssh stops delivering stdout
+            # once unread stderr fills the channel window.
+            stderr_task = asyncio.create_task(
+                _read_tail(proc.stderr, _ARCHIVE_STDERR_TAIL_BYTES),
+            )
+            try:
+                while chunk := await proc.stdout.read(_ARCHIVE_READ_BLOCK):
+                    total += len(chunk)
+                    chunk_count += 1
+                    yield chunk
+                    now = _time.monotonic()
+                    if now - last_report >= _ARCHIVE_TRACE_PROGRESS_INTERVAL_S:
+                        last_report = now
+                        _trace(
+                            "archive_workdir progress bytes=%d rate=%.1fMiB/s",
+                            total, _mib_per_s(total, now - t0),
+                        )
+                await proc.wait()
+                stderr_tail = await stderr_task
+            finally:
+                if proc.returncode is None:
+                    # Abandoned mid-stream (consumer closed or cancelled):
+                    # closing the channel makes the remote pipeline die of
+                    # SIGPIPE instead of blocking on a full SSH window.
+                    proc.close()
+                stderr_task.cancel()
             elapsed = _time.monotonic() - t0
             _trace(
                 "archive_workdir DONE bytes=%d chunks=%d elapsed=%.1fs "
@@ -1014,12 +1042,18 @@ class RemoteHost:
                 total, chunk_count, elapsed, _mib_per_s(total, elapsed),
                 proc.exit_status,
             )
-            if proc.exit_status not in (0, None):
-                _trace(
-                    "archive_workdir RAISED RuntimeError (exit %s)", proc.exit_status,
+            # None means the channel closed without an exit status: the
+            # archive may be truncated, so it is a failure too.
+            if proc.exit_status != 0:
+                status = (
+                    "no exit status" if proc.exit_status is None
+                    else f"exit {proc.exit_status}"
                 )
+                _trace("archive_workdir RAISED RuntimeError (%s)", status)
+                detail = stderr_tail.decode("utf-8", errors="replace").strip()
                 raise RuntimeError(
-                    f"remote workdir archive failed (exit {proc.exit_status})"
+                    f"remote workdir archive failed ({status})"
+                    + (f": {detail}" if detail else "")
                 )
 
         return _gen()
