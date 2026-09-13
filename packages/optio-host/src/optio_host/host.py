@@ -230,6 +230,8 @@ class Host(Protocol):
 # --- implementation -----------------------------------------------------
 
 import asyncio
+import contextlib
+import contextvars
 import fnmatch
 import hashlib
 import logging as _logging
@@ -241,6 +243,41 @@ import time as _time
 
 _trace_logger = _logging.getLogger("optio_core.cancel_trace")
 _CANCEL_TRACE = os.environ.get("OPTIO_CANCEL_TRACE", "0").lower() in ("1", "true", "yes")
+
+# "Is a task-cancel/snapshot unwind in progress right now?" — set only around
+# the finally-block brackets in optio_claudecode.session and
+# optio_agents.protocol.session via unwind_tracing() below. RemoteHost.
+# run_command has ~250 call sites, several of them polled once per second for
+# a session's entire lifetime (e.g. tmux_session_alive); tracing every one of
+# those unconditionally under OPTIO_CANCEL_TRACE=1 would flood the log with
+# heartbeat noise the engine's existing filter does not catch (none of these
+# lines contain "heartbeat"). Gating on this var, in addition to
+# OPTIO_CANCEL_TRACE, confines run_command's trace to the unwind itself.
+#
+# A ContextVar set inside a coroutine is visible to whatever that coroutine
+# awaits in-line, but NOT to a task created (asyncio.create_task) before the
+# var was set — such a task captured its own context snapshot at creation
+# time. Every remote call made during the two unwind brackets today is
+# awaited in-line (verified: neither finally block spawns a new task), so
+# wrapping each bracket's body in one `with unwind_tracing():` is sufficient;
+# if a future unwind step moves work into a freshly created task, that task
+# must enter its own unwind_tracing() block.
+_unwind_tracing: "contextvars.ContextVar[bool]" = contextvars.ContextVar(
+    "optio_host_unwind_tracing", default=False,
+)
+
+
+@contextlib.contextmanager
+def unwind_tracing():
+    """Mark "a task unwind is in progress" for this block (see ``_unwind_tracing``
+    above). Sync context manager — safe to wrap an ``async with``/``await``-heavy
+    block with plain ``with``; resets the var on exit, including when the
+    block raises."""
+    token = _unwind_tracing.set(True)
+    try:
+        yield
+    finally:
+        _unwind_tracing.reset(token)
 
 # asyncio.StreamReader defaults its buffer cap to 64 KiB; readline() raises
 # LimitOverrunError on any single line that exceeds it. Subprocess output we
@@ -1050,18 +1087,28 @@ class RemoteHost:
                 f"export {k}={shlex.quote(v)};" for k, v in env.items()
             ) + " "
         full_command = f"cd {shlex.quote(run_cwd)} && {exports}{command}"
-        _trace("run_command START %r", command[:160])
-        t0 = _time.monotonic()
+        # Trace only while a task-cancel/snapshot unwind is in progress (see
+        # unwind_tracing() above) — run_command's ~250 call sites include
+        # once-per-second liveness polls for a session's entire lifetime, and
+        # tracing every one of those would flood the log outside an unwind.
+        trace_this = _CANCEL_TRACE and _unwind_tracing.get()
+        if trace_this:
+            _trace("run_command START %r", command[:160])
+        t0 = _time.monotonic() if trace_this else 0.0
         result = await self._conn.run(full_command, check=False)
         stdout = result.stdout or ""
         stderr = result.stderr or ""
         stdout = stdout if isinstance(stdout, str) else stdout.decode("utf-8", errors="replace")
         stderr = stderr if isinstance(stderr, str) else stderr.decode("utf-8", errors="replace")
-        _trace(
-            "run_command DONE %r exit=%s elapsed=%.1fs stdout=%dB stderr=%dB",
-            command[:160], result.exit_status, _time.monotonic() - t0,
-            len(stdout.encode("utf-8")), len(stderr.encode("utf-8")),
-        )
+        if trace_this:
+            # Byte-size computation is real work (an extra utf-8 encode over
+            # possibly-large output) — only pay for it when the trace line
+            # will actually be emitted.
+            _trace(
+                "run_command DONE %r exit=%s elapsed=%.1fs stdout=%dB stderr=%dB",
+                command[:160], result.exit_status, _time.monotonic() - t0,
+                len(stdout.encode("utf-8")), len(stderr.encode("utf-8")),
+            )
         return RunResult(
             stdout=stdout,
             stderr=stderr,
