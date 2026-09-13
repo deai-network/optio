@@ -25,7 +25,7 @@ import time as _time
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from optio_agents.context import HookContext
-from optio_host.host import Host
+from optio_host.host import Host, unwind_tracing
 from optio_agents.protocol.parser import (
     AttentionEvent,
     BrowserEvent,
@@ -373,28 +373,34 @@ async def run_log_protocol_session(
         raise
 
     finally:
-        async with _traced("finally: in-session task cancel/gather"):
-            active_tasks = [
-                t for t in (tail_task, body_task, cancel_task, fetch_task, caller_task)
-                if t is not None
-            ]
-            for t in active_tasks:
-                if not t.done():
-                    t.cancel()
-            if active_tasks:
-                await asyncio.gather(*active_tasks, return_exceptions=True)
+        # Mark the unwind for RemoteHost.run_command's OPTIO_CANCEL_TRACE gate
+        # (see optio_host.host.unwind_tracing): everything below is awaited
+        # in-line in this coroutine (no new task is created in this finally
+        # block), so one `with` covers every remote call it makes, including
+        # after_execute's own (e.g. a caller's `rm -f data-source.md`).
+        with unwind_tracing():
+            async with _traced("finally: in-session task cancel/gather"):
+                active_tasks = [
+                    t for t in (tail_task, body_task, cancel_task, fetch_task, caller_task)
+                    if t is not None
+                ]
+                for t in active_tasks:
+                    if not t.done():
+                        t.cancel()
+                if active_tasks:
+                    await asyncio.gather(*active_tasks, return_exceptions=True)
 
-        if after_execute is not None:
-            async with _traced("finally: after_execute hook"):
-                try:
-                    await after_execute(hook_ctx)
-                except BaseException as after_exc:
-                    if session_error is None:
-                        raise
-                    ctx.report_progress(
-                        None,
-                        f"after_execute callback raised: {after_exc!r}",
-                    )
+            if after_execute is not None:
+                async with _traced("finally: after_execute hook"):
+                    try:
+                        await after_execute(hook_ctx)
+                    except BaseException as after_exc:
+                        if session_error is None:
+                            raise
+                        ctx.report_progress(
+                            None,
+                            f"after_execute callback raised: {after_exc!r}",
+                        )
 
 
 # --- private helpers ---------------------------------------------------
