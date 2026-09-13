@@ -142,15 +142,22 @@ class _FakeStream:
 
 class _FakeProc:
     """``exit_status``/``returncode`` stay None until wait(), like asyncssh's
-    before the exit-status message arrives."""
+    before the exit-status message arrives -- unless ``status_arrived``, the
+    exit status having come in while stdout is still buffered. wait() drops
+    unread output, like asyncssh's wait() (communicate() -> collect_output())."""
 
     def __init__(
-        self, stdout: _FakeStream, stderr: _FakeStream, exit_status: int | None,
+        self,
+        stdout: _FakeStream,
+        stderr: _FakeStream,
+        exit_status: int | None,
+        *,
+        status_arrived: bool = False,
     ) -> None:
         self.stdout = stdout
         self.stderr = stderr
         self._final_status = exit_status
-        self._finished = False
+        self._finished = status_arrived
         self.closed = False
 
     @property
@@ -163,6 +170,8 @@ class _FakeProc:
 
     async def wait(self) -> None:
         self._finished = True
+        self.stdout._data = b""
+        self.stderr._data = b""
 
     def close(self) -> None:
         self.closed = True
@@ -183,6 +192,7 @@ class _FakeConn:
         exit_status: int | None = 0,
         stall_stdout_until_stderr_drained: bool = False,
         stdout_gate: asyncio.Event | None = None,
+        exit_status_arrives_early: bool = False,
     ):
         self._pigz = pigz
         self._data = data
@@ -190,6 +200,7 @@ class _FakeConn:
         self._exit_status = exit_status
         self._stall = stall_stdout_until_stderr_drained
         self._stdout_gate = stdout_gate
+        self._early = exit_status_arrives_early
         self.run_commands: list[str] = []
         self.created: list[str] = []
         self.procs: list[_FakeProc] = []
@@ -208,6 +219,7 @@ class _FakeConn:
             _FakeStream(self._data, gate=gate),
             _FakeStream(self._stderr, on_eof=stderr_eof),
             self._exit_status,
+            status_arrived=self._early,
         )
         self.procs.append(proc)
         return proc
@@ -322,6 +334,20 @@ async def test_archive_workdir_drains_stderr_while_stdout_streams():
 
 async def test_archive_workdir_closes_the_remote_pipeline_when_abandoned():
     conn = _FakeConn(pigz=True, data=os.urandom(1024 * 1024))
+    gen = _host(conn).archive_workdir(exclude=None)
+
+    await gen.__anext__()
+    await gen.aclose()
+
+    assert conn.procs[0].closed
+
+
+async def test_archive_workdir_closes_the_channel_when_abandoned_after_the_exit_status():
+    # The exit status can arrive while stdout is still buffered; the channel
+    # keeps holding that data until it is closed.
+    conn = _FakeConn(
+        pigz=True, data=os.urandom(1024 * 1024), exit_status_arrives_early=True,
+    )
     gen = _host(conn).archive_workdir(exclude=None)
 
     await gen.__anext__()
