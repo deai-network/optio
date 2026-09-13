@@ -31,7 +31,9 @@ from optio_core.models import BasicAuth, TaskInstance
 from optio_agents.context import HookContext
 from optio_agents.fs_grants import fs_isolation_dirs
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
-from optio_host.host import Host, LocalHost, ProcessHandle, RemoteHost, proc_wait
+from optio_host.host import (
+    Host, LocalHost, ProcessHandle, RemoteHost, proc_wait, unwind_tracing,
+)
 from optio_host.paths import task_dir
 from optio_agents import seeds as _seeds
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, claustrum, get_protocol
@@ -841,250 +843,256 @@ async def run_claudecode_session(
     except _SessionFailed as fail:
         raise RuntimeError(str(fail)) from None
     finally:
-        if not ctx.should_continue():
-            cancelled = True
-        _trace("finally: ENTER cancelled=%s resuming=%s", cancelled, resuming)
-        if (
-            launched_handle is not None
-            and tmux_path is not None
-            and tmux_socket is not None
-            and tmux_session is not None
-            and claude_path
-        ):
-            # teardown_session_tree's own last step is await_claude_gone, so
-            # by the time this span ends the agent process is confirmed gone.
-            async with _traced(f"finally: teardown_session_tree aggressive={cancelled}") as t:
-                try:
-                    await host_actions.teardown_session_tree(
-                        host,
-                        tmux_path=tmux_path,
-                        tmux_socket=tmux_socket,
-                        tmux_session=tmux_session,
-                        claude_path=claude_path,
-                        ttyd_handle=launched_handle,
-                        aggressive=cancelled,
-                    )
-                except Exception:
-                    _LOG.exception("teardown_session_tree failed")
-            if cancelled:
-                ctx.report_progress(
-                    None, f"Stopping: agent stopped ({t.elapsed:.0f} s)",
-                )
-
-        # Conversation mode has no tmux/ttyd tree (the gate above never fires):
-        # kill the pipe-bound claude directly, then wait for quiescence so the
-        # snapshot capture below tars a static home/.claude.
-        if config.mode == "conversation" and launched_handle is not None:
-            async with _traced(
-                f"finally: terminate_subprocess (conversation) aggressive={cancelled}"
-            ) as t:
-                try:
-                    await host.terminate_subprocess(launched_handle, aggressive=cancelled)
-                except Exception:
-                    _LOG.exception("terminate_subprocess (conversation) failed")
-                try:
-                    await host_actions.await_claude_gone(host, claude_path or "claude")
-                except Exception:
-                    _LOG.exception("await_claude_gone failed; proceeding")
-            if cancelled:
-                ctx.report_progress(
-                    None, f"Stopping: agent stopped ({t.elapsed:.0f} s)",
-                )
-
-        if input_runner is not None:
-            async with _traced("finally: input listener cleanup"):
-                try:
-                    await input_runner.cleanup()
-                except Exception:
-                    _LOG.exception("input listener cleanup failed")
-                try:
-                    await ctx.clear_control_upstream()
-                except Exception:
-                    _LOG.exception("clear control upstream failed")
-
-        if conv_listener is not None:
-            async with _traced("finally: conversation listener teardown"):
-                # Drop the in-process upload writer so a late materializeUpload
-                # RPC can't reach a torn-down Host (raises NoUploadWriter
-                # instead).
-                try:
-                    ctx.clear_upload_writer()
-                except Exception:
-                    _LOG.exception("clear upload writer failed")
-                # Persist the replay buffer into the workdir BEFORE stop() so it
-                # lands in the resume snapshot; the next launch re-primes from it.
-                if config.supports_resume:
+        # Mark the unwind for RemoteHost.run_command's OPTIO_CANCEL_TRACE gate
+        # (see optio_host.host.unwind_tracing): every remote call below is
+        # awaited in-line in this coroutine (this finally block creates no new
+        # task), so one `with` covers all of it -- teardown_session_tree,
+        # _capture_snapshot's run_command calls, cleanup_taskdir, disconnect.
+        with unwind_tracing():
+            if not ctx.should_continue():
+                cancelled = True
+            _trace("finally: ENTER cancelled=%s resuming=%s", cancelled, resuming)
+            if (
+                launched_handle is not None
+                and tmux_path is not None
+                and tmux_socket is not None
+                and tmux_session is not None
+                and claude_path
+            ):
+                # teardown_session_tree's own last step is await_claude_gone, so
+                # by the time this span ends the agent process is confirmed gone.
+                async with _traced(f"finally: teardown_session_tree aggressive={cancelled}") as t:
                     try:
-                        await host.write_text(
-                            _CONV_BUFFER_FILE, json.dumps(conv_listener.export_buffer()),
+                        await host_actions.teardown_session_tree(
+                            host,
+                            tmux_path=tmux_path,
+                            tmux_socket=tmux_socket,
+                            tmux_session=tmux_session,
+                            claude_path=claude_path,
+                            ttyd_handle=launched_handle,
+                            aggressive=cancelled,
                         )
                     except Exception:
-                        _LOG.exception("conversation buffer persist failed")
-                try:
-                    await conv_listener.stop()
-                except Exception:
-                    _LOG.exception("conversation listener cleanup failed")
-
-        if cred_watch_task is not None:
-            async with _traced("finally: cred_watch_task cancel"):
-                cred_watch_task.cancel()
-                try:
-                    await cred_watch_task
-                except asyncio.CancelledError:
-                    pass
-
-        if lease_holder is not None and resolved_seed_id is not None:
-            async with _traced("finally: seed lease release"):
-                try:
-                    await _seeds.release(
-                        ctx._db, prefix=ctx._prefix, suffix=CLAUDE_SEED_SUFFIX,
-                        seed_id=resolved_seed_id, holder=lease_holder,
+                        _LOG.exception("teardown_session_tree failed")
+                if cancelled:
+                    ctx.report_progress(
+                        None, f"Stopping: agent stopped ({t.elapsed:.0f} s)",
                     )
-                except Exception:
-                    _LOG.exception("lease release failed (TTL will reclaim)")
 
-        if resolved_seed_id is not None:
-            async with _traced("finally: credential save-back"):
-                try:
-                    await cred_watcher.save_back_if_changed(
-                        ctx, host,
-                        seed_id=resolved_seed_id,
-                        baseline=cred_baseline,
-                        encrypt=config.seed_encrypt,
-                        decrypt=config.seed_decrypt,
+            # Conversation mode has no tmux/ttyd tree (the gate above never fires):
+            # kill the pipe-bound claude directly, then wait for quiescence so the
+            # snapshot capture below tars a static home/.claude.
+            if config.mode == "conversation" and launched_handle is not None:
+                async with _traced(
+                    f"finally: terminate_subprocess (conversation) aggressive={cancelled}"
+                ) as t:
+                    try:
+                        await host.terminate_subprocess(launched_handle, aggressive=cancelled)
+                    except Exception:
+                        _LOG.exception("terminate_subprocess (conversation) failed")
+                    try:
+                        await host_actions.await_claude_gone(host, claude_path or "claude")
+                    except Exception:
+                        _LOG.exception("await_claude_gone failed; proceeding")
+                if cancelled:
+                    ctx.report_progress(
+                        None, f"Stopping: agent stopped ({t.elapsed:.0f} s)",
                     )
-                except Exception:
-                    _LOG.exception("final credential save-back failed")
 
-        if not resuming and config.on_seed_saved is not None:
-            # Credentials-present guard: never store a seed whose home/.claude
-            # has no valid credentials (a login-less or aborted setup session).
-            # Without a usable refresh token the seed is dead on arrival —
-            # account resolves to None and it only pollutes the pool. Mirrors the
-            # save-back (cred_fingerprint) and snapshot credentials guards.
-            if await cred_watcher.cred_fingerprint(host) is None:
-                _LOG.warning(
-                    "seed capture skipped: no valid credentials in "
-                    "home/.claude/.credentials.json (login-less session)",
-                )
-                _trace("finally: capture_seed SKIPPED (no credentials)")
-            else:
-                _seed_t0 = _time.monotonic()
-                _trace("finally: capture_seed START")
+            if input_runner is not None:
+                async with _traced("finally: input listener cleanup"):
+                    try:
+                        await input_runner.cleanup()
+                    except Exception:
+                        _LOG.exception("input listener cleanup failed")
+                    try:
+                        await ctx.clear_control_upstream()
+                    except Exception:
+                        _LOG.exception("clear control upstream failed")
+
+            if conv_listener is not None:
+                async with _traced("finally: conversation listener teardown"):
+                    # Drop the in-process upload writer so a late materializeUpload
+                    # RPC can't reach a torn-down Host (raises NoUploadWriter
+                    # instead).
+                    try:
+                        ctx.clear_upload_writer()
+                    except Exception:
+                        _LOG.exception("clear upload writer failed")
+                    # Persist the replay buffer into the workdir BEFORE stop() so it
+                    # lands in the resume snapshot; the next launch re-primes from it.
+                    if config.supports_resume:
+                        try:
+                            await host.write_text(
+                                _CONV_BUFFER_FILE, json.dumps(conv_listener.export_buffer()),
+                            )
+                        except Exception:
+                            _LOG.exception("conversation buffer persist failed")
+                    try:
+                        await conv_listener.stop()
+                    except Exception:
+                        _LOG.exception("conversation listener cleanup failed")
+
+            if cred_watch_task is not None:
+                async with _traced("finally: cred_watch_task cancel"):
+                    cred_watch_task.cancel()
+                    try:
+                        await cred_watch_task
+                    except asyncio.CancelledError:
+                        pass
+
+            if lease_holder is not None and resolved_seed_id is not None:
+                async with _traced("finally: seed lease release"):
+                    try:
+                        await _seeds.release(
+                            ctx._db, prefix=ctx._prefix, suffix=CLAUDE_SEED_SUFFIX,
+                            seed_id=resolved_seed_id, holder=lease_holder,
+                        )
+                    except Exception:
+                        _LOG.exception("lease release failed (TTL will reclaim)")
+
+            if resolved_seed_id is not None:
+                async with _traced("finally: credential save-back"):
+                    try:
+                        await cred_watcher.save_back_if_changed(
+                            ctx, host,
+                            seed_id=resolved_seed_id,
+                            baseline=cred_baseline,
+                            encrypt=config.seed_encrypt,
+                            decrypt=config.seed_decrypt,
+                        )
+                    except Exception:
+                        _LOG.exception("final credential save-back failed")
+
+            if not resuming and config.on_seed_saved is not None:
+                # Credentials-present guard: never store a seed whose home/.claude
+                # has no valid credentials (a login-less or aborted setup session).
+                # Without a usable refresh token the seed is dead on arrival —
+                # account resolves to None and it only pollutes the pool. Mirrors the
+                # save-back (cred_fingerprint) and snapshot credentials guards.
+                if await cred_watcher.cred_fingerprint(host) is None:
+                    _LOG.warning(
+                        "seed capture skipped: no valid credentials in "
+                        "home/.claude/.credentials.json (login-less session)",
+                    )
+                    _trace("finally: capture_seed SKIPPED (no credentials)")
+                else:
+                    _seed_t0 = _time.monotonic()
+                    _trace("finally: capture_seed START")
+                    try:
+                        seed_id = await _seeds.capture_seed(
+                            ctx, host,
+                            manifest=CLAUDE_SEED_MANIFEST,
+                            suffix=CLAUDE_SEED_SUFFIX,
+                            encrypt=config.seed_encrypt,
+                        )
+                        _trace(
+                            "finally: capture_seed DONE id=%s (%.1fs)",
+                            seed_id, _time.monotonic() - _seed_t0,
+                        )
+                        # Normalized account(s) from the seeded OAuth token (the
+                        # isolated home creds are still on disk pre-cleanup);
+                        # fail-soft → EMPTY, never disturbs capture. Optio owns the
+                        # capture-time stamp: persist metadata.accounts (claudecode
+                        # is single-account, so the list holds at most one entry),
+                        # then hand on_seed_saved the first account's human-readable
+                        # summary (2nd arg), or None when there is no account.
+                        info = await resolve_capture_account(host)
+                        accounts = [info] if (info is not None and info != EMPTY) else []
+                        await _seeds.declare_metadata(
+                            ctx._db, prefix=ctx._prefix, suffix=CLAUDE_SEED_SUFFIX,
+                            seed_id=seed_id,
+                            metadata={"accounts": accounts_to_metadata(accounts)},
+                        )
+                        summary = accounts[0].summary if accounts else None
+                        await _call_maybe_async(config.on_seed_saved, seed_id, summary)
+                        _trace(
+                            "finally: on_seed_saved fired (summary=%s) (%.1fs)",
+                            summary, _time.monotonic() - _seed_t0,
+                        )
+                    except Exception as exc:
+                        _LOG.exception(
+                            "seed capture failed; callback not fired, teardown continues",
+                        )
+                        _trace(
+                            "finally: capture_seed RAISED %s (%.1fs)",
+                            type(exc).__name__, _time.monotonic() - _seed_t0,
+                        )
+
+            # Explicit session capture (on_session_saved): runs BEFORE snapshot
+            # capture, whose workdir-tar step defensively wipes home/.claude.
+            # Same reached-live gate as snapshots; unlike snapshots there is no
+            # credentials guard — the caller owns blob semantics and lifecycle.
+            if config.on_session_saved is not None and launched_handle is not None:
+                _session_blob_t0 = _time.monotonic()
+                _trace("finally: session blob capture START")
                 try:
-                    seed_id = await _seeds.capture_seed(
+                    _end_state = (
+                        "cancelled" if cancelled
+                        else "failed" if sys.exc_info()[0] is not None
+                        else "done"
+                    )
+                    _session_blob_id, _session_bytes_len = await _store_session_blob(
                         ctx, host,
-                        manifest=CLAUDE_SEED_MANIFEST,
-                        suffix=CLAUDE_SEED_SUFFIX,
-                        encrypt=config.seed_encrypt,
+                        session_blob_encrypt=config.session_blob_encrypt,
+                    )
+                    await _call_maybe_async(
+                        config.on_session_saved, _session_blob_id, _end_state,
                     )
                     _trace(
-                        "finally: capture_seed DONE id=%s (%.1fs)",
-                        seed_id, _time.monotonic() - _seed_t0,
-                    )
-                    # Normalized account(s) from the seeded OAuth token (the
-                    # isolated home creds are still on disk pre-cleanup);
-                    # fail-soft → EMPTY, never disturbs capture. Optio owns the
-                    # capture-time stamp: persist metadata.accounts (claudecode
-                    # is single-account, so the list holds at most one entry),
-                    # then hand on_seed_saved the first account's human-readable
-                    # summary (2nd arg), or None when there is no account.
-                    info = await resolve_capture_account(host)
-                    accounts = [info] if (info is not None and info != EMPTY) else []
-                    await _seeds.declare_metadata(
-                        ctx._db, prefix=ctx._prefix, suffix=CLAUDE_SEED_SUFFIX,
-                        seed_id=seed_id,
-                        metadata={"accounts": accounts_to_metadata(accounts)},
-                    )
-                    summary = accounts[0].summary if accounts else None
-                    await _call_maybe_async(config.on_seed_saved, seed_id, summary)
-                    _trace(
-                        "finally: on_seed_saved fired (summary=%s) (%.1fs)",
-                        summary, _time.monotonic() - _seed_t0,
+                        "finally: session blob capture DONE id=%s state=%s bytes=%d (%.1fs)",
+                        _session_blob_id, _end_state, _session_bytes_len,
+                        _time.monotonic() - _session_blob_t0,
                     )
                 except Exception as exc:
                     _LOG.exception(
-                        "seed capture failed; callback not fired, teardown continues",
+                        "session blob capture failed; callback not fired, "
+                        "teardown continues",
                     )
                     _trace(
-                        "finally: capture_seed RAISED %s (%.1fs)",
-                        type(exc).__name__, _time.monotonic() - _seed_t0,
+                        "finally: session blob capture RAISED %s (%.1fs)",
+                        type(exc).__name__, _time.monotonic() - _session_blob_t0,
                     )
 
-        # Explicit session capture (on_session_saved): runs BEFORE snapshot
-        # capture, whose workdir-tar step defensively wipes home/.claude.
-        # Same reached-live gate as snapshots; unlike snapshots there is no
-        # credentials guard — the caller owns blob semantics and lifecycle.
-        if config.on_session_saved is not None and launched_handle is not None:
-            _session_blob_t0 = _time.monotonic()
-            _trace("finally: session blob capture START")
-            try:
-                _end_state = (
-                    "cancelled" if cancelled
-                    else "failed" if sys.exc_info()[0] is not None
-                    else "done"
-                )
-                _session_blob_id, _session_bytes_len = await _store_session_blob(
-                    ctx, host,
-                    session_blob_encrypt=config.session_blob_encrypt,
-                )
-                await _call_maybe_async(
-                    config.on_session_saved, _session_blob_id, _end_state,
-                )
-                _trace(
-                    "finally: session blob capture DONE id=%s state=%s bytes=%d (%.1fs)",
-                    _session_blob_id, _end_state, _session_bytes_len,
-                    _time.monotonic() - _session_blob_t0,
-                )
-            except Exception as exc:
-                _LOG.exception(
-                    "session blob capture failed; callback not fired, "
-                    "teardown continues",
-                )
-                _trace(
-                    "finally: session blob capture RAISED %s (%.1fs)",
-                    type(exc).__name__, _time.monotonic() - _session_blob_t0,
-                )
+            # Reached-live gate: only capture if claude actually came up.
+            # launched_handle is assigned strictly AFTER merge_seed and a
+            # successful ttyd/claude launch, so non-None ⟹ the environment was
+            # fully planted+seeded and claude live. An interrupt or merge_seed
+            # failure before launch leaves it None — skip capture entirely (do
+            # NOT touch hasSavedState, so any prior good snapshot survives).
+            if config.supports_resume and launched_handle is not None:
+                _snapshot_t0 = _time.monotonic()
+                _trace("finally: capture_snapshot START")
+                try:
+                    await _capture_snapshot(
+                        ctx, host,
+                        end_state="cancelled" if cancelled else "done",
+                        workdir_exclude=config.workdir_exclude,
+                        session_blob_encrypt=config.session_blob_encrypt,
+                    )
+                    _trace(
+                        "finally: capture_snapshot DONE (%.1fs)",
+                        _time.monotonic() - _snapshot_t0,
+                    )
+                except Exception as exc:
+                    _LOG.exception(
+                        "snapshot capture failed; proceeding with workdir wipe",
+                    )
+                    _trace(
+                        "finally: capture_snapshot RAISED %s (%.1fs)",
+                        type(exc).__name__, _time.monotonic() - _snapshot_t0,
+                    )
 
-        # Reached-live gate: only capture if claude actually came up.
-        # launched_handle is assigned strictly AFTER merge_seed and a
-        # successful ttyd/claude launch, so non-None ⟹ the environment was
-        # fully planted+seeded and claude live. An interrupt or merge_seed
-        # failure before launch leaves it None — skip capture entirely (do
-        # NOT touch hasSavedState, so any prior good snapshot survives).
-        if config.supports_resume and launched_handle is not None:
-            _snapshot_t0 = _time.monotonic()
-            _trace("finally: capture_snapshot START")
-            try:
-                await _capture_snapshot(
-                    ctx, host,
-                    end_state="cancelled" if cancelled else "done",
-                    workdir_exclude=config.workdir_exclude,
-                    session_blob_encrypt=config.session_blob_encrypt,
-                )
-                _trace(
-                    "finally: capture_snapshot DONE (%.1fs)",
-                    _time.monotonic() - _snapshot_t0,
-                )
-            except Exception as exc:
-                _LOG.exception(
-                    "snapshot capture failed; proceeding with workdir wipe",
-                )
-                _trace(
-                    "finally: capture_snapshot RAISED %s (%.1fs)",
-                    type(exc).__name__, _time.monotonic() - _snapshot_t0,
-                )
-
-        async with _traced(f"finally: cleanup_taskdir aggressive={cancelled}"):
-            try:
-                await host.cleanup_taskdir(aggressive=cancelled)
-            except Exception:
-                _LOG.exception("cleanup_taskdir failed")
-        async with _traced("finally: disconnect"):
-            try:
-                await host.disconnect()
-            except Exception:
-                _LOG.exception("host.disconnect failed")
+            async with _traced(f"finally: cleanup_taskdir aggressive={cancelled}"):
+                try:
+                    await host.cleanup_taskdir(aggressive=cancelled)
+                except Exception:
+                    _LOG.exception("cleanup_taskdir failed")
+            async with _traced("finally: disconnect"):
+                try:
+                    await host.disconnect()
+                except Exception:
+                    _LOG.exception("host.disconnect failed")
 
 
 # --- helpers ---------------------------------------------------------------
