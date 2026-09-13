@@ -78,6 +78,40 @@ def _trace(fmt: str, *args: object) -> None:
         _trace_logger.warning("[%.3f] optio-claudecode " + fmt, _time.monotonic(), *args)
 
 
+class _traced:
+    """Async context manager: START/DONE/RAISED span for one unwind step.
+
+    Emits through the same ``_trace`` gate (OPTIO_CANCEL_TRACE) as the
+    hand-written START/DONE calls elsewhere in this module, with elapsed
+    monotonic time added on exit. ``.start``/``.elapsed`` stay populated
+    (regardless of the trace gate) so a caller can reuse the same clock for
+    an always-on milestone message (``ctx.report_progress``).
+
+    Diagnostic only: never swallows an exception raised inside the
+    ``async with`` block — it logs RAISED (with the exception type) and
+    re-raises unchanged.
+    """
+
+    def __init__(self, label: str, *, clock: "Callable[[], float]" = _time.monotonic) -> None:
+        self.label = label
+        self._clock = clock
+        self.start = 0.0
+        self.elapsed = 0.0
+
+    async def __aenter__(self) -> "_traced":
+        self.start = self._clock()
+        _trace("%s START", self.label)
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        self.elapsed = self._clock() - self.start
+        if exc_type is not None:
+            _trace("%s RAISED %s (%.1fs)", self.label, exc_type.__name__, self.elapsed)
+        else:
+            _trace("%s DONE (%.1fs)", self.label, self.elapsed)
+        return False
+
+
 READY_TIMEOUT_S = 30.0
 
 
@@ -817,94 +851,110 @@ async def run_claudecode_session(
             and tmux_session is not None
             and claude_path
         ):
-            _trace("finally: teardown_session_tree START aggressive=%s", cancelled)
-            try:
-                await host_actions.teardown_session_tree(
-                    host,
-                    tmux_path=tmux_path,
-                    tmux_socket=tmux_socket,
-                    tmux_session=tmux_session,
-                    claude_path=claude_path,
-                    ttyd_handle=launched_handle,
-                    aggressive=cancelled,
+            # teardown_session_tree's own last step is await_claude_gone, so
+            # by the time this span ends the agent process is confirmed gone.
+            async with _traced(f"finally: teardown_session_tree aggressive={cancelled}") as t:
+                try:
+                    await host_actions.teardown_session_tree(
+                        host,
+                        tmux_path=tmux_path,
+                        tmux_socket=tmux_socket,
+                        tmux_session=tmux_session,
+                        claude_path=claude_path,
+                        ttyd_handle=launched_handle,
+                        aggressive=cancelled,
+                    )
+                except Exception:
+                    _LOG.exception("teardown_session_tree failed")
+            if cancelled:
+                ctx.report_progress(
+                    None, f"Stopping: agent stopped ({t.elapsed:.0f} s)",
                 )
-            except Exception:
-                _LOG.exception("teardown_session_tree failed")
-            _trace("finally: teardown_session_tree DONE")
 
         # Conversation mode has no tmux/ttyd tree (the gate above never fires):
         # kill the pipe-bound claude directly, then wait for quiescence so the
         # snapshot capture below tars a static home/.claude.
         if config.mode == "conversation" and launched_handle is not None:
-            _trace("finally: terminate_subprocess (conversation) START aggressive=%s", cancelled)
-            try:
-                await host.terminate_subprocess(launched_handle, aggressive=cancelled)
-            except Exception:
-                _LOG.exception("terminate_subprocess (conversation) failed")
-            try:
-                await host_actions.await_claude_gone(host, claude_path or "claude")
-            except Exception:
-                _LOG.exception("await_claude_gone failed; proceeding")
-            _trace("finally: terminate_subprocess (conversation) DONE")
+            async with _traced(
+                f"finally: terminate_subprocess (conversation) aggressive={cancelled}"
+            ) as t:
+                try:
+                    await host.terminate_subprocess(launched_handle, aggressive=cancelled)
+                except Exception:
+                    _LOG.exception("terminate_subprocess (conversation) failed")
+                try:
+                    await host_actions.await_claude_gone(host, claude_path or "claude")
+                except Exception:
+                    _LOG.exception("await_claude_gone failed; proceeding")
+            if cancelled:
+                ctx.report_progress(
+                    None, f"Stopping: agent stopped ({t.elapsed:.0f} s)",
+                )
 
         if input_runner is not None:
-            try:
-                await input_runner.cleanup()
-            except Exception:
-                _LOG.exception("input listener cleanup failed")
-            try:
-                await ctx.clear_control_upstream()
-            except Exception:
-                _LOG.exception("clear control upstream failed")
+            async with _traced("finally: input listener cleanup"):
+                try:
+                    await input_runner.cleanup()
+                except Exception:
+                    _LOG.exception("input listener cleanup failed")
+                try:
+                    await ctx.clear_control_upstream()
+                except Exception:
+                    _LOG.exception("clear control upstream failed")
 
         if conv_listener is not None:
-            # Drop the in-process upload writer so a late materializeUpload RPC
-            # can't reach a torn-down Host (raises NoUploadWriter instead).
-            try:
-                ctx.clear_upload_writer()
-            except Exception:
-                _LOG.exception("clear upload writer failed")
-            # Persist the replay buffer into the workdir BEFORE stop() so it
-            # lands in the resume snapshot; the next launch re-primes from it.
-            if config.supports_resume:
+            async with _traced("finally: conversation listener teardown"):
+                # Drop the in-process upload writer so a late materializeUpload
+                # RPC can't reach a torn-down Host (raises NoUploadWriter
+                # instead).
                 try:
-                    await host.write_text(
-                        _CONV_BUFFER_FILE, json.dumps(conv_listener.export_buffer()),
-                    )
+                    ctx.clear_upload_writer()
                 except Exception:
-                    _LOG.exception("conversation buffer persist failed")
-            try:
-                await conv_listener.stop()
-            except Exception:
-                _LOG.exception("conversation listener cleanup failed")
+                    _LOG.exception("clear upload writer failed")
+                # Persist the replay buffer into the workdir BEFORE stop() so it
+                # lands in the resume snapshot; the next launch re-primes from it.
+                if config.supports_resume:
+                    try:
+                        await host.write_text(
+                            _CONV_BUFFER_FILE, json.dumps(conv_listener.export_buffer()),
+                        )
+                    except Exception:
+                        _LOG.exception("conversation buffer persist failed")
+                try:
+                    await conv_listener.stop()
+                except Exception:
+                    _LOG.exception("conversation listener cleanup failed")
 
         if cred_watch_task is not None:
-            cred_watch_task.cancel()
-            try:
-                await cred_watch_task
-            except asyncio.CancelledError:
-                pass
+            async with _traced("finally: cred_watch_task cancel"):
+                cred_watch_task.cancel()
+                try:
+                    await cred_watch_task
+                except asyncio.CancelledError:
+                    pass
 
         if lease_holder is not None and resolved_seed_id is not None:
-            try:
-                await _seeds.release(
-                    ctx._db, prefix=ctx._prefix, suffix=CLAUDE_SEED_SUFFIX,
-                    seed_id=resolved_seed_id, holder=lease_holder,
-                )
-            except Exception:
-                _LOG.exception("lease release failed (TTL will reclaim)")
+            async with _traced("finally: seed lease release"):
+                try:
+                    await _seeds.release(
+                        ctx._db, prefix=ctx._prefix, suffix=CLAUDE_SEED_SUFFIX,
+                        seed_id=resolved_seed_id, holder=lease_holder,
+                    )
+                except Exception:
+                    _LOG.exception("lease release failed (TTL will reclaim)")
 
         if resolved_seed_id is not None:
-            try:
-                await cred_watcher.save_back_if_changed(
-                    ctx, host,
-                    seed_id=resolved_seed_id,
-                    baseline=cred_baseline,
-                    encrypt=config.seed_encrypt,
-                    decrypt=config.seed_decrypt,
-                )
-            except Exception:
-                _LOG.exception("final credential save-back failed")
+            async with _traced("finally: credential save-back"):
+                try:
+                    await cred_watcher.save_back_if_changed(
+                        ctx, host,
+                        seed_id=resolved_seed_id,
+                        baseline=cred_baseline,
+                        encrypt=config.seed_encrypt,
+                        decrypt=config.seed_decrypt,
+                    )
+                except Exception:
+                    _LOG.exception("final credential save-back failed")
 
         if not resuming and config.on_seed_saved is not None:
             # Credentials-present guard: never store a seed whose home/.claude
@@ -919,6 +969,7 @@ async def run_claudecode_session(
                 )
                 _trace("finally: capture_seed SKIPPED (no credentials)")
             else:
+                _seed_t0 = _time.monotonic()
                 _trace("finally: capture_seed START")
                 try:
                     seed_id = await _seeds.capture_seed(
@@ -927,7 +978,10 @@ async def run_claudecode_session(
                         suffix=CLAUDE_SEED_SUFFIX,
                         encrypt=config.seed_encrypt,
                     )
-                    _trace("finally: capture_seed DONE id=%s", seed_id)
+                    _trace(
+                        "finally: capture_seed DONE id=%s (%.1fs)",
+                        seed_id, _time.monotonic() - _seed_t0,
+                    )
                     # Normalized account(s) from the seeded OAuth token (the
                     # isolated home creds are still on disk pre-cleanup);
                     # fail-soft → EMPTY, never disturbs capture. Optio owns the
@@ -944,18 +998,25 @@ async def run_claudecode_session(
                     )
                     summary = accounts[0].summary if accounts else None
                     await _call_maybe_async(config.on_seed_saved, seed_id, summary)
-                    _trace("finally: on_seed_saved fired (summary=%s)", summary)
-                except Exception:
+                    _trace(
+                        "finally: on_seed_saved fired (summary=%s) (%.1fs)",
+                        summary, _time.monotonic() - _seed_t0,
+                    )
+                except Exception as exc:
                     _LOG.exception(
                         "seed capture failed; callback not fired, teardown continues",
                     )
-                    _trace("finally: capture_seed RAISED")
+                    _trace(
+                        "finally: capture_seed RAISED %s (%.1fs)",
+                        type(exc).__name__, _time.monotonic() - _seed_t0,
+                    )
 
         # Explicit session capture (on_session_saved): runs BEFORE snapshot
         # capture, whose workdir-tar step defensively wipes home/.claude.
         # Same reached-live gate as snapshots; unlike snapshots there is no
         # credentials guard — the caller owns blob semantics and lifecycle.
         if config.on_session_saved is not None and launched_handle is not None:
+            _session_blob_t0 = _time.monotonic()
             _trace("finally: session blob capture START")
             try:
                 _end_state = (
@@ -963,7 +1024,7 @@ async def run_claudecode_session(
                     else "failed" if sys.exc_info()[0] is not None
                     else "done"
                 )
-                _session_blob_id = await _store_session_blob(
+                _session_blob_id, _session_bytes_len = await _store_session_blob(
                     ctx, host,
                     session_blob_encrypt=config.session_blob_encrypt,
                 )
@@ -971,13 +1032,18 @@ async def run_claudecode_session(
                     config.on_session_saved, _session_blob_id, _end_state,
                 )
                 _trace(
-                    "finally: session blob capture DONE id=%s state=%s",
-                    _session_blob_id, _end_state,
+                    "finally: session blob capture DONE id=%s state=%s bytes=%d (%.1fs)",
+                    _session_blob_id, _end_state, _session_bytes_len,
+                    _time.monotonic() - _session_blob_t0,
                 )
-            except Exception:
+            except Exception as exc:
                 _LOG.exception(
                     "session blob capture failed; callback not fired, "
                     "teardown continues",
+                )
+                _trace(
+                    "finally: session blob capture RAISED %s (%.1fs)",
+                    type(exc).__name__, _time.monotonic() - _session_blob_t0,
                 )
 
         # Reached-live gate: only capture if claude actually came up.
@@ -987,6 +1053,7 @@ async def run_claudecode_session(
         # failure before launch leaves it None — skip capture entirely (do
         # NOT touch hasSavedState, so any prior good snapshot survives).
         if config.supports_resume and launched_handle is not None:
+            _snapshot_t0 = _time.monotonic()
             _trace("finally: capture_snapshot START")
             try:
                 await _capture_snapshot(
@@ -995,25 +1062,29 @@ async def run_claudecode_session(
                     workdir_exclude=config.workdir_exclude,
                     session_blob_encrypt=config.session_blob_encrypt,
                 )
-                _trace("finally: capture_snapshot DONE")
-            except Exception:
+                _trace(
+                    "finally: capture_snapshot DONE (%.1fs)",
+                    _time.monotonic() - _snapshot_t0,
+                )
+            except Exception as exc:
                 _LOG.exception(
                     "snapshot capture failed; proceeding with workdir wipe",
                 )
-                _trace("finally: capture_snapshot RAISED")
+                _trace(
+                    "finally: capture_snapshot RAISED %s (%.1fs)",
+                    type(exc).__name__, _time.monotonic() - _snapshot_t0,
+                )
 
-        _trace("finally: cleanup_taskdir START aggressive=%s", cancelled)
-        try:
-            await host.cleanup_taskdir(aggressive=cancelled)
-        except Exception:
-            _LOG.exception("cleanup_taskdir failed")
-        _trace("finally: cleanup_taskdir DONE")
-        _trace("finally: disconnect START")
-        try:
-            await host.disconnect()
-        except Exception:
-            _LOG.exception("host.disconnect failed")
-        _trace("finally: disconnect DONE")
+        async with _traced(f"finally: cleanup_taskdir aggressive={cancelled}"):
+            try:
+                await host.cleanup_taskdir(aggressive=cancelled)
+            except Exception:
+                _LOG.exception("cleanup_taskdir failed")
+        async with _traced("finally: disconnect"):
+            try:
+                await host.disconnect()
+            except Exception:
+                _LOG.exception("host.disconnect failed")
 
 
 # --- helpers ---------------------------------------------------------------
@@ -1331,7 +1402,9 @@ async def _store_session_blob(
     """Tar home/.claude, encrypt, store as a standalone GridFS blob.
 
     Shared by snapshot capture and the explicit on_session_saved capture.
-    Returns the GridFS file id.
+    Returns ``(session_blob_id, byte_size)`` — the byte size is the encrypted
+    payload actually written, used by callers for diagnostic traces and the
+    "session state saved" milestone.
     """
     session_bytes = await _archive_home_claude(host)
     encrypt = session_blob_encrypt or (lambda b: b)
@@ -1346,7 +1419,46 @@ async def _store_session_blob(
                 f"session blob short-write: expected {expected_len} bytes, "
                 f"GridIn._position is {written}"
             )
-    return session_blob_id
+    return session_blob_id, expected_len
+
+
+# How often _stream_archive_to_blob emits a "Snapshot: archiving workdir, N MB
+# so far" progress line while streaming the remote tar into GridFS.
+_ARCHIVE_PROGRESS_INTERVAL_S = 30.0
+
+
+async def _stream_archive_to_blob(
+    ctx: ProcessContext,
+    host: Host,
+    exclude: list[str] | None,
+    wwriter,
+    *,
+    start: float,
+    clock: "Callable[[], float]" = _time.monotonic,
+) -> int:
+    """Stream ``host.archive_workdir(exclude)`` into ``wwriter``, counting
+    bytes and emitting a periodic always-on progress milestone.
+
+    Pulled out of ``_capture_snapshot`` so the progress-cadence logic (every
+    ``_ARCHIVE_PROGRESS_INTERVAL_S`` seconds measured from ``start``) can be
+    unit-tested with a fake host and an injected ``clock``, without a real
+    archive or GridFS. Returns the total byte count streamed. Does not
+    change what is archived or how — purely an observing pass-through.
+    """
+    total = 0
+    last_report = start
+    async for chunk in host.archive_workdir(exclude):
+        await wwriter.write(chunk)
+        total += len(chunk)
+        now = clock()
+        if now - last_report >= _ARCHIVE_PROGRESS_INTERVAL_S:
+            last_report = now
+            ctx.report_progress(
+                None,
+                f"Snapshot: archiving workdir, {total // (1024 * 1024)} MB "
+                f"so far ({int(now - start)} s)",
+            )
+    return total
 
 
 async def _capture_snapshot(
@@ -1364,10 +1476,11 @@ async def _capture_snapshot(
     # hasSavedState, so the degenerate snapshot must never be CREATED, not
     # merely have its flag skipped.
     workdir = host.workdir.rstrip("/")
-    chk = await host.run_command(
-        f"test -s {shlex.quote(workdir)}/home/.claude/.credentials.json "
-        f"&& echo OK || true"
-    )
+    async with _traced("capture: credentials guard"):
+        chk = await host.run_command(
+            f"test -s {shlex.quote(workdir)}/home/.claude/.credentials.json "
+            f"&& echo OK || true"
+        )
     if "OK" not in chk.stdout:
         _LOG.warning(
             "snapshot capture skipped: home/.claude/.credentials.json "
@@ -1376,68 +1489,80 @@ async def _capture_snapshot(
         return
 
     # 1-3. tar the sensitive subtree, encrypt, write the session blob.
-    _trace("capture: store_session_blob START")
-    session_blob_id = await _store_session_blob(
-        ctx, host, session_blob_encrypt=session_blob_encrypt,
+    async with _traced("capture: store_session_blob") as t:
+        session_blob_id, session_bytes_len = await _store_session_blob(
+            ctx, host, session_blob_encrypt=session_blob_encrypt,
+        )
+    _trace("capture: store_session_blob id=%s bytes=%d", session_blob_id, session_bytes_len)
+    ctx.report_progress(
+        None,
+        f"Snapshot: session state saved "
+        f"({session_bytes_len / (1024 * 1024):.1f} MB, {t.elapsed:.0f} s)",
     )
-    _trace("capture: store_session_blob DONE id=%s", session_blob_id)
 
     # 4. defensive wipe so the workdir tar cannot carry sensitive state.
-    _trace("capture: rm -rf home/.claude START")
-    await host.run_command(f"rm -rf {shlex.quote(workdir)}/home/.claude")
-    _trace("capture: rm -rf home/.claude DONE")
+    async with _traced("capture: rm -rf home/.claude"):
+        await host.run_command(f"rm -rf {shlex.quote(workdir)}/home/.claude")
 
     # 4b. Drop regenerable scratch that would bloat the workdir snapshot.
     # The claude binary is NOT here: home/.local/share/claude/versions is a
     # symlink to the shared optio cache, which os.walk does not follow and CLI
     # tar stores as a symlink, so it never enters the archive. mozilla
     # cache/profile are pure scratch.
-    _trace("capture: rm -rf regenerable home dirs START")
-    await host.run_command(
-        "rm -rf "
-        f"{shlex.quote(workdir)}/home/.cache/mozilla "
-        f"{shlex.quote(workdir)}/home/.mozilla"
-    )
-    _trace("capture: rm -rf regenerable home dirs DONE")
+    async with _traced("capture: rm -rf regenerable home dirs"):
+        await host.run_command(
+            "rm -rf "
+            f"{shlex.quote(workdir)}/home/.cache/mozilla "
+            f"{shlex.quote(workdir)}/home/.mozilla"
+        )
 
     # 5. stream the plaintext workdir tar.
-    _trace("capture: store_blob(workdir)+archive START")
-    async with ctx.store_blob("workdir") as wwriter:
-        async for chunk in host.archive_workdir(workdir_exclude):
-            await wwriter.write(chunk)
-        workdir_blob_id = wwriter.file_id
-    _trace("capture: store_blob(workdir)+archive DONE id=%s", workdir_blob_id)
+    ctx.report_progress(None, "Snapshot: archiving workdir…")
+    async with _traced("capture: archive_workdir+store") as t:
+        async with ctx.store_blob("workdir") as wwriter:
+            total_bytes = await _stream_archive_to_blob(
+                ctx, host, workdir_exclude, wwriter, start=t.start,
+            )
+            workdir_blob_id = wwriter.file_id
+    _trace("capture: archive_workdir+store id=%s bytes=%d", workdir_blob_id, total_bytes)
+    ctx.report_progress(
+        None,
+        f"Snapshot: workdir archived "
+        f"({total_bytes // (1024 * 1024)} MB in {t.elapsed:.0f} s)",
+    )
 
     # 6. insert the snapshot doc.
-    _trace("capture: insert_snapshot START")
-    await insert_snapshot(
-        ctx._db,
-        prefix=ctx._prefix,
-        process_id=ctx.process_id,
-        end_state=end_state,
-        session_blob_id=session_blob_id,
-        workdir_blob_id=workdir_blob_id,
-        deliverables_emitted=[],
-    )
-    _trace("capture: insert_snapshot DONE")
+    async with _traced("capture: insert_snapshot"):
+        await insert_snapshot(
+            ctx._db,
+            prefix=ctx._prefix,
+            process_id=ctx.process_id,
+            end_state=end_state,
+            session_blob_id=session_blob_id,
+            workdir_blob_id=workdir_blob_id,
+            deliverables_emitted=[],
+        )
+    ctx.report_progress(None, "Snapshot saved")
 
     # 7. prune + delete stale blobs.
-    pruned = await prune_snapshots(
-        ctx._db, prefix=ctx._prefix, process_id=ctx.process_id,
-    )
-    for p in pruned:
-        try:
-            await ctx.delete_blob(p["sessionBlobId"])
-        except Exception:
-            _LOG.exception("delete_blob(session) failed")
-        try:
-            await ctx.delete_blob(p["workdirBlobId"])
-        except Exception:
-            _LOG.exception("delete_blob(workdir) failed")
-    _trace("capture: prune DONE pruned=%d", len(pruned))
+    async with _traced("capture: prune") as t:
+        pruned = await prune_snapshots(
+            ctx._db, prefix=ctx._prefix, process_id=ctx.process_id,
+        )
+        for p in pruned:
+            try:
+                await ctx.delete_blob(p["sessionBlobId"])
+            except Exception:
+                _LOG.exception("delete_blob(session) failed")
+            try:
+                await ctx.delete_blob(p["workdirBlobId"])
+            except Exception:
+                _LOG.exception("delete_blob(workdir) failed")
+    _trace("capture: prune pruned=%d", len(pruned))
 
     # 8. surface the Resume affordance in the dashboard.
-    await ctx.mark_has_saved_state()
+    async with _traced("capture: mark_has_saved_state"):
+        await ctx.mark_has_saved_state()
     _trace("capture: mark_has_saved_state DONE")
 
 
