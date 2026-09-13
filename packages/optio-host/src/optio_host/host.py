@@ -16,7 +16,7 @@ etc.) live in ``optio_opencode.host_actions`` as free functions taking
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import AsyncIterator, Protocol
+from typing import AsyncIterator, Callable, Protocol
 
 
 @dataclass
@@ -254,6 +254,60 @@ _SUBPROCESS_STREAM_LIMIT = 256 * 1024 * 1024
 def _trace(fmt: str, *args: object) -> None:
     if _CANCEL_TRACE:
         _trace_logger.warning("[%.3f] optio-host " + fmt, _time.monotonic(), *args)
+
+
+class _traced:
+    """Async context manager: START/DONE/RAISED span for one unwind step.
+
+    Sibling of the identically-shaped helper in optio_claudecode.session —
+    same logger (``optio_core.cancel_trace``), same OPTIO_CANCEL_TRACE gate,
+    same wording convention, just prefixed "optio-host" by ``_trace``.
+    ``.start``/``.elapsed`` (monotonic seconds) stay populated regardless of
+    the trace gate. Diagnostic only: never swallows an exception raised
+    inside the ``async with`` block — logs RAISED (with the exception type)
+    and re-raises unchanged.
+    """
+
+    def __init__(self, label: str, *, clock: "Callable[[], float]" = _time.monotonic) -> None:
+        self.label = label
+        self._clock = clock
+        self.start = 0.0
+        self.elapsed = 0.0
+
+    async def __aenter__(self) -> "_traced":
+        self.start = self._clock()
+        _trace("%s START", self.label)
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        self.elapsed = self._clock() - self.start
+        if exc_type is not None:
+            _trace("%s RAISED %s (%.1fs)", self.label, exc_type.__name__, self.elapsed)
+        else:
+            _trace("%s DONE (%.1fs)", self.label, self.elapsed)
+        return False
+
+
+# Pure formatting helpers for the archive_workdir progress/DONE trace, kept
+# free of asyncssh/SSH state so they can be unit-tested without a live
+# connection (see tests/test_archive_progress_format.py).
+def _mib(num_bytes: int) -> float:
+    """Bytes to MiB, for trace/progress formatting."""
+    return num_bytes / (1024 * 1024)
+
+
+def _mib_per_s(num_bytes: int, elapsed_s: float) -> float:
+    """MiB/s rate, for trace/progress formatting.
+
+    Returns 0.0 for a non-positive ``elapsed_s`` (the very first sample, or
+    a clock that hasn't advanced) instead of raising a division error.
+    """
+    return _mib(num_bytes) / elapsed_s if elapsed_s > 0 else 0.0
+
+
+# How often archive_workdir's generator emits a bytes-so-far progress trace
+# while streaming the remote tar.
+_ARCHIVE_TRACE_PROGRESS_INTERVAL_S = 10.0
 
 
 def _scrub_env(proc_env: dict, patterns: "list[str] | None") -> None:
@@ -862,12 +916,36 @@ class RemoteHost:
 
         async def _gen() -> "AsyncIterator[bytes]":
             assert self._conn is not None
+            _trace("archive_workdir START cmd=%r excludes=%r", cmd, patterns)
+            t0 = _time.monotonic()
+            total = 0
+            chunk_count = 0
+            last_report = t0
             proc = await self._conn.create_process(cmd, encoding=None)
             async for chunk in proc.stdout:
                 if chunk:
+                    total += len(chunk)
+                    chunk_count += 1
                     yield chunk
+                    now = _time.monotonic()
+                    if now - last_report >= _ARCHIVE_TRACE_PROGRESS_INTERVAL_S:
+                        last_report = now
+                        _trace(
+                            "archive_workdir progress bytes=%d rate=%.1fMiB/s",
+                            total, _mib_per_s(total, now - t0),
+                        )
             await proc.wait()
+            elapsed = _time.monotonic() - t0
+            _trace(
+                "archive_workdir DONE bytes=%d chunks=%d elapsed=%.1fs "
+                "rate=%.1fMiB/s exit=%s",
+                total, chunk_count, elapsed, _mib_per_s(total, elapsed),
+                proc.exit_status,
+            )
             if proc.exit_status not in (0, None):
+                _trace(
+                    "archive_workdir RAISED RuntimeError (exit %s)", proc.exit_status,
+                )
                 raise RuntimeError(f"remote tar czf - failed (exit {proc.exit_status})")
 
         return _gen()
@@ -903,22 +981,27 @@ class RemoteHost:
         progress_cb=None,
     ) -> bytes:
         assert self._conn is not None
-        sftp = await self._conn.start_sftp_client()
-        try:
+        async with _traced(f"fetch_bytes_from_host path={absolute_path}") as t:
+            sftp = await self._conn.start_sftp_client()
             try:
-                async with sftp.open(absolute_path, "rb") as fh:
-                    data = await fh.read()
-            except (asyncssh.SFTPError, asyncssh.SFTPNoSuchFile) as exc:
-                # asyncssh maps "no such file" to a generic SFTPError in some
-                # versions; check the message.
-                if "No such file" in str(exc):
-                    raise FileNotFoundError(absolute_path) from exc
-                raise
-            if progress_cb is not None:
-                progress_cb(100.0, None)
-            return data
-        finally:
-            sftp.exit()
+                try:
+                    async with sftp.open(absolute_path, "rb") as fh:
+                        data = await fh.read()
+                except (asyncssh.SFTPError, asyncssh.SFTPNoSuchFile) as exc:
+                    # asyncssh maps "no such file" to a generic SFTPError in some
+                    # versions; check the message.
+                    if "No such file" in str(exc):
+                        raise FileNotFoundError(absolute_path) from exc
+                    raise
+                if progress_cb is not None:
+                    progress_cb(100.0, None)
+            finally:
+                sftp.exit()
+        _trace(
+            "fetch_bytes_from_host path=%s bytes=%d (%.1fs)",
+            absolute_path, len(data), t.elapsed,
+        )
+        return data
 
     async def glob(self, pattern: str) -> list[str]:
         assert self._conn is not None
@@ -967,12 +1050,21 @@ class RemoteHost:
                 f"export {k}={shlex.quote(v)};" for k, v in env.items()
             ) + " "
         full_command = f"cd {shlex.quote(run_cwd)} && {exports}{command}"
+        _trace("run_command START %r", command[:160])
+        t0 = _time.monotonic()
         result = await self._conn.run(full_command, check=False)
         stdout = result.stdout or ""
         stderr = result.stderr or ""
+        stdout = stdout if isinstance(stdout, str) else stdout.decode("utf-8", errors="replace")
+        stderr = stderr if isinstance(stderr, str) else stderr.decode("utf-8", errors="replace")
+        _trace(
+            "run_command DONE %r exit=%s elapsed=%.1fs stdout=%dB stderr=%dB",
+            command[:160], result.exit_status, _time.monotonic() - t0,
+            len(stdout.encode("utf-8")), len(stderr.encode("utf-8")),
+        )
         return RunResult(
-            stdout=stdout if isinstance(stdout, str) else stdout.decode("utf-8", errors="replace"),
-            stderr=stderr if isinstance(stderr, str) else stderr.decode("utf-8", errors="replace"),
+            stdout=stdout,
+            stderr=stderr,
             exit_code=result.exit_status if result.exit_status is not None else -1,
         )
 
