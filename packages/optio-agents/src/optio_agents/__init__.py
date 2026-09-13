@@ -54,6 +54,15 @@ from optio_agents import claustrum
 from optio_agents import model_probe
 from optio_agents import seeds
 from optio_agents import session_controls
+from optio_agents import steering
+from optio_agents.steering import (
+    BUSY_SEND_VALUES,
+    BusySend,
+    BusySendDeclaration,
+    SendOutcome,
+    Steering,
+    resolve_busy_send,
+)
 from optio_agents.session_controls import ControlOption, SessionControl
 from optio_agents import input_listener
 from optio_agents import tmux_input
@@ -93,6 +102,13 @@ __all__ = [
     "model_probe",
     "seeds",
     "session_controls",
+    "steering",
+    "Steering",
+    "SendOutcome",
+    "BusySend",
+    "BusySendDeclaration",
+    "resolve_busy_send",
+    "BUSY_SEND_VALUES",
     "SessionControl",
     "ControlOption",
     "run_log_protocol_session",

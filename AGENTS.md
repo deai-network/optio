@@ -586,6 +586,20 @@ grok, kimicode, antigravity) inherit their common field sets from mixins in
 
 ---
 
+## Python: engine wrappers — conversation steering
+
+`optio_agents.steering` is the shared scaffolding for sending while the agent
+works: each wrapper declares `busy_send` (`joins-next-step` | `queues-to-end` |
+`cuts-in` | `rejected` | `unsafe`, per agent with per-model overrides, no
+declaration = `unsafe`), and `Steering` implements `send_when_ready`,
+`interrupt_and_send` and `interrupt` over its `Conversation`, with optio's own
+queue, the 15 s bounded wait after an interrupt, and the synthetic events
+`x-optio-queued` / `x-optio-taken` / `x-optio-interrupt`. Details:
+`packages/optio-agents/AGENTS.md`. Design:
+`docs/2026-09-13-conversation-steering-design.md`.
+
+---
+
 ## TypeScript: optio-contracts
 
 Package: `optio-contracts`

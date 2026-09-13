@@ -33,6 +33,40 @@ Also here: `AllowedDir`, `ConversationMode`, `ToolVerbosity` (+
 `TOOL_VERBOSITIES`, the SSOT validation set), `ThinkingVerbosity`,
 `SeedProvider` / `SeedUnavailableError`.
 
+## Conversation steering (`optio_agents.steering`)
+
+Design: `docs/2026-09-13-conversation-steering-design.md`. The scaffolding
+behind every conversation listener's `POST /send`, `POST /steer` and
+`POST /interrupt`.
+
+* `BusySend` — what the agent does with a message sent while a turn runs:
+  `joins-next-step` (taken at the next tool result, same turn),
+  `queues-to-end` (the agent's own queue, after the turn), `cuts-in`
+  (cancels the turn, starts a new one), `rejected`, `unsafe` (undefined).
+* `BusySendDeclaration(agent, models={})` — a wrapper's measured value;
+  `.for_model(model)` returns the model override or the agent value (a
+  `[variant]` suffix is ignored). `resolve_busy_send(None, model)` is
+  `unsafe`: an unmeasured agent is always correct, only slower. Add a model
+  override only when a recording shows that model behaving differently.
+* `Steering(conversation, *, busy_send, emit, is_turn_end,
+  turn_end_timeout_s=15.0, new_id=None)` over any `Conversation`
+  (`send`, `interrupt`, `is_pending`, `on_event`, optional `closed`):
+  * `await send_when_ready(text) -> SendOutcome(id, queued)` — idle: plain
+    send. Busy + `joins-next-step`/`queues-to-end`: emits
+    `{"type":"x-optio-queued","id","text"}`, then sends (the agent holds it).
+    Busy otherwise: emits x-optio-queued and holds it in optio's queue; at
+    the turn end (`is_turn_end(event)`) everything held goes as ONE prompt
+    joined by a blank line, announced by one `{"type":"x-optio-taken","ids"}`.
+  * `await interrupt_and_send(text) -> id | None` — busy: emits
+    `{"type":"x-optio-interrupt","by":"user"}`; `cuts-in` then sends
+    natively; others `interrupt()` and wait for the turn end (at most
+    `turn_end_timeout_s`, then send anyway and log a warning). Then held
+    messages + `text` go as one prompt. Empty `text` = Send now (returns None).
+  * `await interrupt()` — stop only; emits x-optio-interrupt while busy.
+  * `await settle()`, `held_ids`, `close()` (unsubscribes).
+* `emit` must put the event into the wrapper's own event stream (in order
+  with native events) so the conversation listener buffers and persists it.
+
 ## Dependency direction
 
 Depends on `optio-host` and `optio-core`; consumed by every engine wrapper
