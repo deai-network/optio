@@ -1,6 +1,9 @@
 # Snapshot archive throughput: stream the workdir in blocks, compress with pigz
 
-Date: 2026-09-13. Status: design agreed with the owner; **not implemented**.
+Date: 2026-09-13. Status: design agreed with the owner; implemented on branch
+`archive-throughput` (items 1-5), plus review follow-ups the owner accepted:
+remote stderr tail in the error, the remote pipeline closed when a capture is
+abandoned, and a missing exit status treated as failure.
 
 ## Problem
 

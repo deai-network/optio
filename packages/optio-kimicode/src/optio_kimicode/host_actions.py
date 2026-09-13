@@ -51,8 +51,8 @@ _KIMI_READY_RE = re.compile(r"https?://[^\s/]+:(\d+)/(?:#token=(\S+))?")
 # ``${XDG_CACHE_HOME:-$HOME/.cache}/optio-kimicode/bin``; ``OPTIO_KIMICODE_CACHE_DIR``
 # overrides. Resolved via a shell echo so RemoteHost gets the remote location and
 # the cache stays shared + evictable — it lives OUTSIDE any task workdir, so it is
-# never captured by the resume snapshot (``Host.archive_workdir`` = ``cd
-# host.workdir && tar czf - .``) and survives task teardown. Mirrors grok's
+# never captured by the resume snapshot (``Host.archive_workdir`` = a gzip tar
+# of ``host.workdir``) and survives task teardown. Mirrors grok's
 # ``_GROK_CACHE_DIR_SHELL_DEFAULT`` (using the optio-prefixed override name, as
 # claudecode does).
 _KIMICODE_CACHE_DIR_SHELL_DEFAULT = (
