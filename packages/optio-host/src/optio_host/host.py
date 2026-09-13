@@ -646,6 +646,15 @@ import asyncssh
 
 from optio_host.types import SSHConfig
 
+# SSH-level keepalive for every RemoteHost connection. asyncssh leaves it off
+# by default (keepalive_interval=0), and our connections can live for a whole
+# sync or agent session with long idle gaps: a NAT or firewall idle timeout
+# would silently drop them, and a dead peer would go unnoticed until the next
+# write. Probing every 30 s keeps middlebox state alive and closes the
+# connection after 3 unanswered probes (about 90 s).
+SSH_KEEPALIVE_INTERVAL = 30
+SSH_KEEPALIVE_COUNT_MAX = 3
+
 
 class RemoteHost:
     """Host implementation backed by a single asyncssh connection.
@@ -678,6 +687,8 @@ class RemoteHost:
             port=self._ssh.port,
             client_keys=[self._ssh.key_path],
             known_hosts=None,  # Spec: known-hosts verification disabled in MVP.
+            keepalive_interval=SSH_KEEPALIVE_INTERVAL,
+            keepalive_count_max=SSH_KEEPALIVE_COUNT_MAX,
         )
         self._sftp = await self._conn.start_sftp_client()
 
