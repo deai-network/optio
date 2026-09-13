@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time as _time
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from optio_agents.context import HookContext
@@ -47,6 +48,50 @@ if TYPE_CHECKING:
 
 
 _LOG = logging.getLogger(__name__)
+
+# Cancel/capture step tracing — shares the optio_core.cancel_trace logger and
+# the OPTIO_CANCEL_TRACE env gate with the sibling helpers in
+# optio_claudecode.session and optio_host.host, so its lines interleave with
+# theirs during an unwind. Diagnostic only; no behavioral effect.
+_trace_logger = logging.getLogger("optio_core.cancel_trace")
+_CANCEL_TRACE = os.environ.get("OPTIO_CANCEL_TRACE", "0").lower() in ("1", "true", "yes")
+
+
+def _trace(fmt: str, *args: object) -> None:
+    if _CANCEL_TRACE:
+        _trace_logger.warning("[%.3f] optio-agents " + fmt, _time.monotonic(), *args)
+
+
+class _traced:
+    """Async context manager: START/DONE/RAISED span for one unwind step.
+
+    Sibling of the identically-shaped helpers in optio_claudecode.session and
+    optio_host.host — same logger, same OPTIO_CANCEL_TRACE gate, same wording
+    convention, just prefixed "optio-agents" by ``_trace``. ``.start``/
+    ``.elapsed`` (monotonic seconds) stay populated regardless of the trace
+    gate. Diagnostic only: never swallows an exception raised inside the
+    ``async with`` block — logs RAISED (with the exception type) and
+    re-raises unchanged.
+    """
+
+    def __init__(self, label: str, *, clock: "Callable[[], float]" = _time.monotonic) -> None:
+        self.label = label
+        self._clock = clock
+        self.start = 0.0
+        self.elapsed = 0.0
+
+    async def __aenter__(self) -> "_traced":
+        self.start = self._clock()
+        _trace("%s START", self.label)
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> bool:
+        self.elapsed = self._clock() - self.start
+        if exc_type is not None:
+            _trace("%s RAISED %s (%.1fs)", self.label, exc_type.__name__, self.elapsed)
+        else:
+            _trace("%s DONE (%.1fs)", self.label, self.elapsed)
+        return False
 
 
 DELIVERABLE_QUEUE_BOUND = 64
@@ -328,26 +373,28 @@ async def run_log_protocol_session(
         raise
 
     finally:
-        active_tasks = [
-            t for t in (tail_task, body_task, cancel_task, fetch_task, caller_task)
-            if t is not None
-        ]
-        for t in active_tasks:
-            if not t.done():
-                t.cancel()
-        if active_tasks:
-            await asyncio.gather(*active_tasks, return_exceptions=True)
+        async with _traced("finally: in-session task cancel/gather"):
+            active_tasks = [
+                t for t in (tail_task, body_task, cancel_task, fetch_task, caller_task)
+                if t is not None
+            ]
+            for t in active_tasks:
+                if not t.done():
+                    t.cancel()
+            if active_tasks:
+                await asyncio.gather(*active_tasks, return_exceptions=True)
 
         if after_execute is not None:
-            try:
-                await after_execute(hook_ctx)
-            except BaseException as after_exc:
-                if session_error is None:
-                    raise
-                ctx.report_progress(
-                    None,
-                    f"after_execute callback raised: {after_exc!r}",
-                )
+            async with _traced("finally: after_execute hook"):
+                try:
+                    await after_execute(hook_ctx)
+                except BaseException as after_exc:
+                    if session_error is None:
+                        raise
+                    ctx.report_progress(
+                        None,
+                        f"after_execute callback raised: {after_exc!r}",
+                    )
 
 
 # --- private helpers ---------------------------------------------------
