@@ -124,7 +124,7 @@ function ensureInterruptedStyle(): void {
   document.head.appendChild(el);
 }
 
-// A vultus ActionStatus for the busy input bar's multi-action button. The
+// A vultus ActionStatus for the input bar's multi-action send button. The
 // view runs the (async) send itself, so both fire paths just start it.
 function barAction(
   id: string,
@@ -132,8 +132,42 @@ function barAction(
   variant: 'primary' | 'default',
   disabled: boolean,
   run: () => void,
+  invisible = false,
 ): ActionStatus {
-  return { id, label, variant, pending: false, disabled, invisible: false, errors: [], fire: run, firePromise: async () => run() };
+  return { id, label, variant, pending: false, disabled, invisible, errors: [], fire: run, firePromise: async () => run() };
+}
+
+// Fix 10 (owner feedback 2026-09-14): the send button used to swap between a
+// plain Button (idle) and a CombinedActionButton (busy), so it changed size
+// every time the agent went busy/idle. Now it is always the one
+// CombinedActionButton — 'Send' visible only while idle, 'Send when ready' /
+// 'Interrupt and send' visible only while steerable — and this fixed width
+// keeps its footprint constant regardless of which caption is showing.
+// Sized for the longest caption, the dropdown's main half reading
+// "Interrupt and send" (19 characters) at size="small": antd's default
+// 14px UI font sets small-button text around 145-155px for that string,
+// plus ~14px of horizontal padding (7px each side) and a separate ~32px
+// chevron half for the dropdown trigger. 200px gives that a few px of
+// headroom without leaving a visibly empty gap.
+const SEND_BUTTON_WIDTH = 200;
+
+// Makes the reserved SEND_BUTTON_WIDTH slot actually filled by the button
+// rather than left-aligned inside empty space: the single-action case (a
+// plain antd Button) already fills its parent at width:100%, and the
+// dropdown-button case (Space.Compact, block=false so it does not fight
+// other flex parents elsewhere) is told to fill this specific slot, with
+// the main half absorbing the extra room and the chevron half staying its
+// natural size.
+const SEND_BUTTON_STYLE_ID = 'optio-cc-send-button-style';
+function ensureSendButtonStyle(): void {
+  if (typeof document === 'undefined' || document.getElementById(SEND_BUTTON_STYLE_ID)) return;
+  const el = document.createElement('style');
+  el.id = SEND_BUTTON_STYLE_ID;
+  el.textContent = `.optio-cc-send-btn { display: inline-flex; }
+  .optio-cc-send-btn > .ant-btn { width: 100%; }
+  .optio-cc-send-btn > .ant-dropdown-button { width: 100%; }
+  .optio-cc-send-btn > .ant-dropdown-button > .ant-btn:first-child { flex: auto; }`;
+  document.head.appendChild(el);
 }
 
 // Colors come from the antd theme (ConfigProvider algorithm), so the widget
@@ -533,6 +567,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     ensureFlashStyle();
     ensureCopyStyle();
     ensureInterruptedStyle();
+    ensureSendButtonStyle();
     inputRef.current?.focus();
     const timers = [100, 400, 1000].map((ms) => setTimeout(() => inputRef.current?.focus(), ms));
     return () => timers.forEach(clearTimeout);
@@ -617,10 +652,6 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     // Keep the keyboard on the input so the operator can keep typing after
     // Enter without a mouse click.
     inputRef.current?.focus();
-  }
-
-  function send() {
-    return submit('send');
   }
 
   // Guards "Send now" on a queued bubble: reuses the same `sending` state the
@@ -1166,32 +1197,33 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                 </Tooltip>
               </>
             )}
-            {steerable ? (
-              // Busy: one vultus multi-action button, [Send when ready |
-              // Interrupt and send]. keepOriginalDefault keeps the main half
-              // on Send when ready (so its width stays fixed) after the menu
-              // action fires. The red Interrupt beside it stops and sends nothing.
-              <span data-testid="conversation-send-combined">
-                <CombinedActionButton
-                  size="small"
-                  keepOriginalDefault
-                  actions={[
-                    barAction('send-when-ready', 'Send when ready', 'primary', sending || !text, () => void submit('send')),
-                    barAction('interrupt-and-send', 'Interrupt and send', 'default', sending || !text, () => void submit('steer')),
-                  ]}
-                />
-              </span>
-            ) : (
-              <Button
+            {/* Fix 10: always the one vultus multi-action button, never a
+                separate plain Send button — idle shows only 'Send'; busy and
+                steerable shows [Send when ready | Interrupt and send]. An
+                engine without onSteer (steerable stays false even while
+                busy) keeps showing plain 'Send' behaviour. Visibility
+                toggles which actions CombinedActionButton renders — with one
+                visible it renders a plain button, so idle and a non-steering
+                engine look identical to before. keepOriginalDefault keeps
+                the main half on 'Send when ready' after the menu action
+                fires, and back on 'Send' once idle. SEND_BUTTON_WIDTH pins
+                the footprint so it never resizes across any of that; the red
+                Interrupt beside it stops and sends nothing. */}
+            <span
+              data-testid="conversation-send-combined"
+              className="optio-cc-send-btn"
+              style={{ width: SEND_BUTTON_WIDTH }}
+            >
+              <CombinedActionButton
                 size="small"
-                data-testid="conversation-send"
-                type="primary"
-                onClick={() => void send()}
-                disabled={sending || !text || closed}
-              >
-                Send
-              </Button>
-            )}
+                keepOriginalDefault
+                actions={[
+                  barAction('send', 'Send', 'primary', sending || !text || closed, () => void submit('send'), steerable),
+                  barAction('send-when-ready', 'Send when ready', 'primary', sending || !text, () => void submit('send'), !steerable),
+                  barAction('interrupt-and-send', 'Interrupt and send', 'default', sending || !text, () => void submit('steer'), !steerable),
+                ]}
+              />
+            </span>
             <Button
               size="small"
               danger

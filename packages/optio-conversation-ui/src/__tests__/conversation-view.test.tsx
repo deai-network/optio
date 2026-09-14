@@ -297,7 +297,7 @@ describe('ConversationView send', () => {
     renderView(makeProps({ onSend }));
     const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
     fireEvent.change(box, { target: { value: 'ship it' } });
-    fireEvent.click(screen.getByTestId('conversation-send'));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
     await waitFor(() => expect(onSend).toHaveBeenCalledWith('ship it', []));
     // Cleared on success.
@@ -309,7 +309,7 @@ describe('ConversationView send', () => {
     renderView(makeProps({ onSend }));
     const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
     fireEvent.change(box, { target: { value: 'will fail' } });
-    fireEvent.click(screen.getByTestId('conversation-send'));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
     await waitFor(() => expect(screen.getByTestId('conversation-error')).toBeTruthy());
     // The failed send does not clear the input (operator can retry).
@@ -645,24 +645,36 @@ describe('ConversationView steering', () => {
     expect(screen.getByTestId('activity-muted').textContent).toBe('⏹ Interrupted by you');
   });
 
-  it('idle: a single Send, even with onSteer', () => {
+  // Fix 10 (owner feedback 2026-09-14): the plain Send button is gone; the
+  // input bar always renders the one CombinedActionButton at
+  // 'conversation-send-combined', with Send/Send when ready/Interrupt and
+  // send toggled visible by state instead of swapping components.
+  it('idle: one combined button showing only Send, no dropdown and no Send when ready / Interrupt and send anywhere', () => {
     renderView(makeProps({ onSteer: vi.fn(async () => true) }));
-    expect(screen.getByTestId('conversation-send')).toBeTruthy();
-    expect(screen.queryByTestId('conversation-send-combined')).toBeNull();
+    const combined = screen.getByTestId('conversation-send-combined');
+    const main = combined.querySelector('[data-action-id="send"]') as HTMLElement;
+    expect(main.textContent).toBe('Send');
+    // A single visible action renders as a plain button (vultus
+    // CombinedActionButton collapses to ActionButton) — no dropdown trigger.
+    expect(combined.querySelector('.ant-dropdown-trigger')).toBeNull();
+    expect(screen.queryByText('Send when ready')).toBeNull();
+    expect(screen.queryByText('Interrupt and send')).toBeNull();
   });
 
   it('busy without onSteer: the single Send stays (engines without steering)', () => {
     renderView(makeProps({ busy: true, state: busyState() }));
-    expect(screen.getByTestId('conversation-send')).toBeTruthy();
-    expect(screen.queryByTestId('conversation-send-combined')).toBeNull();
+    const combined = screen.getByTestId('conversation-send-combined');
+    expect((combined.querySelector('[data-action-id="send"]') as HTMLElement).textContent).toBe('Send');
+    expect(combined.querySelector('.ant-dropdown-trigger')).toBeNull();
     expect(screen.getByTestId('conversation-interrupt')).toBeTruthy();
   });
 
-  it('busy with onSteer: [Send when ready | Interrupt and send] plus the red Interrupt; the main half stays Send when ready', async () => {
+  it('busy with onSteer: [Send when ready | Interrupt and send] plus the red Interrupt; no Send; the main half stays Send when ready', async () => {
     const onSend = vi.fn(async () => true);
     const onSteer = vi.fn(async () => true);
     const { container } = renderView(makeProps({ busy: true, state: busyState(), onSend, onSteer }));
-    expect(screen.queryByTestId('conversation-send')).toBeNull();
+    const combined = screen.getByTestId('conversation-send-combined');
+    expect(combined.querySelector('[data-action-id="send"]')).toBeNull();
     expect(screen.getByTestId('conversation-interrupt')).toBeTruthy();
     const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
     expect(box.placeholder).toContain('send when ready');
@@ -676,12 +688,33 @@ describe('ConversationView steering', () => {
     await waitFor(() => expect(box.value).toBe(''));
 
     fireEvent.change(box, { target: { value: 'second' } });
-    const combined = screen.getByTestId('conversation-send-combined');
     fireEvent.click(combined.querySelector('.ant-dropdown-trigger') as HTMLElement);
     fireEvent.click(await screen.findByRole('menuitem', { name: 'Interrupt and send' }));
     await waitFor(() => expect(onSteer).toHaveBeenCalledWith('second', []));
     // keepOriginalDefault: the main half is back on Send when ready.
     await waitFor(() => expect(main().textContent).toContain('Send when ready'));
+  });
+
+  it('is the same button element across idle, busy and idle again — it never remounts into a different component', () => {
+    const onSteer = vi.fn(async () => true);
+    const r = renderView(makeProps({ onSteer }));
+    const idle1 = screen.getByTestId('conversation-send-combined');
+    rerenderView(r, makeProps({ busy: true, state: busyState(), onSteer }));
+    const busyEl = screen.getByTestId('conversation-send-combined');
+    expect(busyEl).toBe(idle1);
+    rerenderView(r, makeProps({ onSteer }));
+    const idle2 = screen.getByTestId('conversation-send-combined');
+    expect(idle2).toBe(idle1);
+  });
+
+  it('carries a fixed width style, unchanged between idle and busy', () => {
+    const onSteer = vi.fn(async () => true);
+    const r = renderView(makeProps({ onSteer }));
+    const idleWidth = (screen.getByTestId('conversation-send-combined') as HTMLElement).style.width;
+    expect(idleWidth).not.toBe('');
+    rerenderView(r, makeProps({ busy: true, state: busyState(), onSteer }));
+    const busyWidth = (screen.getByTestId('conversation-send-combined') as HTMLElement).style.width;
+    expect(busyWidth).toBe(idleWidth);
   });
 
   it('Enter sends when ready; Cmd/Ctrl-Enter interrupts and sends while busy', async () => {

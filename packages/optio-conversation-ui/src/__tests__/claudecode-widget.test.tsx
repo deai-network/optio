@@ -84,7 +84,7 @@ describe('ConversationWidget', () => {
 
     const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
     fireEvent.change(box, { target: { value: 'hello' } });
-    fireEvent.click(screen.getByTestId('conversation-send'));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];

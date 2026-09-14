@@ -62,7 +62,7 @@ describe('OpencodeView model send', () => {
     await waitFor(() => expect(screen.getByTestId('conversation-input-box')).toBeTruthy());
     const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
     fireEvent.change(box, { target: { value: 'hi' } });
-    fireEvent.click(screen.getByTestId('conversation-send'));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
     await waitFor(() => expect(posts.some((p) => p.url.includes('/prompt_async'))).toBe(true));
     const sent = posts.find((p) => p.url.includes('/prompt_async'))!;
@@ -80,7 +80,7 @@ describe('OpencodeView model send', () => {
     await waitFor(() => expect(screen.getByTestId('conversation-input-box')).toBeTruthy());
     const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
     fireEvent.change(box, { target: { value: 'hi' } });
-    fireEvent.click(screen.getByTestId('conversation-send'));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     await waitFor(() => expect(posts.some((p) => p.url.includes('/prompt_async'))).toBe(true));
     expect(posts.find((p) => p.url.includes('/prompt_async'))!.body.model)
       .toEqual({ providerID: 'opencode', modelID: 'deepseek-v4-flash' });
@@ -96,7 +96,7 @@ describe('OpencodeView model send', () => {
     await waitFor(() => expect(screen.getByTestId('conversation-input-box')).toBeTruthy());
     const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
     fireEvent.change(box, { target: { value: 'hi' } });
-    fireEvent.click(screen.getByTestId('conversation-send'));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     await waitFor(() => expect(posts.some((p) => p.url.includes('/prompt_async'))).toBe(true));
     expect(posts.find((p) => p.url.includes('/prompt_async'))!.body.model)
       .toEqual({ providerID: 'opencode', modelID: 'deepseek-v4-flash' });
@@ -154,7 +154,7 @@ describe('OpencodeView model control', () => {
 
     const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
     fireEvent.change(box, { target: { value: 'hi' } });
-    fireEvent.click(screen.getByTestId('conversation-send'));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     await waitFor(() => expect(posts.some((p) => p.url.includes('/prompt_async'))).toBe(true));
 
     // No /control POST is issued — the change is UI-local, carried on the prompt.
@@ -214,7 +214,7 @@ describe('OpencodeView effort control', () => {
     await waitFor(() => expect(screen.getByTestId('control-reasoning_effort')).toBeTruthy());
     const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
     fireEvent.change(box, { target: { value: 'hi' } });
-    fireEvent.click(screen.getByTestId('conversation-send'));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     await waitFor(() => expect(posts.some((p) => p.url.includes('/prompt_async'))).toBe(true));
     const sent = posts.find((p) => p.url.includes('/prompt_async'))!;
     expect(sent.body.variant).toBe('medium');
@@ -231,7 +231,7 @@ describe('OpencodeView effort control', () => {
     await waitFor(() => expect(screen.getByTestId('control-reasoning_effort')).toBeTruthy());
     const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
     fireEvent.change(box, { target: { value: 'hi' } });
-    fireEvent.click(screen.getByTestId('conversation-send'));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     await waitFor(() => expect(posts.some((p) => p.url.includes('/prompt_async'))).toBe(true));
     expect(posts.find((p) => p.url.includes('/prompt_async'))!.body.variant).toBe('low');
   });
@@ -255,7 +255,7 @@ describe('OpencodeView effort control', () => {
 
     const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
     fireEvent.change(box, { target: { value: 'hi' } });
-    fireEvent.click(screen.getByTestId('conversation-send'));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     await waitFor(() => expect(posts.some((p) => p.url.includes('/prompt_async'))).toBe(true));
     const sent = posts.find((p) => p.url.includes('/prompt_async'))!;
     expect(sent.body.model).toEqual({ providerID: 'opencode', modelID: 'deepseek-v4-flash' });

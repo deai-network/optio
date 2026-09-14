@@ -70,7 +70,7 @@ describe('AntigravityView (transcript wire over the listener)', () => {
     const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
     fireEvent.change(box, { target: { value: 'hello agy' } });
     await act(async () => {
-      fireEvent.click(screen.getByTestId('conversation-send'));
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     });
 
     const calls = fetchMock.mock.calls as any[];
