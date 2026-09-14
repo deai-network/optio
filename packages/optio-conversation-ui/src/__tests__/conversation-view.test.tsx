@@ -798,4 +798,25 @@ describe('ConversationView message timestamps', () => {
       expect(sibling?.getAttribute('data-testid')).toBe('message-time');
     }
   });
+
+  // Fix 9, owner ruling 2026-09-14 (manual-test finding 3): "System: …" rows
+  // (activity, not muted) show their time too, same label and hover title as
+  // Fix 4's three bubbles, as a sibling below the row rather than inside it.
+  it('a "System: " activity row with a timestamp renders the time label and hover title', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 14, 20, 0).getTime());
+    const ts = new Date(2026, 8, 14, 16, 29).getTime();
+    renderView(makeProps({ state: makeState([{ kind: 'activity', text: 'System: you have been resumed', seq: 1, timestamp: ts }]) }));
+    const label = screen.getByTestId('message-time');
+    expect(label.textContent).toBe('16:29');
+    expect(label.title).toBe(new Date(ts).toLocaleString());
+    const bubble = screen.getByTestId('activity-bubble');
+    expect(bubble.querySelector('[data-testid="message-time"]')).toBeNull();
+    expect(bubble.nextElementSibling?.getAttribute('data-testid')).toBe('message-time');
+  });
+
+  it('a "System: " activity row without a timestamp renders no time label', () => {
+    renderView(makeProps({ state: makeState([{ kind: 'activity', text: 'System: you have been resumed', seq: 1 }]) }));
+    expect(screen.queryByTestId('message-time')).toBeNull();
+  });
 });
