@@ -59,10 +59,21 @@ behind every conversation listener's `POST /send`, `POST /steer` and
     joined by a blank line, announced by one `{"type":"x-optio-taken","ids"}`.
   * `await interrupt_and_send(text) -> id | None` — busy: emits
     `{"type":"x-optio-interrupt","by":"user"}`; `cuts-in` then sends
-    natively; others `interrupt()` and wait for the turn end (at most
-    `turn_end_timeout_s`, then send anyway and log a warning). Then held
-    messages + `text` go as one prompt. Empty `text` = Send now (returns None).
+    natively; others `interrupt()` and wait for the turn end. One
+    `turn_end_timeout_s` deadline covers both the `interrupt()` call and the
+    wait, so a live but unresponsive agent cannot hold `Steering` (and every
+    later send/steer behind it) forever; on expiry it sends anyway and logs
+    a warning. Then held messages + `text` go as one prompt. Empty `text` is
+    Send now (returns `None`); with nothing held and the agent not in
+    `NATIVE_QUEUE`, it is a no-op — it neither interrupts nor sends, so it
+    never draws an interrupted-row on a turn that is still streaming.
   * `await interrupt()` — stop only; emits x-optio-interrupt while busy.
+  * At most one `x-optio-interrupt` (and one underlying `interrupt()` call)
+    per turn, shared between `interrupt()` and `interrupt_and_send()`: a
+    second Interrupt click, or one pressed while `interrupt_and_send` still
+    waits for the turn end, emits no second marker and sends no second
+    control request; `interrupt_and_send` in an already-interrupted turn
+    still waits for the turn end and delivers.
   * `await settle()`, `held_ids`, `close()` (unsubscribes).
 * `emit` must put the event into the wrapper's own event stream (in order
   with native events) so the conversation listener buffers and persists it.
