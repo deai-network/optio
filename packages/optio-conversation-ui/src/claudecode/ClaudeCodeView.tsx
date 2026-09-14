@@ -163,7 +163,7 @@ export function ClaudeCodeView(props: WidgetProps) {
         localEcho(body, resp, false);
         return true;
       }}
-      onInterrupt={() => void post('interrupt', {})}
+      onInterrupt={() => post('interrupt', {})}
       onPermission={(requestId, behavior) => {
         // Claude Code's can_use_tool schema wants a human-readable reason on
         // deny; send a default so a bare click satisfies it. (The wire also

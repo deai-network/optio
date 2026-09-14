@@ -342,6 +342,40 @@ describe('ConversationWidget', () => {
     expect(JSON.parse(init.body as string)).toEqual({ text: '' });
   });
 
+  // Fix 6 (manual-test finding 1): the Interrupt button must learn whether
+  // its POST actually reached the listener, so ClaudeCodeView's onInterrupt
+  // now resolves the boolean postJson/post already computes instead of
+  // discarding it.
+  it('a failed /interrupt POST makes onInterrupt resolve false, surfacing the pending-then-failed button state', async () => {
+    const fetchMock = vi.fn(async () => new Response('', { status: 500 }));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<ConversationWidget {...makeProps()} />);
+    fire({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'go' }] } });
+    fire({ type: 'assistant', message: { role: 'assistant', id: 'm1', content: [{ type: 'text', text: 'working' }] } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('conversation-interrupt'));
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    const [url] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('/api/widget/db/gm/p1/interrupt');
+    await waitFor(() =>
+      expect(screen.getByTestId('conversation-error').textContent).toContain('Interrupt failed — retry.'),
+    );
+  });
+
+  it('an ok /interrupt POST makes onInterrupt resolve true, with no error shown', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<ConversationWidget {...makeProps()} />);
+    fire({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'go' }] } });
+    fire({ type: 'assistant', message: { role: 'assistant', id: 'm1', content: [{ type: 'text', text: 'working' }] } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('conversation-interrupt'));
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    expect(screen.queryByTestId('conversation-error')).toBeNull();
+  });
+
   it('an interrupt renders the cut-off answer with a jagged edge and one muted row, no error', () => {
     render(<ConversationWidget {...makeProps()} />);
     fire({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'essay please' }] } });
