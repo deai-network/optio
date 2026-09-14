@@ -1,0 +1,34 @@
+{"type":"system","subtype":"session_state_changed","state":"running"}
+{"type":"system","subtype":"init","model":"claude-sonnet-5"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Write a 600-word essay about lighthouses. Do not use any tools."}]},"parent_tool_use_id":null,"timestamp":"2026-09-14T04:56:51.258Z","isReplay":true}
+{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-sonnet-5","id":"msg_011Cf2jmY71xSaU4GgBXhQ4J","type":"message","role":"assistant","content":[]}}}
+{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"#"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" L"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ighthouses:"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" Sentinels of the"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" Shore\n\nFor"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" centuries before"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" sat"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ellite navigation and"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" rad"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ar, lighthouses st"}}}
+{"type":"x-optio-interrupt","by":"user"}
+{"type":"control_response","response":{"subtype":"success","request_id":"test-1","response":{"still_queued":[]}}}
+{"type":"assistant","message":{"model":"claude-sonnet-5","id":"msg_011Cf2jmY71xSaU4GgBXhQ4J","type":"message","role":"assistant","content":[{"type":"text","text":"# Lighthouses: Sentinels of the Shore\n\nFor centuries before satellite navigation and radar, lighthouses st"}]},"parent_tool_use_id":null,"timestamp":"2026-09-14T04:56:53.995Z","aborted":true}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]},"parent_tool_use_id":null,"timestamp":"2026-09-14T04:56:54.044Z"}
+{"type":"result","subtype":"error_during_execution","is_error":true,"stop_reason":null,"terminal_reason":"aborted_streaming","num_turns":2}
+{"type":"system","subtype":"session_state_changed","state":"idle"}
+{"type":"system","subtype":"session_state_changed","state":"running"}
+{"type":"system","subtype":"init","model":"claude-sonnet-5"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Say OK."}]},"parent_tool_use_id":null,"timestamp":"2026-09-14T04:56:56.084Z","isReplay":true}
+{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-sonnet-5","id":"msg_011Cf2jmtNfnTnzkKW8Gb7aR","type":"message","role":"assistant","content":[]}}}
+{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"O"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"K."}}}
+{"type":"assistant","message":{"model":"claude-sonnet-5","id":"msg_011Cf2jmtNfnTnzkKW8Gb7aR","type":"message","role":"assistant","content":[{"type":"text","text":"OK."}]},"parent_tool_use_id":null,"timestamp":"2026-09-14T04:56:58.172Z"}
+{"type":"stream_event","event":{"type":"content_block_stop","index":0}}
+{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null,"container":null}}}
+{"type":"stream_event","event":{"type":"message_stop"}}
+{"type":"result","subtype":"success","is_error":false,"result":"OK.","stop_reason":"end_turn","terminal_reason":"completed","num_turns":1}
+{"type":"system","subtype":"session_state_changed","state":"idle"}

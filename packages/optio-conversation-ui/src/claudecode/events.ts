@@ -7,7 +7,9 @@
 // partials arrive as {type:"stream_event", event:{...content_block_delta}}).
 
 import type { ChatItem, ChatState } from '../chat.js';
-import { addQueued, appendItems, dropUndelivered, foldControlUpdate, isQueued, takeQueuedAt, takeQueuedIds } from '../chat.js';
+import {
+  INTERRUPTED_BY_YOU, addQueued, appendItems, dropUndelivered, foldControlUpdate, isQueued, takeQueuedAt, takeQueuedIds,
+} from '../chat.js';
 import { explainApiError } from '../apiError.js';
 import { parseUploadNotice, uploadNoticeActivityText } from '../uploads.js';
 export { initialChatState } from '../chat.js';
@@ -17,6 +19,11 @@ const HARNESS_PREFIX = 'System: ';
 // Parts of one assistant message (narration, then the answer) render in one
 // bubble, separated by a blank line.
 const PART_SEPARATOR = '\n\n';
+
+// Claude Code's own cancel artefacts (CLI 2.1.270): the user text it adds to
+// an interrupted turn, and the terminal reasons of that turn's error result.
+const INTERRUPT_ECHO = /^\[Request interrupted by user( for tool use)?\]$/;
+const ABORTED = new Set<string>(['aborted_streaming', 'aborted_tools']);
 
 type AssistantItem = Extract<ChatItem, { kind: 'assistant' }>;
 type UserItem = Extract<ChatItem, { kind: 'user' }>;
@@ -85,8 +92,10 @@ function toolRow(block: any, seq: number, at: number): ChatItem {
 }
 
 // Apply tool_result blocks to their rows (matched by tool_use_id). A background
-// row ignores its immediate result: the task notification finishes it.
-function applyToolResults(items: ChatItem[], content: unknown, at: number): ChatItem[] {
+// row ignores its immediate result: the task notification finishes it. While
+// an operator interrupt is in flight, an error result is the CLI rejecting the
+// call it cancelled: the row stops, and the boilerplate is not its result.
+function applyToolResults(items: ChatItem[], content: unknown, at: number, interrupted = false): ChatItem[] {
   if (!Array.isArray(content)) return items;
   let out = items;
   for (const b of content) {
@@ -95,6 +104,10 @@ function applyToolResults(items: ChatItem[], content: unknown, at: number): Chat
     if (idx === -1) continue;
     const row = out[idx] as ToolItem;
     if (row.background) continue;
+    if (interrupted && b.is_error) {
+      out = replaceAt(out, idx, { ...row, status: 'stopped', endedAt: at });
+      continue;
+    }
     out = replaceAt(out, idx, {
       ...row,
       status: b.is_error ? 'failed' : 'done',
@@ -111,7 +124,9 @@ function applyToolResults(items: ChatItem[], content: unknown, at: number): Chat
 // that produced the replayed history) nothing will report on them any more:
 // every running row, background included, becomes 'stopped', keeping an end
 // time it already has.
-function freezeRunning(items: ChatItem[], at: number, scope: 'turn' | 'session'): ChatItem[] {
+// 'interrupt' (an operator interrupt): every running row except background
+// ones (their task outlives the turn) becomes 'stopped'.
+function freezeRunning(items: ChatItem[], at: number, scope: 'turn' | 'interrupt' | 'session'): ChatItem[] {
   let changed = false;
   const out = items.map((i) => {
     if (i.kind !== 'tool' || (i.status !== undefined && i.status !== 'running')) return i;
@@ -120,6 +135,7 @@ function freezeRunning(items: ChatItem[], at: number, scope: 'turn' | 'session')
       changed = true;
       return { ...i, endedAt: at };
     }
+    if (scope === 'interrupt' && i.background) return i;
     changed = true;
     const next: ToolItem = { ...i, status: 'stopped' };
     if (next.startedAt !== undefined && next.endedAt === undefined) next.endedAt = at;
@@ -168,7 +184,13 @@ function applyTaskNotice(state: ChatState, n: TaskNotice, at: number, seq: numbe
     ? state.items.findIndex((i) => i.kind === 'tool' && i.callId === n.toolUseId)
     : -1;
   let items: ChatItem[];
-  if (idx !== -1) {
+  const found = idx !== -1 ? (state.items[idx] as ToolItem) : null;
+  if (found && !found.background && found.taskId === n.taskId) {
+    // A foreground call the CLI ran as a task (task_started with
+    // is_backgrounded false), reported when an interrupt stops it: it stays a
+    // foreground row, and the summary (its command) is not its result.
+    items = replaceAt(state.items, idx, { ...found, status: toolStatus, endedAt: found.endedAt ?? at });
+  } else if (idx !== -1) {
     const row = state.items[idx] as ToolItem;
     items = replaceAt(state.items, idx, {
       ...row,
@@ -325,6 +347,56 @@ function insertBeforePending(items: ChatItem[], rows: ChatItem[]): ChatItem[] {
   return [...items.slice(0, idx), ...rows, ...items.slice(idx)];
 }
 
+// -- Operator interrupts (x-optio-interrupt) ---------------------------------
+
+// The index of the "Interrupted by you" row an in-flight interrupt added.
+function interruptRowIndex(items: ChatItem[], rowSeq: number): number {
+  return items.findIndex((i) => i.kind === 'activity' && i.seq === rowSeq);
+}
+
+// Rows the interrupted turn still produces go in front of its row.
+function insertBeforeRow(items: ChatItem[], rowSeq: number, rows: ChatItem[]): ChatItem[] {
+  const r = interruptRowIndex(items, rowSeq);
+  if (r === -1) return appendItems(items, rows);
+  return [...items.slice(0, r), ...rows, ...items.slice(r)];
+}
+
+// The interrupted message's final text (the CLI sends it after the
+// interrupt): it completes the interrupted bubble right before the row,
+// replacing the part its deltas streamed (live), or becomes that bubble
+// (replay holds no deltas).
+function applyInterruptedText(items: ChatItem[], rowSeq: number, seq: number, text: string, msgId?: string): ChatItem[] {
+  const r = interruptRowIndex(items, rowSeq);
+  const prev = r > 0 ? items[r - 1] : undefined;
+  if (prev?.kind === 'assistant' && prev.interrupted && (prev.msgId === null || msgId == null || prev.msgId === msgId)) {
+    const base =
+      prev.openPart !== undefined
+        ? prev.text.slice(0, prev.openPart)
+        : prev.text + (prev.text === '' ? '' : PART_SEPARATOR);
+    const next: AssistantItem = { ...prev, text: base + text, msgId: msgId ?? prev.msgId };
+    delete next.openPart;
+    return replaceAt(items, r - 1, next);
+  }
+  return insertBeforeRow(items, rowSeq, [
+    { kind: 'assistant', text, pending: false, seq, msgId: msgId ?? null, interrupted: true },
+  ]);
+}
+
+// The interrupted turn is over: drop the flag and the part offset the
+// interrupted bubble kept for its final text.
+function endInterrupt(state: ChatState): ChatState {
+  if (!state.interrupt) return state;
+  const items = state.items.map((i) => {
+    if (i.kind !== 'assistant' || !i.interrupted || i.openPart === undefined) return i;
+    const next: AssistantItem = { ...i };
+    delete next.openPart;
+    return next;
+  });
+  const next: ChatState = { ...state, items };
+  delete next.interrupt;
+  return next;
+}
+
 export function reduceEvent(state: ChatState, ev: any, seq: number, now: number = Date.now()): ChatState {
   // Sniff the runtime model and fold it into the model control. Claude Code
   // reports the model at top level on `system`/`init` (fires immediately at
@@ -358,7 +430,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // message under --replay-user-messages).
       // Tool results arrive as user events; finish their rows first. Such an
       // event carries no text, so it adds no bubble below.
-      const withResults = applyToolResults(state.items, ev.message?.content, eventTime(ev, now));
+      const withResults = applyToolResults(state.items, ev.message?.content, eventTime(ev, now), state.interrupt !== undefined);
       if (withResults !== state.items) state = { ...state, items: withResults };
       // A joint echo of several queued messages, taken together at the start
       // of one follow-up turn (see textBlocks): match each block, in order,
@@ -386,6 +458,8 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // happens to start with the literal text renders normally. Fall back to
       // the text-prefix sniff only for older replays that carry no origin.
       const rawText = extractText(ev.message?.content);
+      // The CLI's own marker for the turn optio interrupted: its row says so.
+      if (state.interrupt && INTERRUPT_ECHO.test(rawText.trim())) return state;
       const isInjectedNotification =
         ev.origin && typeof ev.origin === 'object'
           ? ev.origin.kind === 'task-notification'
@@ -461,6 +535,28 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       return { ...state, items: [...state.items, item], busy: true };
     }
 
+    // Synthetic, listener-emitted (steering): the operator interrupted
+    // (Interrupt, Interrupt and send, Send now). The only source of the
+    // "Interrupted by you" row. Nothing in flight, or an interrupt already in
+    // flight: no-op.
+    case 'x-optio-interrupt': {
+      if (!state.busy || state.interrupt) return state;
+      let items = state.items;
+      const idx = pendingIndex(items);
+      if (idx !== -1) {
+        // The in-flight answer (only queued bubbles after it) is cut off: it
+        // keeps its text (and its open part, which the final text event
+        // replaces) and gets the jagged edge. A pending bubble with tool rows
+        // after it was already complete: it just stops being pending.
+        items = items.slice(idx + 1).every(isQueued)
+          ? replaceAt(items, idx, { ...(items[idx] as AssistantItem), pending: false, interrupted: true })
+          : finalizeAt(items, idx);
+      }
+      items = freezeRunning(items, lastWireTime(state, now), 'interrupt');
+      items = appendItems(items, [{ kind: 'activity', text: INTERRUPTED_BY_YOU, seq, muted: true }]);
+      return { ...state, items, interrupt: { rowSeq: seq } };
+    }
+
     // Synthetic, listener-emitted (steering): a Send when ready that arrived
     // while the agent works. Upload notice lines are split off as in a user
     // echo, so the bubble shows (and the echo matches) the prompt text.
@@ -498,18 +594,28 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
         const text = blockText(block);
         if (text !== null) {
           // The agent is answering (or narrating) — complete this block's
-          // part of the bubble.
-          items = applyBlockText(items, seq, text, msgId);
+          // part of the bubble. After an operator interrupt, the interrupted
+          // message's text completes the cut-off bubble in front of its row.
+          items = state.interrupt
+            ? applyInterruptedText(items, state.interrupt.rowSeq, seq, text, msgId)
+            : applyBlockText(items, seq, text, msgId);
         } else if (block?.type === 'tool_use') {
           // A persistent row per call; its tool_result (a later user event)
-          // finishes it.
-          items = appendItems(items, [toolRow(block, seq, at)]);
+          // finishes it. A call the interrupted turn still announces is
+          // stopped before it ran.
+          items = state.interrupt
+            ? insertBeforeRow(items, state.interrupt.rowSeq, [{ ...(toolRow(block, seq, at) as ToolItem), status: 'stopped', endedAt: at }])
+            : appendItems(items, [toolRow(block, seq, at)]);
         }
       }
       return items === state.items ? state : { ...state, items };
     }
 
     case 'stream_event': {
+      // While an operator interrupt is in flight the interrupted message's
+      // final assistant event carries its text; deltas that raced the
+      // interrupt are dropped (replay never has them either).
+      if (state.interrupt) return state;
       // A new assistant message announces itself before its deltas. Finalize
       // the previous message's bubble here, or its tail would absorb the next
       // message's deltas ("10" + "9" rendering as "109").
@@ -527,8 +633,19 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
     }
 
     case 'result': {
+      const at = eventTime(ev, lastWireTime(state, now));
+      if (state.interrupt) {
+        state = endInterrupt(state);
+        // The turn optio interrupted ends with the CLI's abort error: that is
+        // the operator's own interrupt, already shown by its row. No error
+        // item; rows still running stop.
+        if (ev.subtype === 'error_during_execution' && ABORTED.has(ev.terminal_reason)) {
+          const items = freezeRunning(finalizePending(state.items, seq, null), at, 'interrupt');
+          return { ...state, items, busy: false };
+        }
+      }
       const resultText = typeof ev.result === 'string' ? ev.result : null;
-      const items = freezeRunning(state.items, eventTime(ev, lastWireTime(state, now)), 'turn');
+      const items = freezeRunning(state.items, at, 'turn');
       // An API/model error arrives as a result with is_error — surface it as a
       // distinct, explained error item instead of a plain agent bubble.
       if (ev.is_error) {
@@ -567,6 +684,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
     }
 
     case 'x-optio-closed': {
+      state = endInterrupt(state);
       // Session ended: stop every running row, background rows included.
       const item: ChatItem = { kind: 'closed', reason: String(ev.reason ?? ''), seq };
       const items = dropUndelivered(freezeRunning(state.items, lastWireTime(state, now), 'session'));
@@ -574,6 +692,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
     }
 
     case 'x-optio-resumed': {
+      state = endInterrupt(state);
       // Synthetic, listener-emitted after a resumed run's restored history
       // (x-optio-closed is not persisted, so nothing else ends that run here).
       // Its process is gone: stop what it left running, background rows
@@ -590,7 +709,10 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // job finishes (CLI 2.1.269), so busy follows it.
       if (ev.subtype === 'session_state_changed') {
         if (ev.state === 'running') return state.busy ? state : { ...state, busy: true };
-        if (ev.state === 'idle') return state.busy ? { ...state, busy: false } : state;
+        if (ev.state === 'idle') {
+          const ended = endInterrupt(state);
+          return ended.busy ? { ...ended, busy: false } : ended;
+        }
         return state;
       }
       // Background shell commands: task_started marks the Bash row (its
@@ -607,6 +729,14 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
         delete next.endedAt;
         delete next.result;
         return { ...state, items: replaceAt(state.items, idx, next) };
+      }
+      if (ev.subtype === 'task_started' && ev.is_backgrounded === false
+        && typeof ev.tool_use_id === 'string' && typeof ev.task_id === 'string') {
+        // A foreground call run as a task: remember its task id, so its
+        // notification (sent when an interrupt stops it) keeps it foreground.
+        const idx = state.items.findIndex((i) => i.kind === 'tool' && i.callId === ev.tool_use_id);
+        if (idx === -1) return state;
+        return { ...state, items: replaceAt(state.items, idx, { ...(state.items[idx] as ToolItem), taskId: ev.task_id }) };
       }
       if (ev.subtype === 'task_updated' && typeof ev.task_id === 'string') {
         // patch.end_time (epoch ms) is the only exact end time the CLI reports
