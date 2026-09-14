@@ -668,7 +668,8 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // your internet or DNS (EAI_AGAIN)"): the is_error result below (see
       // 'result') renders this same text as the single, explained error
       // item. This event must not also open or extend an agent bubble with
-      // it — fix round 2 (predates the branch: main 44441fb8, from 21a9846a).
+      // it — Fix 2 of this branch's manual-test wave (bug predates the
+      // branch: main 44441fb8, from 21a9846a).
       if (ev.message?.model === '<synthetic>' && typeof ev.error === 'string') return state;
       const blocks = Array.isArray(ev.message?.content) ? ev.message.content : [];
       const msgId = typeof ev.message?.id === 'string' ? ev.message.id : undefined;
@@ -748,7 +749,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // pending bubble is finalized in place first (keeping whatever real
       // text it already streamed): the CLI's own synthetic error message is
       // filtered out above, but real narration/text from earlier in the same
-      // turn must stay, finalized, not left stuck pending — fix round 2.
+      // turn must stay, finalized, not left stuck pending — Fix 2.
       if (ev.is_error) {
         const msg = explainApiError(resultText ?? '', ev.api_error_status);
         const pidx = pendingIndex(items);
