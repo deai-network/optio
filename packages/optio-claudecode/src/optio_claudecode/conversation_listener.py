@@ -8,8 +8,10 @@ optio-api widget proxy (which injects the basic-auth credential):
                      is a monotonic seq; Last-Event-ID resumes without dupes.
                      After a resume the restored history is followed by one
                      {"type": "x-optio-resumed"} marker.
-  POST /send       — {text}                      -> conversation.send
-  POST /interrupt  — {}                          -> conversation.interrupt
+  POST /send       — {text}  -> steering.send_when_ready; {ok, id, queued}
+  POST /steer      — {text}  -> steering.interrupt_and_send; {ok, id}
+                     (empty text: deliver what is queued; id is null)
+  POST /interrupt  — {}      -> steering.interrupt (stop only)
   POST /control    — {id, value}                  -> conversation.set_control
   GET  /download   — ?path=<relpath>              -> download_reader; returns
                      the bytes with Content-Disposition: attachment.
@@ -31,6 +33,9 @@ from typing import Awaitable, Callable
 from aiohttp import web
 
 from optio_agents.conversation import ConversationClosed, PermissionDecision
+from optio_agents.steering import Steering
+
+from optio_claudecode.steering import make_steering
 
 _LOG = logging.getLogger(__name__)
 
@@ -56,6 +61,7 @@ class ConversationListener:
         initial_events: "list[tuple[int, dict]] | None" = None,
         download_reader: "Callable[[str], Awaitable[tuple[bytes, str]]] | None" = None,
         max_download_bytes: int = 10_000_000,
+        steering: "Steering | None" = None,
     ) -> None:
         self._conversation = conversation
         self._password = password
@@ -81,6 +87,10 @@ class ConversationListener:
         self._runner: web.AppRunner | None = None
         self._unsubscribe = conversation.on_event(self._on_event)
         conversation.on_permission_request(self._on_permission_request)
+        # Send when ready / Interrupt and send / Interrupt. Its synthetic
+        # events come back through conversation.emit_event -> _on_event, so
+        # they are buffered and persisted like native events.
+        self._steering = steering if steering is not None else make_steering(conversation)
 
     def export_buffer(self) -> "list[list]":
         """Serializable snapshot of the replay buffer ([[seq, event], …]) for
@@ -201,16 +211,32 @@ class ConversationListener:
         if not isinstance(text, str) or not text:
             return web.json_response({"ok": False, "reason": "bad-text"}, status=400)
         try:
-            await self._conversation.send(text)
+            outcome = await self._steering.send_when_ready(text)
         except ConversationClosed:
             return web.json_response({"ok": False, "reason": "closed"}, status=409)
-        return web.json_response({"ok": True})
+        return web.json_response({"ok": True, "id": outcome.id, "queued": outcome.queued})
+
+    async def _handle_steer(self, request: web.Request) -> web.Response:
+        if not self._authorized(request):
+            return web.json_response({"ok": False}, status=401)
+        try:
+            payload = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"ok": False, "reason": "bad-json"}, status=400)
+        text = payload.get("text", "")
+        if not isinstance(text, str):
+            return web.json_response({"ok": False, "reason": "bad-text"}, status=400)
+        try:
+            qid = await self._steering.interrupt_and_send(text)
+        except ConversationClosed:
+            return web.json_response({"ok": False, "reason": "closed"}, status=409)
+        return web.json_response({"ok": True, "id": qid})
 
     async def _handle_interrupt(self, request: web.Request) -> web.Response:
         if not self._authorized(request):
             return web.json_response({"ok": False}, status=401)
         try:
-            await self._conversation.interrupt()
+            await self._steering.interrupt()
         except ConversationClosed:
             return web.json_response({"ok": False, "reason": "closed"}, status=409)
         return web.json_response({"ok": True})
@@ -284,6 +310,7 @@ class ConversationListener:
         app = web.Application()
         app.router.add_get("/events", self._handle_events)
         app.router.add_post("/send", self._handle_send)
+        app.router.add_post("/steer", self._handle_steer)
         app.router.add_post("/interrupt", self._handle_interrupt)
         app.router.add_post("/control", self._handle_control)
         app.router.add_get("/download", self._handle_download)
@@ -302,6 +329,7 @@ class ConversationListener:
         unsubscribe = self._unsubscribe
         self._unsubscribe = lambda: None
         unsubscribe()
+        self._steering.close()
         for fut in self._pending_permissions.values():
             if not fut.done():
                 fut.set_result(PermissionDecision(

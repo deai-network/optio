@@ -24,6 +24,7 @@ class FakeConversation:
     def __init__(self):
         self.handlers = []
         self.perm_handler = None
+        self.runtime_model = None
 
     def on_event(self, h):
         self.handlers.append(h)
@@ -32,6 +33,12 @@ class FakeConversation:
     def on_permission_request(self, h):
         self.perm_handler = h
         return lambda: None
+
+    def is_pending(self):
+        return False
+
+    def emit_event(self, event):
+        pass
 
     async def send(self, text):
         pass
