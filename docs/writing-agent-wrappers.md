@@ -252,6 +252,22 @@ emits `x-optio-queued {id, text}`, `x-optio-taken {ids}` and
 `x-optio-interrupt {by:"user"}`; your reducer maps them plus your agent's
 native echo / cancel signals.
 
+**The `is_pending()` contract.** For a `joins-next-step` agent, Steering
+relies on `Conversation.is_pending()` to know whether the agent is still
+mid-turn: it must go **False** the moment the agent goes idle, even when
+several sends were merged into one turn end (one `on_message` for several
+`send()` calls), and it must go back **True** across the gap before a
+follow-up turn starts — never dropping to False just because a turn ended.
+Get either half wrong and every later send reports `queued` forever, or
+`interrupt`/`interrupt_and_send` fire at an agent that has nothing running.
+Claude Code satisfies this with a `system/session_state_changed`
+running/idle resync in `ClaudeCodeConversation._route` (see
+`optio-claudecode/…/conversation.py`) — but the CLI only emits those events
+when the wrapper's launch env sets `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`
+(`conversation_launch_env`, Fix 3); without it `is_pending()` can drift
+after a merged turn. A wrapper with no equivalent native signal must derive
+one some other way before declaring `joins-next-step`.
+
 **Reference.** `optio-agents/…/steering.py`; Claude Code:
 `optio-claudecode/…/steering.py` (`BUSY_SEND`, `make_steering`) and
 `…/conversation_listener.py`.
