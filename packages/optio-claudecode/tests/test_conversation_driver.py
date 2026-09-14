@@ -364,6 +364,68 @@ async def test_pending_survives_a_stale_idle_racing_interrupt_and_send(convo):
     await reader
 
 
+@pytest.mark.asyncio
+async def test_interrupt_after_a_merged_turns_idle_gate_still_writes_a_control_request(convo):
+    # final-review M1. A merged turn (two sends, one result) leaves
+    # is_pending() True until the idle a few ms later (see
+    # test_idle_state_clears_pending_after_a_merged_turn above). An Interrupt
+    # landing in that window must not leave Steering._interrupted set once
+    # idle actually clears is_pending() -- otherwise the NEXT turn's own
+    # interrupt() is a silent no-op: no marker, and (checked here) no
+    # control_request reaches the CLI at all.
+    c, handle = convo
+    steering = make_steering(c, new_id=lambda: "s3")
+    reader = asyncio.create_task(c.run_reader())
+
+    await c.send("first")
+    await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    await c.send("steer")  # joins the same turn: one result covers both
+    await asyncio.wait_for(handle.stdin.lines.get(), 60)
+
+    result_seen = asyncio.Event()
+    c.on_event(lambda ev: result_seen.set() if ev.get("type") == "result" else None)
+    handle.stdout.feed({"type": "result", "subtype": "success",
+                        "result": "done", "is_error": False})
+    await asyncio.wait_for(result_seen.wait(), 60)
+    assert c.is_pending()  # merged turn: still waiting on the second send
+
+    intr1 = asyncio.create_task(steering.interrupt())
+    ctrl1 = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert ctrl1["request"]["subtype"] == "interrupt"
+    handle.stdout.feed({"type": "control_response", "response": {
+        "subtype": "success", "request_id": ctrl1["request_id"]}})
+    await asyncio.wait_for(intr1, 60)
+
+    idle_seen = asyncio.Event()
+    c.on_event(lambda ev: idle_seen.set()
+               if ev.get("subtype") == "session_state_changed" and ev.get("state") == "idle"
+               else None)
+    handle.stdout.feed({"type": "system", "subtype": "session_state_changed", "state": "idle"})
+    await asyncio.wait_for(idle_seen.wait(), 60)
+    assert not c.is_pending()
+
+    # A new turn starts.
+    await c.send("second task")
+    await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    running_seen = asyncio.Event()
+    c.on_event(lambda ev: running_seen.set()
+               if ev.get("subtype") == "session_state_changed" and ev.get("state") == "running"
+               else None)
+    handle.stdout.feed({"type": "system", "subtype": "session_state_changed", "state": "running"})
+    await asyncio.wait_for(running_seen.wait(), 60)
+    assert c.is_pending()
+
+    intr2 = asyncio.create_task(steering.interrupt())
+    ctrl2 = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert ctrl2["request"]["subtype"] == "interrupt"
+    handle.stdout.feed({"type": "control_response", "response": {
+        "subtype": "success", "request_id": ctrl2["request_id"]}})
+    await asyncio.wait_for(intr2, 60)
+
+    handle.stdout.eof()
+    await reader
+
+
 # -- session_state_changed one-time warning (fix-3-brief) --------------------
 
 @pytest.mark.asyncio
