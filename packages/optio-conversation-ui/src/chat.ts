@@ -3,7 +3,19 @@
 // conversation widget renders.
 
 export type ChatItem =
-  | { kind: 'user'; text: string; seq: number; local?: boolean }
+  | {
+      kind: 'user';
+      text: string;
+      seq: number;
+      local?: boolean;
+      // Steering: a "Send when ready" message the agent has not taken yet.
+      // Rendered muted and dashed ("Queued"), pinned at the bottom; it does
+      // not count as newer content, so streaming continues above it.
+      queued?: boolean;
+      // The id optio gave the message (POST /send response, x-optio-queued,
+      // x-optio-taken). Kept once the message is taken.
+      queueId?: string;
+    }
   | {
       kind: 'assistant';
       text: string;
@@ -15,7 +27,9 @@ export type ChatItem =
       // rendered.
       openPart?: number;
     }
-  | { kind: 'activity'; text: string; seq: number }
+  // muted: a quiet one-line note (e.g. an operator interrupt, an undelivered
+  // message) instead of the harness System: bubble.
+  | { kind: 'activity'; text: string; seq: number; muted?: boolean }
   | { kind: 'thinking'; text: string; seq: number }
   | {
       kind: 'tool';
@@ -102,6 +116,70 @@ export interface ChatState {
   // (epoch ms). The time base for events that carry none (system, result,
   // optio's synthetic events), so a replay shows the live durations.
   lastEventAt?: number;
+}
+
+type UserItem = Extract<ChatItem, { kind: 'user' }>;
+
+// -- Steering: queued bubbles (engine-neutral; every reducer uses these) ----
+
+export function isQueued(item: ChatItem): item is UserItem {
+  return item.kind === 'user' && item.queued === true;
+}
+
+// Queued bubbles are pinned at the bottom: new conversation content goes in
+// front of the first one.
+export function appendItems(items: ChatItem[], rows: ChatItem[]): ChatItem[] {
+  if (rows.length === 0) return items;
+  const q = items.findIndex(isQueued);
+  if (q === -1) return [...items, ...rows];
+  return [...items.slice(0, q), ...rows, ...items.slice(q)];
+}
+
+// The agent took the queued bubble at idx: it leaves the pinned group and
+// lands at the take point (the end of the conversation content), with any
+// rows that belong in front of it (an attachment row).
+export function takeQueuedAt(items: ChatItem[], idx: number, before: ChatItem[] = []): ChatItem[] {
+  const taken: UserItem = { ...(items[idx] as UserItem) };
+  delete taken.queued;
+  delete taken.local;
+  const rest = [...items.slice(0, idx), ...items.slice(idx + 1)];
+  return appendItems(rest, [...before, taken]);
+}
+
+// x-optio-taken: optio delivered the messages it held; take them in order.
+export function takeQueuedIds(items: ChatItem[], ids: readonly string[]): ChatItem[] {
+  let out = items;
+  for (const id of ids) {
+    const idx = out.findIndex((i) => isQueued(i) && i.queueId === id);
+    if (idx !== -1) out = takeQueuedAt(out, idx);
+  }
+  return out;
+}
+
+// x-optio-queued: a Send when ready the agent has not taken yet. It
+// supersedes the view's local echo of the same id (whichever arrives first
+// holds the slot); a message already taken stays taken.
+export function addQueued(items: ChatItem[], id: string, text: string, seq: number): ChatItem[] {
+  const idx = items.findIndex((i) => i.kind === 'user' && i.queueId === id);
+  if (idx === -1) return [...items, { kind: 'user', text, seq, queued: true, queueId: id }];
+  const cur = items[idx] as UserItem;
+  if (!cur.local) return items;
+  const next: UserItem = { ...cur, queued: true };
+  delete next.local;
+  return [...items.slice(0, idx), next, ...items.slice(idx + 1)];
+}
+
+// The session ended (or a resumed run replaced it) before the agent took
+// these: nothing will deliver them now. Each becomes a muted note.
+export function dropUndelivered(items: ChatItem[]): ChatItem[] {
+  if (!items.some(isQueued)) return items;
+  const kept: ChatItem[] = [];
+  const notes: ChatItem[] = [];
+  for (const i of items) {
+    if (isQueued(i)) notes.push({ kind: 'activity', text: `Not delivered: ${i.text}`, seq: i.seq, muted: true });
+    else kept.push(i);
+  }
+  return [...kept, ...notes];
 }
 
 export const initialChatState: ChatState = {

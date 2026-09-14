@@ -272,16 +272,15 @@ describe('reduceEvent', () => {
     expect(bubbles.map((b) => b.pending)).toEqual([false, false]);
   });
 
-  it('still inserts the user echo before the pending bubble when it is the tail behind a tool row', () => {
-    // Live streaming with a tool row after the pending bubble: tool rows count
-    // as progress, not newer content (isTail), so the bubble is still the tail.
+  it('a user echo after a tool row lands after that row, not above the in-flight answer (mid-turn take)', () => {
+    // Claude Code takes a message sent mid-turn at the next tool result and
+    // echoes it then; it belongs after that tool row (steering design §4).
     const s = run([
       delta('working on it'),
       toolUse('Bash', { command: 'ls' }),
       user('the question'),
     ]);
-    const kinds = s.items.map((i) => i.kind);
-    expect(kinds.indexOf('user')).toBeLessThan(kinds.indexOf('assistant'));
+    expect(s.items.map((i) => i.kind)).toEqual(['assistant', 'tool', 'user']);
   });
 
   it('does not glue the next message\'s deltas onto the previous bubble (countdown repro)', () => {
