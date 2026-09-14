@@ -204,14 +204,29 @@ export function takeQueuedIds(items: ChatItem[], ids: readonly string[]): ChatIt
   return out;
 }
 
-// x-optio-queued: a Send when ready the agent has not taken yet. It
-// supersedes the view's local echo of the same id (whichever arrives first
-// holds the slot); a message already taken stays taken.
-export function addQueued(items: ChatItem[], id: string, text: string, seq: number): ChatItem[] {
+// x-optio-queued: either a Send when ready the agent has not taken yet
+// (fired while the agent is busy — a genuine queue, pinned and offering
+// "Send now"), or interrupt_and_send announcing its own steered text right
+// after the turn it interrupted has already ended (final-review M3 of fix
+// 8) — by the time that reaches here the agent is idle again (the result
+// already cleared `busy`), and the text is already on its way to being sent
+// as a new turn, not waiting for one. `busy` (the reducer's own state at the
+// moment this event is folded) tells the two apart: only the busy case gets
+// the pinned, dashed "Queued" bubble with "Send now" (which would otherwise
+// send an empty steer into the turn this message itself just started); the
+// idle case is a plain unconfirmed local bubble, exactly as if the view's
+// own local echo had created it. Either way it supersedes (or is
+// superseded by) the view's local echo of the same id — whichever arrives
+// first holds the slot; a message already taken/confirmed stays that way.
+export function addQueued(items: ChatItem[], id: string, text: string, seq: number, busy: boolean): ChatItem[] {
   const idx = items.findIndex((i) => i.kind === 'user' && i.queueId === id);
-  if (idx === -1) return [...items, { kind: 'user', text, seq, queued: true, queueId: id }];
+  if (idx === -1) {
+    return busy
+      ? [...items, { kind: 'user', text, seq, queued: true, queueId: id }]
+      : [...items, { kind: 'user', text, seq, local: true, queueId: id }];
+  }
   const cur = items[idx] as UserItem;
-  if (!cur.local) return items;
+  if (!cur.local || !busy) return items;
   const next: UserItem = { ...cur, queued: true };
   delete next.local;
   return [...items.slice(0, idx), next, ...items.slice(idx + 1)];

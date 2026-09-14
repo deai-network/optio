@@ -294,9 +294,13 @@ describe('claudecode steering: a too-late interrupt (marker raced a normal resul
 // its own text (same id /steer returns), so the view's local echo (queued:
 // false — it is not pinned, just an immediate confirmation) and the wire's
 // own echo of the sent text both have an id-bearing bubble to land on,
-// whichever of the two arrives first.
+// whichever of the two arrives first. `base` uses the REAL wire order (fix
+// 8 review round 1: x-optio-interrupt, then the aborted result, THEN
+// x-optio-queued — interrupt_and_send waits for the turn end before
+// emitting it — not queued-then-result, which the round-1 tests below used
+// and which cannot show the bug because the agent still reads as busy then).
 describe('claudecode steering: final-review M3 (interrupt-and-send announces its own text)', () => {
-  const base = [user('q'), delta('a'), interrupt, queued('q1', 'now'), aborted()];
+  const base = [user('q'), delta('a'), interrupt, aborted(), queued('q1', 'now')];
 
   it('confirms into ONE bubble, never "Not delivered", local echo first', () => {
     const s = run([...base, localUser('now', 'q1', false), user('now')]);
@@ -314,5 +318,37 @@ describe('claudecode steering: final-review M3 (interrupt-and-send announces its
     expect(bubbles[0].queued).toBeUndefined();
     expect(bubbles[0].local).toBeUndefined();
     expect(s.items.some((i) => i.kind === 'activity' && i.text.startsWith('Not delivered'))).toBe(false);
+  });
+});
+
+// Review of fix 8, finding 1: x-optio-queued for a steer's OWN text arrives
+// (in the real order above) while the agent already reads as idle again —
+// the interrupted turn's result already cleared `busy`. Before this fix,
+// addQueued always set queued:true regardless, so the message rendered as
+// a pinned "Queued — the agent reads it when ready · Send now" bubble for
+// the ~1.5-2s until the CLI's own wire echo arrived, even though it had
+// already been sent: clicking "Send now" there posts an empty /steer and
+// interrupts the very turn this message just started.
+describe('claudecode steering: review of fix 8 (a steer never shows as Queued/Send now)', () => {
+  const base = [user('q'), delta('a'), interrupt, aborted()];
+
+  it('x-optio-queued alone (idle) is a plain unconfirmed bubble, not queued', () => {
+    const s = run([...base, queued('q1', 'now')]);
+    const bubble = users(s).find((u) => u.text === 'now');
+    expect(bubble).toBeDefined();
+    expect(bubble!.queued).toBeUndefined();
+    expect(bubble!.queueId).toBe('q1');
+  });
+
+  it('stays un-queued between x-optio-queued and the local echo, local echo first', () => {
+    const s = run([...base, queued('q1', 'now'), localUser('now', 'q1', false)]);
+    const bubble = users(s).find((u) => u.text === 'now');
+    expect(bubble!.queued).toBeUndefined();
+  });
+
+  it('a genuine Send when ready queued while busy is unaffected: still pinned, offers Send now', () => {
+    const s = run([user('q'), delta('ans'), queued('q1', 'later')]);
+    const bubble = users(s).find((u) => u.text === 'later');
+    expect(bubble!.queued).toBe(true);
   });
 });

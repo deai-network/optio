@@ -704,7 +704,12 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       const id = typeof ev.id === 'string' ? ev.id : '';
       const { text } = parseUploadNotice(typeof ev.text === 'string' ? ev.text : '');
       if (id === '' || text === '') return state;
-      const items = addQueued(state.items, id, text, seq);
+      // Whether the agent is still busy right now decides queued vs local —
+      // see addQueued (final-review M3 of fix 8: an interrupt_and_send's own
+      // announcement of its steered text arrives after that turn's result
+      // already cleared `busy`, so it must not render as a pinned "Queued"
+      // bubble with "Send now").
+      const items = addQueued(state.items, id, text, seq, state.busy);
       return items === state.items ? state : { ...state, items };
     }
 
