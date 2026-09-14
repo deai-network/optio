@@ -782,23 +782,36 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
         // right-aligned user and left-aligned assistant bubbles. Fix 9, owner
         // ruling 2026-09-14: these rows show their time too, as a sibling
         // below the bubble (same small grey label as withTimeLabel's three
-        // bubbles) — not through that helper, since its non-'stretch' branch
-        // adds its own 80% cap and this bubble already caps itself (round 2
-        // note below); going through it would compound the two caps.
+        // bubbles). Not routed through that helper (it is keyed to the
+        // 'flex-end'/'flex-start'/'stretch' alignments the three message
+        // kinds use), but built the same way it is: the wrapper div below is
+        // this row's containing block, sized against the definite-width
+        // transcript column, so IT carries the `maxWidth: '80%'` cap (fix 9
+        // review round 1). The bubble itself must stay uncapped — capping
+        // both would resolve the bubble's 80% against the wrapper's already
+        // shrunk-to-fit width and compound far below 80%, wrapping short
+        // text that fits on one line (invisible in jsdom, real in a
+        // browser). This wrapper renders for every non-muted activity row
+        // regardless of whether it has a timestamp; the cap living here
+        // keeps that identical to today's width even when renderTimeLabel
+        // below renders nothing.
         return (
           <div
             key={item.seq}
-            style={{ display: 'flex', flexDirection: 'column', alignSelf: 'center', alignItems: 'center' }}
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              alignSelf: 'center',
+              alignItems: 'center',
+              maxWidth: '80%',
+            }}
           >
             <div
               data-testid="activity-bubble"
               style={{
                 ...bubbleBase,
-                // Not wrapped by withTimeLabel, so unlike the three bubbles
-                // above this is the only place that needs to cap its own
-                // width — bubbleBase no longer carries maxWidth (see its
-                // definition).
-                maxWidth: '80%',
+                // No maxWidth here — the wrapper above caps the row's width
+                // against the transcript column; see the comment there.
                 alignSelf: 'center',
                 background: token.purple1,
                 border: `1px solid ${token.purple3}`,
