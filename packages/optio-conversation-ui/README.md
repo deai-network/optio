@@ -30,6 +30,7 @@ It registers for `ui_widget = "conversation"`. Each task carries its engine in `
 ## Features
 
 - Streamed chat transcript (replay + live) with optimistic local echo.
+- Steering while the agent works (claudecode, via the view's `onSteer`): the busy input bar is `[Send when ready | Interrupt and send]` (Enter / ⌘/Ctrl-Enter) beside the red Interrupt; a message the agent has not taken yet is a dashed "Queued" bubble with **Send now**; an interrupted answer keeps its text with a jagged bottom edge, followed by one muted "⏹ Interrupted by you" row. Views without `onSteer` keep a single Send.
 - Tool-call and permission cards (approve / deny) when the task runs a permission gate.
 - Model switching (when the task enables `show_model_selector`).
 - File upload (📎) and one-click file download (agent emits `[name](optio-file:relpath)`), when the task enables `show_file_upload` / `file_download`.
@@ -55,6 +56,7 @@ See `src/AnswerBlock.tsx` for the authoritative list.
   - Tool items (`kind: 'tool'`) may carry `callId` (the call's wire id), `result` (its output, trimmed), `startedAt` / `endedAt` (epoch ms; the view shows a live elapsed counter until `endedAt` is set), `background` (a backgrounded shell command) and `taskId` (its background task id). All are optional and set by the claudecode reducer only.
   - A tool item's `status` may also be `'stopped'`: stopped rather than completed or failed (a background task stopped or killed, or a call still running when the session closed or a resumed run replaced it). It renders as finished, not failed.
   - `reduceClaudecodeEvent(state, ev, seq, now?)`: `now` (epoch ms, default `Date.now()`) is the clock used only until the stream has shown a user/assistant timestamp; pass it for deterministic replays and tests.
+  - Steering fields (all optional): user items `queued` (not taken yet; pinned at the bottom) and `queueId` (optio's id for the message); assistant items `interrupted` (cut off by the operator); activity items `muted` (a quiet one-line note). The claudecode reducer maps the listener's `x-optio-queued`, `x-optio-taken` and `x-optio-interrupt` events onto them.
   - Steering (claudecode): a user item may carry `queued` (a "Send when ready" message the agent has not taken yet, pinned at the bottom of the transcript) and `queueId` (the id optio gave the message, kept once it is taken). An activity item may carry `muted` (a quiet one-line note, e.g. an undelivered message, instead of the harness `System:` bubble). Set by the claudecode reducer from the listener's `x-optio-queued` / `x-optio-taken` events and the view's own local echo.
 
 ## License
