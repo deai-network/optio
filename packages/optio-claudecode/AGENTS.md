@@ -118,7 +118,13 @@ The `Conversation` surface (abstract Protocol in
   zeroing it unconditionally: `idle` sets it to the number of sends
   written since the last `result` (0 for a genuinely finished turn, but
   not for a stale idle that races a send), and `running` raises it to at
-  least 1.
+  least 1. **These resyncs depend on the CLI actually emitting
+  `session_state_changed`, which since CLI 2.1.270 only happens with
+  `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`** (set by
+  `conversation_launch_env`, below). Without it a merged turn leaves
+  `_pending` stuck above 0 forever. `_route` logs one warning per
+  conversation (on the first `result` seen with no prior state event)
+  naming the variable, rather than drifting silently.
 * `emit_event(event)` — put a synthetic `x-optio-*` event into the event
   stream, in order with native events (the steering scaffold's hook).
 * `await interrupt()` — abort the current turn; no-op when idle.
@@ -276,6 +282,12 @@ DONE / ERROR terminate the session.
   renders as ordinary replies; the pin keeps a CLI default change from
   silently dropping that channel. See
   `docs/2026-09-12-claudecode-conversation-rendering-design.md`.
+  Conversation mode also pins `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`
+  (same function): since CLI 2.1.270 the CLI only emits
+  `system/session_state_changed` (idle/running) with this set, and
+  conversation steering's `is_pending()` resync (see above) depends on
+  those events. Owner ruling, 2026-09-14 manual test finding (conversation
+  steering stage 1, fix 3).
 * ttyd — downloaded from `tsl0922/ttyd` GitHub Releases (pinned
   version). Linux x86_64/aarch64/armv7l only in v1.
 

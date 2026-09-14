@@ -54,6 +54,13 @@ class ClaudeCodeConversation:
         # incremented on every send(). Used only to correct _pending against
         # a stale idle (below).
         self._sends_since_result = 0
+        # Whether a system/session_state_changed event has been seen since
+        # this conversation started. The _pending resync above depends on
+        # those events (CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1, set by
+        # conversation_launch_env); without them is_pending() can drift after
+        # a merged turn. Tracked so _route can warn once, not on every result.
+        self._seen_state_event = False
+        self._warned_no_state_events = False
         self._closed = asyncio.Event()
         self._close_reason: str | None = None
         # Cooperative-shutdown request towards the owning task body.
@@ -133,6 +140,14 @@ class ClaudeCodeConversation:
     def _route(self, obj: dict) -> None:
         t = obj.get("type")
         if t == "result":
+            if not self._seen_state_event and not self._warned_no_state_events:
+                self._warned_no_state_events = True
+                _LOG.warning(
+                    "conversation: no system/session_state_changed event seen "
+                    "before this result; is_pending() may drift after a "
+                    "merged turn. Set CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1 "
+                    "in the launch env (conversation_launch_env) to fix this.",
+                )
             self._pending = max(0, self._pending - 1)
             self._sends_since_result = 0
             text = obj.get("result")
@@ -181,6 +196,7 @@ class ClaudeCodeConversation:
             # `result` already reset), but a send already written for the
             # next turn survives. running then restores _pending to at least
             # 1 if a send raced ahead of it too.
+            self._seen_state_event = True
             state = obj.get("state")
             if state == "idle":
                 self._pending = self._sends_since_result
