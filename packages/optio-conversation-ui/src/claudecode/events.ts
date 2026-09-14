@@ -397,6 +397,36 @@ function endInterrupt(state: ChatState): ChatState {
   return next;
 }
 
+// OWNER RULING (Task 6 fix round 1): a too-late interrupt — x-optio-interrupt
+// followed, in the same turn, by a result that is not an abort — races the
+// end of a turn the CLI finished normally. Rendering must end up exactly as
+// if optio had never sent it: undo every mark the interrupt made for this
+// turn. The row is dropped; the bubble it cut off goes back to pending, so
+// the normal end-of-turn path below (finalizePending) completes it in place
+// instead of appending a second copy; a tool row the interrupt (or a CLI
+// signal that only ever fires because of one, e.g. a rejected tool_result or
+// a foreground task_notification) stopped without a result goes back to
+// running, so the normal 'turn' freeze handles it exactly as it would have
+// without the interrupt. Abort results never call this: they keep today's
+// interrupt rendering.
+function undoInterrupt(items: ChatItem[], rowSeq: number): ChatItem[] {
+  const r = interruptRowIndex(items, rowSeq);
+  const out = r === -1 ? items : [...items.slice(0, r), ...items.slice(r + 1)];
+  return out.map((i) => {
+    if (i.kind === 'assistant' && i.interrupted) {
+      const next: AssistantItem = { ...i, pending: true };
+      delete next.interrupted;
+      return next;
+    }
+    if (i.kind === 'tool' && i.status === 'stopped' && i.result === undefined) {
+      const next: ToolItem = { ...i, status: 'running' };
+      delete next.endedAt;
+      return next;
+    }
+    return i;
+  });
+}
+
 export function reduceEvent(state: ChatState, ev: any, seq: number, now: number = Date.now()): ChatState {
   // Sniff the runtime model and fold it into the model control. Claude Code
   // reports the model at top level on `system`/`init` (fires immediately at
@@ -635,6 +665,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
     case 'result': {
       const at = eventTime(ev, lastWireTime(state, now));
       if (state.interrupt) {
+        const rowSeq = state.interrupt.rowSeq;
         state = endInterrupt(state);
         // The turn optio interrupted ends with the CLI's abort error: that is
         // the operator's own interrupt, already shown by its row. No error
@@ -643,6 +674,8 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
           const items = freezeRunning(finalizePending(state.items, seq, null), at, 'interrupt');
           return { ...state, items, busy: false };
         }
+        // Too late: the turn finished normally after all (see undoInterrupt).
+        state = { ...state, items: undoInterrupt(state.items, rowSeq) };
       }
       const resultText = typeof ev.result === 'string' ? ev.result : null;
       const items = freezeRunning(state.items, at, 'turn');

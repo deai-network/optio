@@ -195,3 +195,58 @@ describe('claudecode steering: operator interrupts', () => {
     expect('openPart' in s.items[1]).toBe(false);
   });
 });
+
+// Fix round 1: x-optio-interrupt raced the end of a turn the CLI still
+// finished normally (a non-abort result) -- reproduced live with running,
+// user 'q', delta 'Hel', x-optio-interrupt, assistant 'Hello.', result
+// success 'Hello.', idle. OWNER RULING: render exactly as if optio had never
+// sent the interrupt.
+describe('claudecode steering: a too-late interrupt (marker raced a normal result)', () => {
+  const idle = { type: 'system', subtype: 'session_state_changed', state: 'idle' };
+
+  function withoutSeq(items: ChatItem[]): unknown[] {
+    return items.map(({ seq: _seq, ...rest }) => rest);
+  }
+  function live(events: any[]): ChatState {
+    return run(events);
+  }
+  function replay(events: any[]): ChatState {
+    return run(events.filter((e) => e.type !== 'stream_event'));
+  }
+
+  it('the answer bubble ends complete, not interrupted, with no duplicate and no Interrupted by you row', () => {
+    const s = run([user('q'), delta('Hel'), interrupt, assistantText('Hello.', 'm1'), result('Hello.'), idle]);
+    expect(kinds(s)).toEqual(['user', 'assistant']);
+    expect(s.items[1]).toMatchObject({ kind: 'assistant', text: 'Hello.', pending: false, msgId: 'm1' });
+    expect('interrupted' in s.items[1]).toBe(false);
+    expect(s.busy).toBe(false);
+    expect(s.interrupt).toBeUndefined();
+  });
+
+  it('matches the same stream without the marker, live and on replay (streaming answer)', () => {
+    const withMarker = [user('q'), delta('Hel'), interrupt, assistantText('Hello.', 'm1'), result('Hello.'), idle];
+    const withoutMarker = withMarker.filter((e) => e.type !== 'x-optio-interrupt');
+    expect(withoutSeq(live(withMarker).items)).toEqual(withoutSeq(live(withoutMarker).items));
+    expect(withoutSeq(replay(withMarker).items)).toEqual(withoutSeq(replay(withoutMarker).items));
+  });
+
+  it('matches the same stream without the marker, live and on replay (a tool running when it arrives)', () => {
+    const withMarker = [
+      user('q'), toolCall('t1', 'Bash', { command: 'sleep 1' }), interrupt,
+      toolResult('t1', 'done', false), result('OK.'), idle,
+    ];
+    const withoutMarker = withMarker.filter((e) => e.type !== 'x-optio-interrupt');
+    expect(withoutSeq(live(withMarker).items)).toEqual(withoutSeq(live(withoutMarker).items));
+    expect(withoutSeq(replay(withMarker).items)).toEqual(withoutSeq(replay(withoutMarker).items));
+    const s = live(withMarker);
+    const tool = s.items.find((i) => i.kind === 'tool') as Extract<ChatItem, { kind: 'tool' }>;
+    expect(tool.status).toBe('done');
+    expect(tool.result).toBe('done');
+  });
+
+  it('an abort result (a genuine interrupt) still keeps today\'s interrupt rendering', () => {
+    const s = run([user('q'), delta('a'), interrupt, aborted()]);
+    expect(s.items.some((i) => i.kind === 'activity' && i.text === '⏹ Interrupted by you')).toBe(true);
+    expect(s.items[1]).toMatchObject({ interrupted: true });
+  });
+});
