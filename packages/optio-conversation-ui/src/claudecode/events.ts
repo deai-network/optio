@@ -663,6 +663,13 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
     }
 
     case 'assistant': {
+      // The CLI's own synthetic error message (model "<synthetic>", an
+      // `error` field, e.g. "API Error: Can't reach the API server — check
+      // your internet or DNS (EAI_AGAIN)"): the is_error result below (see
+      // 'result') renders this same text as the single, explained error
+      // item. This event must not also open or extend an agent bubble with
+      // it — fix round 2 (predates the branch: main 44441fb8, from 21a9846a).
+      if (ev.message?.model === '<synthetic>' && typeof ev.error === 'string') return state;
       const blocks = Array.isArray(ev.message?.content) ? ev.message.content : [];
       const msgId = typeof ev.message?.id === 'string' ? ev.message.id : undefined;
       const at = eventTime(ev, now);
@@ -737,10 +744,16 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       const resultText = typeof ev.result === 'string' ? ev.result : null;
       const items = freezeRunning(state.items, at, 'turn');
       // An API/model error arrives as a result with is_error — surface it as a
-      // distinct, explained error item instead of a plain agent bubble.
+      // distinct, explained error item instead of a plain agent bubble. Any
+      // pending bubble is finalized in place first (keeping whatever real
+      // text it already streamed): the CLI's own synthetic error message is
+      // filtered out above, but real narration/text from earlier in the same
+      // turn must stay, finalized, not left stuck pending — fix round 2.
       if (ev.is_error) {
         const msg = explainApiError(resultText ?? '', ev.api_error_status);
-        return { ...state, items: appendItems(items, [{ kind: 'error', text: msg, seq }]), busy: false };
+        const pidx = pendingIndex(items);
+        const finalized = pidx === -1 ? items : finalizeAt(items, pidx);
+        return { ...state, items: appendItems(finalized, [{ kind: 'error', text: msg, seq }]), busy: false };
       }
       return { ...state, items: finalizePending(items, seq, resultText), busy: false };
     }
