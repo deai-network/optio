@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Input, Segmented, Select, Slider, Spin, Switch, Tooltip, theme } from 'antd';
 import type { GlobalToken } from 'antd';
+import { CombinedActionButton, type ActionStatus } from 'vultus-antd';
 import type { TextAreaRef } from 'antd/es/input/TextArea';
 import type { ChatItem, ChatState, SessionControl } from './chat.js';
 import { AnswerBlock } from './AnswerBlock.js';
@@ -37,6 +38,13 @@ export interface ConversationViewProps {
   nativeSpinner?: React.ReactNode;
   onSend: (text: string, attachments: Attachment[]) => Promise<boolean>; // returns ok
   onInterrupt: () => void;
+  // Steering (optional). When set, a busy input bar offers "Send when ready"
+  // (Enter → onSend) and "Interrupt and send" (Cmd/Ctrl-Enter → onSteer) in
+  // one vultus multi-action button, and a queued bubble offers "Send now"
+  // (onSteer('', [])). Absent: the bar keeps a single Send while busy (the
+  // engine's /send decides what a busy send does) and queued bubbles show no
+  // Send now link. Returns ok, like onSend.
+  onSteer?: (text: string, attachments: Attachment[]) => Promise<boolean>;
   onPermission: (requestId: string, behavior: 'allow' | 'deny') => void;
   onFileDownload: (relpath: string, filename: string) => void;
   // Engine-neutral session controls (model / thinking / mode / ...) rendered
@@ -85,6 +93,33 @@ function ensureCopyStyle(): void {
   el.textContent = `.optio-cc-answer .optio-cc-copy{visibility:hidden}
   .optio-cc-answer:hover .optio-cc-copy{visibility:visible}`;
   document.head.appendChild(el);
+}
+
+// Jagged bottom edge on an answer the operator interrupted: a zigzag mask, so
+// it follows the bubble's own background and border in either theme.
+const INTERRUPTED_STYLE_ID = 'optio-cc-interrupted-style';
+function ensureInterruptedStyle(): void {
+  if (typeof document === 'undefined' || document.getElementById(INTERRUPTED_STYLE_ID)) return;
+  const el = document.createElement('style');
+  el.id = INTERRUPTED_STYLE_ID;
+  el.textContent = `.optio-cc-interrupted {
+    padding-bottom: 14px !important;
+    -webkit-mask: conic-gradient(from -45deg at bottom, #0000, #000 1deg 89deg, #0000 90deg) 50% / 12px 100%;
+    mask: conic-gradient(from -45deg at bottom, #0000, #000 1deg 89deg, #0000 90deg) 50% / 12px 100%;
+  }`;
+  document.head.appendChild(el);
+}
+
+// A vultus ActionStatus for the busy input bar's multi-action button. The
+// view runs the (async) send itself, so both fire paths just start it.
+function barAction(
+  id: string,
+  label: string,
+  variant: 'primary' | 'default',
+  disabled: boolean,
+  run: () => void,
+): ActionStatus {
+  return { id, label, variant, pending: false, disabled, invisible: false, errors: [], fire: run, firePromise: async () => run() };
 }
 
 // Colors come from the antd theme (ConfigProvider algorithm), so the widget
@@ -385,6 +420,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   useEffect(() => {
     ensureFlashStyle();
     ensureCopyStyle();
+    ensureInterruptedStyle();
     inputRef.current?.focus();
     const timers = [100, 400, 1000].map((ms) => setTimeout(() => inputRef.current?.focus(), ms));
     return () => timers.forEach(clearTimeout);
@@ -446,12 +482,19 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     return () => ro.disconnect();
   }, []);
 
-  async function send() {
+  // Steering applies only while a turn runs, and only for engines that wire it.
+  const steerable = busy && !closed && props.onSteer !== undefined;
+
+  // 'send' → onSend (Send; Send when ready while busy). 'steer' → onSteer
+  // (Interrupt and send).
+  async function submit(kind: 'send' | 'steer') {
     const body = text;
     if (!body || sending || closed) return;
+    const deliver = kind === 'steer' ? props.onSteer : onSend;
+    if (!deliver) return;
     setSending(true);
     setError(null);
-    const ok = await onSend(body, attachments);
+    const ok = await deliver(body, attachments);
     if (ok) {
       setText('');
       setAttachments([]);
@@ -464,10 +507,16 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     inputRef.current?.focus();
   }
 
+  function send() {
+    return submit('send');
+  }
+
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      void send();
+      // Cmd/Ctrl-Enter interrupts and sends while the agent works; Enter
+      // sends (when ready, if busy), and so does Cmd/Ctrl-Enter when idle.
+      void submit((e.metaKey || e.ctrlKey) && steerable ? 'steer' : 'send');
     } else if (e.key === 'Escape' && busy && !closed) {
       // Same guard as the Interrupt button: only while a turn is running.
       e.preventDefault();
@@ -478,6 +527,38 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   function renderItem(item: ChatItem) {
     switch (item.kind) {
       case 'user':
+        // A Send when ready the agent has not taken yet: user colours, dashed
+        // and muted; the reducer keeps it pinned at the bottom.
+        if (item.queued) {
+          return (
+            <div
+              key={item.seq}
+              data-testid="queued-bubble"
+              style={{
+                ...bubbleBase,
+                alignSelf: 'flex-end',
+                background: token.colorPrimaryBg,
+                border: `1px dashed ${token.colorPrimaryBorder}`,
+                borderRadius: '14px 14px 4px 14px',
+                color: token.colorText,
+                opacity: 0.6,
+              }}
+            >
+              {item.text}
+              <div style={{ fontSize: 12, color: token.colorTextSecondary, marginTop: 4, whiteSpace: 'normal' }}>
+                Queued — the agent reads it when ready
+                {props.onSteer && !closed ? (
+                  <>
+                    {' · '}
+                    <a data-testid="queued-send-now" onClick={() => void props.onSteer?.('', [])}>
+                      Send now
+                    </a>
+                  </>
+                ) : null}
+              </div>
+            </div>
+          );
+        }
         return (
           <div
             key={item.seq}
@@ -499,6 +580,10 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
         return (
           <div
             key={item.seq}
+            // An answer the operator interrupted keeps its text and gets a
+            // jagged bottom edge (the class is installed on mount).
+            data-testid={item.interrupted ? 'answer-interrupted' : undefined}
+            className={item.interrupted ? 'optio-cc-interrupted' : undefined}
             style={{
               ...bubbleBase,
               alignSelf: 'flex-start',
@@ -524,6 +609,19 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
           </div>
         );
       case 'activity':
+        // A muted note ("⏹ Interrupted by you", an undelivered message): one
+        // quiet centred line, not a bubble.
+        if (item.muted) {
+          return (
+            <div
+              key={item.seq}
+              data-testid="activity-muted"
+              style={{ alignSelf: 'center', color: token.colorTextTertiary, fontSize: 12 }}
+            >
+              {item.text}
+            </div>
+          );
+        }
         // Harness System: messages — neither the user nor the agent, so render
         // a centered bubble in a distinct (lavender) colour, set apart from the
         // right-aligned user and left-aligned assistant bubbles.
@@ -829,7 +927,11 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="Message agent…  (Enter to send, Shift+Enter for newline)"
+            placeholder={
+              steerable
+                ? 'Message agent…  (Enter: send when ready, ⌘/Ctrl+Enter: interrupt and send, Shift+Enter: newline)'
+                : 'Message agent…  (Enter to send, Shift+Enter for newline)'
+            }
             autoSize={{ minRows: 2, maxRows: 8 }}
             disabled={closed}
             ref={inputRef}
@@ -876,15 +978,32 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                 </Tooltip>
               </>
             )}
-            <Button
-              size="small"
-              data-testid="conversation-send"
-              type="primary"
-              onClick={() => void send()}
-              disabled={sending || !text || closed}
-            >
-              Send
-            </Button>
+            {steerable ? (
+              // Busy: one vultus multi-action button, [Send when ready |
+              // Interrupt and send]. keepOriginalDefault keeps the main half
+              // on Send when ready (so its width stays fixed) after the menu
+              // action fires. The red Interrupt beside it stops and sends nothing.
+              <span data-testid="conversation-send-combined">
+                <CombinedActionButton
+                  size="small"
+                  keepOriginalDefault
+                  actions={[
+                    barAction('send-when-ready', 'Send when ready', 'primary', sending || !text, () => void submit('send')),
+                    barAction('interrupt-and-send', 'Interrupt and send', 'default', sending || !text, () => void submit('steer')),
+                  ]}
+                />
+              </span>
+            ) : (
+              <Button
+                size="small"
+                data-testid="conversation-send"
+                type="primary"
+                onClick={() => void send()}
+                disabled={sending || !text || closed}
+              >
+                Send
+              </Button>
+            )}
             <Button
               size="small"
               danger
