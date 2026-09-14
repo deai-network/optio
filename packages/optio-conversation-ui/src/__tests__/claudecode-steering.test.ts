@@ -114,3 +114,84 @@ describe('claudecode steering: queued bubbles', () => {
     }
   });
 });
+
+const interrupt = { type: 'x-optio-interrupt', by: 'user' };
+const aborted = (reason = 'aborted_streaming') => ({ type: 'result', subtype: 'error_during_execution', is_error: true, terminal_reason: reason });
+
+describe('claudecode steering: operator interrupts', () => {
+  it('while idle adds nothing', () => {
+    expect(run([interrupt])).toEqual(initialChatState);
+  });
+
+  it('cuts off the streaming answer, adds one muted row and swallows the CLI artefacts', () => {
+    const s = run([
+      user('q'), delta('Light'), interrupt, delta('house'),
+      assistantText('Lighthouse', 'm1'), user('[Request interrupted by user]'), aborted(),
+    ]);
+    expect(kinds(s)).toEqual(['user', 'assistant', 'activity']);
+    expect(s.items[1]).toMatchObject({ kind: 'assistant', text: 'Lighthouse', pending: false, interrupted: true, msgId: 'm1' });
+    expect('openPart' in s.items[1]).toBe(false);
+    expect(s.items[2]).toMatchObject({ kind: 'activity', text: '⏹ Interrupted by you', muted: true });
+    expect(s.busy).toBe(false);
+    expect(s.interrupt).toBeUndefined();
+  });
+
+  it('a second interrupt before the turn ends adds no second row', () => {
+    const s = run([user('q'), delta('a'), interrupt, interrupt]);
+    expect(s.items.filter((i) => i.kind === 'activity')).toHaveLength(1);
+  });
+
+  it('queued bubbles stay pinned below the interrupt row', () => {
+    const s = run([user('q'), delta('ans'), queued('q1', 'later'), interrupt]);
+    expect(kinds(s)).toEqual(['user', 'assistant', 'activity', 'queued']);
+    expect(s.items[1]).toMatchObject({ interrupted: true });
+  });
+
+  it('a running tool stops, and the CLI rejection is not stored as its result', () => {
+    const s = run([
+      user('q'), toolCall('t1', 'Bash', { command: 'sleep 25' }), interrupt,
+      toolResult('t1', "The user doesn't want to proceed with this tool use.", true),
+      user('[Request interrupted by user for tool use]'), aborted('aborted_tools'),
+    ]);
+    const tool = s.items.find((i) => i.kind === 'tool') as Extract<ChatItem, { kind: 'tool' }>;
+    expect(tool.status).toBe('stopped');
+    expect(tool.result).toBeUndefined();
+    expect(s.items.some((i) => i.kind === 'error')).toBe(false);
+    expect(users(s).map((u) => u.text)).toEqual(['q']);
+  });
+
+  it('the flag ends at the result, so the next turn streams normally', () => {
+    const s = run([user('q'), delta('a'), interrupt, aborted(), user('next'), delta('b')]);
+    expect(s.interrupt).toBeUndefined();
+    expect(s.items[s.items.length - 1]).toMatchObject({ kind: 'assistant', text: 'b', pending: true });
+  });
+
+  it('an error result other than an abort still shows after an interrupt', () => {
+    const s = run([user('q'), interrupt, { type: 'result', subtype: 'error_during_execution', is_error: true, terminal_reason: 'model_error', result: 'boom' }]);
+    expect(s.items.some((i) => i.kind === 'error')).toBe(true);
+  });
+
+  it('without x-optio-interrupt the CLI artefacts still show (an interrupt optio did not send)', () => {
+    const s = run([user('q'), delta('a'), assistantText('a', 'm1'), user('[Request interrupted by user]'), aborted()]);
+    expect(users(s).map((u) => u.text)).toContain('[Request interrupted by user]');
+    expect(s.items.some((i) => i.kind === 'error')).toBe(true);
+  });
+
+  it('a foreground task the CLI reports stopped stays a foreground row', () => {
+    const s = run([
+      toolCall('t1', 'Bash', { command: 'sleep 25' }),
+      { type: 'system', subtype: 'task_started', task_id: 'k1', tool_use_id: 't1', is_backgrounded: false, task_type: 'local_bash' },
+      { type: 'system', subtype: 'task_notification', task_id: 'k1', tool_use_id: 't1', status: 'stopped', summary: 'sleep 25' },
+    ]);
+    const tool = s.items.find((i) => i.kind === 'tool') as Extract<ChatItem, { kind: 'tool' }>;
+    expect(tool).toMatchObject({ taskId: 'k1', status: 'stopped' });
+    expect(tool.background).toBeUndefined();
+    expect(tool.result).toBeUndefined();
+  });
+
+  it('session close during an interrupt clears the flag', () => {
+    const s = run([user('q'), delta('a'), interrupt, { type: 'x-optio-closed', reason: 'x' }]);
+    expect(s.interrupt).toBeUndefined();
+    expect('openPart' in s.items[1]).toBe(false);
+  });
+});

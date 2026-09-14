@@ -26,6 +26,9 @@ export type ChatItem =
       // block currently streaming via deltas; absent when none is open. Not
       // rendered.
       openPart?: number;
+      // The operator interrupted this answer: it keeps its text and renders
+      // with a jagged bottom edge.
+      interrupted?: boolean;
     }
   // muted: a quiet one-line note (e.g. an operator interrupt, an undelivered
   // message) instead of the harness System: bubble.
@@ -116,9 +119,17 @@ export interface ChatState {
   // (epoch ms). The time base for events that carry none (system, result,
   // optio's synthetic events), so a replay shows the live durations.
   lastEventAt?: number;
+  // Reducer-private (claudecode): set by x-optio-interrupt until the
+  // interrupted turn's result; rowSeq is the seq of its "Interrupted by you"
+  // row. While set, the CLI's own cancel artefacts are swallowed and the
+  // interrupted message's final text lands in front of that row.
+  interrupt?: { rowSeq: number };
 }
 
 type UserItem = Extract<ChatItem, { kind: 'user' }>;
+
+// The one row an operator interrupt adds (every engine's reducer uses it).
+export const INTERRUPTED_BY_YOU = '⏹ Interrupted by you';
 
 // -- Steering: queued bubbles (engine-neutral; every reducer uses these) ----
 
