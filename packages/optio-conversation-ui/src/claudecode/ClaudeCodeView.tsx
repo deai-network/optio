@@ -2,6 +2,7 @@ import { useEffect, useReducer, useRef } from 'react';
 import type { WidgetProps } from 'optio-ui';
 import type { ChatState, SessionControl } from '../chat.js';
 import { initialChatState, reduceEvent } from './events.js';
+import type { Attachment } from '../attachments.js';
 import { resolveUploadUrl, uploadFiles, bundleUploadNotice } from '../uploads.js';
 import { blobDownload } from '../FileDownloadContext.js';
 import { ConversationView } from '../ConversationView.js';
@@ -55,17 +56,61 @@ export function ClaudeCodeView(props: WidgetProps) {
   // send flag that a busy-change effect could fail to clear on a mid-turn send.
   const busy = state.busy;
 
-  async function post(path: string, body: unknown): Promise<boolean> {
+  // POST a JSON body. Returns the parsed response on 2xx ({} when the body is
+  // not a JSON object), null on failure.
+  async function postJson(path: string, body: unknown): Promise<Record<string, unknown> | null> {
     try {
       const resp = await fetch(`${widgetProxyUrl}${path}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
       });
-      return resp.ok;
+      if (!resp.ok) return null;
+      try {
+        const parsed: unknown = await resp.json();
+        return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
+      } catch {
+        return {};
+      }
     } catch {
-      return false;
+      return null;
     }
+  }
+
+  async function post(path: string, body: unknown): Promise<boolean> {
+    return (await postJson(path, body)) !== null;
+  }
+
+  // When files are attached, upload them through the generic route first, then
+  // bundle one `System:` notice line per stored file into the prompt so the
+  // agent can Read them from the workdir. null: nothing left to send.
+  async function preparePrompt(body: string, attachments: Attachment[]): Promise<string | null> {
+    if (attachments.length === 0) return body;
+    const uploadUrl = resolveUploadUrl(props.process.widgetData, widgetProxyUrl);
+    if (!uploadUrl) return null;
+    const { ok: stored, failed } = await uploadFiles(uploadUrl, attachments, maxUploadBytes);
+    for (const f of failed) {
+      // Surface each failed upload as an immediate, transient error row.
+      localSeqRef.current -= 1;
+      dispatch({ ev: { type: 'x-optio-local-error', text: `Upload failed: ${f.name} — ${f.error}` }, seq: localSeqRef.current });
+    }
+    // Everything failed and no prompt to send → don't send an empty turn.
+    if (stored.length === 0 && body.trim() === '') return null;
+    return bundleUploadNotice(stored, body);
+  }
+
+  // Optimistic local echo: show the operator's text (not the System: preamble)
+  // now. It carries the listener's id for the message, so the listener's
+  // x-optio-queued for the same id does not add a second bubble; `queued`
+  // makes it the Queued bubble until Claude takes it. The wire echo confirms
+  // it in place (or moves a queued one to where Claude took it). Negative
+  // seqs keep React keys unique and clear of wire seqs.
+  function localEcho(text: string, resp: Record<string, unknown>, queued: boolean) {
+    localSeqRef.current -= 1;
+    dispatch({
+      ev: { type: 'x-optio-local-user', text, id: typeof resp.id === 'string' ? resp.id : undefined, queued },
+      seq: localSeqRef.current,
+    });
   }
 
   async function onFileDownload(relpath: string, filename: string) {
@@ -92,33 +137,25 @@ export function ClaudeCodeView(props: WidgetProps) {
       fileDownload={fileDownload}
       nativeSpinner={nativeSpinner ? <NativeSpinner engine="claudecode" /> : undefined}
       onSend={async (body, attachments) => {
-        // When files are attached, upload them through the generic route first,
-        // then bundle one `System:` notice line per stored file into the prompt
-        // so the agent can Read them from the workdir. The optimistic echo still
-        // shows the operator's text (`body`), not the System: preamble.
-        let prompt = body;
-        if (attachments.length > 0) {
-          const uploadUrl = resolveUploadUrl(props.process.widgetData, widgetProxyUrl);
-          if (!uploadUrl) return false;
-          const { ok: stored, failed } = await uploadFiles(uploadUrl, attachments, maxUploadBytes);
-          for (const f of failed) {
-            // Surface each failed upload as an immediate, transient error row.
-            localSeqRef.current -= 1;
-            dispatch({ ev: { type: 'x-optio-local-error', text: `Upload failed: ${f.name} — ${f.error}` }, seq: localSeqRef.current });
-          }
-          // Everything failed and no prompt to send → don't send an empty turn.
-          if (stored.length === 0 && body.trim() === '') return false;
-          prompt = bundleUploadNotice(stored, body);
-        }
-        const ok = await post('send', { text: prompt });
-        if (ok) {
-          // Optimistic local echo: show the message now; the wire echo (which
-          // only arrives once the answer starts streaming) confirms it in place.
-          // Negative seqs keep React keys unique and clear of wire seqs.
-          localSeqRef.current -= 1;
-          dispatch({ ev: { type: 'x-optio-local-user', text: body }, seq: localSeqRef.current });
-        }
-        return ok;
+        // Send (idle) or Send when ready (busy): the listener answers
+        // {id, queued}; queued means Claude holds it until the next tool result.
+        const prompt = await preparePrompt(body, attachments);
+        if (prompt === null) return false;
+        const resp = await postJson('send', { text: prompt });
+        if (resp === null) return false;
+        localEcho(body, resp, resp.queued === true);
+        return true;
+      }}
+      onSteer={async (body, attachments) => {
+        // Interrupt and send (body), or Send now on a queued bubble (no body):
+        // POST /steer stops the running step, then Claude runs what it holds
+        // and the new text follows.
+        const prompt = body === '' && attachments.length === 0 ? '' : await preparePrompt(body, attachments);
+        if (prompt === null) return false;
+        const resp = await postJson('steer', { text: prompt });
+        if (resp === null) return false;
+        localEcho(body, resp, false);
+        return true;
       }}
       onInterrupt={() => void post('interrupt', {})}
       onPermission={(requestId, behavior) => {

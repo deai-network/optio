@@ -104,8 +104,9 @@ describe('ConversationWidget', () => {
 
     const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
     fireEvent.change(box, { target: { value: 'actually stop at 5' } });
+    // Busy: the send is the main half of [Send when ready | Interrupt and send].
     await act(async () => {
-      fireEvent.click(screen.getByTestId('conversation-send'));
+      fireEvent.click(document.querySelector('[data-action-id="send-when-ready"]') as HTMLElement);
     });
 
     // The turn ends. The indicator must disappear — it must not stay stuck on
@@ -291,5 +292,67 @@ describe('ConversationWidget', () => {
     render(<ConversationWidget {...propsV('description-only')} />);
     fire({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 't1', name: 'Write', input: { file_path: '/x', result: 'draft' } }] } });
     expect(screen.getByTestId('tool-call').getAttribute('data-tool-status')).toBe('running');
+  });
+
+  it('a busy send shows the Queued bubble under the /send id; the listener event does not duplicate it; the echo takes it', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true, id: 'q7', queued: true }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<ConversationWidget {...makeProps()} />);
+    fire({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'count to 10' }] } });
+    fire({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: '1 2 3' } } });
+    const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: 'stop at 5' } });
+    await act(async () => {
+      fireEvent.click(document.querySelector('[data-action-id="send-when-ready"]') as HTMLElement);
+    });
+    await waitFor(() => expect(screen.getByTestId('queued-bubble').textContent).toContain('stop at 5'));
+    fire({ type: 'x-optio-queued', id: 'q7', text: 'stop at 5' });
+    expect(screen.getAllByTestId('queued-bubble')).toHaveLength(1);
+    fire({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'stop at 5' }] } });
+    expect(screen.queryByTestId('queued-bubble')).toBeNull();
+    expect(screen.getByText('stop at 5')).toBeTruthy();
+  });
+
+  it('Interrupt and send POSTs the text to /steer and echoes it', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true, id: 's1' }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<ConversationWidget {...makeProps()} />);
+    fire({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'long job' }] } });
+    const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: 'change of plan' } });
+    fireEvent.click(screen.getByTestId('conversation-send-combined').querySelector('.ant-dropdown-trigger') as HTMLElement);
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Interrupt and send' }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('/api/widget/db/gm/p1/steer');
+    expect(JSON.parse(init.body as string)).toEqual({ text: 'change of plan' });
+    await waitFor(() => expect(screen.getByText('change of plan')).toBeTruthy());
+  });
+
+  it('Send now on a queued bubble POSTs an empty text to /steer', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true, id: null }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<ConversationWidget {...makeProps()} />);
+    fire({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'long job' }] } });
+    fire({ type: 'x-optio-queued', id: 'q1', text: 'later' });
+    fireEvent.click(screen.getByTestId('queued-send-now'));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('/api/widget/db/gm/p1/steer');
+    expect(JSON.parse(init.body as string)).toEqual({ text: '' });
+  });
+
+  it('an interrupt renders the cut-off answer with a jagged edge and one muted row, no error', () => {
+    render(<ConversationWidget {...makeProps()} />);
+    fire({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'essay please' }] } });
+    fire({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Lighthouses stand' } } });
+    fire({ type: 'x-optio-interrupt', by: 'user' });
+    fire({ type: 'assistant', message: { role: 'assistant', id: 'm1', content: [{ type: 'text', text: 'Lighthouses stand tall' }] } });
+    fire({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] } });
+    fire({ type: 'result', subtype: 'error_during_execution', is_error: true, terminal_reason: 'aborted_streaming' });
+    expect(screen.getByTestId('answer-interrupted').textContent).toContain('Lighthouses stand tall');
+    expect(screen.getByTestId('activity-muted').textContent).toBe('⏹ Interrupted by you');
+    expect(screen.queryByTestId('conversation-error-item')).toBeNull();
+    expect(screen.queryByText('[Request interrupted by user]')).toBeNull();
   });
 });

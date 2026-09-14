@@ -267,8 +267,9 @@ native echo / cancel signals.
    engine-specific knowledge lives; it is DOM-free and unit-tested.
 2. A thin **transport-adapter view** that opens the agent's event stream, feeds the
    reducer, and wires the `ConversationViewProps` callbacks (`onSend`,
-   `onInterrupt`, `onPermission`, `onFileDownload`, and `onControlChange` for the
-   generic session controls) to the agent's endpoints. It then hands all rendering
+   `onInterrupt`, `onPermission`, `onFileDownload`, `onControlChange` for the
+   generic session controls, and `onSteer` → `POST /steer` once the wrapper has
+   steering, see B.1) to the agent's endpoints. It then hands all rendering
    to the shared `ConversationView`.
 3. A `widgetData.protocol` discriminator so `ConversationWidget` dispatches to your
    view.
