@@ -362,3 +362,43 @@ async def test_pending_survives_a_stale_idle_racing_interrupt_and_send(convo):
     await asyncio.wait_for(intr, 60)
     handle.stdout.eof()
     await reader
+
+
+# -- session_state_changed one-time warning (fix-3-brief) --------------------
+
+@pytest.mark.asyncio
+async def test_result_without_any_state_event_logs_one_warning(convo, caplog):
+    # Production's launch env did not set CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS,
+    # so the CLI never emits session_state_changed and is_pending() can drift
+    # after a merged turn (fix-3-brief root cause). Surface that once per
+    # conversation rather than silently.
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    with caplog.at_level("WARNING", logger="optio_claudecode.conversation"):
+        handle.stdout.feed({"type": "result", "subtype": "success",
+                            "result": "done", "is_error": False})
+        await asyncio.sleep(0)
+        handle.stdout.feed({"type": "result", "subtype": "success",
+                            "result": "again", "is_error": False})
+        await asyncio.sleep(0)
+    handle.stdout.eof()
+    await reader
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS" in warnings[0].message
+
+
+@pytest.mark.asyncio
+async def test_result_after_a_state_event_logs_no_warning(convo, caplog):
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    with caplog.at_level("WARNING", logger="optio_claudecode.conversation"):
+        handle.stdout.feed({"type": "system", "subtype": "session_state_changed",
+                            "state": "running"})
+        await asyncio.sleep(0)
+        handle.stdout.feed({"type": "result", "subtype": "success",
+                            "result": "done", "is_error": False})
+        await asyncio.sleep(0)
+    handle.stdout.eof()
+    await reader
+    assert not [r for r in caplog.records if r.levelname == "WARNING"]

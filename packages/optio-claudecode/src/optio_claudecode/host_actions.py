@@ -1184,6 +1184,16 @@ def build_conversation_argv(
     return out
 
 
+# Since CLI 2.1.270 the CLI emits system/session_state_changed (idle/running)
+# only when this is set. Conversation steering's is_pending() resync (the
+# _route "system"/"session_state_changed" branch in conversation.py) depends
+# on those events to un-stick a merged turn's pending count; without them
+# is_pending() can stay true forever after a merged turn, so sends queue
+# behind an idle agent and interrupt fires at nothing (owner ruling,
+# fix-3-brief: 2026-09-13-conversation-steering-plan-stage1).
+_EMIT_SESSION_STATE_EVENTS = "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS"
+
+
 def conversation_launch_env(
     workdir: str, extra_env: dict[str, str] | None,
 ) -> dict[str, str]:
@@ -1209,6 +1219,7 @@ def conversation_launch_env(
         # in -p mode that returns no thinking text at all, narration included
         # (docs/2026-09-12-claudecode-conversation-rendering-design.md).
         "CLAUDE_CODE_THINKING_DISPLAY_UPDATES": "1",
+        _EMIT_SESSION_STATE_EVENTS: "1",
         **extra,
     }
 
