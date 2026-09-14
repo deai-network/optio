@@ -635,3 +635,64 @@ describe('ConversationView steering', () => {
     expect(onSteer).not.toHaveBeenCalled();
   });
 });
+
+// Fix 4 (owner ruling 2026-09-14: "all messages need a timestamp"): a small
+// grey time under user/assistant/error bubbles, from the item's own
+// `timestamp` (never invented). formatMessageTime itself is unit-tested in
+// message-time.test.ts; these assert the view wires it up.
+describe('ConversationView message timestamps', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('a user message with a timestamp renders the time text and the hover title', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 14, 20, 0).getTime());
+    const ts = new Date(2026, 8, 14, 16, 29).getTime();
+    renderView(makeProps({ state: makeState([{ kind: 'user', text: 'hi', seq: 1, timestamp: ts }]) }));
+    const label = screen.getByTestId('message-time');
+    expect(label.textContent).toBe('16:29');
+    expect(label.title).toBe(new Date(ts).toLocaleString());
+  });
+
+  it('an assistant message with a timestamp from an earlier day shows a short date', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 14, 10, 0).getTime());
+    const ts = new Date(2026, 8, 13, 16, 29).getTime();
+    renderView(
+      makeProps({
+        state: makeState([{ kind: 'assistant', text: 'answer', pending: false, seq: 1, msgId: 'm1', timestamp: ts }]),
+      }),
+    );
+    expect(screen.getByTestId('message-time').textContent).toBe('13 Sep 16:29');
+  });
+
+  it('an error item with a timestamp shows its time too', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 14, 20, 0).getTime());
+    const ts = new Date(2026, 8, 14, 16, 29).getTime();
+    renderView(makeProps({ state: makeState([{ kind: 'error', text: 'boom', seq: 1, timestamp: ts }]) }));
+    expect(screen.getByTestId('message-time').textContent).toBe('16:29');
+  });
+
+  it('a message without a known timestamp renders no time label', () => {
+    renderView(makeProps({ state: makeState([{ kind: 'user', text: 'hi', seq: 1 }]) }));
+    expect(screen.queryByTestId('message-time')).toBeNull();
+  });
+
+  it('a queued bubble with a (local-echo) timestamp shows it; still-queued-with-none shows nothing', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 14, 20, 0).getTime());
+    const ts = new Date(2026, 8, 14, 16, 29).getTime();
+    const r = renderView(
+      makeProps({ state: makeState([{ kind: 'user', text: 'q', seq: 1, queued: true, queueId: 'q1', timestamp: ts }]) }),
+    );
+    expect(screen.getByTestId('message-time').textContent).toBe('16:29');
+    r.unmount();
+    renderView(makeProps({ state: makeState([{ kind: 'user', text: 'q', seq: 1, queued: true, queueId: 'q1' }]) }));
+    expect(screen.queryByTestId('message-time')).toBeNull();
+  });
+
+  it('tool, activity, permission, thinking and closed rows never get a time label', () => {
+    renderView(makeProps({ state: makeState(ALL_KINDS) }));
+    expect(screen.queryByTestId('message-time')).toBeNull();
+  });
+});

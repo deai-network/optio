@@ -296,7 +296,11 @@ function appendDelta(items: ChatItem[], seq: number, delta: string): ChatItem[] 
 // Within the same message it replaces the part its deltas streamed, or appends
 // a new part when nothing streamed (replays hold no stream_events). A different
 // message, or a pending bubble that is no longer the tail, opens a fresh bubble.
-function applyBlockText(items: ChatItem[], seq: number, text: string, msgId?: string): ChatItem[] {
+// `ts`, when given, is this event's own wire time; the bubble keeps the FIRST
+// one it ever sees for its message (a streaming delta carries none — the
+// bubble may exist with no timestamp yet, filled in once its assistant event
+// arrives; a later event for the same message must not overwrite it).
+function applyBlockText(items: ChatItem[], seq: number, text: string, msgId?: string, ts?: number): ChatItem[] {
   const idx = pendingIndex(items);
   if (idx !== -1) {
     const cur = items[idx] as AssistantItem;
@@ -307,12 +311,15 @@ function applyBlockText(items: ChatItem[], seq: number, text: string, msgId?: st
           ? cur.text.slice(0, cur.openPart)
           : cur.text + (cur.text === '' ? '' : PART_SEPARATOR);
       const next: AssistantItem = { ...cur, text: base + text, msgId: msgId ?? cur.msgId };
+      if (next.timestamp === undefined && ts !== undefined) next.timestamp = ts;
       delete next.openPart;
       return replaceAt(items, idx, next);
     }
     items = finalizeAt(items, idx);
   }
-  return appendItems(items, [{ kind: 'assistant', text, pending: true, seq, msgId: msgId ?? null }]);
+  const fresh: AssistantItem = { kind: 'assistant', text, pending: true, seq, msgId: msgId ?? null };
+  if (ts !== undefined) fresh.timestamp = ts;
+  return appendItems(items, [fresh]);
 }
 
 // Finalize the in-flight assistant bubble (pending -> false). The result text
@@ -370,8 +377,10 @@ function insertBeforeRow(items: ChatItem[], rowSeq: number, rows: ChatItem[]): C
 // The interrupted message's final text (the CLI sends it after the
 // interrupt): it completes the interrupted bubble right before the row,
 // replacing the part its deltas streamed (live), or becomes that bubble
-// (replay holds no deltas).
-function applyInterruptedText(items: ChatItem[], rowSeq: number, seq: number, text: string, msgId?: string): ChatItem[] {
+// (replay holds no deltas). `ts`: see applyBlockText — first-seen wins.
+function applyInterruptedText(
+  items: ChatItem[], rowSeq: number, seq: number, text: string, msgId?: string, ts?: number,
+): ChatItem[] {
   const r = interruptRowIndex(items, rowSeq);
   const prev = r > 0 ? items[r - 1] : undefined;
   if (prev?.kind === 'assistant' && prev.interrupted && (prev.msgId === null || msgId == null || prev.msgId === msgId)) {
@@ -380,12 +389,13 @@ function applyInterruptedText(items: ChatItem[], rowSeq: number, seq: number, te
         ? prev.text.slice(0, prev.openPart)
         : prev.text + (prev.text === '' ? '' : PART_SEPARATOR);
     const next: AssistantItem = { ...prev, text: base + text, msgId: msgId ?? prev.msgId };
+    if (next.timestamp === undefined && ts !== undefined) next.timestamp = ts;
     delete next.openPart;
     return replaceAt(items, r - 1, next);
   }
-  return insertBeforeRow(items, rowSeq, [
-    { kind: 'assistant', text, pending: false, seq, msgId: msgId ?? null, interrupted: true },
-  ]);
+  const fresh: AssistantItem = { kind: 'assistant', text, pending: false, seq, msgId: msgId ?? null, interrupted: true };
+  if (ts !== undefined) fresh.timestamp = ts;
+  return insertBeforeRow(items, rowSeq, [fresh]);
 }
 
 // Record that the current interrupt (if any) is responsible for the item
@@ -501,6 +511,10 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // single-message match below). Two messages queued mid-tool instead
       // arrive as two separate one-block echoes and take the ordinary path.
       const blocks = textBlocks(ev.message?.content);
+      // The one echo event's own wire time: "once the message is taken, the
+      // transcript user message shows the echo's wire timestamp" — every
+      // block taken by this same event shares it.
+      const echoTs = wireTime(ev) ?? undefined;
       if (blocks.length > 1) {
         let items = state.items;
         let matchedAll = true;
@@ -510,7 +524,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
             matchedAll = false;
             break;
           }
-          items = takeQueuedAt(items, idx);
+          items = takeQueuedAt(items, idx, [], echoTs);
         }
         if (matchedAll) return { ...state, items, busy: true };
       }
@@ -559,13 +573,16 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // with, or at the start of the next turn): it moves to the take point,
       // its attachment row in front.
       if (localIdx !== -1 && (state.items[localIdx] as UserItem).queued) {
-        return { ...state, items: takeQueuedAt(state.items, localIdx, attach ? [attach] : []), busy: true };
+        return { ...state, items: takeQueuedAt(state.items, localIdx, attach ? [attach] : [], wireTime(ev) ?? undefined), busy: true };
       }
       // A local bubble: confirm it in place instead of inserting a duplicate
-      // (the attachment row slots just before it).
+      // (the attachment row slots just before it). The echo's own wire time
+      // replaces whatever send-time the local (optimistic) bubble carried.
       if (localIdx !== -1) {
         const confirmed = { ...state.items[localIdx] } as Extract<ChatItem, { kind: 'user' }>;
         delete confirmed.local;
+        const t = wireTime(ev);
+        if (t !== null) confirmed.timestamp = t;
         const items = attach
           ? [...state.items.slice(0, localIdx), attach, confirmed, ...state.items.slice(localIdx + 1)]
           : [...state.items.slice(0, localIdx), confirmed, ...state.items.slice(localIdx + 1)];
@@ -573,9 +590,9 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       }
       // Replayed / un-echoed prompt: slot the attachment row + user bubble in
       // front of the in-flight assistant bubble (the answer streams first).
-      const rows: ChatItem[] = attach
-        ? [attach, { kind: 'user', text, seq }]
-        : [{ kind: 'user', text, seq }];
+      const userItem: UserItem = { kind: 'user', text, seq };
+      if (echoTs !== undefined) userItem.timestamp = echoTs;
+      const rows: ChatItem[] = attach ? [attach, userItem] : [userItem];
       return { ...state, items: insertBeforePending(state.items, rows), busy: true };
     }
 
@@ -592,6 +609,10 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       }
       const item: UserItem = { kind: 'user', text, seq, local: true };
       if (id !== undefined) item.queueId = id;
+      // The view's own send-time (Date.now() at the moment it dispatched this
+      // synthetic event) — the reducer itself never reads the clock. Shown
+      // live until the wire echo replaces it with its own timestamp.
+      if (typeof ev.time === 'number') item.timestamp = ev.time;
       // Queued (the /send response said so), or sent behind queued messages:
       // it waits, pinned at the bottom with them.
       if (ev.queued === true || state.items.some(isQueued)) item.queued = true;
@@ -659,7 +680,9 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // not replayed on resume, unlike the successful-filename activity rows).
       const text = typeof ev.text === 'string' ? ev.text : '';
       if (text === '') return state;
-      return { ...state, items: appendItems(state.items, [{ kind: 'error', text, seq }]) };
+      const item: Extract<ChatItem, { kind: 'error' }> = { kind: 'error', text, seq };
+      if (typeof ev.time === 'number') item.timestamp = ev.time;
+      return { ...state, items: appendItems(state.items, [item]) };
     }
 
     case 'assistant': {
@@ -674,6 +697,11 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       const blocks = Array.isArray(ev.message?.content) ? ev.message.content : [];
       const msgId = typeof ev.message?.id === 'string' ? ev.message.id : undefined;
       const at = eventTime(ev, now);
+      // This event's own wire time, for the message-time shown under the
+      // bubble (see chat.ts): the FIRST such timestamp seen for a message
+      // wins (applyBlockText/applyInterruptedText enforce that), so a later
+      // event for the same message never overrides it.
+      const ts = wireTime(ev) ?? undefined;
       let items = state.items;
       for (const block of blocks) {
         const text = blockText(block);
@@ -685,10 +713,10 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
           // already tracked — or, if none existed yet, a freshly inserted
           // one, tracked here by its own seq, this event's `seq`).
           if (state.interrupt) {
-            items = applyInterruptedText(items, state.interrupt.rowSeq, seq, text, msgId);
+            items = applyInterruptedText(items, state.interrupt.rowSeq, seq, text, msgId, ts);
             state = noteInterrupted(state, seq);
           } else {
-            items = applyBlockText(items, seq, text, msgId);
+            items = applyBlockText(items, seq, text, msgId, ts);
           }
         } else if (block?.type === 'tool_use') {
           // A persistent row per call; its tool_result (a later user event)
@@ -754,7 +782,11 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
         const msg = explainApiError(resultText ?? '', ev.api_error_status);
         const pidx = pendingIndex(items);
         const finalized = pidx === -1 ? items : finalizeAt(items, pidx);
-        return { ...state, items: appendItems(finalized, [{ kind: 'error', text: msg, seq }]), busy: false };
+        // 'result' carries no wire timestamp of its own; `at` is the same
+        // time base freezeRunning just used above (the latest real
+        // user/assistant time, or the reducer clock if none has been seen
+        // yet), so live and replay agree.
+        return { ...state, items: appendItems(finalized, [{ kind: 'error', text: msg, seq, timestamp: at }]), busy: false };
       }
       return { ...state, items: finalizePending(items, seq, resultText), busy: false };
     }
