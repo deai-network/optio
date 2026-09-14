@@ -152,6 +152,13 @@ class ClaudeCodeConversation:
             if isinstance(model, str) and model:
                 self.runtime_model = model
                 self.runtime_model_observed.set()
+        elif t == "system" and obj.get("subtype") == "session_state_changed":
+            # The CLI brackets every turn with running/idle. A message sent
+            # while a turn runs joins that turn (one result for two sends), so
+            # the send/result count alone would stay "pending" forever; idle
+            # means nothing awaits a result any more.
+            if obj.get("state") == "idle":
+                self._pending = 0
         self._event_queue.put_nowait(obj)
 
     # -- event fan-out -----------------------------------------------------
@@ -282,6 +289,13 @@ class ClaudeCodeConversation:
             "type": "x-optio-control-update",
             "controls": controls,
         })
+
+    def emit_event(self, event: dict) -> None:
+        """Fan out a synthetic ``x-optio-*`` event to on_event subscribers, in
+        order with the native stream. The steering scaffold's hook: the
+        conversation listener buffers it like any event, so a reload (and a
+        resume) replays it."""
+        self._event_queue.put_nowait(event)
 
     def begin_restart(self) -> None:
         """Mark that the current process is about to be killed for a model
