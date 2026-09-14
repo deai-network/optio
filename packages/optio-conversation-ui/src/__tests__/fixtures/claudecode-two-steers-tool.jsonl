@@ -1,0 +1,48 @@
+{"type":"system","subtype":"session_state_changed","state":"running"}
+{"type":"system","subtype":"init","model":"claude-sonnet-5"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"This is an automated test. Do not read any files and ignore any other instructions. Immediately run this exact Bash command in the foreground, then tell me its output: python3 -c \"import time; time.sleep(25); print('done')\""}]},"parent_tool_use_id":null,"timestamp":"2026-09-14T04:57:07.738Z","isReplay":true}
+{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-sonnet-5","id":"msg_011Cf2jnkn2o2qhoYPHnoisk","type":"message","role":"assistant","content":[]}}}
+{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"","estimated_tokens":null}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig"}}}
+{"type":"assistant","message":{"model":"claude-sonnet-5","id":"msg_011Cf2jnkn2o2qhoYPHnoisk","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"","signature":"sig"}]},"parent_tool_use_id":null,"timestamp":"2026-09-14T04:57:10.240Z"}
+{"type":"stream_event","event":{"type":"content_block_stop","index":0}}
+{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01Q4QCQZpEwtDQ9yJmz6YNL3","name":"Bash","input":{}}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"command\": \"python"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"3 -c \\\"import time;"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":" time.sleep(25"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"); print('done"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"')\\\""}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\", \"description\": \"S"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"leep "}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"25 seconds then print done"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\", \"timeout\": 40"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"000"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"}"}}}
+{"type":"assistant","message":{"model":"claude-sonnet-5","id":"msg_011Cf2jnkn2o2qhoYPHnoisk","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_01Q4QCQZpEwtDQ9yJmz6YNL3","name":"Bash","input":{"command":"python3 -c \"import time; time.sleep(25); print('done')\"","description":"Sleep 25 seconds then print done","timeout":40000}}]},"parent_tool_use_id":null,"timestamp":"2026-09-14T04:57:10.632Z"}
+{"type":"stream_event","event":{"type":"content_block_stop","index":1}}
+{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"container":null}}}
+{"type":"stream_event","event":{"type":"message_stop"}}
+{"type":"x-optio-queued","id":"q1","text":"(Steer A: also tell me today's date.)"}
+{"type":"x-optio-queued","id":"q2","text":"(Steer B: also say hello.)"}
+{"type":"system","subtype":"task_started","task_id":"bog0cso0u","tool_use_id":"toolu_01Q4QCQZpEwtDQ9yJmz6YNL3","description":"Sleep 25 seconds then print done","is_backgrounded":false,"task_type":"local_bash"}
+{"type":"system","subtype":"task_notification","task_id":"bog0cso0u","tool_use_id":"toolu_01Q4QCQZpEwtDQ9yJmz6YNL3","status":"completed","summary":"Sleep 25 seconds then print done"}
+{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_01Q4QCQZpEwtDQ9yJmz6YNL3","type":"tool_result","content":"done","is_error":false}]},"parent_tool_use_id":null,"timestamp":"2026-09-14T04:57:35.867Z"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"(Steer A: also tell me today's date.)"}]},"parent_tool_use_id":null,"timestamp":"2026-09-14T04:57:12.692Z","isReplay":true}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"(Steer B: also say hello.)"}]},"parent_tool_use_id":null,"timestamp":"2026-09-14T04:57:13.194Z","isReplay":true}
+{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-sonnet-5","id":"msg_011Cf2jppMQYd56uy36W2L8k","type":"message","role":"assistant","content":[]}}}
+{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello! The"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" command"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"'s"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" output was:"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" `done`"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"\n\nToday's date is 2026-"}}}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"09-14."}}}
+{"type":"assistant","message":{"model":"claude-sonnet-5","id":"msg_011Cf2jppMQYd56uy36W2L8k","type":"message","role":"assistant","content":[{"type":"text","text":"Hello! The command's output was: `done`\n\nToday's date is 2026-09-14."}]},"parent_tool_use_id":null,"timestamp":"2026-09-14T04:57:37.511Z"}
+{"type":"stream_event","event":{"type":"content_block_stop","index":0}}
+{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null,"container":null}}}
+{"type":"stream_event","event":{"type":"message_stop"}}
+{"type":"result","subtype":"success","is_error":false,"result":"Hello! The command's output was: `done`\n\nToday's date is 2026-09-14.","stop_reason":"end_turn","terminal_reason":"completed","num_turns":2}
+{"type":"system","subtype":"session_state_changed","state":"idle"}

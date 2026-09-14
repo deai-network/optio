@@ -206,6 +206,20 @@ function extractText(content: unknown): string {
     .join('\n');
 }
 
+// message.content's text blocks, in order (tool_use/tool_result/thinking
+// blocks excluded). A lone user message carries exactly one; a joint echo of
+// several messages queued together (CLI 2.1.270: two "Send when ready"
+// messages queued while the answer streams come back as ONE isReplay echo,
+// one text block per message, each the exact sent text) carries more than
+// one — see the multi-block take below.
+function textBlocks(content: unknown): string[] {
+  if (typeof content === 'string') return content === '' ? [] : [content];
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter((block: any) => block?.type === 'text' && typeof block.text === 'string')
+    .map((block: any) => block.text);
+}
+
 function pendingIndex(items: ChatItem[]): number {
   return items.findIndex((item) => item.kind === 'assistant' && item.pending);
 }
@@ -346,6 +360,25 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // event carries no text, so it adds no bubble below.
       const withResults = applyToolResults(state.items, ev.message?.content, eventTime(ev, now));
       if (withResults !== state.items) state = { ...state, items: withResults };
+      // A joint echo of several queued messages, taken together at the start
+      // of one follow-up turn (see textBlocks): match each block, in order,
+      // to its own queued bubble and take it (FIFO by text, same as the
+      // single-message match below). Two messages queued mid-tool instead
+      // arrive as two separate one-block echoes and take the ordinary path.
+      const blocks = textBlocks(ev.message?.content);
+      if (blocks.length > 1) {
+        let items = state.items;
+        let matchedAll = true;
+        for (const t of blocks) {
+          const idx = items.findIndex((i) => i.kind === 'user' && isQueued(i) && i.text === t);
+          if (idx === -1) {
+            matchedAll = false;
+            break;
+          }
+          items = takeQueuedAt(items, idx);
+        }
+        if (matchedAll) return { ...state, items, busy: true };
+      }
       // A background command ended and the CLI injected its notification as a
       // user turn: apply it to the Bash row; never render it as a user bubble.
       // Trust `origin` when the CLI sends it: only an origin explicitly tagged
