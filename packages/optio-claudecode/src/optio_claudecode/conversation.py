@@ -44,7 +44,16 @@ class ClaudeCodeConversation:
         # defensive deny (design §3.5) instead of being queued for a handler.
         self._permission_gate = permission_gate
         self._handle = None
+        # Sends awaiting a ``result`` (a merged turn — a message sent while a
+        # turn runs joins it, so two sends can produce one result — leaves
+        # this above 0 after that result). session_state_changed idle/running
+        # resync it against _sends_since_result rather than zeroing it
+        # outright: see the comment on that branch in _route.
         self._pending = 0
+        # Sends written since the last ``result``. Reset to 0 on ``result``,
+        # incremented on every send(). Used only to correct _pending against
+        # a stale idle (below).
+        self._sends_since_result = 0
         self._closed = asyncio.Event()
         self._close_reason: str | None = None
         # Cooperative-shutdown request towards the owning task body.
@@ -125,6 +134,7 @@ class ClaudeCodeConversation:
         t = obj.get("type")
         if t == "result":
             self._pending = max(0, self._pending - 1)
+            self._sends_since_result = 0
             text = obj.get("result")
             if isinstance(text, str):
                 self._fire_message(text)
@@ -156,9 +166,26 @@ class ClaudeCodeConversation:
             # The CLI brackets every turn with running/idle. A message sent
             # while a turn runs joins that turn (one result for two sends), so
             # the send/result count alone would stay "pending" forever; idle
-            # means nothing awaits a result any more.
-            if obj.get("state") == "idle":
-                self._pending = 0
+            # is meant to mean nothing awaits a result any more.
+            #
+            # But the CLI's idle for a turn that just ended can arrive a few
+            # ms after that turn's own result (recorded: result then idle
+            # ~4 ms later), and steering's interrupt_and_send reacts to the
+            # result by writing the NEXT turn's prompt within microseconds —
+            # raising _pending back to 1 before the stale idle is even read.
+            # Zeroing _pending unconditionally on idle would then erase that
+            # brand-new turn's pending state for good (OWNER RULING, review
+            # of Task 3, fix round 1). Instead, idle resyncs _pending to
+            # _sends_since_result: for a genuinely-finished turn that's 0 (a
+            # merged turn's extra send was folded into the count that
+            # `result` already reset), but a send already written for the
+            # next turn survives. running then restores _pending to at least
+            # 1 if a send raced ahead of it too.
+            state = obj.get("state")
+            if state == "idle":
+                self._pending = self._sends_since_result
+            elif state == "running":
+                self._pending = max(self._pending, 1)
         self._event_queue.put_nowait(obj)
 
     # -- event fan-out -----------------------------------------------------
@@ -255,10 +282,12 @@ class ClaudeCodeConversation:
         if self._closed.is_set():
             raise ConversationClosed(self._close_reason or "conversation closed")
         self._pending += 1
+        self._sends_since_result += 1
         try:
             await self._write_bytes(_user_message_line(text))
         except Exception:
             self._pending -= 1
+            self._sends_since_result -= 1
             await self._finish("stdin write failed")
             raise
 
@@ -325,6 +354,11 @@ class ClaudeCodeConversation:
         return _unsub
 
     def is_pending(self) -> bool:
+        """True while a turn is outstanding: more sends than results seen
+        since the conversation started, corrected against the CLI's own
+        session_state_changed idle/running so a stale idle for an
+        already-ended turn can't erase a turn that started a few ms later
+        (see the comment on the session_state_changed branch in _route)."""
         return self._pending > 0
 
     async def interrupt(self) -> None:
