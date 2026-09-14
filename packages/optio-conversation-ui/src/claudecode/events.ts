@@ -604,8 +604,22 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       if (text === '') return state;
       const id = typeof ev.id === 'string' && ev.id !== '' ? ev.id : undefined;
       // The listener's x-optio-queued (or the message's echo) got here first.
-      if (id !== undefined && state.items.some((i) => i.kind === 'user' && i.queueId === id)) {
-        return { ...state, busy: true };
+      if (id !== undefined) {
+        const idx = state.items.findIndex((i) => i.kind === 'user' && i.queueId === id);
+        if (idx !== -1) {
+          const existing = state.items[idx] as UserItem;
+          // x-optio-queued carries no time of its own, so a bubble it created
+          // has none yet. If the item is still queued/local (the wire echo
+          // has not confirmed it) and untimed, this is the only send-time we
+          // have — use it. An item the wire echo already confirmed (queued
+          // and local both cleared) keeps its own wire time; never overwrite
+          // that.
+          if ((existing.queued === true || existing.local === true) && existing.timestamp === undefined && typeof ev.time === 'number') {
+            const timed = { ...existing, timestamp: ev.time };
+            return { ...state, items: [...state.items.slice(0, idx), timed, ...state.items.slice(idx + 1)], busy: true };
+          }
+          return { ...state, busy: true };
+        }
       }
       const item: UserItem = { kind: 'user', text, seq, local: true };
       if (id !== undefined) item.queueId = id;
@@ -782,11 +796,15 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
         const msg = explainApiError(resultText ?? '', ev.api_error_status);
         const pidx = pendingIndex(items);
         const finalized = pidx === -1 ? items : finalizeAt(items, pidx);
-        // 'result' carries no wire timestamp of its own; `at` is the same
-        // time base freezeRunning just used above (the latest real
-        // user/assistant time, or the reducer clock if none has been seen
-        // yet), so live and replay agree.
-        return { ...state, items: appendItems(finalized, [{ kind: 'error', text: msg, seq, timestamp: at }]), busy: false };
+        // 'result' carries no wire timestamp of its own. The reducer must
+        // never read the clock: use the latest real user/assistant wire time
+        // seen so far (state.lastEventAt), and show no time at all when none
+        // has been seen yet — never invent one. `at` (which falls back to
+        // `now`) stays reserved for freezeRunning above, which always needs a
+        // concrete instant to freeze running tool rows against.
+        const item: Extract<ChatItem, { kind: 'error' }> = { kind: 'error', text: msg, seq };
+        if (state.lastEventAt !== undefined) item.timestamp = state.lastEventAt;
+        return { ...state, items: appendItems(finalized, [item]), busy: false };
       }
       return { ...state, items: finalizePending(items, seq, resultText), busy: false };
     }
