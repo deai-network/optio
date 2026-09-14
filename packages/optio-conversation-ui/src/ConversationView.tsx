@@ -265,6 +265,45 @@ function renderTimeLabel(timestamp: number | undefined, now: number, token: Glob
   );
 }
 
+// Fix 4 review round 1: the time label is a SIBLING below the bubble, never a
+// descendant of it. Rendered inside the bubble it sat on the bubble's own
+// tinted/coloured background (colorPrimaryBg, colorErrorBg, after the
+// assistant cursor, between the queued text and its caption) with poor
+// contrast. `align` mirrors the bubble's own alignSelf so the column takes
+// the same place in the outer transcript flex column the bubble alone used
+// to occupy; `labelAlign` right-aligns the label under user bubbles and
+// left-aligns it under assistant and error bubbles. When `align` is
+// 'flex-end'/'flex-start' (user, assistant) the column also gets bubbleBase's
+// own 80% width cap: the bubble's copy of that percentage would otherwise
+// resolve against this column's indefinite (shrink-to-fit) width and stop
+// constraining anything. The error bubble stays 'stretch' (full width, as
+// before) and is left uncapped.
+function withTimeLabel(
+  key: number,
+  align: 'flex-end' | 'flex-start' | 'stretch',
+  labelAlign: 'flex-end' | 'flex-start',
+  bubble: React.ReactNode,
+  timestamp: number | undefined,
+  now: number,
+  token: GlobalToken,
+): React.ReactNode {
+  return (
+    <div
+      key={key}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignSelf: align,
+        alignItems: labelAlign,
+        ...(align === 'stretch' ? null : { maxWidth: '80%' }),
+      }}
+    >
+      {bubble}
+      {renderTimeLabel(timestamp, now, token)}
+    </div>
+  );
+}
+
 // Generic renderer for engine-neutral session controls. Each control renders by
 // kind: boolean -> <Switch>, segmented -> <Segmented>, slider -> <Slider>,
 // select -> <Select> (disabled options greyed with a whyDisabled tooltip
@@ -580,13 +619,14 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
         // A Send when ready the agent has not taken yet: user colours, dashed
         // and muted; the reducer keeps it pinned at the bottom.
         if (item.queued) {
-          return (
+          return withTimeLabel(
+            item.seq,
+            'flex-end',
+            'flex-end',
             <div
-              key={item.seq}
               data-testid="queued-bubble"
               style={{
                 ...bubbleBase,
-                alignSelf: 'flex-end',
                 background: token.colorPrimaryBg,
                 border: `1px dashed ${token.colorPrimaryBorder}`,
                 borderRadius: '14px 14px 4px 14px',
@@ -595,7 +635,6 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               }}
             >
               {item.text}
-              {renderTimeLabel(item.timestamp, renderedAt, token)}
               <div style={{ fontSize: 12, color: token.colorTextSecondary, marginTop: 4, whiteSpace: 'normal' }}>
                 Queued — the agent reads it when ready
                 {props.onSteer && !closed ? (
@@ -614,15 +653,19 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                   </>
                 ) : null}
               </div>
-            </div>
+            </div>,
+            item.timestamp,
+            renderedAt,
+            token,
           );
         }
-        return (
+        return withTimeLabel(
+          item.seq,
+          'flex-end',
+          'flex-end',
           <div
-            key={item.seq}
             style={{
               ...bubbleBase,
-              alignSelf: 'flex-end',
               background: token.colorPrimaryBg,
               border: `1px solid ${token.colorPrimaryBorder}`,
               borderRadius: '14px 14px 4px 14px',
@@ -632,20 +675,23 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             }}
           >
             {item.text}
-            {renderTimeLabel(item.timestamp, renderedAt, token)}
-          </div>
+          </div>,
+          item.timestamp,
+          renderedAt,
+          token,
         );
       case 'assistant':
-        return (
+        return withTimeLabel(
+          item.seq,
+          'flex-start',
+          'flex-start',
           <div
-            key={item.seq}
             // An answer the operator interrupted keeps its text and gets a
             // jagged bottom edge (the class is installed on mount).
             data-testid={item.interrupted ? 'answer-interrupted' : undefined}
             className={item.interrupted ? 'optio-cc-interrupted' : undefined}
             style={{
               ...bubbleBase,
-              alignSelf: 'flex-start',
               background: token.colorBgContainer,
               border: `1px solid ${token.colorBorderSecondary}`,
               borderRadius: '14px 14px 14px 4px',
@@ -665,8 +711,10 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               </Button>
             </div>
             {item.pending && <span style={{ color: token.colorTextTertiary }}>▍</span>}
-            {renderTimeLabel(item.timestamp, renderedAt, token)}
-          </div>
+          </div>,
+          item.timestamp,
+          renderedAt,
+          token,
         );
       case 'activity':
         // A muted note ("⏹ Interrupted by you", an undelivered message): one
@@ -816,12 +864,13 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
           </div>
         );
       case 'error':
-        return (
+        return withTimeLabel(
+          item.seq,
+          'stretch',
+          'flex-start',
           <div
-            key={item.seq}
             data-testid="conversation-error-item"
             style={{
-              alignSelf: 'stretch',
               background: token.colorErrorBg,
               border: `1px solid ${token.colorErrorBorder}`,
               color: token.colorErrorText,
@@ -831,8 +880,10 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             }}
           >
             {item.text}
-            {renderTimeLabel(item.timestamp, renderedAt, token)}
-          </div>
+          </div>,
+          item.timestamp,
+          renderedAt,
+          token,
         );
       case 'closed':
         return (

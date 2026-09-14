@@ -695,4 +695,28 @@ describe('ConversationView message timestamps', () => {
     renderView(makeProps({ state: makeState(ALL_KINDS) }));
     expect(screen.queryByTestId('message-time')).toBeNull();
   });
+
+  // Fix 4 review round 1, finding 3: rendered as a child, the label sat on the
+  // bubble's own tinted background (colorPrimaryBg / colorErrorBg / inside the
+  // queued caption) with poor contrast. It must be a sibling directly below
+  // the bubble instead: not contained by it, immediately after it in the DOM.
+  it('the time label is a sibling right after the bubble, never a descendant of it', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 14, 20, 0).getTime());
+    const ts = new Date(2026, 8, 14, 16, 29).getTime();
+    renderView(
+      makeProps({
+        state: makeState([
+          { kind: 'error', text: 'boom', seq: 1, timestamp: ts },
+          { kind: 'user', text: 'q', seq: 2, queued: true, queueId: 'q1', timestamp: ts },
+        ]),
+      }),
+    );
+    for (const testId of ['conversation-error-item', 'queued-bubble']) {
+      const bubble = screen.getByTestId(testId);
+      expect(bubble.querySelector('[data-testid="message-time"]')).toBeNull();
+      const sibling = bubble.nextElementSibling;
+      expect(sibling?.getAttribute('data-testid')).toBe('message-time');
+    }
+  });
 });

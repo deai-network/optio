@@ -146,4 +146,35 @@ describe('claudecode message timestamps: synthetic events', () => {
     const s = run([user('q', '2026-09-13T12:00:00.000Z'), assistantText('ok', 'm1', '2026-09-13T12:00:01.000Z'), result('ok')]);
     expect(s.items.some((i) => i.kind === 'error')).toBe(false);
   });
+
+  it('an is_error result with no prior timestamped user/assistant event gives an error item with no timestamp -- never invented', () => {
+    const s = run([{ type: 'result', subtype: 'error_during_execution', is_error: true, result: 'boom', api_error_status: 500 }]);
+    const err = s.items.find((i) => i.kind === 'error');
+    expect(err).toBeDefined();
+    expect(err?.timestamp).toBeUndefined();
+  });
+
+  // Fix 4 review round 1, finding 1: a busy send races x-optio-queued (the
+  // listener broadcasts it before /send returns) ahead of the local echo the
+  // view dispatches only after `await postJson('send')`. The queued bubble
+  // x-optio-queued creates carries no time; the local echo that follows must
+  // still backfill it instead of hitting the "got here first" branch and
+  // discarding ev.time. The taking wire echo (isReplay in real traffic; here
+  // any wire `user` event with matching text) then wins over that.
+  it('x-optio-queued(q1) then x-optio-local-user(q1, time T) backfills T on the still-queued bubble; the taking echo then wins', () => {
+    const sentAt = Date.parse('2026-09-13T12:00:00.000Z');
+    const wireAt = Date.parse('2026-09-13T12:00:01.500Z');
+    const queued = { type: 'x-optio-queued', id: 'q1', text: 'later' };
+    const afterQueued = run([queued]);
+    expect(ofKind(afterQueued, 'user')[0]).toMatchObject({ queued: true, queueId: 'q1' });
+    expect(ofKind(afterQueued, 'user')[0].timestamp).toBeUndefined();
+
+    const afterLocal = run([queued, localUser('later', 'q1', sentAt, true)]);
+    expect(ofKind(afterLocal, 'user')[0]).toMatchObject({ queued: true, queueId: 'q1', timestamp: sentAt });
+
+    const taken = run([queued, localUser('later', 'q1', sentAt, true), user('later', new Date(wireAt).toISOString())]);
+    const takenItem = ofKind(taken, 'user')[0];
+    expect(takenItem).toMatchObject({ queueId: 'q1', timestamp: wireAt });
+    expect(takenItem.queued).toBeUndefined();
+  });
 });
