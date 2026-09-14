@@ -150,7 +150,7 @@ describe.each(SEND_VIEWS)('%s upload via the generic route', (_name, View) => {
 
     const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
     fireEvent.change(box, { target: { value: 'review the screenshot' } });
-    fireEvent.click(screen.getByTestId('conversation-send'));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
     await waitFor(() => expect(calls.some((c) => c.url.endsWith('/send'))).toBe(true));
 
@@ -193,7 +193,7 @@ describe('OpencodeView upload via the generic route', () => {
 
     const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
     fireEvent.change(box, { target: { value: 'look at this' } });
-    fireEvent.click(screen.getByTestId('conversation-send'));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
     await waitFor(() => expect(calls.some((c) => c.url.includes('/prompt_async'))).toBe(true));
 
@@ -239,7 +239,7 @@ describe('a failed upload surfaces an error row', () => {
 
     const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
     fireEvent.change(box, { target: { value: 'review this' } });
-    fireEvent.click(screen.getByTestId('conversation-send'));
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
     // The failed upload is surfaced immediately as an error row naming the file.
     await waitFor(() => expect(screen.getByTestId('conversation-error-item')).toBeTruthy());

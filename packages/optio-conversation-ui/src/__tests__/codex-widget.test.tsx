@@ -78,7 +78,7 @@ describe('CodexView (Stages 6-7 parity)', () => {
     const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
     fireEvent.change(box, { target: { value: 'summarize this' } });
     await act(async () => {
-      fireEvent.click(screen.getByTestId('conversation-send'));
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     });
 
     const calls = fetchMock.mock.calls as any[];
