@@ -38,7 +38,13 @@ export interface ConversationViewProps {
   // generic antd <Spin> is used. The view passes its engine's NativeSpinner.
   nativeSpinner?: React.ReactNode;
   onSend: (text: string, attachments: Attachment[]) => Promise<boolean>; // returns ok
-  onInterrupt: () => void;
+  // Resolves whether the request reached the listener (Fix 6, manual-test
+  // finding 1): the Interrupt button shows a pending state while in flight
+  // and 'Interrupt failed — retry.' through the same error slot the input
+  // bar uses on false or a rejection. A void-returning handler (the other
+  // engines, unchanged) is treated as immediate success — no pending
+  // flicker, no error path.
+  onInterrupt: () => Promise<boolean> | void;
   // Steering (optional). When set, a busy input bar offers "Send when ready"
   // (Enter → onSend) and "Interrupt and send" (Cmd/Ctrl-Enter → onSteer) in
   // one vultus multi-action button, and a queued bubble offers "Send now"
@@ -451,6 +457,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
 
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
+  const [interrupting, setInterrupting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [wide, setWide] = useState(false);
@@ -492,6 +499,31 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   const programmaticRef = useRef(false);
   const lastContentHeightRef = useRef(0);
 
+  // Interrupt (Fix 6): a plain ref guards against a second click landing
+  // before React re-renders (same reason sendingNowRef exists below), while
+  // `interrupting` state drives the button's pending label/disabled look. A
+  // void-returning onInterrupt (older engines) is treated as immediate
+  // success — there is nothing to await.
+  const interruptingRef = useRef(false);
+  async function interrupt() {
+    if (interruptingRef.current || !busy || closed) return;
+    interruptingRef.current = true;
+    setInterrupting(true);
+    setError(null);
+    try {
+      const result = onInterrupt();
+      const ok = result ? await result : true;
+      if (!ok) setError('Interrupt failed — retry.');
+    } catch {
+      // A rejected onInterrupt is still "interrupt failed", not an unhandled
+      // rejection (same guard as the Send now / onSteer path below).
+      setError('Interrupt failed — retry.');
+    } finally {
+      interruptingRef.current = false;
+      setInterrupting(false);
+    }
+  }
+
   // On mount: install the flash keyframes + copy hover rule and focus the input
   // so the operator can type immediately without clicking. The widget mounts
   // async (it un-gates only once widgetData arrives), so on a full page-load a
@@ -512,7 +544,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     const h = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && props.busy && !props.closed) {
         e.preventDefault();
-        props.onInterrupt();
+        void interrupt();
       }
     };
     window.addEventListener('keydown', h);
@@ -624,7 +656,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     } else if (e.key === 'Escape' && busy && !closed) {
       // Same guard as the Interrupt button: only while a turn is running.
       e.preventDefault();
-      onInterrupt();
+      void interrupt();
     }
   }
 
@@ -1140,10 +1172,10 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               size="small"
               danger
               data-testid="conversation-interrupt"
-              disabled={!busy || closed}
-              onClick={onInterrupt}
+              disabled={!busy || closed || interrupting}
+              onClick={() => void interrupt()}
             >
-              Interrupt
+              {interrupting ? 'Interrupting…' : 'Interrupt'}
             </Button>
           </div>
           </div>

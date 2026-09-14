@@ -229,6 +229,68 @@ describe('ConversationView Escape-to-interrupt', () => {
   });
 });
 
+// Fix 6 (manual-test finding 1): Interrupt gets immediate pending feedback and
+// reports a failure through the same error slot the input bar uses, mirroring
+// the queued-bubble Send now pattern from Task 7.
+describe('ConversationView Interrupt pending and failure', () => {
+  it('shows "Interrupting…" while pending, calls onInterrupt once, ignores a second click, and clears with no error on success', async () => {
+    let resolveInterrupt!: (ok: boolean) => void;
+    const onInterrupt = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveInterrupt = resolve;
+        }),
+    );
+    renderView(makeProps({ busy: true, onInterrupt }));
+    const button = screen.getByTestId('conversation-interrupt') as HTMLButtonElement;
+    fireEvent.click(button);
+    expect(onInterrupt).toHaveBeenCalledTimes(1);
+    expect(button.textContent).toBe('Interrupting…');
+    expect(button.disabled).toBe(true);
+
+    // A second click landing while the first is still in flight is dropped.
+    fireEvent.click(button);
+    expect(onInterrupt).toHaveBeenCalledTimes(1);
+
+    resolveInterrupt(true);
+    await waitFor(() => expect(button.textContent).toBe('Interrupt'));
+    expect(button.disabled).toBe(false);
+    expect(screen.queryByTestId('conversation-error')).toBeNull();
+  });
+
+  it('shows "Interrupt failed — retry." when onInterrupt resolves false, then returns to normal', async () => {
+    const onInterrupt = vi.fn(async () => false);
+    renderView(makeProps({ busy: true, onInterrupt }));
+    fireEvent.click(screen.getByTestId('conversation-interrupt'));
+    await waitFor(() =>
+      expect(screen.getByTestId('conversation-error').textContent).toContain('Interrupt failed — retry.'),
+    );
+    const button = screen.getByTestId('conversation-interrupt') as HTMLButtonElement;
+    expect(button.textContent).toBe('Interrupt');
+    expect(button.disabled).toBe(false);
+  });
+
+  it('shows "Interrupt failed — retry." when onInterrupt rejects, with no unhandled rejection', async () => {
+    const onInterrupt = vi.fn(async () => {
+      throw new Error('boom');
+    });
+    renderView(makeProps({ busy: true, onInterrupt }));
+    fireEvent.click(screen.getByTestId('conversation-interrupt'));
+    await waitFor(() =>
+      expect(screen.getByTestId('conversation-error').textContent).toContain('Interrupt failed — retry.'),
+    );
+  });
+
+  it('a void-returning onInterrupt (other engines) is treated as immediate success', () => {
+    const onInterrupt = vi.fn();
+    renderView(makeProps({ busy: true, onInterrupt }));
+    fireEvent.click(screen.getByTestId('conversation-interrupt'));
+    expect(onInterrupt).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('conversation-error')).toBeNull();
+    expect((screen.getByTestId('conversation-interrupt') as HTMLButtonElement).textContent).toBe('Interrupt');
+  });
+});
+
 describe('ConversationView send', () => {
   it('calls onSend with the typed text and empty attachments, then clears on true', async () => {
     const onSend = vi.fn(async () => true);
