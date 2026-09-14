@@ -58,8 +58,15 @@ export interface ConversationViewProps {
   onToggleTheme?: () => void; // absent => no ☀/🌙 button
 }
 
+// No `maxWidth` here (fix 4 review round 2): the three bubbles wrapped by
+// withTimeLabel (queued-user, plain user, assistant) get their 80% cap from
+// that wrapper's own style instead, because it is the wrapper — not the
+// bubble — whose containing block is the transcript's definite-width column.
+// Re-adding `maxWidth: '80%'` here for those bubbles would resolve against
+// the wrapper's already-80%-capped width and compound to ~64%. The one
+// remaining direct (unwrapped) consumer of bubbleBase, the centered
+// System-message bubble below, sets its own `maxWidth: '80%'` explicitly.
 const bubbleBase: React.CSSProperties = {
-  maxWidth: '80%',
   padding: '6px 10px',
   whiteSpace: 'pre-wrap',
   overflowWrap: 'anywhere',
@@ -273,11 +280,19 @@ function renderTimeLabel(timestamp: number | undefined, now: number, token: Glob
 // the same place in the outer transcript flex column the bubble alone used
 // to occupy; `labelAlign` right-aligns the label under user bubbles and
 // left-aligns it under assistant and error bubbles. When `align` is
-// 'flex-end'/'flex-start' (user, assistant) the column also gets bubbleBase's
-// own 80% width cap: the bubble's copy of that percentage would otherwise
-// resolve against this column's indefinite (shrink-to-fit) width and stop
-// constraining anything. The error bubble stays 'stretch' (full width, as
-// before) and is left uncapped.
+// 'flex-end'/'flex-start' (user, assistant) the column also gets an 80%
+// width cap of its own: with the bubble now nested one level deeper, its
+// containing block is this column, not the transcript, so the cap has to
+// live here to resolve against the transcript's definite width. The error
+// bubble stays 'stretch' (full width, as before) and is left uncapped.
+//
+// Fix 4 review round 2: this is now the ONLY 80% cap for the three bubbles
+// that go through here (queued-user, plain user, assistant) — bubbleBase no
+// longer sets `maxWidth` itself (see its definition). Do not re-add
+// `maxWidth: '80%'` to bubbleBase and leave this one in place at the same
+// time: the bubble's copy would then resolve against this column's
+// already-80%-capped width, compounding to ~64% instead of 80% (invisible in
+// jsdom, since it doesn't do CSS layout/percentage resolution).
 function withTimeLabel(
   key: number,
   align: 'flex-end' | 'flex-start' | 'stretch',
@@ -738,6 +753,11 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             key={item.seq}
             style={{
               ...bubbleBase,
+              // Not wrapped by withTimeLabel, so unlike the three bubbles
+              // above this is the only place that needs to cap its own
+              // width — bubbleBase no longer carries maxWidth (see its
+              // definition).
+              maxWidth: '80%',
               alignSelf: 'center',
               background: token.purple1,
               border: `1px solid ${token.purple3}`,
