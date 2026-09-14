@@ -4,12 +4,12 @@ The engine-neutral scaffolding every wrapper's conversation listener uses for
 its ``POST /send``, ``/steer`` and ``/interrupt`` routes. A wrapper declares
 how its agent treats a message sent while a turn runs (``busy_send``, per
 agent with per-model overrides); ``Steering`` adds what the agent lacks:
-optio's own queue for agents that cannot take a busy send, the bounded wait
-for the turn end after an interrupt, and the synthetic events the
-conversation UI renders (``x-optio-queued``, ``x-optio-taken``,
-``x-optio-interrupt``). The events go through the wrapper's ``emit`` hook
-into its own event stream, so the listener buffers (and a resume persists)
-them like native events.
+optio's own queue for agents that cannot take a busy send, one deadline
+bounding both the interrupt call and the wait for the turn end, at most one
+``x-optio-interrupt`` per turn, and the synthetic events the conversation UI
+renders (``x-optio-queued``, ``x-optio-taken``, ``x-optio-interrupt``). The
+events go through the wrapper's ``emit`` hook into its own event stream, so
+the listener buffers (and a resume persists) them like native events.
 
 See docs/2026-09-13-conversation-steering-design.md §2 and §3.
 """
@@ -119,6 +119,12 @@ class Steering:
         self._lock = asyncio.Lock()
         self._turn_end = asyncio.Event()
         self._flush_task: asyncio.Task | None = None
+        # Set when x-optio-interrupt is emitted for the turn now running;
+        # cleared on that turn's end. Shared by interrupt() and
+        # interrupt_and_send() so at most one marker (and one underlying
+        # interrupt() call) happens per turn, however many times either is
+        # called while it runs.
+        self._interrupted = False
         self._unsubscribe = conversation.on_event(self._on_event)
 
     @property
@@ -135,6 +141,7 @@ class Steering:
         if not self._is_turn_end(event):
             return
         self._turn_end.set()
+        self._interrupted = False
         if self._held and (self._flush_task is None or self._flush_task.done()):
             self._flush_task = asyncio.ensure_future(self._flush_after_turn())
 
@@ -169,14 +176,18 @@ class Steering:
         if texts:
             await self._conv.send(PROMPT_SEPARATOR.join(texts))
 
-    async def _interrupt_and_wait(self) -> None:
+    async def _interrupt_and_wait(self, *, call_interrupt: bool) -> None:
+        """Stop (unless someone already did, this turn) and wait for the turn
+        end, both under one ``turn_end_timeout_s`` deadline: a live but
+        unresponsive agent's ``interrupt()`` must not hold ``_lock``
+        (and every later send/steer behind it) indefinitely."""
         self._turn_end.clear()
-        await self._conv.interrupt()
-        if self._turn_end.is_set():
-            return
         try:
-            await asyncio.wait_for(self._turn_end.wait(), self._timeout_s)
-        except asyncio.TimeoutError:
+            async with asyncio.timeout(self._timeout_s):
+                if call_interrupt:
+                    await self._conv.interrupt()
+                await self._turn_end.wait()
+        except TimeoutError:
             _LOG.warning(
                 "steering: no turn end within %.0f s of the interrupt; sending anyway",
                 self._timeout_s,
@@ -211,21 +222,39 @@ class Steering:
         as one prompt. ``cuts-in`` agents cancel natively on the send itself;
         every other agent is interrupted and given at most
         ``turn_end_timeout_s`` to end the turn (its own queue goes first).
-        Empty ``text`` is Send now: returns None."""
+        Empty ``text`` is Send now: returns None. Send now with nothing held
+        on an agent that cannot take a busy send (not in NATIVE_QUEUE) is a
+        no-op: there is nothing to interrupt and nothing to send, so it
+        neither emits x-optio-interrupt nor stops the turn now running.
+        At most one x-optio-interrupt (and one underlying interrupt() call)
+        happens per turn: if interrupt() already marked this turn
+        interrupted, this still waits for the turn end and delivers, but
+        emits no second marker and sends no second interrupt."""
         self._check_open()
+        if not text and not self._held and self._busy_send() not in NATIVE_QUEUE:
+            return None
         qid = self._new_id() if text else None
         async with self._lock:
             if self._conv.is_pending():
-                self._emit({"type": INTERRUPT_EVENT, "by": "user"})
+                already_interrupted = self._interrupted
+                if not already_interrupted:
+                    self._interrupted = True
+                    self._emit({"type": INTERRUPT_EVENT, "by": "user"})
                 if self._busy_send() != "cuts-in":
-                    await self._interrupt_and_wait()
+                    await self._interrupt_and_wait(call_interrupt=not already_interrupted)
             await self._deliver([text])
         return qid
 
     async def interrupt(self) -> None:
-        """Stop only. Emits x-optio-interrupt while a turn runs. Deliberately
-        lock-free, so it never waits behind an interrupt_and_send."""
+        """Stop only. Emits x-optio-interrupt at most once per turn, shared
+        with interrupt_and_send: a second Interrupt (double click, or one
+        pressed while interrupt_and_send still waits for the turn end) emits
+        nothing and sends no second control_request. Deliberately lock-free,
+        so it never waits behind an interrupt_and_send."""
         self._check_open()
         if self._conv.is_pending():
+            if self._interrupted:
+                return
+            self._interrupted = True
             self._emit({"type": INTERRUPT_EVENT, "by": "user"})
         await self._conv.interrupt()

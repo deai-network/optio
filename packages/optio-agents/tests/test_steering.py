@@ -1,5 +1,6 @@
 """Steering scaffold unit tests against a fake conversation (no sleeps)."""
 
+import asyncio
 import logging
 
 import pytest
@@ -211,8 +212,41 @@ async def test_send_now_with_empty_text_delivers_only_the_queue():
     assert native.interrupts == 1 and native.sent == []
 
 
+@pytest.mark.parametrize("cap", ["cuts-in", "rejected", "unsafe"])
+async def test_send_now_with_nothing_held_on_a_non_native_queue_does_nothing(cap):
+    # Send now (empty text) while busy and nothing is held must not cut off
+    # the turn now running: there is nothing to interrupt and nothing to
+    # send. Realistic trigger: Send now clicked right after a turn-end flush
+    # started a new turn, before the UI has processed x-optio-taken.
+    conv = FakeConversation()
+    conv.pending = True
+    s = make(conv, cap)
+    assert await s.interrupt_and_send("") is None
+    assert conv.log == []
+    assert conv.interrupts == 0
+
+
 async def test_no_turn_end_after_the_interrupt_sends_anyway_and_logs(caplog):
     conv = FakeConversation(turn_end_on_interrupt=False)
+    conv.pending = True
+    s = make(conv, "joins-next-step", turn_end_timeout_s=0.0)
+    with caplog.at_level(logging.WARNING, logger="optio_agents.steering"):
+        assert await s.interrupt_and_send("late") == "id1"
+    assert conv.sent == ["late"]
+    assert "no turn end" in caplog.text
+
+
+async def test_a_hanging_interrupt_call_is_bounded_by_the_same_deadline(caplog):
+    # Claude Code's interrupt() awaits a control-ack future with no timeout
+    # of its own; a live but unresponsive agent must not hold Steering's
+    # lock (and every later send/steer behind it) forever.
+    class HangingConversation(FakeConversation):
+        async def interrupt(self) -> None:
+            self.log.append(("interrupt", None))
+            self.interrupts += 1
+            await asyncio.Event().wait()  # never resolves
+
+    conv = HangingConversation()
     conv.pending = True
     s = make(conv, "joins-next-step", turn_end_timeout_s=0.0)
     with caplog.at_level(logging.WARNING, logger="optio_agents.steering"):
@@ -238,6 +272,50 @@ async def test_interrupt_emits_the_marker_only_while_a_turn_runs():
     conv.pending = True
     await s.interrupt()
     assert conv.log[1:] == [("event", INTERRUPT), ("interrupt", None)]
+
+
+async def test_a_double_interrupt_in_the_same_turn_emits_only_one_marker():
+    # The turn does not end between the two clicks (Claude Code's is_pending
+    # stays true until the result arrives), so this exercises the dedup, not
+    # a fresh turn.
+    conv = FakeConversation(turn_end_on_interrupt=False)
+    conv.pending = True
+    s = make(conv)
+    await s.interrupt()
+    await s.interrupt()
+    assert conv.interrupts == 1
+    assert events(conv) == [INTERRUPT]
+
+
+async def test_interrupt_during_interrupt_and_sends_wait_yields_one_marker():
+    # interrupt() is deliberately lock-free, so it can run while
+    # interrupt_and_send is still awaiting the turn end.
+    interrupt_started = asyncio.Event()
+    release = asyncio.Event()
+
+    class PausingConversation(FakeConversation):
+        async def interrupt(self) -> None:
+            self.log.append(("interrupt", None))
+            self.interrupts += 1
+            interrupt_started.set()
+            await release.wait()
+            if self.pending:
+                self.pending = False
+                self.fire({"type": "turn-end"})
+
+    conv = PausingConversation()
+    conv.pending = True
+    s = make(conv, "joins-next-step")
+
+    task = asyncio.ensure_future(s.interrupt_and_send("now"))
+    await interrupt_started.wait()
+    await s.interrupt()  # a second Interrupt while the first is still in flight
+    release.set()
+
+    assert await task == "id1"
+    assert events(conv) == [INTERRUPT]
+    assert conv.interrupts == 1
+    assert conv.sent == ["now"]
 
 
 # -- lifecycle -----------------------------------------------------------------
