@@ -338,6 +338,54 @@ describe('reduceEvent', () => {
     expect(ofKind(s, 'user')).toHaveLength(2);
   });
 
+  // final-review M2: a joint echo (one event, several text blocks — CLI
+  // 2.1.270 batches an idle send with a Send-when-ready sent right after it
+  // this way) must confirm a LOCAL bubble the same way it confirms a QUEUED
+  // one, not just queued ones. Before the fix, the multi-block loop only
+  // matched isQueued bubbles: a local bubble in the mix made matchedAll
+  // false, so the whole echo fell through to the single/no-match path and
+  // (per that path's own fallback) left the local bubble unconfirmed and
+  // the queued one to read "Not delivered" once the session closed.
+  it('a joint multi-block echo confirms a local bubble and a queued bubble together, in order (M2)', () => {
+    const s = run([
+      { type: 'x-optio-local-user', text: 'first' },
+      { type: 'x-optio-queued', id: 'q1', text: 'second' },
+      {
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'text', text: 'first' }, { type: 'text', text: 'second' }] },
+      },
+      { type: 'x-optio-closed', reason: 'test' },
+    ]);
+    expect(ofKind(s, 'user').map((u) => u.text)).toEqual(['first', 'second']);
+    expect(ofKind(s, 'user').every((u) => u.local === undefined && u.queued === undefined)).toBe(true);
+    expect(s.items.some((i) => i.kind === 'activity' && i.text.startsWith('Not delivered'))).toBe(false);
+  });
+
+  // final-review M2 also asks that parseUploadNotice apply per block, as the
+  // single-block path already does (:555).
+  it('a joint multi-block echo applies parseUploadNotice to each block', () => {
+    const s = run([
+      { type: 'x-optio-local-user', text: 'first' },
+      { type: 'x-optio-queued', id: 'q1', text: 'second' },
+      {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'text', text: 'first' },
+            { type: 'text', text: 'System: upload received, stored in uploads/pic.png\n\nsecond' },
+          ],
+        },
+      },
+    ]);
+    expect(ofKind(s, 'user').map((u) => u.text)).toEqual(['first', 'second']);
+    const attach = s.items.find((i) => i.kind === 'activity');
+    expect(attach && attach.kind === 'activity' && attach.text).toBe('📎 Attached: pic.png');
+    expect(s.items.findIndex((i) => i.kind === 'activity')).toBeLessThan(
+      s.items.findIndex((i) => i.kind === 'user' && i.text === 'second'),
+    );
+  });
+
   it('appends a user message when no assistant bubble is pending (reload path)', () => {
     // On reload the buffer has no partials, so the user event arrives with no
     // pending bubble and simply appends; the result then forms the answer.
