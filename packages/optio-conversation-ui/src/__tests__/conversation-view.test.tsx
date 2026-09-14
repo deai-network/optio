@@ -497,6 +497,51 @@ describe('ConversationView steering', () => {
     expect(onSteer).toHaveBeenCalledWith('', []);
   });
 
+  it('Send now is reachable by role button and activates on click', () => {
+    const onSteer = vi.fn(async () => true);
+    renderView(makeProps({ state: busyState([queuedItem]), busy: true, onSteer }));
+    const link = screen.getByRole('button', { name: 'Send now' });
+    fireEvent.click(link);
+    expect(onSteer).toHaveBeenCalledWith('', []);
+  });
+
+  it('Send now failing (onSteer resolves false) shows the send-failed error', async () => {
+    const onSteer = vi.fn(async () => false);
+    renderView(makeProps({ state: busyState([queuedItem]), busy: true, onSteer }));
+    fireEvent.click(screen.getByTestId('queued-send-now'));
+    await waitFor(() =>
+      expect(screen.getByTestId('conversation-error').textContent).toContain('Send failed — retry.'),
+    );
+  });
+
+  it('Send now failing (onSteer rejects) shows the send-failed error, with no unhandled rejection', async () => {
+    const onSteer = vi.fn(async () => {
+      throw new Error('boom');
+    });
+    renderView(makeProps({ state: busyState([queuedItem]), busy: true, onSteer }));
+    fireEvent.click(screen.getByTestId('queued-send-now'));
+    await waitFor(() =>
+      expect(screen.getByTestId('conversation-error').textContent).toContain('Send failed — retry.'),
+    );
+  });
+
+  it('a second click on Send now while the first is pending calls onSteer once', async () => {
+    let resolveSteer!: (ok: boolean) => void;
+    const onSteer = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveSteer = resolve;
+        }),
+    );
+    renderView(makeProps({ state: busyState([queuedItem]), busy: true, onSteer }));
+    const link = screen.getByTestId('queued-send-now');
+    fireEvent.click(link);
+    fireEvent.click(link);
+    expect(onSteer).toHaveBeenCalledTimes(1);
+    resolveSteer(true);
+    await waitFor(() => expect(screen.queryByTestId('conversation-error')).toBeNull());
+  });
+
   it('without onSteer, or once closed, a queued bubble has no Send now link', () => {
     const r = renderView(makeProps({ state: busyState([queuedItem]), busy: true }));
     expect(screen.queryByTestId('queued-send-now')).toBeNull();

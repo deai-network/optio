@@ -511,6 +511,30 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     return submit('send');
   }
 
+  // Guards "Send now" on a queued bubble: reuses the same `sending` state the
+  // busy bar uses (so a queued Send now and the bar's Send when ready /
+  // Interrupt and send disable each other while either is in flight and share
+  // the same error Alert), plus a plain ref so a second click landing before
+  // React re-renders (no await between two fireEvent.click calls, e.g.) is
+  // still dropped rather than firing a second onSteer('', []).
+  const sendingNowRef = useRef(false);
+  async function sendQueuedNow() {
+    if (sendingNowRef.current || sending || closed || !props.onSteer) return;
+    sendingNowRef.current = true;
+    setSending(true);
+    setError(null);
+    try {
+      const ok = await props.onSteer('', []);
+      if (!ok) setError('Send failed — retry.');
+    } catch {
+      // onSteer rejecting is still "send failed", not an unhandled rejection.
+      setError('Send failed — retry.');
+    } finally {
+      sendingNowRef.current = false;
+      setSending(false);
+    }
+  }
+
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -550,9 +574,16 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                 {props.onSteer && !closed ? (
                   <>
                     {' · '}
-                    <a data-testid="queued-send-now" onClick={() => void props.onSteer?.('', [])}>
+                    <Button
+                      type="link"
+                      size="small"
+                      data-testid="queued-send-now"
+                      disabled={sending}
+                      style={{ padding: 0, height: 'auto', fontSize: 12 }}
+                      onClick={() => void sendQueuedNow()}
+                    >
                       Send now
-                    </a>
+                    </Button>
                   </>
                 ) : null}
               </div>
