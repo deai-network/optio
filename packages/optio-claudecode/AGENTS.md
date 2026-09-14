@@ -112,7 +112,15 @@ The `Conversation` surface (abstract Protocol in
   a stray `can_use_tool` is answered with a defensive deny. Note:
   sandbox-safe commands (e.g. a bare `echo`) execute without consulting
   the gate at all — the handler only sees non-sandboxable calls.
-* `is_pending()` — `True` while a sent message has no `result` yet.
+* `is_pending()` — `True` while a sent message has no `result` yet. A
+  message sent mid-turn joins that turn, so two sends can share one
+  `result`. `system/session_state_changed` resyncs it rather than
+  zeroing it unconditionally: `idle` sets it to the number of sends
+  written since the last `result` (0 for a genuinely finished turn, but
+  not for a stale idle that races a send), and `running` raises it to at
+  least 1.
+* `emit_event(event)` — put a synthetic `x-optio-*` event into the event
+  stream, in order with native events (the steering scaffold's hook).
 * `await interrupt()` — abort the current turn; no-op when idle.
   Verified live: the CLI acks with a `control_response` and ends the
   turn with `result` subtype `error_during_execution` (`result: null`,
@@ -176,8 +184,9 @@ the inner basic-auth credential; GET = viewer role, POST = operator):
 | Endpoint | Behavior |
 |---|---|
 | `GET /events` | SSE. On connect: replay buffer contents, then live tail. Each event's SSE `id:` is its monotonic `seq`; `Last-Event-ID` honored, so reconnects resume without duplicates. |
-| `POST /send` | `{text}` → `conversation.send(text)`. 409 when closed. |
-| `POST /interrupt` | `{}` → `conversation.interrupt()`. No-op when idle. |
+| `POST /send` | `{text}` → Send when ready (`Steering.send_when_ready`). Returns `{ok, id, queued}`; `queued` is true when a turn was running (Claude holds the message and takes it at the next tool result). 409 when closed. |
+| `POST /steer` | `{text}` → Interrupt and send (`Steering.interrupt_and_send`): interrupt the running turn, wait for its `result` (at most 15 s), then send `text`. Empty `text` = Send now: only interrupt, so Claude runs what it holds. Returns `{ok, id}` (`id` null for empty text). 409 when closed. |
+| `POST /interrupt` | `{}` → `Steering.interrupt()`: stop only; emits `x-optio-interrupt` while a turn runs. No-op when idle. |
 | `POST /permission` | `{request_id, behavior: "allow"\|"deny", updated_input?, message?}` → resolves the pending permission future. 404 for unknown/already-answered request_id. |
 
 Replay-buffer semantics:
@@ -195,6 +204,12 @@ Replay-buffer semantics:
   `{"type": "x-optio-permission-answered", "request_id": ..., "behavior": ...}`,
   broadcast (and buffered) when a permission is answered so every
   viewer sees the card resolve; and `{"type": "x-optio-resumed"}` (below).
+* Steering events (`optio_claudecode.steering`, `busy_send` =
+  `joins-next-step` via `BUSY_SEND`): `{"type": "x-optio-queued", "id",
+  "text"}` for a Send when ready that arrived mid-turn, and `{"type":
+  "x-optio-interrupt", "by": "user"}` before every interrupt optio sends
+  while a turn runs. Both enter through `emit_event`, so they are buffered,
+  replayed and persisted like native events.
 * Resume: `export_buffer()` persists the buffer with the snapshot, minus
   the terminal `x-optio-closed` (replayed, it would close the live resumed
   session in the UI). When a resumed run re-primes the listener from it,

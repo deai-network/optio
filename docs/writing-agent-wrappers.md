@@ -231,6 +231,31 @@ HTTP/SSE — as long as the Protocol methods behave as specified. Synthetic even
 (the ones optio injects, not the backend) use an `x-optio-` type prefix so
 reducers can tell them apart.
 
+### B.1 Busy sends and steering
+
+**Goal.** While the agent works the operator always gets **Send when ready**
+and **Interrupt and send**; the wrapper adds whatever scaffolding its agent
+lacks.
+
+**Interface to implement.** Declare `busy_send` for the agent (per-model
+overrides only where a recording shows a model differs):
+`BusySendDeclaration(agent="joins-next-step" | "queues-to-end" | "cuts-in" |
+"rejected" | "unsafe", models={...})`. Not measured yet → declare nothing:
+`resolve_busy_send(None, …)` is `unsafe`, always correct, only slower. Build
+one `optio_agents.steering.Steering` per conversation (`busy_send` callable,
+an `emit` hook that puts synthetic events into your own event stream, and
+`is_turn_end(event)` for your native turn-end event) and route the
+conversation listener's `POST /send` → `send_when_ready` (returns `{ok, id,
+queued}`), `POST /steer` → `interrupt_and_send` (returns `{ok, id}`; empty
+text = deliver what is queued) and `POST /interrupt` → `interrupt`. Steering
+emits `x-optio-queued {id, text}`, `x-optio-taken {ids}` and
+`x-optio-interrupt {by:"user"}`; your reducer maps them plus your agent's
+native echo / cancel signals.
+
+**Reference.** `optio-agents/…/steering.py`; Claude Code:
+`optio-claudecode/…/steering.py` (`BUSY_SEND`, `make_steering`) and
+`…/conversation_listener.py`.
+
 ### C. Conversation UI
 
 **Goal.** Render the agent's conversation in the dashboard chat widget, engine-agnostically.
@@ -922,6 +947,7 @@ died on first real launch, all with a green suite.
 | `AgentPromptProfile`, `compose_instructions_file`, `DEFAULT_CONVERSATION_INSTRUCTIONS` | `optio-agents/…/prompt.py` |
 | `fs_isolation_dirs` (sandbox note input), `build_grant_flags` | `optio-agents/…/fs_grants.py` |
 | `Conversation`, `PermissionRequest`, `PermissionDecision`, `ConversationClosed` | `optio-agents/…/conversation.py` |
+| `BusySend`, `BusySendDeclaration`, `resolve_busy_send`, `Steering`, `SendOutcome` | `optio-agents/…/steering.py` |
 | `HookContext`, `HookContextProtocol` | `optio-agents/…/context.py` |
 | `SessionControl`, `ControlOption`, `ControlKind`, `model_control`, `effort_control`, `Conversation.set_control` | `optio-agents/…/session_controls.py` + `…/conversation.py` |
 | `AgentInfo` (slug/name/url) | `optio-agents/…/agent_info.py` |

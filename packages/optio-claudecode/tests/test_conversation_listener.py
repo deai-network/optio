@@ -18,6 +18,10 @@ class FakeConversation:
         self.sent = []
         self.interrupts = 0
         self.closed = False
+        # Steering surface: busy is set by the test; interrupt() ends a busy
+        # turn at once with a result event (the CLI's turn end).
+        self.pending = False
+        self.runtime_model = None
 
     def on_event(self, h):
         self.handlers.append(h)
@@ -26,6 +30,12 @@ class FakeConversation:
     def on_permission_request(self, h):
         self.perm_handler = h
         return lambda: None
+
+    def is_pending(self):
+        return self.pending
+
+    def emit_event(self, event):
+        self.fire(event)
 
     async def send(self, text):
         if self.closed:
@@ -36,6 +46,10 @@ class FakeConversation:
         if self.closed:
             raise ConversationClosed("closed")
         self.interrupts += 1
+        if self.pending:
+            self.pending = False
+            self.fire({"type": "result", "subtype": "error_during_execution",
+                       "is_error": True, "terminal_reason": "aborted_streaming"})
 
     def fire(self, event):
         for h in list(self.handlers):
@@ -252,3 +266,84 @@ async def test_fresh_start_has_no_resumed_marker():
     assert list(ConversationListener(FakeConversation(), password="pw")._buffer) == []
     empty = ConversationListener(FakeConversation(), password="pw", initial_events=[])
     assert list(empty._buffer) == []
+
+
+# -- steering routes (docs/2026-09-13-conversation-steering-design.md) --------
+
+async def test_send_returns_id_and_queued_and_buffers_the_queued_event(listener):
+    conv, lst, url = listener
+    async with aiohttp.ClientSession() as s:
+        r = await s.post(f"{url}/send", json={"text": "hi"}, headers=_auth("pw"))
+        idle = await r.json()
+        assert r.status == 200 and idle["ok"] is True and idle["queued"] is False
+        assert isinstance(idle["id"], str) and idle["id"]
+        conv.pending = True
+        r = await s.post(f"{url}/send", json={"text": "steer"}, headers=_auth("pw"))
+        busy = await r.json()
+        assert busy["queued"] is True and busy["id"] != idle["id"]
+    assert conv.sent == ["hi", "steer"]
+    queued = [e for _, e in lst._buffer if e.get("type") == "x-optio-queued"]
+    assert queued == [{"type": "x-optio-queued", "id": busy["id"], "text": "steer"}]
+
+
+async def test_steer_interrupts_waits_for_the_turn_end_then_sends(listener):
+    conv, lst, url = listener
+    conv.pending = True
+    async with aiohttp.ClientSession() as s:
+        r = await s.post(f"{url}/steer", json={"text": "now"}, headers=_auth("pw"))
+        body = await r.json()
+    assert r.status == 200 and body["ok"] is True and isinstance(body["id"], str)
+    assert conv.interrupts == 1 and conv.sent == ["now"]
+    types = [e.get("type") for _, e in lst._buffer]
+    assert types.index("x-optio-interrupt") < types.index("result")
+
+
+async def test_steer_with_empty_text_only_interrupts(listener):
+    conv, lst, url = listener
+    conv.pending = True
+    async with aiohttp.ClientSession() as s:
+        r = await s.post(f"{url}/steer", json={"text": ""}, headers=_auth("pw"))
+        body = await r.json()
+    assert r.status == 200 and body == {"ok": True, "id": None}
+    assert conv.interrupts == 1 and conv.sent == []
+
+
+async def test_steer_rejects_bad_text_closed_and_unauthorized(listener):
+    conv, lst, url = listener
+    async with aiohttp.ClientSession() as s:
+        r = await s.post(f"{url}/steer", json={"text": 5}, headers=_auth("pw"))
+        assert r.status == 400
+        r = await s.post(f"{url}/steer", json={"text": "x"})
+        assert r.status == 401
+        conv.closed = True
+        r = await s.post(f"{url}/steer", json={"text": "x"}, headers=_auth("pw"))
+        assert r.status == 409
+
+
+async def test_interrupt_emits_the_marker_only_while_busy(listener):
+    conv, lst, url = listener
+    async with aiohttp.ClientSession() as s:
+        await s.post(f"{url}/interrupt", json={}, headers=_auth("pw"))
+        assert not any(e.get("type") == "x-optio-interrupt" for _, e in lst._buffer)
+        conv.pending = True
+        await s.post(f"{url}/interrupt", json={}, headers=_auth("pw"))
+    assert [e for _, e in lst._buffer if e.get("type") == "x-optio-interrupt"] == [
+        {"type": "x-optio-interrupt", "by": "user"},
+    ]
+    assert conv.interrupts == 2
+
+
+async def test_steering_events_persist_across_a_resume():
+    conv = FakeConversation()
+    lst = ConversationListener(conv, password="pw")
+    conv.pending = True
+    await lst._steering.send_when_ready("steer")
+    await lst._steering.interrupt()
+    exported = lst.export_buffer()
+    types = [e["type"] for _, e in exported]
+    assert "x-optio-queued" in types and "x-optio-interrupt" in types
+    lst2 = ConversationListener(
+        FakeConversation(), password="pw",
+        initial_events=[(x[0], x[1]) for x in exported],
+    )
+    assert [e["type"] for _, e in lst2._buffer] == types + ["x-optio-resumed"]
