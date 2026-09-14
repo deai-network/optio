@@ -249,4 +249,43 @@ describe('claudecode steering: a too-late interrupt (marker raced a normal resul
     expect(s.items.some((i) => i.kind === 'activity' && i.text === '⏹ Interrupted by you')).toBe(true);
     expect(s.items[1]).toMatchObject({ interrupted: true });
   });
+
+  // Fix round 2: undoInterrupt used to pattern-match `interrupted`/`stopped`
+  // across the WHOLE item list, so a too-late race in a later turn also
+  // reverted an earlier turn's own, already-finalized genuine interrupt.
+  // Repro (from the finding): turn 1 aborts for real; turn 2's marker then
+  // races a normal result.
+  it('a too-late interrupt in one turn does not corrupt an earlier turn\'s own genuine interrupt', () => {
+    const s = run([
+      user('t1'), delta('a'), interrupt, aborted(),
+      user('t2'), delta('b'), interrupt, result('b'),
+    ]);
+    expect(kinds(s)).toEqual(['user', 'assistant', 'activity', 'user', 'assistant']);
+    // Turn 1's bubble and its row: untouched, still permanently interrupted.
+    expect(s.items[1]).toMatchObject({ text: 'a', pending: false, interrupted: true });
+    expect(s.items[2]).toMatchObject({ kind: 'activity', text: '⏹ Interrupted by you' });
+    // Turn 2's too-late race: renders as if optio never sent it -- finalized
+    // in place, not left pending, not marked interrupted, no second row.
+    expect(s.items[4]).toMatchObject({ text: 'b', pending: false });
+    expect('interrupted' in s.items[4]).toBe(false);
+    expect(s.busy).toBe(false);
+    expect(s.interrupt).toBeUndefined();
+  });
+
+  // Same shape, but the earlier turn's interrupt stopped a running tool
+  // (permanently `status:'stopped'`, no result) instead of cutting off text.
+  it('a too-late interrupt does not revive an earlier turn\'s own genuinely-stopped tool row', () => {
+    const s = run([
+      user('t1'), toolCall('t1', 'Bash', { command: 'sleep 25' }), interrupt,
+      toolResult('t1', "The user doesn't want to proceed with this tool use.", true),
+      user('[Request interrupted by user for tool use]'), aborted('aborted_tools'),
+      user('t2'), delta('b'), interrupt, result('b'),
+    ]);
+    const tool = s.items.find((i) => i.kind === 'tool') as Extract<ChatItem, { kind: 'tool' }>;
+    expect(tool).toMatchObject({ status: 'stopped' });
+    expect(tool.result).toBeUndefined();
+    const answer = s.items[s.items.length - 1];
+    expect(answer).toMatchObject({ kind: 'assistant', text: 'b', pending: false });
+    expect('interrupted' in answer).toBe(false);
+  });
 });

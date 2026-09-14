@@ -95,7 +95,12 @@ function toolRow(block: any, seq: number, at: number): ChatItem {
 // row ignores its immediate result: the task notification finishes it. While
 // an operator interrupt is in flight, an error result is the CLI rejecting the
 // call it cancelled: the row stops, and the boilerplate is not its result.
-function applyToolResults(items: ChatItem[], content: unknown, at: number, interrupted = false): ChatItem[] {
+// `stoppedSeqs`, when given, collects the seq of every row this call stopped
+// for that reason, so the caller can record it against the interrupt that
+// caused it (see noteInterrupted).
+function applyToolResults(
+  items: ChatItem[], content: unknown, at: number, interrupted = false, stoppedSeqs?: number[],
+): ChatItem[] {
   if (!Array.isArray(content)) return items;
   let out = items;
   for (const b of content) {
@@ -106,6 +111,7 @@ function applyToolResults(items: ChatItem[], content: unknown, at: number, inter
     if (row.background) continue;
     if (interrupted && b.is_error) {
       out = replaceAt(out, idx, { ...row, status: 'stopped', endedAt: at });
+      stoppedSeqs?.push(row.seq);
       continue;
     }
     out = replaceAt(out, idx, {
@@ -382,6 +388,20 @@ function applyInterruptedText(items: ChatItem[], rowSeq: number, seq: number, te
   ]);
 }
 
+// Record that the current interrupt (if any) is responsible for the item
+// whose own (persistent) `seq` is `itemSeq` -- fix round 2. An item's `seq`
+// is set once, at the event that created it, and survives every later
+// in-place update (replaceAt always spreads the old item first), so it is a
+// stable identity even though the array index and the item's own fields
+// change. Recording is deliberately conservative: it is fine to note a seq
+// that never actually lands on a matching item (undoInterrupt then simply
+// finds nothing to revert for it), but it must never fail to note one that
+// does, or a too-late race would corrupt an item nobody tracked.
+function noteInterrupted(state: ChatState, itemSeq: number): ChatState {
+  if (!state.interrupt || state.interrupt.itemSeqs.includes(itemSeq)) return state;
+  return { ...state, interrupt: { ...state.interrupt, itemSeqs: [...state.interrupt.itemSeqs, itemSeq] } };
+}
+
 // The interrupted turn is over: drop the flag and the part offset the
 // interrupted bubble kept for its final text.
 function endInterrupt(state: ChatState): ChatState {
@@ -397,22 +417,31 @@ function endInterrupt(state: ChatState): ChatState {
   return next;
 }
 
-// OWNER RULING (Task 6 fix round 1): a too-late interrupt — x-optio-interrupt
-// followed, in the same turn, by a result that is not an abort — races the
-// end of a turn the CLI finished normally. Rendering must end up exactly as
-// if optio had never sent it: undo every mark the interrupt made for this
-// turn. The row is dropped; the bubble it cut off goes back to pending, so
-// the normal end-of-turn path below (finalizePending) completes it in place
-// instead of appending a second copy; a tool row the interrupt (or a CLI
-// signal that only ever fires because of one, e.g. a rejected tool_result or
-// a foreground task_notification) stopped without a result goes back to
-// running, so the normal 'turn' freeze handles it exactly as it would have
-// without the interrupt. Abort results never call this: they keep today's
-// interrupt rendering.
-function undoInterrupt(items: ChatItem[], rowSeq: number): ChatItem[] {
-  const r = interruptRowIndex(items, rowSeq);
+// OWNER RULING (Task 6 fix round 1; scoped in fix round 2): a too-late
+// interrupt — x-optio-interrupt followed, in the same turn, by a result that
+// is not an abort — races the end of a turn the CLI finished normally.
+// Rendering must end up exactly as if optio had never sent it: undo every
+// mark THIS interrupt made for this turn. The row is dropped; a bubble this
+// firing marked goes back to pending, so the normal end-of-turn path below
+// (finalizePending) completes it in place instead of appending a second
+// copy; a tool row this firing (or a CLI signal that only ever fires because
+// of it, e.g. a rejected tool_result or a foreground task_notification)
+// stopped without a result goes back to running, so the normal 'turn' freeze
+// handles it exactly as it would have without the interrupt.
+//
+// Fix round 2: scoped to `interrupt.itemSeqs` — the items THIS firing
+// touched (recorded as they happened, via noteInterrupted) — instead of
+// pattern-matching `interrupted`/`stopped` across the whole item list. A
+// second, unrelated interrupt earlier in the same session (a genuinely
+// aborted turn, permanently `interrupted:true`/`stopped` with no result) is
+// no longer swept up by a later turn's too-late race. Abort results never
+// call this: they keep today's interrupt rendering.
+function undoInterrupt(items: ChatItem[], interrupt: { rowSeq: number; itemSeqs: number[] }): ChatItem[] {
+  const r = interruptRowIndex(items, interrupt.rowSeq);
   const out = r === -1 ? items : [...items.slice(0, r), ...items.slice(r + 1)];
+  const owned = new Set(interrupt.itemSeqs);
   return out.map((i) => {
+    if (!owned.has(i.seq)) return i;
     if (i.kind === 'assistant' && i.interrupted) {
       const next: AssistantItem = { ...i, pending: true };
       delete next.interrupted;
@@ -460,8 +489,12 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // message under --replay-user-messages).
       // Tool results arrive as user events; finish their rows first. Such an
       // event carries no text, so it adds no bubble below.
-      const withResults = applyToolResults(state.items, ev.message?.content, eventTime(ev, now), state.interrupt !== undefined);
+      const stoppedByInterrupt: number[] = [];
+      const withResults = applyToolResults(
+        state.items, ev.message?.content, eventTime(ev, now), state.interrupt !== undefined, stoppedByInterrupt,
+      );
       if (withResults !== state.items) state = { ...state, items: withResults };
+      for (const s of stoppedByInterrupt) state = noteInterrupted(state, s);
       // A joint echo of several queued messages, taken together at the start
       // of one follow-up turn (see textBlocks): match each block, in order,
       // to its own queued bubble and take it (FIFO by text, same as the
@@ -573,18 +606,32 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       if (!state.busy || state.interrupt) return state;
       let items = state.items;
       const idx = pendingIndex(items);
+      // The seqs of the items THIS firing marks (fix round 2): a too-late
+      // race (undoInterrupt) reverts exactly these, never an unrelated item.
+      const itemSeqs: number[] = [];
       if (idx !== -1) {
         // The in-flight answer (only queued bubbles after it) is cut off: it
         // keeps its text (and its open part, which the final text event
         // replaces) and gets the jagged edge. A pending bubble with tool rows
-        // after it was already complete: it just stops being pending.
-        items = items.slice(idx + 1).every(isQueued)
-          ? replaceAt(items, idx, { ...(items[idx] as AssistantItem), pending: false, interrupted: true })
-          : finalizeAt(items, idx);
+        // after it was already complete: it just stops being pending (and is
+        // not tracked — it never becomes `interrupted`, so it can't be
+        // mistaken for this interrupt's doing).
+        if (items.slice(idx + 1).every(isQueued)) {
+          const cur = items[idx] as AssistantItem;
+          itemSeqs.push(cur.seq);
+          items = replaceAt(items, idx, { ...cur, pending: false, interrupted: true });
+        } else {
+          items = finalizeAt(items, idx);
+        }
+      }
+      for (const i of items) {
+        if (i.kind === 'tool' && (i.status === undefined || i.status === 'running') && !i.background) {
+          itemSeqs.push(i.seq);
+        }
       }
       items = freezeRunning(items, lastWireTime(state, now), 'interrupt');
       items = appendItems(items, [{ kind: 'activity', text: INTERRUPTED_BY_YOU, seq, muted: true }]);
-      return { ...state, items, interrupt: { rowSeq: seq } };
+      return { ...state, items, interrupt: { rowSeq: seq, itemSeqs } };
     }
 
     // Synthetic, listener-emitted (steering): a Send when ready that arrived
@@ -625,17 +672,27 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
         if (text !== null) {
           // The agent is answering (or narrating) — complete this block's
           // part of the bubble. After an operator interrupt, the interrupted
-          // message's text completes the cut-off bubble in front of its row.
-          items = state.interrupt
-            ? applyInterruptedText(items, state.interrupt.rowSeq, seq, text, msgId)
-            : applyBlockText(items, seq, text, msgId);
+          // message's text completes the cut-off bubble in front of its row
+          // (merging into the bubble the interrupt itself cut off, an item
+          // already tracked — or, if none existed yet, a freshly inserted
+          // one, tracked here by its own seq, this event's `seq`).
+          if (state.interrupt) {
+            items = applyInterruptedText(items, state.interrupt.rowSeq, seq, text, msgId);
+            state = noteInterrupted(state, seq);
+          } else {
+            items = applyBlockText(items, seq, text, msgId);
+          }
         } else if (block?.type === 'tool_use') {
           // A persistent row per call; its tool_result (a later user event)
           // finishes it. A call the interrupted turn still announces is
-          // stopped before it ran.
-          items = state.interrupt
-            ? insertBeforeRow(items, state.interrupt.rowSeq, [{ ...(toolRow(block, seq, at) as ToolItem), status: 'stopped', endedAt: at }])
-            : appendItems(items, [toolRow(block, seq, at)]);
+          // stopped before it ran — tracked by its own (fresh) seq.
+          if (state.interrupt) {
+            const stoppedRow = { ...(toolRow(block, seq, at) as ToolItem), status: 'stopped' as const, endedAt: at };
+            items = insertBeforeRow(items, state.interrupt.rowSeq, [stoppedRow]);
+            state = noteInterrupted(state, stoppedRow.seq);
+          } else {
+            items = appendItems(items, [toolRow(block, seq, at)]);
+          }
         }
       }
       return items === state.items ? state : { ...state, items };
@@ -665,7 +722,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
     case 'result': {
       const at = eventTime(ev, lastWireTime(state, now));
       if (state.interrupt) {
-        const rowSeq = state.interrupt.rowSeq;
+        const interrupt = state.interrupt;
         state = endInterrupt(state);
         // The turn optio interrupted ends with the CLI's abort error: that is
         // the operator's own interrupt, already shown by its row. No error
@@ -675,7 +732,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
           return { ...state, items, busy: false };
         }
         // Too late: the turn finished normally after all (see undoInterrupt).
-        state = { ...state, items: undoInterrupt(state.items, rowSeq) };
+        state = { ...state, items: undoInterrupt(state.items, interrupt) };
       }
       const resultText = typeof ev.result === 'string' ? ev.result : null;
       const items = freezeRunning(state.items, at, 'turn');
@@ -781,17 +838,24 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
         return { ...state, items: replaceAt(state.items, idx, { ...(state.items[idx] as ToolItem), endedAt: end }) };
       }
       if (ev.subtype === 'task_notification' && typeof ev.task_id === 'string') {
-        return applyTaskNotice(
+        const toolUseId = typeof ev.tool_use_id === 'string' ? ev.tool_use_id : null;
+        let next = applyTaskNotice(
           state,
-          {
-            taskId: ev.task_id,
-            toolUseId: typeof ev.tool_use_id === 'string' ? ev.tool_use_id : null,
-            status: String(ev.status ?? ''),
-            summary: String(ev.summary ?? ''),
-          },
+          { taskId: ev.task_id, toolUseId, status: String(ev.status ?? ''), summary: String(ev.summary ?? '') },
           eventTime(ev, lastWireTime(state, now)),
           seq,
         );
+        // A foreground row this notification stopped while an interrupt is in
+        // flight is this interrupt's doing (only an interrupt produces a
+        // stopped foreground notification) — track it, so a too-late race
+        // (undoInterrupt) can put it back to running.
+        if (next.interrupt && toolUseId) {
+          const row = next.items.find((i) => i.kind === 'tool' && i.callId === toolUseId) as ToolItem | undefined;
+          if (row && !row.background && row.status === 'stopped' && row.result === undefined) {
+            next = noteInterrupted(next, row.seq);
+          }
+        }
+        return next;
       }
       return state;
     }

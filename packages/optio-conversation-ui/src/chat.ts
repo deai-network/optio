@@ -122,8 +122,13 @@ export interface ChatState {
   // Reducer-private (claudecode): set by x-optio-interrupt until the
   // interrupted turn's result; rowSeq is the seq of its "Interrupted by you"
   // row. While set, the CLI's own cancel artefacts are swallowed and the
-  // interrupted message's final text lands in front of that row.
-  interrupt?: { rowSeq: number };
+  // interrupted message's final text lands in front of that row. itemSeqs is
+  // every item's own (persistent) seq this exact firing has marked
+  // (interrupted:true bubbles, stopped:true tool rows) -- fix round 2: a
+  // too-late race (see undoInterrupt) must undo only these, never an
+  // unrelated item (e.g. an earlier turn's own, already-finalized interrupt)
+  // that merely happens to match the same pattern.
+  interrupt?: { rowSeq: number; itemSeqs: number[] };
 }
 
 type UserItem = Extract<ChatItem, { kind: 'user' }>;
