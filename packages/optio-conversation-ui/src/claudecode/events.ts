@@ -341,16 +341,19 @@ function finalizePending(items: ChatItem[], seq: number, resultText: string | nu
   return replaceAt(items, idx, next);
 }
 
-// Insert a user message before the assistant bubble it triggered. With
-// `--replay-user-messages` Claude streams the whole answer FIRST and only
-// echoes the user message afterward, so the streaming assistant bubble already
-// exists (and has an earlier seq) when the user echo arrives. Ordering by seq
-// — or appending on arrival — would therefore render the answer above the
-// question. Conversation order is what we want, so the echoed user turn slots
-// in front of the in-flight assistant bubble — but ONLY while that bubble is
-// the conversation's last content (queued bubbles aside). A stale pending
-// bubble (e.g. replayed from a buffer captured mid-turn, never finalized)
-// must not pull later, unrelated user events above newer content.
+// Insert a user message before the assistant bubble it triggered. With CLI
+// 2.1.270 the prompt's echo arrives BEFORE `message_start` in every
+// recording, but the reducer keeps this path for older replays where
+// `--replay-user-messages` made Claude stream the whole answer FIRST and
+// only echo the user message afterward: the streaming assistant bubble
+// already exists (and has an earlier seq) when that late user echo arrives.
+// Ordering by seq — or appending on arrival — would therefore render the
+// answer above the question. Conversation order is what we want, so the
+// echoed user turn slots in front of the in-flight assistant bubble — but
+// ONLY while that bubble is the conversation's last content (queued bubbles
+// aside). A stale pending bubble (e.g. replayed from a buffer captured
+// mid-turn, never finalized) must not pull later, unrelated user events
+// above newer content.
 function insertBeforePending(items: ChatItem[], rows: ChatItem[]): ChatItem[] {
   const idx = pendingIndex(items);
   // A message echoed after a tool row was taken mid-turn (Claude Code takes
@@ -505,10 +508,13 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       );
       if (withResults !== state.items) state = { ...state, items: withResults };
       for (const s of stoppedByInterrupt) state = noteInterrupted(state, s);
-      // A joint echo of several queued messages, taken together at the start
-      // of one follow-up turn (see textBlocks): match each block, in order,
-      // to its own queued bubble and take it (FIFO by text, same as the
-      // single-message match below). Two messages queued mid-tool instead
+      // A joint echo of several messages, taken together at the start of one
+      // follow-up turn (see textBlocks): match each block, in order, to its
+      // own local or queued bubble and confirm it (FIFO by text, same as the
+      // single-message match below, which matches `local || queued` —
+      // final-review M2). A local (not yet queued) bubble is confirmed in
+      // place; a queued one moves to the take point, exactly as the
+      // single-message path does. Two messages queued mid-tool instead
       // arrive as two separate one-block echoes and take the ordinary path.
       const blocks = textBlocks(ev.message?.content);
       // The one echo event's own wire time: "once the message is taken, the
@@ -518,13 +524,27 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       if (blocks.length > 1) {
         let items = state.items;
         let matchedAll = true;
-        for (const t of blocks) {
-          const idx = items.findIndex((i) => i.kind === 'user' && isQueued(i) && i.text === t);
+        for (const raw of blocks) {
+          // final-review M2: parseUploadNotice per block, as the
+          // single-message path already does below.
+          const { text: t, uploads } = parseUploadNotice(raw);
+          const idx = items.findIndex(
+            (i) => i.kind === 'user' && (i.local === true || isQueued(i)) && i.text === t,
+          );
           if (idx === -1) {
             matchedAll = false;
             break;
           }
-          items = takeQueuedAt(items, idx, [], echoTs);
+          const attach: ChatItem[] =
+            uploads.length > 0 ? [{ kind: 'activity', text: uploadNoticeActivityText(uploads), seq }] : [];
+          if (isQueued(items[idx])) {
+            items = takeQueuedAt(items, idx, attach, echoTs);
+          } else {
+            const confirmed = { ...items[idx] } as unknown as UserItem;
+            delete confirmed.local;
+            if (echoTs !== undefined) confirmed.timestamp = echoTs;
+            items = [...items.slice(0, idx), ...attach, confirmed, ...items.slice(idx + 1)];
+          }
         }
         if (matchedAll) return { ...state, items, busy: true };
       }
