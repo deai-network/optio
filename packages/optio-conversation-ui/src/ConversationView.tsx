@@ -652,7 +652,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               {item.text}
               <div style={{ fontSize: 12, color: token.colorTextSecondary, marginTop: 4, whiteSpace: 'normal' }}>
                 Queued — the agent reads it when ready
-                {props.onSteer && !closed ? (
+                {steerable ? (
                   <>
                     {' · '}
                     <Button

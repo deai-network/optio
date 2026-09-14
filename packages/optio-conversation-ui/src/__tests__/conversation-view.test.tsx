@@ -549,6 +549,23 @@ describe('ConversationView steering', () => {
     expect(screen.queryByTestId('queued-send-now')).toBeNull();
   });
 
+  // final-review I1: every Claude Code `result` clears busy, including the
+  // aborted result an interrupt produces, but the CLI then runs the queued
+  // message as the very next turn with no running/idle event in between (~1.6 s
+  // gap, s3/s5). A Send now click in that gap POSTs /steer with empty text,
+  // which interrupts the turn that is delivering the queue. Send now must
+  // therefore track `busy`, the same condition that makes the input bar
+  // steerable, not just `onSteer`/`closed`.
+  it('Send now tracks busy: shown while busy, hidden in the not-busy gap even with onSteer and not closed', () => {
+    const onSteer = vi.fn(async () => true);
+    const r = renderView(makeProps({ state: busyState([queuedItem]), busy: true, onSteer }));
+    expect(screen.getByTestId('queued-bubble').textContent).toContain('Queued — the agent reads it when ready');
+    expect(screen.getByTestId('queued-send-now')).toBeTruthy();
+    rerenderView(r, makeProps({ state: makeState([queuedItem]), busy: false, closed: false, onSteer }));
+    expect(screen.getByTestId('queued-bubble').textContent).toContain('Queued — the agent reads it when ready');
+    expect(screen.queryByTestId('queued-send-now')).toBeNull();
+  });
+
   it('an interrupted answer gets the jagged-edge class; a normal one does not', () => {
     renderView(makeProps({ state: makeState([
       { kind: 'assistant', text: 'cut off', pending: false, seq: 1, msgId: 'm1', interrupted: true },
