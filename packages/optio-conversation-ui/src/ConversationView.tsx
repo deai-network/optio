@@ -8,6 +8,7 @@ import { AnswerBlock } from './AnswerBlock.js';
 import { type Attachment, toAttachment, withinCap } from './attachments.js';
 import { FileDownloadContext } from './FileDownloadContext.js';
 import { formatDuration } from './duration.js';
+import { formatMessageTime, formatMessageTimeFull } from './messageTime.js';
 
 // Shared conversation chrome for every engine view. Each engine view reduces
 // its native wire events into the engine-neutral ChatState, then hands the
@@ -246,6 +247,24 @@ function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+// Small grey time under a user/assistant/error bubble (Fix 4, owner ruling
+// 2026-09-14: "all messages need a timestamp"). `now` is read once per render
+// by the caller (formatMessageTime itself is pure, see messageTime.ts).
+// Absent entirely when the item carries no known timestamp — never invented
+// (e.g. a still-queued bubble in a replay, or any row that isn't a message).
+function renderTimeLabel(timestamp: number | undefined, now: number, token: GlobalToken): React.ReactNode {
+  if (timestamp === undefined) return null;
+  return (
+    <div
+      data-testid="message-time"
+      title={formatMessageTimeFull(timestamp)}
+      style={{ fontSize: 11, color: token.colorTextTertiary, marginTop: 2 }}
+    >
+      {formatMessageTime(timestamp, now)}
+    </div>
+  );
+}
+
 // Generic renderer for engine-neutral session controls. Each control renders by
 // kind: boolean -> <Switch>, segmented -> <Segmented>, slider -> <Slider>,
 // select -> <Select> (disabled options greyed with a whyDisabled tooltip
@@ -391,6 +410,13 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
       else next.add(seq);
       return next;
     });
+
+  // The wall clock for message-time formatting (Fix 4): read fresh at each
+  // render — the formatter itself is pure and never reads the clock (see
+  // messageTime.ts). Distinct from the ticking `now` below (which only
+  // updates while a timed tool row is running): a message time only needs to
+  // be current as of render, not to tick.
+  const renderedAt = Date.now();
 
   // Live elapsed counters: tick once a second while any timed tool row is
   // still running (no endedAt); no interval otherwise.
@@ -569,6 +595,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               }}
             >
               {item.text}
+              {renderTimeLabel(item.timestamp, renderedAt, token)}
               <div style={{ fontSize: 12, color: token.colorTextSecondary, marginTop: 4, whiteSpace: 'normal' }}>
                 Queued — the agent reads it when ready
                 {props.onSteer && !closed ? (
@@ -605,6 +632,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             }}
           >
             {item.text}
+            {renderTimeLabel(item.timestamp, renderedAt, token)}
           </div>
         );
       case 'assistant':
@@ -637,6 +665,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               </Button>
             </div>
             {item.pending && <span style={{ color: token.colorTextTertiary }}>▍</span>}
+            {renderTimeLabel(item.timestamp, renderedAt, token)}
           </div>
         );
       case 'activity':
@@ -802,6 +831,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             }}
           >
             {item.text}
+            {renderTimeLabel(item.timestamp, renderedAt, token)}
           </div>
         );
       case 'closed':

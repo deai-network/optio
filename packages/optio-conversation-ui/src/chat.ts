@@ -15,6 +15,11 @@ export type ChatItem =
       // The id optio gave the message (POST /send response, x-optio-queued,
       // x-optio-taken). Kept once the message is taken.
       queueId?: string;
+      // Epoch ms this message was sent, from the wire (or, while still
+      // `local`/`queued` live, the view's own send-time echo). Absent when no
+      // time is known (e.g. a still-queued bubble in a replay) — never
+      // invented. See messageTime.ts.
+      timestamp?: number;
     }
   | {
       kind: 'assistant';
@@ -29,6 +34,10 @@ export type ChatItem =
       // The operator interrupted this answer: it keeps its text and renders
       // with a jagged bottom edge.
       interrupted?: boolean;
+      // Epoch ms of the first wire event seen for this message. Absent until
+      // the CLI's own (timestamped) assistant event arrives — a streaming
+      // delta carries none. See messageTime.ts.
+      timestamp?: number;
     }
   // muted: a quiet one-line note (e.g. an operator interrupt, an undelivered
   // message) instead of the harness System: bubble.
@@ -79,7 +88,13 @@ export type ChatItem =
       // carry the detail only in `content`). Rendered when the input KV is empty.
       preview?: string;
     }
-  | { kind: 'error'; text: string; seq: number }
+  | {
+      kind: 'error';
+      text: string;
+      seq: number;
+      // Epoch ms this error was produced. See messageTime.ts.
+      timestamp?: number;
+    }
   | { kind: 'closed'; reason: string; seq: number };
 
 // Engine-neutral session control — one live, UI-renderable knob a wrapper
@@ -153,11 +168,17 @@ export function appendItems(items: ChatItem[], rows: ChatItem[]): ChatItem[] {
 
 // The agent took the queued bubble at idx: it leaves the pinned group and
 // lands at the take point (the end of the conversation content), with any
-// rows that belong in front of it (an attachment row).
-export function takeQueuedAt(items: ChatItem[], idx: number, before: ChatItem[] = []): ChatItem[] {
+// rows that belong in front of it (an attachment row). `timestamp`, when
+// given (the taking echo's own wire time), replaces whatever send-time the
+// bubble carried while queued — "once the message is taken, the transcript
+// user message shows the echo's wire timestamp".
+export function takeQueuedAt(
+  items: ChatItem[], idx: number, before: ChatItem[] = [], timestamp?: number,
+): ChatItem[] {
   const taken: UserItem = { ...(items[idx] as UserItem) };
   delete taken.queued;
   delete taken.local;
+  if (timestamp !== undefined) taken.timestamp = timestamp;
   const rest = [...items.slice(0, idx), ...items.slice(idx + 1)];
   return appendItems(rest, [...before, taken]);
 }

@@ -92,7 +92,10 @@ export function ClaudeCodeView(props: WidgetProps) {
     for (const f of failed) {
       // Surface each failed upload as an immediate, transient error row.
       localSeqRef.current -= 1;
-      dispatch({ ev: { type: 'x-optio-local-error', text: `Upload failed: ${f.name} — ${f.error}` }, seq: localSeqRef.current });
+      dispatch({
+        ev: { type: 'x-optio-local-error', text: `Upload failed: ${f.name} — ${f.error}`, time: Date.now() },
+        seq: localSeqRef.current,
+      });
     }
     // Everything failed and no prompt to send → don't send an empty turn.
     if (stored.length === 0 && body.trim() === '') return null;
@@ -108,7 +111,10 @@ export function ClaudeCodeView(props: WidgetProps) {
   function localEcho(text: string, resp: Record<string, unknown>, queued: boolean) {
     localSeqRef.current -= 1;
     dispatch({
-      ev: { type: 'x-optio-local-user', text, id: typeof resp.id === 'string' ? resp.id : undefined, queued },
+      // `time`: the send moment, read here (the view), not by the reducer —
+      // shown live under the bubble until the wire echo supplies its own
+      // timestamp (Fix 4).
+      ev: { type: 'x-optio-local-user', text, id: typeof resp.id === 'string' ? resp.id : undefined, queued, time: Date.now() },
       seq: localSeqRef.current,
     });
   }
