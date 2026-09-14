@@ -779,26 +779,37 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
         }
         // Harness System: messages — neither the user nor the agent, so render
         // a centered bubble in a distinct (lavender) colour, set apart from the
-        // right-aligned user and left-aligned assistant bubbles.
+        // right-aligned user and left-aligned assistant bubbles. Fix 9, owner
+        // ruling 2026-09-14: these rows show their time too, as a sibling
+        // below the bubble (same small grey label as withTimeLabel's three
+        // bubbles) — not through that helper, since its non-'stretch' branch
+        // adds its own 80% cap and this bubble already caps itself (round 2
+        // note below); going through it would compound the two caps.
         return (
           <div
             key={item.seq}
-            style={{
-              ...bubbleBase,
-              // Not wrapped by withTimeLabel, so unlike the three bubbles
-              // above this is the only place that needs to cap its own
-              // width — bubbleBase no longer carries maxWidth (see its
-              // definition).
-              maxWidth: '80%',
-              alignSelf: 'center',
-              background: token.purple1,
-              border: `1px solid ${token.purple3}`,
-              color: token.colorTextSecondary,
-              fontSize: 12,
-              borderRadius: 14,
-            }}
+            style={{ display: 'flex', flexDirection: 'column', alignSelf: 'center', alignItems: 'center' }}
           >
-            {item.text}
+            <div
+              data-testid="activity-bubble"
+              style={{
+                ...bubbleBase,
+                // Not wrapped by withTimeLabel, so unlike the three bubbles
+                // above this is the only place that needs to cap its own
+                // width — bubbleBase no longer carries maxWidth (see its
+                // definition).
+                maxWidth: '80%',
+                alignSelf: 'center',
+                background: token.purple1,
+                border: `1px solid ${token.purple3}`,
+                color: token.colorTextSecondary,
+                fontSize: 12,
+                borderRadius: 14,
+              }}
+            >
+              {item.text}
+            </div>
+            {renderTimeLabel(item.timestamp, renderedAt, token)}
           </div>
         );
       case 'thinking': {

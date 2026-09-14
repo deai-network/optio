@@ -27,6 +27,7 @@ const ABORTED = new Set<string>(['aborted_streaming', 'aborted_tools']);
 
 type AssistantItem = Extract<ChatItem, { kind: 'assistant' }>;
 type UserItem = Extract<ChatItem, { kind: 'user' }>;
+type ActivityItem = Extract<ChatItem, { kind: 'activity' }>;
 
 // Text a content block contributes to the reply bubble: a text block's text,
 // or the narration a text-bearing thinking block carries. Since CLI 2.1.267
@@ -578,10 +579,17 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
         uploads.length > 0 ? { kind: 'activity', text: uploadNoticeActivityText(uploads), seq } : null;
       // Harness-injected messages (resume notices, auto-start prompt) render as
       // activity rows, not user bubbles; an upload with no prompt body renders
-      // just its attachment row. Either way the agent is working.
+      // just its attachment row. Either way the agent is working. Fix 9, owner
+      // ruling 2026-09-14: the row carries this echo's own wire timestamp
+      // (never the reducer's clock) — never invented when the wire carries none.
       if (text === '' || text.startsWith(HARNESS_PREFIX)) {
         let items = attach ? appendItems(state.items, [attach]) : state.items;
-        if (text !== '') items = appendItems(items, [{ kind: 'activity', text, seq }]);
+        if (text !== '') {
+          const activityItem: ActivityItem = { kind: 'activity', text, seq };
+          const t = wireTime(ev);
+          if (t !== null) activityItem.timestamp = t;
+          items = appendItems(items, [activityItem]);
+        }
         return { ...state, items, busy: true };
       }
       // Wire echo of a message already on screen: the widget's optimistic

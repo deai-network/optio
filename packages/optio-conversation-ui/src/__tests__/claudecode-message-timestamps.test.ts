@@ -178,3 +178,52 @@ describe('claudecode message timestamps: synthetic events', () => {
     expect(takenItem.queued).toBeUndefined();
   });
 });
+
+// Fix 9 (owner ruling 2026-09-14, manual-test finding 3): "System: …" harness
+// echoes (e.g. "System: deliverable … accepted." and "System: you have been
+// resumed", session.py:818-820 and :687) become activity rows, and the row
+// must show the echo's own wire time — never the reducer's clock, and never
+// invented when the wire carries none. Muted notice rows (operator interrupt,
+// undelivered message) stay timeless.
+describe('claudecode message timestamps: "System: " activity rows (Fix 9)', () => {
+  const user = (text: string, timestamp?: string) => ({
+    type: 'user',
+    timestamp,
+    message: { role: 'user', content: [{ type: 'text', text }] },
+  });
+  const NOW3 = Date.parse('2026-09-14T17:00:00.000Z');
+  function run(events: any[]): ChatState {
+    return events.reduce((s, ev, i) => reduceEvent(s, ev, i + 1, NOW3), initialChatState);
+  }
+
+  it('a "System: you have been resumed" echo carries the echo\'s wire timestamp', () => {
+    const t = '2026-09-14T14:33:01.316Z';
+    const s = run([user('System: you have been resumed', t)]);
+    expect(ofKind(s, 'activity')[0]).toMatchObject({ timestamp: Date.parse(t) });
+  });
+
+  it('a "System: deliverable … accepted" echo carries the echo\'s wire timestamp', () => {
+    const t = '2026-09-14T14:33:05.000Z';
+    const s = run([user('System: deliverable mission-report.txt: accepted. thanks for the good work.', t)]);
+    expect(ofKind(s, 'activity')[0]).toMatchObject({ timestamp: Date.parse(t) });
+  });
+
+  it('a "System: " echo with no wire timestamp gives an activity row with none -- never invented from the reducer clock', () => {
+    const s = run([user('System: you have been resumed')]);
+    expect(ofKind(s, 'activity')[0].timestamp).toBeUndefined();
+  });
+
+  it('the operator-interrupt notice row (muted) still carries no timestamp', () => {
+    const s = run([user('q', '2026-09-14T14:00:00.000Z'), { type: 'x-optio-interrupt' }]);
+    const notice = ofKind(s, 'activity').find((i) => i.muted);
+    expect(notice).toBeDefined();
+    expect(notice?.timestamp).toBeUndefined();
+  });
+
+  it('an undelivered-message notice row still carries no timestamp', () => {
+    const s = run([{ type: 'x-optio-queued', id: 'q1', text: 'later' }, { type: 'x-optio-closed', reason: 'done' }]);
+    const notice = ofKind(s, 'activity').find((i) => i.text.startsWith('Not delivered'));
+    expect(notice).toBeDefined();
+    expect(notice?.timestamp).toBeUndefined();
+  });
+});

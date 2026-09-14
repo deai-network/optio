@@ -41,7 +41,18 @@ export type ChatItem =
     }
   // muted: a quiet one-line note (e.g. an operator interrupt, an undelivered
   // message) instead of the harness System: bubble.
-  | { kind: 'activity'; text: string; seq: number; muted?: boolean }
+  | {
+      kind: 'activity';
+      text: string;
+      seq: number;
+      muted?: boolean;
+      // Epoch ms wire time of the "System: …" echo this row was built from
+      // (Fix 9, owner ruling 2026-09-14: "they must show their time"). Set
+      // only for a non-muted harness System: row; absent for a muted notice
+      // (operator interrupt, undelivered message), a background-task row or
+      // an upload notice — never invented. See messageTime.ts.
+      timestamp?: number;
+    }
   | { kind: 'thinking'; text: string; seq: number }
   | {
       kind: 'tool';
