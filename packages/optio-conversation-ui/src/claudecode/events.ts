@@ -7,7 +7,7 @@
 // partials arrive as {type:"stream_event", event:{...content_block_delta}}).
 
 import type { ChatItem, ChatState } from '../chat.js';
-import { foldControlUpdate } from '../chat.js';
+import { addQueued, appendItems, dropUndelivered, foldControlUpdate, isQueued, takeQueuedAt, takeQueuedIds } from '../chat.js';
 import { explainApiError } from '../apiError.js';
 import { parseUploadNotice, uploadNoticeActivityText } from '../uploads.js';
 export { initialChatState } from '../chat.js';
@@ -19,6 +19,7 @@ const HARNESS_PREFIX = 'System: ';
 const PART_SEPARATOR = '\n\n';
 
 type AssistantItem = Extract<ChatItem, { kind: 'assistant' }>;
+type UserItem = Extract<ChatItem, { kind: 'user' }>;
 
 // Text a content block contributes to the reply bubble: a text block's text,
 // or the narration a text-bearing thinking block carries. Since CLI 2.1.267
@@ -187,7 +188,7 @@ function applyTaskNotice(state: ChatState, n: TaskNotice, at: number, seq: numbe
         : toolStatus === 'failed'
           ? `✗ Background task failed: ${what}`
           : `⏹ Background task stopped: ${what}`;
-    items = [...state.items, { kind: 'activity', text, seq }];
+    items = appendItems(state.items, [{ kind: 'activity', text, seq }]);
   }
   return { ...state, items, finishedTaskIds: [...seen, n.taskId] };
 }
@@ -213,9 +214,10 @@ function pendingIndex(items: ChatItem[]): number {
 // the conversation's tail. Tool rows don't count: they are progress rows, not
 // newer conversation content. Anything else after the bubble (activity rows,
 // permission cards, user turns) means newer content has been appended — the
-// bubble is stale and must not act as an anchor anymore.
+// bubble is stale and must not act as an anchor anymore. Queued bubbles
+// don't count either: they are pinned below the conversation.
 function isTail(items: ChatItem[], idx: number): boolean {
-  return items.slice(idx + 1).every((i) => i.kind === 'tool');
+  return items.slice(idx + 1).every((i) => i.kind === 'tool' || isQueued(i));
 }
 
 // Finalize the bubble at idx in place (text kept), used when newer content
@@ -245,7 +247,7 @@ function appendDelta(items: ChatItem[], seq: number, delta: string): ChatItem[] 
     });
   }
   if (idx !== -1) items = finalizeAt(items, idx);
-  return [...items, { kind: 'assistant', text: delta, pending: true, seq, msgId: null, openPart: 0 }];
+  return appendItems(items, [{ kind: 'assistant', text: delta, pending: true, seq, msgId: null, openPart: 0 }]);
 }
 
 // A content block's final assistant event (it carries the block's full text).
@@ -268,7 +270,7 @@ function applyBlockText(items: ChatItem[], seq: number, text: string, msgId?: st
     }
     items = finalizeAt(items, idx);
   }
-  return [...items, { kind: 'assistant', text, pending: true, seq, msgId: msgId ?? null }];
+  return appendItems(items, [{ kind: 'assistant', text, pending: true, seq, msgId: msgId ?? null }]);
 }
 
 // Finalize the in-flight assistant bubble (pending -> false). The result text
@@ -281,7 +283,7 @@ function finalizePending(items: ChatItem[], seq: number, resultText: string | nu
   const idx = pendingIndex(items);
   if (idx === -1) {
     if (resultText === null || resultText === '') return items;
-    return [...items, { kind: 'assistant', text: resultText, pending: false, seq, msgId: null }];
+    return appendItems(items, [{ kind: 'assistant', text: resultText, pending: false, seq, msgId: null }]);
   }
   const current = items[idx] as AssistantItem;
   const keep = resultText === null || current.text.trimEnd().endsWith(resultText.trim());
@@ -297,13 +299,15 @@ function finalizePending(items: ChatItem[], seq: number, resultText: string | nu
 // — or appending on arrival — would therefore render the answer above the
 // question. Conversation order is what we want, so the echoed user turn slots
 // in front of the in-flight assistant bubble — but ONLY while that bubble is
-// the conversation's tail (tool rows after it count as progress, not newer
-// content: see isTail). A stale pending
+// the conversation's last content (queued bubbles aside). A stale pending
 // bubble (e.g. replayed from a buffer captured mid-turn, never finalized)
 // must not pull later, unrelated user events above newer content.
 function insertBeforePending(items: ChatItem[], rows: ChatItem[]): ChatItem[] {
   const idx = pendingIndex(items);
-  if (idx === -1 || !isTail(items, idx)) return [...items, ...rows];
+  // A message echoed after a tool row was taken mid-turn (Claude Code takes
+  // a message sent mid-turn at the next tool result): it belongs after that
+  // row, not above the in-flight answer.
+  if (idx === -1 || !items.slice(idx + 1).every(isQueued)) return appendItems(items, rows);
   return [...items.slice(0, idx), ...rows, ...items.slice(idx)];
 }
 
@@ -372,16 +376,23 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // activity rows, not user bubbles; an upload with no prompt body renders
       // just its attachment row. Either way the agent is working.
       if (text === '' || text.startsWith(HARNESS_PREFIX)) {
-        let items = attach ? [...state.items, attach] : state.items;
-        if (text !== '') items = [...items, { kind: 'activity', text, seq }];
+        let items = attach ? appendItems(state.items, [attach]) : state.items;
+        if (text !== '') items = appendItems(items, [{ kind: 'activity', text, seq }]);
         return { ...state, items, busy: true };
       }
-      // Wire echo of an optimistically-rendered local message (sent from this
-      // widget): confirm the local bubble in place instead of inserting a
-      // duplicate (the attachment row slots just before it). FIFO by text.
+      // Wire echo of a message already on screen: the widget's optimistic
+      // local bubble, or a queued one. FIFO by text.
       const localIdx = state.items.findIndex(
-        (i) => i.kind === 'user' && i.local === true && i.text === text,
+        (i) => i.kind === 'user' && (i.local === true || i.queued === true) && i.text === text,
       );
+      // A queued message the agent took now (after the tool row it came
+      // with, or at the start of the next turn): it moves to the take point,
+      // its attachment row in front.
+      if (localIdx !== -1 && (state.items[localIdx] as UserItem).queued) {
+        return { ...state, items: takeQueuedAt(state.items, localIdx, attach ? [attach] : []), busy: true };
+      }
+      // A local bubble: confirm it in place instead of inserting a duplicate
+      // (the attachment row slots just before it).
       if (localIdx !== -1) {
         const confirmed = { ...state.items[localIdx] } as Extract<ChatItem, { kind: 'user' }>;
         delete confirmed.local;
@@ -404,11 +415,37 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
     case 'x-optio-local-user': {
       const text = typeof ev.text === 'string' ? ev.text : '';
       if (text === '') return state;
-      return {
-        ...state,
-        items: [...state.items, { kind: 'user', text, seq, local: true }],
-        busy: true,
-      };
+      const id = typeof ev.id === 'string' && ev.id !== '' ? ev.id : undefined;
+      // The listener's x-optio-queued (or the message's echo) got here first.
+      if (id !== undefined && state.items.some((i) => i.kind === 'user' && i.queueId === id)) {
+        return { ...state, busy: true };
+      }
+      const item: UserItem = { kind: 'user', text, seq, local: true };
+      if (id !== undefined) item.queueId = id;
+      // Queued (the /send response said so), or sent behind queued messages:
+      // it waits, pinned at the bottom with them.
+      if (ev.queued === true || state.items.some(isQueued)) item.queued = true;
+      return { ...state, items: [...state.items, item], busy: true };
+    }
+
+    // Synthetic, listener-emitted (steering): a Send when ready that arrived
+    // while the agent works. Upload notice lines are split off as in a user
+    // echo, so the bubble shows (and the echo matches) the prompt text.
+    case 'x-optio-queued': {
+      const id = typeof ev.id === 'string' ? ev.id : '';
+      const { text } = parseUploadNotice(typeof ev.text === 'string' ? ev.text : '');
+      if (id === '' || text === '') return state;
+      const items = addQueued(state.items, id, text, seq);
+      return items === state.items ? state : { ...state, items };
+    }
+
+    // Synthetic, listener-emitted (steering): optio delivered the messages it
+    // held, as one prompt. Claude Code holds its own queue, so its listener
+    // never emits this; it is here for completeness of the shared contract.
+    case 'x-optio-taken': {
+      const ids = Array.isArray(ev.ids) ? ev.ids.filter((x: unknown): x is string => typeof x === 'string') : [];
+      const items = takeQueuedIds(state.items, ids);
+      return items === state.items ? state : { ...state, items, busy: true };
     }
 
     case 'x-optio-local-error': {
@@ -416,7 +453,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // not replayed on resume, unlike the successful-filename activity rows).
       const text = typeof ev.text === 'string' ? ev.text : '';
       if (text === '') return state;
-      return { ...state, items: [...state.items, { kind: 'error', text, seq }] };
+      return { ...state, items: appendItems(state.items, [{ kind: 'error', text, seq }]) };
     }
 
     case 'assistant': {
@@ -433,7 +470,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
         } else if (block?.type === 'tool_use') {
           // A persistent row per call; its tool_result (a later user event)
           // finishes it.
-          items = [...items, toolRow(block, seq, at)];
+          items = appendItems(items, [toolRow(block, seq, at)]);
         }
       }
       return items === state.items ? state : { ...state, items };
@@ -463,7 +500,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // distinct, explained error item instead of a plain agent bubble.
       if (ev.is_error) {
         const msg = explainApiError(resultText ?? '', ev.api_error_status);
-        return { ...state, items: [...items, { kind: 'error', text: msg, seq }], busy: false };
+        return { ...state, items: appendItems(items, [{ kind: 'error', text: msg, seq }]), busy: false };
       }
       return { ...state, items: finalizePending(items, seq, resultText), busy: false };
     }
@@ -479,7 +516,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
         seq,
       };
       // busy stays true — the agent is parked on the gate.
-      return { ...state, items: [...state.items, item] };
+      return { ...state, items: appendItems(state.items, [item]) };
     }
 
     case 'x-optio-permission-answered': {
@@ -499,7 +536,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
     case 'x-optio-closed': {
       // Session ended: stop every running row, background rows included.
       const item: ChatItem = { kind: 'closed', reason: String(ev.reason ?? ''), seq };
-      const items = freezeRunning(state.items, lastWireTime(state, now), 'session');
+      const items = dropUndelivered(freezeRunning(state.items, lastWireTime(state, now), 'session'));
       return { ...state, items: [...items, item], busy: false, closed: true };
     }
 
@@ -509,7 +546,8 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // Its process is gone: stop what it left running, background rows
       // included, and drop a busy flag its unfinished turn left behind. The
       // session itself stays open.
-      const items = freezeRunning(state.items, lastWireTime(state, now), 'session');
+      // Messages the old process held died with it.
+      const items = dropUndelivered(freezeRunning(state.items, lastWireTime(state, now), 'session'));
       return { ...state, items, busy: false };
     }
 
