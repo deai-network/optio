@@ -476,3 +476,117 @@ describe('ConversationView elapsed-counter interval', () => {
     expect(screen.getAllByTestId('tool-elapsed')[1].textContent).toBe(' · 2s');
   });
 });
+
+describe('ConversationView steering', () => {
+  const queuedItem: ChatItem = { kind: 'user', text: 'do this next', seq: 1, queued: true, queueId: 'q1' };
+  const busyState = (items: ChatItem[] = []) => makeState(items, { busy: true });
+
+  it('renders a queued bubble muted and dashed, with its caption', () => {
+    renderView(makeProps({ state: busyState([queuedItem]), busy: true }));
+    const bubble = screen.getByTestId('queued-bubble');
+    expect(bubble.textContent).toContain('do this next');
+    expect(bubble.textContent).toContain('Queued — the agent reads it when ready');
+    expect(bubble.getAttribute('style')).toContain('dashed');
+    expect(bubble.style.opacity).toBe('0.6');
+  });
+
+  it('Send now on a queued bubble calls onSteer with no new text', () => {
+    const onSteer = vi.fn(async () => true);
+    renderView(makeProps({ state: busyState([queuedItem]), busy: true, onSteer }));
+    fireEvent.click(screen.getByTestId('queued-send-now'));
+    expect(onSteer).toHaveBeenCalledWith('', []);
+  });
+
+  it('without onSteer, or once closed, a queued bubble has no Send now link', () => {
+    const r = renderView(makeProps({ state: busyState([queuedItem]), busy: true }));
+    expect(screen.queryByTestId('queued-send-now')).toBeNull();
+    rerenderView(r, makeProps({ state: makeState([queuedItem]), closed: true, onSteer: vi.fn(async () => true) }));
+    expect(screen.queryByTestId('queued-send-now')).toBeNull();
+  });
+
+  it('an interrupted answer gets the jagged-edge class; a normal one does not', () => {
+    renderView(makeProps({ state: makeState([
+      { kind: 'assistant', text: 'cut off', pending: false, seq: 1, msgId: 'm1', interrupted: true },
+      { kind: 'assistant', text: 'whole', pending: false, seq: 2, msgId: 'm2' },
+    ]) }));
+    const cut = screen.getAllByTestId('answer-interrupted');
+    expect(cut).toHaveLength(1);
+    expect(cut[0].className).toContain('optio-cc-interrupted');
+    expect(cut[0].textContent).toContain('cut off');
+    expect(document.getElementById('optio-cc-interrupted-style')).not.toBeNull();
+  });
+
+  it('a muted activity row renders as a plain muted line', () => {
+    renderView(makeProps({ state: makeState([{ kind: 'activity', text: '⏹ Interrupted by you', seq: 1, muted: true }]) }));
+    expect(screen.getByTestId('activity-muted').textContent).toBe('⏹ Interrupted by you');
+  });
+
+  it('idle: a single Send, even with onSteer', () => {
+    renderView(makeProps({ onSteer: vi.fn(async () => true) }));
+    expect(screen.getByTestId('conversation-send')).toBeTruthy();
+    expect(screen.queryByTestId('conversation-send-combined')).toBeNull();
+  });
+
+  it('busy without onSteer: the single Send stays (engines without steering)', () => {
+    renderView(makeProps({ busy: true, state: busyState() }));
+    expect(screen.getByTestId('conversation-send')).toBeTruthy();
+    expect(screen.queryByTestId('conversation-send-combined')).toBeNull();
+    expect(screen.getByTestId('conversation-interrupt')).toBeTruthy();
+  });
+
+  it('busy with onSteer: [Send when ready | Interrupt and send] plus the red Interrupt; the main half stays Send when ready', async () => {
+    const onSend = vi.fn(async () => true);
+    const onSteer = vi.fn(async () => true);
+    const { container } = renderView(makeProps({ busy: true, state: busyState(), onSend, onSteer }));
+    expect(screen.queryByTestId('conversation-send')).toBeNull();
+    expect(screen.getByTestId('conversation-interrupt')).toBeTruthy();
+    const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
+    expect(box.placeholder).toContain('send when ready');
+    expect(box.placeholder).toContain('interrupt and send');
+
+    fireEvent.change(box, { target: { value: 'first' } });
+    const main = () => container.querySelector('[data-action-id="send-when-ready"]') as HTMLElement;
+    expect(main().textContent).toContain('Send when ready');
+    fireEvent.click(main());
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('first', []));
+    await waitFor(() => expect(box.value).toBe(''));
+
+    fireEvent.change(box, { target: { value: 'second' } });
+    const combined = screen.getByTestId('conversation-send-combined');
+    fireEvent.click(combined.querySelector('.ant-dropdown-trigger') as HTMLElement);
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Interrupt and send' }));
+    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('second', []));
+    // keepOriginalDefault: the main half is back on Send when ready.
+    await waitFor(() => expect(main().textContent).toContain('Send when ready'));
+  });
+
+  it('Enter sends when ready; Cmd/Ctrl-Enter interrupts and sends while busy', async () => {
+    const onSend = vi.fn(async () => true);
+    const onSteer = vi.fn(async () => true);
+    renderView(makeProps({ busy: true, state: busyState(), onSend, onSteer }));
+    const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: 'a' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('a', []));
+    await waitFor(() => expect(box.value).toBe(''));
+    fireEvent.change(box, { target: { value: 'b' } });
+    fireEvent.keyDown(box, { key: 'Enter', ctrlKey: true });
+    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('b', []));
+    await waitFor(() => expect(box.value).toBe(''));
+    fireEvent.change(box, { target: { value: 'c' } });
+    fireEvent.keyDown(box, { key: 'Enter', metaKey: true });
+    await waitFor(() => expect(onSteer).toHaveBeenCalledWith('c', []));
+    expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
+  it('Cmd/Ctrl-Enter while idle is a plain send', async () => {
+    const onSend = vi.fn(async () => true);
+    const onSteer = vi.fn(async () => true);
+    renderView(makeProps({ onSend, onSteer }));
+    const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: 'x' } });
+    fireEvent.keyDown(box, { key: 'Enter', ctrlKey: true });
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('x', []));
+    expect(onSteer).not.toHaveBeenCalled();
+  });
+});
