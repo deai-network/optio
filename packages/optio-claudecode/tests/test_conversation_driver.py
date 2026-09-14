@@ -197,3 +197,98 @@ async def test_close_sets_close_requested(convo):
     c, handle = convo
     await c.close()
     assert c.close_requested.is_set()
+
+
+# -- steering hooks (docs/2026-09-13-conversation-steering-design.md) ---------
+
+from optio_claudecode.steering import BUSY_SEND, is_turn_end, make_steering
+
+
+@pytest.mark.asyncio
+async def test_idle_state_clears_pending_after_a_merged_turn(convo):
+    # A message sent while a turn runs joins that turn: two sends, ONE result
+    # (CLI 2.1.270). session_state_changed idle ends the count.
+    c, handle = convo
+    seen_result, seen_idle = asyncio.Event(), asyncio.Event()
+
+    def watch(ev):
+        if ev.get("type") == "result":
+            seen_result.set()
+        if ev.get("subtype") == "session_state_changed" and ev.get("state") == "idle":
+            seen_idle.set()
+
+    c.on_event(watch)
+    reader = asyncio.create_task(c.run_reader())
+    await c.send("first")
+    await c.send("steer")
+    handle.stdout.feed({"type": "result", "subtype": "success", "result": "done", "is_error": False})
+    await asyncio.wait_for(seen_result.wait(), 60)
+    assert c.is_pending()  # the count alone still waits for a second result
+    handle.stdout.feed({"type": "system", "subtype": "session_state_changed", "state": "idle"})
+    await asyncio.wait_for(seen_idle.wait(), 60)
+    assert not c.is_pending()
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_emit_event_reaches_subscribers_unmodified(convo):
+    c, handle = convo
+    events = []
+    c.on_event(events.append)
+    c.emit_event({"type": "x-optio-queued", "id": "q1", "text": "hi"})
+    reader = asyncio.create_task(c.run_reader())
+    handle.stdout.eof()
+    await reader
+    assert events[0] == {"type": "x-optio-queued", "id": "q1", "text": "hi"}
+    assert events[-1]["type"] == "x-optio-closed"
+
+
+def test_claudecode_declares_joins_next_step_and_ends_turns_on_result():
+    assert BUSY_SEND.for_model(None) == "joins-next-step"
+    assert BUSY_SEND.for_model("claude-sonnet-5") == "joins-next-step"
+    assert is_turn_end({"type": "result", "subtype": "error_during_execution"})
+    assert not is_turn_end({"type": "system", "subtype": "session_state_changed", "state": "idle"})
+
+
+@pytest.mark.asyncio
+async def test_steering_busy_send_goes_straight_to_claude_as_queued(convo):
+    c, handle = convo
+    events = []
+    c.on_event(events.append)
+    steering = make_steering(c, new_id=lambda: "q1")
+    reader = asyncio.create_task(c.run_reader())
+    await c.send("long task")
+    await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    out = await steering.send_when_ready("steer")
+    assert (out.id, out.queued) == ("q1", True)
+    sent = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert sent["message"]["content"][0]["text"] == "steer"
+    handle.stdout.eof()
+    await reader
+    assert {"type": "x-optio-queued", "id": "q1", "text": "steer"} in events
+
+
+@pytest.mark.asyncio
+async def test_steering_interrupt_and_send_waits_for_the_result(convo):
+    c, handle = convo
+    events = []
+    c.on_event(events.append)
+    steering = make_steering(c, new_id=lambda: "s1")
+    reader = asyncio.create_task(c.run_reader())
+    await c.send("long task")
+    await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    task = asyncio.create_task(steering.interrupt_and_send("now"))
+    ctrl = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert ctrl["request"]["subtype"] == "interrupt"
+    handle.stdout.feed({"type": "control_response", "response": {
+        "subtype": "success", "request_id": ctrl["request_id"]}})
+    handle.stdout.feed({"type": "result", "subtype": "error_during_execution",
+                        "is_error": True, "terminal_reason": "aborted_streaming"})
+    msg = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert msg["type"] == "user"
+    assert msg["message"]["content"][0]["text"] == "now"
+    assert await asyncio.wait_for(task, 60) == "s1"
+    handle.stdout.eof()
+    await reader
+    assert events[0] == {"type": "x-optio-interrupt", "by": "user"}
