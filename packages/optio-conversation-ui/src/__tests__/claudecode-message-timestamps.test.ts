@@ -161,19 +161,27 @@ describe('claudecode message timestamps: synthetic events', () => {
   // still backfill it instead of hitting the "got here first" branch and
   // discarding ev.time. The taking wire echo (isReplay in real traffic; here
   // any wire `user` event with matching text) then wins over that.
+  //
+  // Review of fix 8, finding 1: x-optio-queued only pins a genuinely-busy
+  // "Send when ready" bubble while the agent reads as busy (an
+  // interrupt_and_send's OWN x-optio-queued fires once the turn it
+  // interrupted has already ended, and must not pin one -- see the reducer
+  // tests in claudecode-steering.test.ts). A leading in-flight turn is what
+  // makes the agent busy here, same as a real "Send when ready" would race.
   it('x-optio-queued(q1) then x-optio-local-user(q1, time T) backfills T on the still-queued bubble; the taking echo then wins', () => {
     const sentAt = Date.parse('2026-09-13T12:00:00.000Z');
     const wireAt = Date.parse('2026-09-13T12:00:01.500Z');
+    const busyTurn = user('q', '2026-09-13T11:59:59.000Z');
     const queued = { type: 'x-optio-queued', id: 'q1', text: 'later' };
-    const afterQueued = run([queued]);
-    expect(ofKind(afterQueued, 'user')[0]).toMatchObject({ queued: true, queueId: 'q1' });
-    expect(ofKind(afterQueued, 'user')[0].timestamp).toBeUndefined();
+    const afterQueued = run([busyTurn, queued]);
+    expect(ofKind(afterQueued, 'user')[1]).toMatchObject({ queued: true, queueId: 'q1' });
+    expect(ofKind(afterQueued, 'user')[1].timestamp).toBeUndefined();
 
-    const afterLocal = run([queued, localUser('later', 'q1', sentAt, true)]);
-    expect(ofKind(afterLocal, 'user')[0]).toMatchObject({ queued: true, queueId: 'q1', timestamp: sentAt });
+    const afterLocal = run([busyTurn, queued, localUser('later', 'q1', sentAt, true)]);
+    expect(ofKind(afterLocal, 'user')[1]).toMatchObject({ queued: true, queueId: 'q1', timestamp: sentAt });
 
-    const taken = run([queued, localUser('later', 'q1', sentAt, true), user('later', new Date(wireAt).toISOString())]);
-    const takenItem = ofKind(taken, 'user')[0];
+    const taken = run([busyTurn, queued, localUser('later', 'q1', sentAt, true), user('later', new Date(wireAt).toISOString())]);
+    const takenItem = ofKind(taken, 'user')[1];
     expect(takenItem).toMatchObject({ queueId: 'q1', timestamp: wireAt });
     expect(takenItem.queued).toBeUndefined();
   });
@@ -221,7 +229,14 @@ describe('claudecode message timestamps: "System: " activity rows (Fix 9)', () =
   });
 
   it('an undelivered-message notice row still carries no timestamp', () => {
-    const s = run([{ type: 'x-optio-queued', id: 'q1', text: 'later' }, { type: 'x-optio-closed', reason: 'done' }]);
+    // Review of fix 8, finding 1: x-optio-queued only pins a queued bubble
+    // while the agent reads as busy; a leading in-flight turn establishes that
+    // (see claudecode-steering.test.ts for the reducer-level coverage).
+    const s = run([
+      user('q'),
+      { type: 'x-optio-queued', id: 'q1', text: 'later' },
+      { type: 'x-optio-closed', reason: 'done' },
+    ]);
     const notice = ofKind(s, 'activity').find((i) => i.text.startsWith('Not delivered'));
     expect(notice).toBeDefined();
     expect(notice?.timestamp).toBeUndefined();
