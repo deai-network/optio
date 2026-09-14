@@ -271,9 +271,22 @@ async def test_steering_busy_send_goes_straight_to_claude_as_queued(convo):
 
 @pytest.mark.asyncio
 async def test_steering_interrupt_and_send_waits_for_the_result(convo):
+    # Regression for review finding 2 (Task 3 fix round 1): the previous
+    # version of this test fed control_response AND result before ever
+    # reading stdin again, so a wrong is_turn_end would only make Steering
+    # fall back to its 15 s timeout — the test would still pass. Use an
+    # event-based sync point instead: after the interrupt is acked, assert
+    # the send is still withheld, then feed the result and assert it lands.
     c, handle = convo
     events = []
-    c.on_event(events.append)
+    ack_seen = asyncio.Event()
+
+    def watch(ev):
+        events.append(ev)
+        if ev.get("type") == "control_response":
+            ack_seen.set()
+
+    c.on_event(watch)
     steering = make_steering(c, new_id=lambda: "s1")
     reader = asyncio.create_task(c.run_reader())
     await c.send("long task")
@@ -283,6 +296,11 @@ async def test_steering_interrupt_and_send_waits_for_the_result(convo):
     assert ctrl["request"]["subtype"] == "interrupt"
     handle.stdout.feed({"type": "control_response", "response": {
         "subtype": "success", "request_id": ctrl["request_id"]}})
+    await asyncio.wait_for(ack_seen.wait(), 60)
+    # The interrupt ack alone must not release the held send: only the
+    # turn's own result (is_turn_end) may.
+    assert not task.done()
+    assert handle.stdin.lines.qsize() == 0
     handle.stdout.feed({"type": "result", "subtype": "error_during_execution",
                         "is_error": True, "terminal_reason": "aborted_streaming"})
     msg = await asyncio.wait_for(handle.stdin.lines.get(), 60)
@@ -292,3 +310,55 @@ async def test_steering_interrupt_and_send_waits_for_the_result(convo):
     handle.stdout.eof()
     await reader
     assert events[0] == {"type": "x-optio-interrupt", "by": "user"}
+
+
+@pytest.mark.asyncio
+async def test_pending_survives_a_stale_idle_racing_interrupt_and_send(convo):
+    # Regression for review finding 1 (Task 3 fix round 1). Recorded order
+    # (s1: result at 16.167, idle at 16.171; s2: 26.077, 26.082): the CLI's
+    # own idle for a turn arrives a few ms after that turn's result.
+    # interrupt_and_send reacts to the result immediately (is_pending()
+    # already False, nothing to interrupt) and writes the next prompt within
+    # microseconds; the stale idle — and then running, once the CLI takes
+    # the new turn — must not erase that brand-new turn's pending state.
+    c, handle = convo
+    steering = make_steering(c, new_id=lambda: "s2")
+    reader = asyncio.create_task(c.run_reader())
+    await c.send("first task")
+    await asyncio.wait_for(handle.stdin.lines.get(), 60)
+
+    result_seen = asyncio.Event()
+    c.on_event(lambda ev: result_seen.set() if ev.get("type") == "result" else None)
+    handle.stdout.feed({"type": "result", "subtype": "success",
+                        "result": "done", "is_error": False})
+    await asyncio.wait_for(result_seen.wait(), 60)
+    assert not c.is_pending()
+
+    # interrupt_and_send sees the turn already ended: nothing to interrupt,
+    # so it just writes the new prompt straight away.
+    await steering.interrupt_and_send("now")
+    sent = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert sent["message"]["content"][0]["text"] == "now"
+    assert c.is_pending()
+
+    running_seen = asyncio.Event()
+
+    def watch_running(ev):
+        if ev.get("subtype") == "session_state_changed" and ev.get("state") == "running":
+            running_seen.set()
+
+    c.on_event(watch_running)
+    handle.stdout.feed({"type": "system", "subtype": "session_state_changed", "state": "idle"})
+    handle.stdout.feed({"type": "system", "subtype": "session_state_changed", "state": "running"})
+    await asyncio.wait_for(running_seen.wait(), 60)
+
+    assert c.is_pending()
+    intr = asyncio.create_task(steering.interrupt())
+    ctrl = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert ctrl["type"] == "control_request"
+    assert ctrl["request"]["subtype"] == "interrupt"
+    handle.stdout.feed({"type": "control_response", "response": {
+        "subtype": "success", "request_id": ctrl["request_id"]}})
+    await asyncio.wait_for(intr, 60)
+    handle.stdout.eof()
+    await reader
