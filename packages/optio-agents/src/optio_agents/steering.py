@@ -138,12 +138,25 @@ class Steering:
     # -- turn end --------------------------------------------------------------
 
     def _on_event(self, event: dict) -> None:
-        if not self._is_turn_end(event):
-            return
-        self._turn_end.set()
-        self._interrupted = False
-        if self._held and (self._flush_task is None or self._flush_task.done()):
-            self._flush_task = asyncio.ensure_future(self._flush_after_turn())
+        if self._is_turn_end(event):
+            self._turn_end.set()
+            self._interrupted = False
+            if self._held and (self._flush_task is None or self._flush_task.done()):
+                self._flush_task = asyncio.ensure_future(self._flush_after_turn())
+        # A merged turn (Send when ready taken mid-turn) has two sends and
+        # one result, so is_pending() can stay True for a few ms after that
+        # result's turn-end event above, until a later, non-turn-end event
+        # (the wrapper's own idle) actually clears it (final-review M1). An
+        # Interrupt landing in that window sets _interrupted again after the
+        # line above cleared it; without this second check nothing would
+        # ever clear it, and the NEXT turn's first Interrupt would silently
+        # no-op (see Steering.interrupt/interrupt_and_send). _route (or the
+        # wrapper's equivalent) has already updated is_pending() by the time
+        # any event reaches here, so this is safe to run unconditionally: a
+        # stale idle racing a fresh send leaves is_pending() True and this
+        # is a no-op.
+        if self._interrupted and not self._conv.is_pending():
+            self._interrupted = False
 
     async def _flush_after_turn(self) -> None:
         async with self._lock:
@@ -229,7 +242,11 @@ class Steering:
         At most one x-optio-interrupt (and one underlying interrupt() call)
         happens per turn: if interrupt() already marked this turn
         interrupted, this still waits for the turn end and delivers, but
-        emits no second marker and sends no second interrupt."""
+        emits no second marker and sends no second interrupt. Non-empty
+        ``text`` gets its own x-optio-queued (id, text) — the same id this
+        call returns — emitted after the interrupt marker (if any) and
+        just before the send, so the reducer can dedupe the steer's local
+        echo against the wire by id (final-review M3)."""
         self._check_open()
         if not text and not self._held and self._busy_send() not in NATIVE_QUEUE:
             return None
@@ -242,6 +259,8 @@ class Steering:
                     self._emit({"type": INTERRUPT_EVENT, "by": "user"})
                 if self._busy_send() != "cuts-in":
                     await self._interrupt_and_wait(call_interrupt=not already_interrupted)
+            if text:
+                self._emit({"type": QUEUED_EVENT, "id": qid, "text": text})
             await self._deliver([text])
         return qid
 

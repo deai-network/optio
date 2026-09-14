@@ -161,7 +161,15 @@ async def test_interrupt_and_send_interrupts_waits_for_the_turn_end_then_sends()
     conv.pending = True
     s = make(conv, "joins-next-step")
     assert await s.interrupt_and_send("now") == "id1"
-    assert conv.log == [("event", INTERRUPT), ("interrupt", None), ("send", "now")]
+    # x-optio-queued (final-review M3) lands after the interrupt marker and
+    # the underlying interrupt() call, and before the send: the reducer
+    # dedupes the steer's local echo against it by id.
+    assert conv.log == [
+        ("event", INTERRUPT),
+        ("interrupt", None),
+        ("event", {"type": QUEUED, "id": "id1", "text": "now"}),
+        ("send", "now"),
+    ]
 
 
 async def test_interrupt_and_send_delivers_what_optio_holds_first_in_one_prompt():
@@ -171,9 +179,10 @@ async def test_interrupt_and_send_delivers_what_optio_holds_first_in_one_prompt(
     await s.send_when_ready("a")
     await s.send_when_ready("b")
     assert await s.interrupt_and_send("c") == "id3"
-    assert conv.log[-4:] == [
+    assert conv.log[-5:] == [
         ("event", INTERRUPT),
         ("interrupt", None),
+        ("event", {"type": QUEUED, "id": "id3", "text": "c"}),
         ("event", {"type": TAKEN, "ids": ["id1", "id2"]}),
         ("send", "a\n\nb\n\nc"),
     ]
@@ -191,6 +200,7 @@ async def test_cuts_in_sends_natively_without_an_optio_interrupt():
     assert conv.log == [
         ("event", {"type": QUEUED, "id": "id1", "text": "a"}),
         ("event", INTERRUPT),
+        ("event", {"type": QUEUED, "id": "id2", "text": "b"}),
         ("event", {"type": TAKEN, "ids": ["id1"]}),
         ("send", "a\n\nb"),
     ]
@@ -259,7 +269,12 @@ async def test_idle_interrupt_and_send_sends_without_interrupting():
     conv = FakeConversation()
     s = make(conv, "joins-next-step")
     await s.interrupt_and_send("x")
-    assert conv.log == [("send", "x")]
+    # No interrupt marker (idle), but the text still gets its own
+    # x-optio-queued (final-review M3) so the reducer has an id to dedupe.
+    assert conv.log == [
+        ("event", {"type": QUEUED, "id": "id1", "text": "x"}),
+        ("send", "x"),
+    ]
 
 
 # -- interrupt -----------------------------------------------------------------
@@ -313,9 +328,38 @@ async def test_interrupt_during_interrupt_and_sends_wait_yields_one_marker():
     release.set()
 
     assert await task == "id1"
-    assert events(conv) == [INTERRUPT]
+    assert events(conv) == [INTERRUPT, {"type": QUEUED, "id": "id1", "text": "now"}]
     assert conv.interrupts == 1
     assert conv.sent == ["now"]
+
+
+# -- final-review M1: the interrupt flag must not survive a merged turn's ----
+# -- idle gap into the next turn --------------------------------------------
+
+async def test_interrupted_flag_clears_once_idle_after_a_merged_turns_result():
+    # Mirrors the real Claude Code driver (final-review M1): a merged turn
+    # (Send when ready taken mid-turn) has two sends and one result, so
+    # is_pending() can stay True for a few ms after that result's turn-end
+    # event, until a later, non-turn-end event (idle) actually clears it. An
+    # Interrupt landing in that window must not leave `_interrupted` set once
+    # idle catches up — otherwise the NEXT turn's first Interrupt is a silent
+    # no-op (no marker, no underlying interrupt() call).
+    conv = FakeConversation(turn_end_on_interrupt=False)
+    conv.pending = True
+    s = make(conv, "joins-next-step")
+
+    conv.fire({"type": "turn-end"})  # this turn's result; still "pending"
+    await s.interrupt()              # window between result and idle
+    assert events(conv) == [INTERRUPT]
+    assert conv.interrupts == 1
+
+    conv.pending = False
+    conv.fire({"type": "idle"})      # not itself a turn-end event
+
+    conv.pending = True               # the next turn starts
+    await s.interrupt()
+    assert events(conv) == [INTERRUPT, INTERRUPT]
+    assert conv.interrupts == 2
 
 
 # -- lifecycle -----------------------------------------------------------------

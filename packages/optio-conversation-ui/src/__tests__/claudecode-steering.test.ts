@@ -289,3 +289,30 @@ describe('claudecode steering: a too-late interrupt (marker raced a normal resul
     expect('interrupted' in answer).toBe(false);
   });
 });
+
+// final-review M3: Steering.interrupt_and_send now emits x-optio-queued for
+// its own text (same id /steer returns), so the view's local echo (queued:
+// false — it is not pinned, just an immediate confirmation) and the wire's
+// own echo of the sent text both have an id-bearing bubble to land on,
+// whichever of the two arrives first.
+describe('claudecode steering: final-review M3 (interrupt-and-send announces its own text)', () => {
+  const base = [user('q'), delta('a'), interrupt, queued('q1', 'now'), aborted()];
+
+  it('confirms into ONE bubble, never "Not delivered", local echo first', () => {
+    const s = run([...base, localUser('now', 'q1', false), user('now')]);
+    const bubbles = users(s).filter((u) => u.text === 'now');
+    expect(bubbles).toHaveLength(1);
+    expect(bubbles[0].queued).toBeUndefined();
+    expect(bubbles[0].local).toBeUndefined();
+    expect(s.items.some((i) => i.kind === 'activity' && i.text.startsWith('Not delivered'))).toBe(false);
+  });
+
+  it('confirms into ONE bubble, never "Not delivered", wire echo first', () => {
+    const s = run([...base, user('now'), localUser('now', 'q1', false)]);
+    const bubbles = users(s).filter((u) => u.text === 'now');
+    expect(bubbles).toHaveLength(1);
+    expect(bubbles[0].queued).toBeUndefined();
+    expect(bubbles[0].local).toBeUndefined();
+    expect(s.items.some((i) => i.kind === 'activity' && i.text.startsWith('Not delivered'))).toBe(false);
+  });
+});

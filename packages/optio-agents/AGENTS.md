@@ -63,17 +63,29 @@ behind every conversation listener's `POST /send`, `POST /steer` and
     `turn_end_timeout_s` deadline covers both the `interrupt()` call and the
     wait, so a live but unresponsive agent cannot hold `Steering` (and every
     later send/steer behind it) forever; on expiry it sends anyway and logs
-    a warning. Then held messages + `text` go as one prompt. Empty `text` is
-    Send now (returns `None`); with nothing held and the agent not in
-    `NATIVE_QUEUE`, it is a no-op — it neither interrupts nor sends, so it
-    never draws an interrupted-row on a turn that is still streaming.
+    a warning. Non-empty `text` gets its own
+    `{"type":"x-optio-queued","id","text"}` (the same id this call returns),
+    emitted after the interrupt marker (if any) and just before the send, so
+    the reducer can dedupe the steer's own local echo against the wire by
+    id. Then held messages + `text` go as one prompt. Empty `text` is Send
+    now (returns `None`, no queued event); with nothing held and the agent
+    not in `NATIVE_QUEUE`, it is a no-op — it neither interrupts nor sends,
+    so it never draws an interrupted-row on a turn that is still streaming.
   * `await interrupt()` — stop only; emits x-optio-interrupt while busy.
   * At most one `x-optio-interrupt` (and one underlying `interrupt()` call)
     per turn, shared between `interrupt()` and `interrupt_and_send()`: a
     second Interrupt click, or one pressed while `interrupt_and_send` still
     waits for the turn end, emits no second marker and sends no second
     control request; `interrupt_and_send` in an already-interrupted turn
-    still waits for the turn end and delivers.
+    still waits for the turn end and delivers. The flag clears on
+    `is_turn_end(event)`, and — checked again on every later event — also
+    once `conversation.is_pending()` has gone False. The second check
+    matters for a merged turn (Send when ready taken mid-turn): the result
+    that ends it can leave `is_pending()` True for a few more ms, until the
+    wrapper's own idle event catches up. Without it, an Interrupt landing in
+    that gap sets the flag again right after `is_turn_end` cleared it, and
+    nothing would ever clear it again — silently swallowing the next turn's
+    first Interrupt (no marker, no underlying `interrupt()` call).
   * `await settle()`, `held_ids`, `close()` (unsubscribes).
 * `emit` must put the event into the wrapper's own event stream (in order
   with native events) so the conversation listener buffers and persists it.
