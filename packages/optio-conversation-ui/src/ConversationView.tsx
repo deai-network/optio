@@ -265,50 +265,33 @@ function ensureSendButtonStyle(): void {
   document.head.appendChild(el);
 }
 
-// Fix 18 (owner ruling 2026-09-15, manual-test finding): the pending label
-// used to swap to 'Interrupting…', which is longer than 'Interrupt' and made
-// the buttons jump when a turn was cut. The label now always reads
-// 'Interrupt' — a spinner (antd's `loading` state, driven by the action's own
-// `pending` field below) is the only sign the request is in flight — and
-// this fixed width keeps the button's footprint constant across idle,
-// pending and disabled. Sized like SEND_BUTTON_WIDTH above: 'Interrupt' (10
-// characters) at size="small" runs at most ~75px of text under antd's
-// default 14px UI font, antd's loading spinner replaces the icon slot at
-// ~14px plus a ~8px gap to the label while pending, and the button itself
-// adds ~14px of horizontal padding (7px each side). 100px covers the
-// spinner-plus-label case with a few px of headroom and does not leave a
-// visibly empty gap when idle.
-const INTERRUPT_BUTTON_WIDTH = 100;
-
-// Mirrors SEND_BUTTON_STYLE_ID: the reserved INTERRUPT_BUTTON_WIDTH slot is a
-// plain <span>, so the antd <Button> vultus's ActionButton renders inside it
-// is told to fill it.
-//
-// Review-of-Fix-18 finding (round 1): vultus's ActionButton (Props: action,
-// size, block, keepOriginalDefault — no style/className, ActionButton.tsx:
-// 8-14) cannot be given the fixed width directly, and unitas is read-only
-// for this fix, so the width is applied from here via this wrapper <span>
-// plus a CSS rule, exactly as Fix 10 already does for the send button. The
-// owner has not explicitly signed off on this specific instance (see the
-// round-1 fix report); it is recorded here for visibility. Unlike Fix 10's
-// original rule, this one does NOT assume the antd <Button> is the wrapper's
-// *direct* child: ActionButton inserts its own <span> around the button
-// whenever `action.reason` is set (a Tooltip wrapper, ActionButton.tsx:
-// 73-79). `interruptAction` above never sets `reason` or `confirmation`
-// today, so that extra wrapper never appears in practice — but `> *` plus a
-// plain descendant `.ant-btn` rule (rather than `> .ant-btn`) keeps the fill
-// correct even if it ever does, instead of silently stopping to apply. This
-// does not cover the popconfirm/typing-modal wrapper cases, which
-// `interruptAction` also never uses.
-const INTERRUPT_BUTTON_STYLE_ID = 'optio-cc-interrupt-button-style';
-function ensureInterruptButtonStyle(): void {
-  if (typeof document === 'undefined' || document.getElementById(INTERRUPT_BUTTON_STYLE_ID)) return;
-  const el = document.createElement('style');
-  el.id = INTERRUPT_BUTTON_STYLE_ID;
-  el.textContent = `.optio-cc-interrupt-btn { display: inline-flex; }
-  .optio-cc-interrupt-btn > * { width: 100%; }
-  .optio-cc-interrupt-btn .ant-btn { width: 100%; }`;
-  document.head.appendChild(el);
+// Fix 20 (owner ruling 2026-09-15, manual-test finding): Fix 18 (677782b7..
+// 9034cd89) gave Interrupt a fixed-width wrapper so antd's `loading` spinner
+// wouldn't resize the button. That only worked in jsdom — in a real browser
+// the button has no free room at rest, so the spinner still grew it and the
+// whole input bar jumped; jsdom cannot measure layout, which is why the
+// earlier review missed it. vultus's ActionStatus carries an `icon` field
+// (vultus-core types.ts) that ActionButton passes straight to antd's Button,
+// and antd renders its `loading` spinner IN THE ICON'S SLOT (button.js:
+// `iconNode = icon && !innerLoading ? icon : … defaultLoadingIconElement()`)
+// — so idle (icon + 'Interrupt') and pending (spinner + 'Interrupt') are the
+// same width by construction, and no reserved width or extra CSS is needed.
+// @ant-design/icons is not a dependency of optio-conversation-ui (checked
+// package.json), so this is a small inline square in the '⏹' spirit rather
+// than a library icon.
+function InterruptStopIcon() {
+  return (
+    <span
+      data-testid="interrupt-stop-icon"
+      aria-hidden="true"
+      style={{
+        display: 'inline-block',
+        width: '0.7em',
+        height: '0.7em',
+        backgroundColor: 'currentColor',
+      }}
+    />
+  );
 }
 
 // Colors come from the antd theme (ConfigProvider algorithm), so the widget
@@ -739,9 +722,13 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   // `loading` spinner (see ActionButton.tsx) instead of Fix 6's old
   // 'Interrupting…' label swap; `interrupt()` above still runs the same
   // ref-guarded fire-once/error logic, just invoked through `fire`.
+  // Fix 20: `icon` gives idle Interrupt a stop icon; antd swaps it for the
+  // loading spinner while `pending`, in the same slot (see InterruptStopIcon
+  // above), which is what makes the fixed-width workaround unnecessary.
   const interruptAction: ActionStatus = {
     id: 'interrupt',
     label: 'Interrupt',
+    icon: <InterruptStopIcon />,
     variant: 'danger',
     pending: interrupting,
     disabled: !busy || closed,
@@ -761,7 +748,6 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     ensureCopyStyle();
     ensureInterruptedStyle();
     ensureSendButtonStyle();
-    ensureInterruptButtonStyle();
     inputRef.current?.focus();
     const timers = [100, 400, 1000].map((ms) => setTimeout(() => inputRef.current?.focus(), ms));
     return () => timers.forEach(clearTimeout);
@@ -1429,14 +1415,11 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                 (danger ActionStatus above) instead of a plain antd Button —
                 it renders the same red button, but its own `pending` state
                 drives ActionButton's antd `loading` spinner rather than
-                swapping the label. INTERRUPT_BUTTON_WIDTH keeps the
-                footprint constant across idle/pending/disabled, exactly the
-                SEND_BUTTON_WIDTH pattern above. */}
-            <span
-              data-testid="conversation-interrupt"
-              className="optio-cc-interrupt-btn"
-              style={{ width: INTERRUPT_BUTTON_WIDTH }}
-            >
+                swapping the label. Fix 20: the action's `icon` (a stop
+                square) occupies the same slot antd's spinner takes over
+                while pending, so the button's width no longer needs to be
+                reserved — this wrapper only keeps the stable test id. */}
+            <span data-testid="conversation-interrupt">
               <ActionButton action={interruptAction} size="small" />
             </span>
           </div>

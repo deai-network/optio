@@ -275,7 +275,13 @@ describe('ConversationView Interrupt pending and failure', () => {
     expect(screen.queryByTestId('conversation-error')).toBeNull();
   });
 
-  it('has the same fixed-width wrapper style whether idle or pending', async () => {
+  // Fix 20 (owner ruling 2026-09-15, manual-test finding): Fix 18's fixed
+  // width only worked in jsdom -- in a real browser the button had no free
+  // room at rest, so the spinner grew it and the whole input bar jumped. The
+  // fix instead gives Interrupt a stop icon; antd renders its `loading`
+  // spinner IN THE ICON SLOT, so idle (icon + label) and pending (spinner +
+  // label) are the same width by construction and no wrapper CSS is needed.
+  it('shows a stop icon while idle, the icon disappears in favour of antd\'s spinner while pending, and the icon returns after it resolves', async () => {
     let resolveInterrupt!: (ok: boolean) => void;
     const onInterrupt = vi.fn(
       () =>
@@ -285,14 +291,18 @@ describe('ConversationView Interrupt pending and failure', () => {
     );
     renderView(makeProps({ busy: true, onInterrupt }));
     const wrap = screen.getByTestId('conversation-interrupt') as HTMLElement;
-    const idleWidth = wrap.style.width;
-    expect(idleWidth).not.toBe('');
+    expect(wrap.style.width).toBe('');
+    expect(wrap.querySelector('[data-testid="interrupt-stop-icon"]')).toBeTruthy();
+    expect(interruptButton().classList.contains('ant-btn-loading')).toBe(false);
+
     fireEvent.click(interruptButton());
     expect(interruptButton().classList.contains('ant-btn-loading')).toBe(true);
-    expect(wrap.style.width).toBe(idleWidth);
+    expect(wrap.querySelector('[data-testid="interrupt-stop-icon"]')).toBeNull();
+    expect(interruptButton().textContent).toBe('Interrupt');
+
     resolveInterrupt(true);
     await waitFor(() => expect(interruptButton().classList.contains('ant-btn-loading')).toBe(false));
-    expect(wrap.style.width).toBe(idleWidth);
+    expect(wrap.querySelector('[data-testid="interrupt-stop-icon"]')).toBeTruthy();
   });
 
   it('shows "Interrupt failed — retry." when onInterrupt resolves false, then returns to normal with no spinner', async () => {
