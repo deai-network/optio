@@ -630,27 +630,44 @@ class ProcessContext:
             )
 
     async def _flush_progress(self) -> None:
-        # Phase 0: flush coalesced percent-only update (silent, no log).
-        if self._pending_pct is not None:
-            await self._write_progress(self._pending_pct)
-            self._pending_pct = None
+        await self._drain_pending()
+        self._last_flush_time = time.monotonic()
 
-        # Phase 1: drain any quiet-mode messages.
-        while self._message_queue:
-            await self._write_progress(self._message_queue.popleft())
+    async def _drain_pending(self) -> None:
+        """Write the pending progress state, in order.
 
-        # Phase 2: flush pending avalanche message, with drop summary first.
-        if self._pending_progress is not None:
-            if self._dropped_count > 0:
+        Each piece of state is taken off the context *before* its write is
+        awaited, so report_progress calls made meanwhile are neither lost nor
+        written twice. Quiet-mode messages that arrive during the writes are
+        drained too: this flush is the running one, so _schedule_flush did
+        not start another. Pending avalanche and percent-only state that
+        arrives meanwhile does not by itself keep this flush going (it is
+        written in a further round only if quiet messages force one), so
+        the write throttle for bursts still holds.
+        """
+        while True:
+            # Phase 0: coalesced percent-only update (silent, no log).
+            pct, self._pending_pct = self._pending_pct, None
+            if pct is not None:
+                await self._write_progress(pct)
+
+            # Phase 1: quiet-mode messages.
+            while self._message_queue:
+                await self._write_progress(self._message_queue.popleft())
+
+            # Phase 2: pending avalanche message, with drop summary first.
+            pending, self._pending_progress = self._pending_progress, None
+            dropped, self._dropped_count = self._dropped_count, 0
+            if dropped > 0:
                 await self._write_progress(Progress(
                     percent=None,
-                    message=f"({self._dropped_count} messages dropped)",
+                    message=f"({dropped} messages dropped)",
                 ))
-                self._dropped_count = 0
-            await self._write_progress(self._pending_progress)
-            self._pending_progress = None
+            if pending is not None:
+                await self._write_progress(pending)
 
-        self._last_flush_time = time.monotonic()
+            if not self._message_queue:
+                return
 
     async def flush_final_progress(self) -> None:
         """Force flush any pending progress (called when process ends)."""
@@ -668,31 +685,9 @@ class ProcessContext:
                     raise
             except Exception:
                 _log.exception("Progress flush failed while finishing the process")
-        # Flush coalesced percent-only update.
-        if self._pending_pct is not None:
-            await self._write_progress(self._pending_pct)
-            self._pending_pct = None
-        # Drain any remaining quiet-mode queue.
-        while self._message_queue:
-            await self._write_progress(self._message_queue.popleft())
-        # Flush any leftover avalanche state.
-        if self._pending_progress is not None:
-            if self._dropped_count > 0:
-                await self._write_progress(Progress(
-                    percent=None,
-                    message=f"({self._dropped_count} messages dropped)",
-                ))
-                self._dropped_count = 0
-            await self._write_progress(self._pending_progress)
-            self._pending_progress = None
-        elif self._dropped_count > 0:
-            # Avalanche ended at exactly the moment the pending was flushed
-            # but more drops accumulated after. Surface the count.
-            await self._write_progress(Progress(
-                percent=None,
-                message=f"({self._dropped_count} messages dropped)",
-            ))
-            self._dropped_count = 0
+        # Everything still pending: percent, queued messages, and leftover
+        # avalanche state (a drop count without a surviving message included).
+        await self._drain_pending()
 
     def _set_child_callback(self, callback: Callable) -> None:
         """Set the on_child_progress callback for this context."""
