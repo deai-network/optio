@@ -183,3 +183,45 @@ async def test_no_avalanche_no_drop_summary(mongo_db):
     messages = await _log_messages(mongo_db, "test", "noavalanche")
     assert messages == [f"q-{i}" for i in range(AVALANCHE_THRESHOLD)]
     assert not any("dropped" in m for m in messages)
+
+
+async def test_flush_final_progress_keeps_the_message_being_written(
+    mongo_db, monkeypatch,
+):
+    """A task that ends while a flush is mid-write must not lose that line.
+
+    The flush takes each message off the queue before awaiting its write, so
+    cancelling it mid-write (as flush_final_progress used to) dropped that
+    message from the log."""
+    from optio_core import store
+
+    task = TaskInstance(execute=_dummy, process_id="inflight", name="In flight")
+    proc = await upsert_process(mongo_db, "test", task)
+    ctx = _make_context(mongo_db, "test", proc)
+
+    real_update_progress = store.update_progress
+    in_flight = asyncio.Event()
+    release = asyncio.Event()
+
+    async def gated_update_progress(db, prefix, oid, progress):
+        if progress.message == "msg-2" and not release.is_set():
+            in_flight.set()
+            await release.wait()
+        await real_update_progress(db, prefix, oid, progress)
+
+    monkeypatch.setattr(store, "update_progress", gated_update_progress)
+
+    ctx.report_progress(None, "msg-1")
+    await _wait_for_flush(ctx)
+    ctx.report_progress(None, "msg-2")
+    await asyncio.wait_for(in_flight.wait(), 60)  # the flush is now mid-write
+    ctx.report_progress(None, "msg-3")
+    ctx.report_progress(None, "msg-4")
+
+    final = asyncio.create_task(ctx.flush_final_progress())
+    await asyncio.sleep(0)  # let the final flush reach its first await
+    release.set()
+    await asyncio.wait_for(final, 60)
+
+    messages = await _log_messages(mongo_db, "test", "inflight")
+    assert messages == ["msg-1", "msg-2", "msg-3", "msg-4"]
