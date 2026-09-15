@@ -503,11 +503,25 @@ describe('claudecode message timestamps: "System: " activity rows (Fix 9)', () =
     expect(ofKind(s, 'activity')[0].timestamp).toBeUndefined();
   });
 
+  // Fix 14 (owner ruling 2026-09-15, manual-test finding): the view now gives
+  // ONLY a "System: " row the user bubble's corner treatment and a
+  // right-aligned time label -- but a background-task/upload-notice row
+  // shares this same (non-muted) branch and, like a muted notice, never
+  // carries a timestamp either, so `timestamp` presence alone can't tell
+  // them apart. The reducer flags a "System: " echo `system: true` so the
+  // view has a real discriminator instead of sniffing text.
+  it('a "System: " echo is flagged system: true', () => {
+    const t = '2026-09-14T14:33:01.316Z';
+    const s = run([user('System: you have been resumed', t)]);
+    expect(ofKind(s, 'activity')[0]).toMatchObject({ system: true });
+  });
+
   it('the operator-interrupt notice row (muted) still carries no timestamp', () => {
     const s = run([user('q', '2026-09-14T14:00:00.000Z'), { type: 'x-optio-interrupt' }]);
     const notice = ofKind(s, 'activity').find((i) => i.muted);
     expect(notice).toBeDefined();
     expect(notice?.timestamp).toBeUndefined();
+    expect(notice?.system).toBeUndefined();
   });
 
   it('an undelivered-message notice row still carries no timestamp', () => {

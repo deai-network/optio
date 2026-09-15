@@ -83,6 +83,13 @@ const bubbleBase: React.CSSProperties = {
   overflowWrap: 'anywhere',
 };
 
+// The user bubble's own corner treatment: full top corners, a flattened
+// bottom-right one (its "tail", pointing at its own right-aligned time
+// label). Named so it can be reused verbatim — Fix 14, owner ruling
+// 2026-09-15, gives a "System: " activity row this same radius instead of a
+// second copy of the shorthand.
+const USER_BUBBLE_RADIUS = '14px 14px 4px 14px';
+
 // One-time mount flash: a thick pulsating ring (box-shadow, so it doesn't
 // shift layout) that plays ~4×0.5s = 2s then stops. Injected once into the
 // document head — the package otherwise uses inline styles, but @keyframes
@@ -746,7 +753,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                 ...bubbleBase,
                 background: token.colorPrimaryBg,
                 border: `1px dashed ${token.colorPrimaryBorder}`,
-                borderRadius: '14px 14px 4px 14px',
+                borderRadius: USER_BUBBLE_RADIUS,
                 color: token.colorText,
                 opacity: 0.6,
               }}
@@ -783,7 +790,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               ...bubbleBase,
               background: token.colorPrimaryBg,
               border: `1px solid ${token.colorPrimaryBorder}`,
-              borderRadius: '14px 14px 4px 14px',
+              borderRadius: USER_BUBBLE_RADIUS,
               // Explicit token color — without it the text inherits the host's
               // default and is unreadable on the dark-mode bubble.
               color: token.colorText,
@@ -859,6 +866,16 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
         // regardless of whether it has a timestamp; the cap living here
         // keeps that identical to today's width even when renderTimeLabel
         // below renders nothing.
+        //
+        // Fix 14, owner ruling 2026-09-15 (manual-test finding): a "System: "
+        // row -- flagged `item.system` by the reducer, since an untimed
+        // background-task/upload-notice row shares this same branch and a
+        // timestamp alone can't tell them apart (chat.ts) -- is styled more
+        // like a user message: the user bubble's own corner radius, and its
+        // time label right-aligned like the one under a user bubble. Position
+        // is otherwise unchanged: the bubble keeps its own `alignSelf:
+        // 'center'` below regardless, so only the (narrower) label's place
+        // within the column moves when `alignItems` turns 'flex-end'.
         return (
           <div
             key={item.seq}
@@ -866,7 +883,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               display: 'flex',
               flexDirection: 'column',
               alignSelf: 'center',
-              alignItems: 'center',
+              alignItems: item.system ? 'flex-end' : 'center',
               maxWidth: '80%',
             }}
           >
@@ -881,7 +898,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                 border: `1px solid ${token.purple3}`,
                 color: token.colorTextSecondary,
                 fontSize: 12,
-                borderRadius: 14,
+                borderRadius: item.system ? USER_BUBBLE_RADIUS : 14,
               }}
             >
               {item.text}
