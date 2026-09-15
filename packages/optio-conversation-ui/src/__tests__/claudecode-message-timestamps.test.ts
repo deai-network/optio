@@ -53,15 +53,17 @@ describe('claudecode real wire: message timestamps', () => {
   // block, 6.5-15.4s after the true start). This fixture predates the marker
   // this fix adds, so the fallback applies: the previous wire event
   // (lastEventAt as it stood just before the bubble opened) -- here the
-  // initiating user prompt. `endTimestamp` is the LAST TEXT/thinking block's
-  // own wire time (the message's second assistant event, line160, is a
-  // tool_use block -- it does not extend the bubble's text, so it does not
-  // move endTimestamp either).
-  it('without a marker, the assistant bubble\'s start falls back to the previous wire event; end is its last text block\'s own time', () => {
+  // initiating user prompt. `endTimestamp` is the LAST assistant wire event
+  // seen for the message, full stop (review of fix 12, finding 2): the
+  // message's second assistant event, line 161, is a tool_use block -- it
+  // carries no text, but it is still the LAST assistant event of this
+  // message, so it is what `endTimestamp` ends up holding, not the earlier
+  // text block's own time.
+  it('without a marker, the assistant bubble\'s start falls back to the previous wire event; end is the message\'s LAST assistant event (a trailing tool_use), not its last text block', () => {
     const s = replay(events);
     const bubble = ofKind(s, 'assistant')[0];
     expect(bubble.timestamp).toBe(Date.parse('2026-09-14T04:57:00.765Z'));
-    expect(bubble.endTimestamp).toBe(Date.parse('2026-09-14T04:57:09.321Z'));
+    expect(bubble.endTimestamp).toBe(Date.parse('2026-09-14T04:57:09.612Z'));
   });
 
   it('the second message (after the steer) falls back to the LATEST wire event seen so far -- not the earlier-timestamped steer echo that preceded it on the wire', () => {
@@ -83,7 +85,7 @@ describe('claudecode real wire: message timestamps', () => {
     for (const s of [live(withMarker), replay(withMarker)]) {
       const bubble = ofKind(s, 'assistant')[0];
       expect(bubble.timestamp).toBe(markerTs);
-      expect(bubble.endTimestamp).toBe(Date.parse('2026-09-14T04:57:09.321Z'));
+      expect(bubble.endTimestamp).toBe(Date.parse('2026-09-14T04:57:09.612Z'));
     }
   });
 
@@ -111,9 +113,48 @@ describe('claudecode real wire: message timestamps', () => {
   });
 });
 
+describe('claudecode real wire: message timestamps (narration-tools fixture, hidden thinking)', () => {
+  // Review of fix 12, finding 1: claudecode-narration-tools.jsonl's fourth
+  // message (msg_011Cexri1QWoKypvm9uzsBoj) opens with a HIDDEN thinking block
+  // (thinking: "", blockText null -- the real reasoning, not narration)
+  // before its text -- exactly the pattern that lost the marker: the old
+  // code cleared `pendingMessageStart` the instant ANY assistant event for
+  // this message id arrived, regardless of whether that event's blocks
+  // opened a bubble, so the hidden thinking event threw the marker away and
+  // the later text block fell back to the previous wire event (here, that
+  // fallback happens to equal the hidden thinking block's own late
+  // completing time, 03:45:33.525 -- 17s after the marker).
+  const events = load('claudecode-narration-tools.jsonl');
+  const TARGET_MSG_ID = 'msg_011Cexri1QWoKypvm9uzsBoj';
+
+  it('a marker inserted before a message that opens with hidden thinking gives an exact start, live and replay alike', () => {
+    const idx = events.findIndex(
+      (e) => e.type === 'stream_event' && e.event?.type === 'message_start' && e.event.message.id === TARGET_MSG_ID,
+    );
+    expect(idx).toBeGreaterThan(-1);
+    // Between the marker and the true start: the fixture's own true start
+    // (the user turn that triggers this message) is 03:45:16.808Z; the
+    // hidden thinking block doesn't complete until 03:45:33.525Z. Any value
+    // in that window proves the marker, not either fallback, won.
+    const markerTs = Date.parse('2026-09-12T03:45:20.000Z');
+    const withMarker = [
+      ...events.slice(0, idx),
+      { type: 'x-optio-message-start', id: TARGET_MSG_ID, ts: markerTs },
+      ...events.slice(idx),
+    ];
+    for (const s of [live(withMarker), replay(withMarker)]) {
+      const bubble = ofKind(s, 'assistant').find((a) => a.msgId === TARGET_MSG_ID);
+      expect(bubble).toBeDefined();
+      expect(bubble?.timestamp).toBe(markerTs);
+      expect(bubble?.endTimestamp).toBe(Date.parse('2026-09-12T03:45:33.674Z'));
+    }
+  });
+});
+
 describe('claudecode real wire: message timestamps (two-steers fixture)', () => {
   // Fix 12: the same start/end split, cross-checked against a second real
-  // recording (two steers taken across one streamed answer).
+  // recording (two steers taken across one streamed answer -- two assistant
+  // messages, each a single text block, no trailing tool_use).
   const events = load('claudecode-two-steers-streaming.jsonl');
 
   it('live and replay give the exact same start AND end for every assistant bubble', () => {
@@ -123,11 +164,50 @@ describe('claudecode real wire: message timestamps (two-steers fixture)', () => 
     expect(ofKind(l, 'assistant').map((a) => a.endTimestamp)).toEqual(ofKind(r, 'assistant').map((a) => a.endTimestamp));
   });
 
-  it('without a marker, every assistant bubble still resolves a start (the fallback chain never leaves a mid-conversation message timeless)', () => {
+  // Review of fix 12, finding 3: exact fallback values, derived from the
+  // wire, replacing the earlier toBeDefined-only check. Both messages have
+  // no marker in this fixture as recorded: message 1's bubble falls back to
+  // the previous wire event, the initiating user prompt (04:57:05.968Z);
+  // message 2's bubble falls back to the previous wire event AT THE TIME ITS
+  // OWN bubble opens -- the steer's taking echo (04:57:26.024Z), not the
+  // earlier message. Each message has exactly one (text) assistant event on
+  // the wire, so `endTimestamp` equals that same event's own time.
+  it('without a marker, each assistant bubble resolves the exact previous-wire-event fallback for both start and end', () => {
     const s = replay(events);
-    for (const bubble of ofKind(s, 'assistant')) {
-      expect(bubble.timestamp).toBeDefined();
-      expect(bubble.endTimestamp).toBeDefined();
+    const bubbles = ofKind(s, 'assistant');
+    expect(bubbles).toHaveLength(2);
+    expect(bubbles[0].timestamp).toBe(Date.parse('2026-09-14T04:57:05.968Z'));
+    expect(bubbles[0].endTimestamp).toBe(Date.parse('2026-09-14T04:57:25.828Z'));
+    expect(bubbles[1].timestamp).toBe(Date.parse('2026-09-14T04:57:26.024Z'));
+    expect(bubbles[1].endTimestamp).toBe(Date.parse('2026-09-14T04:57:29.962Z'));
+  });
+
+  // Review of fix 12, finding 3: the brief requires this fixture checked
+  // WITH a marker too -- one inserted before EACH message_start, not just
+  // the first -- asserting start = marker ts and end = the message's last
+  // block, live and on replay, for BOTH bubbles.
+  it('with a marker inserted before EACH message_start, both bubbles get their marker as start; end is unaffected', () => {
+    const starts = events
+      .map((e, i) => ({ e, i }))
+      .filter(({ e }) => e.type === 'stream_event' && e.event?.type === 'message_start');
+    expect(starts).toHaveLength(2);
+    const markerTs1 = Date.parse('2026-09-14T04:57:10.000Z');
+    const markerTs2 = Date.parse('2026-09-14T04:57:27.000Z');
+    const [first, second] = starts;
+    const withMarkers = [
+      ...events.slice(0, first.i),
+      { type: 'x-optio-message-start', id: first.e.event.message.id, ts: markerTs1 },
+      ...events.slice(first.i, second.i),
+      { type: 'x-optio-message-start', id: second.e.event.message.id, ts: markerTs2 },
+      ...events.slice(second.i),
+    ];
+    for (const s of [live(withMarkers), replay(withMarkers)]) {
+      const bubbles = ofKind(s, 'assistant');
+      expect(bubbles).toHaveLength(2);
+      expect(bubbles[0].timestamp).toBe(markerTs1);
+      expect(bubbles[0].endTimestamp).toBe(Date.parse('2026-09-14T04:57:25.828Z'));
+      expect(bubbles[1].timestamp).toBe(markerTs2);
+      expect(bubbles[1].endTimestamp).toBe(Date.parse('2026-09-14T04:57:29.962Z'));
     }
   });
 });
@@ -198,6 +278,48 @@ describe('claudecode message timestamps: synthetic events', () => {
     expect(bubble?.endTimestamp).toBe(Date.parse(t2));
   });
 
+  // Review of fix 12, finding 2: `endTimestamp` is the LAST assistant wire
+  // event of the message, full stop -- including a trailing tool_use (no
+  // text at all) or a hidden thinking block (empty `thinking`, blockText
+  // null), neither of which goes through applyBlockText/applyInterruptedText.
+  it('a trailing tool_use event (no text) still moves endTimestamp to its own time, since it is the LAST assistant event of the message', () => {
+    const t0 = '2026-09-13T12:00:00.000Z';
+    const t1 = '2026-09-13T12:00:01.000Z';
+    const t2 = '2026-09-13T12:00:02.000Z';
+    const toolUse = (msgId: string, timestamp: string) => ({
+      type: 'assistant',
+      timestamp,
+      message: { role: 'assistant', id: msgId, content: [{ type: 'tool_use', id: 'call1', name: 'Bash', input: {} }] },
+    });
+    const s = run([
+      user('q', t0),
+      assistantText('Hello', 'm1', t1),
+      toolUse('m1', t2),
+    ]);
+    const bubble = s.items.find((i) => i.kind === 'assistant');
+    expect(bubble?.timestamp).toBe(Date.parse(t0));
+    expect(bubble?.endTimestamp).toBe(Date.parse(t2));
+  });
+
+  it('a trailing hidden-thinking event (empty thinking, no rendered text) still moves endTimestamp to its own time', () => {
+    const t0 = '2026-09-13T12:00:00.000Z';
+    const t1 = '2026-09-13T12:00:01.000Z';
+    const t2 = '2026-09-13T12:00:02.000Z';
+    const hiddenThinking = (msgId: string, timestamp: string) => ({
+      type: 'assistant',
+      timestamp,
+      message: { role: 'assistant', id: msgId, content: [{ type: 'thinking', thinking: '' }] },
+    });
+    const s = run([
+      user('q', t0),
+      assistantText('Hello', 'm1', t1),
+      hiddenThinking('m1', t2),
+    ]);
+    const bubble = s.items.find((i) => i.kind === 'assistant');
+    expect(bubble?.timestamp).toBe(Date.parse(t0));
+    expect(bubble?.endTimestamp).toBe(Date.parse(t2));
+  });
+
   // Fix 12 fallback chain, in priority order: x-optio-message-start marker >
   // the message's own first (thinking) block > the previous wire event > none.
   describe('Fix 12: start/end fallback chain', () => {
@@ -244,6 +366,52 @@ describe('claudecode message timestamps: synthetic events', () => {
       ]);
       const bubble = s.items.find((i) => i.kind === 'assistant');
       expect(bubble?.timestamp).toBeUndefined();
+    });
+
+    // Review of fix 12, finding 1: a marker must survive an assistant event
+    // for its own message id that opens no bubble at all -- a hidden
+    // thinking block (empty `thinking`, blockText null) or a tool_use-first
+    // event, both real-recording patterns (claudecode-narration-tools.jsonl,
+    // claudecode-steer-then-interrupt.jsonl). Before the fix, the marker was
+    // cleared unconditionally the moment ANY assistant event for its message
+    // id arrived, so it was thrown away here and the later text block fell
+    // back to the previous wire event -- effectively this same hidden
+    // thinking event's own (late) completing time.
+    const hiddenThinking = (msgId: string, timestamp: string) => ({
+      type: 'assistant',
+      timestamp,
+      message: { role: 'assistant', id: msgId, content: [{ type: 'thinking', thinking: '' }] },
+    });
+    const toolUse = (msgId: string, timestamp: string) => ({
+      type: 'assistant',
+      timestamp,
+      message: { role: 'assistant', id: msgId, content: [{ type: 'tool_use', id: 'call1', name: 'Bash', input: {} }] },
+    });
+
+    it('a marker survives a hidden-thinking-only assistant event for its own message (opens no bubble) and is applied once the message\'s text finally arrives', () => {
+      const markerTs = Date.parse('2026-09-13T12:00:00.500Z');
+      const s = run([
+        user('q', '2026-09-13T11:59:59.000Z'),
+        messageStart('m1', markerTs),
+        hiddenThinking('m1', '2026-09-13T12:00:20.000Z'),
+        assistantText('answer', 'm1', '2026-09-13T12:00:21.000Z'),
+      ]);
+      const bubble = s.items.find((i) => i.kind === 'assistant');
+      expect(bubble?.timestamp).toBe(markerTs);
+      expect(bubble?.endTimestamp).toBe(Date.parse('2026-09-13T12:00:21.000Z'));
+    });
+
+    it('a marker survives a tool_use-only assistant event for its own message (opens no bubble) and is applied once the message\'s text finally arrives', () => {
+      const markerTs = Date.parse('2026-09-13T12:00:00.500Z');
+      const s = run([
+        user('q', '2026-09-13T11:59:59.000Z'),
+        messageStart('m1', markerTs),
+        toolUse('m1', '2026-09-13T12:00:20.000Z'),
+        assistantText('answer', 'm1', '2026-09-13T12:00:21.000Z'),
+      ]);
+      const bubble = s.items.find((i) => i.kind === 'assistant');
+      expect(bubble?.timestamp).toBe(markerTs);
+      expect(bubble?.endTimestamp).toBe(Date.parse('2026-09-13T12:00:21.000Z'));
     });
   });
 

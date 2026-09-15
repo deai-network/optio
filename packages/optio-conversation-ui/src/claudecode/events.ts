@@ -312,9 +312,14 @@ function appendDelta(items: ChatItem[], seq: number, delta: string, start?: numb
 // lastEventAt fallback for a message opening with plain text — see
 // reduceEvent's `assistant` case); it wins over `ts` and is set once, on
 // creation, never overwritten by a later block of the same message.
+// Returns `opened: true` exactly when this call created a FRESH bubble (so
+// `start` — an x-optio-message-start marker, in particular — was actually
+// consumed): the caller (review of fix 12, finding 1) uses this to decide
+// whether a pending marker may be cleared, since a block that only merged
+// into an already-open bubble never looked at `start` at all.
 function applyBlockText(
   items: ChatItem[], seq: number, text: string, msgId?: string, ts?: number, start?: number,
-): ChatItem[] {
+): { items: ChatItem[]; opened: boolean } {
   const idx = pendingIndex(items);
   if (idx !== -1) {
     const cur = items[idx] as AssistantItem;
@@ -328,14 +333,14 @@ function applyBlockText(
       if (next.timestamp === undefined && ts !== undefined) next.timestamp = ts;
       if (ts !== undefined) next.endTimestamp = ts;
       delete next.openPart;
-      return replaceAt(items, idx, next);
+      return { items: replaceAt(items, idx, next), opened: false };
     }
     items = finalizeAt(items, idx);
   }
   const fresh: AssistantItem = { kind: 'assistant', text, pending: true, seq, msgId: msgId ?? null };
   if (start !== undefined) fresh.timestamp = start;
   if (ts !== undefined) fresh.endTimestamp = ts;
-  return appendItems(items, [fresh]);
+  return { items: appendItems(items, [fresh]), opened: true };
 }
 
 // Finalize the in-flight assistant bubble (pending -> false). The result text
@@ -355,6 +360,25 @@ function finalizePending(items: ChatItem[], seq: number, resultText: string | nu
   const next: AssistantItem = { ...current, text: keep ? current.text : resultText, pending: false };
   delete next.openPart;
   return replaceAt(items, idx, next);
+}
+
+// Review of fix 12, finding 2: `endTimestamp` is the timestamp of the LAST
+// assistant wire event seen for a message (chat.ts, README.md), not just the
+// last one that produced a text/narration block. Finds the message's bubble
+// by `msgId` (whether pending, interrupted, or already finalized) and
+// overwrites its `endTimestamp` unconditionally with `ts` — this event's own
+// wire time, which is always later, in wire order, than whatever it already
+// held. A no-op when no bubble exists yet for this message (a tool_use or
+// hidden-thinking block that opens the very first bubble for its message
+// backfills `endTimestamp` itself, via applyBlockText/applyInterruptedText's
+// `start`/`ts` handling, once a later block actually opens one).
+function updateEndTimestamp(items: ChatItem[], msgId: string | undefined, ts: number | undefined): ChatItem[] {
+  if (msgId === undefined || ts === undefined) return items;
+  const idx = items.findIndex((i) => i.kind === 'assistant' && i.msgId === msgId);
+  if (idx === -1) return items;
+  const cur = items[idx] as AssistantItem;
+  if (cur.endTimestamp === ts) return items;
+  return replaceAt(items, idx, { ...cur, endTimestamp: ts });
 }
 
 // Insert a user message before the assistant bubble it triggered. With CLI
@@ -396,10 +420,11 @@ function insertBeforeRow(items: ChatItem[], rowSeq: number, rows: ChatItem[]): C
 // The interrupted message's final text (the CLI sends it after the
 // interrupt): it completes the interrupted bubble right before the row,
 // replacing the part its deltas streamed (live), or becomes that bubble
-// (replay holds no deltas). `ts`/`start`: see applyBlockText.
+// (replay holds no deltas). `ts`/`start`: see applyBlockText. `opened`: see
+// applyBlockText.
 function applyInterruptedText(
   items: ChatItem[], rowSeq: number, seq: number, text: string, msgId?: string, ts?: number, start?: number,
-): ChatItem[] {
+): { items: ChatItem[]; opened: boolean } {
   const r = interruptRowIndex(items, rowSeq);
   const prev = r > 0 ? items[r - 1] : undefined;
   if (prev?.kind === 'assistant' && prev.interrupted && (prev.msgId === null || msgId == null || prev.msgId === msgId)) {
@@ -411,12 +436,12 @@ function applyInterruptedText(
     if (next.timestamp === undefined && ts !== undefined) next.timestamp = ts;
     if (ts !== undefined) next.endTimestamp = ts;
     delete next.openPart;
-    return replaceAt(items, r - 1, next);
+    return { items: replaceAt(items, r - 1, next), opened: false };
   }
   const fresh: AssistantItem = { kind: 'assistant', text, pending: false, seq, msgId: msgId ?? null, interrupted: true };
   if (start !== undefined) fresh.timestamp = start;
   if (ts !== undefined) fresh.endTimestamp = ts;
-  return insertBeforeRow(items, rowSeq, [fresh]);
+  return { items: insertBeforeRow(items, rowSeq, [fresh]), opened: true };
 }
 
 // Record that the current interrupt (if any) is responsible for the item
@@ -791,14 +816,20 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // — resolved per block below, since only a text-opening message uses
       // that fallback. A marker always precedes the message it announces (the
       // stream_event message_start already finalized any earlier bubble), so
-      // at most one message ever consumes it, and consuming it here (whether
-      // or not this particular event ends up opening the bubble live vs.
-      // replay) is always correct.
+      // at most one message ever consumes it.
+      //
+      // Review of fix 12, finding 1: the marker is peeked here, not cleared —
+      // it is only actually consumed (below) once a block of THIS event opens
+      // a fresh bubble with it. A hidden thinking block (blockText null) or a
+      // tool_use-first event opens no bubble at all, so a marker left pending
+      // here survives to the message's later event that finally opens one
+      // (real recordings: claudecode-narration-tools.jsonl,
+      // claudecode-steer-then-interrupt.jsonl both open a message with hidden
+      // thinking before any text).
       const marker =
         state.pendingMessageStart !== undefined && state.pendingMessageStart.id === msgId
           ? state.pendingMessageStart.ts
           : undefined;
-      if (marker !== undefined) state = { ...state, pendingMessageStart: undefined };
       let items = state.items;
       for (const block of blocks) {
         const text = blockText(block);
@@ -813,10 +844,14 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
           // already tracked — or, if none existed yet, a freshly inserted
           // one, tracked here by its own seq, this event's `seq`).
           if (state.interrupt) {
-            items = applyInterruptedText(items, state.interrupt.rowSeq, seq, text, msgId, ts, freshStart);
+            const applied = applyInterruptedText(items, state.interrupt.rowSeq, seq, text, msgId, ts, freshStart);
+            items = applied.items;
+            if (applied.opened && marker !== undefined) state = { ...state, pendingMessageStart: undefined };
             state = noteInterrupted(state, seq);
           } else {
-            items = applyBlockText(items, seq, text, msgId, ts, freshStart);
+            const applied = applyBlockText(items, seq, text, msgId, ts, freshStart);
+            items = applied.items;
+            if (applied.opened && marker !== undefined) state = { ...state, pendingMessageStart: undefined };
           }
         } else if (block?.type === 'tool_use') {
           // A persistent row per call; its tool_result (a later user event)
@@ -831,6 +866,14 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
           }
         }
       }
+      // Review of fix 12, finding 2: `endTimestamp` is the LAST assistant
+      // wire event seen for the message, full stop — including a tool_use or
+      // hidden-thinking block that carries no text of its own and so never
+      // goes through applyBlockText/applyInterruptedText above. This
+      // backfills it against a bubble that already exists; it is a no-op
+      // when the message hasn't opened one yet (nothing to update), and a
+      // no-op when a block above already set it to this same `ts`.
+      items = updateEndTimestamp(items, msgId, ts);
       return items === state.items ? state : { ...state, items };
     }
 
