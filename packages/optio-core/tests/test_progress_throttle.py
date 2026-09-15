@@ -76,15 +76,17 @@ async def test_quiet_load_preserves_every_message(mongo_db):
     assert messages == ["msg-1", "msg-2", "msg-3"]
 
 
-async def test_avalanche_drops_intermediate_messages_and_emits_summary(mongo_db):
+async def test_avalanche_drops_intermediate_messages_and_emits_summary(
+    mongo_db, fake_clock,
+):
     """Many fast calls should produce the surviving last message preceded
     by a "(N messages dropped)" line."""
     task = TaskInstance(execute=_dummy, process_id="burst", name="Burst")
     proc = await upsert_process(mongo_db, "test", task)
     ctx = _make_context(mongo_db, "test", proc)
 
-    # Emit a tight burst — all calls happen synchronously within a single
-    # event-loop tick, so they fall well within AVALANCHE_WINDOW.
+    # Emit a burst. The fake clock does not advance, so every call falls
+    # inside AVALANCHE_WINDOW however slowly the loop runs.
     n_calls = 200
     for i in range(n_calls):
         ctx.report_progress(None, f"burst-{i}")
@@ -183,7 +185,8 @@ async def test_quiet_message_during_avalanche_flush_is_written_once(
 
 async def test_percent_update_during_flush_is_not_lost(mongo_db, monkeypatch):
     """A percent-only update made while a flush writes the previous one must
-    survive to the next flush (the flush used to clear it after its await)."""
+    be written by that same flush: it used to be cleared after the await,
+    and then left waiting for the next report_progress call."""
     from optio_core import store
 
     task = TaskInstance(execute=_dummy, process_id="pct-race", name="Pct")
@@ -207,17 +210,61 @@ async def test_percent_update_during_flush_is_not_lost(mongo_db, monkeypatch):
     ctx.report_progress(70)
     release.set()
     await asyncio.wait_for(_wait_for_flush(ctx), 60)
-    await ctx.flush_final_progress()
 
     proc = await get_process_by_process_id(mongo_db, "test", "pct-race")
     assert proc["progress"]["percent"] == 70
+
+
+async def test_cancelling_the_final_flush_keeps_the_write_in_flight(
+    mongo_db, monkeypatch,
+):
+    """If whoever called flush_final_progress is cancelled (force-cancel),
+    the flush that is mid-write must still finish its line."""
+    from optio_core import store
+
+    task = TaskInstance(execute=_dummy, process_id="cancel-final", name="Cancel final")
+    proc = await upsert_process(mongo_db, "test", task)
+    ctx = _make_context(mongo_db, "test", proc)
+
+    real_update_progress = store.update_progress
+    in_flight = asyncio.Event()
+    release = asyncio.Event()
+
+    async def gated_update_progress(db, prefix, oid, progress):
+        if progress.message == "msg-2" and not release.is_set():
+            in_flight.set()
+            await release.wait()
+        await real_update_progress(db, prefix, oid, progress)
+
+    monkeypatch.setattr(store, "update_progress", gated_update_progress)
+
+    ctx.report_progress(None, "msg-1")
+    await _wait_for_flush(ctx)
+    ctx.report_progress(None, "msg-2")
+    await asyncio.wait_for(in_flight.wait(), 60)  # the flush is now mid-write
+    in_flight_flush = ctx._flush_task
+
+    final = asyncio.create_task(ctx.flush_final_progress())
+    await asyncio.sleep(0)  # let the final flush start waiting on it
+    final.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await final
+
+    release.set()
+    await asyncio.wait_for(in_flight_flush, 60)
+
+    messages = await _log_messages(mongo_db, "test", "cancel-final")
+    assert messages == ["msg-1", "msg-2"]
 
 
 async def test_avalanche_then_quiet_drop_summary_emitted_before_survivor(
     mongo_db, fake_clock,
 ):
     """When the avalanche subsides, the drop summary must precede both
-    the surviving avalanche message and any subsequent quiet message."""
+    the surviving avalanche message and any subsequent quiet message.
+
+    Everything is queued before the flush starts here; the race with a flush
+    already in progress is test_quiet_message_during_avalanche_flush_is_written_once."""
     task = TaskInstance(execute=_dummy, process_id="burst2quiet", name="B2Q")
     proc = await upsert_process(mongo_db, "test", task)
     ctx = _make_context(mongo_db, "test", proc)
@@ -250,7 +297,9 @@ async def test_avalanche_then_quiet_drop_summary_emitted_before_survivor(
     assert drop_msg.endswith(" messages dropped)")
 
 
-async def test_flush_final_progress_handles_pending_avalanche(mongo_db):
+async def test_flush_final_progress_handles_pending_avalanche(
+    mongo_db, fake_clock,
+):
     """End-of-task flush surfaces any pending avalanche state, including
     the drop summary."""
     task = TaskInstance(execute=_dummy, process_id="final", name="Final")

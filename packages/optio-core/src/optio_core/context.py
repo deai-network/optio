@@ -640,10 +640,11 @@ class ProcessContext:
         awaited, so report_progress calls made meanwhile are neither lost nor
         written twice. Quiet-mode messages that arrive during the writes are
         drained too: this flush is the running one, so _schedule_flush did
-        not start another. Pending avalanche and percent-only state that
-        arrives meanwhile does not by itself keep this flush going (it is
-        written in a further round only if quiet messages force one), so
-        the write throttle for bursts still holds.
+        not start another. The same goes for a percent-only update (that path
+        has no interval throttle). Pending avalanche state that arrives
+        meanwhile does not by itself keep this flush going (it is written in
+        a further round only if other state forces one), so the write
+        throttle for bursts still holds.
         """
         while True:
             # Phase 0: coalesced percent-only update (silent, no log).
@@ -666,25 +667,24 @@ class ProcessContext:
             if pending is not None:
                 await self._write_progress(pending)
 
-            if not self._message_queue:
+            if not self._message_queue and self._pending_pct is None:
                 return
 
     async def flush_final_progress(self) -> None:
         """Force flush any pending progress (called when process ends)."""
         # Let an in-flight flush finish instead of cancelling it: it has
         # already taken its current message off the queue, so cancelling it
-        # mid-write would lose that log line.
-        if self._flush_task and not self._flush_task.done():
-            try:
-                await self._flush_task
-            except asyncio.CancelledError:
-                # Re-raise if we are the one being cancelled; a flush task
-                # cancelled on its own just leaves the rest for the drain below.
-                current = asyncio.current_task()
-                if current is not None and current.cancelling():
-                    raise
-            except Exception:
-                _log.exception("Progress flush failed while finishing the process")
+        # mid-write would lose that log line. asyncio.wait neither passes our
+        # own cancellation on to the flush task nor raises its exception here.
+        task = self._flush_task
+        if task is not None:
+            if not task.done():
+                await asyncio.wait({task})
+            if not task.cancelled() and task.exception() is not None:
+                _log.error(
+                    "Progress flush failed while finishing the process",
+                    exc_info=task.exception(),
+                )
         # Everything still pending: percent, queued messages, and leftover
         # avalanche state (a drop count without a surviving message included).
         await self._drain_pending()
