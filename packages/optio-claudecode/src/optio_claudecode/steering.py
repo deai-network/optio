@@ -6,13 +6,13 @@ same turn, and echoed as a ``user`` event (joins-next-step). An interrupt ends
 the turn with a ``result`` (``error_during_execution``); the CLI then runs
 whatever it still holds.
 
-Fix 13a: the CLI also reports per-message ``command_lifecycle`` (queued /
-started / a terminal state) for every stdin message that carries a ``uuid``
-(cli-queue-lifecycle.md §1). ``command_lifecycle()`` below is the
-``Steering(..., command_lifecycle=...)`` hook this enables: it lets
-``interrupt_and_send``'s ``up_to`` ("Send now" through message k) tell which
-later queued messages the CLI has not yet started, and wait for k's own
-``started`` before re-sending the ones it cancelled.
+The CLI also reports per-message ``command_lifecycle`` (queued / started /
+a final state) for every stdin message that carries a ``uuid``
+(cli-queue-lifecycle.md §1; Fix 13a stamps the steering id as that uuid).
+``command_lifecycle()`` below is the ``Steering(..., command_lifecycle=...)``
+hook: Steering keeps at most ONE message in the CLI's queue and writes the
+next the moment the one in flight reports ``started`` or a final state
+(Fix 17, docs/2026-09-15-steering-individual-delivery-design.md).
 """
 from __future__ import annotations
 
@@ -43,17 +43,16 @@ def command_lifecycle(event: dict) -> "tuple[str, str] | None":
 def make_steering(conversation, **kwargs) -> Steering:
     """Steering over a ClaudeCodeConversation, or anything with its surface:
     send, interrupt, is_pending, on_event, emit_event, runtime_model. Wires
-    command_lifecycle unconditionally (the pure function above) and
-    cancel_async_message only if the conversation actually offers it, so a
-    minimal stand-in (tests, another wrapper's fake) without that method
-    still works — interrupt_and_send's up_to then just degrades to
-    delivering everything queued, per Steering's own contract."""
+    command_lifecycle (the pure function above), so queued messages reach
+    the CLI one at a time, each written the moment the CLI takes the one
+    before it (Fix 17). A stand-in that never emits command_lifecycle still
+    works: Steering then writes the next message when the conversation is
+    idle again."""
     return Steering(
         conversation,
         busy_send=lambda: BUSY_SEND.for_model(getattr(conversation, "runtime_model", None)),
         emit=conversation.emit_event,
         is_turn_end=is_turn_end,
         command_lifecycle=command_lifecycle,
-        cancel_async_message=getattr(conversation, "cancel_async_message", None),
         **kwargs,
     )

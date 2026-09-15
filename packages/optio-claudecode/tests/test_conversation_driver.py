@@ -304,51 +304,6 @@ async def test_emit_event_reaches_subscribers_unmodified(convo):
     assert events[-1]["type"] == "x-optio-closed"
 
 
-@pytest.mark.asyncio
-async def test_steering_send_now_up_to_over_the_real_driver(convo):
-    # End-to-end wiring check for Fix 13a's make_steering(command_lifecycle=,
-    # cancel_async_message=) against the real event shapes conversation.py
-    # produces and consumes (cli-queue-lifecycle.md case d).
-    c, handle = convo
-    ids = iter(["q1", "q2", "q3", "q4"])
-    steering = make_steering(c, new_id=lambda: next(ids))
-    reader = asyncio.create_task(c.run_reader())
-
-    await c.send("first task")
-    await asyncio.wait_for(handle.stdin.lines.get(), 60)
-    for text in ("one", "two", "three"):
-        await steering.send_when_ready(text)
-        queued = await asyncio.wait_for(handle.stdin.lines.get(), 60)
-        assert queued["message"]["content"][0]["text"] == f"{text}\n\n"
-
-    task = asyncio.ensure_future(steering.interrupt_and_send("", up_to="q2"))
-
-    cancel_ctrl = await asyncio.wait_for(handle.stdin.lines.get(), 60)
-    assert cancel_ctrl["request"] == {"subtype": "cancel_async_message", "message_uuid": "q3"}
-    handle.stdout.feed({"type": "command_lifecycle", "command_uuid": "q3",
-                        "state": "cancelled", "uuid": "lc-1", "session_id": "s"})
-    handle.stdout.feed({"type": "control_response", "response": {
-        "subtype": "success", "request_id": cancel_ctrl["request_id"],
-        "response": {"cancelled": True}}})
-
-    interrupt_ctrl = await asyncio.wait_for(handle.stdin.lines.get(), 60)
-    assert interrupt_ctrl["request"]["subtype"] == "interrupt"
-    handle.stdout.feed({"type": "control_response", "response": {
-        "subtype": "success", "request_id": interrupt_ctrl["request_id"]}})
-    handle.stdout.feed({"type": "result", "subtype": "error_during_execution",
-                        "is_error": True, "terminal_reason": "aborted_streaming"})
-    handle.stdout.feed({"type": "command_lifecycle", "command_uuid": "q2",
-                        "state": "started", "uuid": "lc-2", "session_id": "s"})
-
-    resend = await asyncio.wait_for(handle.stdin.lines.get(), 60)
-    assert resend["message"]["content"][0]["text"] == "three\n\n"
-    assert resend["uuid"] == "q4"
-    assert await asyncio.wait_for(task, 60) is None
-
-    handle.stdout.eof()
-    await reader
-
-
 def test_claudecode_declares_joins_next_step_and_ends_turns_on_result():
     assert BUSY_SEND.for_model(None) == "joins-next-step"
     assert BUSY_SEND.for_model("claude-sonnet-5") == "joins-next-step"

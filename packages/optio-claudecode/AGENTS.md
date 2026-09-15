@@ -190,8 +190,8 @@ the inner basic-auth credential; GET = viewer role, POST = operator):
 | Endpoint | Behavior |
 |---|---|
 | `GET /events` | SSE. On connect: replay buffer contents, then live tail. Each event's SSE `id:` is its monotonic `seq`; `Last-Event-ID` honored, so reconnects resume without duplicates. |
-| `POST /send` | `{text}` → Send when ready (`Steering.send_when_ready`). Returns `{ok, id, queued}`; `queued` is true when a turn was running (Claude holds the message and takes it at the next tool result). 409 when closed. |
-| `POST /steer` | `{text, upTo?}` → Interrupt and send (`Steering.interrupt_and_send`): interrupt the running turn, wait for its `result` (at most 15 s), then send `text`. Empty `text` = Send now: only interrupt, so Claude runs what it holds. `upTo` (Fix 13a): a queued id — cancel every later queued message, interrupt, then once `upTo` itself starts, re-send the cancelled ones with fresh uuids (`x-optio-requeued`). Returns `{ok, id}` (`id` null for empty text). 409 when closed. |
+| `POST /send` | `{text}` → Send when ready (`Steering.send_when_ready`). Returns `{ok, id, queued}`; `queued` is true when a turn was running: the message waits its turn and reaches Claude as its own user message (one at a time, Fix 17: see Steering events below). 409 when closed. |
+| `POST /steer` | `{text, upTo?}` → Interrupt and send (`Steering.interrupt_and_send`): queue `text` behind anything already queued, interrupt the running turn and wait for its `result` (at most 15 s). Claude then runs the message in flight, and the rest follow one at a time, so `text` arrives last, as its own message. Empty `text` = Send now: only interrupt. `upTo` is the queued id Send now was clicked on; since Fix 17 it needs nothing beyond the interrupt (no cancel, no re-send). Returns `{ok, id}` (`id` null for empty text). 409 when closed. |
 | `POST /interrupt` | `{}` → `Steering.interrupt()`: stop only; emits `x-optio-interrupt` while a turn runs. No-op when idle. |
 | `POST /permission` | `{request_id, behavior: "allow"\|"deny", updated_input?, message?}` → resolves the pending permission future. 404 for unknown/already-answered request_id. |
 
@@ -227,12 +227,14 @@ Replay-buffer semantics:
   the persisted buffer show the exact same value.
 * Steering events (`optio_claudecode.steering`, `busy_send` =
   `joins-next-step` via `BUSY_SEND`): `{"type": "x-optio-queued", "id",
-  "text"}` for a Send when ready that arrived mid-turn, `{"type":
-  "x-optio-interrupt", "by": "user"}` before every interrupt optio sends
-  while a turn runs, and `{"type": "x-optio-requeued", "id", "new_id"}`
-  (Fix 13a) when a `POST /steer` `upTo` re-sends a cancelled queued message
-  under a fresh uuid. All enter through `emit_event`, so they are buffered,
-  replayed and persisted like native events.
+  "text"}` for a Send when ready (or an Interrupt and send's text) that
+  arrived mid-turn, emitted when it is sent, not when it reaches Claude,
+  and `{"type": "x-optio-interrupt", "by": "user"}` before every interrupt
+  optio sends while a turn runs. Both enter through `emit_event`, so they
+  are buffered, replayed and persisted like native events. `{"type":
+  "x-optio-requeued", "id", "new_id"}` (Fix 13a's `upTo` re-send) is no
+  longer emitted since Fix 17; buffers recorded before it still contain
+  it, and the UI still handles it.
 * Fix 13a (owner rulings from manual testing, 2026-09-15): every stdin
   message `ClaudeCodeConversation.send(text, *, uuid=None)` writes carries a
   `uuid` (never a `priority`) — the ONLY thing that turns on the CLI's
@@ -247,12 +249,30 @@ Replay-buffer semantics:
   separator, because the CLI folds them into one turn with one text block
   each (`x-optio-queued` itself still carries the ORIGINAL text). Idle
   sends are unchanged. `ClaudeCodeConversation.cancel_async_message(uuid)`
-  sends `cancel_async_message` and returns the reply's `cancelled` bool;
+  sends `cancel_async_message` and returns the reply's `cancelled` bool (a
+  transport capability; Steering no longer uses it since Fix 17).
   `optio_claudecode.steering.command_lifecycle(event)` extracts
-  `(command_uuid, state)` from a `command_lifecycle` event. `make_steering`
-  wires both into `Steering` (`command_lifecycle` unconditionally — it's a
-  pure function; `cancel_async_message` only if the conversation offers
-  it), enabling `POST /steer`'s `upTo`.
+  `(command_uuid, state)` from a `command_lifecycle` event, and
+  `make_steering` always wires it into `Steering` (it is a pure function).
+* One at a time (Fix 17, owner ruling 2026-09-15;
+  `docs/2026-09-15-steering-individual-delivery-design.md`). Claude Code
+  folds every prompt waiting in its stdin queue into ONE user message when
+  it starts a turn, but takes queued prompts one by one at tool
+  boundaries, and no `priority` value changes that (`now` interrupts the
+  turn and jumps the queue; `later` is never taken mid-turn and is still
+  folded). So `Steering` keeps at most ONE optio message in the CLI queue:
+  the others wait in its pending list, and the next is written when the
+  CLI reports the one in flight `started`, or `completed` / `cancelled` /
+  `discarded` / `refused` (each can arrive without `started`). With tool
+  calls, each message joins the running turn at the next tool boundary; in
+  a text-only turn, each becomes its own turn after the current one (N
+  messages = N turns, a cost the owner accepted). After an interrupt the
+  CLI runs the message in flight first (the interrupt reply lists it under
+  `still_queued`), and the model reads the CLI's "[Request interrupted by
+  user]" marker in that same user turn. A CLI that emits no lifecycle
+  still advances: a conversation that is idle (`is_pending()` False) holds
+  nothing in its queue, so the next message goes when the turn ends idle.
+  Messages still pending when the session ends are never written.
 * Resume: `export_buffer()` persists the buffer with the snapshot, minus
   the terminal `x-optio-closed` (replayed, it would close the live resumed
   session in the UI). When a resumed run re-primes the listener from it,

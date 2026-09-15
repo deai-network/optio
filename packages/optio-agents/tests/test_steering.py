@@ -25,18 +25,25 @@ class FakeConversation:
 
     The test sets ``pending`` (busy) itself. ``interrupt()`` ends the turn
     at once (fires the turn-end event) unless ``turn_end_on_interrupt`` is
-    False.
+    False. That turn end leaves the agent idle, unless
+    ``busy_after_interrupt`` is True: then it stays busy, the way Claude
+    Code's CLI runs the message still in its queue right after the
+    interrupted turn (cli-queue-lifecycle.md, "Interrupt with exactly one
+    queued").
 
     ``uuids`` is a parallel array to ``sent``: the ``uuid`` kwarg (if any)
     ``Steering`` passed to that ``send()`` call — kept separate from ``log``
     so the many pre-existing exact-log assertions below don't have to change
     shape just because sends now carry an id (Fix 13a).
 
-    Native-queue command lifecycle (Fix 13a, ``fire_lifecycle``) and
-    ``cancel_async_message`` are opt-in via ``native_lifecycle=True`` so
-    only the tests that need the "Send now up to k" machinery pay for it."""
+    ``native_lifecycle=True`` wires Steering's ``command_lifecycle`` hook
+    (see ``make``); ``fire_lifecycle`` then plays the agent's per-message
+    lifecycle events, which drive one-at-a-time delivery (Fix 17)."""
 
-    def __init__(self, *, turn_end_on_interrupt: bool = True, native_lifecycle: bool = False):
+    def __init__(
+        self, *, turn_end_on_interrupt: bool = True, native_lifecycle: bool = False,
+        busy_after_interrupt: bool = False,
+    ):
         self.handlers = []
         self.sent: list[str] = []
         self.uuids: list[str | None] = []
@@ -44,10 +51,9 @@ class FakeConversation:
         self.pending = False
         self.closed = False
         self.turn_end_on_interrupt = turn_end_on_interrupt
+        self.busy_after_interrupt = busy_after_interrupt
         self.log: list[tuple[str, object]] = []
         self.native_lifecycle = native_lifecycle
-        self.cancel_calls: list[str] = []
-        self.cancel_responses: dict[str, bool] = {}
 
     def on_event(self, handler):
         self.handlers.append(handler)
@@ -81,15 +87,8 @@ class FakeConversation:
         self.log.append(("interrupt", None))
         self.interrupts += 1
         if self.turn_end_on_interrupt and self.pending:
-            self.pending = False
+            self.pending = self.busy_after_interrupt
             self.fire({"type": "turn-end"})
-
-    async def cancel_async_message(self, message_uuid: str) -> bool:
-        self.cancel_calls.append(message_uuid)
-        cancelled = self.cancel_responses.get(message_uuid, False)
-        if cancelled:
-            self.fire_lifecycle(message_uuid, "cancelled")
-        return cancelled
 
 
 def _lifecycle(event: dict) -> tuple[str, str] | None:
@@ -103,7 +102,6 @@ def make(conv, busy_send="joins-next-step", **kw):
     extra = {}
     if conv.native_lifecycle:
         extra["command_lifecycle"] = _lifecycle
-        extra["cancel_async_message"] = conv.cancel_async_message
     return Steering(
         conv,
         busy_send=lambda: busy_send,
@@ -235,13 +233,13 @@ async def test_interrupt_and_send_interrupts_waits_for_the_turn_end_then_sends()
     conv.pending = True
     s = make(conv, "joins-next-step")
     assert await s.interrupt_and_send("now") == "id1"
-    # x-optio-queued (final-review M3) lands after the interrupt marker and
-    # the underlying interrupt() call, and before the send: the reducer
-    # dedupes the steer's local echo against it by id.
+    # Fix 17: the text is appended (x-optio-queued, still after the interrupt
+    # marker: final-review M3) before the interrupt, and written once the
+    # turn has ended, since nothing else is in flight.
     assert conv.log == [
         ("event", INTERRUPT),
-        ("interrupt", None),
         ("event", {"type": QUEUED, "id": "id1", "text": "now"}),
+        ("interrupt", None),
         ("send", "now\n\n"),  # blank line: this joins the native queue (Fix 13a)
     ]
 
@@ -370,141 +368,194 @@ async def test_idle_interrupt_and_send_sends_without_interrupting():
     ]
 
 
-# -- send now up to k (Fix 13a, owner ruling 2) -------------------------------
-# "With messages 1, 2 and 3 queued, 'Send now' on message 2 must deliver
-# messages 1 and 2 (in order) and keep message 3 queued for the agent to take
-# when ready."
+# -- one at a time onto a native queue (Fix 17, owner ruling 2026-09-15) -----
+# docs/2026-09-15-steering-individual-delivery-design.md: at most ONE optio
+# message waits in the agent's own queue; the next is written when the one
+# in flight reports command_lifecycle "started" or any final state, with a
+# safety net on turn end or idle. No sleeps: each step is driven by an event
+# and awaited with Steering.settle().
 
 
 async def _queue_three(s):
     return [(await s.send_when_ready(text)).id for text in ("one", "two", "three")]
 
 
-async def test_send_now_up_to_cancels_only_the_message_after_k_then_resends_it():
+async def test_only_one_native_queue_message_is_in_flight_at_a_time():
     conv = FakeConversation(native_lifecycle=True)
     conv.pending = True
-    s = make(conv, "joins-next-step")
+    s = make(conv)
     id1, id2, id3 = await _queue_three(s)
-    conv.cancel_responses[id3] = True
-    conv.log.clear()
+    # Every message is announced when it is sent, under the id that is also its uuid ...
+    assert events(conv) == [
+        {"type": QUEUED, "id": id1, "text": "one"},
+        {"type": QUEUED, "id": id2, "text": "two"},
+        {"type": QUEUED, "id": id3, "text": "three"},
+    ]
+    # ... but only the first is written to the agent.
+    assert conv.sent == ["one\n\n"] and conv.uuids == [id1]
+    assert s.in_flight_id == id1 and s.pending_ids == [id2, id3]
 
-    # id3's 'started' has not been seen: interrupt_and_send blocks in the
-    # wait-for-k's-turn-to-start step until the CLI reports it, so drive it
-    # from a background task (no sleeps: one bare yield reaches that await,
-    # since nothing before it suspends on a FakeConversation).
-    task = asyncio.ensure_future(s.interrupt_and_send("", up_to=id2))
-    await asyncio.sleep(0)
-    assert conv.cancel_calls == [id3]  # not id1 or id2
-    assert conv.interrupts == 1
-    assert events(conv) == [INTERRUPT]
+
+async def test_started_writes_the_next_message_in_order():
+    conv = FakeConversation(native_lifecycle=True)
+    conv.pending = True
+    s = make(conv)
+    id1, id2, id3 = await _queue_three(s)
+    conv.fire_lifecycle(id1, "queued")  # entering the agent's queue is no reason to advance
+    await s.settle()
+    assert conv.sent == ["one\n\n"]
+
+    conv.fire_lifecycle(id1, "started")
+    await s.settle()
+    assert conv.sent == ["one\n\n", "two\n\n"] and conv.uuids == [id1, id2]
+    assert s.in_flight_id == id2 and s.pending_ids == [id3]
 
     conv.fire_lifecycle(id2, "started")
-    assert await task is None
-
-    assert len(events(conv)) == 2
-    requeued = events(conv)[1]
-    assert requeued["type"] == REQUEUED and requeued["id"] == id3
-    new_id = requeued["new_id"]
-    assert new_id != id3
-    assert conv.sent[-1] == "three\n\n"  # same text, still blank-line terminated
-    assert conv.uuids[-1] == new_id
+    await s.settle()
+    assert conv.sent == ["one\n\n", "two\n\n", "three\n\n"]
+    assert conv.uuids == [id1, id2, id3]
+    assert s.in_flight_id == id3 and s.pending_ids == []
 
 
-async def test_send_now_up_to_does_not_resend_when_cancel_reports_false():
-    # cancelled:false means the message was already taken (or unknown) and
-    # will be delivered normally: no re-send, no x-optio-requeued.
+@pytest.mark.parametrize("state", ["completed", "cancelled", "discarded", "refused"])
+async def test_a_final_state_without_started_also_writes_the_next_message(state):
+    # cli-queue-lifecycle.md: a final state can arrive without "started";
+    # waiting for "started" alone would stall delivery for good.
     conv = FakeConversation(native_lifecycle=True)
     conv.pending = True
-    s = make(conv, "joins-next-step")
+    s = make(conv)
     id1, id2, id3 = await _queue_three(s)
-    conv.cancel_responses[id3] = False
-    conv.log.clear()
-
-    assert await s.interrupt_and_send("", up_to=id2) is None
-
-    assert conv.cancel_calls == [id3]
-    assert conv.interrupts == 1
-    assert events(conv) == [INTERRUPT]
-    assert conv.sent == ["one\n\n", "two\n\n", "three\n\n"]  # id3 sent only once
+    conv.fire_lifecycle(id1, state)
+    await s.settle()
+    assert conv.sent == ["one\n\n", "two\n\n"]
+    assert s.in_flight_id == id2 and s.pending_ids == [id3]
 
 
-async def test_send_now_up_to_skips_a_message_already_started():
+async def test_lifecycle_of_a_message_not_in_flight_does_not_advance():
     conv = FakeConversation(native_lifecycle=True)
     conv.pending = True
-    s = make(conv, "joins-next-step")
+    s = make(conv)
     id1, id2, id3 = await _queue_three(s)
-    conv.fire_lifecycle(id3, "started")  # e.g. taken at a tool boundary already
-    conv.log.clear()
+    conv.fire_lifecycle(id2, "started")  # not written yet, so not in flight
+    conv.fire_lifecycle("cli-minted", "completed")  # a command optio never sent
+    await s.settle()
+    assert conv.sent == ["one\n\n"] and s.in_flight_id == id1
 
-    assert await s.interrupt_and_send("", up_to=id2) is None
-    assert conv.cancel_calls == []
 
-
-async def test_send_now_up_to_naming_the_last_message_cancels_nothing():
-    conv = FakeConversation(native_lifecycle=True)
+@pytest.mark.parametrize("event", [{"type": "turn-end"}, {"type": "idle"}])
+async def test_the_safety_net_writes_the_next_message_once_the_agent_is_idle(event):
+    # No command_lifecycle hook: an agent that reports no lifecycle at all.
+    # An idle agent holds nothing in its queue, so a turn end, or any later
+    # event, that finds it idle lets the next message go.
+    conv = FakeConversation()
     conv.pending = True
-    s = make(conv, "joins-next-step")
+    s = make(conv)
     id1, id2, id3 = await _queue_three(s)
-    conv.log.clear()
+    conv.fire({"type": "turn-end"})  # e.g. a merged turn's result: still busy
+    await s.settle()
+    assert conv.sent == ["one\n\n"] and s.in_flight_id == id1
 
-    assert await s.interrupt_and_send("", up_to=id3) is None
+    conv.pending = False
+    conv.fire(event)
+    await s.settle()
+    assert conv.sent == ["one\n\n", "two\n\n"]
+    assert s.in_flight_id == id2 and s.pending_ids == [id3]
 
-    assert conv.cancel_calls == []
-    assert conv.interrupts == 1  # still a plain "send now"
-    assert events(conv) == [INTERRUPT]
 
-
-async def test_up_to_is_ignored_without_native_lifecycle_support():
-    # A wrapper that never wired command_lifecycle/cancel_async_message (no
-    # engine but Claude Code has this yet) degrades to today's meaning:
-    # deliver everything queued, exactly as if up_to were absent.
-    conv = FakeConversation()  # native_lifecycle=False: no cancel support
+async def test_a_send_that_finds_the_agent_idle_still_waits_behind_pending_messages():
+    # The agent went idle, but the event that says so has not reached
+    # Steering yet: a new message must not overtake the ones still pending.
+    conv = FakeConversation()
     conv.pending = True
-    s = make(conv, "joins-next-step")
+    s = make(conv)
     id1, id2, id3 = await _queue_three(s)
-    conv.log.clear()
+    conv.pending = False
+    outcome = await s.send_when_ready("four")
+    assert outcome.queued is True
+    assert conv.sent == ["one\n\n", "two\n\n"]
+    assert s.in_flight_id == id2 and s.pending_ids == [id3, outcome.id]
 
-    assert await s.interrupt_and_send("", up_to=id2) is None
-    assert conv.interrupts == 1
 
-
-async def test_a_hanging_cancel_in_send_now_up_to_is_bounded_by_one_deadline(caplog):
-    # ClaudeCodeConversation.cancel_async_message awaits a control-ack future
-    # with no timeout of its own; a live CLI that never answers it must not
-    # hold Steering's lock (and every later /send and /steer queued behind
-    # it) forever. The cancel loop, the interrupt and the turn-end wait all
-    # share ONE turn_end_timeout_s deadline (review of Fix 13a, round 1),
-    # not three stacked waits.
-    class HangingCancelConversation(FakeConversation):
-        async def cancel_async_message(self, message_uuid: str) -> bool:
-            self.cancel_calls.append(message_uuid)
-            await asyncio.Event().wait()  # never resolves
-            return True  # pragma: no cover
-
-    conv = HangingCancelConversation(native_lifecycle=True)
+@pytest.mark.parametrize("k", [0, 1, 2])
+async def test_send_now_on_message_k_only_interrupts_and_delivery_continues_in_order(k):
+    # Send now on message k: interrupt; the message in flight runs next and
+    # the rest follow one at a time. No cancel, no re-send, no
+    # x-optio-requeued (Fix 13a's path is gone).
+    conv = FakeConversation(native_lifecycle=True, busy_after_interrupt=True)
     conv.pending = True
-    s = make(conv, "joins-next-step", turn_end_timeout_s=0.0)
-    id1, id2, id3 = await _queue_three(s)
+    s = make(conv)
+    ids = await _queue_three(s)
     conv.log.clear()
 
-    with caplog.at_level(logging.WARNING, logger="optio_agents.steering"):
-        assert await asyncio.wait_for(
-            s.interrupt_and_send("", up_to=id2), timeout=5.0,
-        ) is None
-    assert conv.cancel_calls == [id3]
-    assert "send-now-up-to" in caplog.text
+    assert await s.interrupt_and_send("", up_to=ids[k]) is None
+    await s.settle()
+    assert conv.log == [("event", INTERRUPT), ("interrupt", None)]
+    assert s.in_flight_id == ids[0] and s.pending_ids == ids[1:]
 
-    # The cancel never confirmed, so no interrupt and no re-send happened --
-    # only the message actually confirmed cancelled would be resent, and
-    # here that set is empty.
-    assert conv.interrupts == 0
+    conv.fire_lifecycle(ids[0], "started")
+    await s.settle()
+    conv.fire_lifecycle(ids[1], "started")
+    await s.settle()
+    assert conv.sent == ["one\n\n", "two\n\n", "three\n\n"]
+    assert conv.uuids == ids
+    assert REQUEUED not in [e["type"] for e in events(conv)]
+
+
+async def test_interrupt_and_send_appends_then_interrupts_and_the_text_arrives_last():
+    # The owner's live scenario (design doc, Testing): #1 and #2 queued,
+    # then Interrupt and send #3: three separate messages, in order.
+    conv = FakeConversation(native_lifecycle=True, busy_after_interrupt=True)
+    conv.pending = True
+    s = make(conv)
+    id1 = (await s.send_when_ready("#1")).id
+    id2 = (await s.send_when_ready("#2")).id
+    conv.log.clear()
+
+    assert await s.interrupt_and_send("#3") == "id3"
+    assert conv.log == [
+        ("event", INTERRUPT),
+        ("event", {"type": QUEUED, "id": "id3", "text": "#3"}),
+        ("interrupt", None),
+    ]
+    assert s.in_flight_id == id1 and s.pending_ids == [id2, "id3"]
+
+    conv.fire_lifecycle(id1, "started")  # #1 runs right after the interrupted turn
+    await s.settle()
+    conv.fire_lifecycle(id2, "started")
+    await s.settle()
+    assert conv.sent == ["#1\n\n", "#2\n\n", "#3\n\n"]
+    assert conv.uuids == [id1, id2, "id3"]
+
+
+async def test_a_plain_interrupt_leaves_pending_messages_going_one_at_a_time():
+    conv = FakeConversation(native_lifecycle=True, busy_after_interrupt=True)
+    conv.pending = True
+    s = make(conv)
+    id1, id2, id3 = await _queue_three(s)
+    await s.interrupt()
+    await s.settle()
+    assert conv.sent == ["one\n\n"] and s.pending_ids == [id2, id3]
+
+    conv.fire_lifecycle(id1, "started")
+    await s.settle()
+    conv.fire_lifecycle(id2, "started")
+    await s.settle()
     assert conv.sent == ["one\n\n", "two\n\n", "three\n\n"]
 
-    # And critically: the lock was released. A later call does not hang
-    # behind the earlier one.
-    conv.pending = False
-    outcome = await asyncio.wait_for(s.send_when_ready("four"), timeout=5.0)
-    assert outcome.id and not outcome.queued
+
+async def test_pending_messages_stay_undelivered_when_the_session_ends(caplog):
+    conv = FakeConversation(native_lifecycle=True)
+    conv.pending = True
+    s = make(conv)
+    id1, id2, id3 = await _queue_three(s)
+    conv.closed = True
+    with caplog.at_level(logging.WARNING, logger="optio_agents.steering"):
+        conv.fire_lifecycle(id1, "discarded")  # teardown: it was still queued
+        conv.fire({"type": "x-optio-closed", "reason": "process ended"})
+        await s.settle()
+    assert conv.sent == ["one\n\n"]
+    assert s.pending_ids == [id2, id3]
+    assert "not delivered" in caplog.text
 
 
 # -- interrupt -----------------------------------------------------------------
