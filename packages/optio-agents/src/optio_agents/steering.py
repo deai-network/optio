@@ -368,36 +368,63 @@ class Steering:
         """Cancel every not-yet-started message after ``up_to`` in the
         agent's native queue, interrupt (plain — the CLI then runs 1..up_to
         as its next turn), and once ``up_to`` has itself been seen
-        ``started`` (bounded by ``turn_end_timeout_s``; on timeout, resend
-        anyway and log it), re-send each successfully cancelled message, in
-        queue order, with the same text and a fresh uuid — emitting
+        ``started``, re-send each successfully cancelled message, in queue
+        order, with the same text and a fresh uuid — emitting
         ``x-optio-requeued`` for each so the UI re-keys its bubble. A
         ``cancelled:false`` reply means the message was already taken (or
-        unknown) and will be delivered normally: it is not re-sent. Assumes
-        the caller holds ``_lock``."""
+        unknown) and will be delivered normally: it is not re-sent.
+
+        The cancel loop, the interrupt, the turn-end wait and the wait for
+        ``up_to``'s ``started`` all run under ONE ``turn_end_timeout_s``
+        deadline (review of Fix 13a, round 1):
+        ``cancel_async_message`` awaits a control-ack future with no
+        timeout of its own (``ClaudeCodeConversation.cancel_async_message``),
+        so a live but unresponsive CLI must not hold ``_lock`` — and every
+        later ``/send``/``/steer`` queued behind it — for an unbounded wait
+        followed by two more independent 15 s waits. On expiry at any
+        point, log a warning and still re-send whatever was already
+        confirmed cancelled by then; a later ``/steer`` can retry the rest.
+        Assumes the caller holds ``_lock``."""
         try:
             k_index = self._native_order.index(up_to)
         except ValueError:
             k_index = len(self._native_order) - 1
         later_ids = list(self._native_order[k_index + 1:])
-        cancelled_ids = []
-        for mid in later_ids:
-            if self._native_lifecycle.get(mid) == "started":
-                continue  # already taken; will be delivered anyway
-            if await self._cancel_async_message(mid):
-                cancelled_ids.append(mid)
-        if self._conv.is_pending():
-            already_interrupted = self._interrupted
-            if not already_interrupted:
-                self._interrupted = True
-                self._emit({"type": INTERRUPT_EVENT, "by": "user"})
-            await self._interrupt_and_wait(call_interrupt=not already_interrupted)
+        cancelled_ids: list[str] = []
+        try:
+            async with asyncio.timeout(self._timeout_s):
+                for mid in later_ids:
+                    if self._native_lifecycle.get(mid) == "started":
+                        continue  # already taken; will be delivered anyway
+                    if await self._cancel_async_message(mid):
+                        cancelled_ids.append(mid)
+                if self._conv.is_pending():
+                    already_interrupted = self._interrupted
+                    if not already_interrupted:
+                        self._interrupted = True
+                        self._emit({"type": INTERRUPT_EVENT, "by": "user"})
+                    self._turn_end.clear()
+                    if not already_interrupted:
+                        await self._conv.interrupt()
+                    await self._turn_end.wait()
+                if cancelled_ids and self._native_lifecycle.get(up_to) != "started":
+                    waiter = self._lifecycle_waiters.setdefault(up_to, asyncio.Event())
+                    try:
+                        await waiter.wait()
+                    finally:
+                        self._lifecycle_waiters.pop(up_to, None)
+        except TimeoutError:
+            _LOG.warning(
+                "steering: send-now-up-to %s exceeded turn_end_timeout_s=%.0f s "
+                "waiting on the CLI (cancel, interrupt or turn end); "
+                "re-sending the %d message(s) already confirmed cancelled anyway",
+                up_to, self._timeout_s, len(cancelled_ids),
+            )
         for mid in cancelled_ids:
             if mid in self._native_order:
                 self._native_order.remove(mid)
         if not cancelled_ids:
             return None
-        await self._wait_for_started(up_to)
         for mid in cancelled_ids:
             resend_text = self._native_texts.pop(mid, "")
             new_id = self._new_id()
@@ -407,25 +434,6 @@ class Steering:
             await self._conv.send(resend_text, uuid=new_id)
             self._emit({"type": REQUEUED_EVENT, "id": mid, "new_id": new_id})
         return None
-
-    async def _wait_for_started(self, command_uuid: str) -> None:
-        """Wait until ``command_uuid``'s command_lifecycle reports
-        'started', bounded by ``turn_end_timeout_s``; on timeout, log and
-        return anyway so the caller re-sends regardless."""
-        if self._native_lifecycle.get(command_uuid) == "started":
-            return
-        waiter = self._lifecycle_waiters.setdefault(command_uuid, asyncio.Event())
-        try:
-            async with asyncio.timeout(self._timeout_s):
-                await waiter.wait()
-        except TimeoutError:
-            _LOG.warning(
-                "steering: no 'started' for message %s within %.0f s; "
-                "re-sending the queued messages after it anyway",
-                command_uuid, self._timeout_s,
-            )
-        finally:
-            self._lifecycle_waiters.pop(command_uuid, None)
 
     async def interrupt(self) -> None:
         """Stop only. Emits x-optio-interrupt at most once per turn, shared
