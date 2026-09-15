@@ -304,6 +304,98 @@ async def test_emit_event_reaches_subscribers_unmodified(convo):
     assert events[-1]["type"] == "x-optio-closed"
 
 
+def _lifecycle(command_uuid: str, state: str) -> dict:
+    # The recorded shape (cli-queue-lifecycle.md section 1): exactly type,
+    # command_uuid, state, uuid (a fresh per-event id) and session_id.
+    return {"type": "command_lifecycle", "command_uuid": command_uuid, "state": state,
+            "uuid": f"lc-{command_uuid}-{state}", "session_id": "s"}
+
+
+@pytest.mark.asyncio
+async def test_steering_writes_one_queued_message_at_a_time_over_the_real_driver(convo):
+    # Fix 17 (docs/2026-09-15-steering-individual-delivery-design.md): at
+    # most ONE optio message waits in the CLI's own queue. The next goes on
+    # the in-flight message's "started" (recording o-tool) or on a final
+    # state that came without "started".
+    c, handle = convo
+    events = []
+    c.on_event(events.append)
+    ids = iter(["q1", "q2", "q3"])
+    steering = make_steering(c, new_id=lambda: next(ids))
+    reader = asyncio.create_task(c.run_reader())
+
+    await c.send("long task")
+    await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    for text in ("one", "two", "three"):
+        assert (await steering.send_when_ready(text)).queued is True
+    first = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert (first["uuid"], first["message"]["content"][0]["text"]) == ("q1", "one\n\n")
+    assert handle.stdin.lines.qsize() == 0  # two and three wait in optio
+
+    handle.stdout.feed(_lifecycle("q1", "queued"))
+    handle.stdout.feed(_lifecycle("q1", "started"))
+    second = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert (second["uuid"], second["message"]["content"][0]["text"]) == ("q2", "two\n\n")
+
+    handle.stdout.feed(_lifecycle("q2", "completed"))  # final, without "started"
+    third = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert (third["uuid"], third["message"]["content"][0]["text"]) == ("q3", "three\n\n")
+
+    handle.stdout.feed(_lifecycle("q3", "started"))
+    handle.stdout.feed({"type": "result", "subtype": "success", "result": "done", "is_error": False})
+    handle.stdout.eof()
+    await reader
+    await steering.settle()
+    assert handle.stdin.lines.qsize() == 0
+    assert [e for e in events if e.get("type") == "x-optio-queued"] == [
+        {"type": "x-optio-queued", "id": "q1", "text": "one"},
+        {"type": "x-optio-queued", "id": "q2", "text": "two"},
+        {"type": "x-optio-queued", "id": "q3", "text": "three"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_interrupt_and_send_after_two_queued_gives_three_separate_messages_over_the_real_driver(convo):
+    # The owner's live scenario (design doc, Testing): #1 and #2 queued,
+    # then Interrupt and send #3. Recorded shape o-int: the interrupt reply
+    # lists the one message in flight under still_queued, the interrupted
+    # result follows, then that message's "started".
+    c, handle = convo
+    ids = iter(["m1", "m2", "m3"])
+    steering = make_steering(c, new_id=lambda: next(ids))
+    reader = asyncio.create_task(c.run_reader())
+
+    await c.send("long task")
+    await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    await steering.send_when_ready("#1")
+    await steering.send_when_ready("#2")
+    m1 = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert m1["uuid"] == "m1"
+
+    task = asyncio.create_task(steering.interrupt_and_send("#3"))
+    ctrl = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert ctrl["request"]["subtype"] == "interrupt"  # #3 was appended, not written
+    handle.stdout.feed({"type": "control_response", "response": {
+        "subtype": "success", "request_id": ctrl["request_id"],
+        "response": {"still_queued": ["m1"]}}})
+    handle.stdout.feed({"type": "result", "subtype": "error_during_execution",
+                        "is_error": True, "terminal_reason": "aborted_streaming"})
+    assert await asyncio.wait_for(task, 60) == "m3"
+    await steering.settle()
+    assert handle.stdin.lines.qsize() == 0  # #1 runs next; #2 and #3 still wait
+
+    handle.stdout.feed(_lifecycle("m1", "started"))
+    m2 = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert (m2["uuid"], m2["message"]["content"][0]["text"]) == ("m2", "#2\n\n")
+    handle.stdout.feed(_lifecycle("m1", "completed"))  # no longer in flight: ignored
+    handle.stdout.feed({"type": "result", "subtype": "success", "result": "ok", "is_error": False})
+    handle.stdout.feed(_lifecycle("m2", "started"))
+    m3 = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert (m3["uuid"], m3["message"]["content"][0]["text"]) == ("m3", "#3\n\n")
+    handle.stdout.eof()
+    await reader
+
+
 def test_claudecode_declares_joins_next_step_and_ends_turns_on_result():
     assert BUSY_SEND.for_model(None) == "joins-next-step"
     assert BUSY_SEND.for_model("claude-sonnet-5") == "joins-next-step"

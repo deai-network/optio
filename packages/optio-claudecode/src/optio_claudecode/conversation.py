@@ -408,12 +408,13 @@ class ClaudeCodeConversation:
         await fut
 
     async def cancel_async_message(self, message_uuid: str) -> bool:
-        """Ask the CLI to drop a still-queued message before it starts
-        (Steering's ``up_to`` — Fix 13a). The control_response's
-        ``cancelled`` bool says whether anything was actually removed:
-        false means the message already started or completed, or was never
-        known, and it will be (or was) delivered normally
-        (cli-queue-lifecycle.md §1)."""
+        """Ask the CLI to drop a still-queued message before it starts. The
+        control_response's ``cancelled`` bool says whether anything was
+        actually removed: false means the message already started or
+        completed, or was never known, and it will be (or was) delivered
+        normally (cli-queue-lifecycle.md §1). A transport capability that
+        Steering no longer uses: since Fix 17 the CLI queue never holds more
+        than one optio message, so "Send now" needs no cancel."""
         if self._closed.is_set():
             raise ConversationClosed(self._close_reason or "conversation closed")
         self._next_request_id += 1
