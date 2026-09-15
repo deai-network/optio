@@ -136,6 +136,25 @@ function ensureInterruptedStyle(): void {
   document.head.appendChild(el);
 }
 
+// Fix 16 (owner ruling 2026-09-15, manual-test finding): an interrupted
+// answer's cut-off text (the jagged-edge bubble above) also trails off with
+// an ellipsis, unless the text already ends with one. Render only: this
+// computes what gets HANDED TO the markdown renderer, never item.text
+// itself, so the reducer/stored-event text and the copy button (which reads
+// item.text directly, below) are unaffected. Appended to the raw markdown
+// SOURCE (trimmed of trailing whitespace first, so it doesn't land on a
+// trailing blank line) rather than as a separate DOM node after the
+// rendered block, so it lands inline on the last rendered line — the end of
+// the last paragraph/list item/cell — the same way it would if the model's
+// own output had trailed off there.
+const ELLIPSIS = '…';
+function withInterruptEllipsis(text: string, interrupted: boolean | undefined): string {
+  if (!interrupted) return text;
+  const trimmed = text.trimEnd();
+  if (trimmed.endsWith(ELLIPSIS) || trimmed.endsWith('...')) return text;
+  return trimmed + ELLIPSIS;
+}
+
 // A vultus ActionStatus for the input bar's multi-action send button. The
 // view runs the (async) send itself, so both fire paths just start it.
 function barAction(
@@ -818,7 +837,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             }}
           >
             <div className="optio-cc-answer" style={{ position: 'relative' }}>
-              <AnswerBlock text={item.text} />
+              <AnswerBlock text={withInterruptEllipsis(item.text, item.interrupted)} />
               <Button
                 size="small"
                 type="text"
