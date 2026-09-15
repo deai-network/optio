@@ -184,6 +184,15 @@ export interface ChatState {
   // unrelated item (e.g. an earlier turn's own, already-finalized interrupt)
   // that merely happens to match the same pattern.
   interrupt?: { rowSeq: number; itemSeqs: number[] };
+  // Reducer-private (claudecode, review of Fix 13b, finding 4): uuids
+  // ConversationView just told us to expect a same-turn "Send now up to"
+  // resend for (x-optio-pending-requeue, dispatched right before the /steer
+  // POST). The CLI's own command_lifecycle 'cancelled' for one of these is
+  // OUR OWN doing -- the owner ruling ("a cancelled that belongs to our own
+  // requeue is ignored") applies literally: it must never turn the bubble
+  // into a "Not delivered" note in the first place. x-optio-requeued clears
+  // the entry once it resolves; a session boundary clears any left over.
+  pendingRequeue?: string[];
 }
 
 type UserItem = Extract<ChatItem, { kind: 'user' }>;
@@ -235,6 +244,23 @@ export function takeQueuedAt(
   if (timestamp !== undefined) taken.timestamp = timestamp;
   const rest = [...items.slice(0, idx), ...items.slice(idx + 1)];
   return appendItems(rest, [...before, taken]);
+}
+
+// Review of Fix 13b, finding 4: ids of every queued bubble AFTER the one
+// named `upTo` (its own position among the pinned queue) -- the ones
+// steering.py's own "Send now up to" is about to have the CLI cancel and
+// re-send under new uuids (x-optio-requeued). ConversationView dispatches
+// these as a local x-optio-pending-requeue hint before the /steer POST, so
+// the reducer can keep them queued through the CLI's 'cancelled' instead of
+// flashing a "Not delivered" note it would only have to undo moments later.
+export function queuedIdsAfter(items: ChatItem[], upTo: string): string[] {
+  const idx = items.findIndex((i) => isQueued(i) && i.queueId === upTo);
+  if (idx === -1) return [];
+  const ids: string[] = [];
+  for (const i of items.slice(idx + 1)) {
+    if (isQueued(i) && i.queueId !== undefined) ids.push(i.queueId);
+  }
+  return ids;
 }
 
 // x-optio-taken: optio delivered the messages it held; take them in order.

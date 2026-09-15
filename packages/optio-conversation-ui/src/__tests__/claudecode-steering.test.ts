@@ -541,3 +541,184 @@ describe('claudecode steering: lifecycle-driven queued bubbles (Fix 13b)', () =>
     expect(users(s)[1].queued).toBeUndefined();
   });
 });
+
+// Review of fix 13b, finding 1: 13a appends a blank line ("\n\n") to a
+// message written while busy; the bubble it was queued as never carries it
+// (x-optio-queued keeps the ORIGINAL text). None of the text-matching
+// fallback paths trimmed it, so a uuid miss (the CLI mints its own uuid for
+// a message optio sent without one, cli-queue-lifecycle.md §4) left the
+// original bubble stuck queued and rendered a duplicate with the trailing
+// blank line visible. Real strings from
+// recordings/prod/s8-three-steers-trailing-newlines.jsonl (predates 13a,
+// so nothing sent a uuid — the CLI-minted one on the echo cannot match any
+// id optio ever gave it, forcing the fallback).
+describe('review of fix 13b, finding 1: text matching trims a trailing blank line', () => {
+  it('a single-message echo with a trailing blank line (uuid miss) still takes its queued bubble, no duplicate', () => {
+    const s = run([user('q'), queued('s1', 'First steer message'), echoU('cli-minted', ['First steer message\n\n'])]);
+    expect(kinds(s)).toEqual(['user', 'user']);
+    expect(users(s)).toHaveLength(2);
+    expect(users(s)[1]).toMatchObject({ text: 'First steer message', queueId: 's1' });
+    expect(users(s)[1].queued).toBeUndefined();
+  });
+
+  it('the same echo with nothing queued to match creates a bubble with the blank line trimmed, never shown', () => {
+    const s = run([echoU('cli-minted', ['First steer message\n\n'])]);
+    expect(users(s)).toHaveLength(1);
+    expect(users(s)[0].text).toBe('First steer message');
+  });
+
+  it("a fold's LAST block with a trailing blank line and a uuid miss still confirms the last queued bubble", () => {
+    const s = run([
+      user('q'), queued('s1', 'apple'), queued('s2', 'banana'),
+      echoU('cli-minted', ['apple', 'banana\n\n']),
+    ]);
+    expect(users(s).some((u) => u.queued)).toBe(false);
+    expect(users(s).map((u) => u.text)).toEqual(['q', 'apple', 'banana']);
+  });
+
+  it("a fold's NON-last block with a trailing blank line still confirms it via trimmed text match", () => {
+    const s = run([
+      user('q'), queued('s1', 'apple'), queued('s2', 'banana'),
+      echoU('cli-minted', ['apple\n\n', 'banana']),
+    ]);
+    expect(users(s).some((u) => u.queued)).toBe(false);
+    expect(users(s).map((u) => u.text)).toEqual(['q', 'apple', 'banana']);
+  });
+});
+
+// Review of fix 13b, finding 2: a "Not delivered" note a command_lifecycle
+// 'cancelled'/'discarded'/'refused' makes keeps `queueId` so a later
+// x-optio-requeued can still restore it — but nothing ever cleared it when
+// no requeue came, so the note stayed pinned at the very bottom forever
+// (isPinned, chat.ts), and (b) 'started' never confirmed a plain (never
+// queued) local echo, so a later abort-'cancelled' for the same uuid still
+// matched it as if it were an undelivered queued message.
+describe('review of fix 13b, finding 2: a lifecycle "Not delivered" note eventually unpins', () => {
+  it("'discarded' unpins at its own turn's end, so a later exchange doesn't stay stuck above it forever", () => {
+    const s1 = run([
+      user('q'), delta('working'), queued('q1', 'later'), lifecycle('q1', 'discarded'),
+      assistantText('working', 'm1'), result('working'),
+    ]);
+    const note = s1.items.find((i) => i.kind === 'activity' && i.text === 'Not delivered: later');
+    expect(note).toBeDefined();
+    expect((note as any).queueId).toBeUndefined();
+    const s2 = run([user('next'), assistantText('answer', 'm2'), result('answer')], s1);
+    expect(texts(s2)).toEqual(['q', 'working', 'Not delivered: later', 'next', 'answer']);
+  });
+
+  it("'refused' behaves the same as 'discarded'", () => {
+    const s = run([
+      user('q'), queued('q1', 'later'), lifecycle('q1', 'refused'),
+      assistantText('a', 'm1'), result('a'),
+    ]);
+    expect((s.items.find((i) => i.kind === 'activity') as any).queueId).toBeUndefined();
+  });
+
+  it("x-optio-resumed unpins a lifecycle-discarded note too, so the post-resume exchange lands after it, not perpetually above it", () => {
+    const s = run([
+      user('q'), queued('q1', 'later'), lifecycle('q1', 'discarded'),
+      { type: 'x-optio-resumed' },
+      user('next'), assistantText('answer', 'm1'), result('answer'),
+    ]);
+    expect(texts(s)).toEqual(['q', 'Not delivered: later', 'next', 'answer']);
+  });
+
+  it('x-optio-closed unpins it the same way', () => {
+    const s = run([user('q'), queued('q1', 'later'), lifecycle('q1', 'refused'), { type: 'x-optio-closed', reason: 'x' }]);
+    const note = s.items.find((i) => i.kind === 'activity' && i.text === 'Not delivered: later');
+    expect((note as any).queueId).toBeUndefined();
+  });
+
+  it("'started' confirms a plain (non-queued) local echo, so a later abort-'cancelled' doesn't wrongly mark it Not delivered (idle send interrupted before its echo)", () => {
+    const s = run([
+      localUser('oops', 'u1'), lifecycle('u1', 'started'), interrupt, aborted(), lifecycle('u1', 'cancelled'),
+      user('next'), assistantText('answer to next', 'm1'), result('answer to next'),
+    ]);
+    expect(s.items.some((i) => i.kind === 'activity' && i.text.startsWith('Not delivered'))).toBe(false);
+    expect(texts(s)).toEqual(['oops', '⏹ Interrupted by you', 'next', 'answer to next']);
+  });
+});
+
+// Review of fix 13b, finding 3: Fix 4 regression. Live, a queued bubble
+// carries the widget's own local send time (x-optio-local-user). When
+// 'started' takes it ahead of its echo (the fold's last message; cancel3's
+// message 2 and the re-sent message 3), takeQueuedAt got no timestamp
+// (lifecycle events carry none) and the later echo only backfilled when
+// `timestamp === undefined` — so live kept the browser send time forever
+// instead of the taking echo's wire time, diverging from replay (which has
+// no local echo and so always showed the wire time).
+describe("review of fix 13b, finding 3: 'started' clears the queued send-time so the taking echo's wire time wins (Fix 4)", () => {
+  const LOCAL_TIME = Date.parse('2026-09-13T01:00:05.000Z');
+  const WIRE_TIME = '2026-09-13T01:00:30.000Z';
+  const localEcho = (text: string, id: string) => ({ type: 'x-optio-local-user', text, id, queued: true, time: LOCAL_TIME });
+  const strip = (s: ChatState) => s.items.map(({ seq: _seq, ...rest }) => rest);
+
+  it("a fold of 2: 'started' takes both bubbles before the combined echo; the echo's wire time replaces a LIVE local send time, matching replay", () => {
+    const withLocalEcho = [
+      user('q'), delta('essay'),
+      localEcho('apple', 'q1'), queued('q1', 'apple'),
+      localEcho('banana', 'q2'), queued('q2', 'banana'),
+      assistantText('essay', 'm1'), result('essay'),
+      lifecycle('q1', 'started'), lifecycle('q2', 'started'),
+      echoU('q2', ['apple', 'banana'], { timestamp: WIRE_TIME }),
+    ];
+    const live = run(withLocalEcho);
+    const replay = run(withLocalEcho.filter((e) => e.type !== 'x-optio-local-user' && e.type !== 'stream_event'));
+    expect(users(live).find((u) => u.text === 'banana')).toMatchObject({ timestamp: Date.parse(WIRE_TIME) });
+    expect(users(live).find((u) => u.text === 'apple')?.timestamp).toBeUndefined();
+    expect(strip(live)).toEqual(strip(replay));
+  });
+
+  it("cancel3: a LIVE local send time on the re-sent message (new uuid) is replaced by its own taking echo's wire time, matching replay", () => {
+    const withLocalEcho = [
+      user('q'), delta('essay'),
+      localEcho('cherry', 'q3'),
+      queued('q1', 'apple'), queued('q2', 'banana'), queued('q3', 'cherry'),
+      lifecycle('q1', 'queued'), lifecycle('q2', 'queued'), lifecycle('q3', 'queued'),
+      interrupt, lifecycle('q3', 'cancelled'),
+      assistantText('essay', 'm0'), aborted(),
+      echoU('q1', ['apple']), lifecycle('q1', 'started'), lifecycle('q2', 'started'),
+      requeued('q3', 'q3-new'),
+      echoU('q2', ['apple', 'banana'], { timestamp: '2026-09-13T17:49:08.000Z' }),
+      assistantText('got it', 'm1'), result('got it'),
+      lifecycle('q3-new', 'started'),
+      echoU('q3-new', ['cherry'], { timestamp: WIRE_TIME }),
+      assistantText('cherry ok', 'm2'), result('cherry ok'),
+    ];
+    const live = run(withLocalEcho);
+    const replay = run(withLocalEcho.filter((e) => e.type !== 'x-optio-local-user' && e.type !== 'stream_event'));
+    expect(users(live).find((u) => u.text === 'cherry')).toMatchObject({ timestamp: Date.parse(WIRE_TIME) });
+    expect(strip(live)).toEqual(strip(replay));
+  });
+});
+
+// Review of fix 13b, finding 4: the brief says a 'cancelled' that belongs to
+// our own requeue is ignored -- the original implementation applied the
+// "Not delivered" note and undid it once x-optio-requeued arrived, which
+// live flashes the bubble (Send now link gone) for up to
+// turn_end_timeout_s. x-optio-pending-requeue (dispatched by ConversationView
+// before the /steer POST — see ClaudeCodeView.tsx) makes the reducer ignore
+// that cancellation outright, so the flash never happens.
+describe('review of fix 13b, finding 4: x-optio-pending-requeue suppresses the live cancel flash', () => {
+  const pendingRequeue = (ids: string[]) => ({ type: 'x-optio-pending-requeue', ids });
+
+  it('a cancelled for a pending-requeue id is ignored entirely: the bubble stays queued, never a Not delivered note', () => {
+    const s = run([user('q'), queued('q1', 'apple'), queued('q2', 'banana'), pendingRequeue(['q2']), lifecycle('q2', 'cancelled')]);
+    expect(s.items.some((i) => i.kind === 'activity')).toBe(false);
+    expect(users(s).find((u) => u.queueId === 'q2')).toMatchObject({ text: 'banana', queued: true });
+  });
+
+  it('the eventual x-optio-requeued for a protected id still re-keys it and clears the protection', () => {
+    const s = run([
+      user('q'), queued('q1', 'apple'), queued('q2', 'banana'), pendingRequeue(['q2']),
+      lifecycle('q2', 'cancelled'), requeued('q2', 'q2-new'),
+    ]);
+    expect(s.pendingRequeue).toBeUndefined();
+    expect(users(s).find((u) => u.queueId === 'q2-new')).toMatchObject({ text: 'banana', queued: true });
+  });
+
+  it('an unrelated cancelled (a different id, not in pendingRequeue) is unaffected', () => {
+    const s = run([user('q'), queued('q1', 'apple'), pendingRequeue(['q2']), lifecycle('q1', 'cancelled')]);
+    expect(s.items.find((i) => i.kind === 'activity')).toMatchObject({ text: 'Not delivered: apple' });
+  });
+});

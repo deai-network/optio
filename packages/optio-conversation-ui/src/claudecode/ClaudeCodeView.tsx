@@ -1,6 +1,7 @@
 import { useEffect, useReducer, useRef } from 'react';
 import type { WidgetProps } from 'optio-ui';
 import type { ChatState, SessionControl } from '../chat.js';
+import { queuedIdsAfter } from '../chat.js';
 import { initialChatState, reduceEvent } from './events.js';
 import type { Attachment } from '../attachments.js';
 import { resolveUploadUrl, uploadFiles, bundleUploadNotice } from '../uploads.js';
@@ -159,6 +160,20 @@ export function ClaudeCodeView(props: WidgetProps) {
         // (and including) `upTo`, and the new text follows.
         const prompt = body === '' && attachments.length === 0 ? '' : await preparePrompt(body, attachments);
         if (prompt === null) return false;
+        if (upTo !== undefined) {
+          // Review of fix 13b, finding 4: tell the reducer, before the POST,
+          // which OTHER currently-queued bubbles this "Send now up to" is
+          // about to have the CLI cancel and steering.py re-send under new
+          // uuids — so their command_lifecycle 'cancelled' (which arrives
+          // well before x-optio-requeued restores them, up to
+          // turn_end_timeout_s on the timeout path) never flashes them into
+          // a muted "Not delivered" note.
+          const laterIds = queuedIdsAfter(state.items, upTo);
+          if (laterIds.length > 0) {
+            localSeqRef.current -= 1;
+            dispatch({ ev: { type: 'x-optio-pending-requeue', ids: laterIds }, seq: localSeqRef.current });
+          }
+        }
         const resp = await postJson('steer', upTo !== undefined ? { text: prompt, upTo } : { text: prompt });
         if (resp === null) return false;
         localEcho(body, resp, false);
