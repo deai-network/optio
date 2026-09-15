@@ -940,10 +940,21 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
           // `local`) so a LATER 'cancelled' for the same uuid (an aborted
           // turn: cli-queue-lifecycle.md's "cancelled also means its turn
           // was aborted") is never mistaken for an undelivered queued
-          // message by the guard just below.
+          // message by the guard just below. Review round 2, finding 1: this
+          // is the same Fix-4 regression finding 3 fixed for queued bubbles,
+          // but for a plain (never-queued) echo — x-optio-local-user now
+          // accompanies every send, not just queued ones (Fix 13a), and
+          // 'started' routinely precedes the taking echo even for a plain
+          // idle send. So also drop the item's pre-existing local send time
+          // here, the same way the `cur.queued === true` branch above does,
+          // so the later echo's "already resolved by uuid alone" branch
+          // backfills the wire time unconditionally instead of leaving the
+          // local send time in place forever (diverging from replay, which
+          // has no local echo and always shows the wire time).
           const confirmed = { ...cur };
           delete confirmed.local;
-          return { ...state, items: replaceAt(state.items, idx, confirmed), busy: true };
+          const items = clearTakenTimestamp(replaceAt(state.items, idx, confirmed), commandUuid);
+          return { ...state, items, busy: true };
         }
         // Already taken/confirmed (an earlier solo echo can put either
         // first): nothing left to move.

@@ -692,6 +692,39 @@ describe("review of fix 13b, finding 3: 'started' clears the queued send-time so
   });
 });
 
+// Review round 2 of fix 13b, finding 1: the same Fix-4 regression fixed by
+// finding 3 above, but for an ordinary PLAIN (never-queued) local echo.
+// x-optio-local-user now accompanies every send, not just queued ones (Fix
+// 13a), and 'started' typically arrives before the wire echo even for a
+// plain idle send (cli-queue-lifecycle.md ordering (a): queued/started fire
+// back-to-back, ~0.8s before the echo). The `cur.local === true` branch
+// confirmed the echo (cleared `local`) but left its pre-existing send time
+// in place, so the later wire echo's "already resolved by uuid alone"
+// branch — guarded by `cur.timestamp === undefined` — silently discarded
+// the wire time and the live bubble kept the local send time forever,
+// diverging from replay (which has no local echo and always shows the wire
+// time). None of fix 13b's own tests exercised this: the idle-send fixture
+// (claudecode-queue-idle.jsonl) is a raw CLI-only recording with no
+// x-optio-local-user events at all.
+describe("review round 2 of fix 13b, finding 1: 'started' also clears a PLAIN local echo's send-time so the taking echo's wire time wins (Fix 4)", () => {
+  const LOCAL_TIME = Date.parse('2026-09-13T01:00:05.000Z');
+  const WIRE_TIME = '2026-09-13T01:00:05.800Z';
+  const localEcho = (text: string, id: string) => ({ type: 'x-optio-local-user', text, id, queued: false, time: LOCAL_TIME });
+
+  it("a plain idle send: 'started' fires before the wire echo; the echo's wire time replaces a LIVE local send time, matching replay", () => {
+    const withLocalEcho = [
+      localEcho('hi', 'u1'),
+      lifecycle('u1', 'started'),
+      echoU('u1', ['hi'], { timestamp: WIRE_TIME }),
+      assistantText('hello', 'm1'), result('hello'),
+    ];
+    const live = run(withLocalEcho);
+    const replay = run(withLocalEcho.filter((e) => e.type !== 'x-optio-local-user' && e.type !== 'stream_event'));
+    expect(users(live).find((u) => u.text === 'hi')).toMatchObject({ timestamp: Date.parse(WIRE_TIME) });
+    expect(users(replay).find((u) => u.text === 'hi')).toMatchObject({ timestamp: Date.parse(WIRE_TIME) });
+  });
+});
+
 // Review of fix 13b, finding 4: the brief says a 'cancelled' that belongs to
 // our own requeue is ignored -- the original implementation applied the
 // "Not delivered" note and undid it once x-optio-requeued arrived, which
