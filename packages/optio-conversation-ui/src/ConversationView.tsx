@@ -278,19 +278,34 @@ function ensureSendButtonStyle(): void {
 // same width by construction, and no reserved width or extra CSS is needed.
 // @ant-design/icons is not a dependency of optio-conversation-ui (checked
 // package.json), so this is a small inline square in the '⏹' spirit rather
-// than a library icon.
+// than a library icon. The outer box is a fixed 1em x 1em — matching
+// @ant-design/icons' IconBase, which sets width/height to '1em' on every
+// antd icon including the LoadingOutlined spinner antd swaps in while
+// pending — so the icon slot (.ant-btn-icon) is exactly as wide idle as it
+// is pending. The visible 0.7em currentColor square is centered inside that
+// fixed box; only the box needs to be measured or asserted on.
 function InterruptStopIcon() {
   return (
     <span
       data-testid="interrupt-stop-icon"
       aria-hidden="true"
       style={{
-        display: 'inline-block',
-        width: '0.7em',
-        height: '0.7em',
-        backgroundColor: 'currentColor',
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: '1em',
+        height: '1em',
       }}
-    />
+    >
+      <span
+        style={{
+          display: 'inline-block',
+          width: '0.7em',
+          height: '0.7em',
+          backgroundColor: 'currentColor',
+        }}
+      />
+    </span>
   );
 }
 

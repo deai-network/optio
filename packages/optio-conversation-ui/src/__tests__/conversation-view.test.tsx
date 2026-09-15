@@ -292,7 +292,14 @@ describe('ConversationView Interrupt pending and failure', () => {
     renderView(makeProps({ busy: true, onInterrupt }));
     const wrap = screen.getByTestId('conversation-interrupt') as HTMLElement;
     expect(wrap.style.width).toBe('');
-    expect(wrap.querySelector('[data-testid="interrupt-stop-icon"]')).toBeTruthy();
+    const icon = wrap.querySelector('[data-testid="interrupt-stop-icon"]') as HTMLElement;
+    expect(icon).toBeTruthy();
+    // jsdom can't measure layout, so pin the icon's slot width the only way
+    // that's checkable: its own inline style, sized like an antd icon (1em),
+    // matching antd's LoadingOutlined spinner that takes this slot while
+    // pending (@ant-design/icons IconBase sets width/height to '1em').
+    expect(icon.style.width).toBe('1em');
+    expect(icon.style.height).toBe('1em');
     expect(interruptButton().classList.contains('ant-btn-loading')).toBe(false);
 
     fireEvent.click(interruptButton());
