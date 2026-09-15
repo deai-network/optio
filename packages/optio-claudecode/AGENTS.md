@@ -132,8 +132,16 @@ The `Conversation` surface (abstract Protocol in
   turn with `result` subtype `error_during_execution` (`result: null`,
   so no `on_message` fires for the aborted turn). Messages queued
   behind the interrupted turn are processed normally afterwards.
+  `interrupt(cancel_queued=True)` (Fix 19) makes the CLI drop them
+  instead: each gets a `command_lifecycle` `cancelled` and no `started`.
+* `begin_session_end()` / `await interrupt_for_session_end()` (Fix 19,
+  session end; see "Session end" below): the first makes `send()` raise
+  `ConversationClosed` and `closed` read `True`; the second interrupts
+  the running turn with `cancel_queued` and returns once its `result`
+  was dispatched (a no-op when idle). The session bounds it at 3 s.
 * `await close()` — cooperative shutdown of the whole task; idempotent.
-* `closed` (property) — `True` once the session has ended.
+* `closed` (property) — `True` once the session has ended, or is ending
+  (`begin_session_end`).
 
 Caller-side usage (publish/await via optio-core):
 
@@ -209,8 +217,10 @@ Replay-buffer semantics:
   listener adds synthetic events of its own:
   `{"type": "x-optio-permission-answered", "request_id": ..., "behavior": ...}`,
   broadcast (and buffered) when a permission is answered so every
-  viewer sees the card resolve; `{"type": "x-optio-resumed"}` (below); and
-  `{"type": "x-optio-message-start", "id", "ts"}` (Fix 12).
+  viewer sees the card resolve; `{"type": "x-optio-resumed"}` (below);
+  `{"type": "x-optio-message-start", "id", "ts"}` (Fix 12); and, at a
+  session end mid-turn (Fix 19, below), `{"type": "x-optio-partial", "id",
+  "text"}` and `{"type": "x-optio-interrupt", "by": "session"}`.
 * `x-optio-message-start` (Fix 12, owner ruling 2026-09-14: an assistant
   message's time label becomes a "HH:MM - HH:MM" interval when streaming
   crosses a minute, so the UI needs an exact start). `stream_event` frames
@@ -232,9 +242,10 @@ Replay-buffer semantics:
   and `{"type": "x-optio-interrupt", "by": "user"}` before every interrupt
   optio sends while a turn runs. Both enter through `emit_event`, so they
   are buffered, replayed and persisted like native events. `{"type":
-  "x-optio-requeued", "id", "new_id"}` (Fix 13a's `upTo` re-send) is no
-  longer emitted since Fix 17; buffers recorded before it still contain
-  it, and the UI still handles it.
+  "x-optio-requeued", "id", "new_id"}` is no longer emitted for Fix 13a's
+  `upTo` re-send (Fix 17); since Fix 19 it announces each message a
+  resumed run re-sends (see Resume below). Buffers recorded before Fix 17
+  still contain the old kind, and the UI handles both.
 * Fix 13a (owner rulings from manual testing, 2026-09-15): every stdin
   message `ClaudeCodeConversation.send(text, *, uuid=None)` writes carries a
   `uuid` (never a `priority`) — the ONLY thing that turns on the CLI's
@@ -273,6 +284,30 @@ Replay-buffer semantics:
   still advances: a conversation that is idle (`is_pending()` False) holds
   nothing in its queue, so the next message goes when the turn ends idle.
   Messages still pending when the session ends are never written.
+* Session end (Fix 19, owner rulings 2026-09-15;
+  `docs/2026-09-15-steering-session-end-design.md`). A cooperative cancel
+  (stop, suspend, engine shutdown) while a turn runs
+  (`is_pending()`): the body's cancel path calls
+  `session._end_turn_gracefully`, which (1) `begin_session_end()`, so
+  neither Steering nor `POST /send` writes anything more; (2)
+  `listener.announce_session_end()`, which puts `{"type":
+  "x-optio-interrupt", "by": "session"}` into the event stream after
+  every event already read; (3) `interrupt_for_session_end()`, bounded
+  by `GRACEFUL_INTERRUPT_TIMEOUT_S` (3 s), while the reader still runs:
+  the CLI records the partial answer in its transcript, and its final
+  partial `assistant` event, "[Request interrupted by user]", the
+  `cancelled` of the message in flight and the aborted `result` are all
+  buffered. Then the reader stops. Just before `x-optio-closed` passes,
+  the listener adds `{"type": "x-optio-partial", "id", "text"}` if the
+  open block of the message being streamed has text whose final
+  `assistant` event never came (the listener accumulates `text_delta` and
+  `thinking_delta` text per block, reset at `message_start` and at each
+  final `assistant` event), and the marker if it was not announced and a
+  turn runs (`running` or a `message_start` seen without its
+  `result`/`idle`, or `is_pending()`). Both are in `export_buffer()`.
+  claude is then SIGKILLed and the snapshot taken as before. Idle: nothing
+  happens. The wait loop of the body cancels its waiter tasks when it is
+  cancelled (no "Task was destroyed but it is pending!").
 * Resume: `export_buffer()` persists the buffer with the snapshot, minus
   the terminal `x-optio-closed` (replayed, it would close the live resumed
   session in the UI). When a resumed run re-primes the listener from it,
@@ -281,7 +316,18 @@ Replay-buffer semantics:
   else does: the widget stops the rows that run left running (a background
   task, a call with no result) as `stopped`, at the latest wire timestamp.
   The marker is persisted like any event, so a later resume replays it in
-  place and appends its own.
+  place and appends its own. Fix 19 (owner ruling 2026-09-15, finding 6
+  #2): `optio_claudecode.steering.undelivered_queued(events)` computes,
+  from the restored buffer, what the LAST run left queued and undelivered
+  (an `x-optio-queued` with no `command_lifecycle` `started`/`completed`
+  and no confirming echo; `x-optio-requeued` renames it; `discarded` and a
+  `cancelled` without `started` leave it undelivered; an earlier
+  `x-optio-resumed` drops what older runs left). The marker then carries
+  `"requeued": [ids]`, and right after the "you have been resumed" notice
+  the session calls `listener.requeue_undelivered()`: `Steering.requeue`
+  re-sends them in order, each under a new uuid with one `{"type":
+  "x-optio-requeued", "id", "new_id"}`, one at a time (Fix 17). Nothing
+  the CLI already started is re-sent.
 
 **Handler-slot rule**: `conversation_ui=True` occupies the single
 `on_permission_request` slot (the listener registers the handler and
