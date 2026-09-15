@@ -191,7 +191,7 @@ the inner basic-auth credential; GET = viewer role, POST = operator):
 |---|---|
 | `GET /events` | SSE. On connect: replay buffer contents, then live tail. Each event's SSE `id:` is its monotonic `seq`; `Last-Event-ID` honored, so reconnects resume without duplicates. |
 | `POST /send` | `{text}` → Send when ready (`Steering.send_when_ready`). Returns `{ok, id, queued}`; `queued` is true when a turn was running (Claude holds the message and takes it at the next tool result). 409 when closed. |
-| `POST /steer` | `{text}` → Interrupt and send (`Steering.interrupt_and_send`): interrupt the running turn, wait for its `result` (at most 15 s), then send `text`. Empty `text` = Send now: only interrupt, so Claude runs what it holds. Returns `{ok, id}` (`id` null for empty text). 409 when closed. |
+| `POST /steer` | `{text, upTo?}` → Interrupt and send (`Steering.interrupt_and_send`): interrupt the running turn, wait for its `result` (at most 15 s), then send `text`. Empty `text` = Send now: only interrupt, so Claude runs what it holds. `upTo` (Fix 13a): a queued id — cancel every later queued message, interrupt, then once `upTo` itself starts, re-send the cancelled ones with fresh uuids (`x-optio-requeued`). Returns `{ok, id}` (`id` null for empty text). 409 when closed. |
 | `POST /interrupt` | `{}` → `Steering.interrupt()`: stop only; emits `x-optio-interrupt` while a turn runs. No-op when idle. |
 | `POST /permission` | `{request_id, behavior: "allow"\|"deny", updated_input?, message?}` → resolves the pending permission future. 404 for unknown/already-answered request_id. |
 
@@ -227,10 +227,32 @@ Replay-buffer semantics:
   the persisted buffer show the exact same value.
 * Steering events (`optio_claudecode.steering`, `busy_send` =
   `joins-next-step` via `BUSY_SEND`): `{"type": "x-optio-queued", "id",
-  "text"}` for a Send when ready that arrived mid-turn, and `{"type":
+  "text"}` for a Send when ready that arrived mid-turn, `{"type":
   "x-optio-interrupt", "by": "user"}` before every interrupt optio sends
-  while a turn runs. Both enter through `emit_event`, so they are buffered,
+  while a turn runs, and `{"type": "x-optio-requeued", "id", "new_id"}`
+  (Fix 13a) when a `POST /steer` `upTo` re-sends a cancelled queued message
+  under a fresh uuid. All enter through `emit_event`, so they are buffered,
   replayed and persisted like native events.
+* Fix 13a (owner rulings from manual testing, 2026-09-15): every stdin
+  message `ClaudeCodeConversation.send(text, *, uuid=None)` writes carries a
+  `uuid` (never a `priority`) — the ONLY thing that turns on the CLI's
+  `command_lifecycle` events for that message. A message through Steering
+  gets its own steering id as that uuid (bubble id, response id and CLI
+  uuid are one value); a call outside Steering (session.py's agent
+  feedback, the first prompt) omits it and gets a fresh `uuid4` minted
+  inside `send()`. A message written directly onto Claude's own native
+  queue (the busy path of `send_when_ready` and `interrupt_and_send`) gets
+  a trailing blank line unless it already ends with one: several messages
+  queued together otherwise reach the model run together with no
+  separator, because the CLI folds them into one turn with one text block
+  each (`x-optio-queued` itself still carries the ORIGINAL text). Idle
+  sends are unchanged. `ClaudeCodeConversation.cancel_async_message(uuid)`
+  sends `cancel_async_message` and returns the reply's `cancelled` bool;
+  `optio_claudecode.steering.command_lifecycle(event)` extracts
+  `(command_uuid, state)` from a `command_lifecycle` event. `make_steering`
+  wires both into `Steering` (`command_lifecycle` unconditionally — it's a
+  pure function; `cancel_async_message` only if the conversation offers
+  it), enabling `POST /steer`'s `upTo`.
 * Resume: `export_buffer()` persists the buffer with the snapshot, minus
   the terminal `x-optio-closed` (replayed, it would close the live resumed
   session in the UI). When a resumed run re-primes the listener from it,

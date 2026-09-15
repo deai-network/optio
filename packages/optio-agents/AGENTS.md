@@ -49,16 +49,24 @@ behind every conversation listener's `POST /send`, `POST /steer` and
   `unsafe`: an unmeasured agent is always correct, only slower. Add a model
   override only when a recording shows that model behaving differently.
 * `Steering(conversation, *, busy_send, emit, is_turn_end,
-  turn_end_timeout_s=15.0, new_id=None)` over any `Conversation`
-  (`send`, `interrupt`, `is_pending`, `on_event`, optional `closed`):
+  turn_end_timeout_s=15.0, new_id=None, command_lifecycle=None,
+  cancel_async_message=None)` over any `Conversation` (`send(text,
+  *, uuid=None)`, `interrupt`, `is_pending`, `on_event`, optional `closed`).
+  `new_id` defaults to a dashed `uuid.uuid4()` string, not `.hex`: for a
+  native-queue wrapper this id doubles as the transport's own message
+  identity (Fix 13a — see below), which for Claude Code's CLI must be a
+  schema-valid uuid.
   * `await send_when_ready(text) -> SendOutcome(id, queued)` — idle: plain
-    send. Busy + `joins-next-step`/`queues-to-end`: emits
-    `{"type":"x-optio-queued","id","text"}`, then sends (the agent holds it).
-    Busy otherwise: emits x-optio-queued and holds it in optio's queue; at
-    the turn end (`is_turn_end(event)`) everything held goes as ONE prompt
-    joined by a blank line, announced by one `{"type":"x-optio-taken","ids"}`.
-  * `await interrupt_and_send(text) -> id | None` — busy: emits
-    `{"type":"x-optio-interrupt","by":"user"}`; `cuts-in` then sends
+    send, `conversation.send(text, uuid=id)`. Busy +
+    `joins-next-step`/`queues-to-end`: emits
+    `{"type":"x-optio-queued","id","text"}` (ORIGINAL text), then sends the
+    agent's own queue `conversation.send(text_with_blank_line, uuid=id)` —
+    the agent holds it. Busy otherwise: emits x-optio-queued and holds it in
+    optio's queue; at the turn end (`is_turn_end(event)`) everything held
+    goes as ONE prompt joined by a blank line, announced by one
+    `{"type":"x-optio-taken","ids"}`.
+  * `await interrupt_and_send(text, *, up_to=None) -> id | None` — busy:
+    emits `{"type":"x-optio-interrupt","by":"user"}`; `cuts-in` then sends
     natively; others `interrupt()` and wait for the turn end. One
     `turn_end_timeout_s` deadline covers both the `interrupt()` call and the
     wait, so a live but unresponsive agent cannot hold `Steering` (and every
@@ -67,10 +75,28 @@ behind every conversation listener's `POST /send`, `POST /steer` and
     `{"type":"x-optio-queued","id","text"}` (the same id this call returns),
     emitted after the interrupt marker (if any) and just before the send, so
     the reducer can dedupe the steer's own local echo against the wire by
-    id. Then held messages + `text` go as one prompt. Empty `text` is Send
-    now (returns `None`, no queued event); with nothing held and the agent
-    not in `NATIVE_QUEUE`, it is a no-op — it neither interrupts nor sends,
-    so it never draws an interrupted-row on a turn that is still streaming.
+    id. Then held messages + `text` go as one prompt, sent with that id as
+    its uuid; while busy on a `NATIVE_QUEUE` agent, `text` also gets the
+    trailing-blank-line treatment (it is about to join the native queue,
+    same as a busy `send_when_ready`). Empty `text` is Send now (returns
+    `None`, no queued event); with nothing held and the agent not in
+    `NATIVE_QUEUE`, it is a no-op — it neither interrupts nor sends, so it
+    never draws an interrupted-row on a turn that is still streaming.
+  * `up_to` (Fix 13a, owner ruling: "Send now" up to one already-queued
+    message): only takes effect for a `NATIVE_QUEUE` agent whose
+    `command_lifecycle` and `cancel_async_message` hooks were both given;
+    otherwise it is silently ignored (today's meaning: deliver everything
+    queued). When active: cancel every later, not-yet-`started` native-queue
+    message (`cancel_async_message`, correlate the reply — never react to a
+    bare `command_lifecycle` "cancelled", which can mean other things too);
+    plain `interrupt()` (the CLI then runs 1..`up_to` as its next turn);
+    once `up_to` itself reports `command_lifecycle` `started` (same
+    `turn_end_timeout_s` deadline; on expiry, resend anyway and log it),
+    re-send each successfully cancelled message — same text, a fresh uuid —
+    emitting `{"type":"x-optio-requeued","id":<old>,"new_id":<new>}` per one
+    so the UI re-keys its bubble. A `cancelled:false` reply means the
+    message already started (or was unknown) and will be delivered
+    normally: it is not re-sent.
   * `await interrupt()` — stop only; emits x-optio-interrupt while busy.
   * At most one `x-optio-interrupt` (and one underlying `interrupt()` call)
     per turn, shared between `interrupt()` and `interrupt_and_send()`: a

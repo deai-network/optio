@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid as uuid_lib
 
 from optio_agents.conversation import (
     ConversationClosed,
@@ -28,10 +29,16 @@ from optio_claudecode.info import AGENT_INFO
 _LOG = logging.getLogger(__name__)
 
 
-def _user_message_line(text: str) -> bytes:
+def _user_message_line(text: str, message_uuid: str) -> bytes:
+    # No "priority": the schema defaults an omitted one to "next", which is
+    # exactly what optio always wants (cli-queue-lifecycle.md §1). The uuid
+    # is the ONLY thing that turns command_lifecycle events on for this
+    # message (schema: "commands enqueued without a uuid ... emit no
+    # lifecycle events").
     return (json.dumps({
         "type": "user",
         "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+        "uuid": message_uuid,
     }) + "\n").encode("utf-8")
 
 
@@ -294,13 +301,20 @@ class ClaudeCodeConversation:
 
     # -- Conversation protocol surface --------------------------------------
 
-    async def send(self, text: str) -> None:
+    async def send(self, text: str, *, uuid: str | None = None) -> None:
+        """``uuid`` is this message's stdin identity (Fix 13a): Steering
+        passes its own steering id, so bubble id, response id and CLI uuid
+        are one value. Callers outside Steering (session.py's agent
+        feedback, the first prompt) omit it and get a fresh uuid4 here —
+        every message optio writes still needs one, or the CLI never emits
+        command_lifecycle for it at all (cli-queue-lifecycle.md §1)."""
         if self._closed.is_set():
             raise ConversationClosed(self._close_reason or "conversation closed")
+        message_uuid = uuid if uuid is not None else str(uuid_lib.uuid4())
         self._pending += 1
         self._sends_since_result += 1
         try:
-            await self._write_bytes(_user_message_line(text))
+            await self._write_bytes(_user_message_line(text, message_uuid))
         except Exception:
             self._pending -= 1
             self._sends_since_result -= 1
@@ -392,6 +406,28 @@ class ClaudeCodeConversation:
             "request": {"subtype": "interrupt"},
         })
         await fut
+
+    async def cancel_async_message(self, message_uuid: str) -> bool:
+        """Ask the CLI to drop a still-queued message before it starts
+        (Steering's ``up_to`` — Fix 13a). The control_response's
+        ``cancelled`` bool says whether anything was actually removed:
+        false means the message already started or completed, or was never
+        known, and it will be (or was) delivered normally
+        (cli-queue-lifecycle.md §1)."""
+        if self._closed.is_set():
+            raise ConversationClosed(self._close_reason or "conversation closed")
+        self._next_request_id += 1
+        rid = f"optio-{self._next_request_id}"
+        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._control_acks[rid] = fut
+        await self._write_json({
+            "type": "control_request",
+            "request_id": rid,
+            "request": {"subtype": "cancel_async_message", "message_uuid": message_uuid},
+        })
+        obj = await fut
+        response = (obj.get("response") or {}).get("response") or {}
+        return bool(response.get("cancelled"))
 
     async def close(self) -> None:
         self.close_requested.set()

@@ -16,6 +16,7 @@ from optio_agents.steering import (
 
 QUEUED = "x-optio-queued"
 TAKEN = "x-optio-taken"
+REQUEUED = "x-optio-requeued"
 INTERRUPT = {"type": "x-optio-interrupt", "by": "user"}
 
 
@@ -24,16 +25,29 @@ class FakeConversation:
 
     The test sets ``pending`` (busy) itself. ``interrupt()`` ends the turn
     at once (fires the turn-end event) unless ``turn_end_on_interrupt`` is
-    False."""
+    False.
 
-    def __init__(self, *, turn_end_on_interrupt: bool = True):
+    ``uuids`` is a parallel array to ``sent``: the ``uuid`` kwarg (if any)
+    ``Steering`` passed to that ``send()`` call — kept separate from ``log``
+    so the many pre-existing exact-log assertions below don't have to change
+    shape just because sends now carry an id (Fix 13a).
+
+    Native-queue command lifecycle (Fix 13a, ``fire_lifecycle``) and
+    ``cancel_async_message`` are opt-in via ``native_lifecycle=True`` so
+    only the tests that need the "Send now up to k" machinery pay for it."""
+
+    def __init__(self, *, turn_end_on_interrupt: bool = True, native_lifecycle: bool = False):
         self.handlers = []
         self.sent: list[str] = []
+        self.uuids: list[str | None] = []
         self.interrupts = 0
         self.pending = False
         self.closed = False
         self.turn_end_on_interrupt = turn_end_on_interrupt
         self.log: list[tuple[str, object]] = []
+        self.native_lifecycle = native_lifecycle
+        self.cancel_calls: list[str] = []
+        self.cancel_responses: dict[str, bool] = {}
 
     def on_event(self, handler):
         self.handlers.append(handler)
@@ -43,6 +57,9 @@ class FakeConversation:
         for h in list(self.handlers):
             h(event)
 
+    def fire_lifecycle(self, command_uuid: str, state: str) -> None:
+        self.fire({"type": "command_lifecycle", "command_uuid": command_uuid, "state": state})
+
     def emit(self, event: dict) -> None:  # the wrapper's synthetic-event hook
         self.log.append(("event", event))
         self.fire(event)
@@ -50,11 +67,12 @@ class FakeConversation:
     def is_pending(self) -> bool:
         return self.pending
 
-    async def send(self, text: str) -> None:
+    async def send(self, text: str, *, uuid: str | None = None) -> None:
         if self.closed:
             raise ConversationClosed("closed")
         self.log.append(("send", text))
         self.sent.append(text)
+        self.uuids.append(uuid)
         self.pending = True
 
     async def interrupt(self) -> None:
@@ -66,15 +84,33 @@ class FakeConversation:
             self.pending = False
             self.fire({"type": "turn-end"})
 
+    async def cancel_async_message(self, message_uuid: str) -> bool:
+        self.cancel_calls.append(message_uuid)
+        cancelled = self.cancel_responses.get(message_uuid, False)
+        if cancelled:
+            self.fire_lifecycle(message_uuid, "cancelled")
+        return cancelled
+
+
+def _lifecycle(event: dict) -> tuple[str, str] | None:
+    if event.get("type") != "command_lifecycle":
+        return None
+    return event["command_uuid"], event["state"]
+
 
 def make(conv, busy_send="joins-next-step", **kw):
     ids = iter(f"id{n}" for n in range(1, 100))
+    extra = {}
+    if conv.native_lifecycle:
+        extra["command_lifecycle"] = _lifecycle
+        extra["cancel_async_message"] = conv.cancel_async_message
     return Steering(
         conv,
         busy_send=lambda: busy_send,
         emit=conv.emit,
         is_turn_end=lambda e: e.get("type") == "turn-end",
         new_id=lambda: next(ids),
+        **extra,
         **kw,
     )
 
@@ -113,6 +149,17 @@ async def test_idle_send_is_a_plain_send_without_events(cap):
     assert conv.log == [("send", "hi")]
 
 
+async def test_idle_send_uuid_is_the_steering_id_and_gets_no_blank_line():
+    # Fix 13a: every send through Steering carries its steering id as the
+    # CLI uuid; an idle send's text is otherwise unchanged (no separator
+    # needed -- nothing else will ever fold with it).
+    conv = FakeConversation()
+    s = make(conv)
+    outcome = await s.send_when_ready("hi")
+    assert conv.uuids == [outcome.id] == ["id1"]
+    assert conv.sent == ["hi"]
+
+
 @pytest.mark.parametrize("cap", ["joins-next-step", "queues-to-end"])
 async def test_busy_send_to_a_native_queue_goes_straight_through_as_queued(cap):
     conv = FakeConversation()
@@ -120,11 +167,38 @@ async def test_busy_send_to_a_native_queue_goes_straight_through_as_queued(cap):
     s = make(conv, cap)
     assert await s.send_when_ready("steer") == SendOutcome(id="id1", queued=True)
     # The queued event precedes the send, so it precedes the agent's echo.
+    # x-optio-queued keeps the original text; the wire send gets a trailing
+    # blank line (Fix 13a) so the agent's own fold does not run it on.
     assert conv.log == [
         ("event", {"type": QUEUED, "id": "id1", "text": "steer"}),
-        ("send", "steer"),
+        ("send", "steer\n\n"),
     ]
     assert s.held_ids == []
+
+
+@pytest.mark.parametrize("cap", ["joins-next-step", "queues-to-end"])
+async def test_busy_native_queue_send_gets_the_steering_id_and_a_blank_line(cap):
+    # Fix 13a, owner ruling 1: several queued messages otherwise reach the
+    # model with no separator between them ("This is a test messageSecond
+    # test message..."), because the CLI folds separately-sent queued
+    # messages into one turn with one text block each. A trailing blank
+    # line on each survives the fold. x-optio-queued keeps the ORIGINAL
+    # text (no appended newlines).
+    conv = FakeConversation()
+    conv.pending = True
+    s = make(conv, cap)
+    outcome = await s.send_when_ready("steer")
+    assert conv.uuids == [outcome.id]
+    assert conv.sent == ["steer\n\n"]
+    assert conv.log[0] == ("event", {"type": QUEUED, "id": outcome.id, "text": "steer"})
+
+
+async def test_busy_native_queue_send_does_not_double_an_existing_blank_line():
+    conv = FakeConversation()
+    conv.pending = True
+    s = make(conv, "joins-next-step")
+    await s.send_when_ready("steer\n\n")
+    assert conv.sent == ["steer\n\n"]
 
 
 @pytest.mark.parametrize("cap", ["cuts-in", "rejected", "unsafe"])
@@ -168,8 +242,27 @@ async def test_interrupt_and_send_interrupts_waits_for_the_turn_end_then_sends()
         ("event", INTERRUPT),
         ("interrupt", None),
         ("event", {"type": QUEUED, "id": "id1", "text": "now"}),
-        ("send", "now"),
+        ("send", "now\n\n"),  # blank line: this joins the native queue (Fix 13a)
     ]
+
+
+async def test_interrupt_and_send_uuid_and_blank_line_while_busy():
+    # Fix 13a: "Interrupt and send with text is unchanged apart from the
+    # uuid and the blank line."
+    conv = FakeConversation()
+    conv.pending = True
+    s = make(conv, "joins-next-step")
+    qid = await s.interrupt_and_send("now")
+    assert conv.uuids == [qid]
+    assert conv.sent == ["now\n\n"]
+
+
+async def test_idle_interrupt_and_send_uuid_without_a_blank_line():
+    conv = FakeConversation()
+    s = make(conv, "joins-next-step")
+    qid = await s.interrupt_and_send("x")
+    assert conv.uuids == [qid]
+    assert conv.sent == ["x"]
 
 
 async def test_interrupt_and_send_delivers_what_optio_holds_first_in_one_prompt():
@@ -242,7 +335,7 @@ async def test_no_turn_end_after_the_interrupt_sends_anyway_and_logs(caplog):
     s = make(conv, "joins-next-step", turn_end_timeout_s=0.0)
     with caplog.at_level(logging.WARNING, logger="optio_agents.steering"):
         assert await s.interrupt_and_send("late") == "id1"
-    assert conv.sent == ["late"]
+    assert conv.sent == ["late\n\n"]
     assert "no turn end" in caplog.text
 
 
@@ -261,7 +354,7 @@ async def test_a_hanging_interrupt_call_is_bounded_by_the_same_deadline(caplog):
     s = make(conv, "joins-next-step", turn_end_timeout_s=0.0)
     with caplog.at_level(logging.WARNING, logger="optio_agents.steering"):
         assert await s.interrupt_and_send("late") == "id1"
-    assert conv.sent == ["late"]
+    assert conv.sent == ["late\n\n"]
     assert "no turn end" in caplog.text
 
 
@@ -275,6 +368,104 @@ async def test_idle_interrupt_and_send_sends_without_interrupting():
         ("event", {"type": QUEUED, "id": "id1", "text": "x"}),
         ("send", "x"),
     ]
+
+
+# -- send now up to k (Fix 13a, owner ruling 2) -------------------------------
+# "With messages 1, 2 and 3 queued, 'Send now' on message 2 must deliver
+# messages 1 and 2 (in order) and keep message 3 queued for the agent to take
+# when ready."
+
+
+async def _queue_three(s):
+    return [(await s.send_when_ready(text)).id for text in ("one", "two", "three")]
+
+
+async def test_send_now_up_to_cancels_only_the_message_after_k_then_resends_it():
+    conv = FakeConversation(native_lifecycle=True)
+    conv.pending = True
+    s = make(conv, "joins-next-step")
+    id1, id2, id3 = await _queue_three(s)
+    conv.cancel_responses[id3] = True
+    conv.log.clear()
+
+    # id3's 'started' has not been seen: interrupt_and_send blocks in the
+    # wait-for-k's-turn-to-start step until the CLI reports it, so drive it
+    # from a background task (no sleeps: one bare yield reaches that await,
+    # since nothing before it suspends on a FakeConversation).
+    task = asyncio.ensure_future(s.interrupt_and_send("", up_to=id2))
+    await asyncio.sleep(0)
+    assert conv.cancel_calls == [id3]  # not id1 or id2
+    assert conv.interrupts == 1
+    assert events(conv) == [INTERRUPT]
+
+    conv.fire_lifecycle(id2, "started")
+    assert await task is None
+
+    assert len(events(conv)) == 2
+    requeued = events(conv)[1]
+    assert requeued["type"] == REQUEUED and requeued["id"] == id3
+    new_id = requeued["new_id"]
+    assert new_id != id3
+    assert conv.sent[-1] == "three\n\n"  # same text, still blank-line terminated
+    assert conv.uuids[-1] == new_id
+
+
+async def test_send_now_up_to_does_not_resend_when_cancel_reports_false():
+    # cancelled:false means the message was already taken (or unknown) and
+    # will be delivered normally: no re-send, no x-optio-requeued.
+    conv = FakeConversation(native_lifecycle=True)
+    conv.pending = True
+    s = make(conv, "joins-next-step")
+    id1, id2, id3 = await _queue_three(s)
+    conv.cancel_responses[id3] = False
+    conv.log.clear()
+
+    assert await s.interrupt_and_send("", up_to=id2) is None
+
+    assert conv.cancel_calls == [id3]
+    assert conv.interrupts == 1
+    assert events(conv) == [INTERRUPT]
+    assert conv.sent == ["one\n\n", "two\n\n", "three\n\n"]  # id3 sent only once
+
+
+async def test_send_now_up_to_skips_a_message_already_started():
+    conv = FakeConversation(native_lifecycle=True)
+    conv.pending = True
+    s = make(conv, "joins-next-step")
+    id1, id2, id3 = await _queue_three(s)
+    conv.fire_lifecycle(id3, "started")  # e.g. taken at a tool boundary already
+    conv.log.clear()
+
+    assert await s.interrupt_and_send("", up_to=id2) is None
+    assert conv.cancel_calls == []
+
+
+async def test_send_now_up_to_naming_the_last_message_cancels_nothing():
+    conv = FakeConversation(native_lifecycle=True)
+    conv.pending = True
+    s = make(conv, "joins-next-step")
+    id1, id2, id3 = await _queue_three(s)
+    conv.log.clear()
+
+    assert await s.interrupt_and_send("", up_to=id3) is None
+
+    assert conv.cancel_calls == []
+    assert conv.interrupts == 1  # still a plain "send now"
+    assert events(conv) == [INTERRUPT]
+
+
+async def test_up_to_is_ignored_without_native_lifecycle_support():
+    # A wrapper that never wired command_lifecycle/cancel_async_message (no
+    # engine but Claude Code has this yet) degrades to today's meaning:
+    # deliver everything queued, exactly as if up_to were absent.
+    conv = FakeConversation()  # native_lifecycle=False: no cancel support
+    conv.pending = True
+    s = make(conv, "joins-next-step")
+    id1, id2, id3 = await _queue_three(s)
+    conv.log.clear()
+
+    assert await s.interrupt_and_send("", up_to=id2) is None
+    assert conv.interrupts == 1
 
 
 # -- interrupt -----------------------------------------------------------------
@@ -330,7 +521,7 @@ async def test_interrupt_during_interrupt_and_sends_wait_yields_one_marker():
     assert await task == "id1"
     assert events(conv) == [INTERRUPT, {"type": QUEUED, "id": "id1", "text": "now"}]
     assert conv.interrupts == 1
-    assert conv.sent == ["now"]
+    assert conv.sent == ["now\n\n"]
 
 
 # -- final-review M1: the interrupt flag must not survive a merged turn's ----

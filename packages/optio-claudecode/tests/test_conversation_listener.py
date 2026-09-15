@@ -16,6 +16,7 @@ class FakeConversation:
         self.handlers = []
         self.perm_handler = None
         self.sent = []
+        self.uuids = []
         self.interrupts = 0
         self.closed = False
         # Steering surface: busy is set by the test; interrupt() ends a busy
@@ -37,10 +38,11 @@ class FakeConversation:
     def emit_event(self, event):
         self.fire(event)
 
-    async def send(self, text):
+    async def send(self, text, *, uuid=None):
         if self.closed:
             raise ConversationClosed("closed")
         self.sent.append(text)
+        self.uuids.append(uuid)
 
     async def interrupt(self):
         if self.closed:
@@ -281,7 +283,9 @@ async def test_send_returns_id_and_queued_and_buffers_the_queued_event(listener)
         r = await s.post(f"{url}/send", json={"text": "steer"}, headers=_auth("pw"))
         busy = await r.json()
         assert busy["queued"] is True and busy["id"] != idle["id"]
-    assert conv.sent == ["hi", "steer"]
+    # the busy send gets a trailing blank line on the wire (Fix 13a); the
+    # x-optio-queued event below still carries the ORIGINAL text.
+    assert conv.sent == ["hi", "steer\n\n"]
     queued = [e for _, e in lst._buffer if e.get("type") == "x-optio-queued"]
     assert queued == [{"type": "x-optio-queued", "id": busy["id"], "text": "steer"}]
 
@@ -293,7 +297,7 @@ async def test_steer_interrupts_waits_for_the_turn_end_then_sends(listener):
         r = await s.post(f"{url}/steer", json={"text": "now"}, headers=_auth("pw"))
         body = await r.json()
     assert r.status == 200 and body["ok"] is True and isinstance(body["id"], str)
-    assert conv.interrupts == 1 and conv.sent == ["now"]
+    assert conv.interrupts == 1 and conv.sent == ["now\n\n"]  # blank line (Fix 13a)
     types = [e.get("type") for _, e in lst._buffer]
     assert types.index("x-optio-interrupt") < types.index("result")
 
@@ -306,6 +310,27 @@ async def test_steer_with_empty_text_only_interrupts(listener):
         body = await r.json()
     assert r.status == 200 and body == {"ok": True, "id": None}
     assert conv.interrupts == 1 and conv.sent == []
+
+
+async def test_steer_rejects_bad_up_to(listener):
+    conv, lst, url = listener
+    async with aiohttp.ClientSession() as s:
+        r = await s.post(f"{url}/steer", json={"text": "", "upTo": 5}, headers=_auth("pw"))
+        assert r.status == 400
+
+
+async def test_steer_with_up_to_on_a_conversation_without_cancel_support_falls_back(listener):
+    # This FakeConversation has no cancel_async_message, so make_steering
+    # wires command_lifecycle but not cancel_async_message: up_to degrades
+    # to today's meaning (deliver everything queued) rather than erroring.
+    conv, lst, url = listener
+    conv.pending = True
+    async with aiohttp.ClientSession() as s:
+        r = await s.post(f"{url}/steer", json={"text": "", "upTo": "some-id"},
+                          headers=_auth("pw"))
+        body = await r.json()
+    assert r.status == 200 and body == {"ok": True, "id": None}
+    assert conv.interrupts == 1
 
 
 async def test_steer_rejects_bad_text_closed_and_unauthorized(listener):
