@@ -74,6 +74,12 @@ export type ChatItem =
       // "Send now up to" can emit its command_lifecycle 'cancelled' well
       // before the x-optio-requeued that says it was a requeue, not a drop).
       queueId?: string;
+      // Fix 19 (owner ruling 2026-09-15, finding 6 #2): set on a "Not
+      // delivered" note that does NOT pin (made at session end by
+      // dropUndelivered, or a lifecycle note settleNotes unpinned): the id of
+      // the message it stands for, so an x-optio-requeued for it after a
+      // resume can still turn it back into a queued bubble.
+      requeueId?: string;
       // Fix 14 (owner ruling 2026-09-15): set only for a harness "System: …"
       // row (claudecode/events.ts). The view needs a real discriminator, not
       // a guess from `timestamp` presence: a background-task or upload-notice
@@ -192,7 +198,10 @@ export interface ChatState {
   // too-late race (see undoInterrupt) must undo only these, never an
   // unrelated item (e.g. an earlier turn's own, already-finalized interrupt)
   // that merely happens to match the same pattern.
-  interrupt?: { rowSeq: number; itemSeqs: number[] };
+  // Fix 19: `session` is set for the session-end marker (x-optio-interrupt
+  // by 'session'): whatever result ends that turn keeps the rendering (no
+  // too-late undo, no error row, no second copy of the answer).
+  interrupt?: { rowSeq: number; itemSeqs: number[]; session?: true };
   // Reducer-private (claudecode, review of Fix 13b, finding 4): uuids
   // ConversationView just told us to expect a same-turn "Send now up to"
   // resend for (x-optio-pending-requeue, dispatched right before the /steer
@@ -208,6 +217,9 @@ type UserItem = Extract<ChatItem, { kind: 'user' }>;
 
 // The one row an operator interrupt adds (every engine's reducer uses it).
 export const INTERRUPTED_BY_YOU = '⏹ Interrupted by you';
+// Fix 19 (owner ruling 2026-09-15, finding 6 #1): the row a session that
+// ended mid-turn adds, in the same place and style.
+export const INTERRUPTED_SESSION_ENDED = '⏹ Interrupted: session ended';
 
 // -- Steering: queued bubbles (engine-neutral; every reducer uses these) ----
 
@@ -311,16 +323,29 @@ export function addQueued(items: ChatItem[], id: string, text: string, seq: numb
 }
 
 // The session ended (or a resumed run replaced it) before the agent took
-// these: nothing will deliver them now. Each becomes a muted note.
-export function dropUndelivered(items: ChatItem[]): ChatItem[] {
-  if (!items.some(isQueued)) return items;
-  const kept: ChatItem[] = [];
+// these: each becomes a muted note, unless its id is in `keep` (Fix 19: the
+// ids x-optio-resumed says the new run re-queues), which stay queued, pinned
+// below the notes. A note keeps the message's id as `requeueId`, so a later
+// x-optio-requeued can still restore it.
+export function dropUndelivered(items: ChatItem[], keep: readonly string[] = []): ChatItem[] {
+  const drops = (i: ChatItem): boolean => isQueued(i) && !(i.queueId !== undefined && keep.includes(i.queueId));
+  if (!items.some(drops)) return items;
+  const rest: ChatItem[] = [];
   const notes: ChatItem[] = [];
+  const stillQueued: ChatItem[] = [];
   for (const i of items) {
-    if (isQueued(i)) notes.push({ kind: 'activity', text: `Not delivered: ${i.text}`, seq: i.seq, muted: true });
-    else kept.push(i);
+    if (drops(i)) {
+      const q = i as UserItem;
+      const note: Extract<ChatItem, { kind: 'activity' }> = { kind: 'activity', text: `Not delivered: ${q.text}`, seq: q.seq, muted: true };
+      if (q.queueId !== undefined) note.requeueId = q.queueId;
+      notes.push(note);
+    } else if (isQueued(i)) {
+      stillQueued.push(i);
+    } else {
+      rest.push(i);
+    }
   }
-  return [...kept, ...notes];
+  return [...rest, ...notes, ...stillQueued];
 }
 
 export const initialChatState: ChatState = {
