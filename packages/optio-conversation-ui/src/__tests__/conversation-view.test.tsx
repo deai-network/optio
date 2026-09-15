@@ -860,7 +860,7 @@ describe('ConversationView message timestamps', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 8, 14, 20, 0).getTime());
     const ts = new Date(2026, 8, 14, 16, 29).getTime();
-    renderView(makeProps({ state: makeState([{ kind: 'activity', text: 'System: you have been resumed', seq: 1, timestamp: ts }]) }));
+    renderView(makeProps({ state: makeState([{ kind: 'activity', text: 'System: you have been resumed', seq: 1, system: true, timestamp: ts }]) }));
     const label = screen.getByTestId('message-time');
     expect(label.textContent).toBe('16:29');
     expect(label.title).toBe(new Date(ts).toLocaleString());
@@ -870,8 +870,49 @@ describe('ConversationView message timestamps', () => {
   });
 
   it('a "System: " activity row without a timestamp renders no time label', () => {
-    renderView(makeProps({ state: makeState([{ kind: 'activity', text: 'System: you have been resumed', seq: 1 }]) }));
+    renderView(makeProps({ state: makeState([{ kind: 'activity', text: 'System: you have been resumed', seq: 1, system: true }]) }));
     expect(screen.queryByTestId('message-time')).toBeNull();
+  });
+
+  // Fix 14, owner ruling 2026-09-15 (manual-test finding): format "System: "
+  // rows more like user messages -- the same bottom-right corner radius as a
+  // user bubble, and the time label moved to the right, aligned like the
+  // time under a user bubble. Everything else (position, colours, text
+  // styling) is unchanged: the row still centers itself in the transcript
+  // (see the "keeps the centered radius" test below for what did NOT change).
+  it('a "System: " row (system: true) gets the user bubble\'s corner radius and a right-aligned time label', () => {
+    const ts = Date.parse('2026-09-15T10:00:00.000Z');
+    renderView(makeProps({
+      state: makeState([{ kind: 'activity', text: 'System: you have been resumed', seq: 1, system: true, timestamp: ts }]),
+    }));
+    const bubble = screen.getByTestId('activity-bubble');
+    // Same shorthand the user bubble uses (see "gives the user bubble a
+    // right-tail radius..." above) -- reused, not a duplicated magic number.
+    expect(bubble.style.borderRadius).toBe('14px 14px 4px 14px');
+    const label = screen.getByTestId('message-time');
+    expect(bubble.nextElementSibling).toBe(label);
+    // The row's own column still centers itself in the transcript (position
+    // unchanged); only the alignment WITHIN that column moves to the right,
+    // same as `labelAlign` for a user bubble in withTimeLabel above.
+    const column = bubble.parentElement as HTMLElement;
+    expect(column.style.alignSelf).toBe('center');
+    expect(column.style.alignItems).toBe('flex-end');
+  });
+
+  it('a non-"System:" activity row (no system flag, e.g. a background-task notice) keeps its centered radius and centered time label', () => {
+    renderView(makeProps({
+      state: makeState([{ kind: 'activity', text: '✓ Background task finished: export', seq: 1 }]),
+    }));
+    const bubble = screen.getByTestId('activity-bubble');
+    expect(bubble.style.borderRadius).toBe('14px');
+    const column = bubble.parentElement as HTMLElement;
+    expect(column.style.alignItems).toBe('center');
+  });
+
+  it('a muted notice row ("Interrupted by you") is unaffected by the System: styling change', () => {
+    renderView(makeProps({ state: makeState([{ kind: 'activity', text: '⏹ Interrupted by you', seq: 1, muted: true }]) }));
+    expect(screen.getByTestId('activity-muted')).toBeTruthy();
+    expect(screen.queryByTestId('activity-bubble')).toBeNull();
   });
 });
 

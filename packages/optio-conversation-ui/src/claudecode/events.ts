@@ -725,7 +725,11 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       if (text === '' || text.startsWith(HARNESS_PREFIX)) {
         let items = attach ? appendItems(state.items, [attach]) : state.items;
         if (text !== '') {
-          const activityItem: ActivityItem = { kind: 'activity', text, seq };
+          // Fix 14, owner ruling 2026-09-15: flagged `system: true` so the
+          // view can give it the user bubble's corner radius and a
+          // right-aligned time label without mistaking an untimed
+          // background-task/upload-notice row (same branch, no flag) for one.
+          const activityItem: ActivityItem = { kind: 'activity', text, seq, system: true };
           const t = wireTime(ev);
           if (t !== null) activityItem.timestamp = t;
           items = appendItems(items, [activityItem]);

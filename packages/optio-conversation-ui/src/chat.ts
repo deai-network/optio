@@ -74,6 +74,15 @@ export type ChatItem =
       // "Send now up to" can emit its command_lifecycle 'cancelled' well
       // before the x-optio-requeued that says it was a requeue, not a drop).
       queueId?: string;
+      // Fix 14 (owner ruling 2026-09-15): set only for a harness "System: …"
+      // row (claudecode/events.ts). The view needs a real discriminator, not
+      // a guess from `timestamp` presence: a background-task or upload-notice
+      // row shares this same non-muted rendering branch and, like a muted
+      // notice, never carries a timestamp either (see above), so an old
+      // "System: …" echo replayed with no wire time would otherwise be
+      // indistinguishable from one of those. Only a "System: …" row gets the
+      // user bubble's own corner radius and a right-aligned time label.
+      system?: boolean;
     }
   | { kind: 'thinking'; text: string; seq: number }
   | {
