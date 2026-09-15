@@ -552,11 +552,14 @@ describe('ConversationView steering', () => {
     expect(bubble.style.opacity).toBe('0.6');
   });
 
-  it('Send now on a queued bubble calls onSteer with no new text', () => {
+  // Fix 13b, owner ruling 2026-09-15: Send now delivers up to the bubble it
+  // was clicked on, not "everything queued" — ClaudeCodeView turns this into
+  // POST /steer {text:"", upTo:<id>}.
+  it('Send now on a queued bubble calls onSteer with no new text and that bubble\'s id as upTo', () => {
     const onSteer = vi.fn(async () => true);
     renderView(makeProps({ state: busyState([queuedItem]), busy: true, onSteer }));
     fireEvent.click(screen.getByTestId('queued-send-now'));
-    expect(onSteer).toHaveBeenCalledWith('', []);
+    expect(onSteer).toHaveBeenCalledWith('', [], 'q1');
   });
 
   it('Send now is reachable by role button and activates on click', () => {
@@ -564,7 +567,21 @@ describe('ConversationView steering', () => {
     renderView(makeProps({ state: busyState([queuedItem]), busy: true, onSteer }));
     const link = screen.getByRole('button', { name: 'Send now' });
     fireEvent.click(link);
-    expect(onSteer).toHaveBeenCalledWith('', []);
+    expect(onSteer).toHaveBeenCalledWith('', [], 'q1');
+  });
+
+  it('Send now on the 2nd of 3 queued bubbles posts upTo with that bubble\'s own id', () => {
+    const onSteer = vi.fn(async () => true);
+    const three: ChatItem[] = [
+      { kind: 'user', text: 'one', seq: 1, queued: true, queueId: 'q1' },
+      { kind: 'user', text: 'two', seq: 2, queued: true, queueId: 'q2' },
+      { kind: 'user', text: 'three', seq: 3, queued: true, queueId: 'q3' },
+    ];
+    renderView(makeProps({ state: busyState(three), busy: true, onSteer }));
+    const links = screen.getAllByTestId('queued-send-now');
+    expect(links).toHaveLength(3);
+    fireEvent.click(links[1]);
+    expect(onSteer).toHaveBeenCalledWith('', [], 'q2');
   });
 
   it('Send now failing (onSteer resolves false) shows the send-failed error', async () => {

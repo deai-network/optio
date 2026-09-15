@@ -152,13 +152,14 @@ export function ClaudeCodeView(props: WidgetProps) {
         localEcho(body, resp, resp.queued === true);
         return true;
       }}
-      onSteer={async (body, attachments) => {
-        // Interrupt and send (body), or Send now on a queued bubble (no body):
-        // POST /steer stops the running step, then Claude runs what it holds
-        // and the new text follows.
+      onSteer={async (body, attachments, upTo) => {
+        // Interrupt and send (body), or Send now on a queued bubble (no
+        // body, `upTo` the clicked bubble's own id — Fix 13b): POST /steer
+        // stops the running step, then Claude runs what it holds up to
+        // (and including) `upTo`, and the new text follows.
         const prompt = body === '' && attachments.length === 0 ? '' : await preparePrompt(body, attachments);
         if (prompt === null) return false;
-        const resp = await postJson('steer', { text: prompt });
+        const resp = await postJson('steer', upTo !== undefined ? { text: prompt, upTo } : { text: prompt });
         if (resp === null) return false;
         localEcho(body, resp, false);
         return true;

@@ -50,10 +50,13 @@ export interface ConversationViewProps {
   // Steering (optional). When set, a busy input bar offers "Send when ready"
   // (Enter → onSend) and "Interrupt and send" (Cmd/Ctrl-Enter → onSteer) in
   // one vultus multi-action button, and a queued bubble offers "Send now"
-  // (onSteer('', [])). Absent: the bar keeps a single Send while busy (the
-  // engine's /send decides what a busy send does) and queued bubbles show no
-  // Send now link. Returns ok, like onSend.
-  onSteer?: (text: string, attachments: Attachment[]) => Promise<boolean>;
+  // (onSteer('', [], upTo) — Fix 13b: `upTo` is that bubble's own id, so
+  // Send now delivers up to (and including) it and leaves any later queued
+  // bubbles queued, instead of "everything queued"). The bar's own Send when
+  // ready / Interrupt and send calls pass no `upTo`. Absent: the bar keeps a
+  // single Send while busy (the engine's /send decides what a busy send
+  // does) and queued bubbles show no Send now link. Returns ok, like onSend.
+  onSteer?: (text: string, attachments: Attachment[], upTo?: string) => Promise<boolean>;
   onPermission: (requestId: string, behavior: 'allow' | 'deny') => void;
   onFileDownload: (relpath: string, filename: string) => void;
   // Engine-neutral session controls (model / thinking / mode / ...) rendered
@@ -693,15 +696,17 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   // Interrupt and send disable each other while either is in flight and share
   // the same error Alert), plus a plain ref so a second click landing before
   // React re-renders (no await between two fireEvent.click calls, e.g.) is
-  // still dropped rather than firing a second onSteer('', []).
+  // still dropped rather than firing a second onSteer('', [], upTo). Fix
+  // 13b: `upTo` is the clicked bubble's own id, so Send now on the 2nd of 3
+  // queued bubbles delivers 1-2 and leaves 3 queued.
   const sendingNowRef = useRef(false);
-  async function sendQueuedNow() {
+  async function sendQueuedNow(upTo?: string) {
     if (sendingNowRef.current || sending || closed || !props.onSteer) return;
     sendingNowRef.current = true;
     setSending(true);
     setError(null);
     try {
-      const ok = await props.onSteer('', []);
+      const ok = await props.onSteer('', [], upTo);
       if (!ok) setError('Send failed — retry.');
     } catch {
       // onSteer rejecting is still "send failed", not an unhandled rejection.
@@ -758,7 +763,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                       data-testid="queued-send-now"
                       disabled={sending}
                       style={{ padding: 0, height: 'auto', fontSize: 12 }}
-                      onClick={() => void sendQueuedNow()}
+                      onClick={() => void sendQueuedNow(item.queueId)}
                     >
                       Send now
                     </Button>
