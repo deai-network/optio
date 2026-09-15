@@ -34,10 +34,24 @@ export type ChatItem =
       // The operator interrupted this answer: it keeps its text and renders
       // with a jagged bottom edge.
       interrupted?: boolean;
-      // Epoch ms of the first wire event seen for this message. Absent until
-      // the CLI's own (timestamped) assistant event arrives — a streaming
-      // delta carries none. See messageTime.ts.
+      // Epoch ms this message STARTED (Fix 12, owner ruling 2026-09-14: a
+      // "HH:MM - HH:MM" interval needs an exact start, not the end Fix 4 used
+      // to show here). Priority, set once and never overwritten: (1) the
+      // listener's x-optio-message-start ts for this message id, when seen
+      // before the bubble opened; (2) otherwise, if the message's first
+      // content block is a thinking block, that block's own wire timestamp;
+      // (3) otherwise state.lastEventAt as it stood just before the bubble
+      // opened (the previous wire event — an approximation, not exact).
+      // Absent when none of these exists (the very first message of a
+      // conversation, replayed with no marker) — never invented. See
+      // messageTime.ts.
       timestamp?: number;
+      // Epoch ms of the LAST wire event seen for this message (every
+      // assistant event for it updates this, unlike `timestamp` above).
+      // Absent until the CLI's own (timestamped) assistant event arrives — a
+      // streaming delta carries none. This is what Fix 4 used to store in
+      // `timestamp`. See messageTime.ts.
+      endTimestamp?: number;
     }
   // muted: a quiet one-line note (e.g. an operator interrupt, an undelivered
   // message) instead of the harness System: bubble.
@@ -145,6 +159,13 @@ export interface ChatState {
   // (epoch ms). The time base for events that carry none (system, result,
   // optio's synthetic events), so a replay shows the live durations.
   lastEventAt?: number;
+  // Reducer-private (claudecode, Fix 12): the x-optio-message-start marker's
+  // {id, ts} once seen, not yet attached to a bubble. Consumed (and cleared)
+  // the moment the next assistant bubble opens — live (the first delta) or
+  // replay (the first assistant event) alike — as that message's start
+  // timestamp. A marker always precedes the stream_event/assistant event(s)
+  // for the message it announces, so at most one is ever pending.
+  pendingMessageStart?: { id: string; ts: number };
   // Reducer-private (claudecode): set by x-optio-interrupt until the
   // interrupted turn's result; rowSeq is the seq of its "Interrupted by you"
   // row. While set, the CLI's own cancel artefacts are swallowed and the

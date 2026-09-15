@@ -8,7 +8,9 @@ import { AnswerBlock } from './AnswerBlock.js';
 import { type Attachment, toAttachment, withinCap } from './attachments.js';
 import { FileDownloadContext } from './FileDownloadContext.js';
 import { formatDuration } from './duration.js';
-import { formatMessageTime, formatMessageTimeFull } from './messageTime.js';
+import {
+  formatMessageTime, formatMessageTimeFull, formatMessageTimeInterval, formatMessageTimeIntervalFull,
+} from './messageTime.js';
 
 // Shared conversation chrome for every engine view. Each engine view reduces
 // its native wire events into the engine-neutral ChatState, then hands the
@@ -312,6 +314,32 @@ function renderTimeLabel(timestamp: number | undefined, now: number, token: Glob
   );
 }
 
+// Fix 12 (owner ruling 2026-09-14): the assistant-only variant of
+// renderTimeLabel above, showing a "HH:MM - HH:MM" interval when the
+// message's start and end fall in different local minutes (a single time
+// otherwise), with the full start and end as the hover title. Driven by
+// `end` (item.endTimestamp): absent entirely when there is no end, exactly
+// like renderTimeLabel above — a bubble with no wire time yet (still
+// streaming, or a replay that never saw one) shows no label at all, `start`
+// notwithstanding. `start` (item.timestamp) is optional per chat.ts (the
+// very first message of a conversation, replayed with no marker, may resolve
+// no start): with none, the label and title fall back to the single end
+// time, same as renderTimeLabel.
+function renderTimeLabelRange(
+  start: number | undefined, end: number | undefined, now: number, token: GlobalToken,
+): React.ReactNode {
+  if (end === undefined) return null;
+  return (
+    <div
+      data-testid="message-time"
+      title={formatMessageTimeIntervalFull(start, end)}
+      style={{ fontSize: 11, color: token.colorTextTertiary, marginTop: 2 }}
+    >
+      {start === undefined ? formatMessageTime(end, now) : formatMessageTimeInterval(start, end, now)}
+    </div>
+  );
+}
+
 // Fix 4 review round 1: the time label is a SIBLING below the bubble, never a
 // descendant of it. Rendered inside the bubble it sat on the bubble's own
 // tinted/coloured background (colorPrimaryBg, colorErrorBg, after the
@@ -333,14 +361,20 @@ function renderTimeLabel(timestamp: number | undefined, now: number, token: Glob
 // time: the bubble's copy would then resolve against this column's
 // already-80%-capped width, compounding to ~64% instead of 80% (invisible in
 // jsdom, since it doesn't do CSS layout/percentage resolution).
+// `timeLabel` (Fix 12: was `timestamp`/`now`/`token`, computed internally via
+// renderTimeLabel) is now a pre-rendered node, so each caller picks its own
+// renderer: renderTimeLabel for a single time (queued/plain user, error), or
+// renderTimeLabelRange for the assistant start-end interval. Passing a node
+// rather than raw values also means a caller with no end (still streaming)
+// renders nothing by simply passing renderTimeLabelRange's own null-when-no-
+// end result, instead of this helper silently guessing which renderer to
+// fall back to.
 function withTimeLabel(
   key: number,
   align: 'flex-end' | 'flex-start' | 'stretch',
   labelAlign: 'flex-end' | 'flex-start',
   bubble: React.ReactNode,
-  timestamp: number | undefined,
-  now: number,
-  token: GlobalToken,
+  timeLabel: React.ReactNode,
 ): React.ReactNode {
   return (
     <div
@@ -354,7 +388,7 @@ function withTimeLabel(
       }}
     >
       {bubble}
-      {renderTimeLabel(timestamp, now, token)}
+      {timeLabel}
     </div>
   );
 }
@@ -732,9 +766,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                 ) : null}
               </div>
             </div>,
-            item.timestamp,
-            renderedAt,
-            token,
+            renderTimeLabel(item.timestamp, renderedAt, token),
           );
         }
         return withTimeLabel(
@@ -754,9 +786,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
           >
             {item.text}
           </div>,
-          item.timestamp,
-          renderedAt,
-          token,
+          renderTimeLabel(item.timestamp, renderedAt, token),
         );
       case 'assistant':
         return withTimeLabel(
@@ -790,9 +820,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             </div>
             {item.pending && <span style={{ color: token.colorTextTertiary }}>▍</span>}
           </div>,
-          item.timestamp,
-          renderedAt,
-          token,
+          renderTimeLabelRange(item.timestamp, item.endTimestamp, renderedAt, token),
         );
       case 'activity':
         // A muted note ("⏹ Interrupted by you", an undelivered message): one
@@ -988,9 +1016,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
           >
             {item.text}
           </div>,
-          item.timestamp,
-          renderedAt,
-          token,
+          renderTimeLabel(item.timestamp, renderedAt, token),
         );
       case 'closed':
         return (

@@ -26,3 +26,27 @@ export function formatMessageTime(timestamp: number, now: number): string {
 export function formatMessageTimeFull(timestamp: number): string {
   return new Date(timestamp).toLocaleString();
 }
+
+// Fix 12 (owner ruling 2026-09-14): a streamed agent message carries a START
+// and an END time; the label reads "HH:MM - HH:MM" when they fall in
+// different local minutes, and a single "HH:MM" when they don't. Reusing
+// formatMessageTime for each side (rather than a separate same-minute check)
+// means a day/year boundary between start and end is dated on whichever side
+// it falls on, exactly as formatMessageTime already does for a lone
+// timestamp — and "different minutes" falls out for free: two instants
+// render to the same minute-granularity string only when they share it.
+export function formatMessageTimeInterval(start: number, end: number, now: number): string {
+  const a = formatMessageTime(start, now);
+  const b = formatMessageTime(end, now);
+  return a === b ? a : `${a} - ${b}`;
+}
+
+// Full local date and time for the hover title (see renderTimeLabel in
+// ConversationView.tsx). `start` is optional (see chat.ts: an assistant item
+// may have an end with no known start) and independent of `now`, like
+// formatMessageTimeFull. Collapses to the single end time when there is no
+// start, or the start equals the end — never a redundant "x - x".
+export function formatMessageTimeIntervalFull(start: number | undefined, end: number): string {
+  if (start === undefined || start === end) return formatMessageTimeFull(end);
+  return `${formatMessageTimeFull(start)} - ${formatMessageTimeFull(end)}`;
+}
