@@ -4,27 +4,34 @@ The engine-neutral scaffolding every wrapper's conversation listener uses for
 its ``POST /send``, ``/steer`` and ``/interrupt`` routes. A wrapper declares
 how its agent treats a message sent while a turn runs (``busy_send``, per
 agent with per-model overrides); ``Steering`` adds what the agent lacks:
-optio's own queue for agents that cannot take a busy send, one deadline
-bounding both the interrupt call and the wait for the turn end, at most one
+optio's own queue for agents that cannot take a busy send, one-at-a-time
+delivery for agents that queue a busy send themselves, one deadline bounding
+both the interrupt call and the wait for the turn end, at most one
 ``x-optio-interrupt`` per turn, and the synthetic events the conversation UI
-renders (``x-optio-queued``, ``x-optio-taken``, ``x-optio-interrupt``,
-``x-optio-requeued``). The events go through the wrapper's ``emit`` hook into
-its own event stream, so the listener buffers (and a resume persists) them
-like native events.
+renders (``x-optio-queued``, ``x-optio-taken``, ``x-optio-interrupt``). The
+events go through the wrapper's ``emit`` hook into its own event stream, so
+the listener buffers (and a resume persists) them like native events.
 
 Fix 13a (owner rulings from manual testing, 2026-09-15): every message a
 ``Steering`` writes carries its own id as the underlying transport's message
 identity too (``Conversation.send(text, uuid=...)`` — a backend without
 message identity just ignores it), so a wrapper that DOES have one (Claude
 Code's CLI stdin ``uuid``) can key its own lifecycle events by it. A message
-written onto a native queue (``NATIVE_QUEUE``, one CLI message per
-``send_when_ready``/``interrupt_and_send`` call rather than one optio-joined
-prompt) gets a trailing blank line so the agent does not read it run-on
-against whatever it gets folded with. And ``interrupt_and_send`` grew
-``up_to``: "Send now" for a native-queue agent up to one queued message,
-implemented with the agent's own ``cancel_async_message`` and
-``command_lifecycle`` events (both optional constructor hooks; without them
-``up_to`` degrades to today's meaning, deliver everything queued).
+written onto a native queue (``NATIVE_QUEUE``) gets a trailing blank line.
+
+Fix 17 (owner ruling 2026-09-15, see
+docs/2026-09-15-steering-individual-delivery-design.md): a native-queue
+agent (Claude Code) folds every prompt waiting in its own queue into ONE
+user message when it starts a turn, but takes them one by one at tool
+boundaries. With at most ONE optio message in that queue at any time, every
+message arrives as its own user message. So messages sent while such an
+agent is busy wait in an ordered pending list, and at most one is "in
+flight" (written to the agent, not yet taken). The next is written when the
+in-flight message's lifecycle (the optional ``command_lifecycle`` hook)
+reaches ``started`` or any final state, or, as a safety net, when a turn
+ends or the agent is idle with nothing in flight. Send now
+(``interrupt_and_send`` with empty text, with or without ``up_to``) is only
+an interrupt: delivery then continues in order.
 
 See docs/2026-09-13-conversation-steering-design.md §2 and §3.
 """
@@ -36,7 +43,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Literal, Mapping
+from typing import Callable, Literal, Mapping
 
 from optio_agents.conversation import ConversationClosed
 
@@ -52,24 +59,24 @@ BusySend = Literal["joins-next-step", "queues-to-end", "cuts-in", "rejected", "u
 BUSY_SEND_VALUES: tuple[str, ...] = (
     "joins-next-step", "queues-to-end", "cuts-in", "rejected", "unsafe",
 )
-# The agent holds a busy send itself: optio sends it straight through.
+# The agent holds a busy send itself: optio feeds it one message at a time.
 NATIVE_QUEUE: frozenset[str] = frozenset({"joins-next-step", "queues-to-end"})
 
 QUEUED_EVENT = "x-optio-queued"
 TAKEN_EVENT = "x-optio-taken"
 INTERRUPT_EVENT = "x-optio-interrupt"
-REQUEUED_EVENT = "x-optio-requeued"
 # Messages optio delivers together form one prompt, in the order written.
 PROMPT_SEPARATOR = "\n\n"
 # Upper bound on the wait for the turn end after an interrupt.
 TURN_END_TIMEOUT_S = 15.0
-# command_lifecycle states that end a native-queue message's life for good
-# (Fix 13a). Deliberately excludes "cancelled": that state can mean our own
-# cancel_async_message succeeded (the ONLY case Steering itself resends from,
-# handled explicitly in _send_now_up_to) or an unrelated abort, and the CLI
-# schema itself warns resenders not to react to it blindly — only a
-# correlated cancel_async_message reply is trustworthy.
-_NATIVE_QUEUE_TERMINAL_STATES = frozenset({"completed", "discarded", "refused"})
+# command_lifecycle states after which the in-flight native-queue message
+# no longer waits in the agent's queue (Fix 17): it was drained into a turn
+# ("started"), or its life ended without that. A final state can arrive
+# without "started" (cli-queue-lifecycle.md), so waiting for "started" alone
+# could stall delivery for good.
+_LIFECYCLE_ADVANCE_STATES = frozenset(
+    {"started", "completed", "cancelled", "discarded", "refused"},
+)
 
 _VARIANT_SUFFIX = re.compile(r"\[[^\]]*\]$")
 
@@ -128,10 +135,11 @@ class Steering:
     ``busy_send`` is read on every call (it can follow the running model).
     ``emit`` puts a synthetic event into the wrapper's event stream.
     ``is_turn_end`` recognises the native event that ends a turn.
-    ``command_lifecycle`` and ``cancel_async_message`` are optional: a
-    native-queue wrapper whose transport reports per-message lifecycle state
-    (Claude Code) passes both to enable ``interrupt_and_send``'s ``up_to``;
-    without them ``up_to`` is ignored.
+    ``command_lifecycle`` is optional: a native-queue wrapper whose
+    transport reports per-message lifecycle state (Claude Code) passes it,
+    and one-at-a-time delivery then advances the moment the agent takes the
+    message in flight (Fix 17). Without it, delivery advances when the
+    agent is idle (the safety net), one message per turn.
     """
 
     def __init__(
@@ -144,7 +152,6 @@ class Steering:
         turn_end_timeout_s: float = TURN_END_TIMEOUT_S,
         new_id: Callable[[], str] | None = None,
         command_lifecycle: "Callable[[dict], tuple[str, str] | None] | None" = None,
-        cancel_async_message: "Callable[[str], Awaitable[bool]] | None" = None,
     ) -> None:
         self._conv = conversation
         self._busy_send = busy_send
@@ -157,7 +164,6 @@ class Steering:
         # CLI must be a schema-valid uuid.
         self._new_id = new_id or (lambda: str(uuid.uuid4()))
         self._command_lifecycle = command_lifecycle
-        self._cancel_async_message = cancel_async_message
         # optio's own queue (cuts-in / rejected / unsafe): (id, text), in order.
         self._held: list[tuple[str, str]] = []
         self._lock = asyncio.Lock()
@@ -169,20 +175,28 @@ class Steering:
         # interrupt() call) happens per turn, however many times either is
         # called while it runs.
         self._interrupted = False
-        # Native-queue bookkeeping for up_to (Fix 13a): ids of messages sent
-        # straight through to the agent's own queue, in the order sent;
-        # their as-sent text (for a cancel+re-send); and the latest
-        # command_lifecycle state seen for each. Populated only when
-        # command_lifecycle is wired (native-queue agents that report it).
-        self._native_order: list[str] = []
-        self._native_texts: dict[str, str] = {}
-        self._native_lifecycle: dict[str, str] = {}
-        self._lifecycle_waiters: dict[str, asyncio.Event] = {}
+        # One-at-a-time delivery onto a native queue (Fix 17): messages sent
+        # while the agent was busy and not yet written to it, in order, as
+        # (id, text as it will be written); and the id of the one message
+        # written to the agent that it has not taken yet (at most one).
+        self._native_pending: list[tuple[str, str]] = []
+        self._in_flight: str | None = None
+        self._advance_task: asyncio.Task | None = None
         self._unsubscribe = conversation.on_event(self._on_event)
 
     @property
     def held_ids(self) -> list[str]:
         return [qid for qid, _ in self._held]
+
+    @property
+    def pending_ids(self) -> list[str]:
+        """Native-queue messages not written to the agent yet, in order (Fix 17)."""
+        return [qid for qid, _ in self._native_pending]
+
+    @property
+    def in_flight_id(self) -> str | None:
+        """The native-queue message written to the agent and not taken yet (Fix 17)."""
+        return self._in_flight
 
     def close(self) -> None:
         unsubscribe, self._unsubscribe = self._unsubscribe, (lambda: None)
@@ -191,25 +205,30 @@ class Steering:
     # -- turn end --------------------------------------------------------------
 
     def _on_event(self, event: dict) -> None:
-        if self._command_lifecycle is not None:
+        advanced = False
+        if self._in_flight is not None and self._command_lifecycle is not None:
             parsed = self._command_lifecycle(event)
-            if parsed is not None:
-                command_uuid, state = parsed
-                self._native_lifecycle[command_uuid] = state
-                if state == "started":
-                    waiter = self._lifecycle_waiters.get(command_uuid)
-                    if waiter is not None:
-                        waiter.set()
-                if state in _NATIVE_QUEUE_TERMINAL_STATES:
-                    self._native_lifecycle.pop(command_uuid, None)
-                    self._native_texts.pop(command_uuid, None)
-                    if command_uuid in self._native_order:
-                        self._native_order.remove(command_uuid)
-        if self._is_turn_end(event):
+            if (
+                parsed is not None
+                and parsed[0] == self._in_flight
+                and parsed[1] in _LIFECYCLE_ADVANCE_STATES
+            ):
+                self._in_flight = None
+                advanced = True
+        turn_end = self._is_turn_end(event)
+        if turn_end:
             self._turn_end.set()
             self._interrupted = False
             if self._held and (self._flush_task is None or self._flush_task.done()):
                 self._flush_task = asyncio.ensure_future(self._flush_after_turn())
+        idle = not self._conv.is_pending()
+        if idle:
+            # An idle agent holds nothing in its queue: the message in flight
+            # has been taken (or dropped). This is what lets the safety net
+            # below also serve an agent that reports no lifecycle at all.
+            self._in_flight = None
+        if self._native_pending and self._in_flight is None and (advanced or turn_end or idle):
+            self._schedule_advance()
         # A merged turn (Send when ready taken mid-turn) has two sends and
         # one result, so is_pending() can stay True for a few ms after that
         # result's turn-end event above, until a later, non-turn-end event
@@ -222,7 +241,7 @@ class Steering:
         # any event reaches here, so this is safe to run unconditionally: a
         # stale idle racing a fresh send leaves is_pending() True and this
         # is a no-op.
-        if self._interrupted and not self._conv.is_pending():
+        if self._interrupted and idle:
             self._interrupted = False
 
     async def _flush_after_turn(self) -> None:
@@ -232,11 +251,31 @@ class Steering:
             except ConversationClosed:
                 _LOG.warning("steering: conversation closed before held messages were delivered")
 
+    def _schedule_advance(self) -> None:
+        if self._advance_task is None or self._advance_task.done():
+            self._advance_task = asyncio.ensure_future(self._advance())
+
+    async def _advance(self) -> None:
+        """Write the next pending native-queue message while none is in
+        flight (Fix 17). Runs as its own task: _on_event is called from the
+        wrapper's event dispatch and must never wait for _lock there."""
+        async with self._lock:
+            try:
+                while self._in_flight is None and self._native_pending:
+                    self._check_open()
+                    await self._write_next_locked()
+            except ConversationClosed:
+                _LOG.warning(
+                    "steering: conversation closed; %d queued message(s) not delivered",
+                    len(self._native_pending),
+                )
+
     async def settle(self) -> None:
-        """Wait for a turn-end flush in progress (tests, orderly teardown)."""
-        task = self._flush_task
-        if task is not None:
-            await task
+        """Wait for a turn-end flush or a native-queue write in progress
+        (tests, orderly teardown)."""
+        for task in (self._flush_task, self._advance_task):
+            if task is not None:
+                await task
 
     # -- helpers ---------------------------------------------------------------
 
@@ -259,6 +298,17 @@ class Steering:
             send_uuid = extra_id if not ids and len(texts) == 1 else None
             await self._conv.send(PROMPT_SEPARATOR.join(texts), uuid=send_uuid)
 
+    async def _write_next_locked(self) -> None:
+        """Write the oldest pending native-queue message, unless one is
+        already in flight (Fix 17). It already carries its trailing blank
+        line, and its id becomes its transport uuid. The caller holds
+        _lock."""
+        if self._in_flight is not None or not self._native_pending:
+            return
+        qid, text = self._native_pending.pop(0)
+        self._in_flight = qid
+        await self._conv.send(text, uuid=qid)
+
     async def _interrupt_and_wait(self, *, call_interrupt: bool) -> None:
         """Stop (unless someone already did, this turn) and wait for the turn
         end, both under one ``turn_end_timeout_s`` deadline: a live but
@@ -279,29 +329,32 @@ class Steering:
     # -- the three operations ---------------------------------------------------
 
     async def send_when_ready(self, text: str) -> SendOutcome:
-        """Idle: a plain send. Busy: the agent's own queue takes it
-        (joins-next-step, queues-to-end), or optio holds it until the turn
-        ends. A busy send reports x-optio-queued first. The message's id
-        (``qid``) is also its transport uuid (Fix 13a); a native-queue send
-        additionally gets a trailing blank line so the agent's own fold of
-        separately-sent queued messages does not run this one into the
-        next — x-optio-queued keeps the ORIGINAL text."""
+        """Idle: a plain send. Busy: a native-queue agent (joins-next-step,
+        queues-to-end) gets it one at a time (Fix 17): it joins the pending
+        list and is written at once only if nothing is in flight. Any other
+        agent: optio holds it until the turn ends. A busy send reports
+        x-optio-queued first, with the ORIGINAL text. The message's id
+        (``qid``) is also its transport uuid (Fix 13a); a native-queue
+        message additionally gets a trailing blank line. A send that finds
+        a native-queue agent idle while earlier messages are still pending
+        queues behind them rather than overtaking them."""
         self._check_open()
         qid = self._new_id()
         async with self._lock:
             busy = self._conv.is_pending()
+            if self._busy_send() in NATIVE_QUEUE and not self._held:
+                if not busy:
+                    self._in_flight = None  # an idle agent holds nothing in its queue
+                if not busy and not self._native_pending:
+                    await self._conv.send(text, uuid=qid)
+                    return SendOutcome(id=qid, queued=False)
+                self._emit({"type": QUEUED_EVENT, "id": qid, "text": text})
+                self._native_pending.append((qid, _with_trailing_blank_line(text)))
+                await self._write_next_locked()
+                return SendOutcome(id=qid, queued=True)
             if not busy and not self._held:
                 await self._conv.send(text, uuid=qid)
                 return SendOutcome(id=qid, queued=False)
-            if self._busy_send() in NATIVE_QUEUE and not self._held:
-                sent_text = _with_trailing_blank_line(text)
-                self._emit({"type": QUEUED_EVENT, "id": qid, "text": text})
-                if self._command_lifecycle is not None:
-                    self._native_order.append(qid)
-                    self._native_texts[qid] = sent_text
-                    self._native_lifecycle[qid] = "queued"
-                await self._conv.send(sent_text, uuid=qid)
-                return SendOutcome(id=qid, queued=True)
             self._held.append((qid, text))
             self._emit({"type": QUEUED_EVENT, "id": qid, "text": text})
             if not busy:
@@ -310,40 +363,34 @@ class Steering:
             return SendOutcome(id=qid, queued=True)
 
     async def interrupt_and_send(self, text: str, *, up_to: str | None = None) -> str | None:
-        """Stop the running step, then deliver what optio holds plus ``text``
-        as one prompt. ``cuts-in`` agents cancel natively on the send itself;
-        every other agent is interrupted and given at most
-        ``turn_end_timeout_s`` to end the turn (its own queue goes first).
-        Empty ``text`` is Send now: returns None. Send now with nothing held
-        on an agent that cannot take a busy send (not in NATIVE_QUEUE) is a
-        no-op: there is nothing to interrupt and nothing to send, so it
-        neither emits x-optio-interrupt nor stops the turn now running.
-        At most one x-optio-interrupt (and one underlying interrupt() call)
-        happens per turn: if interrupt() already marked this turn
-        interrupted, this still waits for the turn end and delivers, but
-        emits no second marker and sends no second interrupt. Non-empty
-        ``text`` gets its own x-optio-queued (id, text) — the same id this
-        call returns — emitted after the interrupt marker (if any) and
-        just before the send, so the reducer can dedupe the steer's local
-        echo against the wire by id (final-review M3). While busy, ``text``
-        also gets the trailing-blank-line treatment (Fix 13a): it is about
-        to join the agent's own native queue exactly like a busy
-        send_when_ready would.
+        """Stop the running step and deliver ``text``. Empty ``text`` is
+        Send now: returns None.
 
-        ``up_to`` (Fix 13a, owner ruling 2): "Send now" up to one already
-        queued message id, for a native-queue agent that reports
-        command_lifecycle and supports cancel_async_message (both optional
-        constructor hooks — without either, ``up_to`` is silently ignored
-        and this call keeps today's meaning). See _send_now_up_to."""
+        Native-queue agent (Fix 17): see _interrupt_and_send_native.
+        ``up_to`` (the queued id "Send now" was clicked on) is accepted and
+        needs nothing more: the agent's queue never holds more than the one
+        message in flight, so messages after ``up_to`` are only written once
+        their predecessors started, and are taken when the agent is ready.
+
+        Any other agent: deliver what optio holds plus ``text`` as one
+        prompt. ``cuts-in`` agents cancel natively on the send itself;
+        every other agent is interrupted and given at most
+        ``turn_end_timeout_s`` to end the turn. Send now with nothing held
+        is a no-op: there is nothing to interrupt and nothing to send, so it
+        neither emits x-optio-interrupt nor stops the turn now running.
+        ``up_to`` is ignored.
+
+        Either way, at most one x-optio-interrupt (and one underlying
+        interrupt() call) happens per turn: if interrupt() already marked
+        this turn interrupted, this still waits for the turn end, but emits
+        no second marker and sends no second interrupt. Non-empty ``text``
+        gets its own x-optio-queued (id, text) — the same id this call
+        returns — emitted after the interrupt marker (if any), so the
+        reducer can dedupe the steer's local echo against the wire by id
+        (final-review M3)."""
         self._check_open()
-        if (
-            up_to is not None
-            and self._busy_send() in NATIVE_QUEUE
-            and self._cancel_async_message is not None
-            and self._command_lifecycle is not None
-        ):
-            async with self._lock:
-                return await self._send_now_up_to(up_to)
+        if self._busy_send() in NATIVE_QUEUE and not self._held:
+            return await self._interrupt_and_send_native(text)
         if not text and not self._held and self._busy_send() not in NATIVE_QUEUE:
             return None
         qid = self._new_id() if text else None
@@ -364,83 +411,48 @@ class Steering:
             await self._deliver([send_text], extra_id=qid)
         return qid
 
-    async def _send_now_up_to(self, up_to: str) -> None:
-        """Cancel every not-yet-started message after ``up_to`` in the
-        agent's native queue, interrupt (plain — the CLI then runs 1..up_to
-        as its next turn), and once ``up_to`` has itself been seen
-        ``started``, re-send each successfully cancelled message, in queue
-        order, with the same text and a fresh uuid — emitting
-        ``x-optio-requeued`` for each so the UI re-keys its bubble. A
-        ``cancelled:false`` reply means the message was already taken (or
-        unknown) and will be delivered normally: it is not re-sent.
+    async def _interrupt_and_send_native(self, text: str) -> str | None:
+        """interrupt_and_send for a native-queue agent (Fix 17).
 
-        The cancel loop, the interrupt, the turn-end wait and the wait for
-        ``up_to``'s ``started`` all run under ONE ``turn_end_timeout_s``
-        deadline (review of Fix 13a, round 1):
-        ``cancel_async_message`` awaits a control-ack future with no
-        timeout of its own (``ClaudeCodeConversation.cancel_async_message``),
-        so a live but unresponsive CLI must not hold ``_lock`` — and every
-        later ``/send``/``/steer`` queued behind it — for an unbounded wait
-        followed by two more independent 15 s waits. On expiry at any
-        point, log a warning and still re-send whatever was already
-        confirmed cancelled by then; a later ``/steer`` can retry the rest.
-        Assumes the caller holds ``_lock``."""
-        try:
-            k_index = self._native_order.index(up_to)
-        except ValueError:
-            k_index = len(self._native_order) - 1
-        later_ids = list(self._native_order[k_index + 1:])
-        cancelled_ids: list[str] = []
-        try:
-            async with asyncio.timeout(self._timeout_s):
-                for mid in later_ids:
-                    if self._native_lifecycle.get(mid) == "started":
-                        continue  # already taken; will be delivered anyway
-                    if await self._cancel_async_message(mid):
-                        cancelled_ids.append(mid)
-                if self._conv.is_pending():
-                    already_interrupted = self._interrupted
-                    if not already_interrupted:
-                        self._interrupted = True
-                        self._emit({"type": INTERRUPT_EVENT, "by": "user"})
-                    self._turn_end.clear()
-                    if not already_interrupted:
-                        await self._conv.interrupt()
-                    await self._turn_end.wait()
-                if cancelled_ids and self._native_lifecycle.get(up_to) != "started":
-                    waiter = self._lifecycle_waiters.setdefault(up_to, asyncio.Event())
-                    try:
-                        await waiter.wait()
-                    finally:
-                        self._lifecycle_waiters.pop(up_to, None)
-        except TimeoutError:
-            _LOG.warning(
-                "steering: send-now-up-to %s exceeded turn_end_timeout_s=%.0f s "
-                "waiting on the CLI (cancel, interrupt or turn end); "
-                "re-sending the %d message(s) already confirmed cancelled anyway",
-                up_to, self._timeout_s, len(cancelled_ids),
-            )
-        for mid in cancelled_ids:
-            if mid in self._native_order:
-                self._native_order.remove(mid)
-        if not cancelled_ids:
-            return None
-        for mid in cancelled_ids:
-            resend_text = self._native_texts.pop(mid, "")
-            new_id = self._new_id()
-            self._native_order.append(new_id)
-            self._native_texts[new_id] = resend_text
-            self._native_lifecycle[new_id] = "queued"
-            await self._conv.send(resend_text, uuid=new_id)
-            self._emit({"type": REQUEUED_EVENT, "id": mid, "new_id": new_id})
-        return None
+        Busy: emit the interrupt marker (once per turn), then x-optio-queued
+        for ``text`` and append it to the pending list WITHOUT writing it
+        (the design's order: append, then interrupt; a message only written
+        after the turn end cannot be taken into the turn the interrupt cuts
+        off), interrupt, and wait for the turn end under the one deadline.
+        The agent keeps the message in flight through the interrupt and
+        runs it next; the rest follow one at a time, so ``text`` arrives
+        last, as its own message. With nothing in flight, the next pending
+        message is written right after the turn end (or the deadline).
+
+        Idle: ``text`` is a plain send, unless earlier messages still wait
+        (then it queues behind them)."""
+        qid = self._new_id() if text else None
+        async with self._lock:
+            pending = self._conv.is_pending()
+            if not pending:
+                self._in_flight = None  # an idle agent holds nothing in its queue
+            call_interrupt = pending and not self._interrupted
+            if call_interrupt:
+                self._interrupted = True
+                self._emit({"type": INTERRUPT_EVENT, "by": "user"})
+            if text:
+                self._emit({"type": QUEUED_EVENT, "id": qid, "text": text})
+                if pending or self._native_pending:
+                    self._native_pending.append((qid, _with_trailing_blank_line(text)))
+                else:
+                    await self._conv.send(text, uuid=qid)
+            if pending:
+                await self._interrupt_and_wait(call_interrupt=call_interrupt)
+            await self._write_next_locked()
+        return qid
 
     async def interrupt(self) -> None:
         """Stop only. Emits x-optio-interrupt at most once per turn, shared
         with interrupt_and_send: a second Interrupt (double click, or one
         pressed while interrupt_and_send still waits for the turn end) emits
         nothing and sends no second control_request. Deliberately lock-free,
-        so it never waits behind an interrupt_and_send."""
+        so it never waits behind an interrupt_and_send. Messages pending on
+        a native queue keep going one at a time afterwards (Fix 17)."""
         self._check_open()
         if self._conv.is_pending():
             if self._interrupted:

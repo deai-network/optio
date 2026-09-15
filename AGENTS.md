@@ -593,16 +593,19 @@ works: each wrapper declares `busy_send` (`joins-next-step` | `queues-to-end` |
 `cuts-in` | `rejected` | `unsafe`, per agent with per-model overrides, no
 declaration = `unsafe`), and `Steering` implements `send_when_ready`,
 `interrupt_and_send` and `interrupt` over its `Conversation`, with optio's own
-queue, the 15 s bounded wait after an interrupt, and the synthetic events
-`x-optio-queued` / `x-optio-taken` / `x-optio-interrupt` / `x-optio-requeued`.
+queue, one-at-a-time delivery onto an agent's own queue (Fix 17: at most
+one optio message waits there; the next goes once the agent reports taking
+it), the 15 s bounded wait after an interrupt, and the synthetic events
+`x-optio-queued` / `x-optio-taken` / `x-optio-interrupt`.
 A wrapper's conversation listener exposes it as `POST /send` (send when
 ready, returns `{id, queued}`), `POST /steer` (interrupt and send; empty
-text = send what is queued; `upTo` = send now up to one queued message, a
-native-queue agent only) and `POST /interrupt`; stage 1 wires Claude Code
+text = send what is queued; `upTo` = the queued id Send now was clicked on)
+and `POST /interrupt`; stage 1 wires Claude Code
 (`packages/optio-claudecode/AGENTS.md`), including a uuid on every CLI stdin
 message (the steering id, for messages Steering sends) and a trailing blank
 line on a busy native-queue send. Details: `packages/optio-agents/AGENTS.md`.
-Design: `docs/2026-09-13-conversation-steering-design.md`.
+Design: `docs/2026-09-13-conversation-steering-design.md` and
+`docs/2026-09-15-steering-individual-delivery-design.md`.
 
 ---
 

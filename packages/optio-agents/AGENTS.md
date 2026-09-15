@@ -49,55 +49,76 @@ behind every conversation listener's `POST /send`, `POST /steer` and
   `unsafe`: an unmeasured agent is always correct, only slower. Add a model
   override only when a recording shows that model behaving differently.
 * `Steering(conversation, *, busy_send, emit, is_turn_end,
-  turn_end_timeout_s=15.0, new_id=None, command_lifecycle=None,
-  cancel_async_message=None)` over any `Conversation` (`send(text,
-  *, uuid=None)`, `interrupt`, `is_pending`, `on_event`, optional `closed`).
-  `new_id` defaults to a dashed `uuid.uuid4()` string, not `.hex`: for a
-  native-queue wrapper this id doubles as the transport's own message
-  identity (Fix 13a — see below), which for Claude Code's CLI must be a
-  schema-valid uuid.
+  turn_end_timeout_s=15.0, new_id=None, command_lifecycle=None)` over any
+  `Conversation` (`send(text, *, uuid=None)`, `interrupt`, `is_pending`,
+  `on_event`, optional `closed`). `new_id` defaults to a dashed
+  `uuid.uuid4()` string, not `.hex`: for a native-queue wrapper this id
+  doubles as the transport's own message identity (Fix 13a), which for
+  Claude Code's CLI must be a schema-valid uuid. `command_lifecycle(event)`
+  returns `(command_uuid, state)` for the transport's per-message lifecycle
+  event, else `None`; a native-queue wrapper whose transport reports one
+  (Claude Code) passes it.
+  * One at a time onto a native queue (Fix 17, owner ruling 2026-09-15;
+    `docs/2026-09-15-steering-individual-delivery-design.md`). An agent in
+    `NATIVE_QUEUE` (`joins-next-step`, `queues-to-end`) may fold every
+    prompt waiting in its own queue into ONE user message when it starts a
+    turn, so `Steering` never lets more than one of its messages wait
+    there. Messages sent while the agent is busy form an ordered pending
+    list (`pending_ids`); at most one is in flight, i.e. written to the
+    agent and not taken yet (`in_flight_id`). The next pending message is
+    written when the in-flight one's `command_lifecycle` state is `started`
+    or any final state (`completed`, `cancelled`, `discarded`, `refused`;
+    a final state can come without `started`), or, as a safety net, when a
+    turn ends or the agent is idle with nothing in flight. An idle agent
+    holds nothing in its queue, so `is_pending()` going False also clears
+    the in-flight mark: that keeps delivery going (one message per turn)
+    for a transport that reports no lifecycle at all. Each written message
+    carries its id as its uuid and a trailing blank line. The write runs as
+    its own task, never inside the wrapper's event dispatch.
   * `await send_when_ready(text) -> SendOutcome(id, queued)` — idle: plain
-    send, `conversation.send(text, uuid=id)`. Busy +
-    `joins-next-step`/`queues-to-end`: emits
-    `{"type":"x-optio-queued","id","text"}` (ORIGINAL text), then sends the
-    agent's own queue `conversation.send(text_with_blank_line, uuid=id)` —
-    the agent holds it. Busy otherwise: emits x-optio-queued and holds it in
-    optio's queue; at the turn end (`is_turn_end(event)`) everything held
-    goes as ONE prompt joined by a blank line, announced by one
+    send, `conversation.send(text, uuid=id)`. Busy + `NATIVE_QUEUE`: emits
+    `{"type":"x-optio-queued","id","text"}` (ORIGINAL text) and appends the
+    message to the pending list; it is written at once only if nothing is
+    in flight. A send that finds the agent idle while earlier messages are
+    still pending queues behind them instead of overtaking them. Busy
+    otherwise: emits x-optio-queued and holds it in optio's queue; at the
+    turn end (`is_turn_end(event)`) everything held goes as ONE prompt
+    joined by a blank line, announced by one
     `{"type":"x-optio-taken","ids"}`.
   * `await interrupt_and_send(text, *, up_to=None) -> id | None` — busy:
-    emits `{"type":"x-optio-interrupt","by":"user"}`; `cuts-in` then sends
-    natively; others `interrupt()` and wait for the turn end. One
-    `turn_end_timeout_s` deadline covers both the `interrupt()` call and the
-    wait, so a live but unresponsive agent cannot hold `Steering` (and every
-    later send/steer behind it) forever; on expiry it sends anyway and logs
-    a warning. Non-empty `text` gets its own
-    `{"type":"x-optio-queued","id","text"}` (the same id this call returns),
-    emitted after the interrupt marker (if any) and just before the send, so
-    the reducer can dedupe the steer's own local echo against the wire by
-    id. Then held messages + `text` go as one prompt, sent with that id as
-    its uuid; while busy on a `NATIVE_QUEUE` agent, `text` also gets the
-    trailing-blank-line treatment (it is about to join the native queue,
-    same as a busy `send_when_ready`). Empty `text` is Send now (returns
-    `None`, no queued event); with nothing held and the agent not in
-    `NATIVE_QUEUE`, it is a no-op — it neither interrupts nor sends, so it
-    never draws an interrupted-row on a turn that is still streaming.
-  * `up_to` (Fix 13a, owner ruling: "Send now" up to one already-queued
-    message): only takes effect for a `NATIVE_QUEUE` agent whose
-    `command_lifecycle` and `cancel_async_message` hooks were both given;
-    otherwise it is silently ignored (today's meaning: deliver everything
-    queued). When active: cancel every later, not-yet-`started` native-queue
-    message (`cancel_async_message`, correlate the reply — never react to a
-    bare `command_lifecycle` "cancelled", which can mean other things too);
-    plain `interrupt()` (the CLI then runs 1..`up_to` as its next turn);
-    once `up_to` itself reports `command_lifecycle` `started` (same
-    `turn_end_timeout_s` deadline; on expiry, resend anyway and log it),
-    re-send each successfully cancelled message — same text, a fresh uuid —
-    emitting `{"type":"x-optio-requeued","id":<old>,"new_id":<new>}` per one
-    so the UI re-keys its bubble. A `cancelled:false` reply means the
-    message already started (or was unknown) and will be delivered
-    normally: it is not re-sent.
+    emits `{"type":"x-optio-interrupt","by":"user"}`. `NATIVE_QUEUE`:
+    non-empty `text` then gets its x-optio-queued and is appended to the
+    pending list WITHOUT being written, then comes `interrupt()` and the
+    wait for the turn end; after it (or the deadline) the next pending
+    message is written if nothing is in flight. The agent keeps the
+    in-flight message through the interrupt and runs it next, and the rest
+    follow one at a time, so `text` arrives last, as its own message.
+    `cuts-in` sends natively; the other agents `interrupt()`, wait for the
+    turn end, then send what optio holds plus `text` as one prompt. One
+    `turn_end_timeout_s` deadline covers both the `interrupt()` call and
+    the wait, so a live but unresponsive agent cannot hold `Steering` (and
+    every later send/steer behind it) forever; on expiry it goes on anyway
+    and logs a warning. Non-empty `text` gets its own
+    `{"type":"x-optio-queued","id","text"}` (the same id this call
+    returns), emitted after the interrupt marker (if any), so the reducer
+    can dedupe the steer's own local echo against the wire by id. Idle,
+    `text` is a plain send (on a native queue, unless earlier messages are
+    still pending: then it queues behind them). Empty `text` is Send now
+    (returns `None`, no queued event): on a native queue it only
+    interrupts, and delivery continues in order; with nothing held and the
+    agent not in `NATIVE_QUEUE`, it is a no-op — it neither interrupts nor
+    sends, so it never draws an interrupted-row on a turn that is still
+    streaming.
+  * `up_to` (the queued id Send now was clicked on) is accepted and needs
+    nothing beyond the interrupt: a native queue never holds more than the
+    one in-flight message, so messages after `up_to` are only written once
+    their predecessors started, and are taken when the agent is ready.
+    Fix 13a's `cancel_async_message` + re-send path is gone (Fix 17), and
+    with it `{"type":"x-optio-requeued","id","new_id"}`: Steering no longer
+    emits it, though the UI still handles it for buffers recorded before.
   * `await interrupt()` — stop only; emits x-optio-interrupt while busy.
+    Messages still pending on a native queue keep going one at a time
+    afterwards.
   * At most one `x-optio-interrupt` (and one underlying `interrupt()` call)
     per turn, shared between `interrupt()` and `interrupt_and_send()`: a
     second Interrupt click, or one pressed while `interrupt_and_send` still
@@ -112,7 +133,12 @@ behind every conversation listener's `POST /send`, `POST /steer` and
     that gap sets the flag again right after `is_turn_end` cleared it, and
     nothing would ever clear it again — silently swallowing the next turn's
     first Interrupt (no marker, no underlying `interrupt()` call).
-  * `await settle()`, `held_ids`, `close()` (unsubscribes).
+  * Session end: pending native-queue messages are never written (an
+    x-optio-queued never followed by its `started` is what the UI renders
+    as "Not delivered"); a write attempted after the close logs a warning.
+  * `await settle()` (waits for a turn-end flush or a native-queue write in
+    progress), `held_ids`, `pending_ids`, `in_flight_id`, `close()`
+    (unsubscribes).
 * `emit` must put the event into the wrapper's own event stream (in order
   with native events) so the conversation listener buffers and persists it.
 
