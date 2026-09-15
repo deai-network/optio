@@ -654,12 +654,20 @@ class ProcessContext:
 
     async def flush_final_progress(self) -> None:
         """Force flush any pending progress (called when process ends)."""
+        # Let an in-flight flush finish instead of cancelling it: it has
+        # already taken its current message off the queue, so cancelling it
+        # mid-write would lose that log line.
         if self._flush_task and not self._flush_task.done():
-            self._flush_task.cancel()
             try:
                 await self._flush_task
             except asyncio.CancelledError:
-                pass
+                # Re-raise if we are the one being cancelled; a flush task
+                # cancelled on its own just leaves the rest for the drain below.
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
+            except Exception:
+                _log.exception("Progress flush failed while finishing the process")
         # Flush coalesced percent-only update.
         if self._pending_pct is not None:
             await self._write_progress(self._pending_pct)
