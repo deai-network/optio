@@ -343,6 +343,34 @@ describe('ConversationWidget', () => {
     expect(JSON.parse(init.body as string)).toEqual({ text: '', upTo: 'q1' });
   });
 
+  // Review of fix 13b, finding 4: Send now on message 1 of 2 must not let
+  // the CLI's own command_lifecycle 'cancelled' for message 2 (steering.py
+  // cancelling it before re-sending it under a new uuid) flash it into a
+  // muted "Not delivered" note — ConversationView's local
+  // x-optio-pending-requeue hint (dispatched before the /steer POST) makes
+  // the reducer ignore that cancellation outright.
+  it('Send now on the 1st of 2 queued bubbles suppresses the CLI cancel flash for the 2nd', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true, id: null }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    render(<ConversationWidget {...makeProps()} />);
+    fire({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'long job' }] } });
+    fire({ type: 'x-optio-queued', id: 'q1', text: 'first' });
+    fire({ type: 'x-optio-queued', id: 'q2', text: 'second' });
+    const links = screen.getAllByTestId('queued-send-now');
+    fireEvent.click(links[0]);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    fire({ type: 'command_lifecycle', command_uuid: 'q2', state: 'cancelled' });
+    expect(screen.queryByTestId('activity-muted')).toBeNull();
+    expect(screen.getAllByTestId('queued-bubble')).toHaveLength(2);
+    expect(screen.getByText('second')).toBeTruthy();
+    expect(screen.getAllByTestId('queued-send-now')).toHaveLength(2);
+    // The eventual requeue still re-keys it and keeps it queued.
+    fire({ type: 'x-optio-requeued', id: 'q2', new_id: 'q2-new' });
+    expect(screen.queryByTestId('activity-muted')).toBeNull();
+    expect(screen.getAllByTestId('queued-bubble')).toHaveLength(2);
+    expect(screen.getByText('second')).toBeTruthy();
+  });
+
   // Fix 6 (manual-test finding 1): the Interrupt button must learn whether
   // its POST actually reached the listener, so ClaudeCodeView's onInterrupt
   // now resolves the boolean postJson/post already computes instead of

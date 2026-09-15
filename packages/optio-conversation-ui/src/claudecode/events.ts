@@ -45,6 +45,38 @@ function replaceAt(items: ChatItem[], idx: number, item: ChatItem): ChatItem[] {
   return [...items.slice(0, idx), item, ...items.slice(idx + 1)];
 }
 
+// Review of fix 13b, finding 3: drop the timestamp a user item with this
+// queueId already carries (if any) — used right after command_lifecycle
+// 'started' takes it, so a later timestamped echo (single-block "already
+// resolved by uuid alone", or a fold's last block) unconditionally backfills
+// it, instead of a live-only pre-existing send time (x-optio-local-user)
+// winning over the taking echo's wire time (Fix 4).
+function clearTakenTimestamp(items: ChatItem[], queueId: string): ChatItem[] {
+  const idx = items.findIndex((i) => i.kind === 'user' && i.queueId === queueId && i.timestamp !== undefined);
+  if (idx === -1) return items;
+  const next = { ...(items[idx] as UserItem) };
+  delete next.timestamp;
+  return replaceAt(items, idx, next);
+}
+
+// Review of fix 13b, finding 2: a "Not delivered" note's `queueId` exists
+// only so a LATER x-optio-requeued (our own "Send now up to" resend) can
+// still restore it; once no further requeue can arrive for any note still
+// carrying one, they settle permanently into the transcript, no longer
+// pinning later content behind them (isPinned, chat.ts) — called at the
+// next clean turn end (a requeue, per the protocol, always resolves before
+// its own turn's own result) and unconditionally at x-optio-resumed /
+// x-optio-closed (the process that might still have sent one is gone).
+function settleNotes(items: ChatItem[]): ChatItem[] {
+  if (!items.some((i) => i.kind === 'activity' && i.queueId !== undefined)) return items;
+  return items.map((i) => {
+    if (i.kind !== 'activity' || i.queueId === undefined) return i;
+    const next = { ...i };
+    delete next.queueId;
+    return next;
+  });
+}
+
 type ToolItem = Extract<ChatItem, { kind: 'tool' }>;
 
 const RESULT_MAX = 2000;
@@ -611,12 +643,15 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
             // Fix 13b: try the last block's own uuid first; a miss (the CLI
             // minted its own because optio sent none — see the single-block
             // path's note) falls back to text matching, same as the other
-            // blocks below.
+            // blocks below. Review of fix 13b, finding 1: trimEnd() both
+            // sides — a message written while busy (13a) ends with a blank
+            // line the queued/local bubble's own text never carried.
             let idx = foldUuid !== undefined
               ? items.findIndex((i) => i.kind === 'user' && i.queueId === foldUuid)
               : -1;
             if (idx === -1) {
-              idx = items.findIndex((i) => i.kind === 'user' && (i.local === true || isQueued(i)) && i.text === t);
+              const tt = t.trimEnd();
+              idx = items.findIndex((i) => i.kind === 'user' && (i.local === true || isQueued(i)) && i.text.trimEnd() === tt);
             }
             if (idx === -1) {
               matchedAll = false;
@@ -630,8 +665,11 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
             }
             return;
           }
+          // Review of fix 13b, finding 1: same trimEnd() treatment as the
+          // last block above.
+          const tt = t.trimEnd();
           const idx = items.findIndex(
-            (i) => i.kind === 'user' && (i.local === true || isQueued(i)) && i.text === t,
+            (i) => i.kind === 'user' && (i.local === true || isQueued(i)) && i.text.trimEnd() === tt,
           );
           if (idx === -1) {
             // uuid'd conversation: already resolved by its own solo echo or
@@ -707,7 +745,15 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
         ? state.items.findIndex((i) => i.kind === 'user' && i.queueId === msgUuid)
         : -1;
       if (localIdx === -1) {
-        localIdx = state.items.findIndex((i) => i.kind === 'user' && (i.local === true || i.queued === true) && i.text === text);
+        // Review of fix 13b, finding 1: trimEnd() both sides — a message
+        // written while busy (13a) ends with a blank line the queued/local
+        // bubble's own text never carried, so an untrimmed compare here
+        // would miss it and fall through to creating a duplicate bubble
+        // below, leaving the original stuck queued.
+        const textTrimmed = text.trimEnd();
+        localIdx = state.items.findIndex(
+          (i) => i.kind === 'user' && (i.local === true || i.queued === true) && i.text.trimEnd() === textTrimmed,
+        );
       }
       // A queued message the agent took now (after the tool row it came
       // with, or at the start of the next turn): it moves to the take point,
@@ -745,7 +791,11 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       }
       // Replayed / un-echoed prompt: slot the attachment row + user bubble in
       // front of the in-flight assistant bubble (the answer streams first).
-      const userItem: UserItem = { kind: 'user', text, seq };
+      // Review of fix 13b, finding 1: trimEnd() the stored text — a message
+      // written while busy (13a) can reach here with its appended blank
+      // line still attached (nothing to match it against), and a displayed
+      // bubble must never show it (the bubble style is white-space: pre-wrap).
+      const userItem: UserItem = { kind: 'user', text: text.trimEnd(), seq };
       if (echoTs !== undefined) userItem.timestamp = echoTs;
       const rows: ChatItem[] = attach ? [attach, userItem] : [userItem];
       return { ...state, items: insertBeforePending(state.items, rows), busy: true };
@@ -862,17 +912,51 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       const lcState = typeof ev.state === 'string' ? ev.state : '';
       if (commandUuid === '') return state;
       if (lcState === 'started') {
-        // 'started': drained into a turn — the bubble leaves the queued
-        // state and moves to this point in the transcript (the take
-        // point). No-op when it isn't (still) queued: already taken by an
-        // earlier solo echo (the wire order in every observed recording
-        // can put either first), or a plain (never-queued) send that has
-        // nothing to move.
+        // 'started': drained into a turn. No-op when there is no item for
+        // this uuid at all.
         const idx = state.items.findIndex((i) => i.kind === 'user' && i.queueId === commandUuid);
-        if (idx === -1 || !isQueued(state.items[idx])) return state;
-        return { ...state, items: takeQueuedAt(state.items, idx), busy: true };
+        if (idx === -1) return state;
+        const cur = state.items[idx] as UserItem;
+        if (cur.queued === true) {
+          // The bubble leaves the queued state and moves to this point in
+          // the transcript (the take point). Review of fix 13b, finding 3
+          // (Fix 4 regression): 'started' carries no timestamp of its own.
+          // Live, the bubble already has one — the widget's own local send
+          // time (x-optio-local-user), set before it was ever queued — and
+          // 'started' routinely precedes the taking echo (the fold's last
+          // message; cancel3's message 2 and the re-sent message 3). Fix 4
+          // says the taking ECHO's wire time is what replaces the send
+          // time, so clear it here: the later match below (the single
+          // echo's "already resolved by uuid alone" branch, or the fold's
+          // last block) then backfills unconditionally from the first
+          // timestamped echo, exactly as a replay (which never had a local
+          // send time to begin with) already does.
+          const takenItems = takeQueuedAt(state.items, idx);
+          return { ...state, items: clearTakenTimestamp(takenItems, commandUuid), busy: true };
+        }
+        if (cur.local === true) {
+          // Review of fix 13b, finding 2: a plain (never-queued, idle-sent)
+          // local echo the CLI just started running — confirm it (clear
+          // `local`) so a LATER 'cancelled' for the same uuid (an aborted
+          // turn: cli-queue-lifecycle.md's "cancelled also means its turn
+          // was aborted") is never mistaken for an undelivered queued
+          // message by the guard just below.
+          const confirmed = { ...cur };
+          delete confirmed.local;
+          return { ...state, items: replaceAt(state.items, idx, confirmed), busy: true };
+        }
+        // Already taken/confirmed (an earlier solo echo can put either
+        // first): nothing left to move.
+        return state;
       }
       if (lcState === 'cancelled' || lcState === 'discarded' || lcState === 'refused') {
+        // Review of fix 13b, finding 4: a cancellation ConversationView
+        // already told us to expect (x-optio-pending-requeue) is OUR OWN
+        // "Send now up to" resend, not a genuine drop — ignore it entirely,
+        // per the owner ruling, instead of applying then undoing it (which
+        // live would flash the bubble to a muted "Not delivered" note for
+        // up to turn_end_timeout_s until x-optio-requeued arrives).
+        if (state.pendingRequeue?.includes(commandUuid)) return state;
         // A bubble optio did NOT re-queue: mark it "Not delivered", as at
         // session end (dropUndelivered) — but keep the old uuid on the note
         // (`queueId`) so a LATER x-optio-requeued for it (steering.py emits
@@ -888,6 +972,10 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
         if (idx === -1) return state;
         const cur = state.items[idx] as UserItem;
         const note: ActivityItem = { kind: 'activity', text: `Not delivered: ${cur.text}`, seq: cur.seq, muted: true, queueId: commandUuid };
+        // Review of fix 13b, finding 4: carry the send timestamp through —
+        // x-optio-requeued's restore (below) puts it back on the recreated
+        // queued bubble, instead of silently losing it.
+        if (cur.timestamp !== undefined) note.timestamp = cur.timestamp;
         return { ...state, items: replaceAt(state.items, idx, note) };
       }
       // 'queued': x-optio-queued already pinned the bubble. 'completed':
@@ -910,18 +998,43 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       const id = typeof ev.id === 'string' ? ev.id : '';
       const newId = typeof ev.new_id === 'string' ? ev.new_id : '';
       if (id === '' || newId === '') return state;
+      // Review of fix 13b, finding 4: this id's pending-requeue protection
+      // (if any) has now resolved — drop it, so the reducer's state doesn't
+      // hold it forever.
+      const remaining = state.pendingRequeue?.filter((x) => x !== id);
+      const pendingRequeue = remaining && remaining.length > 0 ? remaining : undefined;
       const idx = state.items.findIndex((i) => i.kind === 'user' && i.queueId === id);
       if (idx !== -1) {
         const cur = state.items[idx] as UserItem;
-        return { ...state, items: replaceAt(state.items, idx, { ...cur, queueId: newId }) };
+        return { ...state, items: replaceAt(state.items, idx, { ...cur, queueId: newId }), pendingRequeue };
       }
       const nidx = state.items.findIndex((i) => i.kind === 'activity' && (i as ActivityItem).queueId === id);
-      if (nidx === -1) return state;
+      if (nidx === -1) return { ...state, pendingRequeue };
       const note = state.items[nidx] as ActivityItem;
       const restored: UserItem = {
         kind: 'user', text: note.text.replace(/^Not delivered: /, ''), seq: note.seq, queued: true, queueId: newId,
       };
-      return { ...state, items: replaceAt(state.items, nidx, restored) };
+      // Review of fix 13b, finding 4: the note carries the original send
+      // timestamp through (see command_lifecycle above) — restore it,
+      // instead of rebuilding the bubble with none at all.
+      if (note.timestamp !== undefined) restored.timestamp = note.timestamp;
+      return { ...state, items: replaceAt(state.items, nidx, restored), pendingRequeue };
+    }
+
+    // Synthetic, widget-emitted (review of fix 13b, finding 4):
+    // ConversationView is about to POST /steer {upTo}; `ids` are the OTHER
+    // currently-queued bubbles the CLI is about to cancel and steering.py
+    // is about to re-send under new uuids (x-optio-requeued) — see
+    // queuedIdsAfter, chat.ts. Dispatched before the network call, so it is
+    // always seen before the CLI's own command_lifecycle 'cancelled' for
+    // them. A replay carries no such local hint (it is not a wire event);
+    // the note-then-requeue path in command_lifecycle/x-optio-requeued
+    // above still handles that case exactly as before.
+    case 'x-optio-pending-requeue': {
+      const ids = Array.isArray(ev.ids) ? ev.ids.filter((x: unknown): x is string => typeof x === 'string') : [];
+      if (ids.length === 0) return state;
+      const merged = Array.from(new Set([...(state.pendingRequeue ?? []), ...ids]));
+      return { ...state, pendingRequeue: merged };
     }
 
     case 'x-optio-local-error': {
@@ -1086,9 +1199,15 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
         // concrete instant to freeze running tool rows against.
         const item: Extract<ChatItem, { kind: 'error' }> = { kind: 'error', text: msg, seq };
         if (state.lastEventAt !== undefined) item.timestamp = state.lastEventAt;
-        return { ...state, items: appendItems(finalized, [item]), busy: false };
+        // Review of fix 13b, finding 2: this is a genuine turn end (not the
+        // ABORTED-interrupt branch above, which a same-turn requeue may
+        // still be pending against) — settle any leftover "Not delivered"
+        // notes.
+        return { ...state, items: settleNotes(appendItems(finalized, [item])), busy: false };
       }
-      return { ...state, items: finalizePending(items, seq, resultText), busy: false };
+      // Review of fix 13b, finding 2: a clean turn end — same reasoning as
+      // just above.
+      return { ...state, items: settleNotes(finalizePending(items, seq, resultText)), busy: false };
     }
 
     case 'control_request': {
@@ -1123,8 +1242,12 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       state = endInterrupt(state);
       // Session ended: stop every running row, background rows included.
       const item: ChatItem = { kind: 'closed', reason: String(ev.reason ?? ''), seq };
-      const items = dropUndelivered(freezeRunning(state.items, lastWireTime(state, now), 'session'));
-      return { ...state, items: [...items, item], busy: false, closed: true };
+      // Review of fix 13b, finding 2: settle any "Not delivered" note still
+      // carrying a queueId (a lifecycle cancellation optio never got to
+      // requeue) — the process that might have sent x-optio-requeued is
+      // gone, so it can never unpin otherwise.
+      const items = settleNotes(dropUndelivered(freezeRunning(state.items, lastWireTime(state, now), 'session')));
+      return { ...state, items: [...items, item], busy: false, closed: true, pendingRequeue: undefined };
     }
 
     case 'x-optio-resumed': {
@@ -1135,8 +1258,11 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // included, and drop a busy flag its unfinished turn left behind. The
       // session itself stays open.
       // Messages the old process held died with it.
-      const items = dropUndelivered(freezeRunning(state.items, lastWireTime(state, now), 'session'));
-      return { ...state, items, busy: false };
+      // Review of fix 13b, finding 2: same reasoning as x-optio-closed —
+      // settle any leftover "Not delivered" note (the old process's
+      // requeue, if any, died with it).
+      const items = settleNotes(dropUndelivered(freezeRunning(state.items, lastWireTime(state, now), 'session')));
+      return { ...state, items, busy: false, pendingRequeue: undefined };
     }
 
     case 'system': {
