@@ -232,8 +232,23 @@ describe('ConversationView Escape-to-interrupt', () => {
 // Fix 6 (manual-test finding 1): Interrupt gets immediate pending feedback and
 // reports a failure through the same error slot the input bar uses, mirroring
 // the queued-bubble Send now pattern from Task 7.
+// Fix 18 (owner ruling 2026-09-15): the pending label used to read
+// 'Interrupting…', longer than 'Interrupt', which made the buttons jump.
+// The label now always reads 'Interrupt'; only a spinner (antd's `loading`
+// state, driven by the vultus action's own `pending` field) marks the
+// request in flight, and the button has a fixed width so the spinner never
+// resizes it. The control is a vultus ActionButton now (owner addition), so
+// tests reach the real <button> via data-action-id="interrupt" nested under
+// the existing data-testid="conversation-interrupt" wrapper — the same way
+// the CombinedActionButton tests below identify vultus buttons.
 describe('ConversationView Interrupt pending and failure', () => {
-  it('shows "Interrupting…" while pending, calls onInterrupt once, ignores a second click, and clears with no error on success', async () => {
+  function interruptButton(): HTMLButtonElement {
+    return screen
+      .getByTestId('conversation-interrupt')
+      .querySelector('[data-action-id="interrupt"]') as HTMLButtonElement;
+  }
+
+  it('keeps the label "Interrupt" and shows a spinner while pending, calls onInterrupt once, ignores a second click, and the spinner clears with no error on success', async () => {
     let resolveInterrupt!: (ok: boolean) => void;
     const onInterrupt = vi.fn(
       () =>
@@ -242,10 +257,11 @@ describe('ConversationView Interrupt pending and failure', () => {
         }),
     );
     renderView(makeProps({ busy: true, onInterrupt }));
-    const button = screen.getByTestId('conversation-interrupt') as HTMLButtonElement;
+    const button = interruptButton();
     fireEvent.click(button);
     expect(onInterrupt).toHaveBeenCalledTimes(1);
-    expect(button.textContent).toBe('Interrupting…');
+    expect(button.textContent).toBe('Interrupt');
+    expect(button.classList.contains('ant-btn-loading')).toBe(true);
     expect(button.disabled).toBe(true);
 
     // A second click landing while the first is still in flight is dropped.
@@ -253,20 +269,42 @@ describe('ConversationView Interrupt pending and failure', () => {
     expect(onInterrupt).toHaveBeenCalledTimes(1);
 
     resolveInterrupt(true);
-    await waitFor(() => expect(button.textContent).toBe('Interrupt'));
-    expect(button.disabled).toBe(false);
+    await waitFor(() => expect(interruptButton().classList.contains('ant-btn-loading')).toBe(false));
+    expect(interruptButton().textContent).toBe('Interrupt');
+    expect(interruptButton().disabled).toBe(false);
     expect(screen.queryByTestId('conversation-error')).toBeNull();
   });
 
-  it('shows "Interrupt failed — retry." when onInterrupt resolves false, then returns to normal', async () => {
+  it('has the same fixed-width wrapper style whether idle or pending', async () => {
+    let resolveInterrupt!: (ok: boolean) => void;
+    const onInterrupt = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveInterrupt = resolve;
+        }),
+    );
+    renderView(makeProps({ busy: true, onInterrupt }));
+    const wrap = screen.getByTestId('conversation-interrupt') as HTMLElement;
+    const idleWidth = wrap.style.width;
+    expect(idleWidth).not.toBe('');
+    fireEvent.click(interruptButton());
+    expect(interruptButton().classList.contains('ant-btn-loading')).toBe(true);
+    expect(wrap.style.width).toBe(idleWidth);
+    resolveInterrupt(true);
+    await waitFor(() => expect(interruptButton().classList.contains('ant-btn-loading')).toBe(false));
+    expect(wrap.style.width).toBe(idleWidth);
+  });
+
+  it('shows "Interrupt failed — retry." when onInterrupt resolves false, then returns to normal with no spinner', async () => {
     const onInterrupt = vi.fn(async () => false);
     renderView(makeProps({ busy: true, onInterrupt }));
-    fireEvent.click(screen.getByTestId('conversation-interrupt'));
+    fireEvent.click(interruptButton());
     await waitFor(() =>
       expect(screen.getByTestId('conversation-error').textContent).toContain('Interrupt failed — retry.'),
     );
-    const button = screen.getByTestId('conversation-interrupt') as HTMLButtonElement;
+    const button = interruptButton();
     expect(button.textContent).toBe('Interrupt');
+    expect(button.classList.contains('ant-btn-loading')).toBe(false);
     expect(button.disabled).toBe(false);
   });
 
@@ -275,7 +313,7 @@ describe('ConversationView Interrupt pending and failure', () => {
       throw new Error('boom');
     });
     renderView(makeProps({ busy: true, onInterrupt }));
-    fireEvent.click(screen.getByTestId('conversation-interrupt'));
+    fireEvent.click(interruptButton());
     await waitFor(() =>
       expect(screen.getByTestId('conversation-error').textContent).toContain('Interrupt failed — retry.'),
     );
@@ -284,10 +322,10 @@ describe('ConversationView Interrupt pending and failure', () => {
   it('a void-returning onInterrupt (other engines) is treated as immediate success', () => {
     const onInterrupt = vi.fn();
     renderView(makeProps({ busy: true, onInterrupt }));
-    fireEvent.click(screen.getByTestId('conversation-interrupt'));
+    fireEvent.click(interruptButton());
     expect(onInterrupt).toHaveBeenCalledTimes(1);
     expect(screen.queryByTestId('conversation-error')).toBeNull();
-    expect((screen.getByTestId('conversation-interrupt') as HTMLButtonElement).textContent).toBe('Interrupt');
+    expect(interruptButton().textContent).toBe('Interrupt');
   });
 });
 
