@@ -329,7 +329,8 @@ describe('ConversationWidget', () => {
     await waitFor(() => expect(screen.getByText('change of plan')).toBeTruthy());
   });
 
-  it('Send now on a queued bubble POSTs an empty text to /steer', async () => {
+  // Fix 13b: Send now delivers up to the bubble it was clicked on.
+  it('Send now on a queued bubble POSTs an empty text and that bubble\'s id as upTo to /steer', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true, id: null }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
     render(<ConversationWidget {...makeProps()} />);
@@ -339,7 +340,7 @@ describe('ConversationWidget', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('/api/widget/db/gm/p1/steer');
-    expect(JSON.parse(init.body as string)).toEqual({ text: '' });
+    expect(JSON.parse(init.body as string)).toEqual({ text: '', upTo: 'q1' });
   });
 
   // Fix 6 (manual-test finding 1): the Interrupt button must learn whether

@@ -8,7 +8,7 @@
 
 import type { ChatItem, ChatState } from '../chat.js';
 import {
-  INTERRUPTED_BY_YOU, addQueued, appendItems, dropUndelivered, foldControlUpdate, isQueued, takeQueuedAt, takeQueuedIds,
+  INTERRUPTED_BY_YOU, addQueued, appendItems, dropUndelivered, foldControlUpdate, isPinned, isQueued, takeQueuedAt, takeQueuedIds,
 } from '../chat.js';
 import { explainApiError } from '../apiError.js';
 import { parseUploadNotice, uploadNoticeActivityText } from '../uploads.js';
@@ -257,10 +257,11 @@ function pendingIndex(items: ChatItem[]): number {
 // the conversation's tail. Tool rows don't count: they are progress rows, not
 // newer conversation content. Anything else after the bubble (activity rows,
 // permission cards, user turns) means newer content has been appended — the
-// bubble is stale and must not act as an anchor anymore. Queued bubbles
-// don't count either: they are pinned below the conversation.
+// bubble is stale and must not act as an anchor anymore. Queued bubbles (and
+// their "Not delivered" notes, Fix 13b — see isPinned) don't count either:
+// they are pinned below the conversation.
 function isTail(items: ChatItem[], idx: number): boolean {
-  return items.slice(idx + 1).every((i) => i.kind === 'tool' || isQueued(i));
+  return items.slice(idx + 1).every((i) => i.kind === 'tool' || isPinned(i));
 }
 
 // Finalize the bubble at idx in place (text kept), used when newer content
@@ -399,7 +400,7 @@ function insertBeforePending(items: ChatItem[], rows: ChatItem[]): ChatItem[] {
   // A message echoed after a tool row was taken mid-turn (Claude Code takes
   // a message sent mid-turn at the next tool result): it belongs after that
   // row, not above the in-flight answer.
-  if (idx === -1 || !items.slice(idx + 1).every(isQueued)) return appendItems(items, rows);
+  if (idx === -1 || !items.slice(idx + 1).every(isPinned)) return appendItems(items, rows);
   return [...items.slice(0, idx), ...rows, ...items.slice(idx)];
 }
 
@@ -577,27 +578,68 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // place; a queued one moves to the take point, exactly as the
       // single-message path does. Two messages queued mid-tool instead
       // arrive as two separate one-block echoes and take the ordinary path.
+      //
+      // Fix 13b: in a fold (cli-queue-lifecycle.md §1/§2c-d), this combined
+      // echo carries the LAST message's own uuid and ALL of the fold's text
+      // blocks — but only that last message's bubble is still unresolved by
+      // the time it arrives: the earlier ones were already taken by their
+      // own solo echo or a command_lifecycle 'started' (see the `user`
+      // uuid-matching and `command_lifecycle` cases below), which the wire
+      // order in every observed recording puts first. So for a uuid'd
+      // conversation, every block except the last is matched against
+      // still-queued/local items exactly as before (today's fallback path,
+      // for a wrapper that folds without uuids at all); the last block is
+      // matched by uuid — confirming an already-taken bubble (never a
+      // duplicate) and backfilling its timestamp if it has none yet.
       const blocks = textBlocks(ev.message?.content);
       // The one echo event's own wire time: "once the message is taken, the
       // transcript user message shows the echo's wire timestamp" — every
       // block taken by this same event shares it.
       const echoTs = wireTime(ev) ?? undefined;
+      const foldUuid = typeof ev.uuid === 'string' ? ev.uuid : undefined;
       if (blocks.length > 1) {
         let items = state.items;
         let matchedAll = true;
-        for (const raw of blocks) {
+        blocks.forEach((raw, blockIdx) => {
+          if (!matchedAll) return;
           // final-review M2: parseUploadNotice per block, as the
           // single-message path already does below.
           const { text: t, uploads } = parseUploadNotice(raw);
+          const attach: ChatItem[] =
+            uploads.length > 0 ? [{ kind: 'activity', text: uploadNoticeActivityText(uploads), seq }] : [];
+          if (blockIdx === blocks.length - 1) {
+            // Fix 13b: try the last block's own uuid first; a miss (the CLI
+            // minted its own because optio sent none — see the single-block
+            // path's note) falls back to text matching, same as the other
+            // blocks below.
+            let idx = foldUuid !== undefined
+              ? items.findIndex((i) => i.kind === 'user' && i.queueId === foldUuid)
+              : -1;
+            if (idx === -1) {
+              idx = items.findIndex((i) => i.kind === 'user' && (i.local === true || isQueued(i)) && i.text === t);
+            }
+            if (idx === -1) {
+              matchedAll = false;
+              return;
+            }
+            const cur = items[idx] as UserItem;
+            if (cur.queued === true || cur.local === true) {
+              items = takeQueuedAt(items, idx, attach, echoTs);
+            } else if (cur.timestamp === undefined && echoTs !== undefined) {
+              items = replaceAt(items, idx, { ...cur, timestamp: echoTs });
+            }
+            return;
+          }
           const idx = items.findIndex(
             (i) => i.kind === 'user' && (i.local === true || isQueued(i)) && i.text === t,
           );
           if (idx === -1) {
-            matchedAll = false;
-            break;
+            // uuid'd conversation: already resolved by its own solo echo or
+            // command_lifecycle 'started' — not a failure, no duplicate.
+            // uuid-less conversation (today's fallback): a genuine miss.
+            if (foldUuid === undefined) matchedAll = false;
+            return;
           }
-          const attach: ChatItem[] =
-            uploads.length > 0 ? [{ kind: 'activity', text: uploadNoticeActivityText(uploads), seq }] : [];
           if (isQueued(items[idx])) {
             items = takeQueuedAt(items, idx, attach, echoTs);
           } else {
@@ -606,7 +648,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
             if (echoTs !== undefined) confirmed.timestamp = echoTs;
             items = [...items.slice(0, idx), ...attach, confirmed, ...items.slice(idx + 1)];
           }
-        }
+        });
         if (matchedAll) return { ...state, items, busy: true };
       }
       // A background command ended and the CLI injected its notification as a
@@ -653,10 +695,20 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
         return { ...state, items, busy: true };
       }
       // Wire echo of a message already on screen: the widget's optimistic
-      // local bubble, or a queued one. FIFO by text.
-      const localIdx = state.items.findIndex(
-        (i) => i.kind === 'user' && (i.local === true || i.queued === true) && i.text === text,
-      );
+      // local bubble, or a queued one. Fix 13b: when this echo carries the
+      // CLI's own uuid, try matching by it first (the id a queued bubble or
+      // local echo was given — see the module-level note). A miss falls
+      // back to today's FIFO-by-text match — needed even for a message
+      // WITH a uuid on this echo: the CLI mints its own when optio sent none
+      // on stdin (cli-queue-lifecycle.md §4, "the echo still arrives with a
+      // CLI-minted uuid"), which cannot match any id optio ever gave it.
+      const msgUuid = typeof ev.uuid === 'string' ? ev.uuid : undefined;
+      let localIdx = msgUuid !== undefined
+        ? state.items.findIndex((i) => i.kind === 'user' && i.queueId === msgUuid)
+        : -1;
+      if (localIdx === -1) {
+        localIdx = state.items.findIndex((i) => i.kind === 'user' && (i.local === true || i.queued === true) && i.text === text);
+      }
       // A queued message the agent took now (after the tool row it came
       // with, or at the start of the next turn): it moves to the take point,
       // its attachment row in front.
@@ -666,7 +718,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // A local bubble: confirm it in place instead of inserting a duplicate
       // (the attachment row slots just before it). The echo's own wire time
       // replaces whatever send-time the local (optimistic) bubble carried.
-      if (localIdx !== -1) {
+      if (localIdx !== -1 && (state.items[localIdx] as UserItem).local) {
         const confirmed = { ...state.items[localIdx] } as Extract<ChatItem, { kind: 'user' }>;
         delete confirmed.local;
         const t = wireTime(ev);
@@ -675,6 +727,21 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
           ? [...state.items.slice(0, localIdx), attach, confirmed, ...state.items.slice(localIdx + 1)]
           : [...state.items.slice(0, localIdx), confirmed, ...state.items.slice(localIdx + 1)];
         return { ...state, items, busy: true };
+      }
+      // Already resolved by uuid alone (a command_lifecycle 'started' took
+      // it, or — in a fold — an earlier echo already confirmed it): this
+      // echo must never create a second bubble. Lifecycle events carry no
+      // time, so backfill the timestamp from THIS echo only if none is set
+      // yet (Fix 4 rules: the echo's wire time = send time; a fold's N-1
+      // solo pre-echoes carry no timestamp at all, so this is a no-op for
+      // them and only ever fires from a genuine wire timestamp).
+      if (localIdx !== -1) {
+        const cur = state.items[localIdx] as UserItem;
+        const t = wireTime(ev);
+        if (t !== null && cur.timestamp === undefined) {
+          return { ...state, items: replaceAt(state.items, localIdx, { ...cur, timestamp: t }), busy: true };
+        }
+        return state.busy ? state : { ...state, busy: true };
       }
       // Replayed / un-echoed prompt: slot the attachment row + user bubble in
       // front of the in-flight assistant bubble (the answer streams first).
@@ -739,7 +806,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
         // after it was already complete: it just stops being pending (and is
         // not tracked — it never becomes `interrupted`, so it can't be
         // mistaken for this interrupt's doing).
-        if (items.slice(idx + 1).every(isQueued)) {
+        if (items.slice(idx + 1).every(isPinned)) {
           const cur = items[idx] as AssistantItem;
           itemSeqs.push(cur.seq);
           items = replaceAt(items, idx, { ...cur, pending: false, interrupted: true });
@@ -780,6 +847,81 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       const ids = Array.isArray(ev.ids) ? ev.ids.filter((x: unknown): x is string => typeof x === 'string') : [];
       const items = takeQueuedIds(state.items, ids);
       return items === state.items ? state : { ...state, items, busy: true };
+    }
+
+    // Native, CLI-emitted (Fix 13b, owner ruling 2026-09-15, per
+    // cli-queue-lifecycle.md): the queue lifecycle of a message the CLI
+    // knows by its own uuid. Every user message optio writes now carries
+    // one (Fix 13a), so a queued bubble or unconfirmed local echo's
+    // `queueId` IS this uuid — see the `user`/`x-optio-requeued` cases. A
+    // conversation with no uuids emits none of these at all (cli-queue-
+    // lifecycle.md §4): the fallback text-matching paths never see this
+    // case fire for them.
+    case 'command_lifecycle': {
+      const commandUuid = typeof ev.command_uuid === 'string' ? ev.command_uuid : '';
+      const lcState = typeof ev.state === 'string' ? ev.state : '';
+      if (commandUuid === '') return state;
+      if (lcState === 'started') {
+        // 'started': drained into a turn — the bubble leaves the queued
+        // state and moves to this point in the transcript (the take
+        // point). No-op when it isn't (still) queued: already taken by an
+        // earlier solo echo (the wire order in every observed recording
+        // can put either first), or a plain (never-queued) send that has
+        // nothing to move.
+        const idx = state.items.findIndex((i) => i.kind === 'user' && i.queueId === commandUuid);
+        if (idx === -1 || !isQueued(state.items[idx])) return state;
+        return { ...state, items: takeQueuedAt(state.items, idx), busy: true };
+      }
+      if (lcState === 'cancelled' || lcState === 'discarded' || lcState === 'refused') {
+        // A bubble optio did NOT re-queue: mark it "Not delivered", as at
+        // session end (dropUndelivered) — but keep the old uuid on the note
+        // (`queueId`) so a LATER x-optio-requeued for it (steering.py emits
+        // its own command_lifecycle 'cancelled' well before the requeue —
+        // see x-optio-requeued below) can find and reverse this. Only a
+        // bubble still queued/local matches: one already taken (a genuine
+        // interrupt of an already-delivered message; cli-queue-
+        // lifecycle.md's "cancelled also means its turn was aborted")
+        // keeps its normal rendering untouched.
+        const idx = state.items.findIndex(
+          (i) => i.kind === 'user' && i.queueId === commandUuid && (isQueued(i) || (i as UserItem).local === true),
+        );
+        if (idx === -1) return state;
+        const cur = state.items[idx] as UserItem;
+        const note: ActivityItem = { kind: 'activity', text: `Not delivered: ${cur.text}`, seq: cur.seq, muted: true, queueId: commandUuid };
+        return { ...state, items: replaceAt(state.items, idx, note) };
+      }
+      // 'queued': x-optio-queued already pinned the bubble. 'completed':
+      // the turn that consumed it ended cleanly — nothing left to do.
+      return state;
+    }
+
+    // Synthetic, listener-emitted (Fix 13b): steering.py's own resend for
+    // "Send now up to a message" (packages/optio-agents/steering.py
+    // `_send_now_up_to`) — re-keys the bubble from its old id to the new
+    // uuid it resent under, and keeps it queued in its place. Handles both
+    // orders steering.py's own emission can produce relative to the CLI's
+    // command_lifecycle 'cancelled' for the old id (that event reaches the
+    // buffer as soon as the CLI raises it — well before this one, which
+    // waits for the "Send now" target's own 'started'): the bubble may
+    // still be plain queued/local (id not yet re-marked "Not delivered"),
+    // or may already be the "Not delivered" note the cancel produced —
+    // either way it ends up queued again, under the new id.
+    case 'x-optio-requeued': {
+      const id = typeof ev.id === 'string' ? ev.id : '';
+      const newId = typeof ev.new_id === 'string' ? ev.new_id : '';
+      if (id === '' || newId === '') return state;
+      const idx = state.items.findIndex((i) => i.kind === 'user' && i.queueId === id);
+      if (idx !== -1) {
+        const cur = state.items[idx] as UserItem;
+        return { ...state, items: replaceAt(state.items, idx, { ...cur, queueId: newId }) };
+      }
+      const nidx = state.items.findIndex((i) => i.kind === 'activity' && (i as ActivityItem).queueId === id);
+      if (nidx === -1) return state;
+      const note = state.items[nidx] as ActivityItem;
+      const restored: UserItem = {
+        kind: 'user', text: note.text.replace(/^Not delivered: /, ''), seq: note.seq, queued: true, queueId: newId,
+      };
+      return { ...state, items: replaceAt(state.items, nidx, restored) };
     }
 
     case 'x-optio-local-error': {

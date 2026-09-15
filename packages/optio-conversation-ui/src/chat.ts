@@ -66,6 +66,14 @@ export type ChatItem =
       // (operator interrupt, undelivered message), a background-task row or
       // an upload notice — never invented. See messageTime.ts.
       timestamp?: number;
+      // Fix 13b: set only on a "Not delivered" note created from a
+      // command_lifecycle 'cancelled'/'discarded'/'refused' for a queued
+      // bubble's own uuid (never on the plain session-end notes dropUndelivered
+      // makes) — the uuid the note replaced, so a later x-optio-requeued for
+      // the same id can find and reverse it (steering.py's own resend for a
+      // "Send now up to" can emit its command_lifecycle 'cancelled' well
+      // before the x-optio-requeued that says it was a requeue, not a drop).
+      queueId?: string;
     }
   | { kind: 'thinking'; text: string; seq: number }
   | {
@@ -189,11 +197,25 @@ export function isQueued(item: ChatItem): item is UserItem {
   return item.kind === 'user' && item.queued === true;
 }
 
-// Queued bubbles are pinned at the bottom: new conversation content goes in
-// front of the first one.
+// Fix 13b: a queued bubble, OR a "Not delivered" note the reducer made from
+// a command_lifecycle 'cancelled'/'discarded'/'refused' for one (it keeps
+// the old id as `queueId` — see claudecode/events.ts — in case a later
+// x-optio-requeued restores it). Both are transient, bottom-pinned
+// placeholders for a message that has not yet reached its final resting
+// place; new content must go in front of either kind exactly the same way,
+// or a message taken/echoed AFTER the note was made would be appended past
+// it instead of before it, corrupting the order of already-resolved
+// messages relative to the note and breaking the streaming-merge tail check
+// for whatever bubble opens next (isTail, claudecode/events.ts).
+export function isPinned(item: ChatItem): boolean {
+  return isQueued(item) || (item.kind === 'activity' && item.queueId !== undefined);
+}
+
+// Queued bubbles (and their "Not delivered" notes, Fix 13b) are pinned at
+// the bottom: new conversation content goes in front of the first one.
 export function appendItems(items: ChatItem[], rows: ChatItem[]): ChatItem[] {
   if (rows.length === 0) return items;
-  const q = items.findIndex(isQueued);
+  const q = items.findIndex(isPinned);
   if (q === -1) return [...items, ...rows];
   return [...items.slice(0, q), ...rows, ...items.slice(q)];
 }
