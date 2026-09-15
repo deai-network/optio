@@ -319,10 +319,10 @@ async def test_steer_rejects_bad_up_to(listener):
         assert r.status == 400
 
 
-async def test_steer_with_up_to_on_a_conversation_without_cancel_support_falls_back(listener):
-    # This FakeConversation has no cancel_async_message, so make_steering
-    # wires command_lifecycle but not cancel_async_message: up_to degrades
-    # to today's meaning (deliver everything queued) rather than erroring.
+async def test_steer_with_up_to_only_interrupts(listener):
+    # Fix 17: Send now on a queued bubble posts upTo. Queued messages
+    # already reach Claude one at a time, in order, so upTo needs nothing
+    # beyond the interrupt: no cancel, no re-send, no x-optio-requeued.
     conv, lst, url = listener
     conv.pending = True
     async with aiohttp.ClientSession() as s:
@@ -330,7 +330,8 @@ async def test_steer_with_up_to_on_a_conversation_without_cancel_support_falls_b
                           headers=_auth("pw"))
         body = await r.json()
     assert r.status == 200 and body == {"ok": True, "id": None}
-    assert conv.interrupts == 1
+    assert conv.interrupts == 1 and conv.sent == []
+    assert not any(e.get("type") == "x-optio-requeued" for _, e in lst._buffer)
 
 
 async def test_steer_rejects_bad_text_closed_and_unauthorized(listener):

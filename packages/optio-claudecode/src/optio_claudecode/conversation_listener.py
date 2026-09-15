@@ -10,10 +10,10 @@ optio-api widget proxy (which injects the basic-auth credential):
                      {"type": "x-optio-resumed"} marker.
   POST /send       — {text}  -> steering.send_when_ready; {ok, id, queued}
   POST /steer      — {text, upTo?} -> steering.interrupt_and_send; {ok, id}
-                     (empty text: deliver what is queued; id is null. upTo:
-                     a queued id — "Send now" up to and including it, Fix
-                     13a; ignored unless the agent is native-queue AND the
-                     conversation supports cancel_async_message)
+                     (empty text: Send now, deliver what is queued; id is
+                     null. upTo: the queued id Send now was clicked on; it
+                     needs nothing beyond the interrupt since Fix 17, as
+                     queued messages reach Claude one at a time, in order)
   POST /interrupt  — {}      -> steering.interrupt (stop only)
   POST /control    — {id, value}                  -> conversation.set_control
   GET  /download   — ?path=<relpath>              -> download_reader; returns
