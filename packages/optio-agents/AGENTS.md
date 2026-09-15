@@ -113,9 +113,9 @@ behind every conversation listener's `POST /send`, `POST /steer` and
     nothing beyond the interrupt: a native queue never holds more than the
     one in-flight message, so messages after `up_to` are only written once
     their predecessors started, and are taken when the agent is ready.
-    Fix 13a's `cancel_async_message` + re-send path is gone (Fix 17), and
-    with it `{"type":"x-optio-requeued","id","new_id"}`: Steering no longer
-    emits it, though the UI still handles it for buffers recorded before.
+    Fix 13a's `cancel_async_message` + re-send path is gone (Fix 17);
+    `{"type":"x-optio-requeued","id","new_id"}` now comes only from
+    `requeue` (Fix 19, below).
   * `await interrupt()` — stop only; emits x-optio-interrupt while busy.
     Messages still pending on a native queue keep going one at a time
     afterwards.
@@ -133,9 +133,21 @@ behind every conversation listener's `POST /send`, `POST /steer` and
     that gap sets the flag again right after `is_turn_end` cleared it, and
     nothing would ever clear it again — silently swallowing the next turn's
     first Interrupt (no marker, no underlying `interrupt()` call).
-  * Session end: pending native-queue messages are never written (an
-    x-optio-queued never followed by its `started` is what the UI renders
-    as "Not delivered"); a write attempted after the close logs a warning.
+  * `await requeue(messages) -> [new ids]` (Fix 19, owner ruling
+    2026-09-15, finding 6 #2): deliver again messages a previous run left
+    queued and undelivered, given as `(old id, ORIGINAL text)` in their
+    original order. Each gets a NEW id and one
+    `{"type":"x-optio-requeued","id":<old>,"new_id":<new>}` (never a
+    second x-optio-queued), emitted before anything is written.
+    `NATIVE_QUEUE`: they go to the FRONT of the pending list, ahead of
+    messages sent since the resume, written one at a time as above (the
+    first at once if nothing is in flight). Other agents: the front of
+    optio's queue, delivered at the turn end, or at once when idle.
+    Raises `ConversationClosed` when closed.
+  * Session end: pending native-queue messages are never written; a write
+    attempted after the close logs a warning. Their x-optio-queued, never
+    followed by a `started`, is what a resuming wrapper re-queues (Claude
+    Code: `ConversationListener.requeue_undelivered`, Fix 19).
   * `await settle()` (waits for a turn-end flush or a native-queue write in
     progress), `held_ids`, `pending_ids`, `in_flight_id`, `close()`
     (unsubscribes).
