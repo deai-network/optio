@@ -27,6 +27,7 @@ import asyncio
 import base64
 import json
 import logging
+import time
 from collections import deque
 from typing import Awaitable, Callable
 
@@ -43,7 +44,18 @@ BUFFER_MAXLEN = 1000
 # Synthetic marker appended after a re-primed (resumed) history: the prior
 # run's process is gone, so anything it left running will never report.
 RESUMED_EVENT_TYPE = "x-optio-resumed"
+# Synthetic marker this listener stamps for every streamed message (Fix 12,
+# owner ruling 2026-09-14): stream_event frames carry no time and are never
+# buffered (see UNBUFFERED_TYPES below), so a streamed message's true start
+# would otherwise be lost to replay. Emitted once per message_start, BEFORE
+# that stream_event is forwarded; buffered and persisted like a native event,
+# so the exact same value comes back on replay.
+MESSAGE_START_EVENT_TYPE = "x-optio-message-start"
 UNBUFFERED_TYPES = {"stream_event"}
+
+
+def _wall_clock_ms() -> float:
+    return time.time() * 1000
 PING_INTERVAL_S = 15.0
 # Bound aiohttp's graceful-shutdown wait. The /events SSE handler is a
 # long-lived loop; without this, runner.cleanup() would block on it for the
@@ -62,11 +74,16 @@ class ConversationListener:
         download_reader: "Callable[[str], Awaitable[tuple[bytes, str]]] | None" = None,
         max_download_bytes: int = 10_000_000,
         steering: "Steering | None" = None,
+        clock: "Callable[[], float]" = _wall_clock_ms,
     ) -> None:
         self._conversation = conversation
         self._password = password
         self._download_reader = download_reader
         self._max_download_bytes = max_download_bytes
+        # Injectable so x-optio-message-start's ts is deterministic in tests
+        # (see MESSAGE_START_EVENT_TYPE); the real clock is a server-side wall
+        # clock read at receipt, per the owner ruling.
+        self._clock = clock
         self._buffer: deque[tuple[int, dict]] = deque(maxlen=BUFFER_MAXLEN)
         # Re-prime the replay buffer from a previous run (resume) so a viewer
         # attaching after a resume still sees the prior conversation history.
@@ -117,7 +134,28 @@ class ConversationListener:
             q.put_nowait(item)
 
     def _on_event(self, event: dict) -> None:
+        if self._is_message_start(event):
+            message = event["event"].get("message")
+            msg_id = message.get("id") if isinstance(message, dict) else None
+            if isinstance(msg_id, str):
+                # Stamped and broadcast BEFORE the stream_event it announces,
+                # so a subscriber (or the replay buffer) always sees the
+                # start marker first — see MESSAGE_START_EVENT_TYPE.
+                self._broadcast({
+                    "type": MESSAGE_START_EVENT_TYPE,
+                    "id": msg_id,
+                    "ts": self._clock(),
+                })
         self._broadcast(event)
+
+    @staticmethod
+    def _is_message_start(event: dict) -> bool:
+        inner = event.get("event")
+        return (
+            event.get("type") == "stream_event"
+            and isinstance(inner, dict)
+            and inner.get("type") == "message_start"
+        )
 
     # -- permission gate -------------------------------------------------------
 

@@ -206,10 +206,25 @@ Replay-buffer semantics:
   `result`, `control_request`, `x-optio-*` — is buffered.
 * The engine channels raw stream-json events through untouched; all
   interpretation happens client-side in `optio-conversation-ui`. The
-  listener adds two synthetic events of its own:
+  listener adds synthetic events of its own:
   `{"type": "x-optio-permission-answered", "request_id": ..., "behavior": ...}`,
   broadcast (and buffered) when a permission is answered so every
-  viewer sees the card resolve; and `{"type": "x-optio-resumed"}` (below).
+  viewer sees the card resolve; `{"type": "x-optio-resumed"}` (below); and
+  `{"type": "x-optio-message-start", "id", "ts"}` (Fix 12).
+* `x-optio-message-start` (Fix 12, owner ruling 2026-09-14: an assistant
+  message's time label becomes a "HH:MM - HH:MM" interval when streaming
+  crosses a minute, so the UI needs an exact start). `stream_event` frames
+  carry no time and are never buffered (above), so a streamed message's true
+  start would otherwise only exist live, at the moment `message_start`
+  passes through, and be lost to replay. The listener stamps it instead: for
+  every `stream_event` whose inner event is `message_start`, it broadcasts
+  `{"type": "x-optio-message-start", "id": <message.id>, "ts": <epoch ms,
+  server clock at receipt>}` — buffered and persisted like a native event —
+  immediately BEFORE forwarding that `stream_event` (still unbuffered, as
+  today). `id` matches the assistant event's own `message.id`. The clock is
+  injectable (`ConversationListener(..., clock=...)`) for deterministic
+  tests; only the listener ever stamps this, so live and a later replay of
+  the persisted buffer show the exact same value.
 * Steering events (`optio_claudecode.steering`, `busy_send` =
   `joins-next-step` via `BUSY_SEND`): `{"type": "x-optio-queued", "id",
   "text"}` for a Send when ready that arrived mid-turn, and `{"type":
