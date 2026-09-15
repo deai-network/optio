@@ -765,13 +765,17 @@ describe('ConversationView message timestamps', () => {
     expect(label.title).toBe(new Date(ts).toLocaleString());
   });
 
-  it('an assistant message with a timestamp from an earlier day shows a short date', () => {
+  // Fix 12: an assistant bubble's label is driven by `endTimestamp` (the
+  // message must have SOME wire time to show anything at all); with no
+  // `timestamp` (start) it falls back to the single end time, exactly like
+  // any other bubble.
+  it('an assistant message with only an end (no known start) shows the single end time, short-dated', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 8, 14, 10, 0).getTime());
     const ts = new Date(2026, 8, 13, 16, 29).getTime();
     renderView(
       makeProps({
-        state: makeState([{ kind: 'assistant', text: 'answer', pending: false, seq: 1, msgId: 'm1', timestamp: ts }]),
+        state: makeState([{ kind: 'assistant', text: 'answer', pending: false, seq: 1, msgId: 'm1', endTimestamp: ts }]),
       }),
     );
     expect(screen.getByTestId('message-time').textContent).toBe('13 Sep 16:29');
@@ -850,6 +854,79 @@ describe('ConversationView message timestamps', () => {
 
   it('a "System: " activity row without a timestamp renders no time label', () => {
     renderView(makeProps({ state: makeState([{ kind: 'activity', text: 'System: you have been resumed', seq: 1 }]) }));
+    expect(screen.queryByTestId('message-time')).toBeNull();
+  });
+});
+
+// Fix 12 (owner ruling 2026-09-14): a streamed agent message's label becomes a
+// "HH:MM - HH:MM" interval, from the item's `timestamp` (start) and
+// `endTimestamp` (end). formatMessageTimeInterval/formatMessageTimeIntervalFull
+// are unit-tested in message-time.test.ts; these assert the view wires them
+// up, only for the assistant bubble (user/error/activity rows are unaffected,
+// covered above).
+describe('ConversationView assistant start-end interval (Fix 12)', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('start and end in the same minute render a single time, not a range', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 14, 20, 0).getTime());
+    const start = new Date(2026, 8, 14, 16, 29, 1).getTime();
+    const end = new Date(2026, 8, 14, 16, 29, 45).getTime();
+    renderView(
+      makeProps({
+        state: makeState([{ kind: 'assistant', text: 'answer', pending: false, seq: 1, msgId: 'm1', timestamp: start, endTimestamp: end }]),
+      }),
+    );
+    expect(screen.getByTestId('message-time').textContent).toBe('16:29');
+  });
+
+  it('start and end in different minutes render "a - b"', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 14, 20, 0).getTime());
+    const start = new Date(2026, 8, 14, 16, 29).getTime();
+    const end = new Date(2026, 8, 14, 16, 35).getTime();
+    renderView(
+      makeProps({
+        state: makeState([{ kind: 'assistant', text: 'answer', pending: false, seq: 1, msgId: 'm1', timestamp: start, endTimestamp: end }]),
+      }),
+    );
+    expect(screen.getByTestId('message-time').textContent).toBe('16:29 - 16:35');
+  });
+
+  it('the hover title shows the full start and end when they differ', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 14, 20, 0).getTime());
+    const start = new Date(2026, 8, 14, 16, 29).getTime();
+    const end = new Date(2026, 8, 14, 16, 35).getTime();
+    renderView(
+      makeProps({
+        state: makeState([{ kind: 'assistant', text: 'answer', pending: false, seq: 1, msgId: 'm1', timestamp: start, endTimestamp: end }]),
+      }),
+    );
+    const label = screen.getByTestId('message-time');
+    expect(label.title).toBe(`${new Date(start).toLocaleString()} - ${new Date(end).toLocaleString()}`);
+  });
+
+  it('with no known start, shows just the single end time (no dangling range)', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 8, 14, 20, 0).getTime());
+    const end = new Date(2026, 8, 14, 16, 35).getTime();
+    renderView(
+      makeProps({
+        state: makeState([{ kind: 'assistant', text: 'answer', pending: false, seq: 1, msgId: 'm1', endTimestamp: end }]),
+      }),
+    );
+    const label = screen.getByTestId('message-time');
+    expect(label.textContent).toBe('16:35');
+    expect(label.title).toBe(new Date(end).toLocaleString());
+  });
+
+  it('with no end at all, renders no time label even when a start is somehow present', () => {
+    renderView(
+      makeProps({
+        state: makeState([{ kind: 'assistant', text: 'answer', pending: false, seq: 1, msgId: 'm1', timestamp: Date.now() }]),
+      }),
+    );
     expect(screen.queryByTestId('message-time')).toBeNull();
   });
 });

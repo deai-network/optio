@@ -47,9 +47,44 @@ describe('claudecode real wire: message timestamps', () => {
     expect(ofKind(s, 'user')[0].timestamp).toBe(Date.parse('2026-09-14T04:57:00.765Z'));
   });
 
-  it('the assistant bubble carries the first timestamp seen for that message', () => {
+  // Fix 12 (owner ruling 2026-09-14): `timestamp` is now the message's START,
+  // not "the first wire ts seen" (that was Fix 4's bug -- see fix-12-brief.md
+  // Facts: for a plain-text answer that first-seen ts is the END of the first
+  // block, 6.5-15.4s after the true start). This fixture predates the marker
+  // this fix adds, so the fallback applies: the previous wire event
+  // (lastEventAt as it stood just before the bubble opened) -- here the
+  // initiating user prompt. `endTimestamp` is the LAST TEXT/thinking block's
+  // own wire time (the message's second assistant event, line160, is a
+  // tool_use block -- it does not extend the bubble's text, so it does not
+  // move endTimestamp either).
+  it('without a marker, the assistant bubble\'s start falls back to the previous wire event; end is its last text block\'s own time', () => {
     const s = replay(events);
-    expect(ofKind(s, 'assistant')[0].timestamp).toBe(Date.parse('2026-09-14T04:57:09.321Z'));
+    const bubble = ofKind(s, 'assistant')[0];
+    expect(bubble.timestamp).toBe(Date.parse('2026-09-14T04:57:00.765Z'));
+    expect(bubble.endTimestamp).toBe(Date.parse('2026-09-14T04:57:09.321Z'));
+  });
+
+  it('the second message (after the steer) falls back to the LATEST wire event seen so far -- not the earlier-timestamped steer echo that preceded it on the wire', () => {
+    const s = replay(events);
+    const bubble = ofKind(s, 'assistant')[1];
+    expect(bubble.timestamp).toBe(Date.parse('2026-09-14T04:57:09.754Z'));
+    expect(bubble.endTimestamp).toBe(Date.parse('2026-09-14T04:57:11.805Z'));
+  });
+
+  it('Fix 12: an x-optio-message-start marker inserted before the real message_start gives an exact start, live and replay alike', () => {
+    const idx = events.findIndex((e) => e.type === 'stream_event' && e.event?.type === 'message_start');
+    const msgId = events[idx].event.message.id;
+    const markerTs = Date.parse('2026-09-14T04:57:05.000Z');
+    const withMarker = [
+      ...events.slice(0, idx),
+      { type: 'x-optio-message-start', id: msgId, ts: markerTs },
+      ...events.slice(idx),
+    ];
+    for (const s of [live(withMarker), replay(withMarker)]) {
+      const bubble = ofKind(s, 'assistant')[0];
+      expect(bubble.timestamp).toBe(markerTs);
+      expect(bubble.endTimestamp).toBe(Date.parse('2026-09-14T04:57:09.321Z'));
+    }
   });
 
   it('a taken steer shows the ECHO\'s wire send time, not the (later) take moment', () => {
@@ -59,11 +94,12 @@ describe('claudecode real wire: message timestamps', () => {
     expect(steer.timestamp).toBe(Date.parse('2026-09-14T04:57:02.996Z'));
   });
 
-  it('live and replay give the exact same timestamps', () => {
+  it('live and replay give the exact same timestamps (start AND end)', () => {
     const l = live(events);
     const r = replay(events);
     expect(ofKind(l, 'user').map((u) => u.timestamp)).toEqual(ofKind(r, 'user').map((u) => u.timestamp));
     expect(ofKind(l, 'assistant').map((a) => a.timestamp)).toEqual(ofKind(r, 'assistant').map((a) => a.timestamp));
+    expect(ofKind(l, 'assistant').map((a) => a.endTimestamp)).toEqual(ofKind(r, 'assistant').map((a) => a.endTimestamp));
   });
 
   it('a still-queued bubble with no echo yet carries no timestamp -- never invented', () => {
@@ -72,6 +108,27 @@ describe('claudecode real wire: message timestamps', () => {
     const q = ofKind(s, 'user').find((u) => u.queued);
     expect(q).toBeDefined();
     expect(q?.timestamp).toBeUndefined();
+  });
+});
+
+describe('claudecode real wire: message timestamps (two-steers fixture)', () => {
+  // Fix 12: the same start/end split, cross-checked against a second real
+  // recording (two steers taken across one streamed answer).
+  const events = load('claudecode-two-steers-streaming.jsonl');
+
+  it('live and replay give the exact same start AND end for every assistant bubble', () => {
+    const l = live(events);
+    const r = replay(events);
+    expect(ofKind(l, 'assistant').map((a) => a.timestamp)).toEqual(ofKind(r, 'assistant').map((a) => a.timestamp));
+    expect(ofKind(l, 'assistant').map((a) => a.endTimestamp)).toEqual(ofKind(r, 'assistant').map((a) => a.endTimestamp));
+  });
+
+  it('without a marker, every assistant bubble still resolves a start (the fallback chain never leaves a mid-conversation message timeless)', () => {
+    const s = replay(events);
+    for (const bubble of ofKind(s, 'assistant')) {
+      expect(bubble.timestamp).toBeDefined();
+      expect(bubble.endTimestamp).toBeDefined();
+    }
   });
 });
 
@@ -112,25 +169,82 @@ describe('claudecode message timestamps: synthetic events', () => {
     expect(s.items[0]).toMatchObject({ kind: 'user', timestamp: wireAt });
   });
 
-  it('a streaming delta with no wire event yet leaves the pending bubble without a timestamp', () => {
+  // Fix 12: a text-opening bubble resolves its START the moment it opens (the
+  // fallback -- the previous wire event, here the user prompt -- is already
+  // known synchronously), but its END stays unresolved until an actual
+  // assistant event finalizes a block; a delta carries no timestamp to give it
+  // one.
+  it('a streaming delta with no wire event yet resolves a start (fallback: the previous wire event) but no end yet', () => {
     const s = run([user('q', '2026-09-13T12:00:00.000Z'), delta('Hel')]);
     const bubble = s.items.find((i) => i.kind === 'assistant');
-    expect(bubble?.timestamp).toBeUndefined();
+    expect(bubble).toMatchObject({ timestamp: Date.parse('2026-09-13T12:00:00.000Z') });
+    expect(bubble?.endTimestamp).toBeUndefined();
   });
 
-  it('the assistant bubble keeps the FIRST timestamp seen across several events for the same message', () => {
+  it('the assistant bubble\'s endTimestamp tracks the LAST wire event for the message; its start (resolved once, at creation) is never overwritten', () => {
+    const t0 = '2026-09-13T12:00:00.000Z'; // the initiating prompt -- this message's start fallback
     const t1 = '2026-09-13T12:00:01.000Z';
     const t2 = '2026-09-13T12:00:02.000Z';
     const s = run([
-      user('q', '2026-09-13T12:00:00.000Z'),
+      user('q', t0),
       delta('Hel'),
       assistantText('Hello', 'm1', t1),
-      // A second event for the SAME message id must not overwrite the first
-      // timestamp already recorded for it.
+      // A second event for the SAME message id updates endTimestamp (LAST
+      // wins) but must never touch the already-resolved start.
       { ...assistantText('Hello there', 'm1', t2) },
     ]);
     const bubble = s.items.find((i) => i.kind === 'assistant');
-    expect(bubble?.timestamp).toBe(Date.parse(t1));
+    expect(bubble?.timestamp).toBe(Date.parse(t0));
+    expect(bubble?.endTimestamp).toBe(Date.parse(t2));
+  });
+
+  // Fix 12 fallback chain, in priority order: x-optio-message-start marker >
+  // the message's own first (thinking) block > the previous wire event > none.
+  describe('Fix 12: start/end fallback chain', () => {
+    const messageStart = (id: string, ts: number) => ({ type: 'x-optio-message-start', id, ts });
+    const thinkingText = (text: string, msgId: string, timestamp: string) => ({
+      type: 'assistant',
+      timestamp,
+      message: { role: 'assistant', id: msgId, content: [{ type: 'thinking', thinking: text }] },
+    });
+
+    it('a marker resolves the exact start, overriding the previous-wire-event fallback', () => {
+      const s = run([
+        user('q', '2026-09-13T11:59:59.000Z'),
+        messageStart('m1', Date.parse('2026-09-13T12:00:00.500Z')),
+        assistantText('answer', 'm1', '2026-09-13T12:00:05.000Z'),
+      ]);
+      const bubble = s.items.find((i) => i.kind === 'assistant');
+      expect(bubble?.timestamp).toBe(Date.parse('2026-09-13T12:00:00.500Z'));
+      expect(bubble?.endTimestamp).toBe(Date.parse('2026-09-13T12:00:05.000Z'));
+    });
+
+    it('without a marker, a message opening with a thinking (narration) block uses that block\'s own completing time as its start', () => {
+      const s = run([
+        user('q', '2026-09-13T11:59:59.000Z'),
+        thinkingText('let me think', 'm1', '2026-09-13T12:00:03.000Z'),
+        assistantText('answer', 'm1', '2026-09-13T12:00:05.000Z'),
+      ]);
+      const bubble = s.items.find((i) => i.kind === 'assistant');
+      expect(bubble?.timestamp).toBe(Date.parse('2026-09-13T12:00:03.000Z'));
+      expect(bubble?.endTimestamp).toBe(Date.parse('2026-09-13T12:00:05.000Z'));
+    });
+
+    it('with no marker and no prior wire event (the very first message of the conversation), the bubble gets no start at all -- never invented', () => {
+      const s = run([assistantText('answer', 'm1', '2026-09-13T12:00:05.000Z')]);
+      const bubble = s.items.find((i) => i.kind === 'assistant');
+      expect(bubble?.timestamp).toBeUndefined();
+      expect(bubble?.endTimestamp).toBe(Date.parse('2026-09-13T12:00:05.000Z'));
+    });
+
+    it('a marker recorded for a different message id is left pending, not consumed by an unrelated message', () => {
+      const s = run([
+        messageStart('other-id', 999),
+        assistantText('answer', 'm1', '2026-09-13T12:00:05.000Z'),
+      ]);
+      const bubble = s.items.find((i) => i.kind === 'assistant');
+      expect(bubble?.timestamp).toBeUndefined();
+    });
   });
 
   it('an is_error result gets a timestamp derived from the wire, not an invented one', () => {

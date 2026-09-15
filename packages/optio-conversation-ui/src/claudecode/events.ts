@@ -276,8 +276,12 @@ function finalizeAt(items: ChatItem[], idx: number): ChatItem[] {
 // A streamed delta (text_delta or thinking_delta) extends the open part of the
 // pending bubble; the first delta of a block opens a new part, separated from
 // earlier parts by a blank line. A pending bubble that is no longer the tail is
-// finalized where it stands and a fresh bubble opens at the end.
-function appendDelta(items: ChatItem[], seq: number, delta: string): ChatItem[] {
+// finalized where it stands and a fresh bubble opens at the end. `start`
+// (Fix 12), when given, is this message's resolved START (x-optio-message-start
+// ts, or the lastEventAt fallback — see reduceEvent's `stream_event` case): it
+// is only ever used when this call opens a FRESH bubble (a delta carries no
+// timestamp of its own to backfill with later, unlike applyBlockText).
+function appendDelta(items: ChatItem[], seq: number, delta: string, start?: number): ChatItem[] {
   const idx = pendingIndex(items);
   if (idx !== -1 && isTail(items, idx)) {
     const cur = items[idx] as AssistantItem;
@@ -290,18 +294,27 @@ function appendDelta(items: ChatItem[], seq: number, delta: string): ChatItem[] 
     });
   }
   if (idx !== -1) items = finalizeAt(items, idx);
-  return appendItems(items, [{ kind: 'assistant', text: delta, pending: true, seq, msgId: null, openPart: 0 }]);
+  const fresh: AssistantItem = { kind: 'assistant', text: delta, pending: true, seq, msgId: null, openPart: 0 };
+  if (start !== undefined) fresh.timestamp = start;
+  return appendItems(items, [fresh]);
 }
 
 // A content block's final assistant event (it carries the block's full text).
 // Within the same message it replaces the part its deltas streamed, or appends
 // a new part when nothing streamed (replays hold no stream_events). A different
 // message, or a pending bubble that is no longer the tail, opens a fresh bubble.
-// `ts`, when given, is this event's own wire time; the bubble keeps the FIRST
-// one it ever sees for its message (a streaming delta carries none — the
-// bubble may exist with no timestamp yet, filled in once its assistant event
-// arrives; a later event for the same message must not overwrite it).
-function applyBlockText(items: ChatItem[], seq: number, text: string, msgId?: string, ts?: number): ChatItem[] {
+// `ts`, when given, is this event's own wire time: it always becomes (or
+// updates) `endTimestamp` — the LAST one seen for the message — and, only when
+// this call opens a fresh bubble AND no better `start` was resolved by the
+// caller, backfills `timestamp` too (Fix 12 fallback: "the message opens with
+// a thinking block" — that block's own completing time). `start`, when given,
+// is this message's resolved START (x-optio-message-start ts, or the
+// lastEventAt fallback for a message opening with plain text — see
+// reduceEvent's `assistant` case); it wins over `ts` and is set once, on
+// creation, never overwritten by a later block of the same message.
+function applyBlockText(
+  items: ChatItem[], seq: number, text: string, msgId?: string, ts?: number, start?: number,
+): ChatItem[] {
   const idx = pendingIndex(items);
   if (idx !== -1) {
     const cur = items[idx] as AssistantItem;
@@ -313,13 +326,15 @@ function applyBlockText(items: ChatItem[], seq: number, text: string, msgId?: st
           : cur.text + (cur.text === '' ? '' : PART_SEPARATOR);
       const next: AssistantItem = { ...cur, text: base + text, msgId: msgId ?? cur.msgId };
       if (next.timestamp === undefined && ts !== undefined) next.timestamp = ts;
+      if (ts !== undefined) next.endTimestamp = ts;
       delete next.openPart;
       return replaceAt(items, idx, next);
     }
     items = finalizeAt(items, idx);
   }
   const fresh: AssistantItem = { kind: 'assistant', text, pending: true, seq, msgId: msgId ?? null };
-  if (ts !== undefined) fresh.timestamp = ts;
+  if (start !== undefined) fresh.timestamp = start;
+  if (ts !== undefined) fresh.endTimestamp = ts;
   return appendItems(items, [fresh]);
 }
 
@@ -381,9 +396,9 @@ function insertBeforeRow(items: ChatItem[], rowSeq: number, rows: ChatItem[]): C
 // The interrupted message's final text (the CLI sends it after the
 // interrupt): it completes the interrupted bubble right before the row,
 // replacing the part its deltas streamed (live), or becomes that bubble
-// (replay holds no deltas). `ts`: see applyBlockText — first-seen wins.
+// (replay holds no deltas). `ts`/`start`: see applyBlockText.
 function applyInterruptedText(
-  items: ChatItem[], rowSeq: number, seq: number, text: string, msgId?: string, ts?: number,
+  items: ChatItem[], rowSeq: number, seq: number, text: string, msgId?: string, ts?: number, start?: number,
 ): ChatItem[] {
   const r = interruptRowIndex(items, rowSeq);
   const prev = r > 0 ? items[r - 1] : undefined;
@@ -394,11 +409,13 @@ function applyInterruptedText(
         : prev.text + (prev.text === '' ? '' : PART_SEPARATOR);
     const next: AssistantItem = { ...prev, text: base + text, msgId: msgId ?? prev.msgId };
     if (next.timestamp === undefined && ts !== undefined) next.timestamp = ts;
+    if (ts !== undefined) next.endTimestamp = ts;
     delete next.openPart;
     return replaceAt(items, r - 1, next);
   }
   const fresh: AssistantItem = { kind: 'assistant', text, pending: false, seq, msgId: msgId ?? null, interrupted: true };
-  if (ts !== undefined) fresh.timestamp = ts;
+  if (start !== undefined) fresh.timestamp = start;
+  if (ts !== undefined) fresh.endTimestamp = ts;
   return insertBeforeRow(items, rowSeq, [fresh]);
 }
 
@@ -485,6 +502,10 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       state = foldControlUpdate(state, { id: 'model', value: rawModel.replace(/\[[^\]]*\]$/, '') });
     }
   }
+  // Fix 12: captured BEFORE this event's own wire time (if any) updates
+  // lastEventAt just below — an assistant message's start fallback #3 is the
+  // PREVIOUS wire event, never this one (see the `assistant` case).
+  const priorLastEventAt = state.lastEventAt;
   // Track the latest wire time (see lastWireTime).
   if (ev?.type === 'user' || ev?.type === 'assistant') {
     const t = wireTime(ev);
@@ -495,6 +516,20 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
   switch (ev?.type) {
     case 'x-optio-control-update':
       return foldControlUpdate(state, ev);
+
+    // Synthetic, listener-emitted (Fix 12, owner ruling 2026-09-14): the
+    // listener's own stamp of a streamed message's exact start (server clock
+    // at receipt), broadcast just before the stream_event carrying
+    // message_start. Buffered and persisted, so live and replay see the same
+    // value. Recorded here, not yet attached to any bubble — consumed (and
+    // cleared) the moment that message's first content opens one, in the
+    // `stream_event` and `assistant` cases below.
+    case 'x-optio-message-start': {
+      const id = typeof ev.id === 'string' ? ev.id : '';
+      const ts = typeof ev.ts === 'number' ? ev.ts : undefined;
+      if (id === '' || ts === undefined) return state;
+      return { ...state, pendingMessageStart: { id, ts } };
+    }
 
     case 'user': {
       // An upload prepends `System: upload received…` lines; split them off —
@@ -744,15 +779,33 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       const blocks = Array.isArray(ev.message?.content) ? ev.message.content : [];
       const msgId = typeof ev.message?.id === 'string' ? ev.message.id : undefined;
       const at = eventTime(ev, now);
-      // This event's own wire time, for the message-time shown under the
-      // bubble (see chat.ts): the FIRST such timestamp seen for a message
-      // wins (applyBlockText/applyInterruptedText enforce that), so a later
-      // event for the same message never overrides it.
+      // This event's own wire time: always becomes/updates `endTimestamp` —
+      // the LAST one seen for a message (applyBlockText/applyInterruptedText
+      // enforce that; see chat.ts).
       const ts = wireTime(ev) ?? undefined;
+      // Fix 12: this message's resolved START, used only by whichever block
+      // below actually opens a fresh bubble for it. Priority: the listener's
+      // x-optio-message-start marker for THIS message id; otherwise, if the
+      // message opens with a thinking block, that block's own (this event's)
+      // completing time; otherwise the previous wire event (priorLastEventAt)
+      // — resolved per block below, since only a text-opening message uses
+      // that fallback. A marker always precedes the message it announces (the
+      // stream_event message_start already finalized any earlier bubble), so
+      // at most one message ever consumes it, and consuming it here (whether
+      // or not this particular event ends up opening the bubble live vs.
+      // replay) is always correct.
+      const marker =
+        state.pendingMessageStart !== undefined && state.pendingMessageStart.id === msgId
+          ? state.pendingMessageStart.ts
+          : undefined;
+      if (marker !== undefined) state = { ...state, pendingMessageStart: undefined };
       let items = state.items;
       for (const block of blocks) {
         const text = blockText(block);
         if (text !== null) {
+          const freshStart = marker !== undefined
+            ? marker
+            : block?.type === 'thinking' ? ts : priorLastEventAt;
           // The agent is answering (or narrating) — complete this block's
           // part of the bubble. After an operator interrupt, the interrupted
           // message's text completes the cut-off bubble in front of its row
@@ -760,10 +813,10 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
           // already tracked — or, if none existed yet, a freshly inserted
           // one, tracked here by its own seq, this event's `seq`).
           if (state.interrupt) {
-            items = applyInterruptedText(items, state.interrupt.rowSeq, seq, text, msgId, ts);
+            items = applyInterruptedText(items, state.interrupt.rowSeq, seq, text, msgId, ts, freshStart);
             state = noteInterrupted(state, seq);
           } else {
-            items = applyBlockText(items, seq, text, msgId, ts);
+            items = applyBlockText(items, seq, text, msgId, ts, freshStart);
           }
         } else if (block?.type === 'tool_use') {
           // A persistent row per call; its tool_result (a later user event)
@@ -797,9 +850,20 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // the hidden reasoning block streams no text). signature/input_json deltas
       // carry neither.
       const d = ev.event?.delta;
-      const delta = d?.type === 'thinking_delta' ? d.thinking : d?.text;
+      const isThinking = d?.type === 'thinking_delta';
+      const delta = isThinking ? d.thinking : d?.text;
       if (typeof delta !== 'string' || delta === '') return state;
-      return { ...state, items: appendDelta(state.items, seq, delta) };
+      // Fix 12: this message's resolved START (see the `assistant` case for
+      // the full priority chain). A delta carries no timestamp of its own, so
+      // the thinking-opening fallback can't resolve here — it is left unset
+      // and backfilled once this block's own assistant event arrives
+      // (applyBlockText's existing first-seen-wins merge). message_start
+      // above already finalized any earlier bubble, so a pending marker is
+      // always for the message this delta is about to open.
+      let start = state.pendingMessageStart?.ts;
+      if (start === undefined && !isThinking) start = state.lastEventAt;
+      if (state.pendingMessageStart !== undefined) state = { ...state, pendingMessageStart: undefined };
+      return { ...state, items: appendDelta(state.items, seq, delta, start) };
     }
 
     case 'result': {
