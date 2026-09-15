@@ -9,8 +9,11 @@ optio-api widget proxy (which injects the basic-auth credential):
                      After a resume the restored history is followed by one
                      {"type": "x-optio-resumed"} marker.
   POST /send       — {text}  -> steering.send_when_ready; {ok, id, queued}
-  POST /steer      — {text}  -> steering.interrupt_and_send; {ok, id}
-                     (empty text: deliver what is queued; id is null)
+  POST /steer      — {text, upTo?} -> steering.interrupt_and_send; {ok, id}
+                     (empty text: deliver what is queued; id is null. upTo:
+                     a queued id — "Send now" up to and including it, Fix
+                     13a; ignored unless the agent is native-queue AND the
+                     conversation supports cancel_async_message)
   POST /interrupt  — {}      -> steering.interrupt (stop only)
   POST /control    — {id, value}                  -> conversation.set_control
   GET  /download   — ?path=<relpath>              -> download_reader; returns
@@ -264,8 +267,11 @@ class ConversationListener:
         text = payload.get("text", "")
         if not isinstance(text, str):
             return web.json_response({"ok": False, "reason": "bad-text"}, status=400)
+        up_to = payload.get("upTo")
+        if up_to is not None and not isinstance(up_to, str):
+            return web.json_response({"ok": False, "reason": "bad-upTo"}, status=400)
         try:
-            qid = await self._steering.interrupt_and_send(text)
+            qid = await self._steering.interrupt_and_send(text, up_to=up_to)
         except ConversationClosed:
             return web.json_response({"ok": False, "reason": "closed"}, status=409)
         return web.json_response({"ok": True, "id": qid})
