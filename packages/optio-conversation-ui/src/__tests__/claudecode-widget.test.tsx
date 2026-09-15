@@ -375,6 +375,10 @@ describe('ConversationWidget', () => {
   // its POST actually reached the listener, so ClaudeCodeView's onInterrupt
   // now resolves the boolean postJson/post already computes instead of
   // discarding it.
+  // Fix 18: Interrupt is now a vultus ActionButton nested inside the
+  // data-testid="conversation-interrupt" wrapper span, so the click must
+  // land on the real <button> — a click fired on the wrapper does not
+  // bubble down to it. The accessible name is still 'Interrupt'.
   it('a failed /interrupt POST makes onInterrupt resolve false, surfacing the pending-then-failed button state', async () => {
     const fetchMock = vi.fn(async () => new Response('', { status: 500 }));
     vi.stubGlobal('fetch', fetchMock);
@@ -382,7 +386,7 @@ describe('ConversationWidget', () => {
     fire({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'go' }] } });
     fire({ type: 'assistant', message: { role: 'assistant', id: 'm1', content: [{ type: 'text', text: 'working' }] } });
     await act(async () => {
-      fireEvent.click(screen.getByTestId('conversation-interrupt'));
+      fireEvent.click(screen.getByRole('button', { name: 'Interrupt' }));
     });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
     const [url] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
@@ -399,7 +403,7 @@ describe('ConversationWidget', () => {
     fire({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'go' }] } });
     fire({ type: 'assistant', message: { role: 'assistant', id: 'm1', content: [{ type: 'text', text: 'working' }] } });
     await act(async () => {
-      fireEvent.click(screen.getByTestId('conversation-interrupt'));
+      fireEvent.click(screen.getByRole('button', { name: 'Interrupt' }));
     });
     await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
     expect(screen.queryByTestId('conversation-error')).toBeNull();

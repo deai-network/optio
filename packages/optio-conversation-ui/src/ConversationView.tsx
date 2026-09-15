@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Alert, Button, Input, Segmented, Select, Slider, Spin, Switch, Tooltip, theme } from 'antd';
 import type { GlobalToken } from 'antd';
-import { CombinedActionButton, type ActionStatus } from 'vultus-antd';
+import { ActionButton, CombinedActionButton, type ActionStatus } from 'vultus-antd';
 import type { TextAreaRef } from 'antd/es/input/TextArea';
 import type { ChatItem, ChatState, SessionControl } from './chat.js';
 import { AnswerBlock } from './AnswerBlock.js';
@@ -262,6 +262,52 @@ function ensureSendButtonStyle(): void {
   .optio-cc-send-btn > .ant-btn { width: 100%; }
   .optio-cc-send-btn > .ant-dropdown-button { width: 100%; }
   .optio-cc-send-btn > .ant-dropdown-button > .ant-btn:first-child { flex: auto; }`;
+  document.head.appendChild(el);
+}
+
+// Fix 18 (owner ruling 2026-09-15, manual-test finding): the pending label
+// used to swap to 'Interrupting…', which is longer than 'Interrupt' and made
+// the buttons jump when a turn was cut. The label now always reads
+// 'Interrupt' — a spinner (antd's `loading` state, driven by the action's own
+// `pending` field below) is the only sign the request is in flight — and
+// this fixed width keeps the button's footprint constant across idle,
+// pending and disabled. Sized like SEND_BUTTON_WIDTH above: 'Interrupt' (10
+// characters) at size="small" runs at most ~75px of text under antd's
+// default 14px UI font, antd's loading spinner replaces the icon slot at
+// ~14px plus a ~8px gap to the label while pending, and the button itself
+// adds ~14px of horizontal padding (7px each side). 100px covers the
+// spinner-plus-label case with a few px of headroom and does not leave a
+// visibly empty gap when idle.
+const INTERRUPT_BUTTON_WIDTH = 100;
+
+// Mirrors SEND_BUTTON_STYLE_ID: the reserved INTERRUPT_BUTTON_WIDTH slot is a
+// plain <span>, so the antd <Button> vultus's ActionButton renders inside it
+// is told to fill it.
+//
+// Review-of-Fix-18 finding (round 1): vultus's ActionButton (Props: action,
+// size, block, keepOriginalDefault — no style/className, ActionButton.tsx:
+// 8-14) cannot be given the fixed width directly, and unitas is read-only
+// for this fix, so the width is applied from here via this wrapper <span>
+// plus a CSS rule, exactly as Fix 10 already does for the send button. The
+// owner has not explicitly signed off on this specific instance (see the
+// round-1 fix report); it is recorded here for visibility. Unlike Fix 10's
+// original rule, this one does NOT assume the antd <Button> is the wrapper's
+// *direct* child: ActionButton inserts its own <span> around the button
+// whenever `action.reason` is set (a Tooltip wrapper, ActionButton.tsx:
+// 73-79). `interruptAction` above never sets `reason` or `confirmation`
+// today, so that extra wrapper never appears in practice — but `> *` plus a
+// plain descendant `.ant-btn` rule (rather than `> .ant-btn`) keeps the fill
+// correct even if it ever does, instead of silently stopping to apply. This
+// does not cover the popconfirm/typing-modal wrapper cases, which
+// `interruptAction` also never uses.
+const INTERRUPT_BUTTON_STYLE_ID = 'optio-cc-interrupt-button-style';
+function ensureInterruptButtonStyle(): void {
+  if (typeof document === 'undefined' || document.getElementById(INTERRUPT_BUTTON_STYLE_ID)) return;
+  const el = document.createElement('style');
+  el.id = INTERRUPT_BUTTON_STYLE_ID;
+  el.textContent = `.optio-cc-interrupt-btn { display: inline-flex; }
+  .optio-cc-interrupt-btn > * { width: 100%; }
+  .optio-cc-interrupt-btn .ant-btn { width: 100%; }`;
   document.head.appendChild(el);
 }
 
@@ -662,9 +708,10 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
 
   // Interrupt (Fix 6): a plain ref guards against a second click landing
   // before React re-renders (same reason sendingNowRef exists below), while
-  // `interrupting` state drives the button's pending label/disabled look. A
-  // void-returning onInterrupt (older engines) is treated as immediate
-  // success — there is nothing to await.
+  // `interrupting` state drives the button's pending spinner/disabled look
+  // (Fix 18: the label itself no longer changes). A void-returning
+  // onInterrupt (older engines) is treated as immediate success — there is
+  // nothing to await.
   const interruptingRef = useRef(false);
   async function interrupt() {
     if (interruptingRef.current || !busy || closed) return;
@@ -685,6 +732,25 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     }
   }
 
+  // Fix 18 (owner addition 2026-09-15): every other input-bar button is now a
+  // vultus action, so Interrupt becomes one too — a danger ActionStatus fed
+  // to vultus's ActionButton, same shape as barAction above. `pending`
+  // mirrors `interrupting`, so ActionButton's antd Button renders the
+  // `loading` spinner (see ActionButton.tsx) instead of Fix 6's old
+  // 'Interrupting…' label swap; `interrupt()` above still runs the same
+  // ref-guarded fire-once/error logic, just invoked through `fire`.
+  const interruptAction: ActionStatus = {
+    id: 'interrupt',
+    label: 'Interrupt',
+    variant: 'danger',
+    pending: interrupting,
+    disabled: !busy || closed,
+    invisible: false,
+    errors: [],
+    fire: () => void interrupt(),
+    firePromise: async () => interrupt(),
+  };
+
   // On mount: install the flash keyframes + copy hover rule and focus the input
   // so the operator can type immediately without clicking. The widget mounts
   // async (it un-gates only once widgetData arrives), so on a full page-load a
@@ -695,6 +761,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     ensureCopyStyle();
     ensureInterruptedStyle();
     ensureSendButtonStyle();
+    ensureInterruptButtonStyle();
     inputRef.current?.focus();
     const timers = [100, 400, 1000].map((ms) => setTimeout(() => inputRef.current?.focus(), ms));
     return () => timers.forEach(clearTimeout);
@@ -1358,15 +1425,20 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                 ]}
               />
             </span>
-            <Button
-              size="small"
-              danger
+            {/* Fix 18 (owner addition): Interrupt is now a vultus action
+                (danger ActionStatus above) instead of a plain antd Button —
+                it renders the same red button, but its own `pending` state
+                drives ActionButton's antd `loading` spinner rather than
+                swapping the label. INTERRUPT_BUTTON_WIDTH keeps the
+                footprint constant across idle/pending/disabled, exactly the
+                SEND_BUTTON_WIDTH pattern above. */}
+            <span
               data-testid="conversation-interrupt"
-              disabled={!busy || closed || interrupting}
-              onClick={() => void interrupt()}
+              className="optio-cc-interrupt-btn"
+              style={{ width: INTERRUPT_BUTTON_WIDTH }}
             >
-              {interrupting ? 'Interrupting…' : 'Interrupt'}
-            </Button>
+              <ActionButton action={interruptAction} size="small" />
+            </span>
           </div>
           </div>
         </div>
