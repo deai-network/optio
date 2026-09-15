@@ -347,3 +347,70 @@ async def test_steering_events_persist_across_a_resume():
         initial_events=[(x[0], x[1]) for x in exported],
     )
     assert [e["type"] for _, e in lst2._buffer] == types + ["x-optio-resumed"]
+
+
+# -- start-of-message marker (Fix 12) -----------------------------------------
+# Owner ruling 2026-09-14: an interval "HH:MM - HH:MM" for a streamed agent
+# message needs an EXACT start, stamped once by the listener (a server clock
+# read at receipt), so the value is identical live and on replay. The clock is
+# injected so these tests are deterministic (never read the wall clock).
+
+def _message_start(msg_id: str) -> dict:
+    return {"type": "stream_event", "event": {"type": "message_start", "message": {"id": msg_id, "content": []}}}
+
+
+async def test_message_start_gets_a_marker_before_the_stream_event_in_the_buffer():
+    conv = FakeConversation()
+    lst = ConversationListener(conv, password="pw", clock=lambda: 1700000000123)
+    conv.fire(_message_start("msg_1"))
+    # The stream_event itself stays unbuffered (UNBUFFERED_TYPES); only the
+    # marker this fix adds lands in the buffer.
+    assert [e for _, e in lst._buffer] == [
+        {"type": "x-optio-message-start", "id": "msg_1", "ts": 1700000000123},
+    ]
+
+
+async def test_message_start_marker_precedes_the_stream_event_live():
+    # Not the shared `listener` fixture: this needs an injected clock, and the
+    # fixture always builds a ConversationListener with the real one.
+    conv = FakeConversation()
+    lst = ConversationListener(conv, password="pw", clock=lambda: 1)
+    port = await lst.start("127.0.0.1")
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(f"http://127.0.0.1:{port}/events", headers=_auth("pw")) as resp:
+                conv.fire(_message_start("msg_1"))
+                live = await _read_events(resp, 2)
+    finally:
+        await lst.stop()
+    assert live[0] == {"type": "x-optio-message-start", "id": "msg_1", "ts": 1}
+    assert live[1]["type"] == "stream_event"
+
+
+async def test_message_start_marker_appears_exactly_once_per_message_start():
+    conv = FakeConversation()
+    lst = ConversationListener(conv, password="pw", clock=lambda: 1)
+    conv.fire(_message_start("m1"))
+    conv.fire({"type": "stream_event", "event": {"type": "content_block_start"}})
+    conv.fire({"type": "stream_event", "event": {"type": "content_block_delta", "delta": {}}})
+    conv.fire(_message_start("m2"))
+    markers = [e for _, e in lst._buffer if e.get("type") == "x-optio-message-start"]
+    assert [m["id"] for m in markers] == ["m1", "m2"]
+
+
+async def test_message_start_marker_is_persisted_by_export_buffer():
+    conv = FakeConversation()
+    lst = ConversationListener(conv, password="pw", clock=lambda: 42)
+    conv.fire(_message_start("msg_1"))
+    conv.fire({"type": "result", "n": 1})
+    exported = lst.export_buffer()
+    assert [e["type"] for _, e in exported] == ["x-optio-message-start", "result"]
+    assert exported[0][1] == {"type": "x-optio-message-start", "id": "msg_1", "ts": 42}
+
+
+async def test_message_start_with_no_message_id_emits_no_marker():
+    # Defensive: a malformed/missing id must not produce a marker with no id.
+    conv = FakeConversation()
+    lst = ConversationListener(conv, password="pw", clock=lambda: 1)
+    conv.fire({"type": "stream_event", "event": {"type": "message_start", "message": {}}})
+    assert list(lst._buffer) == []
