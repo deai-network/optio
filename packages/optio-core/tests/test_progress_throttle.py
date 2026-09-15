@@ -117,7 +117,105 @@ async def test_avalanche_drops_intermediate_messages_and_emits_summary(mongo_db)
     assert len(pre_burst) + drop_count + 1 == n_calls
 
 
-async def test_avalanche_then_quiet_drop_summary_emitted_before_survivor(mongo_db):
+class _FakeClock:
+    """Stands in for `time` inside optio_core.context only, so a test can
+    cross the avalanche window without sleeping (asyncio keeps its clock)."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture
+def fake_clock(monkeypatch):
+    from optio_core import context as context_module
+
+    clock = _FakeClock()
+    monkeypatch.setattr(context_module, "time", clock)
+    return clock
+
+
+async def test_quiet_message_during_avalanche_flush_is_written_once(
+    mongo_db, fake_clock, monkeypatch,
+):
+    """A quiet report_progress arriving while a flush writes the drop summary
+    must not make that flush write None, and every line must land exactly
+    once, including the quiet one."""
+    from optio_core import store
+
+    task = TaskInstance(execute=_dummy, process_id="avalanche-race", name="Race")
+    proc = await upsert_process(mongo_db, "test", task)
+    ctx = _make_context(mongo_db, "test", proc)
+
+    real_update_progress = store.update_progress
+    in_flight = asyncio.Event()
+    release = asyncio.Event()
+
+    async def gated_update_progress(db, prefix, oid, progress):
+        message = progress.message or ""
+        if message.endswith(" messages dropped)") and not release.is_set():
+            in_flight.set()
+            await release.wait()
+        await real_update_progress(db, prefix, oid, progress)
+
+    monkeypatch.setattr(store, "update_progress", gated_update_progress)
+
+    n_burst = 30
+    for i in range(n_burst):
+        ctx.report_progress(None, f"avalanche-{i}")
+    await asyncio.wait_for(in_flight.wait(), 60)  # writing the drop summary
+
+    fake_clock.advance(AVALANCHE_WINDOW + 0.05)
+    ctx.report_progress(None, "after")  # quiet again, mid-flush
+    release.set()
+    await asyncio.wait_for(_wait_for_flush(ctx), 60)
+
+    messages = await _log_messages(mongo_db, "test", "avalanche-race")
+    assert messages[-2:] == [f"avalanche-{n_burst - 1}", "after"]
+    assert messages[-3].endswith(" messages dropped)")
+    assert sum(m.endswith(" messages dropped)") for m in messages) == 1
+
+
+async def test_percent_update_during_flush_is_not_lost(mongo_db, monkeypatch):
+    """A percent-only update made while a flush writes the previous one must
+    survive to the next flush (the flush used to clear it after its await)."""
+    from optio_core import store
+
+    task = TaskInstance(execute=_dummy, process_id="pct-race", name="Pct")
+    proc = await upsert_process(mongo_db, "test", task)
+    ctx = _make_context(mongo_db, "test", proc)
+
+    real_update_progress = store.update_progress
+    in_flight = asyncio.Event()
+    release = asyncio.Event()
+
+    async def gated_update_progress(db, prefix, oid, progress):
+        if progress.percent == 50 and not release.is_set():
+            in_flight.set()
+            await release.wait()
+        await real_update_progress(db, prefix, oid, progress)
+
+    monkeypatch.setattr(store, "update_progress", gated_update_progress)
+
+    ctx.report_progress(50)
+    await asyncio.wait_for(in_flight.wait(), 60)  # writing 50
+    ctx.report_progress(70)
+    release.set()
+    await asyncio.wait_for(_wait_for_flush(ctx), 60)
+    await ctx.flush_final_progress()
+
+    proc = await get_process_by_process_id(mongo_db, "test", "pct-race")
+    assert proc["progress"]["percent"] == 70
+
+
+async def test_avalanche_then_quiet_drop_summary_emitted_before_survivor(
+    mongo_db, fake_clock,
+):
     """When the avalanche subsides, the drop summary must precede both
     the surviving avalanche message and any subsequent quiet message."""
     task = TaskInstance(execute=_dummy, process_id="burst2quiet", name="B2Q")
@@ -129,8 +227,8 @@ async def test_avalanche_then_quiet_drop_summary_emitted_before_survivor(mongo_d
     for i in range(n_burst):
         ctx.report_progress(None, f"avalanche-{i}")
 
-    # Wait for the rolling window to clear.
-    await asyncio.sleep(AVALANCHE_WINDOW + 0.05)
+    # Let the rolling window clear.
+    fake_clock.advance(AVALANCHE_WINDOW + 0.05)
 
     # A quiet call now — the surviving avalanche message and the drop
     # summary should be emitted as part of this call's flush, then the
