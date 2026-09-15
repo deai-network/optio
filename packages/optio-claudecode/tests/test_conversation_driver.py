@@ -242,6 +242,76 @@ async def test_interrupt_handshake(convo):
 
 
 @pytest.mark.asyncio
+async def test_interrupt_with_cancel_queued_asks_the_cli_to_drop_its_queue(convo):
+    # Fix 19: at session end the message in flight must not start a new turn
+    # the kill would cut (cli-queue-lifecycle.md, interrupt_receipt_v1).
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await c.send("long task")
+    await asyncio.wait_for(handle.stdin.lines.get(), 60)   # user msg
+    intr = asyncio.create_task(c.interrupt(cancel_queued=True))
+    ctrl = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert ctrl["request"] == {"subtype": "interrupt", "cancel_queued": True}
+    handle.stdout.feed({"type": "control_response", "response": {
+        "subtype": "success", "request_id": ctrl["request_id"], "response": {"cancelled": []}}})
+    await asyncio.wait_for(intr, 60)
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_interrupt_for_session_end_returns_after_the_turns_result(convo):
+    c, handle = convo
+    seen = []
+    c.on_event(seen.append)
+    reader = asyncio.create_task(c.run_reader())
+    await c.send("long task")
+    await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    ending = asyncio.create_task(c.interrupt_for_session_end())
+    ctrl = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert ctrl["request"] == {"subtype": "interrupt", "cancel_queued": True}
+    handle.stdout.feed({"type": "control_response", "response": {
+        "subtype": "success", "request_id": ctrl["request_id"], "response": {"cancelled": []}}})
+    handle.stdout.feed({"type": "assistant", "message": {"id": "m1", "role": "assistant",
+                        "content": [{"type": "text", "text": "Because I could"}]}})
+    handle.stdout.feed({"type": "result", "subtype": "error_during_execution",
+                        "is_error": True, "terminal_reason": "aborted_streaming"})
+    await asyncio.wait_for(ending, 60)
+    # It returned only once the result had been dispatched (the CLI has then
+    # written the partial into its transcript).
+    assert any(e.get("type") == "result" for e in seen)
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_interrupt_for_session_end_is_a_no_op_while_idle(convo):
+    c, handle = convo
+    await asyncio.wait_for(c.interrupt_for_session_end(), 60)
+    assert handle.stdin.lines.qsize() == 0
+
+
+@pytest.mark.asyncio
+async def test_begin_session_end_refuses_sends_but_not_the_interrupt(convo):
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await c.send("long task")
+    await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    c.begin_session_end()
+    assert c.closed
+    with pytest.raises(ConversationClosed):
+        await c.send("too late")
+    intr = asyncio.create_task(c.interrupt(cancel_queued=True))
+    ctrl = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert ctrl["type"] == "control_request"
+    handle.stdout.feed({"type": "control_response", "response": {
+        "subtype": "success", "request_id": ctrl["request_id"], "response": {"cancelled": []}}})
+    await asyncio.wait_for(intr, 60)
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
 async def test_send_after_close_raises(convo):
     c, handle = convo
     reader = asyncio.create_task(c.run_reader())
@@ -392,6 +462,40 @@ async def test_interrupt_and_send_after_two_queued_gives_three_separate_messages
     handle.stdout.feed(_lifecycle("m2", "started"))
     m3 = await asyncio.wait_for(handle.stdin.lines.get(), 60)
     assert (m3["uuid"], m3["message"]["content"][0]["text"]) == ("m3", "#3\n\n")
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
+async def test_session_end_writes_no_further_queued_message_over_the_real_driver(convo):
+    # Fix 19: the graceful interrupt sweeps the message in flight
+    # (cancel_queued -> command_lifecycle "cancelled", never "started").
+    # Steering advances on that final state, but begin_session_end() makes
+    # the write fail, so "two" stays undelivered for the resume to re-queue
+    # and the CLI never starts a turn the kill would cut.
+    c, handle = convo
+    ids = iter(["q1", "q2"])
+    steering = make_steering(c, new_id=lambda: next(ids))
+    reader = asyncio.create_task(c.run_reader())
+    await c.send("long task")
+    await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    await steering.send_when_ready("one")
+    await steering.send_when_ready("two")
+    first = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert first["uuid"] == "q1"
+
+    c.begin_session_end()
+    ending = asyncio.create_task(c.interrupt_for_session_end())
+    ctrl = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert ctrl["request"] == {"subtype": "interrupt", "cancel_queued": True}
+    handle.stdout.feed(_lifecycle("q1", "cancelled"))
+    handle.stdout.feed({"type": "control_response", "response": {
+        "subtype": "success", "request_id": ctrl["request_id"], "response": {"cancelled": ["q1"]}}})
+    handle.stdout.feed({"type": "result", "subtype": "error_during_execution",
+                        "is_error": True, "terminal_reason": "aborted_streaming"})
+    await asyncio.wait_for(ending, 60)
+    await steering.settle()
+    assert handle.stdin.lines.qsize() == 0  # "two" was never written
     handle.stdout.eof()
     await reader
 

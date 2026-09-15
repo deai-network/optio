@@ -37,7 +37,7 @@ from typing import Awaitable, Callable
 from aiohttp import web
 
 from optio_agents.conversation import ConversationClosed, PermissionDecision
-from optio_agents.steering import Steering
+from optio_agents.steering import INTERRUPT_EVENT, Steering
 
 from optio_claudecode.steering import make_steering
 
@@ -55,6 +55,15 @@ RESUMED_EVENT_TYPE = "x-optio-resumed"
 # so the exact same value comes back on replay.
 MESSAGE_START_EVENT_TYPE = "x-optio-message-start"
 UNBUFFERED_TYPES = {"stream_event"}
+# Fix 19 (owner rulings 2026-09-15, finding 6; see
+# docs/2026-09-15-steering-session-end-design.md): the text a message had
+# streamed when the session ended, if its final assistant event never came:
+# {"type": "x-optio-partial", "id": <message id>, "text": <text so far>}.
+# stream_event deltas are never buffered, so without it a reload or a resume
+# would lose that text.
+PARTIAL_EVENT_TYPE = "x-optio-partial"
+# The session ended while a turn ran: the UI's "⏹ Interrupted: session ended".
+SESSION_END_MARKER = {"type": INTERRUPT_EVENT, "by": "session"}
 
 
 def _wall_clock_ms() -> float:
@@ -102,6 +111,17 @@ class ConversationListener:
             # resume replays it at this point.
             self._seq += 1
             self._buffer.append((self._seq, {"type": RESUMED_EVENT_TYPE}))
+        # Fix 19, session end. Whether a turn runs (session_state_changed
+        # running or a message_start, until its result or idle); the message
+        # being streamed and the text of its open block (reset at its
+        # message_start and at each of its final assistant events); whether
+        # the session-end marker has passed; whether announce_session_end()
+        # already emitted it.
+        self._turn_open = False
+        self._partial_id: str | None = None
+        self._partial_text = ""
+        self._session_end_marked = False
+        self._session_end_announced = False
         self._subscribers: set[asyncio.Queue] = set()
         self._pending_permissions: dict[str, asyncio.Future] = {}
         self._runner: web.AppRunner | None = None
@@ -137,7 +157,9 @@ class ConversationListener:
             q.put_nowait(item)
 
     def _on_event(self, event: dict) -> None:
-        if self._is_message_start(event):
+        if event.get("type") == "x-optio-closed":
+            self._before_closed()
+        elif self._is_message_start(event):
             message = event["event"].get("message")
             msg_id = message.get("id") if isinstance(message, dict) else None
             if isinstance(msg_id, str):
@@ -149,7 +171,87 @@ class ConversationListener:
                     "id": msg_id,
                     "ts": self._clock(),
                 })
+        self._track(event)
         self._broadcast(event)
+
+    # -- session end (Fix 19) ------------------------------------------------
+
+    def _turn_running(self) -> bool:
+        return self._turn_open or self._conversation.is_pending()
+
+    def _track(self, event: dict) -> None:
+        kind = event.get("type")
+        if kind == "system" and event.get("subtype") == "session_state_changed":
+            if event.get("state") == "running":
+                self._turn_open = True
+            elif event.get("state") == "idle":
+                self._turn_open = False
+                self._partial_id, self._partial_text = None, ""
+        elif kind == "result":
+            self._turn_open = False
+            self._partial_id, self._partial_text = None, ""
+        elif kind == "assistant":
+            # Each assistant event carries one completed block: that block's
+            # text is buffered now, so nothing of it is partial any more.
+            self._partial_text = ""
+        elif kind == INTERRUPT_EVENT and event.get("by") == "session":
+            self._session_end_marked = True
+        elif kind == "stream_event":
+            inner = event.get("event")
+            if not isinstance(inner, dict):
+                return
+            if inner.get("type") == "message_start":
+                message = inner.get("message")
+                msg_id = message.get("id") if isinstance(message, dict) else None
+                self._turn_open = True
+                self._partial_id = msg_id if isinstance(msg_id, str) else None
+                self._partial_text = ""
+            elif inner.get("type") == "content_block_delta" and self._partial_id is not None:
+                delta = inner.get("delta")
+                if not isinstance(delta, dict):
+                    return
+                # A text-bearing thinking block is narration the UI renders
+                # in the bubble too; hidden thinking streams "" and adds
+                # nothing. tool_use input_json deltas are not text.
+                if delta.get("type") == "text_delta":
+                    chunk = delta.get("text")
+                elif delta.get("type") == "thinking_delta":
+                    chunk = delta.get("thinking")
+                else:
+                    chunk = None
+                if isinstance(chunk, str):
+                    self._partial_text += chunk
+
+    def _before_closed(self) -> None:
+        """Runs synchronously inside ClaudeCodeConversation._finish's drain,
+        before x-optio-closed is broadcast, so what it adds is buffered
+        before session.py's export_buffer(). The partial first (only if the
+        open block's final assistant event was not seen), then the marker
+        (only if announce_session_end() did not already send it and a turn
+        runs)."""
+        marked = self._session_end_marked
+        if not marked and not self._turn_running():
+            return
+        if self._partial_id is not None and self._partial_text:
+            self._broadcast({
+                "type": PARTIAL_EVENT_TYPE, "id": self._partial_id, "text": self._partial_text,
+            })
+        if not marked:
+            self._session_end_marked = True
+            self._broadcast(dict(SESSION_END_MARKER))
+
+    def announce_session_end(self) -> None:
+        """Fix 19, the graceful path (session.py ``_end_turn_gracefully``):
+        the session is about to interrupt the running turn. The marker goes
+        out now, through the conversation's own event stream, so it follows
+        every event already read and precedes the CLI's own interrupt
+        artefacts (its final partial assistant event, "[Request interrupted
+        by user]", the aborted result), which the UI then renders as this
+        interruption. At most once."""
+        if self._session_end_announced:
+            return
+        self._session_end_announced = True
+        self._conversation.emit_event(dict(SESSION_END_MARKER))
 
     @staticmethod
     def _is_message_start(event: dict) -> bool:

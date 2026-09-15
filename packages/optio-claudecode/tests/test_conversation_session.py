@@ -346,3 +346,55 @@ async def test_conversation_launch_is_claustrum_wrapped(
     finally:
         monkeypatch.setattr(LocalHost, "launch_subprocess", orig)
         await optio.shutdown(grace_seconds=1.0)
+
+
+def _session_waiters(conv) -> list:
+    """Pending tasks the conversation body's wait loop created on the
+    conversation's own events (close / model / effort / init). A waiter that
+    was cancelled but has not run its last step yet counts as settled."""
+    events = (conv.close_requested, conv.model_change_requested,
+              conv.effort_change_requested, conv.runtime_model_observed)
+    out = []
+    for task in asyncio.all_tasks():
+        if task.done() or task.cancelling():
+            continue
+        coro = task.get_coro()
+        frame = getattr(coro, "cr_frame", None)
+        if getattr(coro, "__qualname__", "") != "Event.wait" or frame is None:
+            continue
+        if any(frame.f_locals.get("self") is ev for ev in events):
+            out.append(task)
+    return out
+
+
+@pytest.mark.asyncio
+async def test_cancel_while_the_body_waits_leaves_no_waiter_task_pending(
+    shim_install_dir: pathlib.Path,
+    claude_cache_dir: pathlib.Path,
+    task_root,
+    mongo_db,
+):
+    """Fix 19 (coordinator item, engine log 2026-09-15 09:06:01): a cancel
+    raises CancelledError at the body's asyncio.wait, which used to leave its
+    four Event waiters pending ("Task was destroyed but it is pending!")."""
+    optio = await _make_optio(mongo_db, "ccconvwait")
+    try:
+        task = create_claudecode_task(
+            process_id="cc-conv-cancel-wait",
+            name="Conversation cancelled while waiting",
+            config=_conversation_config(
+                shim_install_dir, claude_cache_dir, supports_resume=False,
+            ),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result(
+            "cc-conv-cancel-wait", session_id=None, timeout=60,
+        )
+        # The body parks in its wait loop: all four Event waiters exist.
+        await _wait_for(lambda: len(_session_waiters(conv)) == 4)
+        await optio.cancel("cc-conv-cancel-wait")
+        proc = await _wait_terminal(optio, "cc-conv-cancel-wait")
+        assert proc["status"]["state"] == "cancelled"
+        assert _session_waiters(conv) == []
+    finally:
+        await optio.shutdown(grace_seconds=1.0)

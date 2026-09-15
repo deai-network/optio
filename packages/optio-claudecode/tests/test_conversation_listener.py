@@ -440,3 +440,148 @@ async def test_message_start_with_no_message_id_emits_no_marker():
     lst = ConversationListener(conv, password="pw", clock=lambda: 1)
     conv.fire({"type": "stream_event", "event": {"type": "message_start", "message": {}}})
     assert list(lst._buffer) == []
+
+
+# -- session end (Fix 19, docs/2026-09-15-steering-session-end-design.md) -----
+# Owner rulings 2026-09-15 (finding 6): a session that ends mid-turn gets a
+# persisted {"type":"x-optio-interrupt","by":"session"} marker, and the text
+# a cut-off message had streamed is kept as x-optio-partial. Both reach the
+# buffer before x-optio-closed, so export_buffer() persists them.
+
+RUNNING = {"type": "system", "subtype": "session_state_changed", "state": "running"}
+IDLE = {"type": "system", "subtype": "session_state_changed", "state": "idle"}
+CLOSED = {"type": "x-optio-closed", "reason": "process ended"}
+SESSION_END = {"type": "x-optio-interrupt", "by": "session"}
+
+
+def _delta(text: str, kind: str = "text_delta") -> dict:
+    field = "thinking" if kind == "thinking_delta" else "text"
+    return {"type": "stream_event", "event": {
+        "type": "content_block_delta", "index": 0, "delta": {"type": kind, field: text}}}
+
+
+def _assistant(msg_id: str, text: str) -> dict:
+    return {"type": "assistant", "message": {
+        "id": msg_id, "role": "assistant", "content": [{"type": "text", "text": text}]}}
+
+
+def _session_events(lst) -> list[dict]:
+    return [e for _, e in lst._buffer if e.get("type") in ("x-optio-partial", "x-optio-interrupt")]
+
+
+async def test_a_session_end_mid_stream_buffers_the_partial_then_the_marker_before_closed():
+    conv = FakeConversation()
+    lst = ConversationListener(conv, password="pw", clock=lambda: 1)
+    for event in (RUNNING, _message_start("m1"), _delta("Because I"), _delta(" could")):
+        conv.fire(event)
+    conv.fire(CLOSED)
+    partial = {"type": "x-optio-partial", "id": "m1", "text": "Because I could"}
+    assert [e for _, e in lst._buffer][-3:] == [partial, SESSION_END, CLOSED]
+    assert [e for _, e in lst.export_buffer()][-2:] == [partial, SESSION_END]
+
+
+async def test_hidden_thinking_leaves_no_partial_only_the_marker():
+    conv = FakeConversation()
+    lst = ConversationListener(conv, password="pw", clock=lambda: 1)
+    for event in (
+        RUNNING, _message_start("m1"), _delta("", "thinking_delta"),
+        {"type": "assistant", "message": {"id": "m1", "role": "assistant",
+                                          "content": [{"type": "thinking", "thinking": "", "signature": "s"}]}},
+    ):
+        conv.fire(event)
+    conv.fire(CLOSED)
+    assert _session_events(lst) == [SESSION_END]
+
+
+async def test_an_idle_session_end_adds_nothing():
+    conv = FakeConversation()
+    lst = ConversationListener(conv, password="pw", clock=lambda: 1)
+    for event in (
+        RUNNING, _message_start("m1"), _delta("Done"), _assistant("m1", "Done"),
+        {"type": "result", "subtype": "success", "result": "Done"}, IDLE,
+    ):
+        conv.fire(event)
+    conv.fire(CLOSED)
+    assert _session_events(lst) == []
+    fresh = ConversationListener(FakeConversation(), password="pw")
+    fresh._conversation.fire(CLOSED)
+    assert _session_events(fresh) == []
+
+
+async def test_the_partial_holds_only_the_open_block_of_the_current_message():
+    # Reset at the block's final assistant event ...
+    conv = FakeConversation()
+    lst = ConversationListener(conv, password="pw", clock=lambda: 1)
+    for event in (RUNNING, _message_start("m1"), _delta("Intro"), _assistant("m1", "Intro"), _delta("Second")):
+        conv.fire(event)
+    conv.fire(CLOSED)
+    assert _session_events(lst)[0] == {"type": "x-optio-partial", "id": "m1", "text": "Second"}
+    # ... and at the next message_start.
+    conv2 = FakeConversation()
+    lst2 = ConversationListener(conv2, password="pw", clock=lambda: 1)
+    for event in (RUNNING, _message_start("m1"), _delta("Old"), _message_start("m2"), _delta("New")):
+        conv2.fire(event)
+    conv2.fire(CLOSED)
+    assert _session_events(lst2)[0] == {"type": "x-optio-partial", "id": "m2", "text": "New"}
+
+
+async def test_is_pending_counts_as_a_running_turn_without_state_events():
+    conv = FakeConversation()
+    conv.pending = True
+    lst = ConversationListener(conv, password="pw", clock=lambda: 1)
+    for event in (_message_start("m1"), _delta("Half")):
+        conv.fire(event)
+    conv.fire(CLOSED)
+    assert _session_events(lst) == [
+        {"type": "x-optio-partial", "id": "m1", "text": "Half"}, SESSION_END,
+    ]
+
+
+async def test_an_announced_session_end_is_marked_once_and_a_flushed_answer_needs_no_partial():
+    # The graceful path: the marker goes out before the interrupt; the CLI
+    # then flushes the partial as its own final assistant event.
+    conv = FakeConversation()
+    lst = ConversationListener(conv, password="pw", clock=lambda: 1)
+    for event in (RUNNING, _message_start("m1"), _delta("Because I")):
+        conv.fire(event)
+    lst.announce_session_end()
+    lst.announce_session_end()
+    for event in (
+        _assistant("m1", "Because I could"),
+        {"type": "user", "message": {"role": "user", "content": [
+            {"type": "text", "text": "[Request interrupted by user]"}]}},
+        {"type": "result", "subtype": "error_during_execution", "is_error": True,
+         "terminal_reason": "aborted_streaming"},
+        IDLE,
+    ):
+        conv.fire(event)
+    conv.fire(CLOSED)
+    assert _session_events(lst) == [SESSION_END]
+    types = [e.get("type") for _, e in lst._buffer]
+    assert types.index("x-optio-interrupt") < types.index("assistant")
+
+
+async def test_an_announced_session_end_whose_turn_never_ended_adds_the_partial_after_the_marker():
+    conv = FakeConversation()
+    lst = ConversationListener(conv, password="pw", clock=lambda: 1)
+    for event in (RUNNING, _message_start("m1"), _delta("Because I")):
+        conv.fire(event)
+    lst.announce_session_end()
+    conv.fire(_delta(" could"))
+    conv.fire(CLOSED)
+    assert [e for _, e in lst._buffer][-3:] == [
+        SESSION_END, {"type": "x-optio-partial", "id": "m1", "text": "Because I could"}, CLOSED,
+    ]
+
+
+async def test_the_partial_and_the_marker_reach_live_viewers_before_closed(listener):
+    conv, lst, url = listener
+    async with aiohttp.ClientSession() as s:
+        async with s.get(f"{url}/events", headers=_auth("pw")) as resp:
+            conv.fire(RUNNING)
+            conv.fire(_message_start("m1"))   # its marker + the stream_event
+            conv.fire(_delta("Half"))
+            conv.fire(CLOSED)
+            live = await _read_events(resp, 7)
+    assert [e["type"] for e in live][-3:] == ["x-optio-partial", "x-optio-interrupt", "x-optio-closed"]
+    assert live[-2] == SESSION_END

@@ -29,6 +29,7 @@ from optio_core.context import ProcessContext
 from optio_core.models import BasicAuth, TaskInstance
 
 from optio_agents.context import HookContext
+from optio_agents.conversation import ConversationClosed
 from optio_agents.fs_grants import fs_isolation_dirs
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_host.host import (
@@ -706,13 +707,20 @@ async def run_claudecode_session(
                 model_task = asyncio.create_task(conversation.model_change_requested.wait())
                 effort_task = asyncio.create_task(conversation.effort_change_requested.wait())
                 init_task = asyncio.create_task(conversation.runtime_model_observed.wait())
-                done, _ = await asyncio.wait(
-                    {wait_task, close_task, model_task, effort_task, init_task},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                for t in (wait_task, close_task, model_task, effort_task, init_task):
-                    if t not in done:
-                        t.cancel()
+                waiters = (wait_task, close_task, model_task, effort_task, init_task)
+                try:
+                    done, _ = await asyncio.wait(
+                        set(waiters), return_when=asyncio.FIRST_COMPLETED,
+                    )
+                finally:
+                    # Fix 19 (coordinator item): cancelled here at session end
+                    # (CancelledError is raised at the wait above), the waiters
+                    # used to stay pending and log "Task was destroyed but it is
+                    # pending!". On a normal return this is the loop it replaces:
+                    # every waiter that has not completed is cancelled.
+                    for t in waiters:
+                        if not t.done():
+                            t.cancel()
 
                 if init_task in done and close_task not in done and wait_task not in done:
                     # --- runtime model observed from the stream's system/init:
@@ -809,6 +817,15 @@ async def run_claudecode_session(
                 except asyncio.CancelledError:
                     pass
                 cred_watch_task = None
+            # Fix 19 (owner ruling 2026-09-15, session-end design part 4): a
+            # cooperative cancel (stop, suspend, engine shutdown) while a turn
+            # runs first interrupts that turn and waits for its result, at most
+            # GRACEFUL_INTERRUPT_TIMEOUT_S, while the reader still runs: the CLI
+            # records the partial answer, and every event it sends on the way is
+            # buffered. Then the reader stops (x-optio-closed) and the outer
+            # finally SIGKILLs claude as before.
+            if not ctx.should_continue():
+                await _end_turn_gracefully(conversation, conv_listener)
             reader_task.cancel()
             try:
                 await reader_task
@@ -1131,6 +1148,45 @@ async def _load_conversation_buffer(host: Host) -> "list[tuple[int, dict]] | Non
                 continue
             out.append((entry[0], entry[1]))
     return out or None
+
+
+# Fix 19 (owner ruling 2026-09-15, session-end design part 4): how long a
+# cooperative cancel gives a running turn to end gracefully (the CLI then
+# keeps the partial answer in its transcript) before the reader stops and
+# claude is SIGKILLed as before. It comes out of the cancel grace the
+# snapshot shares, so it is small and bounded.
+GRACEFUL_INTERRUPT_TIMEOUT_S = 3.0
+
+
+async def _end_turn_gracefully(
+    conversation, listener, *, timeout_s: float = GRACEFUL_INTERRUPT_TIMEOUT_S,
+) -> bool:
+    """End a running turn before the kill. Nothing happens unless the
+    conversation is open and a turn runs. Then: refuse new sends, let the
+    listener (if any) announce the session-end marker, interrupt the turn
+    with cancel_queued and wait for its result, all within ``timeout_s``.
+    Returns whether the turn ended in time; never raises (the kill follows
+    anyway)."""
+    if conversation is None or conversation.closed or not conversation.is_pending():
+        return False
+    conversation.begin_session_end()
+    if listener is not None:
+        listener.announce_session_end()
+    try:
+        async with asyncio.timeout(timeout_s):
+            await conversation.interrupt_for_session_end()
+    except TimeoutError:
+        _LOG.warning(
+            "session end: the running turn did not end within %.0f s of the "
+            "interrupt; killing claude", timeout_s,
+        )
+        return False
+    except ConversationClosed:
+        return False
+    except Exception:  # noqa: BLE001 — best effort; the kill follows anyway
+        _LOG.exception("session end: graceful interrupt failed; killing claude")
+        return False
+    return True
 
 
 async def _plant_session_content(

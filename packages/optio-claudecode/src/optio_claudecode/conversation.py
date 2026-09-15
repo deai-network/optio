@@ -104,6 +104,11 @@ class ClaudeCodeConversation:
         # close the conversation (no x-optio-closed, _closed stays clear) — the
         # task and the widget stay live across the swap. attach() clears it.
         self._restarting = False
+        # Fix 19: set by begin_session_end() when a cooperative cancel ends
+        # the session while a turn runs. From then on nothing new may reach
+        # the CLI (send() raises, `closed` reads True): only the graceful
+        # interrupt, whose turn the kill would otherwise cut.
+        self._ending = False
 
     # -- wiring ------------------------------------------------------------
 
@@ -310,6 +315,8 @@ class ClaudeCodeConversation:
         command_lifecycle for it at all (cli-queue-lifecycle.md §1)."""
         if self._closed.is_set():
             raise ConversationClosed(self._close_reason or "conversation closed")
+        if self._ending:
+            raise ConversationClosed("session ending")
         message_uuid = uuid if uuid is not None else str(uuid_lib.uuid4())
         self._pending += 1
         self._sends_since_result += 1
@@ -391,7 +398,12 @@ class ClaudeCodeConversation:
         (see the comment on the session_state_changed branch in _route)."""
         return self._pending > 0
 
-    async def interrupt(self) -> None:
+    async def interrupt(self, *, cancel_queued: bool = False) -> None:
+        """Abort the running turn; a no-op when idle. ``cancel_queued``
+        (Fix 19, session end) asks the CLI to drop what still waits in its
+        queue instead of running it next (cli-queue-lifecycle.md,
+        interrupt_receipt_v1): each dropped message gets a command_lifecycle
+        ``cancelled`` and never a ``started``."""
         if self._closed.is_set():
             raise ConversationClosed(self._close_reason or "conversation closed")
         if self._pending == 0:
@@ -400,10 +412,13 @@ class ClaudeCodeConversation:
         rid = f"optio-{self._next_request_id}"
         fut: asyncio.Future = asyncio.get_event_loop().create_future()
         self._control_acks[rid] = fut
+        request: dict = {"subtype": "interrupt"}
+        if cancel_queued:
+            request["cancel_queued"] = True
         await self._write_json({
             "type": "control_request",
             "request_id": rid,
-            "request": {"subtype": "interrupt"},
+            "request": request,
         })
         await fut
 
@@ -430,12 +445,43 @@ class ClaudeCodeConversation:
         response = (obj.get("response") or {}).get("response") or {}
         return bool(response.get("cancelled"))
 
+    def begin_session_end(self) -> None:
+        """Fix 19 (owner ruling 2026-09-15, session-end design part 4): the
+        session is ending while a turn runs. From now on ``send()`` raises
+        ConversationClosed and ``closed`` reads True, so neither Steering's
+        one-at-a-time writer nor ``POST /send`` can hand the CLI a message
+        that would start a turn the kill cuts. interrupt() still works."""
+        self._ending = True
+
+    async def interrupt_for_session_end(self) -> None:
+        """Fix 19: interrupt the running turn with ``cancel_queued`` and
+        return once its ``result`` has been dispatched, so the CLI has
+        recorded the partial answer in its transcript and every event it
+        sent on the way is buffered. A no-op when idle. The caller bounds
+        it (session.py ``_end_turn_gracefully``)."""
+        if self._pending == 0:
+            return
+        turn_end = asyncio.Event()
+
+        def _watch(event: dict) -> None:
+            if event.get("type") == "result":
+                turn_end.set()
+
+        unsubscribe = self.on_event(_watch)
+        try:
+            await self.interrupt(cancel_queued=True)
+            await turn_end.wait()
+        finally:
+            unsubscribe()
+
     async def close(self) -> None:
         self.close_requested.set()
 
     @property
     def closed(self) -> bool:
-        return self._closed.is_set()
+        """True once the session has ended, or is ending (Fix 19:
+        begin_session_end)."""
+        return self._closed.is_set() or self._ending
 
     # -- internals -----------------------------------------------------------
 
