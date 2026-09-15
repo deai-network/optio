@@ -765,6 +765,61 @@ describe('ConversationView steering', () => {
   });
 });
 
+// Fix 16 (owner ruling 2026-09-15, manual-test finding): an interrupted
+// answer's jagged-edge cut-off (Task 6) also gets a trailing ellipsis, so the
+// operator sees the answer trailed off rather than just stopped. Render only:
+// item.text itself is never touched (see the copy-doesn't-include-it and
+// text-object-unchanged assertions below).
+describe('ConversationView interrupted-answer ellipsis (Fix 16)', () => {
+  it('an interrupted answer text is followed by an ellipsis; a non-interrupted one is not', () => {
+    renderView(makeProps({ state: makeState([
+      { kind: 'assistant', text: 'cut off', pending: false, seq: 1, msgId: 'm1', interrupted: true },
+      { kind: 'assistant', text: 'whole', pending: false, seq: 2, msgId: 'm2' },
+    ]) }));
+    expect(screen.getByTestId('answer-interrupted').textContent).toContain('cut off…');
+    expect(screen.queryByText('whole…')).toBeNull();
+    expect(screen.getByText('whole')).toBeTruthy();
+  });
+
+  it('an interrupted answer already ending with an ellipsis character gets no second one', () => {
+    renderView(makeProps({ state: makeState([
+      { kind: 'assistant', text: 'already trailing off…', pending: false, seq: 1, msgId: 'm1', interrupted: true },
+    ]) }));
+    const cut = screen.getByTestId('answer-interrupted');
+    expect(cut.textContent).toContain('already trailing off…');
+    expect(cut.textContent).not.toContain('……');
+  });
+
+  it('an interrupted answer already ending with three dots gets no ellipsis character appended', () => {
+    renderView(makeProps({ state: makeState([
+      { kind: 'assistant', text: 'already trailing off...', pending: false, seq: 1, msgId: 'm1', interrupted: true },
+    ]) }));
+    const cut = screen.getByTestId('answer-interrupted');
+    expect(cut.textContent).toContain('already trailing off...');
+    expect(cut.textContent).not.toContain('...…');
+  });
+
+  it('the too-late-interrupt case (not flagged interrupted) renders with no ellipsis', () => {
+    renderView(makeProps({ state: makeState([
+      { kind: 'assistant', text: 'finished normally', pending: false, seq: 1, msgId: 'm1', interrupted: false },
+    ]) }));
+    expect(screen.queryByTestId('answer-interrupted')).toBeNull();
+    expect(screen.getByText('finished normally')).toBeTruthy();
+    expect(screen.queryByText('finished normally…')).toBeNull();
+  });
+
+  it('is render-only: item.text stays unchanged and the copy button does not include the ellipsis', () => {
+    const item: Extract<ChatItem, { kind: 'assistant' }> = {
+      kind: 'assistant', text: 'cut off', pending: false, seq: 1, msgId: 'm1', interrupted: true,
+    };
+    renderView(makeProps({ state: makeState([item]) }));
+    expect(screen.getByTestId('answer-interrupted').textContent).toContain('cut off…');
+    expect(item.text).toBe('cut off');
+    fireEvent.click(screen.getByTestId('answer-copy'));
+    expect(writeText).toHaveBeenCalledWith('cut off');
+  });
+});
+
 // Fix 4 (owner ruling 2026-09-14: "all messages need a timestamp"): a small
 // grey time under user/assistant/error bubbles, from the item's own
 // `timestamp` (never invented). formatMessageTime itself is unit-tested in
