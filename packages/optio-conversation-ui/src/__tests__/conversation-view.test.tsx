@@ -818,6 +818,41 @@ describe('ConversationView interrupted-answer ellipsis (Fix 16)', () => {
     fireEvent.click(screen.getByTestId('answer-copy'));
     expect(writeText).toHaveBeenCalledWith('cut off');
   });
+
+  // Review of the first cut (round 1): appending "…" to the raw markdown
+  // source is unsafe when the trimmed text ends on a line that *closes* a
+  // fenced code block — "```…" is no longer a valid fence line, so the
+  // parser stops treating it as closing the block and the literal fence
+  // plus the ellipsis show up as one more line of *code*. This asserts the
+  // fallback: the code block's own text is untouched, and the ellipsis
+  // renders as a separate element instead of inside the fence.
+  it('an interrupted answer ending in a closed code fence keeps the fence intact and renders the ellipsis outside it', () => {
+    renderView(makeProps({ state: makeState([
+      { kind: 'assistant', text: '```js\nconst a = 1;\n```', pending: false, seq: 1, msgId: 'm1', interrupted: true },
+    ]) }));
+    const bubble = screen.getByTestId('answer-interrupted');
+    const code = bubble.querySelector('pre code');
+    expect(code).toBeTruthy();
+    expect(code!.textContent ?? '').not.toContain('```');
+    expect(code!.textContent ?? '').toContain('const a = 1;');
+    expect(screen.getByTestId('answer-interrupt-ellipsis').textContent).toBe('…');
+  });
+
+  // Same review finding: a trailing bare URL is GFM-autolinked, so gluing
+  // "…" onto the source directly extends the link's own href. This asserts
+  // the href is exactly what the model produced, with the ellipsis rendered
+  // outside the link instead.
+  it('an interrupted answer ending in a bare URL keeps the link href untouched and renders the ellipsis outside it', () => {
+    renderView(makeProps({ state: makeState([
+      { kind: 'assistant', text: 'See https://example.com/docs', pending: false, seq: 1, msgId: 'm1', interrupted: true },
+    ]) }));
+    const bubble = screen.getByTestId('answer-interrupted');
+    const link = bubble.querySelector('a');
+    expect(link).toBeTruthy();
+    expect(link!.getAttribute('href')).toBe('https://example.com/docs');
+    expect(link!.textContent ?? '').not.toContain('…');
+    expect(screen.getByTestId('answer-interrupt-ellipsis').textContent).toBe('…');
+  });
 });
 
 // Fix 4 (owner ruling 2026-09-14: "all messages need a timestamp"): a small

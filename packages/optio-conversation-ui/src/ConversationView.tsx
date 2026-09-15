@@ -141,18 +141,82 @@ function ensureInterruptedStyle(): void {
 // an ellipsis, unless the text already ends with one. Render only: this
 // computes what gets HANDED TO the markdown renderer, never item.text
 // itself, so the reducer/stored-event text and the copy button (which reads
-// item.text directly, below) are unaffected. Appended to the raw markdown
-// SOURCE (trimmed of trailing whitespace first, so it doesn't land on a
-// trailing blank line) rather than as a separate DOM node after the
-// rendered block, so it lands inline on the last rendered line — the end of
-// the last paragraph/list item/cell — the same way it would if the model's
-// own output had trailed off there.
+// item.text directly, below) are unaffected.
+//
+// Round 1 fix (review of the first cut): appending the ellipsis to the raw
+// markdown SOURCE is only safe when the trimmed text ends inside an ordinary
+// text run. When it ends on a line that *closes* a fenced code block or a
+// display-math block, on a GFM table row, or on a bare URL/autolink, gluing
+// "…" straight onto that line either reopens the construct (the fence/math
+// delimiter line is no longer just delimiters, so the parser keeps reading
+// content into a new line instead of closing) or silently changes rendered
+// data (a new table cell; a link href that now points somewhere the model
+// never produced). None of those are pre-existing degradation — they are
+// regressions this appending scheme would introduce, so in those cases we
+// leave the markdown source untouched and render the ellipsis as a sibling
+// <span> right after the rendered answer block instead (the brief's
+// explicitly allowed fallback for when inline placement "is not practical").
 const ELLIPSIS = '…';
-function withInterruptEllipsis(text: string, interrupted: boolean | undefined): string {
-  if (!interrupted) return text;
+
+// Last non-empty line of the (already right-trimmed) text, e.g. the line
+// that would carry a closing code fence, a closing "$$", or a table row.
+function lastLine(trimmed: string): string {
+  const lines = trimmed.split('\n');
+  return lines[lines.length - 1];
+}
+
+// A line that is only a fenced-code delimiter (``` / ~~~, 3+ chars, optional
+// trailing spaces). Appending "…" right after it — with no newline — turns
+// it into e.g. "```…", which is no longer a valid fence line, so the parser
+// no longer treats it as closing (or opening) a fence at all.
+function isFenceDelimiterLine(line: string): boolean {
+  return /^(`{3,}|~{3,})[ \t]*$/.test(line);
+}
+
+// A line that is only a display-math delimiter ("$$", or more dollars). Same
+// problem as a fence: "$$…" is not a bare "$$" line any more.
+function isMathDelimiterLine(line: string): boolean {
+  return /^\${2,}[ \t]*$/.test(line);
+}
+
+// A GFM table row: starts and ends with "|". Appending "…" right after the
+// trailing "|" is read as the start of one more cell in that row.
+function isTableRowLine(line: string): boolean {
+  return /^\|.*\|$/.test(line.trim());
+}
+
+// The very end of the text is a bare URL (GFM autolink extension) or an
+// explicit <...> autolink. Appending "…" with no separating whitespace
+// extends the link's own text/href to include it.
+function endsWithAutolink(trimmed: string): boolean {
+  const lastToken = /(\S+)$/.exec(trimmed)?.[1];
+  if (!lastToken) return false;
+  if (/^<[^\s<>]+>$/.test(lastToken)) return true;
+  return /^(https?:\/\/|www\.)\S+$/i.test(lastToken);
+}
+
+// Whether appending "…" directly onto `trimmed` (no separating newline) is
+// unsafe for any of the reasons above.
+function unsafeToAppendInline(trimmed: string): boolean {
+  const line = lastLine(trimmed);
+  return isFenceDelimiterLine(line) || isMathDelimiterLine(line) || isTableRowLine(line) || endsWithAutolink(trimmed);
+}
+
+interface InterruptEllipsis {
+  // What to hand to <AnswerBlock>. Never item.text itself when it differs —
+  // callers must keep using item.text everywhere else (copy button, etc).
+  markdownText: string;
+  // When true, render a plain "…" as a sibling right after <AnswerBlock>
+  // instead of it being part of the markdown source.
+  trailingSpan: boolean;
+}
+
+function withInterruptEllipsis(text: string, interrupted: boolean | undefined): InterruptEllipsis {
+  if (!interrupted) return { markdownText: text, trailingSpan: false };
   const trimmed = text.trimEnd();
-  if (trimmed.endsWith(ELLIPSIS) || trimmed.endsWith('...')) return text;
-  return trimmed + ELLIPSIS;
+  if (trimmed.endsWith(ELLIPSIS) || trimmed.endsWith('...')) return { markdownText: text, trailingSpan: false };
+  if (unsafeToAppendInline(trimmed)) return { markdownText: text, trailingSpan: true };
+  return { markdownText: trimmed + ELLIPSIS, trailingSpan: false };
 }
 
 // A vultus ActionStatus for the input bar's multi-action send button. The
@@ -819,7 +883,8 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
           </div>,
           renderTimeLabel(item.timestamp, renderedAt, token),
         );
-      case 'assistant':
+      case 'assistant': {
+        const ellipsis = withInterruptEllipsis(item.text, item.interrupted);
         return withTimeLabel(
           item.seq,
           'flex-start',
@@ -837,7 +902,8 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             }}
           >
             <div className="optio-cc-answer" style={{ position: 'relative' }}>
-              <AnswerBlock text={withInterruptEllipsis(item.text, item.interrupted)} />
+              <AnswerBlock text={ellipsis.markdownText} />
+              {ellipsis.trailingSpan && <span data-testid="answer-interrupt-ellipsis">{ELLIPSIS}</span>}
               <Button
                 size="small"
                 type="text"
@@ -853,6 +919,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
           </div>,
           renderTimeLabelRange(item.timestamp, item.endTimestamp, renderedAt, token),
         );
+      }
       case 'activity':
         // A muted note ("⏹ Interrupted by you", an undelivered message): one
         // quiet centred line, not a bubble.
