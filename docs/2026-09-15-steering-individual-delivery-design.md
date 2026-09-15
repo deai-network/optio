@@ -5,7 +5,7 @@ Status: owner-chosen design, 2026-09-15. It amends docs/2026-09-13-conversation-
 ## Problem
 Claude Code folds every prompt waiting in its native stdin queue into ONE user message when it starts a turn, but injects queued prompts one by one at tool boundaries. So the same queued messages sometimes reach the model separately and sometimes merged. Manual test: #1 and #2 queued, then Interrupt and send #3, gave "#1+#2" folded and #3 separate. The owner wants every message delivered as its own user message, consistently, without giving up Claude Code's native queue (and so its pickup at tool boundaries).
 
-## Facts it rests on (CLI 2.1.270, live probes; see .superpowers/sdd/.../cli-queue-lifecycle.md, section "Individual delivery")
+## Facts it rests on (CLI 2.1.270, live probes; see ~/deai/optio-steering/.superpowers/sdd/2026-09-13-conversation-steering-plan-stage1/cli-queue-lifecycle.md (git-ignored scratch), section "Individual delivery")
 - No `priority` value prevents the fold at turn start. `now` interrupts the turn and jumps the queue, which breaks the order. `later` is never taken at tool boundaries.
 - With at most ONE optio message in the CLI queue at any time, every message arrives as its own user message: with tools (each at the next tool boundary), text-only (each as its own turn), and after an interrupt.
 - Messages carrying a uuid get `command_lifecycle` events (queued, started, completed, cancelled, discarded, refused). Fix 13a stamps the steering id as the uuid.
