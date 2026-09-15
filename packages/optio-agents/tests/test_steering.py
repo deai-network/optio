@@ -468,6 +468,45 @@ async def test_up_to_is_ignored_without_native_lifecycle_support():
     assert conv.interrupts == 1
 
 
+async def test_a_hanging_cancel_in_send_now_up_to_is_bounded_by_one_deadline(caplog):
+    # ClaudeCodeConversation.cancel_async_message awaits a control-ack future
+    # with no timeout of its own; a live CLI that never answers it must not
+    # hold Steering's lock (and every later /send and /steer queued behind
+    # it) forever. The cancel loop, the interrupt and the turn-end wait all
+    # share ONE turn_end_timeout_s deadline (review of Fix 13a, round 1),
+    # not three stacked waits.
+    class HangingCancelConversation(FakeConversation):
+        async def cancel_async_message(self, message_uuid: str) -> bool:
+            self.cancel_calls.append(message_uuid)
+            await asyncio.Event().wait()  # never resolves
+            return True  # pragma: no cover
+
+    conv = HangingCancelConversation(native_lifecycle=True)
+    conv.pending = True
+    s = make(conv, "joins-next-step", turn_end_timeout_s=0.0)
+    id1, id2, id3 = await _queue_three(s)
+    conv.log.clear()
+
+    with caplog.at_level(logging.WARNING, logger="optio_agents.steering"):
+        assert await asyncio.wait_for(
+            s.interrupt_and_send("", up_to=id2), timeout=5.0,
+        ) is None
+    assert conv.cancel_calls == [id3]
+    assert "send-now-up-to" in caplog.text
+
+    # The cancel never confirmed, so no interrupt and no re-send happened --
+    # only the message actually confirmed cancelled would be resent, and
+    # here that set is empty.
+    assert conv.interrupts == 0
+    assert conv.sent == ["one\n\n", "two\n\n", "three\n\n"]
+
+    # And critically: the lock was released. A later call does not hang
+    # behind the earlier one.
+    conv.pending = False
+    outcome = await asyncio.wait_for(s.send_when_ready("four"), timeout=5.0)
+    assert outcome.id and not outcome.queued
+
+
 # -- interrupt -----------------------------------------------------------------
 
 async def test_interrupt_emits_the_marker_only_while_a_turn_runs():
