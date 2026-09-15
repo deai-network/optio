@@ -500,6 +500,38 @@ async def test_session_end_writes_no_further_queued_message_over_the_real_driver
     await reader
 
 
+@pytest.mark.asyncio
+async def test_requeue_follows_the_resume_notice_one_at_a_time_over_the_real_driver(convo):
+    # Fix 19: after "System: you have been resumed", what the last run left
+    # undelivered goes out again in order, each under a new uuid, one at a
+    # time (Fix 17's path), announced by x-optio-requeued.
+    c, handle = convo
+    events = []
+    c.on_event(events.append)
+    ids = iter(["n1", "n2"])
+    steering = make_steering(c, new_id=lambda: next(ids))
+    reader = asyncio.create_task(c.run_reader())
+
+    await c.send("System: you have been resumed")
+    notice = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert notice["message"]["content"][0]["text"] == "System: you have been resumed"
+    assert await steering.requeue([("q1", "one"), ("q2", "two")]) == ["n1", "n2"]
+    first = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert (first["uuid"], first["message"]["content"][0]["text"]) == ("n1", "one\n\n")
+    assert handle.stdin.lines.qsize() == 0
+
+    handle.stdout.feed(_lifecycle("n1", "started"))
+    second = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert (second["uuid"], second["message"]["content"][0]["text"]) == ("n2", "two\n\n")
+    handle.stdout.eof()
+    await reader
+    await steering.settle()
+    assert [e for e in events if e.get("type") == "x-optio-requeued"] == [
+        {"type": "x-optio-requeued", "id": "q1", "new_id": "n1"},
+        {"type": "x-optio-requeued", "id": "q2", "new_id": "n2"},
+    ]
+
+
 def test_claudecode_declares_joins_next_step_and_ends_turns_on_result():
     assert BUSY_SEND.for_model(None) == "joins-next-step"
     assert BUSY_SEND.for_model("claude-sonnet-5") == "joins-next-step"

@@ -7,7 +7,9 @@ optio-api widget proxy (which injects the basic-auth credential):
                      partial-message events; the buffer never does). SSE id:
                      is a monotonic seq; Last-Event-ID resumes without dupes.
                      After a resume the restored history is followed by one
-                     {"type": "x-optio-resumed"} marker.
+                     {"type": "x-optio-resumed"} marker, carrying
+                     "requeued": [ids] when the run re-sends messages the
+                     previous run left undelivered (Fix 19).
   POST /send       — {text}  -> steering.send_when_ready; {ok, id, queued}
   POST /steer      — {text, upTo?} -> steering.interrupt_and_send; {ok, id}
                      (empty text: Send now, deliver what is queued; id is
@@ -39,7 +41,7 @@ from aiohttp import web
 from optio_agents.conversation import ConversationClosed, PermissionDecision
 from optio_agents.steering import INTERRUPT_EVENT, Steering
 
-from optio_claudecode.steering import make_steering
+from optio_claudecode.steering import make_steering, undelivered_queued
 
 _LOG = logging.getLogger(__name__)
 
@@ -101,16 +103,24 @@ class ConversationListener:
         # attaching after a resume still sees the prior conversation history.
         # seq continues monotonically from the highest restored value.
         self._seq = 0
+        # Fix 19: what the previous run left queued and undelivered, as
+        # (old id, text); requeue_undelivered() re-sends it once.
+        self._undelivered: list[tuple[str, str]] = []
         if initial_events:
             for seq, event in initial_events:
                 self._buffer.append((seq, event))
             self._seq = max(seq for seq, _ in initial_events)
+            self._undelivered = undelivered_queued(initial_events)
             # Mark where the prior run's history ends, so the widget stops the
             # rows that run left running (a background task, a call with no
             # result). Buffered and persisted like any event, so a later
-            # resume replays it at this point.
+            # resume replays it at this point. It lists the ids this run
+            # re-queues, so the widget keeps those bubbles queued.
+            resumed: dict = {"type": RESUMED_EVENT_TYPE}
+            if self._undelivered:
+                resumed["requeued"] = [qid for qid, _ in self._undelivered]
             self._seq += 1
-            self._buffer.append((self._seq, {"type": RESUMED_EVENT_TYPE}))
+            self._buffer.append((self._seq, resumed))
         # Fix 19, session end. Whether a turn runs (session_state_changed
         # running or a message_start, until its result or idle); the message
         # being streamed and the text of its open block (reset at its
@@ -145,6 +155,28 @@ class ConversationListener:
             [seq, event] for seq, event in self._buffer
             if event.get("type") != "x-optio-closed"
         ]
+
+    async def requeue_undelivered(self) -> list[str]:
+        """Resume (Fix 19, owner ruling 2026-09-15, finding 6 #2): re-send,
+        in their original order, the messages the previous run left queued
+        and never delivered (``undelivered_queued`` over the restored
+        buffer), each under a NEW id through Steering's one-at-a-time path,
+        announced by one x-optio-requeued {id, new_id} each. Nothing the CLI
+        already started is re-sent. The session calls it once, right after
+        its "you have been resumed" notice, so the resumed turn goes first.
+        Returns the OLD ids; a second call re-sends nothing."""
+        pending, self._undelivered = self._undelivered, []
+        if not pending:
+            return []
+        try:
+            await self._steering.requeue(pending)
+        except ConversationClosed:
+            _LOG.warning(
+                "conversation closed before %d undelivered message(s) could be re-queued",
+                len(pending),
+            )
+            return []
+        return [qid for qid, _ in pending]
 
     # -- event intake --------------------------------------------------------
 

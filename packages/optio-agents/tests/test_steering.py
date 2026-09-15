@@ -558,6 +558,104 @@ async def test_pending_messages_stay_undelivered_when_the_session_ends(caplog):
     assert "not delivered" in caplog.text
 
 
+# -- session end vs. the advance path (Fix 19 controller note 2026-09-15) ----
+# Fix 17's reviewer flagged: at session end the graceful interrupt makes the
+# CLI act on the in-flight message (start it, or cancel it under
+# cancel_queued). That command_lifecycle event triggers the SAME
+# lifecycle-driven advance path (_on_event -> _schedule_advance -> _advance
+# -> _write_next_locked) that delivers the next message mid-turn. Once
+# begin_session_end() has made the conversation ``closed``, that path must
+# write NOTHING (checked before the pop, so the pending list survives intact
+# for the resume re-queue), for BOTH a "started" and a "cancelled" in-flight
+# lifecycle.
+
+
+@pytest.mark.parametrize("in_flight_state", ["started", "cancelled"])
+async def test_session_end_blocks_the_lifecycle_triggered_advance_path(caplog, in_flight_state):
+    conv = FakeConversation(native_lifecycle=True)
+    conv.pending = True
+    s = make(conv)
+    id1, id2, id3 = await _queue_three(s)  # id1 in flight; id2, id3 pending
+    conv.closed = True  # begin_session_end()'s effect on ClaudeCodeConversation.closed
+    with caplog.at_level(logging.WARNING, logger="optio_agents.steering"):
+        conv.fire_lifecycle(id1, in_flight_state)
+        await s.settle()
+    assert conv.sent == ["one\n\n"]  # id2 ("two") is never written
+    assert s.pending_ids == [id2, id3]  # untouched, in order, for the resume re-queue
+    assert "not delivered" in caplog.text
+
+
+# -- re-queue on resume (Fix 19, owner ruling 2026-09-15, finding 6 #2) -------
+# Messages a previous run left queued and undelivered go out again, in their
+# original order, each under a NEW id announced by x-optio-requeued (never a
+# second x-optio-queued), through the one-at-a-time path.
+
+
+async def test_requeue_announces_each_message_under_a_new_id_and_writes_one_at_a_time():
+    conv = FakeConversation(native_lifecycle=True)
+    conv.pending = True  # the resume notice's turn runs
+    s = make(conv)
+    assert await s.requeue([("old1", "one"), ("old2", "two")]) == ["id1", "id2"]
+    assert conv.log == [
+        ("event", {"type": REQUEUED, "id": "old1", "new_id": "id1"}),
+        ("event", {"type": REQUEUED, "id": "old2", "new_id": "id2"}),
+        ("send", "one\n\n"),
+    ]
+    assert conv.uuids == ["id1"]
+    assert s.in_flight_id == "id1" and s.pending_ids == ["id2"]
+    conv.fire_lifecycle("id1", "started")
+    await s.settle()
+    assert conv.sent == ["one\n\n", "two\n\n"] and conv.uuids == ["id1", "id2"]
+    assert QUEUED not in [e["type"] for e in events(conv)]
+
+
+async def test_requeue_while_idle_writes_the_first_at_once():
+    conv = FakeConversation(native_lifecycle=True)
+    s = make(conv)
+    await s.requeue([("old1", "one"), ("old2", "two")])
+    assert conv.sent == ["one\n\n"] and s.pending_ids == ["id2"]
+
+
+async def test_requeued_messages_go_ahead_of_messages_sent_since_the_resume():
+    conv = FakeConversation(native_lifecycle=True)
+    conv.pending = True
+    s = make(conv)
+    first = await s.send_when_ready("new-a")   # in flight
+    second = await s.send_when_ready("new-b")  # pending
+    assert await s.requeue([("old1", "one")]) == ["id3"]
+    assert s.in_flight_id == first.id
+    assert s.pending_ids == ["id3", second.id]
+
+
+async def test_requeue_of_nothing_does_nothing():
+    conv = FakeConversation(native_lifecycle=True)
+    s = make(conv)
+    assert await s.requeue([]) == []
+    assert conv.log == []
+
+
+async def test_requeue_after_close_raises():
+    conv = FakeConversation(native_lifecycle=True)
+    conv.closed = True
+    s = make(conv)
+    with pytest.raises(ConversationClosed):
+        await s.requeue([("old1", "one")])
+    assert conv.log == []
+
+
+async def test_requeue_on_a_non_native_agent_holds_them_until_the_turn_ends():
+    conv = FakeConversation()
+    conv.pending = True
+    s = make(conv, busy_send="unsafe")
+    await s.requeue([("old1", "one"), ("old2", "two")])
+    assert conv.sent == [] and s.held_ids == ["id1", "id2"]
+    conv.pending = False
+    conv.fire({"type": "turn-end"})
+    await s.settle()
+    assert conv.sent == ["one\n\ntwo"]
+    assert {"type": TAKEN, "ids": ["id1", "id2"]} in events(conv)
+
+
 # -- interrupt -----------------------------------------------------------------
 
 async def test_interrupt_emits_the_marker_only_while_a_turn_runs():

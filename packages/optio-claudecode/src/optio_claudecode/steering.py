@@ -16,6 +16,8 @@ next the moment the one in flight reports ``started`` or a final state
 """
 from __future__ import annotations
 
+from typing import Iterable
+
 from optio_agents.steering import BusySendDeclaration, Steering
 
 BUSY_SEND = BusySendDeclaration(agent="joins-next-step")
@@ -38,6 +40,76 @@ def command_lifecycle(event: dict) -> "tuple[str, str] | None":
     if isinstance(command_uuid, str) and isinstance(state, str):
         return command_uuid, state
     return None
+
+
+# command_lifecycle states meaning the CLI took a message into a turn
+# (cli-queue-lifecycle.md §1): "completed" can arrive without "started".
+_DELIVERED_STATES = frozenset({"started", "completed"})
+
+
+def _echo_texts(event: dict) -> list[str]:
+    message = event.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        return [content] if content else []
+    if not isinstance(content, list):
+        return []
+    return [
+        block["text"] for block in content
+        if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
+    ]
+
+
+def undelivered_queued(events: "Iterable[tuple[int, dict]]") -> list[tuple[str, str]]:
+    """Resume (Fix 19, owner ruling 2026-09-15, finding 6 #2): the messages
+    the last run left queued and undelivered, as (id, original text), in the
+    order they were sent, from a restored replay buffer ([(seq, event)]).
+
+    An x-optio-queued stays undelivered until its id sees command_lifecycle
+    "started" or "completed", or a user echo confirming it: its own uuid,
+    or, for a fold's combined echo (only the last uuid) and for buffers
+    older than Fix 13a (CLI-minted uuids), its text. "queued", "cancelled"
+    (the session end's cancel_queued sweep), "discarded" and "refused" leave
+    it undelivered. x-optio-requeued renames it in place. x-optio-resumed
+    ends a run: whatever it left undelivered is dropped (the UI showed it
+    as "Not delivered"), unless the x-optio-requeued events of the resume
+    right after it re-queued it. Malformed events are ignored."""
+    pending: dict[str, str] = {}
+    stale: dict[str, str] = {}
+    for _seq, event in events:
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("type")
+        if kind == "x-optio-queued":
+            qid, text = event.get("id"), event.get("text")
+            if isinstance(qid, str) and qid and isinstance(text, str) and qid not in pending:
+                pending[qid] = text
+        elif kind == "x-optio-requeued":
+            old, new = event.get("id"), event.get("new_id")
+            if not (isinstance(old, str) and isinstance(new, str) and new):
+                continue
+            if old in pending:
+                pending = {(new if k == old else k): v for k, v in pending.items()}
+            elif old in stale:
+                pending[new] = stale.pop(old)
+        elif kind == "x-optio-resumed":
+            stale, pending = pending, {}
+        elif kind == "command_lifecycle":
+            parsed = command_lifecycle(event)
+            if parsed is not None and parsed[1] in _DELIVERED_STATES:
+                pending.pop(parsed[0], None)
+        elif kind == "user":
+            texts = _echo_texts(event)
+            uuid = event.get("uuid")
+            if isinstance(uuid, str) and uuid in pending:
+                del pending[uuid]
+                texts = texts[:-1]  # the last block is the uuid's own message
+            for text in texts:
+                wanted = text.rstrip()
+                match = next((k for k, v in pending.items() if v.rstrip() == wanted), None)
+                if match is not None:
+                    del pending[match]
+    return list(pending.items())
 
 
 def make_steering(conversation, **kwargs) -> Steering:

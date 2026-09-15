@@ -3,12 +3,14 @@
 import asyncio
 import base64
 import json
+import logging
 
 import aiohttp
 import pytest
 
 from optio_agents.conversation import ConversationClosed, PermissionDecision
 from optio_claudecode.conversation_listener import ConversationListener
+from optio_claudecode.steering import make_steering
 
 
 class FakeConversation:
@@ -585,3 +587,60 @@ async def test_the_partial_and_the_marker_reach_live_viewers_before_closed(liste
             live = await _read_events(resp, 7)
     assert [e["type"] for e in live][-3:] == ["x-optio-partial", "x-optio-interrupt", "x-optio-closed"]
     assert live[-2] == SESSION_END
+
+
+# -- re-queue on resume (Fix 19, owner ruling 2026-09-15, finding 6 #2) -------
+
+def _restored(*events):
+    return list(enumerate(events, start=1))
+
+
+def _queued(qid, text):
+    return {"type": "x-optio-queued", "id": qid, "text": text}
+
+
+def _lc(qid, state):
+    return {"type": "command_lifecycle", "command_uuid": qid, "state": state,
+            "uuid": f"lc-{qid}-{state}", "session_id": "s"}
+
+
+async def test_the_resume_marker_lists_the_ids_it_will_requeue():
+    lst = ConversationListener(FakeConversation(), password="pw", initial_events=_restored(
+        _queued("q1", "one"), _lc("q1", "queued"), _queued("q2", "two"),
+    ))
+    assert lst._buffer[-1] == (4, {"type": "x-optio-resumed", "requeued": ["q1", "q2"]})
+
+
+async def test_requeue_undelivered_resends_in_order_under_new_ids_and_skips_what_started():
+    conv = FakeConversation()
+    ids = iter(["n1", "n2"])
+    lst = ConversationListener(conv, password="pw", initial_events=_restored(
+        _queued("q1", "one"), _queued("q2", "two"), _lc("q2", "started"), _queued("q3", "three"),
+    ), steering=make_steering(conv, new_id=lambda: next(ids)))
+    conv.pending = True  # the resume notice's turn runs
+    assert await lst.requeue_undelivered() == ["q1", "q3"]
+    assert conv.sent == ["one\n\n"] and conv.uuids == ["n1"]
+    assert [e for _, e in lst._buffer if e.get("type") == "x-optio-requeued"] == [
+        {"type": "x-optio-requeued", "id": "q1", "new_id": "n1"},
+        {"type": "x-optio-requeued", "id": "q3", "new_id": "n2"},
+    ]
+    conv.fire(_lc("n1", "started"))
+    await lst._steering.settle()
+    assert conv.sent == ["one\n\n", "three\n\n"]
+    assert await lst.requeue_undelivered() == []  # once only
+
+
+async def test_requeue_undelivered_on_a_fresh_start_does_nothing():
+    conv = FakeConversation()
+    lst = ConversationListener(conv, password="pw")
+    assert await lst.requeue_undelivered() == []
+    assert conv.sent == []
+
+
+async def test_requeue_undelivered_after_the_conversation_closed_sends_nothing(caplog):
+    conv = FakeConversation()
+    conv.closed = True
+    lst = ConversationListener(conv, password="pw", initial_events=_restored(_queued("q1", "one")))
+    with caplog.at_level(logging.WARNING, logger="optio_claudecode.conversation_listener"):
+        assert await lst.requeue_undelivered() == []
+    assert conv.sent == [] and "re-queued" in caplog.text
