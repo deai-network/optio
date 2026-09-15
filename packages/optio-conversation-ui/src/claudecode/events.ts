@@ -8,7 +8,7 @@
 
 import type { ChatItem, ChatState } from '../chat.js';
 import {
-  INTERRUPTED_BY_YOU, addQueued, appendItems, dropUndelivered, foldControlUpdate, isPinned, isQueued, takeQueuedAt, takeQueuedIds,
+  INTERRUPTED_BY_YOU, INTERRUPTED_SESSION_ENDED, addQueued, appendItems, dropUndelivered, foldControlUpdate, isPinned, isQueued, takeQueuedAt, takeQueuedIds,
 } from '../chat.js';
 import { explainApiError } from '../apiError.js';
 import { parseUploadNotice, uploadNoticeActivityText } from '../uploads.js';
@@ -71,10 +71,26 @@ function settleNotes(items: ChatItem[]): ChatItem[] {
   if (!items.some((i) => i.kind === 'activity' && i.queueId !== undefined)) return items;
   return items.map((i) => {
     if (i.kind !== 'activity' || i.queueId === undefined) return i;
-    const next = { ...i };
+    // Fix 19: unpinned, but still restorable by a resumed run's requeue.
+    const next = { ...i, requeueId: i.queueId };
     delete next.queueId;
     return next;
   });
+}
+
+// Fix 19: turn the "Not delivered" note at idx back into a queued bubble
+// under `queueId`. A note that pins (queueId, Fix 13b) is replaced in place,
+// as before; one that does not (requeueId) moves to the bottom, where
+// queued bubbles are pinned, so later content keeps going in front of it.
+// Review of fix 13b, finding 4: the note's send timestamp comes along.
+function restoreNote(items: ChatItem[], idx: number, queueId: string): ChatItem[] {
+  const note = items[idx] as ActivityItem;
+  const restored: UserItem = {
+    kind: 'user', text: note.text.replace(/^Not delivered: /, ''), seq: note.seq, queued: true, queueId,
+  };
+  if (note.timestamp !== undefined) restored.timestamp = note.timestamp;
+  if (note.queueId !== undefined) return replaceAt(items, idx, restored);
+  return [...items.slice(0, idx), ...items.slice(idx + 1), restored];
 }
 
 type ToolItem = Extract<ChatItem, { kind: 'tool' }>;
@@ -874,8 +890,44 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
         }
       }
       items = freezeRunning(items, lastWireTime(state, now), 'interrupt');
-      items = appendItems(items, [{ kind: 'activity', text: INTERRUPTED_BY_YOU, seq, muted: true }]);
-      return { ...state, items, interrupt: { rowSeq: seq, itemSeqs } };
+      // Fix 19 (owner ruling 2026-09-15, finding 6 #1): the listener's
+      // by:'session' (the session ended while this turn ran) reads "⏹
+      // Interrupted: session ended", in the same place and style.
+      const bySession = ev.by === 'session';
+      items = appendItems(items, [{ kind: 'activity', text: bySession ? INTERRUPTED_SESSION_ENDED : INTERRUPTED_BY_YOU, seq, muted: true }]);
+      const interrupt: NonNullable<ChatState['interrupt']> = { rowSeq: seq, itemSeqs };
+      if (bySession) interrupt.session = true;
+      return { ...state, items, interrupt };
+    }
+
+    // Synthetic, listener-emitted (Fix 19, owner ruling 2026-09-15, finding
+    // 6 #3): the text message `id` had streamed when the session ended,
+    // whose final assistant event never came (stream_events are never
+    // buffered, so a reload or a resume would lose it). It is that
+    // message's text, cut off: it renders like an interruption. With an
+    // interrupt in flight (the session-end marker came first, or an
+    // operator interrupt) it lands like the CLI's own final text would.
+    case 'x-optio-partial': {
+      const text = typeof ev.text === 'string' ? ev.text : '';
+      if (text === '') return state;
+      const msgId = typeof ev.id === 'string' && ev.id !== '' ? ev.id : undefined;
+      const marker =
+        state.pendingMessageStart !== undefined && state.pendingMessageStart.id === msgId
+          ? state.pendingMessageStart.ts
+          : undefined;
+      const start = marker ?? priorLastEventAt;
+      if (state.interrupt) {
+        const applied = applyInterruptedText(state.items, state.interrupt.rowSeq, seq, text, msgId, undefined, start);
+        let next: ChatState = { ...state, items: applied.items };
+        if (applied.opened && marker !== undefined) next = { ...next, pendingMessageStart: undefined };
+        return noteInterrupted(next, seq);
+      }
+      const applied = applyBlockText(state.items, seq, text, msgId, undefined, start);
+      let items = applied.items;
+      const idx = pendingIndex(items);
+      if (idx !== -1) items = replaceAt(items, idx, { ...(items[idx] as AssistantItem), pending: false, interrupted: true });
+      const next: ChatState = { ...state, items };
+      return applied.opened && marker !== undefined ? { ...next, pendingMessageStart: undefined } : next;
     }
 
     // Synthetic, listener-emitted (steering): a Send when ready that arrived
@@ -1023,17 +1075,14 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
         const cur = state.items[idx] as UserItem;
         return { ...state, items: replaceAt(state.items, idx, { ...cur, queueId: newId }), pendingRequeue };
       }
-      const nidx = state.items.findIndex((i) => i.kind === 'activity' && (i as ActivityItem).queueId === id);
+      // A pinned lifecycle note (queueId, Fix 13b) first; else, Fix 19, a
+      // note that does not pin (requeueId: made at session end, or unpinned
+      // later): x-optio-closed's "Not delivered" must not stick to a message
+      // the resumed run re-queues.
+      let nidx = state.items.findIndex((i) => i.kind === 'activity' && (i as ActivityItem).queueId === id);
+      if (nidx === -1) nidx = state.items.findIndex((i) => i.kind === 'activity' && (i as ActivityItem).requeueId === id);
       if (nidx === -1) return { ...state, pendingRequeue };
-      const note = state.items[nidx] as ActivityItem;
-      const restored: UserItem = {
-        kind: 'user', text: note.text.replace(/^Not delivered: /, ''), seq: note.seq, queued: true, queueId: newId,
-      };
-      // Review of fix 13b, finding 4: the note carries the original send
-      // timestamp through (see command_lifecycle above) — restore it,
-      // instead of rebuilding the bubble with none at all.
-      if (note.timestamp !== undefined) restored.timestamp = note.timestamp;
-      return { ...state, items: replaceAt(state.items, nidx, restored), pendingRequeue };
+      return { ...state, items: restoreNote(state.items, nidx, newId), pendingRequeue };
     }
 
     // Synthetic, widget-emitted (review of fix 13b, finding 4):
@@ -1187,7 +1236,10 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
         // The turn optio interrupted ends with the CLI's abort error: that is
         // the operator's own interrupt, already shown by its row. No error
         // item; rows still running stop.
-        if (ev.subtype === 'error_during_execution' && ABORTED.has(ev.terminal_reason)) {
+        // Fix 19: a session-end interrupt ends here whatever the result says:
+        // no too-late undo (the session is going away), no error row, and no
+        // second copy of the answer its final text already completed.
+        if (interrupt.session || (ev.subtype === 'error_during_execution' && ABORTED.has(ev.terminal_reason))) {
           const items = freezeRunning(finalizePending(state.items, seq, null), at, 'interrupt');
           return { ...state, items, busy: false };
         }
@@ -1276,7 +1328,19 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // Review of fix 13b, finding 2: same reasoning as x-optio-closed —
       // settle any leftover "Not delivered" note (the old process's
       // requeue, if any, died with it).
-      const items = settleNotes(dropUndelivered(freezeRunning(state.items, lastWireTime(state, now), 'session')));
+      // Fix 19 (owner ruling 2026-09-15, finding 6 #2): `requeued` lists the
+      // messages this resumed run re-sends (an x-optio-requeued follows for
+      // each): they stay queued, and a "Not delivered" note already made for
+      // one (x-optio-closed live, or the session end's cancel) turns back
+      // into its queued bubble under the old id.
+      const requeued: string[] = Array.isArray(ev.requeued)
+        ? ev.requeued.filter((x: unknown): x is string => typeof x === 'string')
+        : [];
+      let items = settleNotes(dropUndelivered(freezeRunning(state.items, lastWireTime(state, now), 'session'), requeued));
+      for (const id of requeued) {
+        const nidx = items.findIndex((i) => i.kind === 'activity' && i.requeueId === id);
+        if (nidx !== -1) items = restoreNote(items, nidx, id);
+      }
       return { ...state, items, busy: false, pendingRequeue: undefined };
     }
 
