@@ -686,6 +686,12 @@ async def run_claudecode_session(
             await conversation.send(host_actions.AUTO_START_PROMPT)
         elif resuming and pass_continue and config.host_protocol:
             await conversation.send(f"{SYSTEM_MESSAGE_PREFIX}{RESUME_NOTICE}")
+        # Fix 19 (owner ruling 2026-09-15, finding 6 #2): the messages the
+        # previous run left queued and undelivered go out again, in order,
+        # behind the resume notice (without a notice the first one starts the
+        # turn). A no-op on a fresh start: nothing was restored.
+        if conv_listener is not None:
+            await conv_listener.requeue_undelivered()
 
         if resolved_seed_id is not None:
             cred_watch_task = asyncio.create_task(cred_watcher.run_credential_watcher(

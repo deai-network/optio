@@ -33,6 +33,11 @@ ends or the agent is idle with nothing in flight. Send now
 (``interrupt_and_send`` with empty text, with or without ``up_to``) is only
 an interrupt: delivery then continues in order.
 
+Fix 19 (owner ruling 2026-09-15, see
+docs/2026-09-15-steering-session-end-design.md): on resume, ``requeue``
+sends again, in order and under new ids, the messages the previous run
+left queued and undelivered, announced by one ``x-optio-requeued`` each.
+
 See docs/2026-09-13-conversation-steering-design.md §2 and §3.
 """
 
@@ -65,6 +70,9 @@ NATIVE_QUEUE: frozenset[str] = frozenset({"joins-next-step", "queues-to-end"})
 QUEUED_EVENT = "x-optio-queued"
 TAKEN_EVENT = "x-optio-taken"
 INTERRUPT_EVENT = "x-optio-interrupt"
+# A message a previous run left undelivered, sent again under a new id
+# (Fix 19, Steering.requeue): {"type": REQUEUED_EVENT, "id": old, "new_id": new}.
+REQUEUED_EVENT = "x-optio-requeued"
 # Messages optio delivers together form one prompt, in the order written.
 PROMPT_SEPARATOR = "\n\n"
 # Upper bound on the wait for the turn end after an interrupt.
@@ -445,6 +453,38 @@ class Steering:
                 await self._interrupt_and_wait(call_interrupt=call_interrupt)
             await self._write_next_locked()
         return qid
+
+    async def requeue(self, messages: list[tuple[str, str]]) -> list[str]:
+        """Resume (Fix 19, owner ruling 2026-09-15, finding 6 #2): deliver
+        again messages a previous run of the agent left queued and never
+        delivered, given as (old id, ORIGINAL text) in their original order.
+        Each gets a NEW id (the old one may already be known to the agent's
+        own transcript) and one x-optio-requeued {id: old, new_id: new},
+        emitted before anything is written; never a second x-optio-queued,
+        so the UI re-keys the bubble it already shows. A native-queue agent
+        gets them one at a time (Fix 17), ahead of any message sent since
+        the resume: the first is written at once if nothing is in flight.
+        Any other agent holds them at the front of optio's queue, delivered
+        at the turn end, or at once when idle. Returns the new ids."""
+        self._check_open()
+        if not messages:
+            return []
+        async with self._lock:
+            renamed = [(old, self._new_id(), text) for old, text in messages]
+            for old, new, _text in renamed:
+                self._emit({"type": REQUEUED_EVENT, "id": old, "new_id": new})
+            if self._busy_send() in NATIVE_QUEUE and not self._held:
+                if not self._conv.is_pending():
+                    self._in_flight = None  # an idle agent holds nothing in its queue
+                self._native_pending[0:0] = [
+                    (new, _with_trailing_blank_line(text)) for _old, new, text in renamed
+                ]
+                await self._write_next_locked()
+            else:
+                self._held[0:0] = [(new, text) for _old, new, text in renamed]
+                if not self._conv.is_pending():
+                    await self._deliver([])
+        return [new for _old, new, _text in renamed]
 
     async def interrupt(self) -> None:
         """Stop only. Emits x-optio-interrupt at most once per turn, shared
