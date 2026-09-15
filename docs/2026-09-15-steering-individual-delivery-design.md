@@ -11,6 +11,8 @@ Claude Code folds every prompt waiting in its native stdin queue into ONE user m
 - Messages carrying a uuid get `command_lifecycle` events (queued, started, completed, cancelled, discarded, refused). Fix 13a stamps the steering id as the uuid.
 
 ## Design
+Scope: agents with busy_send joins-next-step (a native queue), which today means Claude Code. Agents without a native queue keep optio's existing hold-and-join delivery unchanged.
+
 Steering (optio_agents.steering) keeps an ordered list of messages the operator sent while the agent was busy. For native-queue agents, at most one of them is "in flight", meaning written to the CLI's stdin.
 - **Send when ready (busy):** emit x-optio-queued {id, text} as today. If nothing is in flight, write the message to stdin now (uuid = id, trailing blank line) and mark it in flight. Otherwise append it to the pending list.
 - **Advance:** when the in-flight message's command_lifecycle reaches `started`, or any final state (completed, cancelled, discarded, refused), write the next pending message and mark it in flight. As a safety net, if a turn ends or the agent goes idle while nothing is in flight and the pending list is not empty, write the next one. This also covers conversations whose CLI emits no lifecycle events.
