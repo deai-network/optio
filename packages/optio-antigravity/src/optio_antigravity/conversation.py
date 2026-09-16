@@ -184,7 +184,9 @@ class AntigravityConversation:
 
     # -- Conversation protocol surface --------------------------------------
 
-    async def send(self, text: str) -> None:
+    async def send(self, text: str, *, uuid: str | None = None) -> None:
+        """``uuid`` is an advisory message id (Fix 13a/Fix 23): this backend
+        has no message identity of its own, so it is accepted and ignored."""
         if self._closed:
             raise ConversationClosed("conversation closed")
 

@@ -48,8 +48,13 @@ class Conversation(Protocol):
     regular optio surface; this object only talks to the model.
     """
 
-    async def send(self, text: str) -> None:
-        """Queue one user message. Raises ConversationClosed after end."""
+    async def send(self, text: str, *, uuid: str | None = None) -> None:
+        """Queue one user message. Raises ConversationClosed after end.
+
+        ``uuid`` is an advisory message id (Fix 13a): a backend with its own
+        message identity (e.g. Claude Code's CLI stdin ``uuid``) may key its
+        lifecycle events by it; a backend with no message identity accepts
+        and ignores it."""
         ...
 
     def on_event(self, handler: EventHandler) -> Unsubscribe:
