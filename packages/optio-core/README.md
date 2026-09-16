@@ -212,10 +212,10 @@ async def execute(ctx: ProcessContext) -> None:
 #### `report_progress()`
 
 ```python
-ctx.report_progress(percent: float | None, message: str | None = None, level: Literal["info", "warning"] = "info") -> None
+ctx.report_progress(percent: float | None, message: str | None = None, *, level: Literal["info", "warning"] = "info") -> None
 ```
 
-Update progress. `percent` is 0-100, or `None` for indeterminate progress. `message` is an optional description of the current step (also appended to the process log). `level` (`"info"` or `"warning"`) is the log level of that line; warnings are never dropped when a burst of messages is coalesced. Progress writes are buffered and flushed to MongoDB at most every 100ms (configurable via the `OPTIO_PROGRESS_FLUSH_INTERVAL_MS` environment variable). A final flush occurs automatically when the process completes.
+Update progress. `percent` is 0-100, or `None` for indeterminate progress. `message` is an optional description of the current step (also appended to the process log). `level` (keyword-only, `"info"` or `"warning"`) is the log level of that line; warnings are never dropped when a burst of messages is coalesced, so they are not rate-limited either. Progress writes are buffered and flushed to MongoDB at most every 100ms (configurable via the `OPTIO_PROGRESS_FLUSH_INTERVAL_MS` environment variable). A final flush occurs automatically when the process completes.
 
 #### `should_continue()`
 
@@ -341,6 +341,7 @@ Call `ctx.report_progress(percent, message)` from your task function:
 
 - `percent`: `float` from 0 to 100, or `None` for indeterminate progress.
 - `message`: Optional `str` describing the current step. Also appended to the process log.
+- `level`: Keyword-only, `"info"` (default) or `"warning"`: the log level of that line. Warnings are never dropped by burst coalescing, and are not rate-limited, so do not emit one per line of a stream.
 
 Progress writes are buffered and flushed to MongoDB at most every 100ms (configurable via `OPTIO_PROGRESS_FLUSH_INTERVAL_MS`). A final flush occurs automatically when the process completes.
 
