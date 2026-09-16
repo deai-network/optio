@@ -288,6 +288,8 @@ async def test_flush_final_progress_returns_despite_a_running_percent_producer(
     finally:
         stop.set()
         await running
+        if ctx._flush_task is not None:
+            await asyncio.wait({ctx._flush_task})
 
     messages = await _log_messages(mongo_db, "test", "pct-producer")
     assert messages == ["last words"]
