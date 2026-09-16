@@ -217,6 +217,26 @@ describe('claudecode session end: messages re-queued on resume', () => {
     expect(comparable(s)).toEqual(comparable(replay(events)));
   });
 
+  it('a message the graceful interrupt swept keeps its place ahead of ones that stayed queued, live and replay agree', () => {
+    // Review round 1, finding 1: q1 is swept by the graceful interrupt
+    // (cancelled, never started) and becomes a "Not delivered" note before
+    // x-optio-closed/x-optio-resumed even run; q2 and q3 stay plainly
+    // queued the whole time. The resumed run re-queues all three: the
+    // original send order (q1, q2, q3) must survive in both live and
+    // replay, not just live (which never shows the bug: x-optio-closed's
+    // blanket drop turns q2/q3 into notes too, so restoring one id at a
+    // time from an all-notes list happens to keep the right order).
+    const events = [
+      running, user('q'), queued('q1', 'one'), queued('q2', 'two'), queued('q3', 'three'),
+      lifecycle('q1', 'queued'), sessionEnd, lifecycle('q1', 'cancelled'), aborted(), idle, closed,
+      resumed(['q1', 'q2', 'q3']), notice,
+    ];
+    const s = live(events);
+    expect(ofKind(s, 'user').filter((u) => u.queued).map((u) => u.text)).toEqual(['one', 'two', 'three']);
+    expect(notDelivered(s)).toEqual([]);
+    expect(comparable(s)).toEqual(comparable(replay(events)));
+  });
+
   it('a bubble x-optio-resumed does not list becomes Not delivered; the listed one stays queued below it', () => {
     const s = run([running, user('q'), queued('q1', 'a'), queued('q2', 'b'), resumed(['q2'])]);
     expect(s.items.map((i) => ('text' in i ? i.text : i.kind))).toEqual(['q', 'Not delivered: a', 'b']);
