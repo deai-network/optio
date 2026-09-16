@@ -867,3 +867,89 @@ async def test_relaunch_resets_the_queue_and_clears_is_pending_without_an_idle_e
     await steering.settle()
     assert new_handle.stdin.lines.qsize() == 0  # nothing left queued
     assert c.is_pending() is False  # no stuck busy state after the relaunch
+
+
+# -- W2: draining the reader across a relaunch (wave-2 re-review of Fix 25) --
+# The dying process's own last events -- e.g. a command_lifecycle "started"
+# for the in-flight message -- can still be sitting in the pipe, unread, at
+# the moment session.py used to call reader_task.cancel() outright. Draining
+# the reader across the process's own real EOF instead (session.py's actual
+# fix) lets that event reach Steering before reset_transport() runs.
+
+
+@pytest.mark.asyncio
+async def test_draining_the_reader_across_a_relaunch_lets_a_pending_started_prevent_a_resend(convo):
+    c, handle = convo
+    ids = iter(["m1", "m2", "m3"])
+    steering = make_steering(c, new_id=lambda: next(ids))
+    reader = asyncio.create_task(c.run_reader())
+
+    await c.send("long task")
+    await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    for text in ("#1", "#2", "#3"):
+        await steering.send_when_ready(text)
+    m1 = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert m1["uuid"] == "m1"
+
+    # session.py's relaunch arm, corrected (Fix 29/W1 + W2):
+    # begin_transport_reset() and begin_restart() BEFORE the kill, then
+    # DRAIN the reader across the old process's own real, graceful EOF --
+    # instead of cancelling it -- so whatever it wrote to the pipe on the
+    # way out is not silently discarded.
+    c.begin_restart()
+    steering.begin_transport_reset()
+    handle.stdout.feed(_lifecycle("m1", "started"))  # sitting unread until drained
+    handle.stdout.eof()
+    await asyncio.wait_for(reader, 60)  # drain, not cancel
+
+    new_handle = _FakeHandle()
+    c.attach(new_handle)
+    reader2 = asyncio.create_task(c.run_reader())
+    await steering.reset_transport()
+
+    # m1 is NOT written again: the drained "started" told Steering it had
+    # already been taken (and --continue already restored it in the new
+    # process's transcript). Delivery moves straight on to m2.
+    m2 = await asyncio.wait_for(new_handle.stdin.lines.get(), 60)
+    assert (m2["uuid"], m2["message"]["content"][0]["text"]) == ("m2", "#2\n\n")
+    assert new_handle.stdin.lines.qsize() == 0
+
+    new_handle.stdout.feed(_lifecycle("m2", "started"))
+    new_handle.stdout.feed({"type": "result", "subtype": "success",
+                            "result": "two", "is_error": False})
+    m3 = await asyncio.wait_for(new_handle.stdin.lines.get(), 60)
+    assert (m3["uuid"], m3["message"]["content"][0]["text"]) == ("m3", "#3\n\n")
+    new_handle.stdout.feed(_lifecycle("m3", "started"))
+    new_handle.stdout.feed({"type": "result", "subtype": "success",
+                            "result": "three", "is_error": False})
+    new_handle.stdout.eof()
+    await asyncio.wait_for(reader2, 60)
+    await steering.settle()
+    assert new_handle.stdin.lines.qsize() == 0
+
+
+# -- W3: a pending interrupt ack must not hang forever across a relaunch -----
+# (wave-2 re-review; pre-existing, but the relaunch path this wave adds is
+# the natural place to close it: begin_restart() is now the designated
+# reset point for everything the dying process leaves behind.)
+
+
+@pytest.mark.asyncio
+async def test_begin_restart_fails_a_pending_interrupt_ack_instead_of_hanging_forever(convo):
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await c.send("long task")
+    await asyncio.wait_for(handle.stdin.lines.get(), 60)
+
+    interrupt_task = asyncio.ensure_future(c.interrupt())
+    await asyncio.wait_for(handle.stdin.lines.get(), 60)  # the control_request itself
+    await asyncio.sleep(0)  # let interrupt() reach `await fut`
+
+    # The operator changes the model before the dying process's ack for
+    # this interrupt ever arrives.
+    c.begin_restart()
+    with pytest.raises(ConversationClosed):
+        await asyncio.wait_for(interrupt_task, 60)
+
+    handle.stdout.eof()
+    await reader

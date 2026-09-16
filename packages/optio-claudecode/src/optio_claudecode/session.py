@@ -767,15 +767,38 @@ async def run_claudecode_session(
                     # Tell the conversation this process EOF is a restart, not a
                     # close — keeps the widget live (no x-optio-closed / grayed
                     # input) and the conversation object open across the swap.
+                    # Fix 29/W1 (wave-2 re-review): begin_transport_reset()
+                    # right alongside it, BEFORE the kill, latches Steering's
+                    # in-flight message against the dying process's own last
+                    # events (an abort result + trailing idle, or a shutdown
+                    # sweep's cancelled/discarded/refused) clearing it before
+                    # reset_transport() below gets to rescue it.
                     conversation.begin_restart()
+                    if conv_listener is not None:
+                        conv_listener.begin_transport_reset()
                     # Graceful kill (not aggressive) so claude flushes its
                     # transcript before --continue resumes it on the new model.
                     await host.terminate_subprocess(handle, aggressive=False)
-                    reader_task.cancel()
+                    # Fix 29/W2 (wave-2 re-review): drain the reader across the
+                    # dying process's own real EOF instead of cancelling it
+                    # outright. A cancel discards whatever the process wrote to
+                    # the pipe that the reader had not yet pulled off — e.g. a
+                    # command_lifecycle "started" for the in-flight message —
+                    # so Steering would never learn it was taken, and
+                    # reset_transport() below would write it a second time on
+                    # top of what --continue already restored. The graceful
+                    # kill above means the process's own stdout EOFs on its
+                    # own; bound the wait so a reader stuck on a truly hung
+                    # pipe still falls back to the previous hard cancel rather
+                    # than blocking the relaunch forever.
                     try:
-                        await reader_task
-                    except asyncio.CancelledError:
-                        pass
+                        await asyncio.wait_for(reader_task, GRACEFUL_INTERRUPT_TIMEOUT_S)
+                    except asyncio.TimeoutError:
+                        reader_task.cancel()
+                        try:
+                            await reader_task
+                        except asyncio.CancelledError:
+                            pass
                     handle, reader_task = await _spawn(current_model, do_continue=True)
                     launched_handle = handle
                     # Fix 25 (final-review-2 I3 / ledger line 399): the killed
