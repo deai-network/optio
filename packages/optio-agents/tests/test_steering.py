@@ -605,6 +605,40 @@ async def test_session_end_blocks_the_lifecycle_triggered_advance_path(caplog, i
     assert "not delivered" in caplog.text
 
 
+# -- transport reset on relaunch (Fix 25, final-review-2 I3 / ledger line 399) -
+# A model/effort relaunch SIGTERMs the CLI mid-turn and reattaches a whole new
+# process underneath the same Conversation. The dead process took the
+# in-flight message with it, so neither its command_lifecycle nor the turn's
+# own result will ever arrive: without reset_transport(), _in_flight would
+# stay set forever and _advance would never write id2/id3 again.
+
+
+async def test_reset_transport_rewrites_the_in_flight_message_then_resumes_in_order():
+    conv = FakeConversation(native_lifecycle=True)
+    conv.pending = True
+    s = make(conv)
+    id1, id2, id3 = await _queue_three(s)  # id1 in flight; id2, id3 pending
+    assert s.in_flight_id == id1 and s.pending_ids == [id2, id3]
+
+    # The transport under conv was just replaced (a real relaunch reattaches
+    # a whole new handle underneath the same Conversation); model what
+    # reaches the fresh one from here on.
+    conv.sent.clear()
+    conv.uuids.clear()
+    await s.reset_transport()
+    assert s.in_flight_id == id1 and s.pending_ids == [id2, id3]
+    assert conv.sent == ["one\n\n"] and conv.uuids == [id1]  # rewritten, not dropped
+
+    conv.fire_lifecycle(id1, "started")
+    await s.settle()
+    assert conv.sent == ["one\n\n", "two\n\n"] and conv.uuids == [id1, id2]
+
+    conv.fire_lifecycle(id2, "started")
+    await s.settle()
+    assert conv.sent == ["one\n\n", "two\n\n", "three\n\n"]
+    assert conv.uuids == [id1, id2, id3]  # #1, #2, #3, in order, exactly once each
+
+
 # -- re-queue on resume (Fix 19, owner ruling 2026-09-15, finding 6 #2) -------
 # Messages a previous run left queued and undelivered go out again, in their
 # original order, each under a NEW id announced by x-optio-requeued (never a
