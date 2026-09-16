@@ -178,6 +178,25 @@ class ConversationListener:
             return []
         return [qid for qid, _ in pending]
 
+    async def reset_transport(self) -> None:
+        """Fix 25 (final-review-2 I3 / ledger line 399): the session calls
+        this right after re-attaching a fresh ``claude`` process for a
+        model/effort relaunch — reaching this ``Steering`` through the
+        listener, the same way ``requeue_undelivered`` does for a resume,
+        rather than a new global. The dead process took whatever message
+        was in flight with it, so without this ``Steering._in_flight``
+        would stay set forever and the queue behind it would never drain —
+        silent, permanent message loss. Delegates to
+        ``Steering.reset_transport``, which re-writes that message (to the
+        transport just re-attached) instead of dropping it."""
+        try:
+            await self._steering.reset_transport()
+        except ConversationClosed:
+            _LOG.warning(
+                "conversation closed before the steering queue could be reset "
+                "across a relaunch",
+            )
+
     # -- event intake --------------------------------------------------------
 
     def _broadcast(self, event: dict) -> None:

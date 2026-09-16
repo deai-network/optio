@@ -284,6 +284,21 @@ Replay-buffer semantics:
   still advances: a conversation that is idle (`is_pending()` False) holds
   nothing in its queue, so the next message goes when the turn ends idle.
   Messages still pending when the session ends are never written.
+* Relaunch (Fix 25, final-review-2 I3 / ledger line 399). A model or
+  reasoning-effort change kills `claude` mid-turn and relaunches it with
+  `--continue`: the dead process takes its in-flight steering message with
+  it, so neither its `command_lifecycle` nor the turn's own `result` will
+  ever arrive for it. `ClaudeCodeConversation.attach()` zeroes `_pending`
+  and `_sends_since_result` (alongside `_restarting`), so `is_pending()`
+  does not stay stuck True from the dead turn once the new process is
+  attached. `session.py`'s relaunch arm then calls
+  `ConversationListener.reset_transport()` (the same spot
+  `requeue_undelivered()` is called from for a resume), which delegates to
+  `Steering.reset_transport()`: it re-writes the in-flight message (to the
+  transport just attached, not the dead one) instead of leaving it stuck
+  forever in `in_flight_id`, so the queue behind it (Fix 17) keeps
+  draining. Queued bubbles keep their ids and order across the relaunch;
+  nothing here relies on a `session_state_changed idle`.
 * Session end (Fix 19, owner rulings 2026-09-15;
   `docs/2026-09-15-steering-session-end-design.md`). A cooperative cancel
   (stop, suspend, engine shutdown) while a turn runs
