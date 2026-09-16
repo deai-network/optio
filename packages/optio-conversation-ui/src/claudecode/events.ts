@@ -93,6 +93,50 @@ function restoreNote(items: ChatItem[], idx: number, queueId: string): ChatItem[
   return [...items.slice(0, idx), ...items.slice(idx + 1), restored];
 }
 
+// Fix 19 review round 1, finding 1: x-optio-resumed's `requeued` list is the
+// original send order (owner ruling, finding 6 #2) and live must match
+// replay. Moving each restored bubble to the bottom ONE AT A TIME (as
+// restoreNote does, for the single-id x-optio-requeued case) is not enough
+// here: on replay there is no x-optio-closed, so a message the graceful
+// interrupt swept (already a "Not delivered" note, made by its own
+// command_lifecycle 'cancelled', before this marker) sits in front of
+// messages that stayed plainly queued the whole time (dropUndelivered keeps
+// them, since their id is in `requeued` too); restoring the note first and
+// moving it to the bottom would then put it AFTER them. Live never shows
+// this because x-optio-closed's blanket dropUndelivered(items, []) turns
+// every one of them into a note first. Fix: pull every item this resumed run
+// is about to re-send (a bubble dropUndelivered kept queued, or a note
+// standing in for one it dropped) out of the list in one pass, and place
+// them back, all at once, in `requeued` order — independent of where each
+// one happened to sit beforehand.
+function restoreQueuedTail(items: ChatItem[], requeued: readonly string[]): ChatItem[] {
+  if (requeued.length === 0) return items;
+  const byId = new Map<string, UserItem>();
+  const rest: ChatItem[] = [];
+  for (const item of items) {
+    if (isQueued(item) && item.queueId !== undefined && requeued.includes(item.queueId)) {
+      byId.set(item.queueId, item);
+      continue;
+    }
+    if (item.kind === 'activity' && item.requeueId !== undefined && requeued.includes(item.requeueId)) {
+      const id = item.requeueId;
+      const restored: UserItem = {
+        kind: 'user', text: item.text.replace(/^Not delivered: /, ''), seq: item.seq, queued: true, queueId: id,
+      };
+      if (item.timestamp !== undefined) restored.timestamp = item.timestamp;
+      byId.set(id, restored);
+      continue;
+    }
+    rest.push(item);
+  }
+  const tail: UserItem[] = [];
+  for (const id of requeued) {
+    const restored = byId.get(id);
+    if (restored !== undefined) tail.push(restored);
+  }
+  return [...rest, ...tail];
+}
+
 type ToolItem = Extract<ChatItem, { kind: 'tool' }>;
 
 const RESULT_MAX = 2000;
@@ -1336,11 +1380,10 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       const requeued: string[] = Array.isArray(ev.requeued)
         ? ev.requeued.filter((x: unknown): x is string => typeof x === 'string')
         : [];
-      let items = settleNotes(dropUndelivered(freezeRunning(state.items, lastWireTime(state, now), 'session'), requeued));
-      for (const id of requeued) {
-        const nidx = items.findIndex((i) => i.kind === 'activity' && i.requeueId === id);
-        if (nidx !== -1) items = restoreNote(items, nidx, id);
-      }
+      const items = restoreQueuedTail(
+        settleNotes(dropUndelivered(freezeRunning(state.items, lastWireTime(state, now), 'session'), requeued)),
+        requeued,
+      );
       return { ...state, items, busy: false, pendingRequeue: undefined };
     }
 
