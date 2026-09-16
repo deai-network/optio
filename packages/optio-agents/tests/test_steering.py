@@ -91,6 +91,20 @@ class FakeConversation:
             self.fire({"type": "turn-end"})
 
 
+class StrictProtocolConversation(FakeConversation):
+    """A conversation whose ``send`` has exactly the ``Conversation`` Protocol
+    signature (Fix 23) -- not the wider one ``FakeConversation`` (and every
+    other pre-Fix-23 fake here) happens to accept. ``Steering`` always calls
+    ``send`` with a ``uuid=`` keyword (Fix 13a); before Fix 23 the six
+    non-Claude-Code wrappers implemented only ``send(self, text: str) ->
+    None`` and so raised ``TypeError`` on every send through a ``Steering``.
+    This fake accepts and ignores the advisory id, the way any backend
+    without message identity should."""
+
+    async def send(self, text: str, *, uuid: str | None = None) -> None:
+        await super().send(text, uuid=uuid)
+
+
 def _lifecycle(event: dict) -> tuple[str, str] | None:
     if event.get("type") != "command_lifecycle":
         return None
@@ -138,6 +152,17 @@ def test_declaration_rejects_unknown_values():
 
 
 # -- send when ready -----------------------------------------------------------
+
+async def test_send_when_ready_works_against_a_conversation_with_only_the_protocol_signature():
+    # Fix 23: the Conversation Protocol declares send(text) -> None, but
+    # Steering always sends with uuid= (Fix 13a). A conversation that
+    # implements exactly the declared Protocol must not raise.
+    conv = StrictProtocolConversation()
+    s = make(conv)
+    outcome = await s.send_when_ready("hi")
+    assert conv.sent == ["hi"]
+    assert outcome == SendOutcome(id="id1", queued=False)
+
 
 @pytest.mark.parametrize("cap", BUSY_SEND_VALUES)
 async def test_idle_send_is_a_plain_send_without_events(cap):
