@@ -949,9 +949,10 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   // Interrupt and send disable each other while either is in flight and share
   // the same error Alert), plus a plain ref so a second click landing before
   // React re-renders (no await between two fireEvent.click calls, e.g.) is
-  // still dropped rather than firing a second onSteer('', [], upTo). Fix
-  // 13b: `upTo` is the clicked bubble's own id, so Send now on the 2nd of 3
-  // queued bubbles delivers 1-2 and leaves 3 queued.
+  // still dropped rather than firing a second onSteer('', [], upTo). `upTo`
+  // is the clicked bubble's own id, but since Fix 17 the native queue never
+  // holds more than one message in flight, so it needs nothing beyond the
+  // interrupt: Send now on any queued bubble does the same thing.
   async function sendQueuedNow(upTo?: string) {
     if (sendingNowRef.current || submittingRef.current || sending || closed || !props.onSteer) return;
     sendingNowRef.current = true;

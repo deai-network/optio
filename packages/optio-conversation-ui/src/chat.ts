@@ -70,9 +70,9 @@ export type ChatItem =
       // command_lifecycle 'cancelled'/'discarded'/'refused' for a queued
       // bubble's own uuid (never on the plain session-end notes dropUndelivered
       // makes) — the uuid the note replaced, so a later x-optio-requeued for
-      // the same id can find and reverse it (steering.py's own resend for a
-      // "Send now up to" can emit its command_lifecycle 'cancelled' well
-      // before the x-optio-requeued that says it was a requeue, not a drop).
+      // the same id can find and reverse it (the CLI's own session-end cancel
+      // sweep can emit this command_lifecycle 'cancelled' well before a
+      // resume's requeue_undelivered says it was a requeue, not a drop).
       queueId?: string;
       // Fix 19 (owner ruling 2026-09-15, finding 6 #2): set on a "Not
       // delivered" note that does NOT pin (made at session end by

@@ -950,7 +950,7 @@ def test_conversation_launch_env_extra_env_overrides_thinking_display_pin():
 def test_conversation_launch_env_enables_session_state_events():
     """Conversation steering's is_pending() resync (conversation.py's _route)
     depends on system/session_state_changed idle/running events, which the CLI
-    only emits with this switch on (owner ruling, fix-3-brief)."""
+    only emits with this switch on (owner ruling)."""
     env = host_actions.conversation_launch_env("/wd", None)
     assert env["CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS"] == "1"
 

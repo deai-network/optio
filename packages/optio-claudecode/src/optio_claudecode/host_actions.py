@@ -1189,8 +1189,7 @@ def build_conversation_argv(
 # _route "system"/"session_state_changed" branch in conversation.py) depends
 # on those events to un-stick a merged turn's pending count; without them
 # is_pending() can stay true forever after a merged turn, so sends queue
-# behind an idle agent and interrupt fires at nothing (owner ruling,
-# fix-3-brief: 2026-09-13-conversation-steering-plan-stage1).
+# behind an idle agent and interrupt fires at nothing (owner ruling).
 _EMIT_SESSION_STATE_EVENTS = "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS"
 
 

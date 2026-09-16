@@ -60,8 +60,8 @@ function clearTakenTimestamp(items: ChatItem[], queueId: string): ChatItem[] {
 }
 
 // Review of fix 13b, finding 2: a "Not delivered" note's `queueId` exists
-// only so a LATER x-optio-requeued (our own "Send now up to" resend) can
-// still restore it; once no further requeue can arrive for any note still
+// only so a LATER x-optio-requeued (a resumed run's requeue_undelivered)
+// can still restore it; once no further requeue can arrive for any note still
 // carrying one, they settle permanently into the transcript, no longer
 // pinning later content behind them (isPinned, chat.ts) — called at the
 // next clean turn end (a requeue, per the protocol, always resolves before
@@ -1024,13 +1024,13 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
           // Live, the bubble already has one — the widget's own local send
           // time (x-optio-local-user), set before it was ever queued — and
           // 'started' routinely precedes the taking echo (the fold's last
-          // message; cancel3's message 2 and the re-sent message 3). Fix 4
-          // says the taking ECHO's wire time is what replaces the send
-          // time, so clear it here: the later match below (the single
-          // echo's "already resolved by uuid alone" branch, or the fold's
-          // last block) then backfills unconditionally from the first
-          // timestamped echo, exactly as a replay (which never had a local
-          // send time to begin with) already does.
+          // message). Fix 4 says the taking ECHO's wire time is what
+          // replaces the send time, so clear it here: the later match
+          // below (the single echo's "already resolved by uuid alone"
+          // branch, or the fold's last block) then backfills
+          // unconditionally from the first timestamped echo, exactly as a
+          // replay (which never had a local send time to begin with)
+          // already does.
           const takenItems = takeQueuedAt(state.items, idx);
           return { ...state, items: clearTakenTimestamp(takenItems, commandUuid), busy: true };
         }
@@ -1132,8 +1132,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // your internet or DNS (EAI_AGAIN)"): the is_error result below (see
       // 'result') renders this same text as the single, explained error
       // item. This event must not also open or extend an agent bubble with
-      // it — Fix 2 of this branch's manual-test wave (bug predates the
-      // branch: main 44441fb8, from 21a9846a).
+      // it (bug predates the branch: main 44441fb8, from 21a9846a).
       if (ev.message?.model === '<synthetic>' && typeof ev.error === 'string') return state;
       const blocks = Array.isArray(ev.message?.content) ? ev.message.content : [];
       const msgId = typeof ev.message?.id === 'string' ? ev.message.id : undefined;
@@ -1268,7 +1267,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // pending bubble is finalized in place first (keeping whatever real
       // text it already streamed): the CLI's own synthetic error message is
       // filtered out above, but real narration/text from earlier in the same
-      // turn must stay, finalized, not left stuck pending — Fix 2.
+      // turn must stay, finalized, not left stuck pending.
       if (ev.is_error) {
         const msg = explainApiError(resultText ?? '', ev.api_error_status);
         const pidx = pendingIndex(items);
