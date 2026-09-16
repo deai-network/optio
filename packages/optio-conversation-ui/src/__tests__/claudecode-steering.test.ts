@@ -426,7 +426,7 @@ describe('claudecode steering: lifecycle-driven queued bubbles (Fix 13b)', () =>
     expect(users(s)[1]).toMatchObject({ text: 'later', queued: true, queueId: 'q1-new' });
   });
 
-  it("x-optio-requeued undoes an already-applied Not delivered note (steering.py emits 'cancelled' well before the requeue): ignored, not dropped", () => {
+  it("x-optio-requeued undoes an already-applied Not delivered note (the CLI's own session-end cancel sweep can emit command_lifecycle cancelled well before a resume's requeue_undelivered): ignored, not dropped", () => {
     const s = run([
       user('q'), queued('q1', 'later'), lifecycle('q1', 'cancelled'), requeued('q1', 'q1-new'),
     ]);
