@@ -48,10 +48,10 @@ describe('claudecode real wire: message timestamps', () => {
   });
 
   // Fix 12 (owner ruling 2026-09-14): `timestamp` is now the message's START,
-  // not "the first wire ts seen" (that was Fix 4's bug -- see fix-12-brief.md
-  // Facts: for a plain-text answer that first-seen ts is the END of the first
-  // block, 6.5-15.4s after the true start). This fixture predates the marker
-  // this fix adds, so the fallback applies: the previous wire event
+  // not "the first wire ts seen" (that was Fix 4's bug: for a plain-text
+  // answer that first-seen ts is the END of the first block, 6.5-15.4s
+  // after the true start). This fixture predates the marker this fix adds,
+  // so the fallback applies: the previous wire event
   // (lastEventAt as it stood just before the bubble opened) -- here the
   // initiating user prompt. `endTimestamp` is the LAST assistant wire event
   // seen for the message, full stop (review of fix 12, finding 2): the

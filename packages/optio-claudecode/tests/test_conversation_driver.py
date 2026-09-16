@@ -760,14 +760,14 @@ async def test_interrupt_after_a_merged_turns_idle_gate_still_writes_a_control_r
     await reader
 
 
-# -- session_state_changed one-time warning (fix-3-brief) --------------------
+# -- session_state_changed one-time warning -----------------------------------
 
 @pytest.mark.asyncio
 async def test_result_without_any_state_event_logs_one_warning(convo, caplog):
     # Production's launch env did not set CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS,
     # so the CLI never emits session_state_changed and is_pending() can drift
-    # after a merged turn (fix-3-brief root cause). Surface that once per
-    # conversation rather than silently.
+    # after a merged turn. Surface that once per conversation rather than
+    # silently.
     c, handle = convo
     reader = asyncio.create_task(c.run_reader())
     with caplog.at_level("WARNING", logger="optio_claudecode.conversation"):
@@ -846,7 +846,7 @@ async def test_relaunch_resets_the_queue_and_clears_is_pending_without_an_idle_e
     # Each message becomes its own text-only turn (AGENTS.md: "N messages =
     # N turns") — its own result, with no session_state_changed at all, is
     # enough for is_pending() to resolve; the merged-turn drift that DOES
-    # need those events (fix-3-brief) is a separate, pre-existing concern.
+    # need those events is a separate, pre-existing concern.
     new_handle.stdout.feed(_lifecycle("m1", "started"))
     new_handle.stdout.feed({"type": "result", "subtype": "success",
                             "result": "one", "is_error": False})

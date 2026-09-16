@@ -264,7 +264,7 @@ Claude Code satisfies this with a `system/session_state_changed`
 running/idle resync in `ClaudeCodeConversation._route` (see
 `optio-claudecode/…/conversation.py`) — but the CLI only emits those events
 when the wrapper's launch env sets `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS=1`
-(`conversation_launch_env`, Fix 3); without it `is_pending()` can drift
+(`conversation_launch_env`); without it `is_pending()` can drift
 after a merged turn. A wrapper with no equivalent native signal must derive
 one some other way before declaring `joins-next-step`.
 
