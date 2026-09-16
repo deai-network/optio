@@ -480,8 +480,9 @@ async def test_warning_is_never_dropped_in_an_avalanche(mongo_db, fake_clock):
     entries = await _log_entries(mongo_db, "test", "warn-burst")
     messages = [message for _, message in entries]
     assert entries.count(("warning", "careful")) == 1
-    assert messages.index("before-29") < messages.index("careful")
-    assert messages[-1] == "after-29"
+    i = messages.index("careful")
+    assert messages[i - 2 : i + 1] == ["(19 messages dropped)", "before-29", "careful"]
+    assert messages[-2:] == ["(29 messages dropped)", "after-29"]
     assert all(level == "info" for level, message in entries if message != "careful")
 
 
@@ -492,3 +493,25 @@ async def test_report_progress_rejects_unknown_levels(mongo_db):
 
     with pytest.raises(ValueError, match="level"):
         ctx.report_progress(None, "boom", level="error")
+
+
+async def test_report_progress_level_is_keyword_only(mongo_db):
+    task = TaskInstance(execute=_dummy, process_id="kw-level", name="Kw level")
+    proc = await upsert_process(mongo_db, "test", task)
+    ctx = _make_context(mongo_db, "test", proc)
+
+    with pytest.raises(TypeError):
+        ctx.report_progress(40, "careful", "warning")  # type: ignore[misc]
+
+
+async def test_percent_only_call_validates_level_and_logs_nothing(mongo_db):
+    task = TaskInstance(execute=_dummy, process_id="pct-level", name="Pct level")
+    proc = await upsert_process(mongo_db, "test", task)
+    ctx = _make_context(mongo_db, "test", proc)
+
+    with pytest.raises(ValueError, match="level"):
+        ctx.report_progress(40, level="error")  # type: ignore[arg-type]
+    ctx.report_progress(40, level="warning")
+    await ctx.flush_final_progress()
+
+    assert await _log_entries(mongo_db, "test", "pct-level") == []

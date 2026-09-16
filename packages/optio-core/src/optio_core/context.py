@@ -6,7 +6,7 @@ import os
 import time
 from collections import deque
 from contextlib import asynccontextmanager
-from typing import Any, Callable, Awaitable, Literal, TYPE_CHECKING
+from typing import Any, Callable, Awaitable, Literal, TYPE_CHECKING, get_args
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase, AsyncIOMotorGridFSBucket
 
@@ -25,6 +25,9 @@ from optio_core.exceptions import ChildProcessFailed
 # "(N messages dropped)" line in front of the surviving message.
 AVALANCHE_THRESHOLD = 10
 AVALANCHE_WINDOW = 0.1
+
+# Log levels a task may give report_progress.
+ProgressLogLevel = Literal["info", "warning"]
 
 if TYPE_CHECKING:
     from optio_core.executor import Executor
@@ -109,7 +112,7 @@ class ProcessContext:
         # message — keeping the surviving message as the last log line.
         self._pending_pct: Progress | None = None
         self._pending_progress: Progress | None = None
-        self._message_queue: deque[tuple[Progress, str]] = deque()
+        self._message_queue: deque[tuple[Progress, ProgressLogLevel]] = deque()
         self._dropped_count: int = 0
         self._recent_calls: deque[float] = deque()
         self._last_flush_time: float = 0
@@ -139,11 +142,12 @@ class ProcessContext:
         self,
         percent: float | None,
         message: str | None = None,
-        level: Literal["info", "warning"] = "info",
+        *,
+        level: ProgressLogLevel = "info",
     ) -> None:
         """Update progress bar and/or append a log line.
 
-        The two arguments are independent:
+        The arguments are independent:
 
           - ``percent`` (0..100, or ``None`` for indeterminate) updates the
             progress bar shown in the UI. Percent-only calls (``message`` is
@@ -151,9 +155,11 @@ class ProcessContext:
           - ``message`` (when not ``None``) appends a log line with that
             text. Pass both together to advance the bar and log a milestone
             in one call.
-          - ``level`` (``"info"`` or ``"warning"``) is the log level of the
-            line a ``message`` appends; a percent-only call ignores it.
-            Warnings are never coalesced away in an avalanche.
+          - ``level`` (keyword-only, ``"info"`` or ``"warning"``) is the log
+            level of the line a ``message`` appends; a percent-only call
+            validates but otherwise ignores it. Warnings are never coalesced
+            away in an avalanche, so they are not rate-limited either: do not
+            emit one per line of a stream.
 
         Call patterns:
 
@@ -180,7 +186,7 @@ class ProcessContext:
             survives and a synthetic ``"(N messages dropped)"`` log line
             is emitted in front of it.
         """
-        if level not in ("info", "warning"):
+        if level not in get_args(ProgressLogLevel):
             raise ValueError(
                 f"report_progress level must be 'info' or 'warning', got {level!r}"
             )
@@ -643,7 +649,9 @@ class ProcessContext:
             self._flush_task = asyncio.create_task(self._flush_progress())
             self._flush_task.add_done_callback(_log_flush_failure)
 
-    async def _write_progress(self, progress: Progress, level: str = "info") -> None:
+    async def _write_progress(
+        self, progress: Progress, level: ProgressLogLevel = "info",
+    ) -> None:
         """Write a single Progress to the DB and append to the log."""
         from optio_core.store import update_progress, append_log
         await update_progress(
