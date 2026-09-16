@@ -687,7 +687,13 @@ class ProcessContext:
                 return
 
     async def flush_final_progress(self) -> None:
-        """Force flush any pending progress (called when process ends)."""
+        """Force flush any pending progress (called when process ends).
+
+        Ends the context life for progress purposes: ``_finishing`` stays
+        set, so later flushes no longer keep looping for percent-only
+        updates. A ProcessContext is not reused after this call -- the
+        executor builds a fresh one per execution, resumes included.
+        """
         self._finishing = True
         # Let an in-flight flush finish instead of cancelling it: it has
         # already taken its current message off the queue, so cancelling it
