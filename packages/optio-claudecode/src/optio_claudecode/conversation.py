@@ -377,8 +377,22 @@ class ClaudeCodeConversation:
     def begin_restart(self) -> None:
         """Mark that the current process is about to be killed for a model
         swap, so its EOF does not close the conversation. Cleared by attach()
-        when the relaunched process is wired in."""
+        when the relaunched process is wired in.
+
+        Fix 29/W3 (wave-2 re-review, pre-existing gap this wave's relaunch
+        path newly reaches): also fails every outstanding control_request
+        ack (e.g. an Interrupt awaiting its response) the same way
+        ``_finish()`` would on a real close — ``_finish()`` skips that step
+        whenever ``_restarting`` is set (by design, so a mid-swap EOF does
+        not look like a close), and ``attach()`` does not revisit it either.
+        Without this, an ``interrupt()`` call whose ack died with the old
+        process hangs forever across the relaunch, since ``Steering.
+        interrupt()`` awaits it with no deadline of its own."""
         self._restarting = True
+        for fut in self._control_acks.values():
+            if not fut.done():
+                fut.set_exception(ConversationClosed("transport relaunched"))
+        self._control_acks.clear()
 
     def on_event(self, handler):
         self._event_handlers.append(handler)

@@ -609,6 +609,9 @@ line on a busy native-queue send. `Steering.reset_transport()` (Fix 25)
 re-writes an in-flight message rather than dropping it when a wrapper
 relaunches its transport mid-turn (Claude Code: a model/effort change),
 so the queue behind it keeps draining and the UI does not stay stuck busy.
+`begin_transport_reset()` (Fix 29) latches that in-flight message from the
+moment the relaunch begins, so the dying process's own last events cannot
+clear it first and leave nothing to rescue.
 Details: `packages/optio-agents/AGENTS.md`.
 Design: `docs/2026-09-13-conversation-steering-design.md` and
 `docs/2026-09-15-steering-individual-delivery-design.md`.

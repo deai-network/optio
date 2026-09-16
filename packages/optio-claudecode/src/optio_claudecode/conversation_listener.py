@@ -180,6 +180,16 @@ class ConversationListener:
             return []
         return [qid for qid, _ in pending]
 
+    def begin_transport_reset(self) -> None:
+        """Fix 29/W1 (wave-2 re-review of Fix 25): the session calls this
+        right alongside ``ClaudeCodeConversation.begin_restart()``, BEFORE
+        the old process is killed — reaching this ``Steering`` through the
+        listener, the same way ``reset_transport`` below does after the
+        relaunch. Delegates to ``Steering.begin_transport_reset``, which
+        latches the window so the dying process's own last events cannot
+        make ``reset_transport`` below find nothing to rescue."""
+        self._steering.begin_transport_reset()
+
     async def reset_transport(self) -> None:
         """Fix 25 (final-review-2 I3 / ledger line 399): the session calls
         this right after re-attaching a fresh ``claude`` process for a
