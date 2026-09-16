@@ -798,3 +798,72 @@ async def test_result_after_a_state_event_logs_no_warning(convo, caplog):
     handle.stdout.eof()
     await reader
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
+
+
+# -- transport reset across a relaunch (Fix 25, final-review-2 I3 / ledger
+# line 399) --------------------------------------------------------------
+# A model/effort relaunch SIGTERMs the CLI mid-turn and reattaches a whole
+# new process. The dead process took the in-flight message with it: no
+# command_lifecycle, no result, ever, for the old handle. Deliberately no
+# system/session_state_changed idle arrives anywhere below — that would be
+# the escape hatch this fix replaces, and the point is draining without it.
+
+
+@pytest.mark.asyncio
+async def test_relaunch_resets_the_queue_and_clears_is_pending_without_an_idle_event(convo):
+    c, handle = convo
+    ids = iter(["m1", "m2", "m3"])
+    steering = make_steering(c, new_id=lambda: next(ids))
+    reader = asyncio.create_task(c.run_reader())
+
+    await c.send("long task")
+    await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    for text in ("#1", "#2", "#3"):
+        await steering.send_when_ready(text)
+    m1 = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert m1["uuid"] == "m1"
+    assert handle.stdin.lines.qsize() == 0  # #2, #3 wait behind #1
+    assert c.is_pending() is True
+
+    # --- the relaunch: the old process is gone for good; a fresh one is
+    # attached in its place (session.py's relaunch arm: begin_restart(),
+    # kill, attach(), then Steering.reset_transport() via
+    # ConversationListener). begin_restart() first, or this EOF would close
+    # the conversation outright instead of modelling a mid-swap restart. ---
+    c.begin_restart()
+    handle.stdout.eof()
+    await reader
+    new_handle = _FakeHandle()
+    c.attach(new_handle)
+    assert c.is_pending() is False  # attach() alone already clears the stale count
+    await steering.reset_transport()
+
+    reader2 = asyncio.create_task(c.run_reader())
+    m1_again = await asyncio.wait_for(new_handle.stdin.lines.get(), 60)
+    assert (m1_again["uuid"], m1_again["message"]["content"][0]["text"]) == ("m1", "#1\n\n")
+    assert c.is_pending() is True  # the re-write itself starts a fresh send
+
+    # Each message becomes its own text-only turn (AGENTS.md: "N messages =
+    # N turns") — its own result, with no session_state_changed at all, is
+    # enough for is_pending() to resolve; the merged-turn drift that DOES
+    # need those events (fix-3-brief) is a separate, pre-existing concern.
+    new_handle.stdout.feed(_lifecycle("m1", "started"))
+    new_handle.stdout.feed({"type": "result", "subtype": "success",
+                            "result": "one", "is_error": False})
+    m2 = await asyncio.wait_for(new_handle.stdin.lines.get(), 60)
+    assert (m2["uuid"], m2["message"]["content"][0]["text"]) == ("m2", "#2\n\n")
+
+    new_handle.stdout.feed(_lifecycle("m2", "started"))
+    new_handle.stdout.feed({"type": "result", "subtype": "success",
+                            "result": "two", "is_error": False})
+    m3 = await asyncio.wait_for(new_handle.stdin.lines.get(), 60)
+    assert (m3["uuid"], m3["message"]["content"][0]["text"]) == ("m3", "#3\n\n")
+
+    new_handle.stdout.feed(_lifecycle("m3", "started"))
+    new_handle.stdout.feed({"type": "result", "subtype": "success",
+                            "result": "three", "is_error": False})
+    new_handle.stdout.eof()
+    await reader2
+    await steering.settle()
+    assert new_handle.stdin.lines.qsize() == 0  # nothing left queued
+    assert c.is_pending() is False  # no stuck busy state after the relaunch

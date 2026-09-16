@@ -124,6 +124,17 @@ class ClaudeCodeConversation:
         # The new live process is attached; a future real EOF should close
         # normally again.
         self._restarting = False
+        # Fix 25 (final-review-2 I3 / ledger line 399): a relaunch (model or
+        # effort change) kills the old process and calls attach() with the
+        # new one. The old process's send()s never got their result (it was
+        # killed, not finished), so without this is_pending() would stay
+        # True forever — the UI stuck busy and every later send queuing
+        # behind a queue that never drains. Both counters describe the DEAD
+        # process's in-flight sends, which have no bearing on the fresh one
+        # attached here (Steering.reset_transport(), called separately,
+        # re-writes any message that still needs to reach it).
+        self._pending = 0
+        self._sends_since_result = 0
 
     async def run_reader(self) -> None:
         """Drain stdout until EOF; dispatch events. Owned by the session

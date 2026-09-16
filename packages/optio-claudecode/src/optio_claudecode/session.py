@@ -778,6 +778,15 @@ async def run_claudecode_session(
                         pass
                     handle, reader_task = await _spawn(current_model, do_continue=True)
                     launched_handle = handle
+                    # Fix 25 (final-review-2 I3 / ledger line 399): the killed
+                    # process took its in-flight steering message with it —
+                    # attach() above (inside _spawn) already zeroed
+                    # is_pending()'s counters, but Steering._in_flight itself
+                    # would otherwise stay set forever, stalling the queue.
+                    # Re-write it (and anything behind it) to the process
+                    # just attached, now that it's live to receive it.
+                    if conv_listener is not None:
+                        await conv_listener.reset_transport()
                     # Re-derive + re-emit the controls for the (possibly new)
                     # model: the reasoning_effort slider's presence and its
                     # preselected level follow the running model.
