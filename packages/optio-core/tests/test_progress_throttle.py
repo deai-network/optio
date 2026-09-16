@@ -60,6 +60,11 @@ async def _log_messages(mongo_db, prefix, process_id) -> list[str]:
     return [entry["message"] for entry in (proc.get("log") or [])]
 
 
+async def _log_entries(mongo_db, prefix, process_id) -> list[tuple[str, str]]:
+    proc = await get_process_by_process_id(mongo_db, prefix, process_id)
+    return [(entry["level"], entry["message"]) for entry in (proc.get("log") or [])]
+
+
 async def test_quiet_load_preserves_every_message(mongo_db):
     """A handful of slow-paced calls should all show up in the log."""
     task = TaskInstance(execute=_dummy, process_id="quiet", name="Quiet")
@@ -441,3 +446,49 @@ async def test_flush_final_progress_keeps_the_message_being_written(
 
     messages = await _log_messages(mongo_db, "test", "inflight")
     assert messages == ["msg-1", "msg-2", "msg-3", "msg-4"]
+
+
+async def test_warning_message_is_logged_at_warning_level(mongo_db):
+    task = TaskInstance(execute=_dummy, process_id="warn", name="Warn")
+    proc = await upsert_process(mongo_db, "test", task)
+    ctx = _make_context(mongo_db, "test", proc)
+
+    ctx.report_progress(None, "plain")
+    ctx.report_progress(40, "careful", level="warning")
+    await ctx.flush_final_progress()
+
+    assert await _log_entries(mongo_db, "test", "warn") == [
+        ("info", "plain"),
+        ("warning", "careful"),
+    ]
+
+
+async def test_warning_is_never_dropped_in_an_avalanche(mongo_db, fake_clock):
+    """Burst coalescing may drop info lines, never a warning, and the warning
+    keeps its place after the burst that preceded it."""
+    task = TaskInstance(execute=_dummy, process_id="warn-burst", name="Warn burst")
+    proc = await upsert_process(mongo_db, "test", task)
+    ctx = _make_context(mongo_db, "test", proc)
+
+    for i in range(30):
+        ctx.report_progress(None, f"before-{i}")
+    ctx.report_progress(None, "careful", level="warning")
+    for i in range(30):
+        ctx.report_progress(None, f"after-{i}")
+    await ctx.flush_final_progress()
+
+    entries = await _log_entries(mongo_db, "test", "warn-burst")
+    messages = [message for _, message in entries]
+    assert entries.count(("warning", "careful")) == 1
+    assert messages.index("before-29") < messages.index("careful")
+    assert messages[-1] == "after-29"
+    assert all(level == "info" for level, message in entries if message != "careful")
+
+
+async def test_report_progress_rejects_unknown_levels(mongo_db):
+    task = TaskInstance(execute=_dummy, process_id="bad-level", name="Bad level")
+    proc = await upsert_process(mongo_db, "test", task)
+    ctx = _make_context(mongo_db, "test", proc)
+
+    with pytest.raises(ValueError, match="level"):
+        ctx.report_progress(None, "boom", level="error")

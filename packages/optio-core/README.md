@@ -212,10 +212,10 @@ async def execute(ctx: ProcessContext) -> None:
 #### `report_progress()`
 
 ```python
-ctx.report_progress(percent: float | None, message: str | None = None) -> None
+ctx.report_progress(percent: float | None, message: str | None = None, level: Literal["info", "warning"] = "info") -> None
 ```
 
-Update progress. `percent` is 0-100, or `None` for indeterminate progress. `message` is an optional description of the current step (also appended to the process log). Progress writes are buffered and flushed to MongoDB at most every 100ms (configurable via the `OPTIO_PROGRESS_FLUSH_INTERVAL_MS` environment variable). A final flush occurs automatically when the process completes.
+Update progress. `percent` is 0-100, or `None` for indeterminate progress. `message` is an optional description of the current step (also appended to the process log). `level` (`"info"` or `"warning"`) is the log level of that line; warnings are never dropped when a burst of messages is coalesced. Progress writes are buffered and flushed to MongoDB at most every 100ms (configurable via the `OPTIO_PROGRESS_FLUSH_INTERVAL_MS` environment variable). A final flush occurs automatically when the process completes.
 
 #### `should_continue()`
 

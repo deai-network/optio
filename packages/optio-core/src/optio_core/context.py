@@ -98,7 +98,7 @@ class ProcessContext:
         # synthetic line is never emitted on their account.
         #
         # For message-bearing calls:
-        # Quiet periods: each call enqueues a Progress in `_message_queue`
+        # Quiet periods: each call enqueues a (Progress, level) pair in `_message_queue`
         # and gets its own DB write + log entry.
         # Avalanche periods (>AVALANCHE_THRESHOLD calls within
         # AVALANCHE_WINDOW seconds): the latest call's value lives in
@@ -109,7 +109,7 @@ class ProcessContext:
         # message — keeping the surviving message as the last log line.
         self._pending_pct: Progress | None = None
         self._pending_progress: Progress | None = None
-        self._message_queue: deque[Progress] = deque()
+        self._message_queue: deque[tuple[Progress, str]] = deque()
         self._dropped_count: int = 0
         self._recent_calls: deque[float] = deque()
         self._last_flush_time: float = 0
@@ -135,7 +135,12 @@ class ProcessContext:
         # Set by executor after creation
         self._executor: "Executor | None" = None
 
-    def report_progress(self, percent: float | None, message: str | None = None) -> None:
+    def report_progress(
+        self,
+        percent: float | None,
+        message: str | None = None,
+        level: Literal["info", "warning"] = "info",
+    ) -> None:
         """Update progress bar and/or append a log line.
 
         The two arguments are independent:
@@ -146,6 +151,9 @@ class ProcessContext:
           - ``message`` (when not ``None``) appends a log line with that
             text. Pass both together to advance the bar and log a milestone
             in one call.
+          - ``level`` (``"info"`` or ``"warning"``) is the log level of the
+            line a ``message`` appends; a percent-only call ignores it.
+            Warnings are never coalesced away in an avalanche.
 
         Call patterns:
 
@@ -172,6 +180,11 @@ class ProcessContext:
             survives and a synthetic ``"(N messages dropped)"`` log line
             is emitted in front of it.
         """
+        if level not in ("info", "warning"):
+            raise ValueError(
+                f"report_progress level must be 'info' or 'warning', got {level!r}"
+            )
+
         # Percent-only path: coalesce silently, no rate counting, no
         # drop summary. Always reaches the DB via the next flush.
         if message is None:
@@ -191,7 +204,8 @@ class ProcessContext:
 
         new_progress = Progress(percent=percent, message=message)
 
-        if len(self._recent_calls) > AVALANCHE_THRESHOLD:
+        # A warning always takes the quiet path: it is never coalesced away.
+        if level == "info" and len(self._recent_calls) > AVALANCHE_THRESHOLD:
             # Avalanche: coalesce. The previous _pending_progress (if any)
             # is being replaced and counts as a drop.
             if self._pending_progress is not None:
@@ -209,14 +223,14 @@ class ProcessContext:
                 # summary first (if any), then the message, before this new
                 # one. Order: (N dropped) → P_avalanche_last → P_new.
                 if self._dropped_count > 0:
-                    self._message_queue.append(Progress(
+                    self._message_queue.append((Progress(
                         percent=None,
                         message=f"({self._dropped_count} messages dropped)",
-                    ))
+                    ), "info"))
                     self._dropped_count = 0
-                self._message_queue.append(self._pending_progress)
+                self._message_queue.append((self._pending_progress, "info"))
                 self._pending_progress = None
-            self._message_queue.append(new_progress)
+            self._message_queue.append((new_progress, level))
             self._schedule_flush()
 
         # Notify parent listener if wired
@@ -629,7 +643,7 @@ class ProcessContext:
             self._flush_task = asyncio.create_task(self._flush_progress())
             self._flush_task.add_done_callback(_log_flush_failure)
 
-    async def _write_progress(self, progress: Progress) -> None:
+    async def _write_progress(self, progress: Progress, level: str = "info") -> None:
         """Write a single Progress to the DB and append to the log."""
         from optio_core.store import update_progress, append_log
         await update_progress(
@@ -638,7 +652,7 @@ class ProcessContext:
         if progress.message:
             await append_log(
                 self._db, self._prefix, self._process_oid,
-                "info", progress.message,
+                level, progress.message,
             )
 
     async def _flush_progress(self) -> None:
@@ -668,7 +682,8 @@ class ProcessContext:
 
             # Phase 1: quiet-mode messages.
             while self._message_queue:
-                await self._write_progress(self._message_queue.popleft())
+                progress, level = self._message_queue.popleft()
+                await self._write_progress(progress, level)
 
             # Phase 2: pending avalanche message, with drop summary first.
             pending, self._pending_progress = self._pending_progress, None
