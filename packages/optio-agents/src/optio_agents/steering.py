@@ -48,6 +48,23 @@ message reached the transcript ``--continue`` will restore — can still
 retire it during that window; everything else waits for
 ``reset_transport()`` to decide.
 
+Fix 29 fix round 1 (review of fix 29, 2026-09-16): two gaps the wave-2
+re-review found in that latch. (1) A ``cancelled``/``discarded``/``refused``
+observed during the window still means the dying process's own raw
+``command_lifecycle`` event reached the UI too (the W2 drain does not
+suppress it, only Steering's own bookkeeping), which the reducer turns into
+a muted "Not delivered" note; ``reset_transport()`` now gives that message a
+NEW id and announces the swap with ``x-optio-requeued`` instead of silently
+rewriting it under the same one, so the reducer's existing Fix 19 path
+restores the note to a queued bubble the fresh process's ``started`` can
+still find. (2) The latch only covered ``_on_event``: ``send_when_ready``,
+``interrupt_and_send`` and ``requeue`` each also read a plain
+``is_pending()`` to decide "the agent is idle, drop what I thought was in
+flight" — exactly what the W2 drain leaves False for a few seconds mid-
+relaunch. All three now suspend that reading while ``_transport_dying`` is
+set, so a send landing in the window queues behind the latched message
+instead of clearing it and writing straight to the dying transport.
+
 See docs/2026-09-13-conversation-steering-design.md §2 and §3.
 """
 
@@ -220,6 +237,23 @@ class Steering:
         # the message into its (persisted, --continue-restored) transcript,
         # so re-writing it to the fresh process would send it twice.
         self._in_flight_taken = False
+        # Fix 29 fix round 1 (review of fix 29, finding 1): while _in_flight
+        # is set and _transport_dying is True, True once a command_lifecycle
+        # "cancelled"/"discarded"/"refused" for it was actually observed --
+        # the mirror of _in_flight_taken above, for the OTHER lifecycle
+        # states _LIFECYCLE_ADVANCE_STATES can report during the window.
+        # W2's drain means that raw event always reaches the wrapper's own
+        # event stream too (Steering does not suppress it, only its own
+        # bookkeeping), so the UI's reducer has already turned the message's
+        # queued bubble into a muted "Not delivered" note by the time
+        # reset_transport() runs. Read only by reset_transport(): rewriting
+        # the message under the SAME id then would leave that note stranded
+        # forever (the fresh process's own eventual "started" finds no
+        # queued bubble left to move) -- reset_transport() gives it a NEW id
+        # instead and announces the swap with x-optio-requeued, which the
+        # reducer's existing Fix 19 path already uses to restore a "Not
+        # delivered" note back to a queued bubble under the new id.
+        self._in_flight_discarded = False
         # Fix 29/W1 (wave-2 re-review): set by begin_transport_reset() from
         # the moment a relaunch begins, cleared by reset_transport() as its
         # first act. While True, _on_event must not let the dying process's
@@ -283,6 +317,12 @@ class Steering:
                     # reset_transport() must NOT then resend (Fix 29/W2).
                     if parsed[1] in _DELIVERED_LIFECYCLE_STATES:
                         self._in_flight_taken = True
+                    else:
+                        # Fix 29 fix round 1, finding 1: cancelled/discarded/
+                        # refused -- reset_transport() must not rewrite this
+                        # message under the same id (see _in_flight_discarded
+                        # above).
+                        self._in_flight_discarded = True
                 else:
                     self._in_flight = None
                     advanced = True
@@ -387,6 +427,7 @@ class Steering:
         qid, text = self._native_pending.pop(0)
         self._in_flight = (qid, text)
         self._in_flight_taken = False
+        self._in_flight_discarded = False
         await self._conv.send(text, uuid=qid)
 
     async def reset_transport(self) -> None:
@@ -415,15 +456,37 @@ class Steering:
         "started"/"completed" for the in-flight message was observed while
         the window was open (``_in_flight_taken``), it is already in the
         transcript ``--continue`` just restored, so it is dropped here
-        instead of being written a second time."""
+        instead of being written a second time.
+
+        Fix 29 fix round 1 (review of fix 29, finding 1): if instead a
+        "cancelled"/"discarded"/"refused" for it was observed while the
+        window was open (``_in_flight_discarded``), the dying process's own
+        raw event already reached the UI (W2's drain) and its reducer has
+        already turned the message's queued bubble into a muted "Not
+        delivered" note. Rewriting it here under the SAME id would strand
+        that note (the fresh process's own eventual "started" would find no
+        queued bubble left to move, and the taking echo would add a second,
+        duplicate bubble instead). So this case gets a NEW id and announces
+        the swap with one ``x-optio-requeued`` -- exactly the event Fix 19's
+        resume-requeue already emits, and the reducer already knows how to
+        turn a "Not delivered" note back into a queued bubble under the new
+        id."""
         self._check_open()
         async with self._lock:
             self._transport_dying = False
             if self._in_flight is not None:
-                if not self._in_flight_taken:
+                if self._in_flight_taken:
+                    pass  # already in the --continue-restored transcript
+                elif self._in_flight_discarded:
+                    old_id, text = self._in_flight
+                    new_id = self._new_id()
+                    self._emit({"type": REQUEUED_EVENT, "id": old_id, "new_id": new_id})
+                    self._native_pending.insert(0, (new_id, text))
+                else:
                     self._native_pending.insert(0, self._in_flight)
                 self._in_flight = None
                 self._in_flight_taken = False
+                self._in_flight_discarded = False
             # The turn that _interrupted tracked died with the old process;
             # nothing is left to mark interrupted, and a stale True would
             # silently swallow the new process's first Interrupt.
@@ -458,15 +521,25 @@ class Steering:
         (``qid``) is also its transport uuid (Fix 13a); a native-queue
         message additionally gets a trailing blank line. A send that finds
         a native-queue agent idle while earlier messages are still pending
-        queues behind them rather than overtaking them."""
+        queues behind them rather than overtaking them.
+
+        Fix 29 fix round 1 (review of fix 29, finding 3): while a relaunch
+        is in progress (``_transport_dying``), the W2 drain of the dying
+        process's own last events can take ``is_pending()`` to False before
+        ``reset_transport()`` runs -- the same window ``begin_transport_reset()``
+        latches in ``_on_event``. Both idle-only shortcuts below are
+        suspended for that window too, so a send landing in it queues onto
+        ``_native_pending`` (written once ``reset_transport()`` runs)
+        instead of clearing the latched in-flight message and writing
+        straight to the dying transport."""
         self._check_open()
         qid = self._new_id()
         async with self._lock:
             busy = self._conv.is_pending()
             if self._busy_send() in NATIVE_QUEUE and not self._held:
-                if not busy:
+                if not busy and not self._transport_dying:
                     self._in_flight = None  # an idle agent holds nothing in its queue
-                if not busy and not self._native_pending:
+                if not busy and not self._native_pending and not self._transport_dying:
                     await self._conv.send(text, uuid=qid)
                     return SendOutcome(id=qid, queued=False)
                 self._emit({"type": QUEUED_EVENT, "id": qid, "text": text})
@@ -546,11 +619,17 @@ class Steering:
         message is written right after the turn end (or the deadline).
 
         Idle: ``text`` is a plain send, unless earlier messages still wait
-        (then it queues behind them)."""
+        (then it queues behind them).
+
+        Fix 29 fix round 1 (review of fix 29, finding 3): the same
+        ``_transport_dying`` guard as ``send_when_ready`` -- a busy-agent
+        idle reading during the relaunch window must not clear the latched
+        in-flight message or write ``text`` straight to the dying
+        transport."""
         qid = self._new_id() if text else None
         async with self._lock:
             pending = self._conv.is_pending()
-            if not pending:
+            if not pending and not self._transport_dying:
                 self._in_flight = None  # an idle agent holds nothing in its queue
             call_interrupt = pending and not self._interrupted
             if call_interrupt:
@@ -558,7 +637,7 @@ class Steering:
                 self._emit({"type": INTERRUPT_EVENT, "by": "user"})
             if text:
                 self._emit({"type": QUEUED_EVENT, "id": qid, "text": text})
-                if pending or self._native_pending:
+                if pending or self._native_pending or self._transport_dying:
                     self._native_pending.append((qid, _with_trailing_blank_line(text)))
                 else:
                     await self._conv.send(text, uuid=qid)
@@ -578,7 +657,12 @@ class Steering:
         gets them one at a time (Fix 17), ahead of any message sent since
         the resume: the first is written at once if nothing is in flight.
         Any other agent holds them at the front of optio's queue, delivered
-        at the turn end, or at once when idle. Returns the new ids."""
+        at the turn end, or at once when idle. Returns the new ids.
+
+        Fix 29 fix round 1 (review of fix 29, finding 3): the same
+        ``_transport_dying`` guard as ``send_when_ready`` -- an idle reading
+        during the relaunch window must not clear the latched in-flight
+        message."""
         self._check_open()
         if not messages:
             return []
@@ -587,7 +671,7 @@ class Steering:
             for old, new, _text in renamed:
                 self._emit({"type": REQUEUED_EVENT, "id": old, "new_id": new})
             if self._busy_send() in NATIVE_QUEUE and not self._held:
-                if not self._conv.is_pending():
+                if not self._conv.is_pending() and not self._transport_dying:
                     self._in_flight = None  # an idle agent holds nothing in its queue
                 self._native_pending[0:0] = [
                     (new, _with_trailing_blank_line(text)) for _old, new, text in renamed

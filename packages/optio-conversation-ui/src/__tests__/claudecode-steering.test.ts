@@ -435,6 +435,12 @@ describe('claudecode steering: lifecycle-driven queued bubbles (Fix 13b)', () =>
     expect(bubble).toMatchObject({ text: 'later', queued: true });
   });
 
+  // Review of fix 29, finding 1: this is also the exact shape reset_transport()
+  // now produces for an in-flight message a relaunch's shutdown sweep marked
+  // 'cancelled' (steering.py, Fix 29 fix round 1) — it emits x-optio-requeued
+  // under a new id instead of silently rewriting the same one, so the "Not
+  // delivered" note this 'cancelled' made gets undone here rather than left
+  // stranded next to a duplicate, freshly-delivered bubble.
   it('the re-keyed bubble is later taken by started/echo under its NEW id, same as any other queued bubble', () => {
     const s = run([
       user('q'), queued('q1', 'later'), lifecycle('q1', 'cancelled'), requeued('q1', 'q1-new'),

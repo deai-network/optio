@@ -159,6 +159,13 @@ behind every conversation listener's `POST /send`, `POST /steer` and
     exact failure Fix 25 exists to prevent, one step earlier). A genuine
     `started`/`completed` observed during the window is still honoured, so
     `reset_transport()` knows not to write that message a second time.
+    Review of fix 29, finding 3: the latch also covers `send_when_ready`,
+    `interrupt_and_send` and `requeue`'s own "the agent is idle, so
+    `in_flight_id` must be stale" reading — each suspends it while a
+    relaunch is in progress, so a call landing in the window (the W2 drain
+    can leave `is_pending()` False for a few seconds before
+    `reset_transport()` runs) queues behind the latched message instead of
+    clearing it and writing straight to the dying transport.
   * `await reset_transport()` (Fix 25, final-review-2 I3 / ledger line 399):
     called once the caller has re-attached a fresh transport underneath this
     Steering (a model/effort relaunch SIGTERMs the CLI mid-turn and
@@ -170,7 +177,16 @@ behind every conversation listener's `POST /send`, `POST /steer` and
     `begin_transport_reset()`'s window already saw it taken) and writes the
     next deliverable message to the newly attached transport; everything
     else queued is left exactly as it was, in order. Clears the
-    `begin_transport_reset()` latch as its first act.
+    `begin_transport_reset()` latch as its first act. Review of fix 29,
+    finding 1: if the window instead saw a `cancelled`/`discarded`/
+    `refused` for it, the dying process's own raw event already reached the
+    UI too (the W2 drain does not suppress it), and the reducer has already
+    turned that message's queued bubble into a muted "Not delivered" note —
+    rewriting it under the SAME id would strand that note next to a
+    duplicate, freshly-delivered bubble. This case instead gets a NEW id
+    and one `x-optio-requeued` announcing the swap, the same event Fix 19's
+    own `requeue()` emits, which the reducer already knows how to turn a
+    "Not delivered" note back into a queued bubble with.
   * `await settle()` (waits for a turn-end flush or a native-queue write in
     progress), `held_ids`, `pending_ids`, `in_flight_id`, `close()`
     (unsubscribes).
