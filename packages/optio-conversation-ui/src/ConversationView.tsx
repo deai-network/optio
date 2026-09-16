@@ -221,6 +221,8 @@ function withInterruptEllipsis(text: string, interrupted: boolean | undefined): 
 
 // A vultus ActionStatus for the input bar's multi-action send button. The
 // view runs the (async) send itself, so both fire paths just start it.
+// Fix 22: `icon` is the Send/Send-when-ready/Interrupt-and-send mark shown on
+// the right of the label (see sendBarIcon and friends above).
 function barAction(
   id: string,
   label: string,
@@ -228,8 +230,11 @@ function barAction(
   disabled: boolean,
   run: () => void,
   invisible = false,
+  icon?: React.ReactNode,
 ): ActionStatus {
-  return { id, label, variant, pending: false, disabled, invisible, errors: [], fire: run, firePromise: async () => run() };
+  return {
+    id, label, variant, icon, pending: false, disabled, invisible, errors: [], fire: run, firePromise: async () => run(),
+  };
 }
 
 // Fix 10 (owner feedback 2026-09-14): the send button used to swap between a
@@ -242,9 +247,15 @@ function barAction(
 // "Interrupt and send" (19 characters) at size="small": antd's default
 // 14px UI font sets small-button text around 145-155px for that string,
 // plus ~14px of horizontal padding (7px each side) and a separate ~32px
-// chevron half for the dropdown trigger. 200px gives that a few px of
-// headroom without leaving a visibly empty gap.
-const SEND_BUTTON_WIDTH = 200;
+// chevron half for the dropdown trigger. That was 200px before Fix 22.
+// Fix 22 (owner ruling 2026-09-15): every main-half caption now also carries
+// an icon on its right (iconPosition="end", Fix 21), so the longest state
+// budgets for that too — an antd small-button icon is 14px square plus an
+// 8px gap next to the label — adding 22px on top of the 200px above (not
+// measured in a real browser here; computed from those two figures, which
+// this file's own prior width comment and the Fix 22 brief both give).
+// 222px keeps that a few px of headroom without leaving a visibly empty gap.
+const SEND_BUTTON_WIDTH = 222;
 
 // Makes the reserved SEND_BUTTON_WIDTH slot actually filled by the button
 // rather than left-aligned inside empty space: the single-action case (a
@@ -306,6 +317,66 @@ function InterruptStopIcon() {
         }}
       />
     </span>
+  );
+}
+
+// Fix 22 (owner rulings 2026-09-15, manual-test findings): every send-bar
+// action gets an icon, not just Interrupt — Send a paper plane, Send when
+// ready a clock, Interrupt and send a lightning bolt — and every icon (this
+// trio plus Fix 20's InterruptStopIcon) sits on the RIGHT of its label via
+// Fix 21's vultus `iconPosition="end"`. @ant-design/icons is still not a
+// dependency of this package, so these are small inline SVGs rather than
+// antd's SendOutlined/ClockCircleOutlined/ThunderboltOutlined, but they share
+// InterruptStopIcon's outer shape: a fixed 1em x 1em box (matching
+// @ant-design/icons' IconBase, and antd's LoadingOutlined spinner that takes
+// this slot while an action is pending) with the visible mark centered
+// inside — so idle (icon) and pending (spinner) stay the same width by
+// construction, same as Interrupt. Menu rows are unaffected: `iconPosition`
+// only ever reaches the main (button) half (see CombinedActionButton), so
+// the dropdown menu keeps antd's own left-icon layout for its entries.
+function sendBarIcon(testId: string, mark: React.ReactNode): React.ReactElement {
+  return (
+    <span
+      data-testid={testId}
+      aria-hidden="true"
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: '1em',
+        height: '1em',
+      }}
+    >
+      {mark}
+    </span>
+  );
+}
+
+function SendPlaneIcon() {
+  return sendBarIcon(
+    'send-icon',
+    <svg viewBox="0 0 24 24" width="0.85em" height="0.85em" fill="currentColor">
+      <path d="M2 21l21-9L2 3v7l15 2-15 2v7z" />
+    </svg>,
+  );
+}
+
+function SendWhenReadyClockIcon() {
+  return sendBarIcon(
+    'send-when-ready-icon',
+    <svg viewBox="0 0 24 24" width="0.85em" height="0.85em" fill="none" stroke="currentColor" strokeWidth={2}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l4 2" />
+    </svg>,
+  );
+}
+
+function InterruptAndSendBoltIcon() {
+  return sendBarIcon(
+    'interrupt-and-send-icon',
+    <svg viewBox="0 0 24 24" width="0.85em" height="0.85em" fill="currentColor">
+      <path d="M13 2 3 14h7l-1 8 11-14h-7l1-6z" />
+    </svg>,
   );
 }
 
@@ -1410,7 +1481,11 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                 the main half on 'Send when ready' after the menu action
                 fires, and back on 'Send' once idle. SEND_BUTTON_WIDTH pins
                 the footprint so it never resizes across any of that; the red
-                Interrupt beside it stops and sends nothing. */}
+                Interrupt beside it stops and sends nothing. Fix 22: each
+                action's `icon` (plane / clock / bolt) plus iconPosition="end"
+                puts that icon on the right of the label, on the main half
+                only — the dropdown menu rows keep antd's own left-icon
+                layout regardless. */}
             <span
               data-testid="conversation-send-combined"
               className="optio-cc-send-btn"
@@ -1419,10 +1494,11 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               <CombinedActionButton
                 size="small"
                 keepOriginalDefault
+                iconPosition="end"
                 actions={[
-                  barAction('send', 'Send', 'primary', sending || !text || closed, () => void submit('send'), steerable),
-                  barAction('send-when-ready', 'Send when ready', 'primary', sending || !text, () => void submit('send'), !steerable),
-                  barAction('interrupt-and-send', 'Interrupt and send', 'default', sending || !text, () => void submit('steer'), !steerable),
+                  barAction('send', 'Send', 'primary', sending || !text || closed, () => void submit('send'), steerable, <SendPlaneIcon />),
+                  barAction('send-when-ready', 'Send when ready', 'primary', sending || !text, () => void submit('send'), !steerable, <SendWhenReadyClockIcon />),
+                  barAction('interrupt-and-send', 'Interrupt and send', 'default', sending || !text, () => void submit('steer'), !steerable, <InterruptAndSendBoltIcon />),
                 ]}
               />
             </span>
@@ -1433,9 +1509,11 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                 swapping the label. Fix 20: the action's `icon` (a stop
                 square) occupies the same slot antd's spinner takes over
                 while pending, so the button's width no longer needs to be
-                reserved — this wrapper only keeps the stable test id. */}
+                reserved — this wrapper only keeps the stable test id. Fix
+                22: iconPosition="end" puts that icon on the right of the
+                label, matching every other send-bar action. */}
             <span data-testid="conversation-interrupt">
-              <ActionButton action={interruptAction} size="small" />
+              <ActionButton action={interruptAction} size="small" iconPosition="end" />
             </span>
           </div>
           </div>

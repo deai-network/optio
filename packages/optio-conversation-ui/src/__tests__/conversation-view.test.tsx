@@ -820,6 +820,74 @@ describe('ConversationView steering', () => {
   });
 });
 
+// Fix 22 (owner rulings 2026-09-15, manual-test findings): Fix 20 gave only
+// Interrupt a stop icon. The owner asked for icons on every send-bar action,
+// all sitting on the RIGHT of the label — Send gets a paper plane, Send when
+// ready a clock, Interrupt and send a lightning bolt, and Interrupt keeps its
+// stop square. "On the right" is Fix 21's vultus `iconPosition="end"`, which
+// antd exposes as the `ant-btn-icon-end` class on the rendered <button> (see
+// vultus-antd's own ActionButton/CombinedActionButton tests) — that class,
+// rather than DOM order, is what these tests assert, since antd renders the
+// icon slot via CSS ordering, not by moving it after the label text node.
+describe('ConversationView send-bar icons (Fix 22)', () => {
+  const busyState = (items: ChatItem[] = []) => makeState(items, { busy: true });
+
+  it('idle Send shows the plane icon on the right of the label', () => {
+    renderView(makeProps({}));
+    const combined = screen.getByTestId('conversation-send-combined');
+    const button = combined.querySelector('[data-action-id="send"]') as HTMLButtonElement;
+    expect(button.className).toContain('ant-btn-icon-end');
+    expect(button.querySelector('[data-testid="send-icon"]')).toBeTruthy();
+  });
+
+  it('busy with onSteer: the main half (Send when ready) shows the clock icon on the right', () => {
+    const onSteer = vi.fn(async () => true);
+    renderView(makeProps({ busy: true, state: busyState(), onSteer }));
+    const combined = screen.getByTestId('conversation-send-combined');
+    const button = combined.querySelector('[data-action-id="send-when-ready"]') as HTMLButtonElement;
+    expect(button.className).toContain('ant-btn-icon-end');
+    expect(button.querySelector('[data-testid="send-when-ready-icon"]')).toBeTruthy();
+  });
+
+  // keepOriginalDefault snaps the main half straight back to 'Send when
+  // ready' the instant the menu pick fires (see the pre-existing "the main
+  // half stays Send when ready" test above), so the bolt can never be
+  // observed on the main half — only in the dropdown menu row itself, which
+  // `iconPosition` deliberately does not touch (brief: "menu entries keep
+  // antd's menu icon placement").
+  it('busy with onSteer: the dropdown menu row for "Interrupt and send" carries the bolt icon, unaffected by iconPosition', async () => {
+    const onSteer = vi.fn(async () => true);
+    renderView(makeProps({ busy: true, state: busyState(), onSteer }));
+    const combined = screen.getByTestId('conversation-send-combined');
+    fireEvent.click(combined.querySelector('.ant-dropdown-trigger') as HTMLElement);
+    const menuItem = await screen.findByRole('menuitem', { name: 'Interrupt and send' });
+    expect(menuItem.querySelector('[data-testid="interrupt-and-send-icon"]')).toBeTruthy();
+  });
+
+  it('Interrupt keeps the stop icon, now on the right of the label', () => {
+    renderView(makeProps({ busy: true, state: busyState() }));
+    const button = screen
+      .getByTestId('conversation-interrupt')
+      .querySelector('[data-action-id="interrupt"]') as HTMLButtonElement;
+    expect(button.className).toContain('ant-btn-icon-end');
+    expect(button.querySelector('[data-testid="interrupt-stop-icon"]')).toBeTruthy();
+  });
+
+  // Fix 10/20's SEND_BUTTON_WIDTH must still fit the longest state now that
+  // it also carries an icon: 'Interrupt and send' plus a 14px small-button
+  // icon plus antd's 8px icon/label gap, alongside the unchanged text and
+  // dropdown-chevron budget from Fix 10.
+  it('widens the reserved send-button footprint by the icon and its gap, unchanged across idle and busy', () => {
+    const onSteer = vi.fn(async () => true);
+    const r = renderView(makeProps({ onSteer }));
+    const idleWidth = (screen.getByTestId('conversation-send-combined') as HTMLElement).style.width;
+    expect(idleWidth).toBe('222px');
+    rerenderView(r, makeProps({ busy: true, state: busyState(), onSteer }));
+    const busyWidth = (screen.getByTestId('conversation-send-combined') as HTMLElement).style.width;
+    expect(busyWidth).toBe(idleWidth);
+  });
+});
+
 // Fix 16 (owner ruling 2026-09-15, manual-test finding): an interrupted
 // answer's jagged-edge cut-off (Task 6) also gets a trailing ellipsis, so the
 // operator sees the answer trailed off rather than just stopped. Render only:
