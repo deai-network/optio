@@ -6,9 +6,8 @@
 // orderings this fix implements.
 //
 // Trimmed (trim_lifecycle.py, a Fix-13b variant of the fix-5 trim.py: also
-// keeps command_lifecycle and each user/assistant event's own uuid, and
-// synthesizes x-optio-requeued for a cancel+interrupt+resend instead of a
-// second x-optio-queued) from the raw driver recordings
+// keeps command_lifecycle and each user/assistant event's own uuid) from
+// the raw driver recordings
 // excavator:~/deai/optio-steering/.superpowers/recordings/prod/q-*.jsonl,
 // which drove the CLI directly (no optio server in the loop) to observe its
 // native queue -- these recordings carry no x-optio-* events of their own.
