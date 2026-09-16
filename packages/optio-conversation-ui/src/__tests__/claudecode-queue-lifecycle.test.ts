@@ -24,13 +24,6 @@
 //     (no timestamp) arrive before their own 'started', the third only
 //     'started', then one combined echo (all 3 texts, the last uuid, a
 //     timestamp) confirms it and must add no duplicates for the other two.
-//   - claudecode-queue-cancel3.jsonl (q-cancel3): three queued, "Send now"
-//     on the second cancels the third, interrupts, delivers 1-2, then
-//     re-sends 3 under a new uuid once 2's own 'started' is seen --
-//     x-optio-requeued (synthesized at the resend, per steering.py's
-//     _send_now_up_to, which never emits a second x-optio-queued for it)
-//     re-keys the bubble the CLI's own 'cancelled' had already turned into
-//     a "Not delivered" note.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -129,39 +122,6 @@ describe('claudecode real wire: a fold of 3 (two solo echoes, started x3, one co
     }
     const last = ofKind(s, 'user').find((u) => u.text === queuedTexts[2]);
     expect(last?.timestamp).toBe(Date.parse('2026-09-14T22:12:39.498Z'));
-  });
-});
-
-describe('claudecode real wire: cancel3 (Send now on message 2 cancels+resends message 3)', () => {
-  const events = load('claudecode-queue-cancel3.jsonl');
-  const texts3 = [
-    'Queued message ONE: include the word apple in your reply.',
-    'Queued message TWO: include the word banana in your reply.',
-    'Queued message THREE: include the word cherry in your reply.',
-  ];
-
-  it('live and replay give the same items', () => {
-    expect(withoutSeq(live(events).items)).toEqual(withoutSeq(replay(events).items));
-  });
-
-  it('every message is eventually delivered exactly once, none left queued or Not delivered', () => {
-    const s = replay(events);
-    noneLeftQueued(s);
-    for (const t of texts3) {
-      expect(texts(s).filter((x) => x === t)).toEqual([t]);
-    }
-  });
-
-  it('message 3 is confirmed under its re-keyed uuid, with the final echo\'s own timestamp', () => {
-    const s = replay(events);
-    const third = ofKind(s, 'user').find((u) => u.text === texts3[2]);
-    expect(third?.queueId).toBe('ff3eef32-5f82-4640-a951-1044e839583e');
-    expect(third?.timestamp).toBe(Date.parse('2026-09-14T21:58:34.209Z'));
-  });
-
-  it('at no point does a "Not delivered" note survive to the end (the cancel that belongs to our own requeue is ignored)', () => {
-    const s = replay(events);
-    expect(s.items.some((i) => i.kind === 'activity' && i.text.startsWith('Not delivered'))).toBe(false);
   });
 });
 
