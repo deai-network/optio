@@ -32,6 +32,13 @@ if TYPE_CHECKING:
 _log = _logging.getLogger("optio_core.context")
 
 
+def _log_flush_failure(task: "asyncio.Task") -> None:
+    """Done-callback for every flush task: log a failure when it happens
+    (and retrieve the exception, so asyncio does not warn later)."""
+    if not task.cancelled() and task.exception() is not None:
+        _log.error("Progress flush failed", exc_info=task.exception())
+
+
 class _GridInWrapper:
     """Thin wrapper around a motor GridIn upload stream.
 
@@ -109,6 +116,10 @@ class ProcessContext:
         _ms = int(os.environ.get("OPTIO_PROGRESS_FLUSH_INTERVAL_MS", "100"))
         self._flush_interval: float = _ms / 1000.0
         self._flush_task: asyncio.Task | None = None
+        # Set while flush_final_progress runs: the drain then stops
+        # looping on percent updates, so a producer that outlives the
+        # task body cannot keep the final flush going forever.
+        self._finishing: bool = False
 
         # Child progress callback
         self._child_progress_snapshots: list["ChildProgressInfo"] = []
@@ -616,6 +627,7 @@ class ProcessContext:
     def _schedule_flush(self) -> None:
         if self._flush_task is None or self._flush_task.done():
             self._flush_task = asyncio.create_task(self._flush_progress())
+            self._flush_task.add_done_callback(_log_flush_failure)
 
     async def _write_progress(self, progress: Progress) -> None:
         """Write a single Progress to the DB and append to the log."""
@@ -640,11 +652,13 @@ class ProcessContext:
         awaited, so report_progress calls made meanwhile are neither lost nor
         written twice. Quiet-mode messages that arrive during the writes are
         drained too: this flush is the running one, so _schedule_flush did
-        not start another. The same goes for a percent-only update (that path
-        has no interval throttle). Pending avalanche state that arrives
-        meanwhile does not by itself keep this flush going (it is written in
-        a further round only if other state forces one), so the write
-        throttle for bursts still holds.
+        not start another. The same goes for a percent-only update (that
+        path has no interval throttle) -- except once flush_final_progress
+        has started, where a percent producer outliving the task body could
+        otherwise loop forever; the final drain then writes its last value
+        once. Pending avalanche state that arrives meanwhile does not by
+        itself keep this flush going, so the burst throttle holds as long as
+        no percent traffic keeps the loop running.
         """
         while True:
             # Phase 0: coalesced percent-only update (silent, no log).
@@ -667,24 +681,22 @@ class ProcessContext:
             if pending is not None:
                 await self._write_progress(pending)
 
-            if not self._message_queue and self._pending_pct is None:
+            if not self._message_queue and (
+                self._finishing or self._pending_pct is None
+            ):
                 return
 
     async def flush_final_progress(self) -> None:
         """Force flush any pending progress (called when process ends)."""
+        self._finishing = True
         # Let an in-flight flush finish instead of cancelling it: it has
         # already taken its current message off the queue, so cancelling it
         # mid-write would lose that log line. asyncio.wait neither passes our
-        # own cancellation on to the flush task nor raises its exception here.
+        # own cancellation on to the flush task nor raises its exception here
+        # (a failing flush is logged by _log_flush_failure).
         task = self._flush_task
-        if task is not None:
-            if not task.done():
-                await asyncio.wait({task})
-            if not task.cancelled() and task.exception() is not None:
-                _log.error(
-                    "Progress flush failed while finishing the process",
-                    exc_info=task.exception(),
-                )
+        if task is not None and not task.done():
+            await asyncio.wait({task})
         # Everything still pending: percent, queued messages, and leftover
         # avalanche state (a drop count without a surviving message included).
         await self._drain_pending()
