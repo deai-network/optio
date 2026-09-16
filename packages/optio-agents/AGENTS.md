@@ -148,6 +148,17 @@ behind every conversation listener's `POST /send`, `POST /steer` and
     attempted after the close logs a warning. Their x-optio-queued, never
     followed by a `started`, is what a resuming wrapper re-queues (Claude
     Code: `ConversationListener.requeue_undelivered`, Fix 19).
+  * `begin_transport_reset()` (Fix 29/W1, wave-2 re-review of Fix 25): call
+    from the moment a relaunch begins, BEFORE the old process is killed —
+    alongside the wrapper's own restart marker (Claude Code:
+    `ClaudeCodeConversation.begin_restart()`). Latches `in_flight_id`
+    against the dying process's own last events: an abort `result` +
+    trailing idle, or a shutdown sweep's `command_lifecycle`
+    `cancelled`/`discarded`/`refused`, no longer clear it (they would
+    otherwise make `reset_transport()` below find nothing to rescue — the
+    exact failure Fix 25 exists to prevent, one step earlier). A genuine
+    `started`/`completed` observed during the window is still honoured, so
+    `reset_transport()` knows not to write that message a second time.
   * `await reset_transport()` (Fix 25, final-review-2 I3 / ledger line 399):
     called once the caller has re-attached a fresh transport underneath this
     Steering (a model/effort relaunch SIGTERMs the CLI mid-turn and
@@ -155,9 +166,11 @@ behind every conversation listener's `POST /send`, `POST /steer` and
     neither its `command_lifecycle` nor the turn's own `result` will ever
     arrive; without this, `in_flight_id` would stay set forever and the
     native queue would never advance again. Puts that message back at the
-    front of `pending_ids` (rewritten, not dropped) and writes the next
-    deliverable message to the newly attached transport; everything else
-    queued is left exactly as it was, in order.
+    front of `pending_ids` (rewritten, not dropped — unless
+    `begin_transport_reset()`'s window already saw it taken) and writes the
+    next deliverable message to the newly attached transport; everything
+    else queued is left exactly as it was, in order. Clears the
+    `begin_transport_reset()` latch as its first act.
   * `await settle()` (waits for a turn-end flush or a native-queue write in
     progress), `held_ids`, `pending_ids`, `in_flight_id`, `close()`
     (unsubscribes).

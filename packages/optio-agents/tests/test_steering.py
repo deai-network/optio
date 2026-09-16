@@ -639,6 +639,102 @@ async def test_reset_transport_rewrites_the_in_flight_message_then_resumes_in_or
     assert conv.uuids == [id1, id2, id3]  # #1, #2, #3, in order, exactly once each
 
 
+# -- W1 (wave-2 re-review of Fix 25): the dying process's own last events ----
+# must not beat reset_transport() to clearing _in_flight, or the message the
+# fix exists to rescue is silently lost one step earlier: an abort result
+# followed by a trailing idle, or a shutdown sweep's own "cancelled" for the
+# in-flight uuid, both land on the OLD process before session.py ever calls
+# reset_transport(). begin_transport_reset() must latch the window so
+# neither can beat it.
+
+
+async def test_begin_transport_reset_survives_an_abort_result_then_a_trailing_idle():
+    conv = FakeConversation(native_lifecycle=True)
+    conv.pending = True
+    s = make(conv)
+    id1, id2, id3 = await _queue_three(s)  # id1 in flight; id2, id3 pending
+    conv.sent.clear()
+    conv.uuids.clear()
+
+    s.begin_transport_reset()
+    # The dying process's own last gasp, both received before session.py
+    # gets to call reset_transport(): an abort result, then a trailing idle
+    # (is_pending() goes False) -- exactly what the plain idle heuristic in
+    # _on_event would otherwise read as "id1 was taken or dropped".
+    conv.pending = False
+    conv.fire({"type": "result", "subtype": "error_during_execution"})
+    conv.fire({"type": "system", "subtype": "session_state_changed", "state": "idle"})
+    assert s.in_flight_id == id1  # NOT cleared: the latch held
+
+    await s.reset_transport()
+    assert conv.sent == ["one\n\n"] and conv.uuids == [id1]  # id1 rewritten, not dropped
+
+    conv.fire_lifecycle(id1, "started")
+    await s.settle()
+    conv.fire_lifecycle(id2, "started")
+    await s.settle()
+    assert conv.sent == ["one\n\n", "two\n\n", "three\n\n"]
+    assert conv.uuids == [id1, id2, id3]  # #1, #2, #3, in order, exactly once each
+
+
+async def test_begin_transport_reset_survives_a_shutdown_sweep_cancelled():
+    conv = FakeConversation(native_lifecycle=True)
+    conv.pending = True
+    s = make(conv)
+    id1, id2, id3 = await _queue_three(s)  # id1 in flight; id2, id3 pending
+    conv.sent.clear()
+    conv.uuids.clear()
+
+    s.begin_transport_reset()
+    # A shutting-down CLI sweeping its own queue on the way out: "cancelled"
+    # is in _LIFECYCLE_ADVANCE_STATES, so without the latch this clears
+    # _in_flight exactly as a real Send-now cancellation would.
+    conv.fire_lifecycle(id1, "cancelled")
+    assert s.in_flight_id == id1  # NOT cleared: the latch held
+
+    await s.reset_transport()
+    assert conv.sent == ["one\n\n"] and conv.uuids == [id1]  # id1 rewritten, not dropped
+
+    conv.fire_lifecycle(id1, "started")
+    await s.settle()
+    conv.fire_lifecycle(id2, "started")
+    await s.settle()
+    assert conv.sent == ["one\n\n", "two\n\n", "three\n\n"]
+    assert conv.uuids == [id1, id2, id3]  # #1, #2, #3, in order, exactly once each
+
+
+# -- W2 (wave-2 re-review): a "started" observed during the window must
+# still prevent reset_transport() from resending -- the dying process took
+# the message into its transcript, and --continue restores that transcript,
+# so writing it again would deliver it twice.
+
+
+async def test_begin_transport_reset_does_not_resend_a_message_confirmed_started():
+    conv = FakeConversation(native_lifecycle=True)
+    conv.pending = True
+    s = make(conv)
+    id1, id2, id3 = await _queue_three(s)  # id1 in flight; id2, id3 pending
+    conv.sent.clear()
+    conv.uuids.clear()
+
+    s.begin_transport_reset()
+    # The reader is drained (Fix 29/W2's own fix, in session.py), so this
+    # "started" -- unlike q-cancel3's sweep -- reaches Steering before
+    # reset_transport() runs.
+    conv.fire_lifecycle(id1, "started")
+    assert s.in_flight_id == id1  # still tracked, but now known taken
+
+    await s.reset_transport()
+    # id1 is NOT written again; reset_transport() moves straight on to id2,
+    # the next deliverable message, since nothing is in flight any more.
+    assert conv.sent == ["two\n\n"] and conv.uuids == [id2]
+    assert s.in_flight_id == id2 and s.pending_ids == [id3]
+
+    conv.fire_lifecycle(id2, "started")
+    await s.settle()
+    assert conv.sent == ["two\n\n", "three\n\n"] and conv.uuids == [id2, id3]
+
+
 # -- re-queue on resume (Fix 19, owner ruling 2026-09-15, finding 6 #2) -------
 # Messages a previous run left queued and undelivered go out again, in their
 # original order, each under a NEW id announced by x-optio-requeued (never a
