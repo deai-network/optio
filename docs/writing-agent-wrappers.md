@@ -244,7 +244,13 @@ overrides only where a recording shows a model differs):
 `resolve_busy_send(None, …)` is `unsafe`, always correct, only slower. Build
 one `optio_agents.steering.Steering` per conversation (`busy_send` callable,
 an `emit` hook that puts synthetic events into your own event stream, and
-`is_turn_end(event)` for your native turn-end event) and route the
+`is_turn_end(event)` for your native turn-end event). Steering calls your
+`Conversation.send` as `send(text, uuid=qid)` (Fix 13a): the Protocol
+declares `send` as `send(self, text: str, *, uuid: str | None = None)`, so
+your implementation must accept that keyword-only `uuid`, even if your
+backend has no message identity of its own to key it by — just ignore it in
+that case. A narrower `send(self, text)` raises `TypeError` on every busy
+send the moment Steering is wired in. Route the
 conversation listener's `POST /send` → `send_when_ready` (returns `{ok, id,
 queued}`), `POST /steer` → `interrupt_and_send` (returns `{ok, id}`; empty
 text = deliver what is queued) and `POST /interrupt` → `interrupt`. Steering
