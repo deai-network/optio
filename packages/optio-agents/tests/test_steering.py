@@ -667,7 +667,12 @@ async def test_begin_transport_reset_survives_an_abort_result_then_a_trailing_id
     assert s.in_flight_id == id1  # NOT cleared: the latch held
 
     await s.reset_transport()
+    # Review of fix 29, finding 1: unlike the shutdown-sweep case below, no
+    # command_lifecycle for id1 ever fired here, so nothing told the UI it
+    # was undelivered — id1 is rewritten under the SAME id, and no
+    # x-optio-requeued is needed (or emitted).
     assert conv.sent == ["one\n\n"] and conv.uuids == [id1]  # id1 rewritten, not dropped
+    assert REQUEUED not in [e["type"] for e in events(conv)]
 
     conv.fire_lifecycle(id1, "started")
     await s.settle()
@@ -693,14 +698,27 @@ async def test_begin_transport_reset_survives_a_shutdown_sweep_cancelled():
     assert s.in_flight_id == id1  # NOT cleared: the latch held
 
     await s.reset_transport()
-    assert conv.sent == ["one\n\n"] and conv.uuids == [id1]  # id1 rewritten, not dropped
+    # Review of fix 29, finding 1: the shutdown sweep's own "cancelled" for
+    # id1 already reached the UI (the conversation's raw event stream —
+    # here, conv.fire() ran it through every handler exactly as a real
+    # wrapper's _route would), which the reducer turns into a muted "Not
+    # delivered: one" note. Rewriting id1 under the SAME id would strand
+    # that note forever, so reset_transport() gives it a NEW id and
+    # announces the swap with x-optio-requeued instead — the same event
+    # Fix 19's own requeue() emits, which the reducer already knows how to
+    # turn a "Not delivered" note back into a queued bubble with.
+    new_id1 = conv.uuids[0]
+    assert new_id1 is not None and new_id1 != id1
+    assert conv.sent == ["one\n\n"]
+    assert s.in_flight_id == new_id1
+    assert {"type": REQUEUED, "id": id1, "new_id": new_id1} in events(conv)
 
-    conv.fire_lifecycle(id1, "started")
+    conv.fire_lifecycle(new_id1, "started")
     await s.settle()
     conv.fire_lifecycle(id2, "started")
     await s.settle()
     assert conv.sent == ["one\n\n", "two\n\n", "three\n\n"]
-    assert conv.uuids == [id1, id2, id3]  # #1, #2, #3, in order, exactly once each
+    assert conv.uuids == [new_id1, id2, id3]  # #1, #2, #3, in order, exactly once each
 
 
 # -- W2 (wave-2 re-review): a "started" observed during the window must
@@ -733,6 +751,101 @@ async def test_begin_transport_reset_does_not_resend_a_message_confirmed_started
     conv.fire_lifecycle(id2, "started")
     await s.settle()
     assert conv.sent == ["two\n\n", "three\n\n"] and conv.uuids == [id2, id3]
+
+
+# -- review of fix 29, finding 3: the latch only guarded _on_event. --------
+# send_when_ready, interrupt_and_send (via _interrupt_and_send_native) and
+# requeue each also read a plain is_pending() to decide "the agent is idle,
+# _in_flight is stale" -- exactly what the W2 drain leaves False for a few
+# seconds mid-relaunch, before reset_transport() has run. Landing in that
+# window must queue behind the latched in-flight message, not clear it and
+# write straight to the dying transport.
+
+
+async def test_send_when_ready_during_a_relaunch_does_not_clear_the_latched_in_flight():
+    conv = FakeConversation(native_lifecycle=True)
+    conv.pending = True
+    s = make(conv)
+    id1, id2, id3 = await _queue_three(s)  # id1 in flight; id2, id3 pending
+    conv.sent.clear()
+    conv.uuids.clear()
+
+    s.begin_transport_reset()
+    conv.pending = False  # the W2-drained abort result + trailing idle
+    outcome = await s.send_when_ready("four")
+    id4 = outcome.id
+    assert outcome.queued is True
+    assert s.in_flight_id == id1  # NOT cleared: the latch still held
+    assert conv.sent == []  # id4 NOT written straight to the dying transport
+    assert s.pending_ids == [id2, id3, id4]
+
+    await s.reset_transport()
+    assert conv.sent == ["one\n\n"] and conv.uuids == [id1]
+
+    conv.fire_lifecycle(id1, "started")
+    await s.settle()
+    conv.fire_lifecycle(id2, "started")
+    await s.settle()
+    conv.fire_lifecycle(id3, "started")
+    await s.settle()
+    assert conv.sent == ["one\n\n", "two\n\n", "three\n\n", "four\n\n"]
+    assert conv.uuids == [id1, id2, id3, id4]  # #1-#4, in order, exactly once each
+
+
+async def test_interrupt_and_send_during_a_relaunch_does_not_clear_the_latched_in_flight():
+    conv = FakeConversation(native_lifecycle=True)
+    conv.pending = True
+    s = make(conv)
+    id1, id2, id3 = await _queue_three(s)  # id1 in flight; id2, id3 pending
+    conv.sent.clear()
+    conv.uuids.clear()
+
+    s.begin_transport_reset()
+    conv.pending = False  # the W2-drained abort result + trailing idle
+    id4 = await s.interrupt_and_send("four")
+    assert s.in_flight_id == id1  # NOT cleared: the latch still held
+    assert conv.sent == []  # id4 NOT written straight to the dying transport
+    assert s.pending_ids == [id2, id3, id4]
+
+    await s.reset_transport()
+    assert conv.sent == ["one\n\n"] and conv.uuids == [id1]
+
+    conv.fire_lifecycle(id1, "started")
+    await s.settle()
+    conv.fire_lifecycle(id2, "started")
+    await s.settle()
+    conv.fire_lifecycle(id3, "started")
+    await s.settle()
+    assert conv.sent == ["one\n\n", "two\n\n", "three\n\n", "four\n\n"]
+    assert conv.uuids == [id1, id2, id3, id4]  # #1-#4, in order, exactly once each
+
+
+async def test_requeue_during_a_relaunch_does_not_clear_the_latched_in_flight():
+    conv = FakeConversation(native_lifecycle=True)
+    conv.pending = True
+    s = make(conv)
+    id1, id2, id3 = await _queue_three(s)  # id1 in flight; id2, id3 pending
+    conv.sent.clear()
+    conv.uuids.clear()
+
+    s.begin_transport_reset()
+    conv.pending = False  # the W2-drained abort result + trailing idle
+    new_ids = await s.requeue([("old1", "zero")])
+    assert s.in_flight_id == id1  # NOT cleared: the latch still held
+    assert conv.sent == []  # not written straight to the dying transport
+    assert s.pending_ids == [new_ids[0], id2, id3]  # requeued goes to the front
+
+    await s.reset_transport()
+    assert conv.sent == ["one\n\n"] and conv.uuids == [id1]
+
+    conv.fire_lifecycle(id1, "started")
+    await s.settle()
+    conv.fire_lifecycle(new_ids[0], "started")
+    await s.settle()
+    conv.fire_lifecycle(id2, "started")
+    await s.settle()
+    assert conv.sent == ["one\n\n", "zero\n\n", "two\n\n", "three\n\n"]
+    assert conv.uuids == [id1, new_ids[0], id2, id3]
 
 
 # -- re-queue on resume (Fix 19, owner ruling 2026-09-15, finding 6 #2) -------
