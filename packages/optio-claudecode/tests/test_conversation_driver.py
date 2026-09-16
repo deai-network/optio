@@ -331,7 +331,7 @@ async def test_close_sets_close_requested(convo):
 
 # -- steering hooks (docs/2026-09-13-conversation-steering-design.md) ---------
 
-from optio_claudecode.steering import BUSY_SEND, is_turn_end, make_steering
+from optio_claudecode.steering import BUSY_SEND, is_turn_end, make_steering, undelivered_queued
 
 
 @pytest.mark.asyncio
@@ -498,6 +498,52 @@ async def test_session_end_writes_no_further_queued_message_over_the_real_driver
     assert handle.stdin.lines.qsize() == 0  # "two" was never written
     handle.stdout.eof()
     await reader
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("in_flight_state", ["started", "cancelled"])
+async def test_session_end_undelivered_queued_lists_the_in_flight_and_pending_messages(convo, in_flight_state):
+    # Fix 19 review round 1, finding 2: the CONTROLLER NOTE requires checking
+    # not just that session end writes nothing further, but that the re-queue
+    # computation still lists the in-flight message (when the graceful
+    # interrupt swept it, never "started") and every still-pending one, in
+    # their original order. optio-agents cannot import undelivered_queued
+    # (optio-claudecode depends on optio-agents, not the reverse), so this
+    # feeds the events the real driver actually emitted into it here.
+    c, handle = convo
+    events: list[dict] = []
+    c.on_event(events.append)
+    ids = iter(["q1", "q2", "q3"])
+    steering = make_steering(c, new_id=lambda: next(ids))
+    reader = asyncio.create_task(c.run_reader())
+    await c.send("long task")
+    await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    await steering.send_when_ready("one")
+    await steering.send_when_ready("two")
+    await steering.send_when_ready("three")
+    first = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert first["uuid"] == "q1"
+
+    c.begin_session_end()
+    ending = asyncio.create_task(c.interrupt_for_session_end())
+    ctrl = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert ctrl["request"] == {"subtype": "interrupt", "cancel_queued": True}
+    handle.stdout.feed(_lifecycle("q1", in_flight_state))
+    handle.stdout.feed({"type": "control_response", "response": {
+        "subtype": "success", "request_id": ctrl["request_id"], "response": {"cancelled": []}}})
+    handle.stdout.feed({"type": "result", "subtype": "error_during_execution",
+                        "is_error": True, "terminal_reason": "aborted_streaming"})
+    await asyncio.wait_for(ending, 60)
+    await steering.settle()
+    assert handle.stdin.lines.qsize() == 0  # nothing further was written
+    handle.stdout.eof()
+    await reader
+
+    undelivered = undelivered_queued(list(enumerate(events, 1)))
+    if in_flight_state == "cancelled":
+        assert undelivered == [("q1", "one"), ("q2", "two"), ("q3", "three")]
+    else:
+        assert undelivered == [("q2", "two"), ("q3", "three")]
 
 
 @pytest.mark.asyncio
