@@ -38,6 +38,16 @@ docs/2026-09-15-steering-session-end-design.md): on resume, ``requeue``
 sends again, in order and under new ids, the messages the previous run
 left queued and undelivered, announced by one ``x-optio-requeued`` each.
 
+Fix 29/W1-W2 (wave-2 re-review of Fix 25, 2026-09-16): a relaunch's own
+dying process can clear ``_in_flight`` (an abort result + trailing idle, or
+a shutdown sweep's ``cancelled``/``discarded``/``refused``) before
+``reset_transport()`` runs, which silently drops the message the fix exists
+to rescue. ``begin_transport_reset()`` latches the window from the moment a
+relaunch begins, so only a genuine ``started``/``completed`` — proof the
+message reached the transcript ``--continue`` will restore — can still
+retire it during that window; everything else waits for
+``reset_transport()`` to decide.
+
 See docs/2026-09-13-conversation-steering-design.md §2 and §3.
 """
 
@@ -85,6 +95,13 @@ TURN_END_TIMEOUT_S = 15.0
 _LIFECYCLE_ADVANCE_STATES = frozenset(
     {"started", "completed", "cancelled", "discarded", "refused"},
 )
+# The subset of _LIFECYCLE_ADVANCE_STATES that means the agent actually took
+# the message (Fix 29/W2): during a _transport_dying window this is what
+# reset_transport() trusts to mean "already in the process's own -- and
+# --continue-restored -- transcript; do not write it again", as opposed to
+# cancelled/discarded/refused, which a shutdown sweep can emit for a message
+# that was never delivered at all.
+_DELIVERED_LIFECYCLE_STATES = frozenset({"started", "completed"})
 
 _VARIANT_SUFFIX = re.compile(r"\[[^\]]*\]$")
 
@@ -188,12 +205,33 @@ class Steering:
         # (id, text as it will be written); and the id of the one message
         # written to the agent that it has not taken yet (at most one).
         self._native_pending: list[tuple[str, str]] = []
-        self._in_flight: str | None = None
-        # The exact text (already carrying its trailing blank line, if any)
-        # last written for _in_flight, kept only so reset_transport() (Fix
-        # 25) can write it again if the transport dies before taking it.
-        # Stale once _in_flight is cleared; only ever read while it is set.
-        self._in_flight_text: str | None = None
+        # (id, exact text as written, already carrying its trailing blank
+        # line if any) of the one native-queue message written to the agent
+        # that it has not taken yet, or None. Held as one pair (Fix 29/W4:
+        # final-review-2's wave-2 re-review) rather than two separately
+        # nullable fields, so nothing can read a text that does not match
+        # its id: the only writer (_write_next_locked) sets both at once.
+        self._in_flight: tuple[str, str] | None = None
+        # Fix 29/W2 (wave-2 re-review): while _in_flight is set, True once a
+        # command_lifecycle "started" or "completed" for it was actually
+        # observed. Read only by reset_transport(), and only meaningful
+        # during a _transport_dying window (see begin_transport_reset): it
+        # is what tells reset_transport() the dying process already took
+        # the message into its (persisted, --continue-restored) transcript,
+        # so re-writing it to the fresh process would send it twice.
+        self._in_flight_taken = False
+        # Fix 29/W1 (wave-2 re-review): set by begin_transport_reset() from
+        # the moment a relaunch begins, cleared by reset_transport() as its
+        # first act. While True, _on_event must not let the dying process's
+        # OWN last gasp -- an abort result followed by a trailing idle, or a
+        # shutdown sweep's command_lifecycle "cancelled"/"discarded"/
+        # "refused" -- erase _in_flight or advance the native queue: either
+        # would make reset_transport() find nothing to rescue, silently
+        # losing the in-flight message one step before the fix that exists
+        # to save it. A "started"/"completed" during the window is still
+        # honoured (see _in_flight_taken above): that one is a genuine
+        # delivery signal, not a shutdown artifact.
+        self._transport_dying = False
         self._advance_task: asyncio.Task | None = None
         self._unsubscribe = conversation.on_event(self._on_event)
 
@@ -209,11 +247,21 @@ class Steering:
     @property
     def in_flight_id(self) -> str | None:
         """The native-queue message written to the agent and not taken yet (Fix 17)."""
-        return self._in_flight
+        return self._in_flight[0] if self._in_flight is not None else None
 
     def close(self) -> None:
         unsubscribe, self._unsubscribe = self._unsubscribe, (lambda: None)
         unsubscribe()
+
+    def begin_transport_reset(self) -> None:
+        """Fix 29/W1 (wave-2 re-review of Fix 25, final-review-2 I3): call
+        this the moment a relaunch begins -- session.py's model/effort arm
+        calls it right alongside ``ClaudeCodeConversation.begin_restart()``,
+        BEFORE the old process is killed. Latches the window so the dying
+        process's own last events cannot make ``reset_transport()`` find
+        nothing to rescue (see ``_transport_dying`` above). Idempotent;
+        cleared by ``reset_transport()``."""
+        self._transport_dying = True
 
     # -- turn end --------------------------------------------------------------
 
@@ -223,11 +271,21 @@ class Steering:
             parsed = self._command_lifecycle(event)
             if (
                 parsed is not None
-                and parsed[0] == self._in_flight
+                and parsed[0] == self._in_flight[0]
                 and parsed[1] in _LIFECYCLE_ADVANCE_STATES
             ):
-                self._in_flight = None
-                advanced = True
+                if self._transport_dying:
+                    # Fix 29/W1: a shutdown sweep's cancelled/discarded/
+                    # refused does not mean "drop it", it means "the process
+                    # is going away regardless" -- reset_transport() must
+                    # still see _in_flight to rescue it. "started"/
+                    # "completed" is different: a genuine take that
+                    # reset_transport() must NOT then resend (Fix 29/W2).
+                    if parsed[1] in _DELIVERED_LIFECYCLE_STATES:
+                        self._in_flight_taken = True
+                else:
+                    self._in_flight = None
+                    advanced = True
         turn_end = self._is_turn_end(event)
         if turn_end:
             self._turn_end.set()
@@ -235,12 +293,20 @@ class Steering:
             if self._held and (self._flush_task is None or self._flush_task.done()):
                 self._flush_task = asyncio.ensure_future(self._flush_after_turn())
         idle = not self._conv.is_pending()
-        if idle:
+        if idle and not self._transport_dying:
             # An idle agent holds nothing in its queue: the message in flight
             # has been taken (or dropped). This is what lets the safety net
             # below also serve an agent that reports no lifecycle at all.
+            # Fix 29/W1: while a relaunch is in progress this heuristic is
+            # exactly what a dying process's own abort result + trailing
+            # idle would otherwise trip, so it is suspended for the window.
             self._in_flight = None
-        if self._native_pending and self._in_flight is None and (advanced or turn_end or idle):
+        if (
+            self._native_pending
+            and self._in_flight is None
+            and not self._transport_dying
+            and (advanced or turn_end or idle)
+        ):
             self._schedule_advance()
         # A merged turn (Send when ready taken mid-turn) has two sends and
         # one result, so is_pending() can stay True for a few ms after that
@@ -319,8 +385,8 @@ class Steering:
         if self._in_flight is not None or not self._native_pending:
             return
         qid, text = self._native_pending.pop(0)
-        self._in_flight = qid
-        self._in_flight_text = text
+        self._in_flight = (qid, text)
+        self._in_flight_taken = False
         await self._conv.send(text, uuid=qid)
 
     async def reset_transport(self) -> None:
@@ -340,13 +406,24 @@ class Steering:
         exactly as they were: nothing here is lost or reordered. Callers
         route this through the same place they already reach this Steering
         (no new plumbing): the session re-attaches the new process, THEN
-        calls this, so the write below reaches it, not the dead one."""
+        calls this, so the write below reaches it, not the dead one.
+
+        Fix 29/W1 (wave-2 re-review): clears ``_transport_dying`` as its
+        first act -- from here on the normal (non-latched) event handling
+        applies again to whatever the freshly attached process reports.
+        Fix 29/W2: if the dying process's own ``command_lifecycle``
+        "started"/"completed" for the in-flight message was observed while
+        the window was open (``_in_flight_taken``), it is already in the
+        transcript ``--continue`` just restored, so it is dropped here
+        instead of being written a second time."""
         self._check_open()
         async with self._lock:
+            self._transport_dying = False
             if self._in_flight is not None:
-                self._native_pending.insert(0, (self._in_flight, self._in_flight_text))
+                if not self._in_flight_taken:
+                    self._native_pending.insert(0, self._in_flight)
                 self._in_flight = None
-                self._in_flight_text = None
+                self._in_flight_taken = False
             # The turn that _interrupted tracked died with the old process;
             # nothing is left to mark interrupted, and a stale True would
             # silently swallow the new process's first Interrupt.
