@@ -17,7 +17,6 @@ Two modes:
 import argparse
 import json
 import os
-import select
 import sys
 import time
 from pathlib import Path
@@ -171,16 +170,20 @@ def run_stream_json_mode(argv: list[str]) -> int:
                                    echoed into the result text.
       FAKE_CLAUDE_EXIT_AFTER     — int: exit(7) after that many results
                                    (simulates unexpected death).
-      FAKE_CLAUDE_REPLY_DELAY_S  — float: hold the turn open this long after
-                                   a user message, before emitting the
-                                   assistant reply and result (Fix 27 I7:
-                                   widens the pending-turn window for a
-                                   cancellation test — real claude is not
-                                   instantaneous either; without it the
+      FAKE_CLAUDE_HOLD_TURN      — '1': after a user message, hold the turn
+                                   open and block (no deadline) until a
+                                   genuine interrupt control_request arrives
+                                   on stdin, then answer it and end the turn
+                                   (Fix 27 I7: widens the pending-turn window
+                                   for a cancellation test — real claude is
+                                   not instantaneous either; without this the
                                    reply races the test's own cancel()).
-                                   Still honours an interrupt control_request
-                                   that arrives during the hold, exactly like
-                                   the busy-turn branch above.
+                                   Event-driven, not timed: nothing else is
+                                   sent while holding, so a caller that never
+                                   interrupts blocks forever here — bounded
+                                   from the outside by the product's own
+                                   GRACEFUL_INTERRUPT_TIMEOUT_S (which kills
+                                   this process), not by a fake sleep.
     """
     def emit(obj):
         sys.stdout.write(json.dumps(obj) + "\n")
@@ -189,7 +192,7 @@ def run_stream_json_mode(argv: list[str]) -> int:
     reply_tpl = os.environ.get("FAKE_CLAUDE_REPLY", "reply-{n}")
     want_permission = os.environ.get("FAKE_CLAUDE_PERMISSION") == "1"
     exit_after = int(os.environ.get("FAKE_CLAUDE_EXIT_AFTER", "0"))
-    reply_delay_s = float(os.environ.get("FAKE_CLAUDE_REPLY_DELAY_S", "0"))
+    hold_turn = os.environ.get("FAKE_CLAUDE_HOLD_TURN") == "1"
     session_id = "fake-session-0000"
     emit({"type": "system", "subtype": "init", "session_id": session_id,
           "model": "fake-model", "cwd": os.getcwd()})
@@ -223,25 +226,37 @@ def run_stream_json_mode(argv: list[str]) -> int:
                     inner = (resp.get("response") or {}).get("response") or {}
                     decision_note = f" perm:{inner.get('behavior')}"
                     break
-        if reply_delay_s:
-            # Hold the turn open (real claude is not instantaneous either):
-            # an interrupt control_request arriving during the hold ends the
-            # turn early, exactly like the busy-turn branch above, instead of
-            # racing this reply (Fix 27 I7).
-            ready, _, _ = select.select([sys.stdin], [], [], reply_delay_s)
-            if ready:
-                interrupt_line = sys.stdin.readline().strip()
-                interrupt_msg = json.loads(interrupt_line) if interrupt_line else None
-                interrupt_sub = None
-                if interrupt_msg is not None and interrupt_msg.get("type") == "control_request":
-                    interrupt_sub = (interrupt_msg.get("request") or {}).get("subtype")
-                if interrupt_sub == "interrupt":
-                    emit({"type": "control_response", "response": {
-                        "subtype": "success", "request_id": interrupt_msg.get("request_id"),
-                    }})
-                    emit({"type": "result", "subtype": "error_during_execution",
-                          "result": "", "session_id": session_id, "is_error": True})
+        if hold_turn:
+            # Hold the turn open until a genuine interrupt control_request
+            # arrives — event-driven, no deadline (Fix 27 review r1: a
+            # wall-clock hold made the covering test's assertions racy under
+            # host load). Anything else read while holding is ignored; EOF
+            # (stdin closed, e.g. this process being killed after the
+            # product's own GRACEFUL_INTERRUPT_TIMEOUT_S) ends the turn
+            # early via ``for line in sys.stdin`` finishing next iteration.
+            held = False
+            for interrupt_line in sys.stdin:
+                interrupt_line = interrupt_line.strip()
+                if not interrupt_line:
                     continue
+                interrupt_msg = json.loads(interrupt_line)
+                if interrupt_msg.get("type") != "control_request":
+                    continue
+                interrupt_sub = (interrupt_msg.get("request") or {}).get("subtype")
+                if interrupt_sub != "interrupt":
+                    continue
+                emit({"type": "control_response", "response": {
+                    "subtype": "success", "request_id": interrupt_msg.get("request_id"),
+                }})
+                emit({"type": "result", "subtype": "error_during_execution",
+                      "result": "", "session_id": session_id, "is_error": True})
+                held = True
+                break
+            if held:
+                continue
+            # stdin closed without an interrupt arriving: nothing left to
+            # reply to.
+            return 0
         text = reply_tpl.format(n=n) + decision_note
         emit({"type": "assistant", "message": {
             "role": "assistant", "content": [{"type": "text", "text": text}],

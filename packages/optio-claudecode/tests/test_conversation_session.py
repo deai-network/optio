@@ -433,10 +433,15 @@ async def test_cancel_while_a_turn_is_pending_runs_the_graceful_interrupt_first(
 
     monkeypatch.setattr(cc_session, "_end_turn_gracefully", spy)
     # Hold the "hello" turn open (fake-claude's own reply is otherwise
-    # instantaneous, racing the cancel below): the fake still honours a real
-    # interrupt control_request during the hold, so this only widens the
-    # pending window rather than faking the graceful-interrupt result itself.
-    monkeypatch.setenv("FAKE_CLAUDE_REPLY_DELAY_S", "2")
+    # instantaneous, racing the cancel below): event-driven, not a timed
+    # sleep — the fake blocks with no deadline until the interrupt this test
+    # sends actually arrives, then answers it and ends the turn. If the
+    # interrupt is never sent (a regression drops it, or reader_task is torn
+    # down first), the fake keeps blocking and the product's own
+    # GRACEFUL_INTERRUPT_TIMEOUT_S kills it, yielding a deterministic
+    # ``results == [False]`` rather than a load-dependent race (Fix 27
+    # review r1).
+    monkeypatch.setenv("FAKE_CLAUDE_HOLD_TURN", "1")
 
     optio = await _make_optio(mongo_db, "ccconvcancelgraceful")
     try:
