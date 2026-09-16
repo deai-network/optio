@@ -264,8 +264,14 @@ describe('ConversationView Interrupt pending and failure', () => {
     expect(button.classList.contains('ant-btn-loading')).toBe(true);
     expect(button.disabled).toBe(true);
 
-    // A second click landing while the first is still in flight is dropped.
-    fireEvent.click(button);
+    // A second click on the button itself can't exercise the guard for real:
+    // the button is `disabled` (see above), and react-dom/jsdom never
+    // dispatches a click to a disabled native <button> at all. Escape's
+    // window-level handler has no disabled state of its own and calls the
+    // same interrupt(), so a second Escape while the first is still in
+    // flight is a real second entry — this is what interruptingRef guards
+    // against (Fix 27 I7).
+    fireEvent.keyDown(window, { key: 'Escape' });
     expect(onInterrupt).toHaveBeenCalledTimes(1);
 
     resolveInterrupt(true);
@@ -817,6 +823,31 @@ describe('ConversationView steering', () => {
     fireEvent.keyDown(box, { key: 'Enter', ctrlKey: true });
     await waitFor(() => expect(onSend).toHaveBeenCalledWith('x', []));
     expect(onSteer).not.toHaveBeenCalled();
+  });
+
+  // Fix 27 I4: submit() (Interrupt and send here) used to have no
+  // try/finally, so a rejecting onSteer left `sending` stuck true forever —
+  // the bar never recovers and the rejection is unhandled.
+  it('a rejecting onSteer (Interrupt and send) shows the error and the bar recovers to submit again', async () => {
+    const onSteer = vi.fn()
+      .mockImplementationOnce(async () => {
+        throw new Error('boom');
+      })
+      .mockImplementationOnce(async () => true);
+    renderView(makeProps({ busy: true, state: busyState(), onSteer }));
+    const box = screen.getByTestId('conversation-input-box') as HTMLTextAreaElement;
+    fireEvent.change(box, { target: { value: 'first' } });
+    fireEvent.keyDown(box, { key: 'Enter', ctrlKey: true });
+    await waitFor(() =>
+      expect(screen.getByTestId('conversation-error').textContent).toContain('Send failed — retry.'),
+    );
+    expect(onSteer).toHaveBeenCalledTimes(1);
+    // The bar recovered (sending cleared in a finally): a second
+    // Interrupt-and-send goes through instead of being dropped forever.
+    fireEvent.change(box, { target: { value: 'second' } });
+    fireEvent.keyDown(box, { key: 'Enter', ctrlKey: true });
+    await waitFor(() => expect(onSteer).toHaveBeenCalledTimes(2));
+    expect(onSteer).toHaveBeenLastCalledWith('second', []);
   });
 });
 
