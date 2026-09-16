@@ -14,7 +14,7 @@ from optio_claudecode.steering import make_steering
 
 
 class FakeConversation:
-    def __init__(self):
+    def __init__(self, *, auto_result_on_interrupt: bool = True):
         self.handlers = []
         self.perm_handler = None
         self.sent = []
@@ -22,9 +22,13 @@ class FakeConversation:
         self.interrupts = 0
         self.closed = False
         # Steering surface: busy is set by the test; interrupt() ends a busy
-        # turn at once with a result event (the CLI's turn end).
+        # turn at once with a result event (the CLI's turn end), unless
+        # ``auto_result_on_interrupt`` is False (Fix 27 I7): then the turn
+        # end is a separate, test-driven step (fire_turn_end()), so a test
+        # can observe the state Steering sits in while it is still waiting.
         self.pending = False
         self.runtime_model = None
+        self._auto_result_on_interrupt = auto_result_on_interrupt
 
     def on_event(self, h):
         self.handlers.append(h)
@@ -50,10 +54,16 @@ class FakeConversation:
         if self.closed:
             raise ConversationClosed("closed")
         self.interrupts += 1
-        if self.pending:
-            self.pending = False
-            self.fire({"type": "result", "subtype": "error_during_execution",
-                       "is_error": True, "terminal_reason": "aborted_streaming"})
+        if self.pending and self._auto_result_on_interrupt:
+            self.fire_turn_end()
+
+    def fire_turn_end(self):
+        """End the pending turn with the CLI's error_during_execution result
+        (Fix 27 I7): a separate step from interrupt() itself, so a test can
+        assert on the state in between."""
+        self.pending = False
+        self.fire({"type": "result", "subtype": "error_during_execution",
+                   "is_error": True, "terminal_reason": "aborted_streaming"})
 
     def fire(self, event):
         for h in list(self.handlers):
@@ -292,14 +302,38 @@ async def test_send_returns_id_and_queued_and_buffers_the_queued_event(listener)
     assert queued == [{"type": "x-optio-queued", "id": busy["id"], "text": "steer"}]
 
 
-async def test_steer_interrupts_waits_for_the_turn_end_then_sends(listener):
-    conv, lst, url = listener
-    conv.pending = True
-    async with aiohttp.ClientSession() as s:
-        r = await s.post(f"{url}/steer", json={"text": "now"}, headers=_auth("pw"))
-        body = await r.json()
+async def test_steer_interrupts_waits_for_the_turn_end_then_sends():
+    # Not the shared `listener` fixture: this needs a conv whose interrupt()
+    # does not end the turn itself (Fix 27 I7), so waiting for the turn end
+    # is observable rather than indistinguishable from not waiting at all —
+    # the send must not land until fire_turn_end() runs.
+    conv = FakeConversation(auto_result_on_interrupt=False)
+    lst = ConversationListener(conv, password="pw")
+    port = await lst.start("127.0.0.1")
+    try:
+        conv.pending = True
+        async with aiohttp.ClientSession() as s:
+            post = asyncio.ensure_future(
+                s.post(f"http://127.0.0.1:{port}/steer", json={"text": "now"},
+                       headers=_auth("pw")),
+            )
+            # Wait until the interrupt actually reached the conversation
+            # before asserting the send has NOT landed yet (bounded polling,
+            # not a fixed wall-clock delay: see the identical pattern above
+            # for the permission-request test).
+            import time
+            end = time.monotonic() + 60
+            while time.monotonic() < end and conv.interrupts == 0:
+                await asyncio.sleep(0.02)
+            assert conv.interrupts == 1
+            assert conv.sent == []  # still waiting for the turn end
+            conv.fire_turn_end()
+            r = await asyncio.wait_for(post, 60)
+            body = await r.json()
+    finally:
+        await lst.stop()
     assert r.status == 200 and body["ok"] is True and isinstance(body["id"], str)
-    assert conv.interrupts == 1 and conv.sent == ["now\n\n"]  # blank line (Fix 13a)
+    assert conv.sent == ["now\n\n"]  # blank line (Fix 13a)
     types = [e.get("type") for _, e in lst._buffer]
     assert types.index("x-optio-interrupt") < types.index("result")
 
@@ -375,6 +409,16 @@ async def test_steering_events_persist_across_a_resume():
         initial_events=[(x[0], x[1]) for x in exported],
     )
     assert [e["type"] for _, e in lst2._buffer] == types + ["x-optio-resumed"]
+
+
+# -- wall clock is integral (Fix 27 M3) ---------------------------------------
+# Every other ms value in the model is an integer; the default clock used to
+# return a float (time.time() * 1000), so x-optio-message-start.ts would be
+# persisted as e.g. 1789361820765.1233.
+
+def test_wall_clock_ms_default_is_an_integer():
+    from optio_claudecode.conversation_listener import _wall_clock_ms
+    assert isinstance(_wall_clock_ms(), int)
 
 
 # -- start-of-message marker (Fix 12) -----------------------------------------

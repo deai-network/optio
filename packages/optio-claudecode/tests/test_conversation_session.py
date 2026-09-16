@@ -34,6 +34,7 @@ import pytest
 from optio_core.lifecycle import Optio
 
 from optio_claudecode import ClaudeCodeTaskConfig, create_claudecode_task
+from optio_claudecode import session as cc_session
 
 
 _TERMINAL = {"done", "failed", "cancelled"}
@@ -398,3 +399,65 @@ async def test_cancel_while_the_body_waits_leaves_no_waiter_task_pending(
         assert _session_waiters(conv) == []
     finally:
         await optio.shutdown(grace_seconds=1.0)
+
+
+@pytest.mark.asyncio
+async def test_cancel_while_a_turn_is_pending_runs_the_graceful_interrupt_first(
+    shim_install_dir: pathlib.Path,
+    claude_cache_dir: pathlib.Path,
+    task_root,
+    mongo_db,
+    monkeypatch,
+):
+    """Fix 27 I7 (trailing note): test_session_end.py exercises
+    _end_turn_gracefully only through a fake, always with an injected
+    timeout_s, so nothing pins the production call site (session.py, right
+    before reader_task.cancel() in the cancellation path). Here the call is
+    spied (delegating to the real function — the interrupt and its wait for
+    the turn end are genuine, against the real fake-claude subprocess and
+    its real reader task): a real cancellation mid-turn must call it exactly
+    once, with no explicit timeout_s override (the production default,
+    GRACEFUL_INTERRUPT_TIMEOUT_S, applies), and it must actually succeed —
+    which is only possible if the reader task was still alive to deliver the
+    interrupt's control_response/result, i.e. it ran before reader_task was
+    torn down."""
+    calls: list[tuple[tuple, dict]] = []
+    results: list[bool] = []
+    original = cc_session._end_turn_gracefully
+
+    async def spy(conversation, listener, *args, **kwargs):
+        calls.append((args, kwargs))
+        result = await original(conversation, listener, *args, **kwargs)
+        results.append(result)
+        return result
+
+    monkeypatch.setattr(cc_session, "_end_turn_gracefully", spy)
+    # Hold the "hello" turn open (fake-claude's own reply is otherwise
+    # instantaneous, racing the cancel below): the fake still honours a real
+    # interrupt control_request during the hold, so this only widens the
+    # pending window rather than faking the graceful-interrupt result itself.
+    monkeypatch.setenv("FAKE_CLAUDE_REPLY_DELAY_S", "2")
+
+    optio = await _make_optio(mongo_db, "ccconvcancelgraceful")
+    try:
+        task = create_claudecode_task(
+            process_id="cc-conv-cancel-graceful",
+            name="Conversation cancelled mid-turn",
+            config=_conversation_config(
+                shim_install_dir, claude_cache_dir, supports_resume=False,
+            ),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result(
+            "cc-conv-cancel-graceful", session_id=None, timeout=60,
+        )
+        await conv.send("hello")
+        assert conv.is_pending()
+        await optio.cancel("cc-conv-cancel-graceful")
+        proc = await _wait_terminal(optio, "cc-conv-cancel-graceful")
+        assert proc["status"]["state"] == "cancelled"
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+    assert calls == [((), {})]  # no timeout_s override: the default bound applies
+    assert results == [True]  # ended gracefully, not the "kill after timeout" fallback
