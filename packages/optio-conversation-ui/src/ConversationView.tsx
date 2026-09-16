@@ -898,26 +898,50 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   // Steering applies only while a turn runs, and only for engines that wire it.
   const steerable = busy && !closed && props.onSteer !== undefined;
 
+  // Fix 27 I4: two plain refs guarding the two ways text leaves the input —
+  // `submittingRef` for submit() (Send / Send when ready / Interrupt and
+  // send), `sendingNowRef` for sendQueuedNow() (a queued bubble's Send now).
+  // Declared together and each checked by both functions, so a concurrent
+  // Send-now and Enter (no await between two synchronous event handlers, so
+  // the `sending` state update from one hasn't flushed when the other
+  // reads it) can't clear each other's in-flight state.
+  const submittingRef = useRef(false);
+  const sendingNowRef = useRef(false);
+
   // 'send' → onSend (Send; Send when ready while busy). 'steer' → onSteer
-  // (Interrupt and send).
+  // (Interrupt and send). Fix 27 I4: this used to have no try/finally — a
+  // rejecting deliver() (onSteer is a documented prop other engine views
+  // can implement; ClaudeCodeView's own postJson/preparePrompt/uploadFiles
+  // happen to catch everything, which is why this was latent) left
+  // `sending` stuck true forever (the send bar, every Send now link and the
+  // error Alert dead until remount) plus an unhandled promise rejection.
   async function submit(kind: 'send' | 'steer') {
     const body = text;
-    if (!body || sending || closed) return;
+    if (!body || sending || sendingNowRef.current || submittingRef.current || closed) return;
     const deliver = kind === 'steer' ? props.onSteer : onSend;
     if (!deliver) return;
+    submittingRef.current = true;
     setSending(true);
     setError(null);
-    const ok = await deliver(body, attachments);
-    if (ok) {
-      setText('');
-      setAttachments([]);
-    } else {
+    try {
+      const ok = await deliver(body, attachments);
+      if (ok) {
+        setText('');
+        setAttachments([]);
+      } else {
+        setError('Send failed — retry.');
+      }
+    } catch {
+      // A rejected deliver() is still "send failed", not an unhandled
+      // rejection (same guard as sendQueuedNow / interrupt above).
       setError('Send failed — retry.');
+    } finally {
+      submittingRef.current = false;
+      setSending(false);
+      // Keep the keyboard on the input so the operator can keep typing after
+      // Enter without a mouse click.
+      inputRef.current?.focus();
     }
-    setSending(false);
-    // Keep the keyboard on the input so the operator can keep typing after
-    // Enter without a mouse click.
-    inputRef.current?.focus();
   }
 
   // Guards "Send now" on a queued bubble: reuses the same `sending` state the
@@ -928,9 +952,8 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   // still dropped rather than firing a second onSteer('', [], upTo). Fix
   // 13b: `upTo` is the clicked bubble's own id, so Send now on the 2nd of 3
   // queued bubbles delivers 1-2 and leaves 3 queued.
-  const sendingNowRef = useRef(false);
   async function sendQueuedNow(upTo?: string) {
-    if (sendingNowRef.current || sending || closed || !props.onSteer) return;
+    if (sendingNowRef.current || submittingRef.current || sending || closed || !props.onSteer) return;
     sendingNowRef.current = true;
     setSending(true);
     setError(null);

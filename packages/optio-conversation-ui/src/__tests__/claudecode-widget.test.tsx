@@ -396,10 +396,16 @@ describe('ConversationWidget', () => {
     render(<ConversationWidget {...makeProps()} />);
     fire({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'go' }] } });
     fire({ type: 'assistant', message: { role: 'assistant', id: 'm1', content: [{ type: 'text', text: 'working' }] } });
+    const button = screen.getByRole('button', { name: 'Interrupt' });
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Interrupt' }));
+      fireEvent.click(button);
     });
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    // Wait on a settled POSITIVE signal — the button's pending spinner
+    // clearing — before asserting the error is absent. Asserting right
+    // after fetch was merely CALLED (Fix 27 I7) runs before Response.json()
+    // is read and the failure branch could even render, so it could not
+    // have caught a broken success path.
+    await waitFor(() => expect(button.classList.contains('ant-btn-loading')).toBe(false));
     expect(screen.queryByTestId('conversation-error')).toBeNull();
   });
 
