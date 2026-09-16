@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { ConfigProvider } from 'antd';
 import type { ReactElement } from 'react';
 import { ConversationView, type ConversationViewProps } from '../ConversationView.js';
@@ -916,6 +916,62 @@ describe('ConversationView send-bar icons (Fix 22)', () => {
     rerenderView(r, makeProps({ busy: true, state: busyState(), onSteer }));
     const busyWidth = (screen.getByTestId('conversation-send-combined') as HTMLElement).style.width;
     expect(busyWidth).toBe(idleWidth);
+  });
+});
+
+// Owner feedback from manual testing, 2026-09-16: right-align every label on
+// the send split button, and (already reached via vultus `iconPosition="end"`
+// plus the new `align` prop) keep the open list's icons on the right of their
+// labels rather than antd's default left slot. jsdom does no layout, so these
+// assert the `justify-content` style vultus applies and DOM order, not actual
+// on-screen pixel alignment.
+describe('ConversationView send-bar alignment', () => {
+  const busyState = (items: ChatItem[] = []) => makeState(items, { busy: true });
+
+  it('idle: the single-action Send button is right-aligned', () => {
+    renderView(makeProps({}));
+    const combined = screen.getByTestId('conversation-send-combined');
+    const button = combined.querySelector('[data-action-id="send"]') as HTMLElement;
+    expect(button.style.justifyContent).toBe('flex-end');
+  });
+
+  it('busy with onSteer: the main half (Send when ready) is right-aligned', () => {
+    const onSteer = vi.fn(async () => true);
+    renderView(makeProps({ busy: true, state: busyState(), onSteer }));
+    const combined = screen.getByTestId('conversation-send-combined');
+    const button = combined.querySelector('[data-action-id="send-when-ready"]') as HTMLElement;
+    expect(button.style.justifyContent).toBe('flex-end');
+  });
+
+  it('busy with onSteer: the open list right-aligns each row\'s content, icon after the label', async () => {
+    const onSteer = vi.fn(async () => true);
+    renderView(makeProps({ busy: true, state: busyState(), onSteer }));
+    const combined = screen.getByTestId('conversation-send-combined');
+    fireEvent.click(combined.querySelector('.ant-dropdown-trigger') as HTMLElement);
+    const menuItem = await screen.findByRole('menuitem', { name: 'Interrupt and send' });
+
+    // No antd icon slot left behind — align folds it into the row's own
+    // label node alongside the text, same as iconPosition="end" alone did.
+    expect(menuItem.querySelector('.ant-dropdown-menu-item-icon')).toBeNull();
+
+    const titleContent = menuItem.querySelector('.ant-dropdown-menu-title-content') as HTMLElement;
+    expect(titleContent).not.toBeNull();
+    const wrapper = titleContent.firstElementChild as HTMLElement;
+    expect(wrapper.style.justifyContent).toBe('flex-end');
+
+    const label = within(menuItem).getByText('Interrupt and send');
+    const icon = menuItem.querySelector('[data-testid="interrupt-and-send-icon"]');
+    expect(icon).not.toBeNull();
+    // DOM order: the label comes before the icon within the row.
+    expect(label.compareDocumentPosition(icon!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('Interrupt (the separate red button) is unaffected — no alignment style', () => {
+    renderView(makeProps({ busy: true, state: busyState() }));
+    const button = screen
+      .getByTestId('conversation-interrupt')
+      .querySelector('[data-action-id="interrupt"]') as HTMLElement;
+    expect(button.style.justifyContent).toBe('');
   });
 });
 

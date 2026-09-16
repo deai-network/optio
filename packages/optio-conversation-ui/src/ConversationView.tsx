@@ -331,9 +331,10 @@ function InterruptStopIcon() {
 // @ant-design/icons' IconBase, and antd's LoadingOutlined spinner that takes
 // this slot while an action is pending) with the visible mark centered
 // inside — so idle (icon) and pending (spinner) stay the same width by
-// construction, same as Interrupt. Menu rows are unaffected: `iconPosition`
-// only ever reaches the main (button) half (see CombinedActionButton), so
-// the dropdown menu keeps antd's own left-icon layout for its entries.
+// construction, same as Interrupt. `iconPosition="end"` and `align="end"`
+// (see the combined button below) also reach the open list: each row's own
+// icon follows its label, and the row's whole content sits flush right,
+// instead of antd's default left-icon, centered-content layout.
 function sendBarIcon(testId: string, mark: React.ReactNode): React.ReactElement {
   return (
     <span
@@ -1505,11 +1506,13 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                 the main half on 'Send when ready' after the menu action
                 fires, and back on 'Send' once idle. SEND_BUTTON_WIDTH pins
                 the footprint so it never resizes across any of that; the red
-                Interrupt beside it stops and sends nothing. Fix 22: each
+                Interrupt beside it stops and sends nothing. Each
                 action's `icon` (plane / clock / bolt) plus iconPosition="end"
-                puts that icon on the right of the label, on the main half
-                only — the dropdown menu rows keep antd's own left-icon
-                layout regardless. */}
+                puts that icon on the right of the label; align="end" right-
+                aligns every state's label within the fixed width, on the
+                main half and — since iconPosition="end" also reaches
+                each open-list row — the row's own icon (after its
+                label) too. */}
             <span
               data-testid="conversation-send-combined"
               className="optio-cc-send-btn"
@@ -1519,6 +1522,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                 size="small"
                 keepOriginalDefault
                 iconPosition="end"
+                align="end"
                 actions={[
                   barAction('send', 'Send', 'primary', sending || !text || closed, () => void submit('send'), steerable, <SendPlaneIcon />),
                   barAction('send-when-ready', 'Send when ready', 'primary', sending || !text, () => void submit('send'), !steerable, <SendWhenReadyClockIcon />),
