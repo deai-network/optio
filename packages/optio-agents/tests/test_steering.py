@@ -1,11 +1,12 @@
 """Steering scaffold unit tests against a fake conversation (no sleeps)."""
 
 import asyncio
+import inspect
 import logging
 
 import pytest
 
-from optio_agents.conversation import ConversationClosed
+from optio_agents.conversation import Conversation, ConversationClosed
 from optio_agents.steering import (
     BUSY_SEND_VALUES,
     BusySendDeclaration,
@@ -91,20 +92,6 @@ class FakeConversation:
             self.fire({"type": "turn-end"})
 
 
-class StrictProtocolConversation(FakeConversation):
-    """A conversation whose ``send`` has exactly the ``Conversation`` Protocol
-    signature (Fix 23) -- not the wider one ``FakeConversation`` (and every
-    other pre-Fix-23 fake here) happens to accept. ``Steering`` always calls
-    ``send`` with a ``uuid=`` keyword (Fix 13a); before Fix 23 the six
-    non-Claude-Code wrappers implemented only ``send(self, text: str) ->
-    None`` and so raised ``TypeError`` on every send through a ``Steering``.
-    This fake accepts and ignores the advisory id, the way any backend
-    without message identity should."""
-
-    async def send(self, text: str, *, uuid: str | None = None) -> None:
-        await super().send(text, uuid=uuid)
-
-
 def _lifecycle(event: dict) -> tuple[str, str] | None:
     if event.get("type") != "command_lifecycle":
         return None
@@ -153,15 +140,23 @@ def test_declaration_rejects_unknown_values():
 
 # -- send when ready -----------------------------------------------------------
 
-async def test_send_when_ready_works_against_a_conversation_with_only_the_protocol_signature():
-    # Fix 23: the Conversation Protocol declares send(text) -> None, but
-    # Steering always sends with uuid= (Fix 13a). A conversation that
-    # implements exactly the declared Protocol must not raise.
-    conv = StrictProtocolConversation()
-    s = make(conv)
-    outcome = await s.send_when_ready("hi")
-    assert conv.sent == ["hi"]
-    assert outcome == SendOutcome(id="id1", queued=False)
+def test_conversation_protocol_send_declares_an_advisory_keyword_only_uuid():
+    # Fix 23 review round 1: a fake's send() is never executed as part of
+    # the Protocol declaration (a Protocol method body is `...`), so a fake
+    # that merely accepts `uuid` proves nothing about the Protocol itself --
+    # only that the fake happens to agree with Steering's call shape. Assert
+    # the contract on the Protocol's own signature instead: this fails
+    # before Fix 23 (send(self, text) -> None, no `uuid` parameter at all)
+    # and passes after, independent of any fake.
+    params = inspect.signature(Conversation.send).parameters
+    assert "uuid" in params
+    assert params["uuid"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert params["uuid"].default is None
+    # Delivery against that exact signature is already covered by
+    # test_idle_send_is_a_plain_send_without_events and
+    # test_idle_send_uuid_is_the_steering_id_and_gets_no_blank_line below,
+    # both of which exercise FakeConversation.send(text, *, uuid=None) --
+    # the same shape the Protocol now declares.
 
 
 @pytest.mark.parametrize("cap", BUSY_SEND_VALUES)
