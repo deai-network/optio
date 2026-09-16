@@ -1061,13 +1061,6 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
         return state;
       }
       if (lcState === 'cancelled' || lcState === 'discarded' || lcState === 'refused') {
-        // Review of fix 13b, finding 4: a cancellation ConversationView
-        // already told us to expect (x-optio-pending-requeue) is OUR OWN
-        // "Send now up to" resend, not a genuine drop — ignore it entirely,
-        // per the owner ruling, instead of applying then undoing it (which
-        // live would flash the bubble to a muted "Not delivered" note for
-        // up to turn_end_timeout_s until x-optio-requeued arrives).
-        if (state.pendingRequeue?.includes(commandUuid)) return state;
         // A bubble optio did NOT re-queue: mark it "Not delivered", as at
         // session end (dropUndelivered) — but keep the old uuid on the note
         // (`queueId`) so a LATER x-optio-requeued for it (steering.py emits
@@ -1094,30 +1087,24 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       return state;
     }
 
-    // Synthetic, listener-emitted (Fix 13b): steering.py's own resend for
-    // "Send now up to a message" (packages/optio-agents/steering.py
-    // `_send_now_up_to`) — re-keys the bubble from its old id to the new
-    // uuid it resent under, and keeps it queued in its place. Handles both
-    // orders steering.py's own emission can produce relative to the CLI's
-    // command_lifecycle 'cancelled' for the old id (that event reaches the
-    // buffer as soon as the CLI raises it — well before this one, which
-    // waits for the "Send now" target's own 'started'): the bubble may
-    // still be plain queued/local (id not yet re-marked "Not delivered"),
-    // or may already be the "Not delivered" note the cancel produced —
+    // Synthetic, listener-emitted (Fix 19): the resumed run's own
+    // requeue_undelivered() re-sends what the previous run left queued and
+    // undelivered under a new id, one x-optio-requeued {id, new_id} each —
+    // re-keys the bubble from its old id to the new uuid, keeping it queued
+    // in its place. By the time this arrives the bubble may still be plain
+    // queued (x-optio-resumed's own restoreQueuedTail already put it back
+    // there under its OLD id), or may still be the "Not delivered" note a
+    // command_lifecycle 'cancelled' made for it (the session-end cancel
+    // sweep, or x-optio-closed's blanket drop) if nothing restored it yet —
     // either way it ends up queued again, under the new id.
     case 'x-optio-requeued': {
       const id = typeof ev.id === 'string' ? ev.id : '';
       const newId = typeof ev.new_id === 'string' ? ev.new_id : '';
       if (id === '' || newId === '') return state;
-      // Review of fix 13b, finding 4: this id's pending-requeue protection
-      // (if any) has now resolved — drop it, so the reducer's state doesn't
-      // hold it forever.
-      const remaining = state.pendingRequeue?.filter((x) => x !== id);
-      const pendingRequeue = remaining && remaining.length > 0 ? remaining : undefined;
       const idx = state.items.findIndex((i) => i.kind === 'user' && i.queueId === id);
       if (idx !== -1) {
         const cur = state.items[idx] as UserItem;
-        return { ...state, items: replaceAt(state.items, idx, { ...cur, queueId: newId }), pendingRequeue };
+        return { ...state, items: replaceAt(state.items, idx, { ...cur, queueId: newId }) };
       }
       // A pinned lifecycle note (queueId, Fix 13b) first; else, Fix 19, a
       // note that does not pin (requeueId: made at session end, or unpinned
@@ -1125,24 +1112,8 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // the resumed run re-queues.
       let nidx = state.items.findIndex((i) => i.kind === 'activity' && (i as ActivityItem).queueId === id);
       if (nidx === -1) nidx = state.items.findIndex((i) => i.kind === 'activity' && (i as ActivityItem).requeueId === id);
-      if (nidx === -1) return { ...state, pendingRequeue };
-      return { ...state, items: restoreNote(state.items, nidx, newId), pendingRequeue };
-    }
-
-    // Synthetic, widget-emitted (review of fix 13b, finding 4):
-    // ConversationView is about to POST /steer {upTo}; `ids` are the OTHER
-    // currently-queued bubbles the CLI is about to cancel and steering.py
-    // is about to re-send under new uuids (x-optio-requeued) — see
-    // queuedIdsAfter, chat.ts. Dispatched before the network call, so it is
-    // always seen before the CLI's own command_lifecycle 'cancelled' for
-    // them. A replay carries no such local hint (it is not a wire event);
-    // the note-then-requeue path in command_lifecycle/x-optio-requeued
-    // above still handles that case exactly as before.
-    case 'x-optio-pending-requeue': {
-      const ids = Array.isArray(ev.ids) ? ev.ids.filter((x: unknown): x is string => typeof x === 'string') : [];
-      if (ids.length === 0) return state;
-      const merged = Array.from(new Set([...(state.pendingRequeue ?? []), ...ids]));
-      return { ...state, pendingRequeue: merged };
+      if (nidx === -1) return state;
+      return { ...state, items: restoreNote(state.items, nidx, newId) };
     }
 
     case 'x-optio-local-error': {
@@ -1358,7 +1329,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // requeue) — the process that might have sent x-optio-requeued is
       // gone, so it can never unpin otherwise.
       const items = settleNotes(dropUndelivered(freezeRunning(state.items, lastWireTime(state, now), 'session')));
-      return { ...state, items: [...items, item], busy: false, closed: true, pendingRequeue: undefined };
+      return { ...state, items: [...items, item], busy: false, closed: true };
     }
 
     case 'x-optio-resumed': {
@@ -1384,7 +1355,7 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
         settleNotes(dropUndelivered(freezeRunning(state.items, lastWireTime(state, now), 'session'), requeued)),
         requeued,
       );
-      return { ...state, items, busy: false, pendingRequeue: undefined };
+      return { ...state, items, busy: false };
     }
 
     case 'system': {

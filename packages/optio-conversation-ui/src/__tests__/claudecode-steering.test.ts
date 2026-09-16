@@ -724,34 +724,3 @@ describe("review round 2 of fix 13b, finding 1: 'started' also clears a PLAIN lo
     expect(users(replay).find((u) => u.text === 'hi')).toMatchObject({ timestamp: Date.parse(WIRE_TIME) });
   });
 });
-
-// Review of fix 13b, finding 4: the brief says a 'cancelled' that belongs to
-// our own requeue is ignored -- the original implementation applied the
-// "Not delivered" note and undid it once x-optio-requeued arrived, which
-// live flashes the bubble (Send now link gone) for up to
-// turn_end_timeout_s. x-optio-pending-requeue (dispatched by ConversationView
-// before the /steer POST — see ClaudeCodeView.tsx) makes the reducer ignore
-// that cancellation outright, so the flash never happens.
-describe('review of fix 13b, finding 4: x-optio-pending-requeue suppresses the live cancel flash', () => {
-  const pendingRequeue = (ids: string[]) => ({ type: 'x-optio-pending-requeue', ids });
-
-  it('a cancelled for a pending-requeue id is ignored entirely: the bubble stays queued, never a Not delivered note', () => {
-    const s = run([user('q'), queued('q1', 'apple'), queued('q2', 'banana'), pendingRequeue(['q2']), lifecycle('q2', 'cancelled')]);
-    expect(s.items.some((i) => i.kind === 'activity')).toBe(false);
-    expect(users(s).find((u) => u.queueId === 'q2')).toMatchObject({ text: 'banana', queued: true });
-  });
-
-  it('the eventual x-optio-requeued for a protected id still re-keys it and clears the protection', () => {
-    const s = run([
-      user('q'), queued('q1', 'apple'), queued('q2', 'banana'), pendingRequeue(['q2']),
-      lifecycle('q2', 'cancelled'), requeued('q2', 'q2-new'),
-    ]);
-    expect(s.pendingRequeue).toBeUndefined();
-    expect(users(s).find((u) => u.queueId === 'q2-new')).toMatchObject({ text: 'banana', queued: true });
-  });
-
-  it('an unrelated cancelled (a different id, not in pendingRequeue) is unaffected', () => {
-    const s = run([user('q'), queued('q1', 'apple'), pendingRequeue(['q2']), lifecycle('q1', 'cancelled')]);
-    expect(s.items.find((i) => i.kind === 'activity')).toMatchObject({ text: 'Not delivered: apple' });
-  });
-});
