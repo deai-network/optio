@@ -10,6 +10,7 @@ Covers the rate-detection switch:
 """
 
 import asyncio
+import logging
 
 import pytest
 
@@ -246,6 +247,9 @@ async def test_cancelling_the_final_flush_keeps_the_write_in_flight(
 
     final = asyncio.create_task(ctx.flush_final_progress())
     await asyncio.sleep(0)  # let the final flush start waiting on it
+    # Cancel it while it waits; if it had not started yet, this test would
+    # pass without exercising the wait at all.
+    assert not final.done() and not in_flight_flush.done()
     final.cancel()
     with pytest.raises(asyncio.CancelledError):
         await final
@@ -255,6 +259,69 @@ async def test_cancelling_the_final_flush_keeps_the_write_in_flight(
 
     messages = await _log_messages(mongo_db, "test", "cancel-final")
     assert messages == ["msg-1", "msg-2"]
+
+
+async def test_flush_final_progress_returns_despite_a_running_percent_producer(
+    mongo_db,
+):
+    """A coroutine still firing percent updates when the process finishes
+    (e.g. a reader the task did not cancel) must not keep the final flush
+    looping forever: the process would never get its terminal state."""
+    task = TaskInstance(execute=_dummy, process_id="pct-producer", name="Producer")
+    proc = await upsert_process(mongo_db, "test", task)
+    ctx = _make_context(mongo_db, "test", proc)
+
+    stop = asyncio.Event()
+
+    async def producer():
+        i = 0
+        while not stop.is_set():
+            i += 1
+            ctx.report_progress(i % 100)
+            await asyncio.sleep(0)
+
+    running = asyncio.create_task(producer())
+    try:
+        ctx.report_progress(None, "last words")
+        # 60 s bounds a true hang only: the final flush must return at once.
+        await asyncio.wait_for(ctx.flush_final_progress(), 60)
+    finally:
+        stop.set()
+        await running
+
+    messages = await _log_messages(mongo_db, "test", "pct-producer")
+    assert messages == ["last words"]
+
+
+async def test_a_failed_flush_is_logged_when_it_fails(
+    mongo_db, monkeypatch, caplog,
+):
+    """A flush whose write raises is logged right away, not only if and when
+    the process finishes, and finishing the process still works."""
+    from optio_core import store
+
+    task = TaskInstance(execute=_dummy, process_id="flush-fails", name="Fails")
+    proc = await upsert_process(mongo_db, "test", task)
+    ctx = _make_context(mongo_db, "test", proc)
+    caplog.set_level(logging.ERROR, logger="optio_core.context")
+
+    real_update_progress = store.update_progress
+
+    async def failing_update_progress(db, prefix, oid, progress):
+        if progress.message == "boom":
+            raise RuntimeError("db down")
+        await real_update_progress(db, prefix, oid, progress)
+
+    monkeypatch.setattr(store, "update_progress", failing_update_progress)
+
+    ctx.report_progress(None, "boom")
+    await asyncio.wait({ctx._flush_task})
+
+    assert any("Progress flush failed" in r.getMessage() for r in caplog.records)
+
+    ctx.report_progress(None, "after")
+    await asyncio.wait_for(ctx.flush_final_progress(), 60)
+    assert await _log_messages(mongo_db, "test", "flush-fails") == ["after"]
 
 
 async def test_avalanche_then_quiet_drop_summary_emitted_before_survivor(
