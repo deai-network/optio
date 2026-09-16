@@ -316,9 +316,9 @@ Passed to `ctx.set_widget_upstream()` to inject credentials into proxied widget 
 
 ```python
 # Progress reporting
-ctx.report_progress(percent: float | None, message: str | None = None) -> None
+ctx.report_progress(percent: float | None, message: str | None = None, level: Literal["info", "warning"] = "info") -> None
 # percent=None → indeterminate; buffered and flushed every 100ms (OPTIO_PROGRESS_FLUSH_INTERVAL_MS env)
-# message is also appended to process log
+# message is also appended to process log, at `level`; warning lines are never dropped by burst coalescing
 
 ctx.should_continue() -> bool
 # Returns False when cancellation has been requested for THIS process —
