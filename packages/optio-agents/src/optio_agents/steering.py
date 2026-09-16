@@ -189,6 +189,11 @@ class Steering:
         # written to the agent that it has not taken yet (at most one).
         self._native_pending: list[tuple[str, str]] = []
         self._in_flight: str | None = None
+        # The exact text (already carrying its trailing blank line, if any)
+        # last written for _in_flight, kept only so reset_transport() (Fix
+        # 25) can write it again if the transport dies before taking it.
+        # Stale once _in_flight is cleared; only ever read while it is set.
+        self._in_flight_text: str | None = None
         self._advance_task: asyncio.Task | None = None
         self._unsubscribe = conversation.on_event(self._on_event)
 
@@ -315,7 +320,38 @@ class Steering:
             return
         qid, text = self._native_pending.pop(0)
         self._in_flight = qid
+        self._in_flight_text = text
         await self._conv.send(text, uuid=qid)
+
+    async def reset_transport(self) -> None:
+        """Fix 25 (final-review-2 I3 / ledger line 399): the transport under
+        this Steering was just replaced — a model/effort relaunch SIGTERMs
+        the CLI mid-turn and reattaches a whole new process underneath the
+        same Conversation. The dead process took the in-flight message with
+        it: its ``command_lifecycle`` (and the turn's own ``result``) will
+        now never arrive, so ``_in_flight`` would otherwise stay set
+        forever and the native queue (Fix 17's one-at-a-time gate) would
+        never advance again — the messages behind it silently lost.
+
+        Puts that message back at the front of ``_native_pending`` — written
+        again, not dropped — and writes the next deliverable message (it, if
+        nothing else was already in flight) to the newly attached transport.
+        ``_native_pending`` (and optio's own held queue) are otherwise left
+        exactly as they were: nothing here is lost or reordered. Callers
+        route this through the same place they already reach this Steering
+        (no new plumbing): the session re-attaches the new process, THEN
+        calls this, so the write below reaches it, not the dead one."""
+        self._check_open()
+        async with self._lock:
+            if self._in_flight is not None:
+                self._native_pending.insert(0, (self._in_flight, self._in_flight_text))
+                self._in_flight = None
+                self._in_flight_text = None
+            # The turn that _interrupted tracked died with the old process;
+            # nothing is left to mark interrupted, and a stale True would
+            # silently swallow the new process's first Interrupt.
+            self._interrupted = False
+            await self._write_next_locked()
 
     async def _interrupt_and_wait(self, *, call_interrupt: bool) -> None:
         """Stop (unless someone already did, this turn) and wait for the turn

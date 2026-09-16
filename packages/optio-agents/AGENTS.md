@@ -148,6 +148,16 @@ behind every conversation listener's `POST /send`, `POST /steer` and
     attempted after the close logs a warning. Their x-optio-queued, never
     followed by a `started`, is what a resuming wrapper re-queues (Claude
     Code: `ConversationListener.requeue_undelivered`, Fix 19).
+  * `await reset_transport()` (Fix 25, final-review-2 I3 / ledger line 399):
+    called once the caller has re-attached a fresh transport underneath this
+    Steering (a model/effort relaunch SIGTERMs the CLI mid-turn and
+    relaunches it). The dead process took the in-flight message with it, so
+    neither its `command_lifecycle` nor the turn's own `result` will ever
+    arrive; without this, `in_flight_id` would stay set forever and the
+    native queue would never advance again. Puts that message back at the
+    front of `pending_ids` (rewritten, not dropped) and writes the next
+    deliverable message to the newly attached transport; everything else
+    queued is left exactly as it was, in order.
   * `await settle()` (waits for a turn-end flush or a native-queue write in
     progress), `held_ids`, `pending_ids`, `in_flight_id`, `close()`
     (unsubscribes).

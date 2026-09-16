@@ -605,7 +605,11 @@ text = send what is queued; `upTo` = the queued id Send now was clicked on)
 and `POST /interrupt`; stage 1 wires Claude Code
 (`packages/optio-claudecode/AGENTS.md`), including a uuid on every CLI stdin
 message (the steering id, for messages Steering sends) and a trailing blank
-line on a busy native-queue send. Details: `packages/optio-agents/AGENTS.md`.
+line on a busy native-queue send. `Steering.reset_transport()` (Fix 25)
+re-writes an in-flight message rather than dropping it when a wrapper
+relaunches its transport mid-turn (Claude Code: a model/effort change),
+so the queue behind it keeps draining and the UI does not stay stuck busy.
+Details: `packages/optio-agents/AGENTS.md`.
 Design: `docs/2026-09-13-conversation-steering-design.md` and
 `docs/2026-09-15-steering-individual-delivery-design.md`.
 
