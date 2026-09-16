@@ -17,6 +17,7 @@ Two modes:
 import argparse
 import json
 import os
+import select
 import sys
 import time
 from pathlib import Path
@@ -170,6 +171,16 @@ def run_stream_json_mode(argv: list[str]) -> int:
                                    echoed into the result text.
       FAKE_CLAUDE_EXIT_AFTER     — int: exit(7) after that many results
                                    (simulates unexpected death).
+      FAKE_CLAUDE_REPLY_DELAY_S  — float: hold the turn open this long after
+                                   a user message, before emitting the
+                                   assistant reply and result (Fix 27 I7:
+                                   widens the pending-turn window for a
+                                   cancellation test — real claude is not
+                                   instantaneous either; without it the
+                                   reply races the test's own cancel()).
+                                   Still honours an interrupt control_request
+                                   that arrives during the hold, exactly like
+                                   the busy-turn branch above.
     """
     def emit(obj):
         sys.stdout.write(json.dumps(obj) + "\n")
@@ -178,6 +189,7 @@ def run_stream_json_mode(argv: list[str]) -> int:
     reply_tpl = os.environ.get("FAKE_CLAUDE_REPLY", "reply-{n}")
     want_permission = os.environ.get("FAKE_CLAUDE_PERMISSION") == "1"
     exit_after = int(os.environ.get("FAKE_CLAUDE_EXIT_AFTER", "0"))
+    reply_delay_s = float(os.environ.get("FAKE_CLAUDE_REPLY_DELAY_S", "0"))
     session_id = "fake-session-0000"
     emit({"type": "system", "subtype": "init", "session_id": session_id,
           "model": "fake-model", "cwd": os.getcwd()})
@@ -211,6 +223,25 @@ def run_stream_json_mode(argv: list[str]) -> int:
                     inner = (resp.get("response") or {}).get("response") or {}
                     decision_note = f" perm:{inner.get('behavior')}"
                     break
+        if reply_delay_s:
+            # Hold the turn open (real claude is not instantaneous either):
+            # an interrupt control_request arriving during the hold ends the
+            # turn early, exactly like the busy-turn branch above, instead of
+            # racing this reply (Fix 27 I7).
+            ready, _, _ = select.select([sys.stdin], [], [], reply_delay_s)
+            if ready:
+                interrupt_line = sys.stdin.readline().strip()
+                interrupt_msg = json.loads(interrupt_line) if interrupt_line else None
+                interrupt_sub = None
+                if interrupt_msg is not None and interrupt_msg.get("type") == "control_request":
+                    interrupt_sub = (interrupt_msg.get("request") or {}).get("subtype")
+                if interrupt_sub == "interrupt":
+                    emit({"type": "control_response", "response": {
+                        "subtype": "success", "request_id": interrupt_msg.get("request_id"),
+                    }})
+                    emit({"type": "result", "subtype": "error_during_execution",
+                          "result": "", "session_id": session_id, "is_error": True})
+                    continue
         text = reply_tpl.format(n=n) + decision_note
         emit({"type": "assistant", "message": {
             "role": "assistant", "content": [{"type": "text", "text": text}],

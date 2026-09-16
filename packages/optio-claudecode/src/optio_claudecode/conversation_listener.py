@@ -68,8 +68,10 @@ PARTIAL_EVENT_TYPE = "x-optio-partial"
 SESSION_END_MARKER = {"type": INTERRUPT_EVENT, "by": "session"}
 
 
-def _wall_clock_ms() -> float:
-    return time.time() * 1000
+def _wall_clock_ms() -> int:
+    # Every other ms value in the model is an integer (Fix 27 M3); this one
+    # feeds x-optio-message-start.ts, persisted into the resume snapshot.
+    return int(time.time() * 1000)
 PING_INTERVAL_S = 15.0
 # Bound aiohttp's graceful-shutdown wait. The /events SSE handler is a
 # long-lived loop; without this, runner.cleanup() would block on it for the
