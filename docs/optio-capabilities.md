@@ -5,8 +5,10 @@ capabilities, its extension points, its wire surfaces, its hard constraints, and
 its own documentation is wrong. Written to be reused as background for design work rather than read
 once.
 
-**Basis.** Six parallel read-only surveys of `/home/csillag/optio` at commit `f5da73ab` (main,
-clean), covering all 20 packages — roughly 132k lines of source and tests — plus the root
+**Basis.** Six parallel read-only surveys at commit `f5da73ab`, **re-surveyed on 2026-09-20 against
+`origin/main` = `4aebde18`** by five delta readers after the original survey turned out to have been
+run on a checkout that had never been fetched and was 133 commits stale. See the revision note at the
+end for what that changed. The surveys covered all 20 packages — roughly 132k lines of source and tests — plus the root
 `README.md`/`AGENTS.md`, the `Makefile`, `optio-demo`, and a themed sweep of the 189-file `docs/`
 corpus. Every `file:line` below was read. Claims that were inferred rather than executed are marked
 *not verified*.
@@ -119,19 +121,19 @@ Notes that matter:
 
 | Package | Lang | Ver | Role |
 |---|---|---|---|
-| `optio-core` | Py | 0.3.1 | The engine. Sole Mongo writer, state machine, executor, scheduler. |
-| `optio-host` | Py | 0.2.7 | Local-or-SSH host abstraction; `Host` protocol; download task. |
-| `optio-agents` | Py | 0.5.0 | Agent-framework SSOT: log-protocol driver, `Conversation`, `HookContext`, seeds, claustrum. |
-| `optio-{claudecode,opencode,codex,cursor,grok,kimicode,antigravity}` | Py | 0.2–0.5 | Seven concrete agent wrappers. |
-| `optio-agents-all` | Py | 0.1.2 | Static meta-factory over the seven. |
-| `optio-contracts` | TS | 0.3.1 | Zod + ts-rest + clamator wire contracts; codegen source for both sides. |
-| `optio-api` | TS | 0.2.8 | REST+SSE library; four framework adapters. |
-| `optio-ui` | TS | 0.3.1 | React components, hooks, and the widget registry. |
-| `optio-conversation-ui` | TS | 0.3.1 | Engine-neutral chat widget; 7 engine views. |
+| `optio-core` | Py | **0.4.0** | The engine. Sole Mongo writer, state machine, executor, scheduler. |
+| `optio-host` | Py | **0.3.0** | Local-or-SSH host abstraction; `Host` protocol; download task. |
+| `optio-agents` | Py | **0.6.0** | Agent-framework SSOT: log-protocol driver, `Conversation`, `HookContext`, seeds, claustrum. |
+| `optio-{claudecode,opencode,codex,cursor,grok,kimicode,antigravity}` | Py | **0.3.1–0.6.2** | Seven concrete agent wrappers. |
+| `optio-agents-all` | Py | **0.2.1** (0.2.0 was unresolvable on PyPI) | Static meta-factory over the seven. |
+| `optio-contracts` | TS | **0.4.0** | Zod + ts-rest + clamator wire contracts; codegen source for both sides. |
+| `optio-api` | TS | **0.2.9** | REST+SSE library; four framework adapters. |
+| `optio-ui` | TS | **0.4.0** | React components, hooks, and the widget registry. |
+| `optio-conversation-ui` | TS | **0.4.0** | Engine-neutral chat widget; 7 engine views. |
 | `optio-agents-ui` | TS | 0.1.0 | Generated `{slug,name,url}` metadata mirror of the Python SSOT. |
 | `optio-dashboard` | TS | 0.1.5 | Turnkey standalone app (`npx optio-dashboard`). Not embeddable by design. |
 | `filtrum-core` / `filtrum-mongo` | TS | 0.1.1 | Backend-agnostic filter predicate language + Mongo dialect. |
-| `optio-demo` | Py | 0.2.3 | The worked example and the cross-engine parity guard. |
+| `optio-demo` | Py | **0.2.4** | The worked example and the cross-engine parity guard. |
 
 ---
 
@@ -173,7 +175,11 @@ the UI; `widgetUpstream` is a URL + inner auth that the API's proxy forwards to 
 reaches a client**; `controlUpstream` is the sibling channel for injecting human input.
 
 **Session event / browser-open request** — client-directed side channels appended to the process
-document and routed to the launching browser via `originatingSessionId`.
+document. A browser-open row is now `{requestId, url, createdAt}` (server-stamped, `store.py:513-519`;
+optional on the wire for back-compat, `schemas/process.ts:31-38`). The stamp exists because the SSE
+pollers replay the **whole accumulated array** on every reconnection's first `update`, so without an
+age check a page reload re-opens the entire history. The 60 s window that consumes it lives in
+`optio-ui/src/handlers/browserOpen.tsx:22` — a de-facto client contract stated in no schema and routed to the launching browser via `originatingSessionId`.
 
 **Blob** — a GridFS file in the same database, tagged `{processId, prefix, name}`.
 
@@ -204,8 +210,10 @@ and a plaintext workdir tar. Retention 5.
 
 **`seed_blob_*` vs `session_blob_*`** — two independent crypto channels. `session_blob_*` wraps *this
 process's* snapshot (per-process); `seed_blob_*` wraps the *shared pool account's* seed tar
-(pool-scoped), falling back to `session_blob_*` when unset. Currently on claudecode and opencode
-only, and **not** in the parity guard's core set.
+(pool-scoped), falling back to `session_blob_*` when unset. **Now on all seven engines** via a shared
+`BlobCryptoConfigMixin` (`config_types.py:73-118`) and **in** the parity guard's CORE set — the
+uniformity pass that added it also exposed a real bug (`1e5313c2`: four engines were not decrypting
+seeds on consume or re-encrypting on save-back).
 
 **Claustrum** — the Landlock, fail-closed filesystem sandbox binary (pinned `v0.1.2`). It applies an
 allowlist to itself then `execve`s the target, so the agent *and every tool subprocess* inherit the
@@ -312,11 +320,18 @@ mechanism the conversation mode uses to hand a live `Conversation` object to the
 
 ### 4.8 Remote execution
 
-`optio-host` gives a structural `Host` protocol (16 methods) with local and SSH implementations behind
+`optio-host` gives a structural `Host` protocol (**17 methods**) with local and SSH implementations behind
 `make_host(ssh=..., taskdir=...)`: `run_command`, `launch_subprocess` (with `env_remove` credential
 scrubbing and a 256 MiB stream limit), `terminate_subprocess`, `put_file_to_host`,
 `fetch_bytes_from_host`, `tail_file`, `establish_tunnel`, `archive_workdir` / `restore_workdir`,
-`setup_workdir`, `cleanup_taskdir`.
+`setup_workdir`, `cleanup_taskdir`, and — new in 0.3.0 — **`glob(pattern)`**, the first *discovery*
+primitive on the abstraction.
+
+Also new in 0.3.0 and unmentioned in the first edition: **`RemoteHost.connect()` now enables SSH
+keepalive** (`SSH_KEEPALIVE_INTERVAL = 30`, `SSH_KEEPALIVE_COUNT_MAX = 3`, `host.py:655-656`,
+passed at `:690-691`). asyncssh defaults these off, so before this a dead connection hung until the
+next write rather than failing after ~90 s. The constants are module-level and **not** plumbed
+through `SSHConfig`, so they are monkeypatchable but not configurable per connection.
 
 Key discipline: **`setup_workdir` wipes the workdir every run** and chmods to `0o700`. Anything that
 must survive a run lives in `taskdir`, not `workdir`. That split is what makes resume possible.
@@ -389,14 +404,22 @@ widget-control route and forwards nav keys as tmux `send-keys` names).
 
 A task calls `ctx.set_widget_upstream(url, inner_auth)`; the API proxies HTTP, SSE **and** WebSocket
 to it at `/api/widget/:database/:prefix/:processId/*`, injecting Basic/header/query inner auth,
-stripping the browser `Origin`, stripping `X-Frame-Options` and CSP `frame-ancestors`, with a 5 s TTL
-cache and `timeout: 0` upstream (deliberate, for OAuth device-code flows). `widgetData.stripProxyPrefix`
+stripping the browser `Origin`, stripping `X-Frame-Options` and CSP `frame-ancestors`, stripping the
+hop-by-hop headers `connection`, `keep-alive`, `transfer-encoding`, `upgrade`, `proxy-connection`,
+`te` and `trailer` (`fastify.ts:83-92` — without which a strict upstream's `Connection: keep-alive`
+made an HTTP/2 frontend reject the whole response), with a **configurable** TTL cache defaulting to
+5 s (`opts.ttlMs ?? WIDGET_CACHE_TTL_MS`, `fastify.ts:187`) and `timeout: 0` upstream (deliberate,
+for OAuth device-code flows). `widgetData.stripProxyPrefix`
 switches HTML rewriting between the ttyd contract and the SPA contract.
 
 ### 5.6 `Host` protocol
 
-Structural (PEP 544), so a third host type — container exec, k8s — needs no inheritance, only the 16
-methods plus `workdir`/`taskdir`. The documented composition pattern is **free functions over `Host`**
+Structural (PEP 544), so a third host type — container exec, k8s — needs no inheritance, only the
+**17** methods plus `workdir`/`taskdir`. The 17th is `glob(pattern) -> list[str]` (`host.py:212`),
+added so codex rollout discovery could move behind the abstraction and work identically over SSH. Its
+contract has three non-obvious clauses: results are **sorted ascending**, a no-match or missing
+directory returns `[]` rather than raising, and only per-segment `*` is supported — **no recursive
+`**`**. The documented composition pattern is **free functions over `Host`**
 living in the consumer package, not methods on the host.
 
 ### 5.7 The agent wrapper contract
@@ -421,7 +444,7 @@ Any clamator client can wrap the same cached transport.
 
 ### 5.10 Extra RPC services
 
-`optio_core.rpc_server.register_service(contract, impl)` before `run()` registers app-specific verbs
+`optio.rpc_server.register_service(contract, impl)` on an initialized `Optio`, before `run()`, registers app-specific verbs
 alongside optio's nine. Alternatively `init(rpc_server=...)` supplies a pre-built server whose
 lifecycle optio does not own (mutually exclusive with `redis_url`).
 
@@ -457,8 +480,6 @@ as a reusable SSH-over-Docker test harness; env knobs `OPTIO_PROGRESS_FLUSH_INTE
   static edits, so adding an engine means editing that package.
 - **The dashboard.** Explicitly not embeddable and not extensible — no plugin system, no custom
   routes, no router (hence no deep-linkable per-process URLs).
-- **Widget proxy `ttlMs`.** On the private options type but never forwarded, so the 5 s TTL is not
-  configurable at all.
 
 ---
 
@@ -522,7 +543,23 @@ permissions?" programmatically. Capability is expressed four ways, all largely i
 4. `AGENTS` / `get_agent_info` — identity metadata only, not capability.
 
 **MCP has no first-class surface anywhere.** Three ACP wrappers send `"mcpServers": self._mcp_servers`
-on the wire and nothing populates it from config.
+on the wire and nothing populates it from config. Still true at `4aebde18`: `mcp` has zero hits in any
+wrapper's `types.py`.
+
+**One capability did arrive, and it is the account layer.** `optio_agents/account.py` (165 lines) now
+exists — `UsageWindow`, `AccountInfo` (with a `summary` property and `next_reset()`), `EMPTY`,
+`is_limited(info, now, models=())`, `any_usable`, and a Mongo codec (`accounts_to_metadata` /
+`accounts_from_metadata` / `account_dicts_from_metadata`). **All seven** engines implement an analyzer
+and stamp `metadata.accounts` at seed capture; `verify_and_refresh_seed` now returns
+`{alive, accounts}`; `optio_agents_all.factory` dispatches both `analyze_account` (6) and
+`analyze_accounts` (7).
+
+**But detection is not enforcement, and the gap is the consumer's to close.** There is **no caller of
+`is_limited` / `any_usable` / `accounts_from_metadata` anywhere in the repo**, and `seeds.acquire()`
+is unchanged — its Mongo filter has no account term. **A quota-exhausted seed is still leased.** The
+intended consumer is out of repo. Anything building on optio that wants the gate must implement it in
+its own seed provider, and must pass `models_required`: antigravity's windows are all per-model, so
+`is_limited(info, now)` with the default empty `models` returns `False` for every one of them.
 
 ### 6.4 The seven wrappers
 
@@ -536,15 +573,21 @@ on the wire and nothing populates it from config.
 | **Reasoning effort** | 6 levels + slider | per-prompt variant | **none** | 4 levels, **no slider** | 5+6 levels + slider | **none** |
 | **MCP** | no | no | wire slot only | wire slot only | wire slot only | n/a |
 | **Permission gate** | yes | **no field** | yes | yes | yes | field exists, **no-op seam** |
-| **src LOC** | 4 803 | 3 740 | 5 022 | 4 701 | 4 789 | 4 803 |
-| **test:src** | 1.42 | **2.01** | 1.08 | **1.00** | 1.40 | 1.13 |
+| **src LOC** | 5 590 | 4 110 | 5 343 | 4 821 | 4 989 | 5 095 |
+| **test:src** | 1.38 | **2.05** | 1.13 | **1.05** | 1.42 | 1.20 |
+
+(claudecode, omitted from the original table because it was the reference wrapper: **5 231 src,
+1.61 test:src**. Every non-numeric cell above — invocation, wire, iframe mechanism, streaming,
+interrupt, effort, MCP, permission gate — was re-verified unchanged.)
 
 Maturity read: **codex** (audited, 28/29 parity) and **opencode** (deepest suite) are production-grade.
 **kimicode** is substantively mature but under-documented (14-line README). **grok** is the clean ACP
-reference yet has the thinnest suite and **zero real-binary env gates**. **cursor** ships a large
-surface on a wire it has never authenticated against — 21 `runtime-unverified` annotations.
-**antigravity** is newest, explicit about its limits, and carries 6 open `TODO(S2/S3)` markers, all
-real-binary verification debt including an unconfirmed self-update suppression.
+reference with the thinnest suite — and while it does have zero real-binary env gates, singling it
+out was misleading: **cursor, opencode and claudecode have zero as well**. **cursor** carries **20**
+`runtime-unverified` annotations in `src` (24 package-wide), byte-identical to the old tree — but its
+wire is no longer unverified in fact, since 274 real authenticated cursor events now sit in the
+fixtures. **antigravity** carries **6** `TODO(S…)` markers in `src` (12 package-wide), **none
+resolved**, including an unconfirmed self-update suppression.
 
 ### 6.5 The de facto wrapper template
 
@@ -581,16 +624,18 @@ The extraction habit exists — `fs_grants`, `claustrum`, `model_probe`, `config
 genuinely shared — but has not been applied to several obvious candidates. Measured on the
 comment-stripped token stream:
 
-1. **`conversation_listener.py` — 5 copies, ~1 546 lines.** grok↔kimicode similarity **1.00**; the
-   entire textual diff is 37 lines, nearly all comments, plus one statement reorder. It is
-   engine-neutral and belongs in `optio-agents`.
-2. `prompt.py` — 0.97–0.99 across four wrappers.
+1. **`conversation_listener.py` — 6 copies, 1 944 lines** (the first edition said 5 copies / 1 546
+   lines, silently excluding claudecode). grok↔kimicode Jaccard still **1.00**. Still unextracted.
+2. ~~`prompt.py`~~ — **FIXED.** Extracted to a shared composer (`AgentPromptProfile` +
+   `compose_instructions_file`), 1 324 wrapper lines → 353 + 313 shared, net ≈ **−890**, with
+   de-duplication now **enforced by a guard test**. `compose_agents_md` was deleted.
 3. `types.py.__post_init__` — ~100 lines per wrapper of the same validation ladder, differing only in
    the class name in error strings. ~500 lines recoverable via a `ConversationConfigMixin`.
 4. `seed_manifest.py` (0.90–0.94), `cred_watcher.py` (up to 0.98), `snapshots.py` (up to 0.98), demo
    tasks (0.95–0.97).
-5. In the UI, the opposite: `acp/events.ts` *is* shared and grok/cursor are 11-line bindings — but
-   `kimicode/events.ts` is a 305-line full copy of it.
+5. ~~`kimicode/events.ts` is a 305-line full copy~~ — **FIXED.** It is now **16 lines**, a pure
+   `reduceAcpEvent` delegation, with the kimi-only "not logged in" case condition-gated inside the
+   shared reducer. All three ACP engines are now thin bindings.
 6. Six of seven conversation views are ~150-line near-clones with identical
    `post`/`onSend`/`onInterrupt`/`onPermission`.
 
@@ -703,8 +748,8 @@ Each was verified by reading. None has been acted on; none is covered by a test 
 
 | | Where | What |
 |---|---|---|
-| **SSH host keys disabled** | `optio-host/src/optio_host/host.py:668` | `known_hosts=None` on every remote connection. MITM exposure on any untrusted network. Self-labelled MVP. |
-| **Unfiltered tar extraction** | `optio-host/src/optio_host/archive.py:182` | `tar.extractall(dest)` with no `filter=` and no member checks — a hostile archive can escape `dest`. |
+| **SSH host keys disabled** | `optio-host/src/optio_host/host.py:689` | `known_hosts=None` on every remote connection. MITM exposure on any untrusted network. Self-labelled MVP. |
+| **Unfiltered tar extraction** | `optio-host/src/optio_host/archive.py:101` | `tar.extractall(dest)` with no `filter=` and no member checks — a hostile archive can escape `dest`. |
 | **Untested auth on the newest routes** | `optio-api` | The auth-bypass fix is fully present, including the mandated 10-case test block in all four adapters. But `widget-control` and `widget-upload` — added later — have **no auth test at all**. |
 | **`@ts-nocheck` on all four adapters** | `optio-api/src/adapters/*.ts:1` | This is precisely what hid the original dangling `checkAuth` reference. Still there, explicitly out of scope. |
 | **Unbounded database choice** | `optio-api` | Any authenticated caller picks `?database=` freely with no allowlist, and `discoverInstances` enumerates every database on the cluster. |
@@ -712,19 +757,17 @@ Each was verified by reading. None has been acted on; none is covered by a test 
 
 ### 9.2 Correctness
 
-- **`_maybe_refresh_on_resume` drops protocol documentation.**
-  `optio-claudecode/src/optio_claudecode/session.py:1472-1518` calls `compose_agents_md` **without**
-  `documentation=`, so it falls back to the default `ProtocolFeatures`. For any task with
-  `use_client_messages=True` or `on_caller_message` set, every resume silently strips the
-  `CLIENT_MESSAGE:`/`CALLER_MESSAGE:` documentation from CLAUDE.md — while the parser still accepts
-  those keywords — and spuriously tags every resume `REFRESHED:CLAUDE.md`. No test covers it.
+- ~~**`_maybe_refresh_on_resume` drops protocol documentation.**~~ **FIXED** (commit `14d2a94e`).
+  It now passes `documentation=` (`session.py:1535`, and the equivalent in every wrapper) and
+  additionally byte-compares the existing file to suppress the spurious `REFRESHED:` tag. Still no
+  test covers it.
 - **Next.js adapters 500 on a valid id.** `nextjs-app.ts:153` and `nextjs-pages.ts:150` resolve the
   tree-stream `:id` with an unguarded `new ObjectId(id)`. The contract explicitly permits the non-hex
   `processId` form, so those two adapters throw where fastify and express correctly 404. The adjacent
   *multi*-stream path was fixed, with a comment at `nextjs-pages.ts:182-185` acknowledging exactly
   this divergence — the single-tree path above it was missed.
 - **`shutting-down` is not on the wire.** `LaunchOutcome.reason` can be `"shutting-down"`
-  (`optio-core/.../models.py:170`), which is absent from the wire enum
+  (`optio-core/.../models.py:19`), which is absent from the wire enum
   (`optio-contracts/src/engine-failure-reasons.ts:10`) and from the generated `LaunchResult2`. An RPC
   launch during shutdown therefore raises a Pydantic `ValidationError` instead of returning a typed
   failure.
@@ -732,6 +775,18 @@ Each was verified by reading. None has been acted on; none is covered by a test 
   Python's `matches_filter` handles flat AND-equality only. A rich filter over `groupCancel` or
   `blockLaunches` reaches Python as a Pydantic model that `list_processes` would iterate as a dict and
   fail on.
+- **A test that has never run, pointed at a file that never existed.**
+  `optio-conversation-ui/src/__tests__/kimicode-real-wire.test.ts:28` resolves
+  `fixtures/kimicode-acp-turn.json` and guards on `fs.existsSync`. That filename has **never existed
+  in any commit**, so the test has always silently skipped — while `kimi-acp-real.json` (1 001 real
+  events) sits in the same directory. Compounding it, the string `TRACKED GAP` now appears **only** in
+  `docs/2026-07-03-optio-kimicode-parity.md`: the tracking that would have caught this was dropped
+  while the gap was still open.
+- **A provenance comment contradicted by the repo's own evidence.**
+  `optio-cursor/src/optio_cursor/conversation.py:18-21` still declares its wire
+  `[grok-pinned, cursor runtime-unverified]`, pinned by "a live UNAUTHENTICATED handshake probe …
+  no authed login on this host" — while 274 real **authenticated** cursor events, containing zero
+  grok/x.ai strings, now sit in `optio-conversation-ui`'s fixtures.
 - **Missing null guards.** `getProcessLog` (`handlers.ts:145`) and `getProcessTreeLog` (`:182`) index
   `proc.log` with no guard while the pollers use `(p.log ?? [])`. A row without `log` 500s the REST
   routes. `toResponse` (`:22-30`) unconditionally calls `proc.rootId.toString()`.
@@ -826,8 +881,20 @@ wrappers for real-binary and remote work.
 
 ### The coordination rule is not being met
 
-Root `AGENTS.md:31-36` mandates same-commit `AGENTS.md` updates on any public-API change. Verified:
-**9 of 20 packages have no `AGENTS.md` at all**; root `AGENTS.md` omits `ttl_seconds`, `auto_resume`,
+Root `AGENTS.md:31-36` mandates same-commit `AGENTS.md` updates on any public-API change. **This
+improved materially**: coverage went from 10 packages missing one to **3** (only the TypeScript UI
+packages `optio-agents-ui`, `optio-conversation-ui` and `optio-dashboard`). The new files are accurate
+but narrow, and two of them (grok, kimicode) instruct you to run `make test` in packages that have no
+Makefile. The rest of this section, however, is largely unrepaired — `optio-ui/AGENTS.md` is untouched
+and now claims version 0.1.0 against a shipped **0.4.0**; both `:prefix` route tables are untouched;
+`session_id` is still absent from the root `AGENTS.md`; the host README example is still unrunnable;
+the demo still documents a `TaskInstance(id=, fn=, cron=)` API that never existed. claudecode's and
+opencode's were partly fixed (blob crypto, `claude_config`, binary install) but still name
+`claude_install_dir` / `opencode_install_dir`, both contradicted by their own tests, and still omit
+`dontAsk`. Of the six gaps listed below in `writing-agent-wrappers.md`, **only the prompt-composer one
+was fixed**.
+
+Original finding, for the record: **9 of 20 packages had no `AGENTS.md` at all**; root `AGENTS.md` omits `ttl_seconds`, `auto_resume`,
 `publish_result`, `launch_and_await_result`, `run_child_task` and the six `init()` timing knobs
 entirely; its `OptioProviderProps` is wrong against the real 7-prop interface; and five symbols the
 dashboard actually imports appear nowhere in either AGENTS.md.
@@ -865,14 +932,34 @@ HEAD is ten days past the newest design doc; the last two weeks of work (the `se
 mechanical-deliverable-rejection reply, caller `claude_config` layering, the 0.2/0.3/0.5 release wave)
 has **no design doc**.
 
+### What the 133 commits after 2026-07-19 did
+
+Three campaign bursts rather than continuous work, and they extend the direction above rather than
+changing it:
+
+- **07-09 -> 07-11 (57 commits)** — the entire account-analysis program, start to finish.
+- **08-13 -> 08-14 (48 commits)** — `BlobCryptoConfigMixin` uniformity across all seven configs, a
+  15-package minor release wave, and an agent-binary-freshness fix off a confirmed live bug: the
+  claustrum `--rox` grant had frozen claudecode's binary cache at 2.1.185 since June, so agents were
+  silently running a months-old binary.
+- **09-11 -> 09-13 (28 commits)** — the shared prompt composer (seven wrappers de-duplicated, guard
+  test added) and the Claude Code conversation-rendering work.
+
+**The only genuinely new capability in the whole range is account analysis.** Everything else is
+de-duplication or uniformity. The first edition's "the last two weeks have no design doc" is closed:
+four new design/plan pairs, the corpus grew 189 -> 202 files, and HEAD is now one day past the newest
+design rather than ten.
+
 ### Open threads, by weight
 
-1. **Account analysis — the live frontier.** Newest design (2026-07-09), **zero code**:
-   `optio_agents/account.py` does not exist and `analyze_account`/`AccountInfo` have zero occurrences
-   anywhere. The frame plan covers claudecode plus a coupled excavator update; **six per-engine
-   analyzer plans are research-gated and unwritten**. The motivating failure is concrete and still
-   live: an antigravity seed hit "Individual quota reached. Resets in 121h" and nothing detected it —
-   **the seed still reads as usable**.
+1. ~~**Account analysis — the live frontier, zero code.**~~ **SHIPPED**, in a single 57-commit burst
+   over 2026-07-09..07-11. `optio_agents/account.py` exists, all seven engines implement an analyzer
+   and stamp `metadata.accounts` at capture, and `optio-agents-all` dispatches both the singular and
+   plural forms. The six "unwritten plans" became six research documents instead. **But the gate is
+   only half closed**: nothing in the repo calls `any_usable` or `is_limited`, and `seeds.acquire()`
+   has no account term, so a quota-exhausted seed is still leased — deliberately, because the consumer
+   is out of repo. And the whole account layer has **no real-binary or live env gate anywhere**, which
+   is the same debt class this report flags elsewhere, now tree-wide.
 2. **Antigravity's spikes never ran.** Two of three pre-stage spikes were marked "REQUIRES USER" (a
    real Google login). Neither ran; the wrapper shipped and released against the *assumed* branch of
    each. Five `TODO(S…)` markers mark the unverified assumptions, including whether
@@ -886,8 +973,33 @@ has **no design doc**.
 5. **Twelve tracked codex/grok shared-template items**, deliberately unforked and fixed together —
    including an error vocabulary missing from snapshot `endState`, a transport failure that silently
    degrades to a fresh session, and a cred watcher that saves back *before* renewing its lease.
-6. **Ten documented kimicode real-binary gaps** — this is the *good* pattern: named, tracked, with
-   opt-in env vars, exactly as the guide requires.
+6. **Ten documented kimicode real-binary gaps** — named and tracked with opt-in env vars. Note the
+   regression, though: `TRACKED GAP` now appears in that ledger and **nowhere else in the tree**, and
+   one of those gaps is the never-running kimicode wire test in §9.2.
+
+### New threads since the first edition
+
+- **Resume awareness is a known, silent parity gap.** Five of seven engines ship only half of it, and
+  the guide says so itself. The resume-log writer and resume-notice de-duplication are explicitly
+  deferred to "the next run" — 11 `_append_resume_log_entry` sites, 5 `build_resume_notice_args`
+  copies.
+- **Conversation rendering is tiered, not uniform.** The shared `ConversationView` is engine-neutral
+  and renders whatever a reducer supplies. Only claudecode's reducer populates the new tool-row
+  lifecycle fields (`startedAt`/`endedAt` and the live elapsed counter, `callId`, `taskId`,
+  `background`, `status` including `'stopped'`), and only it takes the 4th `now` parameter. The three
+  ACP engines share a reducer that supplies `preview` and `status`; codex, opencode and antigravity
+  supply one `status` field and nothing else. Closing the gap is per-engine reducer work — and for the
+  ACP trio it is one shared file for three engines.
+- **The flat wrapper layering broke.** `optio-opencode` now depends on `optio-claudecode`,
+  `optio-codex` and `optio-grok`. That forced a release reorder in both the Makefile and
+  `scripts/release/run.py`, and **`optio-agents-all` 0.2.0 shipped unresolvable on PyPI** before 0.2.1
+  fixed it. The cookbook gained a wave rule and a resolver smoke test.
+- **The workspace now links two packages out of the repo** — `../unitas/packages/vultus-{core,antd}`
+  with `linkWorkspacePackages: true`. `optio-conversation-ui` depends on `vultus-antd ^0.1.0`, which
+  is published (verified on npm), so registry builds work; but the markdown rendering path now lives
+  in a sibling repo, and `vultus-antd` ships untranspiled `.tsx` with no tsconfig, forcing
+  `esbuild: { jsx: 'automatic' }` on any consumer's bundler.
+- **Binary-freshness probes are unthrottled** — one upstream HTTP call per cache-hit launch.
 
 ### Two meta-rules quoted in the newest docs
 
@@ -909,3 +1021,48 @@ has **no design doc**.
   consumers named in the docs ("excavator", "windage"), for which no source is present here.
 - The defects in §9.2 were found by reading and are, with the noted exception, uncovered by tests —
   so they are *verified as present in the source*, not *verified as failing at runtime*.
+
+---
+
+## 13. Revision note — 2026-09-20 re-survey
+
+The first edition of this document was written against `f5da73ab` in a checkout of `~/optio` that had
+**never been fetched**. Its `origin/main` was simply the commit the clone arrived with, and the real
+`origin/main` was **133 commits ahead** — every Python package a full minor version further on, which
+in a 0.x scheme is a breaking boundary rather than a patch. The staleness was caught only because a
+downstream consumer's dependency pins named versions the tree did not contain.
+
+Five delta readers then re-surveyed `f5da73ab..4aebde18` and this edition folds in their corrections.
+Recorded here because the failure is instructive and cheap to repeat:
+
+**What was stale.** Account analysis shipped in full (§6.3, §11). `seed_blob_*` reached all seven
+engines and entered the parity guard (§3). `_maybe_refresh_on_resume` was fixed (§9.2). `Host` gained
+a 17th method and SSH keepalive (§4.8, §5.6). `browserOpenRequests` gained `createdAt` (§3). The
+widget proxy gained hop-by-hop stripping (§5.5). `prompt.py` and `kimicode/events.ts` were
+de-duplicated (§6.6). Every version number in §2.3. `AGENTS.md` coverage (§10).
+
+**What was wrong when written, and is corrected here rather than updated.** The claim that the widget
+proxy's `ttlMs` is "never forwarded, not configurable at all" — it is forwarded, and was at
+`f5da73ab` too; the bullet is deleted. The `register_service` seam spelled as a module,
+`optio_core.rpc_server`, when it is the instance attribute `optio.rpc_server` (§5.10). Two citations
+off by a wide margin: `shutting-down` at `models.py:19` not `:170`, `tar.extractall` at
+`archive.py:101` not `:182`. The `conversation_listener.py` duplication counted 5 copies / 1 546 lines
+when it is **6 copies / 1 944 lines** — claudecode was silently excluded. The wrapper LOC table
+omitted claudecode entirely and its codex cell was a transcription of antigravity's. cursor's
+`runtime-unverified` count of 21 matched neither cut on either tree (it is 20 in `src`, 24
+package-wide). Singling grok out for having zero real-binary env gates was misleading — cursor,
+opencode and claudecode have zero as well.
+
+**What did not change, and is the more important result.** The authority rule and both its
+enforcement mechanisms. The nine RPC verbs and ten HTTP routes, with **no create or spawn verb on
+either wire** — processes still come into existence only through `get_task_definitions` plus
+`resync`, or `ctx.run_child*` inside a running task. The eight-state machine, verbatim, with
+`validate_transition` still uncalled. Every `init()` default, including
+`cancel_grace_seconds = 5.0`. The three-clause auto-resume query. And every defect in §9 that was
+asked about, except the one noted as fixed.
+
+**How to tell whether this edition has gone stale.** It describes `origin/main` = **`4aebde18`**, with
+`optio-core` 0.4.0, `optio-contracts` 0.4.0, `optio-host` 0.3.0, `optio-agents` 0.6.0,
+`optio-agents-all` 0.2.1, `optio-api` 0.2.9, `optio-ui` 0.4.0, `optio-conversation-ui` 0.4.0. Compare
+those against the tree before trusting anything here — and **run `git fetch` first**, because that is
+precisely what was not done the first time.
