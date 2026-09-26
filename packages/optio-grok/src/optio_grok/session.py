@@ -346,6 +346,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                     supports_resume=config.supports_resume,
                     fs_isolation_dirs=fs_isolation_dirs(config, host.workdir),
                     file_download=config.file_download,
+                    check_resume_log_every_message=False,
                 ),
             )
         if config.supports_resume:
@@ -1102,6 +1103,7 @@ async def _maybe_refresh_on_resume(
         supports_resume=new_config.supports_resume,
         fs_isolation_dirs=fs_isolation_dirs(new_config, host.workdir),
         file_download=new_config.file_download,
+        check_resume_log_every_message=False,
     )
     try:
         existing = await hook_ctx.read_text_from_host("AGENTS.md", silent=True)

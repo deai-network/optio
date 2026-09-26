@@ -37,3 +37,13 @@ def test_identity_line_comes_first_and_no_prompt_text_of_its_own():
     src = inspect.getsource(m)
     assert "This harness may pause your session" not in src
     assert "You are running inside a coordination harness" not in src
+
+
+def test_agents_md_waits_for_the_resume_notice_instead_of_polling():
+    """The wrapper sends a System: resume notice on every resume, so the
+    protocol must not tell grok to re-read resume.log before each message."""
+    md = compose_agents_md("x")
+    assert "do\nnot need to check `./resume.log` before each message" in md or (
+        "do not need to check `./resume.log` before each message" in md
+    )
+    assert "At the start of every new incoming user message" not in md

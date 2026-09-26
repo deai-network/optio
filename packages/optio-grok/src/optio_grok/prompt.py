@@ -34,12 +34,17 @@ def compose_agents_md(
     omit_task_framing: bool = False,
     fs_isolation_dirs: list[tuple[str, str]] | None = None,
     file_download: bool = False,
-    check_resume_log_every_message: bool = True,
+    check_resume_log_every_message: bool = False,
 ) -> str:
     """Render <workdir>/AGENTS.md for an optio-grok task.
 
     ``workdir_exclude=None`` means the framework defaults, the same list the
-    snapshot archive uses (``optio_host.archive``)."""
+    snapshot archive uses (``optio_host.archive``).
+
+    ``check_resume_log_every_message`` defaults to False: every resume sends
+    the System: resume notice (no host_protocol gate), so the protocol tells
+    grok to read resume.log only when that notice arrives.
+    """
     return compose_instructions_file(
         consumer_instructions,
         profile=PROFILE,
