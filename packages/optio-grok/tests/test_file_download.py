@@ -26,6 +26,9 @@ class FakeConversation:
     def on_permission_request(self, h):
         return lambda: None
 
+    def on_question(self, h):
+        return lambda: None
+
     async def send(self, text):
         pass
 
