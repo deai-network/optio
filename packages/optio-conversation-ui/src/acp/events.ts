@@ -72,6 +72,33 @@ function rawInputIsBackground(raw: Record<string, unknown> | null): boolean {
   return !!raw && (raw.background === true || raw.is_background === true);
 }
 
+function acpEventTime(ev: any): number | undefined {
+  const meta = ev?.params?._meta ?? ev?._meta;
+  const ms = meta?.agentTimestampMs;
+  return typeof ms === 'number' ? ms : undefined;
+}
+
+// Grok's title is "Execute `<the whole command>`" or "Read `<path>`". The
+// line should look like Claude's: a short tool name, and the model's
+// description (not the command) as the summary. The command stays in input
+// for the verbose detail.
+function shortToolName(update: any, raw: Record<string, unknown> | null): string | undefined {
+  const title = typeof update?.title === 'string' ? update.title.trim() : '';
+  // "[bg] <command>" is a progress rename. A short title such as "Shell (done)"
+  // is kept. Only titles that embed the command or path after a backtick are
+  // shortened, so the line shows a tool name plus the model's description.
+  if (title.startsWith('[bg]')) return undefined;
+  if (title === 'run_terminal_command' || title.startsWith('Execute `')) return 'Bash';
+  if (title.startsWith('Read `')) return 'Read';
+  if (title.startsWith('List `')) return 'List';
+  if (title) return title;
+  const kind = String(update?.kind ?? '').toLowerCase();
+  const variant = String(raw?.variant ?? '').toLowerCase();
+  if (kind === 'execute' || variant === 'bash') return 'Bash';
+  if (kind === 'read' || variant === 'readfile') return 'Read';
+  return undefined;
+}
+
 function asObject(value: unknown): Record<string, unknown> | null {
   if (typeof value === 'string') {
     try {
@@ -341,15 +368,17 @@ function reduce(st: AcpChatState, ev: any, seq: number): AcpChatState {
       const id = String(update.toolCallId ?? '');
       const raw = rawInputObject(update.rawInput);
       const background = rawInputIsBackground(raw);
+      const at = acpEventTime(ev);
       const item: ChatItem = {
         kind: 'tool',
-        name: String(update.title ?? update.kind ?? 'tool'),
+        name: shortToolName(update, raw) ?? String(update.title ?? update.kind ?? 'tool'),
         input: raw ?? {},
         preview: raw ? undefined : acpContentText(update.content) || undefined,
         // A background shell's launch returns immediately. Keep the row running;
         // task_completed is what ends it.
         status: background ? 'running' : (acpToolStatus(update.status) ?? 'running'),
         ...(background ? { background: true as const } : {}),
+        ...(at !== undefined ? { startedAt: at } : {}),
         seq,
       };
       // Tool boundary: finalize the answer bubble, keep prior tool rows.
@@ -375,13 +404,17 @@ function reduce(st: AcpChatState, ev: any, seq: number): AcpChatState {
         // Grok marks the launch call completed while the shell is still running
         // ("Background task … started"). That is not the job ending.
         if (background && status === 'done' && cur.status !== 'done') status = 'running';
+        const at = acpEventTime(ev);
+        const finishing = status === 'done' || status === 'failed';
         const next: ChatItem = {
           ...cur,
-          name: update.title !== undefined ? String(update.title) : cur.name,
+          name: shortToolName(update, raw) ?? cur.name,
           input: raw ?? cur.input,
           preview: raw ? undefined : (preview ?? cur.preview),
           status,
           ...(background ? { background: true as const } : {}),
+          ...(cur.startedAt === undefined && at !== undefined ? { startedAt: at } : {}),
+          ...(finishing && cur.endedAt === undefined && at !== undefined ? { endedAt: at } : {}),
         };
         return { ...st, busy: true, items: [...st.items.slice(0, idx), next, ...st.items.slice(idx + 1)] };
       }

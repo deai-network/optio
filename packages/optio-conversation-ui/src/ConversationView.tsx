@@ -476,7 +476,7 @@ function toolLifecycle(item: Extract<ChatItem, { kind: 'tool' }>): { finished: b
 // For description-only verbosity: pick a one-line summary from the tool input —
 // its `description` when present, else the first non-empty string under a
 // salient key, truncated. Empty string => show just the tool name.
-const SALIENT_KEYS = ['description', 'command', 'file_path', 'path', 'pattern', 'query', 'url', 'prompt', 'title'];
+const SALIENT_KEYS = ['description', 'file_path', 'target_file', 'path', 'pattern', 'query', 'url', 'prompt', 'title', 'command'];
 function toolSummary(input: unknown): string {
   if (input && typeof input === 'object' && !Array.isArray(input)) {
     const obj = input as Record<string, unknown>;
@@ -1374,7 +1374,8 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               style={{ fontFamily: 'monospace', cursor: collapsible ? 'pointer' : 'default' }}
               onClick={collapsible ? () => toggleTool(item.seq) : undefined}
             >
-              {glyph} <strong>{item.name}</strong>{summary ? `: ${summary}` : ''}
+              {!finished && !stopped ? <Spin size="small" /> : glyph}{' '}
+              <strong>{item.name}</strong>{summary ? `: ${summary}` : ''}
               {item.background && finished && item.result ? ` · ${item.result}` : ''}
               {elapsed ? <span data-testid="tool-elapsed">{` · ${elapsed}`}</span> : null}
               {collapsible ? <span style={{ marginLeft: 6 }}>{expandedTools.has(item.seq) ? '▾' : '▸'}</span> : null}

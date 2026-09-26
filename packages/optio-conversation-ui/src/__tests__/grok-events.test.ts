@@ -452,3 +452,38 @@ describe('grok background tasks', () => {
       background: true, status: 'done', result: 'sleep-60 finished',
     });
   });
+
+
+describe('grok tool lines', () => {
+  it('names a shell Bash, keeps the short description, and records start and end', () => {
+    const s = play([
+      {
+        jsonrpc: '2.0', method: 'session/update',
+        params: {
+          _meta: { agentTimestampMs: 1_000 },
+          update: {
+            sessionUpdate: 'tool_call', toolCallId: 't1', title: 'run_terminal_command',
+            rawInput: { command: 'echo hi && sleep 1', description: 'Say hi' },
+          },
+        },
+      },
+      {
+        jsonrpc: '2.0', method: 'session/update',
+        params: {
+          _meta: { agentTimestampMs: 2_500 },
+          update: {
+            sessionUpdate: 'tool_call_update', toolCallId: 't1', kind: 'execute', status: 'completed',
+            title: 'Execute `echo hi && sleep 1`',
+            rawInput: { command: 'echo hi && sleep 1', description: 'Say hi' },
+          },
+        },
+      },
+    ]);
+    const row = s.items.find((i) => i.kind === 'tool');
+    expect(row).toMatchObject({
+      name: 'Bash', status: 'done', startedAt: 1_000, endedAt: 2_500,
+    });
+    expect(row && row.kind === 'tool' && row.name.includes('echo hi')).toBe(false);
+    expect(row && row.kind === 'tool' && (row.input as { description?: string }).description).toBe('Say hi');
+  });
+});

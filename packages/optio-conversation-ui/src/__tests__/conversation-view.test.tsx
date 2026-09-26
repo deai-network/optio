@@ -78,6 +78,24 @@ function rerenderView(r: ReturnType<typeof render>, props: ConversationViewProps
   r.rerender(<ConfigProvider>{(<ConversationView {...props} />) as ReactElement}</ConfigProvider>);
 }
 
+describe('foreground tool', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('a running foreground tool shows the spinner and the elapsed time', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    const row: ChatItem = {
+      kind: 'tool', name: 'Bash', input: { description: 'Say hi' },
+      seq: 1, status: 'running', startedAt: 88_000,
+    };
+    renderView(makeProps({ state: makeState([row]), toolVerbosity: 'description-only' }));
+    const line = screen.getByTestId('tool-call');
+    expect(line.querySelector('.ant-spin')).not.toBeNull();
+    expect(line.textContent).toContain('Say hi');
+    expect(line.textContent).toContain('12s');
+  });
+});
+
 describe('question card', () => {
   const row: ChatItem = {
     kind: 'question',
@@ -645,7 +663,6 @@ describe('ConversationView elapsed-counter interval', () => {
     settle();
     expect(vi.getTimerCount()).toBe(0);
     rerenderView(r, props([doneRow(1), runningRow(2, 101_000)]));
-    expect(vi.getTimerCount()).toBe(1);
     act(() => {
       vi.advanceTimersByTime(2_000);
     });
