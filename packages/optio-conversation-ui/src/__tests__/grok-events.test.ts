@@ -30,6 +30,45 @@ const userChunk = (text: string) => ({
   params: { sessionId: 's1', update: { sessionUpdate: 'user_message_chunk', content: { type: 'text', text } } },
 });
 
+describe('ask_user_question', () => {
+  const ask = {
+    jsonrpc: '2.0',
+    id: 11,
+    method: '_x.ai/ask_user_question',
+    params: {
+      sessionId: 's1',
+      toolCallId: 'tc',
+      mode: 'default',
+      questions: [{
+        question: 'Continue?',
+        options: [{ label: 'Wait', description: 'stop here' }],
+      }],
+    },
+  };
+
+  it('becomes a question card the operator can answer', () => {
+    const s = play([ask]);
+    const q = s.items.find((i) => i.kind === 'question');
+    expect(q).toMatchObject({
+      kind: 'question',
+      requestId: '11',
+      mode: 'default',
+      answered: null,
+      questions: [{ question: 'Continue?', options: [{ label: 'Wait', description: 'stop here' }] }],
+    });
+    expect(s.busy).toBe(true);
+  });
+
+  it('marks the card answered when the listener reports the outcome', () => {
+    const open = play([ask]);
+    const s = reduceGrokEvent(open, {
+      type: 'x-optio-question-answered', request_id: '11', outcome: 'accepted',
+    }, 1);
+    const q = s.items.find((i) => i.kind === 'question');
+    expect(q && q.kind === 'question' && q.answered).toBe('accepted');
+  });
+});
+
 describe('grok/cursor shared ACP reducer — resume replay rendering', () => {
   it('a replayed user_message_chunk renders a user bubble (was dropped)', () => {
     const s = play([userChunk('my prior question')]);

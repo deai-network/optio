@@ -137,6 +137,9 @@ export function GrokView(props: WidgetProps) {
             : { request_id: requestId, behavior };
         void post('permission', body);
       }}
+      onQuestion={(requestId, body) => {
+        void post('question', { request_id: requestId, ...body });
+      }}
       onFileDownload={onFileDownload}
       controls={showSessionControls ? state.controls : undefined}
       onControlChange={

@@ -14,6 +14,10 @@ widget proxy (which injects the basic-auth credential):
                      bytes with Content-Disposition: attachment (Stage 7)
   POST /permission — {request_id, behavior, updated_input?, message?}
                      resolves the pending session/request_permission future.
+  POST /question   — {request_id, outcome, answers?, annotations?,
+                     partial_answers?} resolves a pending
+                     _x.ai/ask_user_question. outcome is accepted, cancelled,
+                     chat_about_this, or skip_interview.
 
 Structurally mirrors optio-claudecode's ConversationListener. Permissions are
 correlated by the ACP
@@ -72,9 +76,11 @@ class ConversationListener:
         self._seq = 0
         self._subscribers: set[asyncio.Queue] = set()
         self._pending_permissions: dict[str, asyncio.Future] = {}
+        self._pending_questions: dict[str, asyncio.Future] = {}
         self._runner: web.AppRunner | None = None
         self._unsubscribe = conversation.on_event(self._on_event)
         conversation.on_permission_request(self._on_permission_request)
+        conversation.on_question(self._on_question)
 
     # -- event intake --------------------------------------------------------
 
@@ -120,6 +126,22 @@ class ConversationListener:
             "behavior": decision.behavior,
         })
         return decision
+
+    async def _on_question(self, obj: dict) -> dict:
+        """Park until POST /question answers this JSON-RPC id."""
+        request_id = str(obj.get("id"))
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._pending_questions[request_id] = fut
+        try:
+            result: dict = await fut
+        finally:
+            self._pending_questions.pop(request_id, None)
+        self._broadcast({
+            "type": "x-optio-question-answered",
+            "request_id": request_id,
+            "outcome": result.get("outcome"),
+        })
+        return result
 
     # -- HTTP handlers -------------------------------------------------------
 
@@ -275,6 +297,35 @@ class ConversationListener:
         ))
         return web.json_response({"ok": True})
 
+    async def _handle_question(self, request: web.Request) -> web.Response:
+        if not self._authorized(request):
+            return web.json_response({"ok": False}, status=401)
+        try:
+            payload = await request.json()
+        except Exception:  # noqa: BLE001
+            return web.json_response({"ok": False, "reason": "bad-json"}, status=400)
+        request_id = str(payload.get("request_id", ""))
+        outcome = payload.get("outcome")
+        if outcome not in ("accepted", "cancelled", "chat_about_this", "skip_interview"):
+            return web.json_response({"ok": False, "reason": "bad-outcome"}, status=400)
+        fut = self._pending_questions.get(request_id)
+        if fut is None or fut.done():
+            return web.json_response({"ok": False, "reason": "unknown-request"}, status=404)
+        result: dict = {"outcome": outcome}
+        if outcome == "accepted":
+            answers = payload.get("answers")
+            if not isinstance(answers, dict):
+                return web.json_response({"ok": False, "reason": "bad-answers"}, status=400)
+            result["answers"] = answers
+            annotations = payload.get("annotations")
+            if isinstance(annotations, dict) and annotations:
+                result["annotations"] = annotations
+        elif outcome in ("chat_about_this", "skip_interview"):
+            partial = payload.get("partial_answers")
+            result["partial_answers"] = partial if isinstance(partial, dict) else {}
+        fut.set_result(result)
+        return web.json_response({"ok": True})
+
     # -- lifecycle -----------------------------------------------------------
 
     async def start(self, bind_iface: str) -> int:
@@ -285,6 +336,7 @@ class ConversationListener:
         app.router.add_post("/control", self._handle_control)
         app.router.add_get("/download", self._handle_download)
         app.router.add_post("/permission", self._handle_permission)
+        app.router.add_post("/question", self._handle_question)
         self._runner = web.AppRunner(app, shutdown_timeout=SHUTDOWN_TIMEOUT_S)
         await self._runner.setup()
         site = web.TCPSite(self._runner, bind_iface, 0)
@@ -304,6 +356,9 @@ class ConversationListener:
                 fut.set_result(PermissionDecision(
                     behavior="deny", message="optio harness: session ending",
                 ))
+        for fut in self._pending_questions.values():
+            if not fut.done():
+                fut.set_result({"outcome": "cancelled"})
         # Wake every open /events handler so it returns now, instead of letting
         # runner.cleanup() wait for the long-lived SSE loops.
         for queue in list(self._subscribers):

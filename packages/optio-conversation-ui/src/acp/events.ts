@@ -157,6 +157,17 @@ function reduce(st: AcpChatState, ev: any, seq: number): AcpChatState {
     if (text === '') return st;
     return { ...st, items: [...st.items, { kind: 'error', text, seq }] };
   }
+  if (synthetic === 'x-optio-question-answered') {
+    const requestId = String(ev.request_id);
+    const outcome = typeof ev.outcome === 'string' ? ev.outcome : 'cancelled';
+    let changed = false;
+    const items = st.items.map((i) => {
+      if (i.kind !== 'question' || i.requestId !== requestId || i.answered !== null) return i;
+      changed = true;
+      return { ...i, answered: outcome };
+    });
+    return changed ? { ...st, items } : st;
+  }
   if (synthetic === 'x-optio-permission-answered') {
     const requestId = String(ev.request_id);
     const behavior: 'allow' | 'deny' = ev.behavior === 'allow' ? 'allow' : 'deny';
@@ -179,6 +190,30 @@ function reduce(st: AcpChatState, ev: any, seq: number): AcpChatState {
 
   // Agent -> client REQUEST we must answer: session/request_permission. The
   // listener correlates the operator's reply by this JSON-RPC id.
+  if (method === '_x.ai/ask_user_question' || method === 'x.ai/ask_user_question' || method === 'ask_user_question') {
+    const params = ev.params ?? {};
+    const rawQuestions = Array.isArray(params.questions) ? params.questions : [];
+    const questions = rawQuestions.map((q: any) => ({
+      question: String(q?.question ?? ''),
+      multiSelect: q?.multiSelect === true,
+      options: Array.isArray(q?.options)
+        ? q.options.map((o: any) => ({
+            label: String(o?.label ?? ''),
+            description: typeof o?.description === 'string' ? o.description : undefined,
+          }))
+        : [],
+    }));
+    const item: ChatItem = {
+      kind: 'question',
+      requestId: String(ev.id),
+      mode: params.mode === 'plan' ? 'plan' : 'default',
+      questions,
+      answered: null,
+      seq,
+    };
+    return { ...st, busy: true, items: [...finalizePending(st.items), item] };
+  }
+
   if (method === 'session/request_permission') {
     const toolCall = ev.params?.toolCall ?? {};
     // Detail source: the `rawInput` object (KV table) when present, else the

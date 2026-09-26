@@ -58,6 +58,17 @@ export interface ConversationViewProps {
   // does) and queued bubbles show no Send now link. Returns ok, like onSend.
   onSteer?: (text: string, attachments: Attachment[], upTo?: string) => Promise<boolean>;
   onPermission: (requestId: string, behavior: 'allow' | 'deny') => void;
+  // Grok `_x.ai/ask_user_question`. The body is the ACP result minus the
+  // JSON-RPC envelope: outcome plus answers keyed by question text.
+  onQuestion?: (
+    requestId: string,
+    body: {
+      outcome: 'accepted' | 'cancelled' | 'chat_about_this' | 'skip_interview';
+      answers?: Record<string, string[]>;
+      annotations?: Record<string, { notes?: string }>;
+      partial_answers?: Record<string, string>;
+    },
+  ) => void;
   onFileDownload: (relpath: string, filename: string) => void;
   // Engine-neutral session controls (model / thinking / mode / ...) rendered
   // generically in the input bar; onControlChange channels a value change back
@@ -484,6 +495,131 @@ function toolSummary(input: unknown): string {
 // A background job that is still running. Shown at every verbosity, including
 // silent: the point of the row is that work continues after the turn that
 // started it. The description is the Bash call's own one-line summary.
+
+function QuestionCard({
+  item, token, onQuestion,
+}: {
+  item: Extract<ChatItem, { kind: 'question' }>;
+  token: GlobalToken;
+  onQuestion?: ConversationViewProps['onQuestion'];
+}): React.ReactNode {
+  const [picked, setPicked] = useState<Record<number, string[]>>({});
+  const [notes, setNotes] = useState<Record<number, string>>({});
+  if (item.answered !== null) return null;
+
+  function send(body: Parameters<NonNullable<ConversationViewProps['onQuestion']>>[1]) {
+    onQuestion?.(item.requestId, body);
+  }
+  function answersFrom(source: Record<number, string[]>): Record<string, string[]> {
+    const answers: Record<string, string[]> = {};
+    item.questions.forEach((q, i) => {
+      const labels = source[i];
+      if (labels && labels.length > 0) answers[q.question] = labels;
+    });
+    return answers;
+  }
+  function choose(qi: number, label: string) {
+    const q = item.questions[qi];
+    const multi = q.multiSelect === true;
+    if (!multi && item.questions.length === 1) {
+      send({ outcome: 'accepted', answers: { [q.question]: [label] } });
+      return;
+    }
+    setPicked((prev) => {
+      const cur = prev[qi] ?? [];
+      const next = multi
+        ? (cur.includes(label) ? cur.filter((x) => x !== label) : [...cur, label])
+        : [label];
+      return { ...prev, [qi]: next };
+    });
+  }
+  function submitPicked() {
+    const answers = { ...answersFrom(picked) };
+    const annotations: Record<string, { notes?: string }> = {};
+    item.questions.forEach((q, i) => {
+      const note = (notes[i] ?? '').trim();
+      if (note === '') return;
+      answers[q.question] = ['Other'];
+      annotations[q.question] = { notes: note };
+    });
+    send({
+      outcome: 'accepted',
+      answers,
+      ...(Object.keys(annotations).length > 0 ? { annotations } : {}),
+    });
+  }
+  function partial(): Record<string, string> {
+    const out: Record<string, string> = {};
+    item.questions.forEach((q, i) => {
+      const label = (picked[i] ?? [])[0];
+      if (label) out[q.question] = label;
+    });
+    return out;
+  }
+  const needsSubmit = item.questions.length > 1 || item.questions.some((q) => q.multiSelect);
+
+  return (
+    <div
+      key={item.seq}
+      data-testid="question-card"
+      style={{
+        alignSelf: 'stretch',
+        border: `1px solid ${token.colorPrimary}`,
+        background: token.colorPrimaryBg,
+        borderRadius: 8,
+        padding: 8,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+      }}
+    >
+      {item.questions.map((q, qi) => (
+        <div key={qi}>
+          <div style={{ marginBottom: 4 }}>{q.question}</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {q.options.map((o) => (
+              <Button
+                key={o.label}
+                size="small"
+                type={(picked[qi] ?? []).includes(o.label) ? 'primary' : 'default'}
+                data-testid="question-option"
+                onClick={() => choose(qi, o.label)}
+              >
+                {o.label}
+              </Button>
+            ))}
+          </div>
+          {q.options.some((o) => o.description) ? (
+            <div style={{ color: token.colorTextTertiary, fontSize: 12, marginTop: 4 }}>
+              {q.options.map((o) => o.description ? `${o.label}: ${o.description}` : null).filter(Boolean).join(' · ')}
+            </div>
+          ) : null}
+        </div>
+      ))}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {needsSubmit ? (
+          <Button size="small" type="primary" data-testid="question-submit" onClick={submitPicked}>
+            Submit
+          </Button>
+        ) : null}
+        {item.mode === 'plan' ? (
+          <>
+            <Button size="small" onClick={() => send({ outcome: 'chat_about_this', partial_answers: partial() })}>
+              Chat about this
+            </Button>
+            <Button size="small" onClick={() => send({ outcome: 'skip_interview', partial_answers: partial() })}>
+              Skip interview
+            </Button>
+          </>
+        ) : null}
+        <Button size="small" data-testid="question-dismiss" onClick={() => send({ outcome: 'cancelled' })}>
+          Dismiss
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function renderBackgroundRunning(
   item: Extract<ChatItem, { kind: 'tool' }>,
   elapsed: string | null,
@@ -754,6 +890,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     onSend,
     onInterrupt,
     onPermission,
+    onQuestion,
     onFileDownload,
   } = props;
 
@@ -1254,6 +1391,10 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
           </div>
         );
       }
+      case 'question':
+        return (
+          <QuestionCard key={item.seq} item={item} token={token} onQuestion={onQuestion} />
+        );
       case 'permission':
         // Once answered, hide the dialog entirely — the conversation proceeds.
         if (item.answered !== null) return null;

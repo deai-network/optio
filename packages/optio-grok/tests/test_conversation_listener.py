@@ -52,6 +52,10 @@ class FakeConversation:
         self.perm_handler = h
         return lambda: None
 
+    def on_question(self, h):
+        self.question_handler = h
+        return lambda: None
+
     async def send(self, text):
         if self.closed:
             raise ConversationClosed("closed")
@@ -276,6 +280,34 @@ async def test_permission_roundtrip_by_jsonrpc_id(listener):
     assert any(e.get("type") == "x-optio-permission-answered"
                and e.get("request_id") == "99"
                for _, e in lst._buffer)
+
+
+async def test_question_roundtrip_by_jsonrpc_id(listener):
+    conv, lst, url = listener
+    task = asyncio.create_task(conv.question_handler({
+        "id": 11,
+        "method": "_x.ai/ask_user_question",
+        "params": {"questions": [{"question": "Continue?", "options": [{"label": "Wait"}]}]},
+    }))
+    await _wait_until(lambda: "11" in lst._pending_questions)
+    async with aiohttp.ClientSession() as s:
+        r = await s.post(
+            f"{url}/question",
+            json={
+                "request_id": "11",
+                "outcome": "accepted",
+                "answers": {"Continue?": ["Wait"]},
+            },
+            headers=_auth("pw"),
+        )
+        assert r.status == 200
+        result = await asyncio.wait_for(task, 60)
+        assert result["outcome"] == "accepted"
+        assert result["answers"] == {"Continue?": ["Wait"]}
+    assert any(
+        e.get("type") == "x-optio-question-answered" and e.get("outcome") == "accepted"
+        for _, e in lst._buffer
+    )
 
 
 async def test_auth_rejected(listener):

@@ -78,6 +78,40 @@ function rerenderView(r: ReturnType<typeof render>, props: ConversationViewProps
   r.rerender(<ConfigProvider>{(<ConversationView {...props} />) as ReactElement}</ConfigProvider>);
 }
 
+describe('question card', () => {
+  const row: ChatItem = {
+    kind: 'question',
+    requestId: '11',
+    mode: 'default',
+    answered: null,
+    seq: 1,
+    questions: [{
+      question: 'Continue?',
+      options: [
+        { label: 'Wait', description: 'stop here' },
+        { label: 'Go' },
+      ],
+    }],
+  };
+
+  it('sends the chosen label as the accepted answer', () => {
+    const onQuestion = vi.fn();
+    renderView(makeProps({ state: makeState([row]), onQuestion }));
+    fireEvent.click(screen.getByRole('button', { name: 'Wait' }));
+    expect(onQuestion).toHaveBeenCalledWith('11', {
+      outcome: 'accepted',
+      answers: { 'Continue?': ['Wait'] },
+    });
+  });
+
+  it('dismiss sends a cancelled outcome', () => {
+    const onQuestion = vi.fn();
+    renderView(makeProps({ state: makeState([row]), onQuestion }));
+    fireEvent.click(screen.getByTestId('question-dismiss'));
+    expect(onQuestion).toHaveBeenCalledWith('11', { outcome: 'cancelled' });
+  });
+});
+
 describe('ConversationView item rendering', () => {
   it('renders each ChatItem kind', () => {
     renderView(makeProps({ state: makeState(ALL_KINDS) }));

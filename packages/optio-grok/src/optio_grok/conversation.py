@@ -52,6 +52,16 @@ Agent -> client REQUESTS (have `id` AND `method`, WE must respond):
     (Only appears when the client does NOT advertise the relevant capability;
     we advertise neither terminal nor fs write, so grok runs its own tools and
     asks here — that is the permission gate seam.)
+  * ``_x.ai/ask_user_question`` {sessionId, toolCallId, questions, mode}.
+    ``questions`` is [{question, options:[{label, description, preview?}],
+    multiSelect?}]. ``mode`` is ``default`` or ``plan``. ANSWER with a result
+    tagged on ``outcome``:
+       accepted        -> {outcome:"accepted", answers:{<question text>: [<label>, ...]}}
+       cancelled       -> {outcome:"cancelled"}
+       chat_about_this -> {outcome:"chat_about_this", partial_answers:{...}}  (plan)
+       skip_interview  -> {outcome:"skip_interview", partial_answers:{...}}   (plan)
+    Answers are keyed by the question text. A free-text answer is the label
+    ``"Other"`` plus ``annotations[<question>].notes``.
   * ``terminal/create`` / ``fs/*`` — only if we advertise those capabilities
     (we do not); answered with a JSON-RPC method-not-found error defensively.
 
@@ -76,6 +86,15 @@ from optio_agents.conversation import (
 from optio_grok.info import AGENT_INFO
 
 _LOG = logging.getLogger(__name__)
+
+# Grok asks a structured question as an ACP ext_method. The underscore form is
+# what the agent sends; the other two spellings are accepted so a client build
+# that drops the underscore still reaches the operator.
+_QUESTION_METHODS = frozenset({
+    "_x.ai/ask_user_question",
+    "x.ai/ask_user_question",
+    "ask_user_question",
+})
 
 # ACP option `kind` prefixes for allow / reject decisions.
 _ALLOW_KINDS = ("allow_once", "allow_always", "allow")
@@ -125,6 +144,8 @@ class GrokConversation:
         self._message_handlers: list = []
         self._permission_handler = None
         self._queued_permission_requests: list[dict] = []
+        self._question_handler = None
+        self._queued_questions: list[dict] = []
         # JSON-RPC id bookkeeping.
         self._next_id = 0
         self._req_futures: dict[int, asyncio.Future] = {}   # handshake requests
@@ -240,6 +261,8 @@ class GrokConversation:
             # Agent -> client REQUEST that we must answer.
             if method == "session/request_permission":
                 self._on_permission(obj)
+            elif method in _QUESTION_METHODS:
+                self._on_question(obj)
             else:
                 # Unadvertised capability (terminal/create, fs/*): decline so
                 # grok falls back to running the tool itself.
@@ -354,6 +377,43 @@ class GrokConversation:
         await self._write_json({
             "jsonrpc": "2.0", "id": obj.get("id"),
             "result": {"outcome": outcome},
+        })
+
+    # -- user question ------------------------------------------------------
+
+    def on_question(self, handler):
+        """Register the coroutine ``handler(request) -> result dict``.
+
+        ``request`` is the raw JSON-RPC object. The result is the ACP
+        ``AskUserQuestionExtResponse`` body (``outcome`` plus answers). A
+        question that arrived before the handler is answered once it is set.
+        """
+        self._question_handler = handler
+        queued, self._queued_questions = self._queued_questions, []
+        for obj in queued:
+            asyncio.ensure_future(self._answer_question(obj))
+
+        def _unsub() -> None:
+            if self._question_handler is handler:
+                self._question_handler = None
+        return _unsub
+
+    def _on_question(self, obj: dict) -> None:
+        if self._question_handler is None:
+            self._queued_questions.append(obj)
+            return
+        asyncio.ensure_future(self._answer_question(obj))
+
+    async def _answer_question(self, obj: dict) -> None:
+        try:
+            result = await self._question_handler(obj)
+        except Exception:  # noqa: BLE001
+            _LOG.exception("grok conversation: question handler raised; cancelling")
+            result = {"outcome": "cancelled"}
+        if not isinstance(result, dict) or not isinstance(result.get("outcome"), str):
+            result = {"outcome": "cancelled"}
+        await self._write_json({
+            "jsonrpc": "2.0", "id": obj.get("id"), "result": result,
         })
 
     # -- Conversation protocol surface --------------------------------------

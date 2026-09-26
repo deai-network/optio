@@ -303,6 +303,44 @@ async def test_gate_off_denies_permission_defensively():
 
 
 @pytest.mark.asyncio
+async def test_ask_user_question_returns_the_operators_answer(convo):
+    c, handle = convo
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)
+
+    async def handler(obj):
+        assert obj["method"] == "_x.ai/ask_user_question"
+        return {
+            "outcome": "accepted",
+            "answers": {"How would you like to continue?": ["Wait"]},
+        }
+
+    c.on_question(handler)
+    handle.stdout.feed({
+        "jsonrpc": "2.0", "id": 11,
+        "method": "_x.ai/ask_user_question",
+        "params": {
+            "sessionId": "s1",
+            "toolCallId": "tc",
+            "mode": "default",
+            "questions": [{
+                "question": "How would you like to continue?",
+                "options": [{"label": "Wait", "description": "stop here"}],
+            }],
+        },
+    })
+    resp = await asyncio.wait_for(handle.stdin.lines.get(), 60)
+    assert resp["id"] == 11
+    assert "error" not in resp
+    assert resp["result"] == {
+        "outcome": "accepted",
+        "answers": {"How would you like to continue?": ["Wait"]},
+    }
+    handle.stdout.eof()
+    await reader
+
+
+@pytest.mark.asyncio
 async def test_interrupt_sends_session_cancel(convo):
     c, handle = convo
     reader = asyncio.create_task(c.run_reader())

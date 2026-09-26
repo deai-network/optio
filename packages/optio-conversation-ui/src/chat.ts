@@ -137,6 +137,19 @@ export type ChatItem =
       preview?: string;
     }
   | {
+      kind: 'question';
+      requestId: string;
+      mode: 'default' | 'plan';
+      questions: {
+        question: string;
+        multiSelect?: boolean;
+        options: { label: string; description?: string }[];
+      }[];
+      // null while the operator has not answered; then the outcome that was sent.
+      answered: string | null;
+      seq: number;
+    }
+  | {
       kind: 'error';
       text: string;
       seq: number;
