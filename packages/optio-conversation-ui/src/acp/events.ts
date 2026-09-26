@@ -68,6 +68,66 @@ function rawInputObject(raw: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function rawInputIsBackground(raw: Record<string, unknown> | null): boolean {
+  return !!raw && (raw.background === true || raw.is_background === true);
+}
+
+function asObject(value: unknown): Record<string, unknown> | null {
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function asTaskList(value: unknown): Record<string, unknown>[] {
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return [];
+    }
+  }
+  return Array.isArray(value)
+    ? value.filter((t) => t && typeof t === 'object') as Record<string, unknown>[]
+    : [];
+}
+
+function toolIndexByCallId(st: AcpChatState, id: string): number {
+  if (!id) return -1;
+  const at = st.toolSeqs?.[id];
+  if (at === undefined) return -1;
+  return st.items.findIndex((i) => i.kind === 'tool' && i.seq === at);
+}
+
+function toolIndexByTaskId(st: AcpChatState, taskId: string): number {
+  if (!taskId) return -1;
+  return st.items.findIndex((i) => i.kind === 'tool' && i.taskId === taskId);
+}
+
+function finishBackgroundTool(
+  st: AcpChatState,
+  taskId: string,
+  status: 'done' | 'failed',
+  result: string | undefined,
+): ChatState {
+  const idx = toolIndexByTaskId(st, taskId);
+  if (idx === -1) return st;
+  const cur = st.items[idx] as Extract<ChatItem, { kind: 'tool' }>;
+  const next: ChatItem = {
+    ...cur,
+    background: true,
+    status,
+    ...(result ? { result } : {}),
+  };
+  return { ...st, items: [...st.items.slice(0, idx), next, ...st.items.slice(idx + 1)] };
+}
+
 // Map the ACP tool `status` onto the ChatItem lifecycle. Now that tool rows
 // PERSIST, a finished tool must not read "running" forever — the status drives
 // the ⟳/✓/✗ glyph and the verbosity rules (description-while-active hides a
@@ -235,7 +295,17 @@ function reduce(st: AcpChatState, ev: any, seq: number): AcpChatState {
   }
 
   // Agent -> client NOTIFICATION: session/update.
-  if (method === 'session/update') {
+  // Grok sends the same update body on three methods. The live SSE ends a
+  // turn with `_x.ai/session_notification` {sessionUpdate:turn_completed};
+  // `_x.ai/session/update` carries the same events in grok's own log.
+  // `_x.ai/task_backgrounded` and `_x.ai/task_completed` are the task pair.
+  if (
+    method === 'session/update' ||
+    method === '_x.ai/session/update' ||
+    method === '_x.ai/session_notification' ||
+    method === '_x.ai/task_backgrounded' ||
+    method === '_x.ai/task_completed'
+  ) {
     const update = ev.params?.update ?? {};
     const kind = update.sessionUpdate as string | undefined;
     const msgId = `turn-${st.turn ?? 0}`;
@@ -258,12 +328,16 @@ function reduce(st: AcpChatState, ev: any, seq: number): AcpChatState {
     if (kind === 'tool_call') {
       const id = String(update.toolCallId ?? '');
       const raw = rawInputObject(update.rawInput);
+      const background = rawInputIsBackground(raw);
       const item: ChatItem = {
         kind: 'tool',
         name: String(update.title ?? update.kind ?? 'tool'),
         input: raw ?? {},
         preview: raw ? undefined : acpContentText(update.content) || undefined,
-        status: acpToolStatus(update.status) ?? 'running',
+        // A background shell's launch returns immediately. Keep the row running;
+        // task_completed is what ends it.
+        status: background ? 'running' : (acpToolStatus(update.status) ?? 'running'),
+        ...(background ? { background: true as const } : {}),
         seq,
       };
       // Tool boundary: finalize the answer bubble, keep prior tool rows.
@@ -284,12 +358,18 @@ function reduce(st: AcpChatState, ev: any, seq: number): AcpChatState {
       const preview = raw ? undefined : acpContentText(update.content) || undefined;
       if (idx !== -1) {
         const cur = st.items[idx] as Extract<ChatItem, { kind: 'tool' }>;
+        const background = cur.background || rawInputIsBackground(raw);
+        let status = acpToolStatus(update.status) ?? cur.status;
+        // Grok marks the launch call completed while the shell is still running
+        // ("Background task … started"). That is not the job ending.
+        if (background && status === 'done' && cur.status !== 'done') status = 'running';
         const next: ChatItem = {
           ...cur,
           name: update.title !== undefined ? String(update.title) : cur.name,
           input: raw ?? cur.input,
           preview: raw ? undefined : (preview ?? cur.preview),
-          status: acpToolStatus(update.status) ?? cur.status,
+          status,
+          ...(background ? { background: true as const } : {}),
         };
         return { ...st, busy: true, items: [...st.items.slice(0, idx), next, ...st.items.slice(idx + 1)] };
       }
@@ -303,6 +383,52 @@ function reduce(st: AcpChatState, ev: any, seq: number): AcpChatState {
         items: [...finalizePending(st.items), item],
         toolSeqs: { ...st.toolSeqs, [id]: seq },
       };
+    }
+
+    if (kind === 'task_backgrounded') {
+      const id = String(update.tool_call_id ?? '');
+      const taskId = String(update.task_id ?? '');
+      const idx = toolIndexByCallId(st, id);
+      if (idx === -1) return st;
+      const cur = st.items[idx] as Extract<ChatItem, { kind: 'tool' }>;
+      const next: ChatItem = {
+        ...cur,
+        background: true,
+        status: 'running',
+        ...(taskId ? { taskId } : {}),
+      };
+      return { ...st, busy: true, items: [...st.items.slice(0, idx), next, ...st.items.slice(idx + 1)] };
+    }
+
+    if (kind === 'task_completed') {
+      const snap = asObject(update.task_snapshot) ?? {};
+      const taskId = String(snap.task_id ?? '');
+      const output = typeof snap.output === 'string' ? snap.output.trim() : '';
+      return finishBackgroundTool(st, taskId, 'done', output || undefined);
+    }
+
+    if (kind === 'background_tasks') {
+      let next = st;
+      for (const task of asTaskList(update.tasks)) {
+        const taskId = String(task.task_id ?? '');
+        const status = task.status;
+        if (status === 'completed' || status === 'failed') {
+          next = finishBackgroundTool(
+            next, taskId, status === 'failed' ? 'failed' : 'done', undefined,
+          );
+        } else if (status === 'running') {
+          const idx = toolIndexByTaskId(next, taskId);
+          if (idx === -1) continue;
+          const cur = next.items[idx] as Extract<ChatItem, { kind: 'tool' }>;
+          if (cur.status === 'done' || cur.status === 'failed') continue;
+          const row: ChatItem = { ...cur, background: true, status: 'running' };
+          next = {
+            ...next,
+            items: [...next.items.slice(0, idx), row, ...next.items.slice(idx + 1)],
+          };
+        }
+      }
+      return next;
     }
 
     if (kind === 'user_message_chunk') {
@@ -353,15 +479,13 @@ function reduce(st: AcpChatState, ev: any, seq: number): AcpChatState {
     }
 
     // No-ops (no dedicated rendering):
-    //  - plan / available_commands_update / session_info_update / _x.ai/*
+    //  - plan / available_commands_update / session_info_update
     //  - grok (x.ai dialect): pending_interaction / interaction_resolved — its
     //    permission signal. In excavator analyze grok AUTO-approves, so these
     //    fire+resolve instantly with no gating (verified in the grok capture);
     //    no card is needed. grok's real GATED wire is not yet captured (manual
     //    mode) — if grok parks a pending_interaction rather than switching to
     //    session/request_permission, a card handler is added here then.
-    //  - grok turn_completed: redundant with the session/prompt response that
-    //    already drives turn-end below.
     return st;
   }
 

@@ -327,3 +327,99 @@ describe('grok ACP event reducer', () => {
     expect(s.busy).toBe(false);
   });
 });
+
+
+describe('grok background tasks', () => {
+  const id = 'call-1';
+  const toolCall = {
+    jsonrpc: '2.0', method: 'session/update',
+    params: { update: {
+      sessionUpdate: 'tool_call', toolCallId: id, title: 'run_terminal_command',
+      rawInput: { command: 'sleep 60', description: 'Sleep 60 seconds in the background', background: true },
+    } },
+  };
+  const launched = {
+    jsonrpc: '2.0', method: 'session/update',
+    params: { update: {
+      sessionUpdate: 'tool_call_update', toolCallId: id, status: 'completed',
+      title: '[bg] sleep 60',
+      content: [{ type: 'content', content: { type: 'text', text: 'Background task started' } }],
+    } },
+  };
+  const backgrounded = {
+    jsonrpc: '2.0', method: 'session/update',
+    params: { update: {
+      sessionUpdate: 'task_backgrounded', tool_call_id: id, task_id: 'task-1',
+      description: 'Sleep 60 seconds in the background', command: 'sleep 60',
+    } },
+  };
+  const completed = {
+    jsonrpc: '2.0', method: 'session/update',
+    params: { update: {
+      sessionUpdate: 'task_completed',
+      task_snapshot: { task_id: 'task-1', output: 'sleep-60 finished\n' },
+    } },
+  };
+
+  it('a backgrounded shell stays running until task_completed', () => {
+    const mid = play([toolCall, launched, backgrounded]);
+    const row = mid.items.find((i) => i.kind === 'tool');
+    expect(row).toMatchObject({
+      kind: 'tool', background: true, status: 'running', taskId: 'task-1',
+    });
+    const end = play([toolCall, launched, backgrounded, completed]);
+    const done = end.items.find((i) => i.kind === 'tool');
+    expect(done).toMatchObject({ kind: 'tool', background: true, status: 'done', result: 'sleep-60 finished' });
+  });
+});
+
+
+  it('the real grok wire uses _x.ai/session/update for background lifecycle', () => {
+    const id = 'call-real';
+    const mid = play([
+      {
+        jsonrpc: '2.0', method: 'session/update',
+        params: { update: {
+          sessionUpdate: 'tool_call', toolCallId: id, title: 'run_terminal_command',
+          rawInput: { command: 'sleep 60', description: 'Sleep 60 seconds in the background', background: true },
+        } },
+      },
+      {
+        jsonrpc: '2.0', method: 'session/update',
+        params: { update: { sessionUpdate: 'tool_call_update', toolCallId: id, status: 'completed', title: '[bg] sleep 60' } },
+      },
+      {
+        jsonrpc: '2.0', method: '_x.ai/session/update',
+        params: { update: { sessionUpdate: 'task_backgrounded', tool_call_id: id, task_id: 'task-real', description: 'Sleep 60 seconds in the background' } },
+      },
+    ]);
+    expect(mid.items.find((i) => i.kind === 'tool')).toMatchObject({
+      background: true, status: 'running', taskId: 'task-real',
+    });
+    const end = play([
+      ...([
+        {
+          jsonrpc: '2.0', method: 'session/update',
+          params: { update: {
+            sessionUpdate: 'tool_call', toolCallId: id, title: 'run_terminal_command',
+            rawInput: { command: 'sleep 60', description: 'Sleep 60 seconds in the background', background: true },
+          } },
+        },
+        {
+          jsonrpc: '2.0', method: 'session/update',
+          params: { update: { sessionUpdate: 'tool_call_update', toolCallId: id, status: 'completed', title: '[bg] sleep 60' } },
+        },
+        {
+          jsonrpc: '2.0', method: '_x.ai/session/update',
+          params: { update: { sessionUpdate: 'task_backgrounded', tool_call_id: id, task_id: 'task-real' } },
+        },
+      ]),
+      {
+        jsonrpc: '2.0', method: '_x.ai/session/update',
+        params: { update: { sessionUpdate: 'task_completed', task_snapshot: { task_id: 'task-real', output: 'sleep-60 finished\n' } } },
+      },
+    ]);
+    expect(end.items.find((i) => i.kind === 'tool')).toMatchObject({
+      background: true, status: 'done', result: 'sleep-60 finished',
+    });
+  });
