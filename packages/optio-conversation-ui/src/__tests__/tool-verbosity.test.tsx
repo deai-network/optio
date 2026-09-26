@@ -6,9 +6,9 @@ import { initialChatState, type ChatItem, type ChatState } from '../chat.js';
 // The shared render applies the tool-verbosity rules for ALL 7 agents (each
 // reducer only supplies the ChatState). These pin the four levels × lifecycle:
 //   silent                    → never a tool row
-//   description-while-active   → row WHILE running, gone once finished
-//   description-only           → persistent one-line row (⟳/✓/✗)
-//   verbose                    → line + detail; finished collapses (click to open)
+//   description-while-active   → same collapsible row, starts collapsed
+//   description-only           → same collapsible row, starts collapsed
+//   verbose                    → same collapsible row, starts expanded
 
 afterEach(cleanup);
 
@@ -47,9 +47,12 @@ describe('tool verbosity — description-while-active', () => {
     expect(toolRow()).not.toBeNull();
     expect(toolRow()!.getAttribute('data-tool-status')).toBe('running');
   });
-  it('hides the row once finished', () => {
+  it('keeps a collapsed row once finished, and a click opens the detail', () => {
     view([toolItem({ status: 'done' })], 'description-while-active');
-    expect(toolRow()).toBeNull();
+    expect(toolRow()).not.toBeNull();
+    expect(detail()).toBeNull();
+    fireEvent.click(toolRow()!.querySelector('div')!);
+    expect(detail()).not.toBeNull();
   });
 });
 
@@ -70,25 +73,31 @@ describe('tool verbosity — verbose', () => {
     view([toolItem({ status: 'running' })], 'verbose');
     expect(detail()).not.toBeNull();
   });
-  it('collapses the detail once finished, click re-expands', () => {
+  it('starts expanded once finished, and a click collapses', () => {
     view([toolItem({ status: 'done' })], 'verbose');
-    // Finished → collapsed: the row is present but the args table is hidden.
     expect(toolRow()).not.toBeNull();
-    expect(detail()).toBeNull();
-    // Click the line → expands.
-    fireEvent.click(toolRow()!.querySelector('div')!);
     expect(detail()).not.toBeNull();
+    fireEvent.click(toolRow()!.querySelector('div')!);
+    expect(detail()).toBeNull();
+  });
+  it('a running row starts expanded, and a click collapses it', () => {
+    view([toolItem({ status: 'running' })], 'verbose');
+    expect(detail()).not.toBeNull();
+    fireEvent.click(toolRow()!.querySelector('div')!);
+    expect(detail()).toBeNull();
   });
 });
 
 describe('tool verbosity — cross-reducer finished detection (no ACP status)', () => {
   it('treats codex-style input.status=completed as finished', () => {
     view([toolItem({ input: { command: 'x', status: 'completed' } })], 'description-while-active');
-    expect(toolRow()).toBeNull(); // hidden = detected finished via input.status
+    expect(toolRow()!.getAttribute('data-tool-status')).toBe('done');
+    expect(detail()).toBeNull();
   });
   it('treats antigravity-style input.result as finished', () => {
     view([toolItem({ input: { result: 'ok' } })], 'description-while-active');
-    expect(toolRow()).toBeNull();
+    expect(toolRow()!.getAttribute('data-tool-status')).toBe('done');
+    expect(detail()).toBeNull();
   });
   it('treats a tool with no signal as still running', () => {
     view([toolItem({ input: {} })], 'description-while-active');

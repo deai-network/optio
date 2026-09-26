@@ -234,12 +234,13 @@ describe('ConversationWidget', () => {
     expect(screen.getByTestId('background-finished').textContent).toBe('✓ Background task finished: Lean-verify all 15 · 12s');
   });
 
-  it('tool verbosity description-while-active: the running call, plus the background job line', () => {
+  it('tool verbosity description-while-active: every call is a collapsed row', () => {
     render(<ConversationWidget {...propsV('description-while-active')} />);
     fireSession();
-    expect(statuses()).toEqual(['running']);
-    expect(screen.getByTestId('tool-call').textContent).toContain('/x');
-    expect(screen.getByTestId('background-finished').textContent).toBe('✓ Background task finished: Lean-verify all 15 · 12s');
+    expect(statuses()).toEqual(['done', 'done', 'running']);
+    expect(screen.getAllByTestId('tool-call')[2].textContent).toContain('/x');
+    expect(screen.queryByTestId('background-finished')).toBeNull();
+    expect(screen.queryByTestId('tool-result')).toBeNull();
   });
 
   it('tool verbosity description-only: one line per call, the background job with its summary and duration', () => {
@@ -253,14 +254,14 @@ describe('ConversationWidget', () => {
     expect(screen.queryByTestId('tool-result')).toBeNull();
   });
 
-  it('tool verbosity verbose: finished calls collapse and expand to their result; the running call shows its args', () => {
+  it('tool verbosity verbose: every call starts expanded, and a click collapses a finished one', () => {
     render(<ConversationWidget {...propsV('verbose')} />);
     fireSession();
     expect(statuses()).toEqual(['done', 'done', 'running']);
     expect(screen.getByText('file_path')).toBeTruthy();
-    expect(screen.queryByTestId('tool-result')).toBeNull();
+    expect(screen.getAllByTestId('tool-result')[0].textContent).toBe('a b');
     fireEvent.click(screen.getAllByTestId('tool-call')[0].firstElementChild!);
-    expect(screen.getByTestId('tool-result').textContent).toBe('a b');
+    expect(screen.queryAllByTestId('tool-result').some((n) => n.textContent === 'a b')).toBe(false);
   });
 
   it('an empty background summary shows the tool name in the silent line', () => {

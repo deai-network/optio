@@ -509,12 +509,12 @@ describe('ConversationView tool rows: elapsed time, results, background jobs', (
       { kind: 'tool', name: 'Bash', input: { command: 'ls' }, seq: 1, status: 'done', result: 'file1', startedAt: 0, endedAt: 1000 },
     ]);
     renderView(makeProps({ state, toolVerbosity: 'verbose' }));
-    expect(screen.queryByTestId('tool-result')).toBeNull(); // finished -> collapsed
-    fireEvent.click(screen.getByText('Bash'));
     expect(screen.getByTestId('tool-result').textContent).toBe('file1');
+    fireEvent.click(screen.getByText('Bash'));
+    expect(screen.queryByTestId('tool-result')).toBeNull();
   });
 
-  it('a running background row says a background task is running, at every verbosity', () => {
+  it('silent keeps a running background job as the muted spinner line', () => {
     vi.useFakeTimers();
     vi.setSystemTime(100_000);
     const row: ChatItem = {
@@ -522,15 +522,12 @@ describe('ConversationView tool rows: elapsed time, results, background jobs', (
       input: { command: 'python3 verify.py', description: 'Compare recipes on 0.13.0' },
       seq: 1, status: 'running', background: true, taskId: 'bfzmek17l', startedAt: 88_000,
     };
-    for (const toolVerbosity of ['silent', 'description-only', 'description-while-active', 'verbose'] as const) {
-      const view = renderView(makeProps({ state: makeState([row]), toolVerbosity }));
-      const line = screen.getByTestId('background-running');
-      expect(line.firstElementChild?.classList.contains('ant-spin')).toBe(true);
-      expect(line.textContent).toContain('Background task running');
-      expect(line.textContent).toContain('Compare recipes on 0.13.0');
-      expect(line.textContent).toContain('12s');
-      view.unmount();
-    }
+    renderView(makeProps({ state: makeState([row]), toolVerbosity: 'silent' }));
+    const line = screen.getByTestId('background-running');
+    expect(line.firstElementChild?.classList.contains('ant-spin')).toBe(true);
+    expect(line.textContent).toContain('Background task running');
+    expect(line.textContent).toContain('Compare recipes on 0.13.0');
+    expect(line.textContent).toContain('12s');
   });
 
   it('silent hides tool rows but keeps a finished background job as one muted line', () => {
@@ -585,7 +582,7 @@ describe('ConversationView tool rows: elapsed time, results, background jobs', (
     expect(screen.getByTestId('background-finished').textContent).toBe('✓ Background task finished: Bash · 9s');
   });
 
-  it('description-while-active keeps a finished background job as the muted line, hiding other finished rows', () => {
+  it('description-while-active keeps finished rows collapsed, including a background job', () => {
     const state = makeState([
       { kind: 'tool', name: 'Bash', input: { command: 'ls' }, seq: 1, status: 'done', startedAt: 0, endedAt: 1000 },
       { kind: 'tool', name: 'Bash', input: { command: './harness.sh' }, seq: 2, status: 'done', background: true, result: 'Lean-verify all 15', startedAt: 0, endedAt: 372_000 },
@@ -593,23 +590,11 @@ describe('ConversationView tool rows: elapsed time, results, background jobs', (
     ]);
     renderView(makeProps({ state, toolVerbosity: 'description-while-active' }));
     const rows = screen.getAllByTestId('tool-call');
-    expect(rows).toHaveLength(1);
-    expect(rows[0].textContent).toContain('/x');
-    const line = screen.getByTestId('background-finished').textContent!;
-    expect(line).toContain('✓ Background task finished: Lean-verify all 15');
-    expect(line).toContain('6m 12s');
-  });
-
-  it('silent and description-while-active render the same background line', () => {
-    for (const status of ['done', 'failed', 'stopped'] as const) {
-      const row: ChatItem = { kind: 'tool', name: 'Bash', input: { command: 'x' }, seq: 1, status, background: true, result: 'job', startedAt: 0, endedAt: 3_000 };
-      const silent = renderView(makeProps({ state: makeState([row]), toolVerbosity: 'silent' }));
-      const html = screen.getByTestId('background-finished').outerHTML;
-      silent.unmount();
-      const active = renderView(makeProps({ state: makeState([row]), toolVerbosity: 'description-while-active' }));
-      expect(screen.getByTestId('background-finished').outerHTML).toBe(html);
-      active.unmount();
-    }
+    expect(rows).toHaveLength(3);
+    expect(rows[2].textContent).toContain('/x');
+    expect(rows[1].textContent).toContain('Lean-verify all 15');
+    expect(screen.queryByTestId('background-finished')).toBeNull();
+    expect(screen.queryByTestId('tool-result')).toBeNull();
   });
 });
 

@@ -900,14 +900,16 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   const [error, setError] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [wide, setWide] = useState(false);
-  // Verbose mode collapses a FINISHED tool to its one-line summary; the seqs in
-  // here are the finished tools the operator re-expanded (click to toggle).
-  const [expandedTools, setExpandedTools] = useState<Set<number>>(() => new Set());
+  // description-while-active, description-only, and verbose share one
+  // collapsible tool row. Verbose starts open; the two description levels
+  // start closed. An entry here overrides that default. Running tools toggle
+  // the same way as finished ones. Silent does not use this.
+  const [toolOpen, setToolOpen] = useState<Map<number, boolean>>(() => new Map());
   const toggleTool = (seq: number) =>
-    setExpandedTools((prev) => {
-      const next = new Set(prev);
-      if (next.has(seq)) next.delete(seq);
-      else next.add(seq);
+    setToolOpen((prev) => {
+      const next = new Map(prev);
+      const current = prev.has(seq) ? prev.get(seq)! : toolVerbosity === 'verbose';
+      next.set(seq, !current);
       return next;
     });
 
@@ -1351,34 +1353,31 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
         const stopped = item.status === 'stopped';
         const elapsed =
           item.startedAt !== undefined ? formatDuration((item.endedAt ?? now) - item.startedAt) : null;
-        if (item.background && !finished) return renderBackgroundRunning(item, elapsed, token);
-        if (toolVerbosity === 'silent' || toolVerbosity === 'description-while-active') {
-          if (item.background && finished) return renderBackgroundLine(item, failed, elapsed, token);
-          // silent: no other tool rows. description-while-active: only WHILE
-          // the tool runs.
-          if (toolVerbosity === 'silent' || finished) return null;
+        // Silent is unchanged: no ordinary tool row. A background job still
+        // leaves its muted line, including while it is running.
+        if (toolVerbosity === 'silent') {
+          if (!item.background) return null;
+          return finished
+            ? renderBackgroundLine(item, failed, elapsed, token)
+            : renderBackgroundRunning(item, elapsed, token);
         }
 
         let summary = toolSummary(item.input);
         if (!summary && item.preview) summary = item.preview.split('\n')[0].slice(0, 120);
         const glyph = !finished ? '⟳' : stopped ? '⏹' : failed ? '✗' : '✓';
-
-        // verbose shows the args/result detail; a FINISHED verbose tool collapses
-        // to its line (click to re-expand). Non-verbose levels are line-only.
-        const collapsible = toolVerbosity === 'verbose' && finished;
-        const open = toolVerbosity === 'verbose' && (!finished || expandedTools.has(item.seq));
+        const open = toolOpen.has(item.seq) ? toolOpen.get(item.seq)! : toolVerbosity === 'verbose';
         return (
           <div key={item.seq} data-testid="tool-call" data-tool-status={finished ? (stopped ? 'stopped' : failed ? 'failed' : 'done') : 'running'}
                style={{ color: token.colorTextTertiary, fontSize: 12 }}>
             <div
-              style={{ fontFamily: 'monospace', cursor: collapsible ? 'pointer' : 'default' }}
-              onClick={collapsible ? () => toggleTool(item.seq) : undefined}
+              style={{ fontFamily: 'monospace', cursor: 'pointer' }}
+              onClick={() => toggleTool(item.seq)}
             >
               {!finished && !stopped ? <Spin size="small" /> : glyph}{' '}
               <strong>{item.name}</strong>{summary ? `: ${summary}` : ''}
               {item.background && finished && item.result ? ` · ${item.result}` : ''}
               {elapsed ? <span data-testid="tool-elapsed">{` · ${elapsed}`}</span> : null}
-              {collapsible ? <span style={{ marginLeft: 6 }}>{expandedTools.has(item.seq) ? '▾' : '▸'}</span> : null}
+              <span style={{ marginLeft: 6 }}>{open ? '▾' : '▸'}</span>
             </div>
             {open ? renderDetail(item.input, item.preview, token) : null}
             {open && item.result ? (
