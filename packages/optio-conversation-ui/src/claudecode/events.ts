@@ -191,6 +191,33 @@ function toolRow(block: any, seq: number, at: number): ChatItem {
 // `stoppedSeqs`, when given, collects the seq of every row this call stopped
 // for that reason, so the caller can record it against the interrupt that
 // caused it (see noteInterrupted).
+// A Bash call the CLI moved to the background says so in the tool_result
+// itself, and this transcript has no system/task_started to mark the row.
+// CLI 2.1.283 sends a JSON string {"resultType":"task","status":"working",
+// "taskId"}; older builds send the sentence "Command running in background
+// with ID: <id>". The row stays running until the task-notification finishes it.
+function runningBackgroundTaskId(content: unknown): string | null {
+  if (content && typeof content === 'object' && !Array.isArray(content)) {
+    const o = content as { resultType?: unknown; status?: unknown; taskId?: unknown };
+    if (o.resultType === 'task' && o.status === 'working' && typeof o.taskId === 'string' && o.taskId !== '') {
+      return o.taskId;
+    }
+    return null;
+  }
+  if (typeof content !== 'string') return null;
+  const text = content.trim();
+  if (text.startsWith('{')) {
+    try {
+      return runningBackgroundTaskId(JSON.parse(text));
+    } catch {
+      return null;
+    }
+  }
+  const m = /^Command running in background with ID: (\S+)/.exec(text);
+  if (!m) return null;
+  return m[1].replace(/[.,;:]$/, '');
+}
+
 function applyToolResults(
   items: ChatItem[], content: unknown, at: number, interrupted = false, stoppedSeqs?: number[],
 ): ChatItem[] {
@@ -202,6 +229,14 @@ function applyToolResults(
     if (idx === -1) continue;
     const row = out[idx] as ToolItem;
     if (row.background) continue;
+    const taskId = runningBackgroundTaskId(b.content);
+    if (taskId) {
+      const next: ToolItem = { ...row, background: true, status: 'running', taskId };
+      delete next.endedAt;
+      delete next.result;
+      out = replaceAt(out, idx, next);
+      continue;
+    }
     if (interrupted && b.is_error) {
       out = replaceAt(out, idx, { ...row, status: 'stopped', endedAt: at });
       stoppedSeqs?.push(row.seq);

@@ -917,6 +917,44 @@ describe('background tasks', () => {
     expect(result.endsWith('…')).toBe(true);
   });
 
+  it('a tool result that says the command is running in the background keeps the row running', () => {
+    const json = JSON.stringify({
+      resultType: 'task',
+      taskId: 'bfzmek17l',
+      status: 'working',
+      statusMessage: 'Command running in background with ID: bfzmek17l. Output is being written to: /tmp/x.output',
+    });
+    const s = run([
+      toolCall('t1', 'Bash', { command: 'python3 verify.py', description: 'Compare recipes on 0.13.0' }, T0),
+      toolResult('t1', json, false, T5),
+      result('The checks are running in the background.'),
+    ]);
+    const [row] = ofKind(s, 'tool');
+    expect(row).toMatchObject({ background: true, status: 'running', taskId: 'bfzmek17l' });
+    expect(row.endedAt).toBeUndefined();
+    expect(row.result).toBeUndefined();
+  });
+
+  it('the plain Command-running-in-background sentence keeps the row running without task_started', () => {
+    const s = run([
+      toolCall('t1', 'Bash', { command: './harness.sh' }, T0),
+      toolResult('t1', 'Command running in background with ID: b1. Output is being written to: /tmp/b1.output', false, T5),
+    ]);
+    expect(ofKind(s, 'tool')[0]).toMatchObject({ background: true, status: 'running', taskId: 'b1' });
+    expect(ofKind(s, 'tool')[0].endedAt).toBeUndefined();
+    expect(ofKind(s, 'tool')[0].result).toBeUndefined();
+  });
+
+  it('a tool result that merely mentions the word background still finishes the row', () => {
+    const s = run([
+      toolCall('t1', 'Bash', { command: 'sql' }, T0),
+      toolResult('t1', 'Error: (pyodbc.ProgrammingError) Background on this error at: https://sqlalche.me/e/20/f405', false, T5),
+    ]);
+    const [row] = ofKind(s, 'tool');
+    expect(row.background).toBeUndefined();
+    expect(row.status).toBe('done');
+  });
+
   it('a malformed <task-notification> with no <task-id> leaves state unchanged and adds no bubble', () => {
     const malformed = {
       type: 'user',

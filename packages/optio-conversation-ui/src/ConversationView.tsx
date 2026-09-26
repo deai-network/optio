@@ -480,6 +480,31 @@ function toolSummary(input: unknown): string {
   return '';
 }
 
+
+// A background job that is still running. Shown at every verbosity, including
+// silent: the point of the row is that work continues after the turn that
+// started it. The description is the Bash call's own one-line summary.
+function renderBackgroundRunning(
+  item: Extract<ChatItem, { kind: 'tool' }>,
+  elapsed: string | null,
+  token: GlobalToken,
+): React.ReactNode {
+  const what = toolSummary(item.input) || item.name;
+  return (
+    <div
+      key={item.seq}
+      data-testid="background-running"
+      style={{ color: token.colorTextTertiary, fontSize: 12, display: 'flex', alignItems: 'center', gap: 8 }}
+    >
+      <Spin size="small" />
+      <span>
+        Background task running: {what}
+        {elapsed ? ` · ${elapsed}` : ''}
+      </span>
+    </div>
+  );
+}
+
 // The muted one-line outcome of a finished background job. The quiet levels
 // (silent, description-while-active) render it instead of the tool row: the
 // job ending is an event, not tool noise. An empty summary shows the tool name.
@@ -1189,6 +1214,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
         const stopped = item.status === 'stopped';
         const elapsed =
           item.startedAt !== undefined ? formatDuration((item.endedAt ?? now) - item.startedAt) : null;
+        if (item.background && !finished) return renderBackgroundRunning(item, elapsed, token);
         if (toolVerbosity === 'silent' || toolVerbosity === 'description-while-active') {
           if (item.background && finished) return renderBackgroundLine(item, failed, elapsed, token);
           // silent: no other tool rows. description-while-active: only WHILE

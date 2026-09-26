@@ -462,6 +462,25 @@ describe('ConversationView tool rows: elapsed time, results, background jobs', (
     expect(screen.getByTestId('tool-result').textContent).toBe('file1');
   });
 
+  it('a running background row says a background task is running, at every verbosity', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    const row: ChatItem = {
+      kind: 'tool', name: 'Bash',
+      input: { command: 'python3 verify.py', description: 'Compare recipes on 0.13.0' },
+      seq: 1, status: 'running', background: true, taskId: 'bfzmek17l', startedAt: 88_000,
+    };
+    for (const toolVerbosity of ['silent', 'description-only', 'description-while-active', 'verbose'] as const) {
+      const view = renderView(makeProps({ state: makeState([row]), toolVerbosity }));
+      const line = screen.getByTestId('background-running');
+      expect(line.firstElementChild?.classList.contains('ant-spin')).toBe(true);
+      expect(line.textContent).toContain('Background task running');
+      expect(line.textContent).toContain('Compare recipes on 0.13.0');
+      expect(line.textContent).toContain('12s');
+      view.unmount();
+    }
+  });
+
   it('silent hides tool rows but keeps a finished background job as one muted line', () => {
     const state = makeState([
       { kind: 'tool', name: 'Bash', input: { command: 'ls' }, seq: 1, status: 'done', startedAt: 0, endedAt: 1000 },
