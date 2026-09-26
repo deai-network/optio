@@ -509,3 +509,31 @@ describe('failed grok tool calls', () => {
     });
   });
 });
+
+
+describe('shell output that failed inside a completed tool', () => {
+  it('marks a completed /etc/hosts Permission denied as failed and keeps the text', () => {
+    const s = play([
+      {
+        jsonrpc: '2.0', method: 'session/update',
+        params: { update: {
+          sessionUpdate: 'tool_call', toolCallId: 'h1', title: 'run_terminal_command',
+          rawInput: { command: "echo x >> /etc/hosts", description: "Attempt to append a line to /etc/hosts" },
+        } },
+      },
+      {
+        jsonrpc: '2.0', method: 'session/update',
+        params: { update: {
+          sessionUpdate: 'tool_call_update', toolCallId: 'h1', status: 'completed',
+          content: [{ type: 'content', content: { type: 'text', text: "--: line 1: /etc/hosts: Permission denied\nexit:1\n" } }],
+          rawOutput: { exit_code: 0, output_for_prompt: "exit: 0\n--: line 1: /etc/hosts: Permission denied\nexit:1\n" },
+        } },
+      },
+    ]);
+    const row = s.items.find((i) => i.kind === 'tool');
+    expect(row).toMatchObject({
+      status: 'failed',
+      result: "--: line 1: /etc/hosts: Permission denied\nexit:1",
+    });
+  });
+});

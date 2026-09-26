@@ -54,6 +54,24 @@ function failureText(status: string | undefined, content: unknown): string | und
   return text || undefined;
 }
 
+// Grok reports status "completed" and rawOutput.exit_code 0 when a redirect
+// fails but a later command in the same script succeeds (`>> /etc/hosts; echo`).
+// The shell's own error line is the failure the operator asked to see.
+function outputLooksFailed(text: string): boolean {
+  return /^--: line \d+:/m.test(text) || /: Permission denied\b/.test(text);
+}
+
+function shellFailure(content: unknown, rawOutput: unknown): { failed: boolean; text?: string } {
+  const fromContent = acpContentText(content).trim();
+  const raw = rawOutput && typeof rawOutput === 'object' ? rawOutput as { exit_code?: unknown; output_for_prompt?: unknown } : null;
+  const fromRaw = typeof raw?.output_for_prompt === 'string' ? raw.output_for_prompt.replace(/^exit:\s*0\n/, '').trim() : '';
+  const text = fromContent || fromRaw;
+  const exit = raw?.exit_code;
+  const nonzero = typeof exit === 'number' && exit !== 0;
+  if (nonzero || (text !== '' && outputLooksFailed(text))) return { failed: true, text: text || undefined };
+  return { failed: false };
+}
+
 function acpContentText(content: unknown): string {
   if (!Array.isArray(content)) return '';
   const parts: string[] = [];
@@ -412,6 +430,8 @@ function reduce(st: AcpChatState, ev: any, seq: number): AcpChatState {
         // Grok marks the launch call completed while the shell is still running
         // ("Background task … started"). That is not the job ending.
         if (background && status === 'done' && cur.status !== 'done') status = 'running';
+        const shell = status === 'done' ? shellFailure(update.content, update.rawOutput) : { failed: false as const };
+        if (shell.failed) status = 'failed';
         const at = acpEventTime(ev);
         const finishing = status === 'done' || status === 'failed';
         const next: ChatItem = {
@@ -423,7 +443,7 @@ function reduce(st: AcpChatState, ev: any, seq: number): AcpChatState {
           ...(background ? { background: true as const } : {}),
           ...(cur.startedAt === undefined && at !== undefined ? { startedAt: at } : {}),
           ...(finishing && cur.endedAt === undefined && at !== undefined ? { endedAt: at } : {}),
-          ...(failureText(status, update.content) ? { result: failureText(status, update.content) } : {}),
+          ...(failureText(status, update.content) ? { result: failureText(status, update.content) } : shell.failed && shell.text ? { result: shell.text } : {}),
         };
         return { ...st, busy: true, items: [...st.items.slice(0, idx), next, ...st.items.slice(idx + 1)] };
       }
