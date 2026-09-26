@@ -48,6 +48,12 @@ function pendingIndex(items: ChatItem[]): number {
 // `rawInput` is absent: kimi/cursor permission cards carry only `content`, and
 // lazy/streaming `tool_call`s stream args as `content` text before `rawInput`
 // arrives on dispatch. Empty string when there is no textual content.
+function failureText(status: string | undefined, content: unknown): string | undefined {
+  if (status !== 'failed') return undefined;
+  const text = acpContentText(content).trim();
+  return text || undefined;
+}
+
 function acpContentText(content: unknown): string {
   if (!Array.isArray(content)) return '';
   const parts: string[] = [];
@@ -381,6 +387,8 @@ function reduce(st: AcpChatState, ev: any, seq: number): AcpChatState {
         ...(at !== undefined ? { startedAt: at } : {}),
         seq,
       };
+      const failed = failureText(item.status, update.content);
+      if (failed) item.result = failed;
       // Tool boundary: finalize the answer bubble, keep prior tool rows.
       return {
         ...st, busy: true,
@@ -415,6 +423,7 @@ function reduce(st: AcpChatState, ev: any, seq: number): AcpChatState {
           ...(background ? { background: true as const } : {}),
           ...(cur.startedAt === undefined && at !== undefined ? { startedAt: at } : {}),
           ...(finishing && cur.endedAt === undefined && at !== undefined ? { endedAt: at } : {}),
+          ...(failureText(status, update.content) ? { result: failureText(status, update.content) } : {}),
         };
         return { ...st, busy: true, items: [...st.items.slice(0, idx), next, ...st.items.slice(idx + 1)] };
       }

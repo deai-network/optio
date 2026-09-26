@@ -78,6 +78,22 @@ function rerenderView(r: ReturnType<typeof render>, props: ConversationViewProps
   r.rerender(<ConfigProvider>{(<ConversationView {...props} />) as ReactElement}</ConfigProvider>);
 }
 
+describe('failed tool call', () => {
+  it('shows the error in the row, in the error color', () => {
+    const row: ChatItem = {
+      kind: 'tool', name: 'Ask: How would you like to continue?',
+      input: { variant: 'AskUserQuestion' },
+      seq: 1, status: 'failed',
+      result: 'Tool `ask_user_question` failed: client does not implement it',
+    };
+    renderView(makeProps({ state: makeState([row]), toolVerbosity: 'description-only' }));
+    const line = screen.getByTestId('tool-call');
+    expect(line.getAttribute('data-tool-status')).toBe('failed');
+    expect(line.textContent).toContain('client does not implement it');
+    expect(line.style.color).not.toBe('');
+  });
+});
+
 describe('foreground tool', () => {
   afterEach(() => vi.useRealTimers());
 

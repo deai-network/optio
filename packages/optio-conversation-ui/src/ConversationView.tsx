@@ -1363,12 +1363,13 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
         }
 
         let summary = toolSummary(item.input);
-        if (!summary && item.preview) summary = item.preview.split('\n')[0].slice(0, 120);
+        if (failed && item.result) summary = item.result.split('\n')[0].slice(0, 160);
+        else if (!summary && item.preview) summary = item.preview.split('\n')[0].slice(0, 120);
         const glyph = !finished ? '⟳' : stopped ? '⏹' : failed ? '✗' : '✓';
         const open = toolOpen.has(item.seq) ? toolOpen.get(item.seq)! : toolVerbosity === 'verbose';
         return (
           <div key={item.seq} data-testid="tool-call" data-tool-status={finished ? (stopped ? 'stopped' : failed ? 'failed' : 'done') : 'running'}
-               style={{ color: token.colorTextTertiary, fontSize: 12 }}>
+               style={{ color: failed ? token.colorError : token.colorTextTertiary, fontSize: 12 }}>
             <div
               style={{ fontFamily: 'monospace', cursor: 'pointer' }}
               onClick={() => toggleTool(item.seq)}

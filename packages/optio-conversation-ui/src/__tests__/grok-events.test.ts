@@ -487,3 +487,25 @@ describe('grok tool lines', () => {
     expect(row && row.kind === 'tool' && (row.input as { description?: string }).description).toBe('Say hi');
   });
 });
+
+
+describe('failed grok tool calls', () => {
+  it('keeps the failure text when the same event also carries rawInput', () => {
+    const s = play([{
+      jsonrpc: '2.0', method: 'session/update',
+      params: { update: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'ask-1',
+        status: 'failed',
+        title: 'Ask: How would you like to continue this UI test?',
+        rawInput: { variant: 'AskUserQuestion', questions: [{ question: 'How?' }] },
+        content: [{ type: 'content', content: { type: 'text', text: 'Tool `ask_user_question` failed: client does not implement it' } }],
+      } },
+    }]);
+    const row = s.items.find((i) => i.kind === 'tool');
+    expect(row).toMatchObject({
+      status: 'failed',
+      result: 'Tool `ask_user_question` failed: client does not implement it',
+    });
+  });
+});
