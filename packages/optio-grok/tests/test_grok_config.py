@@ -33,7 +33,9 @@ async def test_creates_config_when_absent(tmp_path: pathlib.Path):
     await host_actions.write_grok_config(host, host.workdir)
     cfg = _cfg(host)
     assert cfg.is_file()
-    assert tomllib.loads(cfg.read_text())["cli"]["auto_update"] is False
+    data = tomllib.loads(cfg.read_text())
+    assert data["cli"]["auto_update"] is False
+    assert data["ui"]["follow_up_behavior"] == "steer"
 
 
 @pytest.mark.asyncio
@@ -86,3 +88,26 @@ async def test_idempotent(tmp_path: pathlib.Path):
     second = _cfg(host).read_text()
     assert first == second
     assert tomllib.loads(second)["cli"]["auto_update"] is False
+    assert tomllib.loads(second)["ui"]["follow_up_behavior"] == "steer"
+
+
+@pytest.mark.asyncio
+async def test_follow_up_behavior_steer_replaces_queue_inside_ui(tmp_path: pathlib.Path):
+    """Mid-turn follow-ups inject at the next safe gap instead of waiting for
+    the turn to end. The key stays inside [ui] and does not leak elsewhere."""
+    host = await _host(tmp_path)
+    cfg = _cfg(host)
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(
+        '[ui]\n'
+        'theme = "dark"\n'
+        'follow_up_behavior = "queue"\n'
+        '[auth]\n'
+        'token = "abc"\n'
+    )
+    await host_actions.write_grok_config(host, host.workdir)
+    data = tomllib.loads(cfg.read_text())
+    assert data["ui"]["follow_up_behavior"] == "steer"
+    assert data["ui"]["theme"] == "dark"
+    assert "follow_up_behavior" not in data["auth"]
+    assert data["cli"]["auto_update"] is False

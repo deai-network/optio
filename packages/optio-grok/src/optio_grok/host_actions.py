@@ -505,42 +505,60 @@ def _isolation_env(workdir: str) -> dict[str, str]:
 # appended after a foreign ``[table]`` header would be parsed as a member of
 # that table, so grok would ignore it and keep auto-updating). Runs via the
 # worker's ``python3`` (already a grok-worker dependency — see the ctty wrap).
-_GROK_DISABLE_AUTOUPDATE_PY = (
-    "import sys\n"
-    "p=sys.argv[1]\n"
-    "try:\n"
-    "    lines=open(p).read().splitlines()\n"
-    "except FileNotFoundError:\n"
-    "    lines=[]\n"
-    "out=[]\n"
-    "in_cli=False\n"
-    "done=False\n"
-    "def hdr(l):\n"
-    "    s=l.strip()\n"
-    "    return s.startswith('[') and s.endswith(']')\n"
-    "for l in lines:\n"
-    "    if hdr(l):\n"
-    "        if in_cli and not done:\n"
-    "            out.append('auto_update = false')\n"
-    "            done=True\n"
-    "        in_cli = l.strip()=='[cli]'\n"
-    "        out.append(l)\n"
-    "        continue\n"
-    "    if in_cli and l.strip().replace(' ','').startswith('auto_update='):\n"
-    "        continue\n"
-    "    out.append(l)\n"
-    "if in_cli and not done:\n"
-    "    out.append('auto_update = false')\n"
-    "    done=True\n"
-    "if not done:\n"
-    "    out.append('[cli]')\n"
-    "    out.append('auto_update = false')\n"
+# Host-side line editor. Forces two keys in the task config.toml, each inside
+# its own table, preserving every other line:
+#   [cli] auto_update = false
+#   [ui]  follow_up_behavior = "steer"
+# A bare key appended after a foreign [table] header would be parsed as a
+# member of that table, so each key is dropped and re-emitted only within its
+# own table (or a new table is appended when that table is absent).
+_GROK_CONFIG_PY = (
+    'import sys\n'
+    'p=sys.argv[1]\n'
+    'try:\n'
+    '    lines=open(p).read().splitlines()\n'
+    'except FileNotFoundError:\n'
+    '    lines=[]\n'
+    'wanted={\n'
+    " 'cli':('auto_update=','auto_update = false'),\n"
+    ' \'ui\':(\'follow_up_behavior=\',\'follow_up_behavior = "steer"\'),\n'
+    '}\n'
+    'def is_hdr(l):\n'
+    '    s=l.strip()\n'
+    "    return len(s)>=2 and s[0]=='[' and s[-1]==']' and ' ' not in s and '.' not in s\n"
+    'out=[]\n'
+    'section=None\n'
+    'done=set()\n'
+    'def flush():\n'
+    '    if section in wanted and section not in done:\n'
+    '        out.append(wanted[section][1])\n'
+    '        done.add(section)\n'
+    'for l in lines:\n'
+    '    if is_hdr(l):\n'
+    '        flush()\n'
+    '        name=l.strip()[1:-1]\n'
+    '        section=name if name in wanted else None\n'
+    '        out.append(l)\n'
+    '        continue\n'
+    "    if section in wanted and l.strip().replace(' ','').startswith(wanted[section][0]):\n"
+    '        continue\n'
+    '    out.append(l)\n'
+    'flush()\n'
+    "for name in ('cli','ui'):\n"
+    '    if name not in done:\n'
+    "        out.append('['+name+']')\n"
+    '        out.append(wanted[name][1])\n'
     "open(p,'w').write('\\n'.join(out)+'\\n')\n"
 )
 
 
 async def write_grok_config(host: "Host", workdir: str) -> None:
-    """Force ``[cli] auto_update = false`` in the task's ``$GROK_HOME/config.toml``.
+    """Force grok's task ``config.toml``: no self-update, and mid-turn follow-ups steer.
+
+    ``[cli] auto_update = false`` stops grok downloading a fresh binary into
+    the task home. ``[ui] follow_up_behavior = "steer"`` makes a message that
+    arrives while a turn is running inject at the next tool or model safe gap,
+    instead of the default ``queue`` which holds it until that turn ends.
 
     GROK_HOME is ``<workdir>/home/.grok`` (see :func:`_isolation_env`), so the
     config lives at ``<workdir>/home/.grok/config.toml``. Grok otherwise
@@ -563,7 +581,7 @@ async def write_grok_config(host: "Host", workdir: str) -> None:
     cfg = f"{grok_home}/config.toml"
     cmd = (
         f"mkdir -p {shlex.quote(grok_home)} && "
-        f"python3 -c {shlex.quote(_GROK_DISABLE_AUTOUPDATE_PY)} {shlex.quote(cfg)}"
+        f"python3 -c {shlex.quote(_GROK_CONFIG_PY)} {shlex.quote(cfg)}"
     )
     r = await host.run_command(cmd)
     if r.exit_code != 0:
