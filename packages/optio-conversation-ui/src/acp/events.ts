@@ -169,6 +169,18 @@ function appendPending(items: ChatItem[], seq: number, text: string, msgId: stri
 }
 
 // Finalize the in-flight assistant bubble (pending -> false), if any.
+function endTurn(st: AcpChatState): AcpChatState {
+  // Already ended (turn_completed and the prompt response both arrive). A
+  // second boundary must not bump the turn or the next reply splits off.
+  if (!st.busy && pendingIndex(st.items) === -1) return st;
+  return {
+    ...st,
+    items: finalizePending(st.items),
+    busy: false,
+    turn: (st.turn ?? 0) + 1,
+  };
+}
+
 function finalizePending(items: ChatItem[]): ChatItem[] {
   const idx = pendingIndex(items);
   if (idx === -1) return items;
@@ -486,6 +498,10 @@ function reduce(st: AcpChatState, ev: any, seq: number): AcpChatState {
     //    no card is needed. grok's real GATED wire is not yet captured (manual
     //    mode) — if grok parks a pending_interaction rather than switching to
     //    session/request_permission, a card handler is added here then.
+    // grok turn_completed carries stop_reason and is the turn-end that survives
+    // in the replayed log. The session/prompt response, when it also arrives,
+    // is the same boundary; ending twice must not open an extra turn.
+    if (kind === 'turn_completed') return endTurn(st);
     return st;
   }
 
@@ -513,15 +529,8 @@ function reduce(st: AcpChatState, ev: any, seq: number): AcpChatState {
         return { ...st, items: [...st.items, { kind: 'error', text, seq }] };
       }
     }
-    if (ev.result && ev.result.stopReason !== undefined) {
-      // Turn complete — finalize the answer bubble and open the next turn's
-      // bubble id. Tool rows persist as conversation history.
-      return {
-        ...st,
-        items: finalizePending(st.items),
-        busy: false,
-        turn: (st.turn ?? 0) + 1,
-      };
+    if (ev.result && (ev.result.stopReason !== undefined || ev.result.stop_reason !== undefined)) {
+      return endTurn(st);
     }
     return st; // handshake responses (initialize / session/new) — no rendering
   }

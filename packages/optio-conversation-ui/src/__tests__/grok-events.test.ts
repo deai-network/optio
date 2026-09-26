@@ -69,6 +69,35 @@ describe('ask_user_question', () => {
   });
 });
 
+describe('turn end', () => {
+  it('turn_completed clears the working flag and finalizes the answer', () => {
+    const s = play([
+      chunk('The background sleep has finished.'),
+      {
+        jsonrpc: '2.0', method: '_x.ai/session_notification',
+        params: { update: { sessionUpdate: 'turn_completed', stop_reason: 'end_turn' } },
+      },
+    ]);
+    expect(s.busy).toBe(false);
+    const answer = s.items.find((i) => i.kind === 'assistant');
+    expect(answer && answer.kind === 'assistant' && answer.pending).toBe(false);
+  });
+
+  it('a prompt response after turn_completed does not end the turn twice', () => {
+    const events = [
+      chunk('done'),
+      {
+        jsonrpc: '2.0', method: '_x.ai/session_notification',
+        params: { update: { sessionUpdate: 'turn_completed', stop_reason: 'end_turn' } },
+      },
+      { jsonrpc: '2.0', id: 1, result: { stopReason: 'end_turn' } },
+    ];
+    const twice = play(events);
+    expect(twice.busy).toBe(false);
+    expect(twice.items.filter((i) => i.kind === 'assistant')).toHaveLength(1);
+  });
+});
+
 describe('grok/cursor shared ACP reducer — resume replay rendering', () => {
   it('a replayed user_message_chunk renders a user bubble (was dropped)', () => {
     const s = play([userChunk('my prior question')]);
