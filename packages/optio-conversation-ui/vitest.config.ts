@@ -15,6 +15,8 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     testTimeout: 15000,
+    // A wider fork pool pushes widget tests over that timeout.
+    maxWorkers: 2,
     setupFiles: ['./vitest.setup.ts'],
   },
 });

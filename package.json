@@ -4,7 +4,7 @@
   "license": "Apache-2.0",
   "scripts": {
     "build": "pnpm -r build",
-    "test": "pnpm -r --filter '!optio-ui' test && pnpm --filter optio-ui test"
+    "test": "pnpm -r --filter '!optio-ui' --filter '!optio-conversation-ui' test && pnpm --filter optio-conversation-ui test && pnpm --filter optio-ui test"
   },
   "engines": {
     "node": ">=20"
