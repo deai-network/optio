@@ -228,6 +228,10 @@ class TodoTracker:
         self.ctx = ctx
         self.progress = TodoProgress()
         self._unsub = None
+        # Stay false until restore() decides the in-memory list, or observe()
+        # applies a live update. A resume that dies during widget setup must
+        # not overwrite the file the workdir restore just put back.
+        self._save_ok = False
 
     def observe(self, event: dict) -> None:
         try:
@@ -238,6 +242,7 @@ class TodoTracker:
         except Exception:
             _LOG.exception("todo event ignored")
             return
+        self._save_ok = True
         if report is not None:
             self.ctx.report_progress(report.percent, report.message)
 
@@ -252,6 +257,7 @@ class TodoTracker:
 
     async def restore(self, host) -> bool:
         """Load ``.optio-todo.json``. True when a valid file was read."""
+        self._save_ok = True
         path = f"{host.workdir.rstrip('/')}/{TODO_FILENAME}"
         try:
             raw = await host.fetch_bytes_from_host(path)
@@ -274,6 +280,8 @@ class TodoTracker:
         return True
 
     async def save(self, host) -> None:
+        if not self._save_ok:
+            return
         try:
             await host.write_text(TODO_FILENAME, self.progress.to_json())
         except Exception:

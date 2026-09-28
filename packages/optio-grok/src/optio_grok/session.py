@@ -526,7 +526,6 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
 
         ctx.publish_result(conversation)
         ctx.report_progress(None, f"{AGENT_INFO.name} conversation is live")
-        todo_tracker = TodoTracker(extract_acp_todo, ctx)
 
         # Opt-in dashboard chat widget: start a per-task SSE listener over the
         # published conversation and publish it as the "conversation" widget via
@@ -627,6 +626,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                 "uploadUrl": upload_url,
             })
             ctx.report_progress(None, "Conversation UI is live")
+            todo_tracker = TodoTracker(extract_acp_todo, ctx)
             todos_loaded = await todo_tracker.restore(host) if resuming else False
             if not todos_loaded:
                 todo_tracker.arm(conversation)
@@ -696,6 +696,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             if todos_loaded:
                 todo_tracker.arm(conversation)
         else:
+            todo_tracker = TodoTracker(extract_acp_todo, ctx)
             if resuming:
                 await todo_tracker.restore(host)
             todo_tracker.arm(conversation)

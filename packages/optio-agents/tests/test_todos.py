@@ -353,6 +353,33 @@ async def test_tracker_empty_file_loads_without_report():
     assert ctx.calls == []
 
 
+async def test_save_is_noop_until_restore_or_observe():
+    # A resume that dies during widget setup must not overwrite the file
+    # the workdir restore just put back.
+    host = FakeHost('{"items":[{"id":"1","text":"Write","status":"pending"}]}')
+    tracker = TodoTracker(extract_acp_todo, FakeCtx())
+    await tracker.save(host)
+    assert host.written is None
+
+    await tracker.restore(host)
+    await tracker.save(host)
+    assert host.written is not None
+    assert "Write" in host.written[1]
+
+
+async def test_save_after_observe_without_restore():
+    host = FakeHost(None)
+    tracker = TodoTracker(extract_acp_todo, FakeCtx())
+    tracker.observe(_session_update({
+        "sessionUpdate": "plan",
+        "entries": [{"content": "Write", "status": "pending"}],
+    }))
+    await tracker.save(host)
+    assert host.written is not None
+    assert host.written[0] == TODO_FILENAME
+    assert "Write" in host.written[1]
+
+
 def test_tracker_arm_is_idempotent():
     ctx = FakeCtx()
     conversation = FakeConversation()

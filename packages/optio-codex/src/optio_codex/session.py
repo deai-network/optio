@@ -488,7 +488,6 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
 
         ctx.publish_result(conversation)
         ctx.report_progress(None, f"{AGENT_INFO.name} conversation is live")
-        todo_tracker = TodoTracker(extract_codex_todo, ctx)
 
         # Opt-in dashboard chat widget: per-task SSE listener over the
         # published conversation, reached via the widget proxy (which injects
@@ -578,6 +577,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                 "uploadUrl": upload_url,
             })
             ctx.report_progress(None, "Conversation UI is live")
+            todo_tracker = TodoTracker(extract_codex_todo, ctx)
             loaded = await todo_tracker.restore(host) if resuming else False
             if not loaded:
                 todo_tracker.arm(conversation)
@@ -607,6 +607,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             if loaded:
                 todo_tracker.arm(conversation)
         else:
+            todo_tracker = TodoTracker(extract_codex_todo, ctx)
             if resuming:
                 await todo_tracker.restore(host)
             todo_tracker.arm(conversation)
