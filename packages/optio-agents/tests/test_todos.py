@@ -144,3 +144,222 @@ def test_garbage_json_is_none():
     assert TodoProgress.from_json("{") is None
     assert TodoProgress.from_json('{"items":[{}]}') is None
     assert TodoProgress.from_json("[]") is None
+
+
+# --- payload, ACP, tracker -------------------------------------------------
+
+
+from optio_agents.todos import (  # noqa: E402
+    TODO_FILENAME,
+    TODO_TOOL_NAMES,
+    TodoTracker,
+    extract_acp_todo,
+    normalize_tool_name,
+    todo_update_from_payload,
+)
+
+
+def test_payload_todos_replace():
+    update = todo_update_from_payload({
+        "todos": [{
+            "content": "Write", "status": "in_progress", "activeForm": "Writing",
+        }],
+        "merge": False,
+    })
+    assert update is not None
+    assert update.merge is False
+    assert update.items[0].text == "Write"
+    assert update.items[0].active == "Writing"
+    assert update.items[0].status == "in_progress"
+
+
+def test_payload_plan_array():
+    update = todo_update_from_payload({
+        "plan": [{"step": "Write", "status": "in_progress"}],
+    })
+    assert update is not None
+    assert update.merge is False
+    assert update.items[0].text == "Write"
+    assert update.items[0].status == "in_progress"
+
+
+def test_payload_merge_flag():
+    update = todo_update_from_payload({
+        "todos": [{"id": "1", "content": "A", "status": "pending"}],
+        "merge": True,
+    })
+    assert update is not None and update.merge is True
+    assert update.items[0].id == "1"
+
+
+def test_payload_not_a_list():
+    assert todo_update_from_payload({"todos": "nope"}) is None
+
+
+def test_normalize_name():
+    assert normalize_tool_name("TodoWrite") in TODO_TOOL_NAMES
+    assert normalize_tool_name("todo_write") in TODO_TOOL_NAMES
+    assert normalize_tool_name("write_todo") in TODO_TOOL_NAMES
+    assert normalize_tool_name("update_plan") not in TODO_TOOL_NAMES
+
+
+def _session_update(update):
+    return {"jsonrpc": "2.0", "method": "session/update", "params": {"update": update}}
+
+
+def test_acp_plan_update():
+    update = extract_acp_todo(_session_update({
+        "sessionUpdate": "plan",
+        "entries": [{"content": "Write", "status": "pending", "priority": "high"}],
+    }))
+    assert update is not None and update.merge is False
+    assert update.items[0].text == "Write"
+    assert update.items[0].status == "pending"
+    assert not hasattr(update.items[0], "priority") or True
+    assert "priority" not in update.items[0].__dict__
+
+
+def test_acp_tool_call_when_raw_input_object():
+    update = extract_acp_todo(_session_update({
+        "sessionUpdate": "tool_call",
+        "title": "todo_write",
+        "rawInput": {
+            "todos": [{"id": "1", "content": "A", "status": "pending"}],
+            "merge": True,
+        },
+    }))
+    assert update is not None and update.merge is True
+    assert update.items[0].id == "1"
+
+
+def test_acp_tool_call_streaming_raw_input():
+    assert extract_acp_todo(_session_update({
+        "sessionUpdate": "tool_call",
+        "title": "todo_write",
+        "rawInput": '{"todos"',
+    })) is None
+    assert extract_acp_todo(_session_update({
+        "sessionUpdate": "tool_call",
+        "title": "TodoWrite",
+    })) is None
+
+
+def test_acp_unrelated_event():
+    assert extract_acp_todo(_session_update({
+        "sessionUpdate": "agent_message_chunk",
+        "content": {"type": "text", "text": "hi"},
+    })) is None
+
+
+class FakeCtx:
+    def __init__(self):
+        self.calls = []
+
+    def report_progress(self, percent, message=None):
+        self.calls.append((percent, message))
+
+
+class FakeHost:
+    def __init__(self, body=None):
+        self.workdir = "/work"
+        self.body = body
+        self.written = None
+
+    async def fetch_bytes_from_host(self, path):
+        if self.body is None:
+            raise FileNotFoundError(path)
+        return self.body.encode()
+
+    async def write_text(self, relpath, content):
+        self.written = (relpath, content)
+
+
+class FakeConversation:
+    def __init__(self):
+        self.handler = None
+
+    def on_event(self, handler):
+        self.handler = handler
+        def unsub():
+            self.handler = None
+        return unsub
+
+
+def test_tracker_observe_reports():
+    ctx = FakeCtx()
+    tracker = TodoTracker(extract_acp_todo, ctx)
+    tracker.observe(_session_update({
+        "sessionUpdate": "plan",
+        "entries": [{"content": "Write", "status": "in_progress"}],
+    }))
+    assert ctx.calls == [(0, "Write")]
+
+
+def test_tracker_none_extract_does_not_report():
+    ctx = FakeCtx()
+    tracker = TodoTracker(extract_acp_todo, ctx)
+    tracker.observe(_session_update({
+        "sessionUpdate": "agent_message_chunk",
+        "content": {"type": "text", "text": "hi"},
+    }))
+    assert ctx.calls == []
+
+
+def test_tracker_raising_extract_does_not_escape():
+    ctx = FakeCtx()
+
+    def boom(_event):
+        raise RuntimeError("bad event")
+
+    tracker = TodoTracker(boom, ctx)
+    tracker.observe({"anything": True})
+    assert ctx.calls == []
+
+
+async def test_tracker_restore_reports_then_save_round_trip():
+    body = '{"items":[{"id":"1","text":"Write","status":"in_progress","active":"Writing"}]}'
+    host = FakeHost(body)
+    ctx = FakeCtx()
+    tracker = TodoTracker(extract_acp_todo, ctx)
+    assert await tracker.restore(host) is True
+    assert ctx.calls == [(0, "Writing")]
+    await tracker.save(host)
+    assert host.written[0] == TODO_FILENAME
+    other = TodoTracker(extract_acp_todo, FakeCtx())
+    other_host = FakeHost(host.written[1])
+    assert await other.restore(other_host) is True
+    assert other.progress.items[0].text == "Write"
+    assert other.progress.items[0].active == "Writing"
+
+
+async def test_tracker_missing_file():
+    ctx = FakeCtx()
+    tracker = TodoTracker(extract_acp_todo, ctx)
+    assert await tracker.restore(FakeHost(None)) is False
+    assert ctx.calls == []
+
+
+async def test_tracker_garbage_file():
+    ctx = FakeCtx()
+    tracker = TodoTracker(extract_acp_todo, ctx)
+    assert await tracker.restore(FakeHost("{}")) is False
+    assert ctx.calls == []
+
+
+async def test_tracker_empty_file_loads_without_report():
+    ctx = FakeCtx()
+    tracker = TodoTracker(extract_acp_todo, ctx)
+    assert await tracker.restore(FakeHost('{"items":[]}')) is True
+    assert ctx.calls == []
+
+
+def test_tracker_arm_is_idempotent():
+    ctx = FakeCtx()
+    conversation = FakeConversation()
+    tracker = TodoTracker(extract_acp_todo, ctx)
+    tracker.arm(conversation)
+    first = conversation.handler
+    tracker.arm(conversation)
+    assert conversation.handler is first
+    tracker.disarm()
+    assert conversation.handler is None
