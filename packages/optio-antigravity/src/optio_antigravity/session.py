@@ -30,6 +30,7 @@ from optio_agents.fs_grants import fs_isolation_dirs
 from optio_agents.input_listener import serialized, start_input_listener
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_agents.session_controls import model_control
+from optio_agents.todos import TodoTracker
 from optio_agents.uploads import materialize, upload_url_token
 from optio_host.host import Host, LocalHost, ProcessHandle
 from optio_host.paths import task_dir
@@ -38,6 +39,7 @@ from optio_antigravity import auth_scrape, cred_watcher, host_actions
 from optio_antigravity.account import resolve_capture_account
 from optio_antigravity import models as antigravity_models
 from optio_antigravity.conversation import AntigravityConversation
+from optio_antigravity.todos import extract_antigravity_todo
 from optio_antigravity.info import AGENT_INFO
 from optio_antigravity.conversation_listener import ConversationListener
 from optio_antigravity.prompt import compose_agents_md
@@ -433,9 +435,10 @@ async def run_antigravity_session(
     # _prepare); the nonlocals let _agent_sender + teardown reach them.
     conversation: AntigravityConversation | None = None
     conv_listener: ConversationListener | None = None
+    todo_tracker: TodoTracker | None = None
 
     async def _conversation_body(host: Host, hook_ctx: HookContext) -> None:
-        nonlocal conversation, conv_listener
+        nonlocal conversation, conv_listener, todo_tracker
 
         # Antigravity has NO live transport: a conversation is synthetic, each
         # turn driven by a fresh `agy -p` under a PTY with events read from the
@@ -477,6 +480,7 @@ async def run_antigravity_session(
                 _LOG.info("antigravity conversation resume: continuing %s", resumed)
         ctx.publish_result(conversation)
         ctx.report_progress(None, f"{AGENT_INFO.name} conversation is live")
+        todo_tracker = TodoTracker(extract_antigravity_todo, ctx)
 
         # Opt-in dashboard chat widget: start a per-task SSE listener over the
         # published conversation and publish it as the "conversation" widget via
@@ -557,6 +561,9 @@ async def run_antigravity_session(
                 "uploadUrl": upload_url,
             })
             ctx.report_progress(None, "Conversation UI is live")
+            todos_loaded = await todo_tracker.restore(host) if resuming else False
+            if not todos_loaded:
+                todo_tracker.arm(conversation)
 
             # Resume history backfill: the restored workdir carries agy's PRIOR
             # transcript, but the listener's replay buffer starts empty and only
@@ -578,6 +585,12 @@ async def run_antigravity_session(
                         "antigravity conversation resume: replayed %d prior events",
                         replayed,
                     )
+            if todos_loaded:
+                todo_tracker.arm(conversation)
+        else:
+            if resuming:
+                await todo_tracker.restore(host)
+            todo_tracker.arm(conversation)
 
         # Kickoff prompt as the first turn (unattended runs). On resume, push a
         # System: resume notice instead so the resumed conversation notices
@@ -800,6 +813,8 @@ async def run_antigravity_session(
         if config.supports_resume and (
             launched_handle is not None or conversation is not None
         ):
+            if todo_tracker is not None:
+                await todo_tracker.save(host)
             try:
                 await _capture_snapshot(
                     ctx, host,

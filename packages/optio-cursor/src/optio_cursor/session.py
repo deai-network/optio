@@ -36,6 +36,7 @@ from optio_agents.account import EMPTY, accounts_to_metadata
 from optio_agents.fs_grants import fs_isolation_dirs
 from optio_agents.input_listener import serialized, start_input_listener
 from optio_agents.session_controls import model_control
+from optio_agents.todos import TodoTracker, extract_acp_todo
 from optio_agents.uploads import materialize, upload_url_token
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
@@ -557,9 +558,10 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
     # Per-task conversation listener (conversation_ui only). Started in the
     # body after publish_result, torn down in the finally block.
     conv_listener: ConversationListener | None = None
+    todo_tracker: TodoTracker | None = None
 
     async def _conversation_body(host: Host, hook_ctx: HookContext) -> None:
-        nonlocal launched_handle, cred_watch_task, conv_listener
+        nonlocal launched_handle, cred_watch_task, conv_listener, todo_tracker
 
         # Launch `cursor-agent [--model M] [--force] acp` directly (no
         # tmux/ttyd). --force is used only when no permission gate is wired,
@@ -608,6 +610,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
 
         ctx.publish_result(conversation)
         ctx.report_progress(None, f"{AGENT_INFO.name} conversation is live")
+        todo_tracker = TodoTracker(extract_acp_todo, ctx)
 
         # Opt-in dashboard chat widget: start a per-task SSE listener over the
         # published conversation and publish it as the "conversation" widget
@@ -697,6 +700,9 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                 "uploadUrl": upload_url,
             })
             ctx.report_progress(None, "Conversation UI is live")
+            todos_loaded = await todo_tracker.restore(host) if resuming else False
+            if not todos_loaded:
+                todo_tracker.arm(conversation)
 
             # Resume history backfill: the restored workdir carried cursor's
             # PRIOR on-disk ACP session, but this run's bootstrap minted a FRESH
@@ -756,6 +762,12 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                 # the live ring (which would lose it to the thought-chunk flood).
                 await conversation.drain()
                 conv_listener.end_replay()
+            if todos_loaded:
+                todo_tracker.arm(conversation)
+        else:
+            if resuming:
+                await todo_tracker.restore(host)
+            todo_tracker.arm(conversation)
 
         # Start the in-session credential watcher for a seeded session: it
         # saves back the rotated auth.json, and (when the seed is leased)
@@ -1005,6 +1017,8 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
         # launch). An interrupt before launch leaves it None — skip capture so
         # any prior good snapshot survives and hasSavedState is untouched.
         if config.supports_resume and launched_handle is not None:
+            if todo_tracker is not None:
+                await todo_tracker.save(host)
             try:
                 await _capture_snapshot(
                     ctx, host,

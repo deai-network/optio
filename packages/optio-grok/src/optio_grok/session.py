@@ -30,6 +30,7 @@ from optio_agents.account import EMPTY, accounts_to_metadata
 from optio_agents.fs_grants import fs_isolation_dirs
 from optio_agents.input_listener import serialized, start_input_listener
 from optio_agents.session_controls import model_control
+from optio_agents.todos import TodoTracker, extract_acp_todo
 from optio_agents.uploads import materialize, upload_url_token
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
@@ -468,9 +469,10 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
     # Per-task conversation listener (conversation_ui only). Started in the
     # body after publish_result, torn down in the finally block.
     conv_listener: ConversationListener | None = None
+    todo_tracker: TodoTracker | None = None
 
     async def _conversation_body(host: Host, hook_ctx: HookContext) -> None:
-        nonlocal launched_handle, cred_watch_task, conv_listener
+        nonlocal launched_handle, cred_watch_task, conv_listener, todo_tracker
 
         # Launch `grok agent [--model M] [--always-approve] --no-leader stdio`
         # directly (no tmux/ttyd). --always-approve is used only when no
@@ -524,6 +526,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
 
         ctx.publish_result(conversation)
         ctx.report_progress(None, f"{AGENT_INFO.name} conversation is live")
+        todo_tracker = TodoTracker(extract_acp_todo, ctx)
 
         # Opt-in dashboard chat widget: start a per-task SSE listener over the
         # published conversation and publish it as the "conversation" widget via
@@ -624,6 +627,9 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                 "uploadUrl": upload_url,
             })
             ctx.report_progress(None, "Conversation UI is live")
+            todos_loaded = await todo_tracker.restore(host) if resuming else False
+            if not todos_loaded:
+                todo_tracker.arm(conversation)
 
             # Resume history replay: bootstrap() minted a FRESH session via
             # session/new, so the listener's replay buffer starts empty — a
@@ -687,6 +693,12 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                 # the live ring (which would lose it to the thought-chunk flood).
                 await conversation.drain()
                 conv_listener.end_replay()
+            if todos_loaded:
+                todo_tracker.arm(conversation)
+        else:
+            if resuming:
+                await todo_tracker.restore(host)
+            todo_tracker.arm(conversation)
 
         # Kickoff prompt as the first turn (headless: no positional prompt path).
         # On resume, push a System: resume notice instead so the resumed session
@@ -939,6 +951,8 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
         # launch). An interrupt before launch leaves it None — skip capture so
         # any prior good snapshot survives and hasSavedState is untouched.
         if config.supports_resume and launched_handle is not None:
+            if todo_tracker is not None:
+                await todo_tracker.save(host)
             _trace("finally: capture_snapshot START end_state=%s",
                    "cancelled" if cancelled else "done")
             try:

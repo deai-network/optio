@@ -39,6 +39,7 @@ from optio_host.paths import task_dir
 from optio_agents import seeds as _seeds
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, claustrum, get_protocol
 from optio_agents.session_controls import effort_control, model_control
+from optio_agents.todos import TodoTracker
 from optio_agents.uploads import materialize, upload_url_token
 
 from optio_claudecode import cred_watcher
@@ -46,6 +47,7 @@ from optio_claudecode import host_actions
 from optio_claudecode import models as cc_models
 from optio_claudecode.info import AGENT_INFO
 from optio_claudecode.conversation import ClaudeCodeConversation
+from optio_claudecode.todos import extract_claude_todo
 from optio_claudecode.conversation_listener import ConversationListener
 from optio_claudecode.input_listener import serialized, start_input_listener
 from optio_agents.account import EMPTY, accounts_to_metadata
@@ -181,6 +183,7 @@ async def run_claudecode_session(
     injection_lock = asyncio.Lock()
     input_runner = None  # aiohttp AppRunner | None
     conv_listener: ConversationListener | None = None
+    todo_tracker: TodoTracker | None = None
     cancelled = False
     # Set by _prepare (the driver runs it after the workdir wipe, before the
     # optio.log tail); read by the body and the teardown finally.
@@ -460,7 +463,7 @@ async def run_claudecode_session(
 
     async def _conversation_body(host: Host, hook_ctx: HookContext) -> None:
         nonlocal launched_handle, cred_baseline, cred_watch_task
-        nonlocal resolved_seed_id, lease_holder
+        nonlocal resolved_seed_id, lease_holder, todo_tracker
 
         if callable(config.seed_id):
             resolved_seed_id = await config.seed_id(ctx.process_id)  # may raise SeedUnavailableError
@@ -676,6 +679,14 @@ async def run_claudecode_session(
                 "uploadUrl": upload_url,
             })
             ctx.report_progress(None, "Conversation UI is live")
+
+        # After the launch lines, which pass percent None and would otherwise
+        # leave the bar indeterminate. Claude does not replay history through
+        # on_event, so the tracker arms immediately.
+        todo_tracker = TodoTracker(extract_claude_todo, ctx)
+        if resuming:
+            await todo_tracker.restore(host)
+        todo_tracker.arm(conversation)
 
         # Kickoff / resume notice as first stdin messages (print mode with
         # --input-format stream-json takes no positional prompt). The resume
@@ -1116,6 +1127,8 @@ async def run_claudecode_session(
             # failure before launch leaves it None — skip capture entirely (do
             # NOT touch hasSavedState, so any prior good snapshot survives).
             if config.supports_resume and launched_handle is not None:
+                if todo_tracker is not None:
+                    await todo_tracker.save(host)
                 _snapshot_t0 = _time.monotonic()
                 _trace("finally: capture_snapshot START")
                 try:

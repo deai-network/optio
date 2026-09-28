@@ -20,6 +20,7 @@ from optio_agents.fs_grants import fs_isolation_dirs
 from optio_agents.input_listener import serialized, start_input_listener
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_agents.account import EMPTY, accounts_to_metadata
+from optio_agents.todos import TodoTracker
 from optio_agents.uploads import materialize, upload_url_token
 from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
 from optio_host.paths import task_dir
@@ -29,6 +30,7 @@ from optio_codex import models as codex_models
 from optio_codex.account import resolve_capture_account
 from optio_codex.info import AGENT_INFO
 from optio_codex.conversation import CodexConversation
+from optio_codex.todos import extract_codex_todo
 from optio_codex.conversation_listener import ConversationListener
 from optio_codex.fs_allowlist import (
     SandboxSettings,
@@ -175,6 +177,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
     # only) is started after publish and torn down first in the finally block.
     conversation: CodexConversation | None = None
     conv_listener: ConversationListener | None = None
+    todo_tracker: TodoTracker | None = None
 
     await host.connect()
 
@@ -436,7 +439,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             await asyncio.sleep(1.0)
 
     async def _conversation_body(host: Host, hook_ctx: HookContext) -> None:
-        nonlocal launched_handle, conversation, conv_listener
+        nonlocal launched_handle, conversation, conv_listener, todo_tracker
 
         # Launch `codex app-server` directly (no tmux/ttyd). The sandbox MODE
         # and approval policy travel in thread/start params (the app-server has
@@ -485,6 +488,7 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
 
         ctx.publish_result(conversation)
         ctx.report_progress(None, f"{AGENT_INFO.name} conversation is live")
+        todo_tracker = TodoTracker(extract_codex_todo, ctx)
 
         # Opt-in dashboard chat widget: per-task SSE listener over the
         # published conversation, reached via the widget proxy (which injects
@@ -574,6 +578,9 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                 "uploadUrl": upload_url,
             })
             ctx.report_progress(None, "Conversation UI is live")
+            loaded = await todo_tracker.restore(host) if resuming else False
+            if not loaded:
+                todo_tracker.arm(conversation)
 
             # Resume history backfill: the resumed thread already carried its
             # prior conversation inline in the thread/resume response
@@ -597,6 +604,12 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                         "codex conversation resume: replayed %d prior events",
                         replayed,
                     )
+            if loaded:
+                todo_tracker.arm(conversation)
+        else:
+            if resuming:
+                await todo_tracker.restore(host)
+            todo_tracker.arm(conversation)
 
         # Kickoff prompt as the first turn (headless: no positional prompt
         # path). Suppressed on resume — re-kicking would duplicate the task.
@@ -833,6 +846,8 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
         # launch). An interrupt before launch leaves it None — skip capture
         # so any prior good snapshot survives and hasSavedState is untouched.
         if config.supports_resume and launched_handle is not None:
+            if todo_tracker is not None:
+                await todo_tracker.save(host)
             try:
                 await _capture_snapshot(
                     ctx, host,

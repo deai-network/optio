@@ -36,6 +36,7 @@ from optio_agents.fs_grants import fs_isolation_dirs
 from optio_host.host import Host, LocalHost, ProcessHandle
 from optio_host.paths import task_dir
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
+from optio_agents.todos import TodoTracker
 from optio_agents.uploads import materialize, upload_url_token
 from optio_agents import seeds as _seeds
 from optio_agents.account import accounts_to_metadata
@@ -44,6 +45,7 @@ from optio_opencode.account import resolve_capture_accounts
 from optio_opencode import model_probe
 from optio_opencode.info import AGENT_INFO
 from optio_opencode.conversation import OpencodeConversation
+from optio_opencode.todos import extract_opencode_todo
 from optio_opencode.prompt import DEFAULT_CONVERSATION_INSTRUCTIONS, compose_agents_md
 from optio_opencode.seed_manifest import (
     OPENCODE_CRED_MANIFEST,
@@ -210,6 +212,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
     cancelled = False
     launched_handle: ProcessHandle | None = None
     conversation: OpencodeConversation | None = None
+    todo_tracker: TodoTracker | None = None
     reader_task: "asyncio.Task | None" = None
     opencode_exec: str = "opencode"
     session_id: str | None = None
@@ -320,7 +323,7 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         terminate the subprocess and capture the snapshot.
         """
         nonlocal launched_handle, opencode_exec, session_id, preserved_session_id
-        nonlocal worker_port, conversation, reader_task
+        nonlocal worker_port, conversation, reader_task, todo_tracker
         nonlocal cred_baseline, cred_watch_task, resolved_seed_id, lease_holder
 
         if callable(config.seed_id):
@@ -641,6 +644,13 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
         reader_task = asyncio.create_task(conversation.run_reader())
         ctx.publish_result(conversation)
         ctx.report_progress(None, f"{AGENT_INFO.name} conversation is live")
+        # OpenCode does not replay history through on_event. Arm immediately
+        # so the next tool part moves the bar. Restore first, after the
+        # launch line above, which passes percent None.
+        todo_tracker = TodoTracker(extract_opencode_todo, ctx)
+        if resuming:
+            await todo_tracker.restore(host)
+        todo_tracker.arm(conversation)
 
         proc = launched_handle.pid_like
         wait_task = asyncio.create_task(proc.wait())  # type: ignore[union-attr]
@@ -835,6 +845,8 @@ async def run_opencode_session(ctx: ProcessContext, config: OpencodeTaskConfig) 
                 _LOG.exception("opencode seed capture failed; callback not fired")
 
         if config.supports_resume and session_id is not None:
+            if todo_tracker is not None:
+                await todo_tracker.save(host)
             try:
                 await _capture_snapshot(
                     ctx, host,

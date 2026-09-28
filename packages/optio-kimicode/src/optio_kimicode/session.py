@@ -39,6 +39,7 @@ from optio_agents import seeds as _seeds
 from optio_agents.account import EMPTY, accounts_to_metadata
 from optio_agents.fs_grants import fs_isolation_dirs
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
+from optio_agents.todos import TodoTracker, extract_acp_todo
 from optio_agents.uploads import materialize, upload_url_token
 from optio_host.host import Host, LocalHost, ProcessHandle, proc_wait
 from optio_host.paths import task_dir
@@ -542,9 +543,10 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
     # Per-task conversation listener (conversation_ui only). Started in the
     # body after publish_result, torn down in the finally block.
     conv_listener: ConversationListener | None = None
+    todo_tracker: TodoTracker | None = None
 
     async def _conversation_body(host: Host, hook_ctx: HookContext) -> None:
-        nonlocal launched_handle, cred_watch_task, conv_listener
+        nonlocal launched_handle, cred_watch_task, conv_listener, todo_tracker
 
         # Launch ``kimi acp`` directly (headless ACP over stdio; no kimi web
         # server, no tmux/ttyd). ``kimi acp`` accepts only ``--login`` — there
@@ -618,6 +620,7 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
 
         ctx.publish_result(conversation)
         ctx.report_progress(None, f"{AGENT_INFO.name} conversation is live")
+        todo_tracker = TodoTracker(extract_acp_todo, ctx)
 
         # Opt-in dashboard chat widget: start a per-task SSE listener over the
         # published conversation and publish it as the "conversation" widget via
@@ -695,6 +698,9 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                 "uploadUrl": upload_url,
             })
             ctx.report_progress(None, "Conversation UI is live")
+            todos_loaded = await todo_tracker.restore(host) if resuming else False
+            if not todos_loaded:
+                todo_tracker.arm(conversation)
 
             # Resume history backfill: bootstrap opened a FRESH session/new for
             # this task, so kimi never re-emitted the prior conversation — a viewer
@@ -740,6 +746,12 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                 })
                 await conversation.drain()
                 conv_listener.end_replay()
+            if todos_loaded:
+                todo_tracker.arm(conversation)
+        else:
+            if resuming:
+                await todo_tracker.restore(host)
+            todo_tracker.arm(conversation)
 
         # Start the in-session credential watcher for a seeded conversation: it
         # saves back the rotated kimi-code.json, and (when the seed is leased)
@@ -992,6 +1004,8 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
         # Capture a resume snapshot of the now-static workdir + session store.
         # Gated on supports_resume + a launched handle (a session actually ran).
         if config.supports_resume and launched_handle is not None:
+            if todo_tracker is not None:
+                await todo_tracker.save(host)
             _trace("finally: capture_snapshot START end_state=%s",
                    "cancelled" if cancelled else "done")
             try:
