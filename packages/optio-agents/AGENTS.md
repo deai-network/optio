@@ -5,6 +5,23 @@ keyword protocol (parser + session driver), `HookContext`, the abstract
 `Conversation` surface, claustrum provisioning, and the engine-neutral
 task-config vocabulary described below.
 
+## Conversation todos (`optio_agents.todos`)
+
+Design: `docs/2026-09-28-conversation-todo-progress-design.md`.
+
+Conversation mode watches the agent's own todo tool and calls
+`ctx.report_progress`. Percent is completed-over-total on the 0–100 scale
+(`(100 * completed + countable // 2) // countable`, halves up). Cancelled
+items are stored and left out of both counts. The status line is the
+in-progress task texts joined with `"; "`, using `active` when the tool
+sent one; otherwise `"N of M done"`. A list with nothing left to count
+does not move the bar.
+
+The list is `{workdir}/.optio-todo.json`, written at teardown when
+`supports_resume` is set. On resume it is loaded after the launch
+milestone. When that file was present, the watcher is armed only after
+history replay, so a shortened replay cannot replace the saved list.
+
 ## Shared config vocabulary (`optio_agents.config_types`)
 
 Engine `TaskConfig` dataclasses (all `frozen=True, kw_only=True`) compose

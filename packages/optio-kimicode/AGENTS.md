@@ -4,7 +4,8 @@ Task wrapper for Moonshot's Kimi Code CLI (`kimi`): iframe mode (the embedded
 `kimi web` SPA) or headless ACP conversation mode, with resume snapshots, seed
 lifecycle, and claustrum fs-isolation. Entry point:
 `session.run_kimicode_session(ctx, config)` with a `KimiCodeTaskConfig` (see
-`types.py`).
+`types.py`). In conversation mode an ACP `plan` update, or a `todo_write`
+tool call, sets the process percent and status line (`optio_agents.todos`).
 
 ## Config surface (`KimiCodeTaskConfig`)
 

@@ -5,6 +5,10 @@ synthetic transcript-driven conversation mode (`agy` has no streaming server —
 turns are replayed from its `~/.gemini` state tree). Local subprocess or remote
 host over SSH. The config surface deliberately mirrors `optio_grok.types`.
 
+In conversation mode a `PLANNER_RESPONSE` tool call named `todo_write`
+or `write_todo` updates the process percent and status line
+(`optio_agents.todos`).
+
 Full design: `docs/2026-07-06-optio-antigravity-wrapper-design.md`; the
 wrapper-porting playbook is `docs/writing-agent-wrappers.md`.
 

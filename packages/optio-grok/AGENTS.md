@@ -3,7 +3,9 @@
 Task wrapper for xAI's Grok Build CLI (`grok`): ttyd iframe mode (TUI) or
 headless ACP conversation mode, with resume snapshots, seed lifecycle, and
 claustrum fs-isolation. Entry point: `session.run_grok_session(ctx, config)`
-with a `GrokTaskConfig` (see `types.py`).
+with a `GrokTaskConfig` (see `types.py`). In conversation mode an ACP
+`plan` update, or a `todo_write` tool call, sets the process percent and
+status line (`optio_agents.todos`).
 
 ## Config surface (`GrokTaskConfig`)
 

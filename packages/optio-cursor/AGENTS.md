@@ -2,7 +2,9 @@
 
 Run Cursor CLI (`cursor-agent`) as an optio task: ttyd/tmux iframe surface
 (with the iframe-input widget), or headless ACP conversation mode publishing a
-live `CursorConversation`. Local subprocess or remote host over SSH; claustrum
+live `CursorConversation`. In conversation mode an ACP `plan` update, or
+a `todo_write` tool call, sets the process percent and status line
+(`optio_agents.todos`). Local subprocess or remote host over SSH; claustrum
 (Landlock, fail-closed) is the filesystem-isolation guarantee — cursor's own
 `--sandbox` is NOT used for isolation (per-shell-command wrapper only).
 

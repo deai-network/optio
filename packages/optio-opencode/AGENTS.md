@@ -6,6 +6,9 @@ via the widget proxy.
 
 Full design: `docs/2026-04-22-optio-opencode-design.md`.
 
+In conversation mode a `todowrite` / `todo_write` tool part updates the
+process percent and status line (`optio_agents.todos`).
+
 ## Public API
 
 ```python

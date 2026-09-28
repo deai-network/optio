@@ -3,6 +3,8 @@
 Run OpenAI Codex CLI as an optio task — local subprocess or remote host via
 SSH — either as the interactive TUI in a ttyd-served iframe or as a headless
 `codex app-server` conversation session (`mode="conversation"`).
+An `update_plan` item updates the process percent and status line
+(`optio_agents.todos`).
 
 Porting playbook (shared by all wrappers): `docs/writing-agent-wrappers.md`.
 

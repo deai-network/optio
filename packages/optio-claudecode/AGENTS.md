@@ -71,6 +71,9 @@ claude's argv. See `docs/2026-05-29-optio-claudecode-resume-design.md`.
 
 Full design: `docs/2026-06-10-claudecode-conversation-gate-design.md`.
 
+A finished assistant `TodoWrite` updates the process percent and status
+line (`optio_agents.todos`). Streaming argument fragments do not.
+
 Three config fields control it (all defaults preserve today's behavior):
 
 * `mode: Literal["iframe", "conversation"] = "iframe"` —
