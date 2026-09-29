@@ -5,6 +5,7 @@ import { initialChatState, reduceCodexEvent } from './events.js';
 import { resolveUploadUrl, uploadFiles, bundleUploadNotice } from '../uploads.js';
 import { blobDownload } from '../FileDownloadContext.js';
 import { ConversationView } from '../ConversationView.js';
+import { todosFromWidgetData } from '../todosFromWidgetData.js';
 import { NativeSpinner } from '../spinners/NativeSpinner.js';
 
 // Conversation view for codex tasks: speaks the codex app-server stream
@@ -92,6 +93,7 @@ export function CodexView(props: WidgetProps) {
 
   return (
     <ConversationView
+      todos={todosFromWidgetData(props.process.widgetData)}
       state={state}
       closed={state.closed}
       busy={busy}

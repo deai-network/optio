@@ -390,6 +390,10 @@ await ctx.clear_widget_upstream() -> None
 await ctx.set_widget_data(data) -> None
 # Overwrites widgetData (any JSON-serializable value); delivered to widget via tree SSE stream.
 
+await ctx.set_widget_todos(items) -> None
+# Sets widgetData.todos and leaves sibling keys. No-op when widgetData is
+# missing, null, or not an object.
+
 await ctx.clear_widget_data() -> None
 # Sets widgetData to null.
 ```

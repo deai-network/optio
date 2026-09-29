@@ -627,9 +627,19 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
             })
             ctx.report_progress(None, "Conversation UI is live")
             todo_tracker = TodoTracker(extract_acp_todo, ctx)
+            # Silence before restore, so the saved list does not log and
+            # then get followed by every historical change in the replay.
+            if resuming:
+                todo_tracker.begin_replay(reconcile=False)
             todos_loaded = await todo_tracker.restore(host) if resuming else False
-            if not todos_loaded:
-                todo_tracker.arm(conversation)
+            # Arm before replay. When the saved list loaded, replay may only
+            # correct a matching row's status from a todo tool call: a
+            # shortened replay must not replace the list, and a replayed
+            # plan is ignored. Live events after the replay apply normally.
+            # A plan still cannot finish a row the todo tool left in progress.
+            if todos_loaded:
+                todo_tracker.begin_replay(reconcile=True)
+            todo_tracker.arm(conversation)
 
             # Resume history replay: bootstrap() minted a FRESH session via
             # session/new, so the listener's replay buffer starts empty — a
@@ -693,8 +703,7 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                 # the live ring (which would lose it to the thought-chunk flood).
                 await conversation.drain()
                 conv_listener.end_replay()
-            if todos_loaded:
-                todo_tracker.arm(conversation)
+                todo_tracker.end_replay()
         else:
             todo_tracker = TodoTracker(extract_acp_todo, ctx)
             if resuming:

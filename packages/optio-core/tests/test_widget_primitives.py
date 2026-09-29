@@ -191,6 +191,58 @@ async def test_widget_data_clear_sets_null(mongo_db):
 
 
 @pytest.mark.asyncio
+async def test_set_widget_todos_patches_the_list_and_keeps_sibling_keys(mongo_db):
+    async def noop(ctx):
+        pass
+
+    task = TaskInstance(execute=noop, process_id="todos-patch", name="Todos")
+    proc = await upsert_process(mongo_db, "test", task)
+    ctx = _make_test_context(mongo_db, proc)
+    await ctx.set_widget_data({"protocol": "grok", "uploadUrl": "/up"})
+
+    items = [
+        {"id": "1", "text": "Write", "status": "in_progress", "active": "Writing"},
+        {"id": "2", "text": "Ship", "status": "pending"},
+    ]
+    await ctx.set_widget_todos(items)
+
+    doc = await mongo_db["test_processes"].find_one({"_id": proc["_id"]})
+    assert doc["widgetData"]["protocol"] == "grok"
+    assert doc["widgetData"]["uploadUrl"] == "/up"
+    assert doc["widgetData"]["todos"] == items
+
+    await ctx.set_widget_todos([])
+    doc = await mongo_db["test_processes"].find_one({"_id": proc["_id"]})
+    assert doc["widgetData"]["protocol"] == "grok"
+    assert doc["widgetData"]["todos"] == []
+
+
+@pytest.mark.asyncio
+async def test_set_widget_todos_noop_when_widget_data_is_not_an_object(mongo_db):
+    async def noop(ctx):
+        pass
+
+    task = TaskInstance(execute=noop, process_id="todos-null", name="Todos")
+    proc = await upsert_process(mongo_db, "test", task)
+    ctx = _make_test_context(mongo_db, proc)
+
+    items = [{"id": "1", "text": "Write", "status": "pending"}]
+    await ctx.set_widget_todos(items)
+    doc = await mongo_db["test_processes"].find_one({"_id": proc["_id"]})
+    assert "widgetData" not in doc
+
+    await ctx.clear_widget_data()
+    await ctx.set_widget_todos(items)
+    doc = await mongo_db["test_processes"].find_one({"_id": proc["_id"]})
+    assert doc["widgetData"] is None
+
+    await update_widget_data(mongo_db, "test", proc["_id"], "not-an-object")
+    await ctx.set_widget_todos([{"id": "1", "text": "Write", "status": "pending"}])
+    doc = await mongo_db["test_processes"].find_one({"_id": proc["_id"]})
+    assert doc["widgetData"] == "not-an-object"
+
+
+@pytest.mark.asyncio
 async def test_widget_upstream_cleared_on_done(mongo_db):
     async def task_setting_upstream(ctx):
         await ctx.set_widget_upstream("http://127.0.0.1:9000")

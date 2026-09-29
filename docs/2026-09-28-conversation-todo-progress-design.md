@@ -46,8 +46,8 @@ native event
 ```
 
 `TodoItem` is `id`, `text`, `status`, and optional `active`. Status is
-`pending`, `in_progress`, `completed`, or `cancelled`. Any other status is
-stored as `pending`.
+`pending`, `in_progress`, `completed`, or `cancelled`. `canceled` is
+stored as `cancelled`. Any other status is stored as `pending`.
 
 `TodoUpdate` is the items plus `merge`. `merge` is true only when the tool
 payload says so. A snapshot replaces the stored list. A merge patches by
@@ -61,10 +61,12 @@ returns the percent and the message. The watcher calls
 Other callers (launch lines, `STATUS:`, snapshot milestones) still
 overwrite the bar until the next todo update.
 
-The conversation view is not modified. A todo tool row that the view
-already draws stays. A signal the view ignores today (ACP `plan`, Codex
-`update_plan`) stays ignored in the transcript and is still read by the
-watcher.
+The conversation view shows that same list as a standing checklist above
+the transcript, from `widgetData.todos`. The row label is the item's
+text. A todo tool row that the view already draws stays. A signal the
+view ignores today (ACP `plan`, Codex `update_plan`) stays ignored in
+the transcript and is still read by the watcher, which is what puts it
+on the checklist. The process row stays the progress message and bar.
 
 ## Progress rule
 
@@ -73,13 +75,37 @@ countable total is everything else.
 
 Percent is the integer nearest to `100 * completed / countable`, halves
 rounding up: `(100 * completed + countable // 2) // countable`. The scale
-is 0–100, the same scale a `STATUS: 50%` line uses. When the countable
-total is zero, `apply` returns no percent and no message, and the watcher
-does not call `report_progress`. The previous bar stays.
+is 0–100, the same scale a `STATUS: 50%` line uses. When the list is
+empty, the watcher calls `report_progress(None)`: the bar is
+indeterminate and the stale sentence is cleared. When rows remain but
+none of them count, `apply` returns no percent and no message, and the
+watcher does not call `report_progress`. The previous bar stays.
 
-The message is the in-progress rows, joined with `"; "`. A row's shown
-text is `active` when set, otherwise `text`. Claude's `activeForm` is
-`active`. When nothing is in progress the message is `"N of M done"`.
+The message names each in-progress row as `Task <n>/<total>, "<text>"`.
+`n` is that row's 1-based place among the rows that are not cancelled,
+and `total` is how many those are. The quoted text is the task text.
+Several rows are joined with ` and `, and the line starts with
+`Now working on `. When nothing is in progress the message is
+`"N of M done"`, including when the last in-progress row finishes, so
+a done-count that was announced is followed by the new count. The
+watcher logs a sentence once. A repeat of that sentence, which is what
+Grok's tool call, its tool update, and the following plan produce, does
+not append another line. A changed percent with the same sentence still
+moves the bar.
+
+A merge whose id is not already in the list updates the row with the
+same text. A plan snapshot stores the row id as the text, and a later
+todo merge addresses that row as `"2"`. Matching the text keeps the
+one row, so finishing it and starting the next does not leave both in
+progress.
+
+ACP `plan` has no cancelled status. A row with `_meta.cancelled: true`
+is stored as `cancelled` even when `status` is `completed`. The spelling
+`canceled` is the same state.
+
+A plan must not mark a row completed while the last todo-tool status for
+that text is still `in_progress`. Plan-only agents, which never send a
+todo tool call, still complete rows through the plan.
 
 ## Resume
 
@@ -89,7 +115,10 @@ The list is a file in the workdir, `.optio-todo.json`:
 {"items":[{"id":"1","text":"Write the parser","status":"in_progress","active":"Writing the parser"}]}
 ```
 
-`active` is omitted when unset. The file is the full list, not a patch.
+`active` is omitted when unset. An optional `tool` field is the last
+status a todo tool gave that text, omitted when no tool has named the
+row. The checklist published to the widget does not include `tool`.
+The file is the full list, not a patch.
 
 It is written at teardown, in the same window as the other resume files,
 before the workdir tar is taken, and only when `supports_resume` is set
@@ -106,13 +135,19 @@ passes percent `None` and would otherwise leave the bar indeterminate):
 - File present and valid: load it into `TodoProgress`. If the loaded
   list has a countable total above zero, `report_progress` once, with
   the same percent and message a live update would produce. An empty
-  list loads and does not report. Subscribe the watcher after history
-  replay, so a shortened replay cannot replace the saved list.
+  list loads and does not report. When `tool` is `in_progress` and the
+  stored status is `completed`, the row loads as `in_progress`. The
+  watcher is armed before history replay. While replaying, updates
+  change the list and do not append a progress line. A todo tool call
+  updates the status of a matching row and does not add, drop, or
+  reorder rows, so a shortened replay cannot replace the saved list. A
+  replayed plan is ignored. After replay, one line announces the list
+  as it stands. Live updates after that apply as usual.
 - File absent, unreadable, or not valid JSON: start from an empty list
-  and do not fail the launch. Subscribe the watcher before history
-  replay, so a replayed todo write can still set the bar. Claude does
-  not replay through this watcher, so an older Claude snapshot waits
-  for the next write.
+  and do not fail the launch. The watcher is still armed before history
+  replay, so a replayed todo write can set the bar. Claude does not
+  replay through this watcher, so an older Claude snapshot waits for
+  the next write.
 
 A snapshot taken before this change has no file. That is the absent case.
 
@@ -134,7 +169,7 @@ A payload that is not a list, or whose entries are not objects, returns
 | Claude Code | Finished assistant `tool_use` named `TodoWrite`. Streaming `input_json_delta` fragments return `None`. | `todos[]` of `{content, status, activeForm?}` | Replace |
 | Codex | Raw event the conversation already fans out: an `item/completed` whose item is `update_plan`, or a function-call item of that name. | `plan[]` of `{step, status}`. `step` is `text`. | Replace |
 | Grok, Cursor, Kimi | ACP `session/update` with `sessionUpdate: "plan"`. | `entries[]` of `{content, status}`. `priority` is ignored. | Replace |
-| Grok, Cursor, Kimi | `tool_call` or `tool_call_update` whose name is in the shared set, once `rawInput` is an object. A call still streaming arguments as text returns `None`. | `todos[]` of `{id, content, status}`, plus `merge` | Replace, or patch by id when `merge` is true |
+| Grok, Cursor, Kimi | `tool_call` or `tool_call_update` whose name is in the shared set, once `rawInput` is an object. The name is the title, or `_meta["x.ai/tool"].name`, or `rawInput.variant` (Grok titles this call "Updating plan"). A call still streaming arguments as text returns `None`. | `todos[]` of `{id, content, status}`, plus `merge` | Replace, or patch by id when `merge` is true |
 | OpenCode | Tool part whose name is in the shared set, once `state.input` is an object. | That `todos` payload, or `plan[]` of `{step, status}` | Same merge rule |
 | Antigravity | `PLANNER_RESPONSE` tool call whose name is in the shared set. | `args` carrying that payload | Same merge rule |
 
@@ -183,12 +218,13 @@ Unit tests, no wall-clock waits, no live agent.
 
 `packages/optio-agents/AGENTS.md` gains a short section for the module,
 the progress rule, and `.optio-todo.json`. Engine cheatsheets gain one
-sentence each naming the event they recognize. The root `AGENTS.md` does
-not change: the process API is unchanged.
+sentence each naming the event they recognize. `ctx.set_widget_todos`
+is noted next to `set_widget_data` in `packages/optio-core/AGENTS.md`
+and the root `AGENTS.md`.
 
 ## Out of scope
 
-A checklist inside the conversation transcript. Scraping the terminal or
-the agent's web UI. Teaching the model a new `optio.log` keyword.
-Changing percent from the browser. Hiding the todo tool row. Rebuilding
-the list by scanning a resumed transcript when the file is present.
+Scraping the terminal or the agent's web UI. Teaching the model a new
+`optio.log` keyword. Changing percent from the browser. Hiding the todo
+tool row. Rebuilding the list by scanning a resumed transcript when the
+file is present. A second checklist on the process row.

@@ -487,6 +487,20 @@ async def update_widget_data(
     )
 
 
+async def update_widget_todos(
+    db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId, items,
+) -> None:
+    """Set widgetData.todos and leave every sibling key alone.
+
+    No-op when widgetData is missing, null, or not an object. A dotted
+    ``$set`` against null raises in Mongo ("Cannot create field 'todos'").
+    """
+    await _collection(db, prefix).update_one(
+        {"_id": process_oid, "widgetData": {"$type": "object"}},
+        {"$set": {"widgetData.todos": items}},
+    )
+
+
 async def clear_widget_data(
     db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId,
 ) -> None:

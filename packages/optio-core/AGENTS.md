@@ -199,6 +199,10 @@ await ctx.set_widget_data(data) -> None
 # Overwrites widgetData with any JSON-serializable value. The tree stream delivers
 # this to the widget component via the SSE update event.
 
+await ctx.set_widget_todos(items) -> None
+# Sets widgetData.todos and leaves sibling keys. No-op when widgetData is
+# missing, null, or not an object (a dotted $set against null raises in Mongo).
+
 await ctx.clear_widget_data() -> None
 # Sets widgetData to null.
 ```

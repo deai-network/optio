@@ -16,14 +16,14 @@
 - Percent is 0–100: `(100 * completed + countable // 2) // countable`. Halves round up (`1/8` -> 13, `1/2` -> 50).
 - Cancelled items are stored and excluded from both counts. Any other status is stored as `pending`.
 - Countable total of zero does not call `report_progress`.
-- Message is in-progress texts joined with `"; "`, using `active` when set, otherwise `text`. No in-progress row: `"N of M done"`.
+- Message is `Now working on Task <n>/<total>, "<text>"` for each in-progress row, joined with ` and `. No in-progress row: `"N of M done"`. An empty list calls `report_progress(None)`. ACP plan `_meta.cancelled: true` (and the spelling `canceled`) is status `cancelled`.
 - File is `{workdir}/.optio-todo.json`, full list, `active` omitted when unset. Written only when `supports_resume` and a conversation tracker exists. Write failure is logged and does not fail teardown. An empty list is written.
 - Restore happens after the launch line that passes percent `None`. A valid file, including an empty list, is "loaded". Report only when the countable total is above zero.
-- When the file loaded and the engine then replays history through `on_event`, arm the tracker after that replay. Otherwise arm immediately, including before replay when the file is absent.
+- Arm before history replay. Replay updates the list and does not append a progress line per old change. After replay, one line announces the list as it stands. When the file loaded, a replayed todo tool may only correct a matching row, and a replayed plan is ignored.
 - A bad payload returns `None`. Nothing is added to the process log. Launch does not fail on a missing or invalid file.
 - Tool names match case-insensitively with underscores removed. Shared set: `todowrite`, `writetodo`. Codex `update_plan` is separate.
 - No wall-clock sleeps in tests. No live agent.
-- Do not change the conversation UI, the process list, the snapshot document schema, or the root `AGENTS.md`.
+- Do not change the process list or the snapshot document schema. The conversation view does show the list: a standing checklist above the transcript, fed by `widgetData.todos` (added after the first cut of this plan). `ctx.set_widget_todos` is documented in the root `AGENTS.md`.
 - Update `packages/optio-agents/AGENTS.md` and add one sentence to each engine cheatsheet.
 
 ## Review Focus

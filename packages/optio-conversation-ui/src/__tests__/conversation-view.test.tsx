@@ -1359,3 +1359,84 @@ describe('ConversationView assistant start-end interval (Fix 12)', () => {
     expect(screen.queryByTestId('message-time')).toBeNull();
   });
 });
+
+describe('ConversationView todo checklist', () => {
+  const todos = [
+    { id: '1', text: 'Write', status: 'in_progress' as const },
+    { id: '2', text: 'Ship', status: 'pending' as const },
+    { id: '3', text: 'Done', status: 'completed' as const },
+    { id: '4', text: 'Skip', status: 'cancelled' as const },
+  ];
+
+  it('stands above the transcript and marks each status', () => {
+    renderView(makeProps({
+      state: makeState([{ kind: 'user', text: 'hello from user', seq: 1 }]),
+      todos,
+    }));
+    const list = screen.getByTestId('conversation-todos');
+    const header = screen.getByTestId('conversation-header');
+    const content = screen.getByTestId('conversation-content');
+    expect(content.contains(list)).toBe(false);
+    expect(header.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(list.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(list.style.maxHeight).toBe('30%');
+    expect(list.style.overflowY).toBe('auto');
+    const toggle = screen.getByTestId('conversation-todos-toggle');
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(toggle.textContent).toBe('');
+    expect(screen.getByTestId('conversation-todos-title').textContent).toBe('Task list');
+    expect(toggle.querySelector('[data-testid="conversation-todos-chevron"]')).toBeTruthy();
+    const rows = screen.getAllByTestId('conversation-todo');
+    expect(rows.map((row) => row.getAttribute('data-status'))).toEqual([
+      'in_progress', 'pending', 'completed', 'cancelled',
+    ]);
+    expect(rows[0].textContent).toContain('Write');
+    expect(rows[0].querySelector('[data-testid="conversation-todo-spinner"]')).toBeTruthy();
+    expect(rows[0].textContent).not.toContain('▶');
+    expect(rows[1].textContent).toContain('Ship');
+    expect(rows[1].textContent).toContain('·');
+    expect(rows[2].textContent).toContain('Done');
+    expect(rows[2].textContent).toContain('✓');
+    expect(rows[3].textContent).toContain('Skip');
+    expect(rows[3].style.textDecoration).toContain('line-through');
+    fireEvent.click(screen.getByTestId('conversation-todos-toggle'));
+    const folded = screen.getAllByTestId('conversation-todo');
+    expect(folded.map((row) => row.getAttribute('data-status'))).toEqual(['in_progress']);
+    expect(folded[0].textContent).toContain('Write');
+    expect(folded[0].querySelector('[data-testid="conversation-todo-spinner"]')).toBeTruthy();
+    expect(screen.queryByText('Ship')).toBeNull();
+    expect(screen.getByTestId('conversation-todos-title').textContent).toBe('Task list');
+    expect(screen.getByTestId('conversation-todos-chevron').style.transform).toBe('none');
+  });
+
+  it('folds to nothing when no task is in progress', () => {
+    renderView(makeProps({
+      state: makeState([{ kind: 'user', text: 'hello from user', seq: 1 }]),
+      todos: [
+        { id: '1', text: 'Done', status: 'completed' as const },
+        { id: '2', text: 'Later', status: 'pending' as const },
+      ],
+    }));
+    expect(screen.getAllByTestId('conversation-todo')).toHaveLength(2);
+    expect(screen.getByTestId('conversation-todos-toggle').getAttribute('aria-expanded')).toBe('true');
+    fireEvent.click(screen.getByTestId('conversation-todos-toggle'));
+    expect(screen.queryByTestId('conversation-todo')).toBeNull();
+    expect(screen.getByTestId('conversation-todos-toggle').getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('renders nothing when todos are absent', () => {
+    renderView(makeProps({
+      state: makeState([{ kind: 'user', text: 'hello from user', seq: 1 }]),
+    }));
+    expect(screen.queryByTestId('conversation-todos')).toBeNull();
+    expect(screen.getByText('hello from user')).toBeTruthy();
+  });
+
+  it('renders nothing when the todo list is empty', () => {
+    renderView(makeProps({
+      state: makeState([{ kind: 'user', text: 'hello from user', seq: 1 }]),
+      todos: [],
+    }));
+    expect(screen.queryByTestId('conversation-todos')).toBeNull();
+  });
+});

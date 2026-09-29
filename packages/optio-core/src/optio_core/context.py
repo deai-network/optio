@@ -346,6 +346,11 @@ class ProcessContext:
         from optio_core.store import update_widget_data
         await update_widget_data(self._db, self._prefix, self._process_oid, data)
 
+    async def set_widget_todos(self, items) -> None:
+        """Set widgetData.todos. Sibling keys stay. No-op when widgetData is not an object."""
+        from optio_core.store import update_widget_todos
+        await update_widget_todos(self._db, self._prefix, self._process_oid, items)
+
     async def clear_widget_data(self) -> None:
         """Clear widgetData."""
         from optio_core.store import clear_widget_data

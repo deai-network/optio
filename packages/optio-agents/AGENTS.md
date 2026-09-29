@@ -12,15 +12,46 @@ Design: `docs/2026-09-28-conversation-todo-progress-design.md`.
 Conversation mode watches the agent's own todo tool and calls
 `ctx.report_progress`. Percent is completed-over-total on the 0–100 scale
 (`(100 * completed + countable // 2) // countable`, halves up). Cancelled
-items are stored and left out of both counts. The status line is the
-in-progress task texts joined with `"; "`, using `active` when the tool
-sent one; otherwise `"N of M done"`. A list with nothing left to count
-does not move the bar.
+items are stored and left out of both counts. While a row is in progress
+the status line is `Now working on ` plus `Task <n>/<total>, "<text>"`
+for each such row, joined with ` and `. `n` is that row's 1-based place
+among the rows that are not cancelled, and `total` is how many those
+are. The quoted text is the task text. When nothing is in progress the
+line is `"N of M done"`, including when the last in-progress row
+finishes, so a done-count that was announced is followed by the new
+count. The same sentence is logged once. Grok sends a todo change as a
+tool call, again as the tool update, then as a plan. A changed percent
+with the same sentence still moves the bar and does not add a line.
+A merge whose id is not already in the list updates the row with the
+same text instead of appending a second copy. An ACP plan row with
+`_meta.cancelled: true` is `cancelled` even when its status field is
+`completed` (the plan enum has no cancelled value). `canceled` is the
+same state. An empty list calls `report_progress(None)`: the bar goes
+indeterminate and the stale sentence is cleared. A list that still has
+rows but nothing left to count does not move the bar.
 
 The list is `{workdir}/.optio-todo.json`, written at teardown when
 `supports_resume` is set. On resume it is loaded after the launch
-milestone. When that file was present, the watcher is armed only after
-history replay, so a shortened replay cannot replace the saved list.
+milestone. The watcher is armed before history replay. Replay updates the list
+and does not append a progress line for each old change. When replay
+finishes, one line announces the list as it stands. A replayed todo
+tool call updates the status of a matching row and does not add, drop,
+or reorder rows, so a shortened replay cannot replace the saved list.
+A replayed plan is ignored. A plan does not mark a row completed while
+the todo tool's last status for that text is still `in_progress`. That
+last tool status is stored on the item as an optional `tool` field, so
+a resume whose history replay never arrives still blocks the plan.
+Grok's wire title for this tool call is "Updating plan"; the tool name
+is `_meta["x.ai/tool"].name` or `rawInput.variant`.
+
+The same list is written to `widgetData.todos` via `ctx.set_widget_todos`,
+which leaves every other widgetData key in place and does nothing when
+widgetData is not already an object. A failed write is logged and does
+not undo the progress report. Writes are serialized, so an earlier todo
+event cannot land on top of a later one. The conversation view renders
+that list above the transcript; an empty list clears it. Resume
+publishes the restored list before the next todo write. Launch
+milestones do not clear the checklist.
 
 ## Shared config vocabulary (`optio_agents.config_types`)
 

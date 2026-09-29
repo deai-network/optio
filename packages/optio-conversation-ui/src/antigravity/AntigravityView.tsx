@@ -5,6 +5,7 @@ import { initialChatState, reduceAntigravityEvent } from './events.js';
 import { resolveUploadUrl, uploadFiles, bundleUploadNotice } from '../uploads.js';
 import { blobDownload } from '../FileDownloadContext.js';
 import { ConversationView } from '../ConversationView.js';
+import { todosFromWidgetData } from '../todosFromWidgetData.js';
 import { NativeSpinner } from '../spinners/NativeSpinner.js';
 
 // Conversation view for antigravity tasks. Antigravity has NO live transport
@@ -102,6 +103,7 @@ export function AntigravityView(props: WidgetProps) {
 
   return (
     <ConversationView
+      todos={todosFromWidgetData(props.process.widgetData)}
       state={state}
       closed={state.closed}
       busy={busy}
