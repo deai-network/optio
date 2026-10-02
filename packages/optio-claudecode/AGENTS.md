@@ -38,7 +38,14 @@ create_claudecode_task(
 tracking the config field (defaults to `True`). Resume snapshots the
 `<workdir>/home/.claude/` subtree (encryptable session blob) plus a plaintext
 workdir blob; on resume the workdir is restored and `--continue` is appended to
-claude's argv. See `docs/2026-05-29-optio-claudecode-resume-design.md`.
+claude's argv. When that resume continues a transcript, and the pinned model or
+the model the transcript ended on is a `claude-<family>-<version>` id, the
+launch also passes `--model` set to the newest enabled catalog id in that
+family (haiku, sonnet, opus, fable, or any other parsed family) whenever that
+id is at least as new: a higher version, and on a tie the undated alias over a
+dated snapshot. A catalog that only lists older ids leaves the saved model in
+place. A fresh launch keeps its configured model. See
+`docs/2026-05-29-optio-claudecode-resume-design.md`.
 
 ## ClaudeCodeTaskConfig field semantics
 

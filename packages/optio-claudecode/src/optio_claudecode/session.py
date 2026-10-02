@@ -357,11 +357,16 @@ async def run_claudecode_session(
                 pinned=claustrum.CLAUSTRUM_PINNED_TAG,
             )
 
+        resume_model = await _resume_model(
+            host, pinned=config.model, continuing=pass_continue,
+        )
+        if resume_model and resume_model != config.model:
+            ctx.report_progress(None, f"Resuming on {resume_model}…")
         claude_flags = host_actions.build_claude_flags(
             permission_mode=config.permission_mode,
             allowed_tools=config.allowed_tools,
             disallowed_tools=config.disallowed_tools,
-            model=config.model,
+            model=resume_model or config.model,
             resuming=pass_continue,
         )
         # auto_start: append the kickoff prompt ONLY on a genuine fresh launch.
@@ -482,6 +487,24 @@ async def run_claudecode_session(
         # same way current_model drives `--model`. Starts at the configured
         # value; a reasoning_effort control change updates it and relaunches.
         current_effort = config.reasoning_effort
+        # Fetched on a continued session so the launch can move to the newest
+        # model in the saved conversation's family. Reused by the widget
+        # catalog below; None until then on a fresh launch.
+        model_list = None
+        if pass_continue:
+            model_list = await cc_models.fetch_available_models(
+                host, home_dir=f"{host.workdir}/home",
+            )
+            transcript_model = None if config.model else await _transcript_model(host)
+            upgraded = cc_models.resume_launch_model(
+                pinned=config.model,
+                transcript_model=transcript_model,
+                catalog=model_list["models"],
+            )
+            source = (config.model or transcript_model or "").split("[", 1)[0]
+            if upgraded and upgraded != source:
+                ctx.report_progress(None, f"Resuming on {upgraded}…")
+                current_model = upgraded
         # Set inside the conversation_ui block once the model catalog is fetched;
         # (model, effort) -> serialized control list. Reused on every model/
         # effort relaunch to re-emit the controls snapshot (effort presence and
@@ -646,7 +669,10 @@ async def run_claudecode_session(
                 f"http://{upstream_host}:{listener_port}",
                 inner_auth=BasicAuth(username="optio", password=listener_password),
             )
-            model_list = await cc_models.fetch_available_models(host, home_dir=f"{host.workdir}/home")
+            if model_list is None:
+                model_list = await cc_models.fetch_available_models(
+                    host, home_dir=f"{host.workdir}/home",
+                )
 
             def build_controls(model, effort):
                 # The model select is always present; the reasoning_effort
@@ -1353,6 +1379,51 @@ async def _call_maybe_async(fn, *args) -> None:
     result = fn(*args)
     if inspect.isawaitable(result):
         await result
+
+
+async def _transcript_model(host: Host) -> str | None:
+    """Model the restored conversation ended on, or None if it cannot be read.
+
+    Claude records ``message.model`` on assistant turns in the project jsonl.
+    The newest transcript's tail is enough: the last model is the one
+    ``--continue`` would keep. A missing tree or an unreadable file leaves
+    the resume on whatever ``--continue`` chooses."""
+    workdir = host.workdir.rstrip("/")
+    projects = f"{workdir}/home/.claude/projects"
+    found = await host.run_command(
+        f"find {shlex.quote(projects)} -name '*.jsonl' -printf '%T@\\t%p\\n' "
+        "2>/dev/null | sort -n | tail -1"
+    )
+    line = (getattr(found, "stdout", None) or "").strip()
+    if "\t" not in line:
+        return None
+    path = line.split("\t", 1)[1]
+    if not path:
+        return None
+    tail = await host.run_command(
+        f"tail -c 262144 {shlex.quote(path)} 2>/dev/null"
+    )
+    return cc_models.model_from_transcript(getattr(tail, "stdout", None) or "")
+
+
+async def _resume_model(host: Host, *, pinned: str | None, continuing: bool) -> str | None:
+    """``--model`` for a continued session: newest enabled catalog id in the
+    family of ``pinned`` or, when nothing is pinned, of the transcript model.
+    None when this is not a continue, or when the catalog cannot name a model
+    at least as new as the one the session is already on."""
+    if not continuing:
+        return None
+    catalog = await cc_models.fetch_available_models(
+        host, home_dir=f"{host.workdir}/home",
+    )
+    transcript_model = None if pinned else await _transcript_model(host)
+    upgraded = cc_models.resume_launch_model(
+        pinned=pinned, transcript_model=transcript_model, catalog=catalog["models"],
+    )
+    source = (pinned or transcript_model or "").split("[", 1)[0]
+    if not upgraded or upgraded == source:
+        return None
+    return upgraded
 
 
 async def _has_transcript(host: Host) -> bool:

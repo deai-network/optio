@@ -95,7 +95,10 @@ FALLBACK_MODELS: dict = {
     "default": None,
 }
 
-_ID_RE = re.compile(r"^claude-([a-z]+)-(\d+(?:-\d+)*)(?:-(\d{8}))?$")
+# Version is non-greedy so a trailing -YYYYMMDD lands in the date group.
+# A greedy version would swallow the date (claude-haiku-4-5-20251001 becomes
+# version 4.5.20251001) and sort newer than the undated alias claude-haiku-4-5.
+_ID_RE = re.compile(r"^claude-([a-z]+)-(\d+(?:-\d+)*?)(?:-(\d{8}))?$")
 
 
 def _parse_id(model_id: str) -> tuple[str, tuple[int, ...], bool]:
@@ -106,6 +109,74 @@ def _parse_id(model_id: str) -> tuple[str, tuple[int, ...], bool]:
         return (model_id, (), False)
     family, ver, date = m.group(1), m.group(2), m.group(3)
     return (family, tuple(int(x) for x in ver.split("-")), bool(date))
+
+
+def model_from_transcript(text: str) -> str | None:
+    """Model id the conversation ended on, from a Claude jsonl transcript.
+
+    Each assistant turn records ``message.model`` (a runtime id, so a
+    ``[variant]`` suffix is kept). The last such value wins. Lines that are
+    not JSON, and turns that name no model, are skipped. ``None`` when the
+    text names no model."""
+    found: str | None = None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except Exception:  # noqa: BLE001 — a tail read may start mid-line
+            continue
+        if not isinstance(ev, dict):
+            continue
+        msg = ev.get("message")
+        model = msg.get("model") if isinstance(msg, dict) else None
+        if isinstance(model, str) and model:
+            found = model
+    return found
+
+
+def resume_launch_model(
+    *, pinned: str | None, transcript_model: str | None, catalog: list[dict],
+) -> str | None:
+    """Catalog id to pass as ``--model`` when continuing a conversation.
+
+    The family comes from ``pinned`` when the task names a model, otherwise
+    from the model the transcript ended on. The result is the newest enabled
+    catalog id in that family (same ordering as ``declutter``: higher version,
+    then an undated id over a dated snapshot). A ``[variant]`` suffix on the
+    source id is ignored.
+
+    ``None`` means "do not pass ``--model``": there is no source model, the id
+    is not a ``claude-<family>-<version>`` id, the catalog has no enabled
+    sibling, or the newest sibling is older than the model already in use
+    (a stale fallback catalog must not downgrade the session)."""
+    source = pinned or transcript_model
+    if not source:
+        return None
+    base = source.split("[", 1)[0]
+    if _ID_RE.match(base) is None:
+        return None
+    family, prev_ver, prev_dated = _parse_id(base)
+    prev_key = (prev_ver, not prev_dated)
+    best_key: tuple | None = None
+    best_id: str | None = None
+    for item in catalog:
+        if item.get("disabled"):
+            continue
+        mid = item.get("id")
+        if not isinstance(mid, str) or _ID_RE.match(mid) is None:
+            continue
+        fam, ver, has_date = _parse_id(mid)
+        if fam != family:
+            continue
+        key = (ver, not has_date)
+        if best_key is None or key > best_key:
+            best_key = key
+            best_id = mid
+    if best_id is None or best_key is None or best_key < prev_key:
+        return None
+    return best_id
 
 
 def declutter(models: list[dict]) -> list[dict]:
