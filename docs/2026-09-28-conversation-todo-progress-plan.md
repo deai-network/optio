@@ -16,7 +16,7 @@
 - Percent is 0–100: `(100 * completed + countable // 2) // countable`. Halves round up (`1/8` -> 13, `1/2` -> 50).
 - Cancelled items are stored and excluded from both counts. Any other status is stored as `pending`.
 - Countable total of zero does not call `report_progress`.
-- Message is `Now working on Task <n>/<total>, "<text>"` for each in-progress row, joined with ` and `. No in-progress row: `"N of M done"`. An empty list calls `report_progress(None)`. ACP plan `_meta.cancelled: true` (and the spelling `canceled`) is status `cancelled`.
+- Message is `Now working on Task <n>/<total>, "<text>"` for each in-progress row, joined with ` and `. No in-progress row: the message is null and only the percent moves. An empty list calls `report_progress(None)`. ACP plan `_meta.cancelled: true` (and the spelling `canceled`) is status `cancelled`.
 - File is `{workdir}/.optio-todo.json`, full list, `active` omitted when unset. Written only when `supports_resume` and a conversation tracker exists. Write failure is logged and does not fail teardown. An empty list is written.
 - Restore happens after the launch line that passes percent `None`. A valid file, including an empty list, is "loaded". Report only when the countable total is above zero.
 - Arm before history replay. Replay updates the list and does not append a progress line per old change. After replay, one line announces the list as it stands. When the file loaded, a replayed todo tool may only correct a matching row, and a replayed plan is ignored.
@@ -58,12 +58,12 @@
 
 Create `packages/optio-agents/tests/test_todos.py` with tests that import `TodoItem`, `TodoUpdate`, `TodoProgress` from `optio_agents.todos`:
 
-- `test_all_pending_is_zero`: three pending -> percent 0, message `"0 of 3 done"`.
+- `test_all_pending_is_zero`: three pending -> percent 0, message null.
 - `test_mixed_uses_active_text`: one completed, one in_progress with `active="Writing"`, one pending -> percent 33, message `"Writing"`.
 - `test_several_in_progress_join`: two in_progress -> message `"A; B"`.
-- `test_all_complete`: two completed -> percent 100, message `"2 of 2 done"`.
-- `test_cancelled_excluded`: one completed, one cancelled -> percent 100, message `"1 of 1 done"`. The cancelled row is still in `progress.items`.
-- `test_unknown_status_counts_as_pending`: status `"bogus"` stored as `"pending"`, percent 0, message `"0 of 1 done"`.
+- `test_all_complete`: two completed -> percent 100, message null.
+- `test_cancelled_excluded`: one completed, one cancelled -> percent 100, message null. The cancelled row is still in `progress.items`.
+- `test_unknown_status_counts_as_pending`: status `"bogus"` stored as `"pending"`, percent 0, message null.
 - `test_half_rounds_up`: 1 completed and 7 pending -> 13. 1 completed and 1 pending -> 50.
 - `test_zero_countable_returns_none`: one cancelled only -> `apply` returns `None`.
 - `test_replace_drops_old_ids`: apply a snapshot of one item, then a snapshot of a different id. Only the new id remains.

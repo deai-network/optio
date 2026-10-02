@@ -19,7 +19,7 @@ def test_all_pending_is_zero():
     ], merge=False))
     assert report is not None
     assert report.percent == 0
-    assert report.message == "0 of 3 done"
+    assert report.message is None
 
 
 def test_mixed_uses_active_text():
@@ -73,7 +73,7 @@ def test_all_complete():
         _item("b", "completed", "2"),
     ], merge=False))
     assert report.percent == 100
-    assert report.message == "2 of 2 done"
+    assert report.message is None
 
 
 def test_canceled_spelling_is_cancelled():
@@ -84,7 +84,7 @@ def test_canceled_spelling_is_cancelled():
     ], merge=False))
     assert progress.items[1].status == "cancelled"
     assert report.percent == 100
-    assert report.message == "1 of 1 done"
+    assert report.message is None
 
 
 def test_cancelled_excluded():
@@ -94,7 +94,7 @@ def test_cancelled_excluded():
         _item("b", "cancelled", "2"),
     ], merge=False))
     assert report.percent == 100
-    assert report.message == "1 of 1 done"
+    assert report.message is None
     assert [item.status for item in progress.items] == ["completed", "cancelled"]
 
 
@@ -105,7 +105,7 @@ def test_unknown_status_counts_as_pending():
     ], merge=False))
     assert progress.items[0].status == "pending"
     assert report.percent == 0
-    assert report.message == "0 of 1 done"
+    assert report.message is None
 
 
 def test_half_rounds_up():
@@ -168,7 +168,7 @@ def test_remove_ids_drop_the_row():
         items=[], merge=True, source="task", remove_ids=("9",),
     ))
     assert [(item.id, item.text) for item in progress.items] == [("1", "Stay")]
-    assert report is not None and report.message == "0 of 1 done"
+    assert report is not None and report.percent == 0 and report.message is None
 
 
 def test_task_list_keeps_a_stored_subject_and_its_active_form():
@@ -337,7 +337,7 @@ def test_plan_can_complete_an_in_progress_row_when_no_todo_tool_said_so():
     })))
     assert progress.items[0].status == "completed"
     assert report.percent == 100
-    assert report.message == "1 of 1 done"
+    assert report.message is None
 
 
 def test_turn_end_plan_keeps_the_todo_tool_in_progress_row():
@@ -484,8 +484,8 @@ class FakeConversation:
 def test_the_same_status_line_is_logged_once():
     """Grok sends the todo tool call, then the same call again as
     "Updating plan", then a plan snapshot. One sentence is one log line.
-    A later change of the sentence is logged, including the done count
-    once nothing is in progress."""
+    When the last in-progress row finishes, the percent moves and the
+    message is null, so no done-count sentence is sent."""
     ctx = FakeCtx()
     tracker = TodoTracker(extract_acp_todo, ctx)
     todos = [
@@ -513,7 +513,7 @@ def test_the_same_status_line_is_logged_once():
     ]))
     assert ctx.calls == [
         (50, 'Now working on Task 2/2, "Check"'),
-        (100, "2 of 2 done"),
+        (100, None),
     ]
 
 

@@ -17,9 +17,10 @@ the status line is `Now working on ` plus `Task <n>/<total>, "<text>"`
 for each such row, joined with ` and `. `n` is that row's 1-based place
 among the rows that are not cancelled, and `total` is how many those
 are. The quoted text is the task text. When nothing is in progress the
-line is `"N of M done"`, including when the last in-progress row
-finishes, so a done-count that was announced is followed by the new
-count. The same sentence is logged once. Grok sends a todo change as a
+message is null, including when the last in-progress row finishes.
+The percent still moves. A null message clears the previous sentence
+on the bar and does not append a log line. The same sentence is logged
+once. Grok sends a todo change as a
 tool call, again as the tool update, then as a plan. A changed percent
 with the same sentence still moves the bar and does not add a line.
 A merge whose id is not already in the list updates the row with the

@@ -85,10 +85,10 @@ The message names each in-progress row as `Task <n>/<total>, "<text>"`.
 `n` is that row's 1-based place among the rows that are not cancelled,
 and `total` is how many those are. The quoted text is the task text.
 Several rows are joined with ` and `, and the line starts with
-`Now working on `. When nothing is in progress the message is
-`"N of M done"`, including when the last in-progress row finishes, so
-a done-count that was announced is followed by the new count. The
-watcher logs a sentence once. A repeat of that sentence, which is what
+`Now working on `. When nothing is in progress the message is null,
+including when the last in-progress row finishes. The percent still
+moves, and a null message clears the previous sentence on the bar
+without appending a log line. The watcher logs a sentence once. A repeat of that sentence, which is what
 Grok's tool call, its tool update, and the following plan produce, does
 not append another line. A changed percent with the same sentence still
 moves the bar.

@@ -100,7 +100,7 @@ def test_task_create_adds_the_row_from_the_result():
     ))
     assert _rows(progress) == [("1", "Get the source", "pending", "Waiting for the source")]
     assert report is not None and report.percent == 0
-    assert report.message == "0 of 1 done"
+    assert report.message is None
 
 
 def test_a_task_description_survives_an_update_and_a_list():

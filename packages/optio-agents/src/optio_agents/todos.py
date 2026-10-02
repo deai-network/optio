@@ -65,7 +65,7 @@ class TodoUpdate:
 @dataclass(frozen=True)
 class ProgressReport:
     percent: int
-    message: str
+    message: str | None
 
 
 def _status(value: str) -> str:
@@ -319,10 +319,9 @@ class TodoProgress:
             for n, item in enumerate(countable, start=1)
             if item.status == "in_progress"
         ]
+        # Nothing in progress: move the percent and send no sentence.
         message = (
-            "Now working on " + " and ".join(running)
-            if running
-            else f"{done} of {total} done"
+            "Now working on " + " and ".join(running) if running else None
         )
         return ProgressReport(percent=percent, message=message)
 
