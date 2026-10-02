@@ -910,7 +910,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   const [error, setError] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [wide, setWide] = useState(false);
-  // The checklist starts open. The chevron folds it to the in-progress row.
+  // The task sidebar starts open. The chevron collapses the column itself.
   const [todosOpen, setTodosOpen] = useState(true);
   // description-while-active, description-only, and verbose share one
   // collapsible tool row. Verbose starts open; the two description levels
@@ -1501,6 +1501,17 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
         background: token.colorBgLayout, color: token.colorText,
       }}>
         <div
+          data-testid="conversation-split"
+          style={{ display: 'flex', flexDirection: 'row', flex: 1, minHeight: 0, minWidth: 0 }}
+        >
+        <div
+          data-testid="conversation-main"
+          style={{
+            display: 'flex', flexDirection: 'column', flex: '1 1 auto',
+            minWidth: 0, minHeight: 0,
+          }}
+        >
+        <div
           data-testid="conversation-header"
           style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, padding: '4px 8px' }}
         >
@@ -1514,92 +1525,6 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             </Button>
           )}
         </div>
-        {props.todos && props.todos.length > 0 && (
-          <div
-            data-testid="conversation-todos"
-            style={{
-              flexShrink: 0,
-              maxHeight: '30%',
-              overflowY: 'auto',
-              margin: '0 8px 4px',
-              padding: '6px 10px',
-              border: `1px solid ${token.colorBorderSecondary}`,
-              borderRadius: 8,
-              background: token.colorBgContainer,
-              fontSize: 13,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 2,
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-            <span
-              data-testid="conversation-todos-title"
-              style={{ fontSize: 12, fontWeight: 600, color: token.colorTextSecondary }}
-            >
-              Task list
-            </span>
-            <button
-              type="button"
-              data-testid="conversation-todos-toggle"
-              aria-expanded={todosOpen}
-              aria-label={todosOpen ? 'Collapse tasks' : 'Expand tasks'}
-              onClick={() => setTodosOpen((open) => !open)}
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                width: 20,
-                height: 20,
-                border: 'none',
-                background: 'transparent',
-                padding: 0,
-                color: token.colorTextSecondary,
-                cursor: 'pointer',
-              }}
-            >
-              <svg
-                data-testid="conversation-todos-chevron"
-                width="12"
-                height="12"
-                viewBox="0 0 12 12"
-                aria-hidden="true"
-                style={{ display: 'block', transform: todosOpen ? 'rotate(90deg)' : 'none' }}
-              >
-                <path
-                  d="M4 2 L8 6 L4 10"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
-            </button>
-            </div>
-            {(todosOpen ? props.todos : props.todos.filter((todo) => todo.status === 'in_progress')).map((todo) => (
-              <div
-                key={todo.id}
-                data-testid="conversation-todo"
-                data-status={todo.status}
-                style={{
-                  color: todo.status === 'completed' || todo.status === 'cancelled'
-                    ? token.colorTextTertiary
-                    : token.colorText,
-                  textDecoration: todo.status === 'cancelled' ? 'line-through' : undefined,
-                }}
-              >
-                {todo.status === 'in_progress' ? (
-                  <span data-testid="conversation-todo-spinner" style={{ display: 'inline-flex', verticalAlign: 'middle', marginRight: 6 }}>
-                    <Spin size="small" />
-                  </span>
-                ) : todo.status === 'completed' ? '✓' : '·'}
-                {todo.status === 'in_progress' ? null : ' '}
-                {todo.text}
-              </div>
-            ))}
-          </div>
-        )}
         <div
           ref={scrollRef}
           onScroll={onScroll}
@@ -1811,6 +1736,125 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             </span>
           </div>
           </div>
+        </div>
+        </div>
+        {props.todos && props.todos.length > 0 && (
+          <div
+            data-testid="conversation-todos"
+            style={{
+              position: 'relative',
+              display: 'flex',
+              flex: todosOpen ? '0 0 280px' : '0 0 28px',
+              width: todosOpen ? 280 : 28,
+              minHeight: 0,
+              overflow: 'hidden',
+              borderLeft: `1px solid ${token.colorBorderSecondary}`,
+              background: token.colorBgContainer,
+              transition: 'width 200ms ease, flex-basis 200ms ease',
+            }}
+          >
+            <button
+              type="button"
+              data-testid="conversation-todos-toggle"
+              aria-expanded={todosOpen}
+              aria-label={todosOpen ? 'Collapse task list' : 'Expand task list'}
+              onClick={() => setTodosOpen((open) => !open)}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 20,
+                height: 20,
+                border: 'none',
+                background: 'transparent',
+                padding: 0,
+                position: 'absolute',
+                top: 6,
+                left: 4,
+                zIndex: 1,
+                color: token.colorTextSecondary,
+                cursor: 'pointer',
+              }}
+            >
+              <svg
+                data-testid="conversation-todos-chevron"
+                width="12"
+                height="12"
+                viewBox="0 0 12 12"
+                aria-hidden="true"
+                style={{ display: 'block', transform: todosOpen ? 'rotate(180deg)' : 'none', transition: 'transform 200ms ease' }}
+              >
+                <path
+                  d="M4 2 L8 6 L4 10"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+            <div
+              data-testid="conversation-todos-panel"
+              style={{
+                width: 280,
+                flex: '0 0 280px',
+                minHeight: 0,
+                overflowY: 'auto',
+                boxSizing: 'border-box',
+                padding: '6px 10px 6px 32px',
+                fontSize: 13,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 2,
+              }}
+            >
+            <span
+              data-testid="conversation-todos-title"
+              style={{ fontSize: 12, fontWeight: 600, color: token.colorTextSecondary }}
+            >
+              Task list
+            </span>
+            {props.todos.map((todo) => {
+              const failed = todo.text.trimEnd().toLowerCase().endsWith('(failed)');
+              return (
+              <div
+                key={todo.id}
+                data-testid="conversation-todo"
+                data-status={todo.status}
+                style={{
+                  color: todo.status === 'cancelled'
+                    ? token.colorTextTertiary
+                    : token.colorText,
+                  textDecoration: todo.status === 'cancelled' ? 'line-through' : undefined,
+                }}
+              >
+                {todo.status === 'in_progress' && !failed ? (
+                  <span data-testid="conversation-todo-spinner" style={{ display: 'inline-flex', verticalAlign: 'middle', marginRight: 6 }}>
+                    <Spin size="small" />
+                  </span>
+                ) : (
+                  <span
+                    data-testid="conversation-todo-mark"
+                    style={{
+                      color: failed
+                        ? token.colorError
+                        : todo.status === 'completed'
+                          ? token.colorSuccess
+                          : undefined,
+                    }}
+                  >
+                    {failed ? '×' : todo.status === 'completed' ? '✓' : '·'}
+                  </span>
+                )}
+                {todo.status === 'in_progress' && !failed ? null : ' '}
+                {todo.text}
+              </div>
+              );
+            })}
+            </div>
+          </div>
+        )}
         </div>
       </div>
     </FileDownloadContext.Provider>

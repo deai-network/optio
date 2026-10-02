@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
-import { ConfigProvider } from 'antd';
+import { ConfigProvider, theme } from 'antd';
 import type { ReactElement } from 'react';
 import { ConversationView, type ConversationViewProps } from '../ConversationView.js';
 import type { ChatItem, ChatState } from '../chat.js';
@@ -1368,19 +1368,27 @@ describe('ConversationView todo checklist', () => {
     { id: '4', text: 'Skip', status: 'cancelled' as const },
   ];
 
-  it('stands above the transcript and marks each status', () => {
+  it('stands to the right of the transcript and the prompt', () => {
     renderView(makeProps({
       state: makeState([{ kind: 'user', text: 'hello from user', seq: 1 }]),
       todos,
     }));
     const list = screen.getByTestId('conversation-todos');
-    const header = screen.getByTestId('conversation-header');
     const content = screen.getByTestId('conversation-content');
-    expect(content.contains(list)).toBe(false);
-    expect(header.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(list.compareDocumentPosition(content) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(list.style.maxHeight).toBe('30%');
-    expect(list.style.overflowY).toBe('auto');
+    const input = screen.getByTestId('conversation-input-box');
+    const main = screen.getByTestId('conversation-main');
+    const split = screen.getByTestId('conversation-split');
+    expect(main.contains(content)).toBe(true);
+    expect(main.contains(input)).toBe(true);
+    expect(main.contains(list)).toBe(false);
+    expect(split.style.display).toBe('flex');
+    expect(split.style.flexDirection).toBe('row');
+    expect(main.parentElement).toBe(split);
+    expect(list.parentElement).toBe(split);
+    expect(main.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(list.style.width).toBe('280px');
+    expect(screen.getByTestId('conversation-todos-panel').style.overflowY).toBe('auto');
+    expect(list.style.maxHeight).toBe('');
     const toggle = screen.getByTestId('conversation-todos-toggle');
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(toggle.textContent).toBe('');
@@ -1399,29 +1407,73 @@ describe('ConversationView todo checklist', () => {
     expect(rows[2].textContent).toContain('✓');
     expect(rows[3].textContent).toContain('Skip');
     expect(rows[3].style.textDecoration).toContain('line-through');
-    fireEvent.click(screen.getByTestId('conversation-todos-toggle'));
-    const folded = screen.getAllByTestId('conversation-todo');
-    expect(folded.map((row) => row.getAttribute('data-status'))).toEqual(['in_progress']);
-    expect(folded[0].textContent).toContain('Write');
-    expect(folded[0].querySelector('[data-testid="conversation-todo-spinner"]')).toBeTruthy();
-    expect(screen.queryByText('Ship')).toBeNull();
-    expect(screen.getByTestId('conversation-todos-title').textContent).toBe('Task list');
-    expect(screen.getByTestId('conversation-todos-chevron').style.transform).toBe('none');
+    expect(screen.getByTestId('conversation-todos-chevron').style.transform).toBe('rotate(180deg)');
   });
 
-  it('folds to nothing when no task is in progress', () => {
+  it('paints a finished step green and a step whose label ends with (failed) as a red x', () => {
     renderView(makeProps({
       state: makeState([{ kind: 'user', text: 'hello from user', seq: 1 }]),
       todos: [
         { id: '1', text: 'Done', status: 'completed' as const },
-        { id: '2', text: 'Later', status: 'pending' as const },
+        { id: '2', text: 'Deploy (failed)', status: 'completed' as const },
+        { id: '3', text: 'Build (FAILED)', status: 'completed' as const },
+        { id: '4', text: 'Keep going (failed) later', status: 'pending' as const },
       ],
     }));
+    const css = (color: string) => {
+      const probe = document.createElement('div');
+      probe.style.color = color;
+      return probe.style.color;
+    };
+    const tokens = theme.getDesignToken();
+    const rows = screen.getAllByTestId('conversation-todo');
+    const done = rows[0].querySelector('[data-testid="conversation-todo-mark"]') as HTMLElement;
+    const failed = rows[1].querySelector('[data-testid="conversation-todo-mark"]') as HTMLElement;
+    const shouted = rows[2].querySelector('[data-testid="conversation-todo-mark"]') as HTMLElement;
+    const pending = rows[3].querySelector('[data-testid="conversation-todo-mark"]') as HTMLElement;
+    expect(done.textContent).toBe('✓');
+    expect(done.style.color).toBe(css(tokens.colorSuccess));
+    expect(rows[0].style.color).toBe(css(tokens.colorText));
+    expect(rows[0].style.color).not.toBe(css(tokens.colorTextTertiary));
+    expect(failed.textContent).toBe('×');
+    expect(failed.style.color).toBe(css(tokens.colorError));
+    expect(rows[1].textContent).not.toContain('✓');
+    expect(rows[1].style.color).toBe(css(tokens.colorText));
+    expect(shouted.textContent).toBe('×');
+    expect(shouted.style.color).toBe(css(tokens.colorError));
+    expect(rows[2].textContent).toContain('Build (FAILED)');
+    expect(rows[2].textContent).not.toContain('✓');
+    expect(pending.textContent).toBe('·');
+    expect(rows[3].textContent).toContain('Keep going (failed) later');
+  });
+
+  it('collapses the sidebar and leaves the task rows out of the layout', () => {
+    renderView(makeProps({
+      state: makeState([{ kind: 'user', text: 'hello from user', seq: 1 }]),
+      todos: [
+        { id: '1', text: 'Write', status: 'in_progress' as const },
+        { id: '2', text: 'Ship', status: 'pending' as const },
+      ],
+    }));
+    const list = screen.getByTestId('conversation-todos');
+    expect(list.style.width).toBe('280px');
+    expect(list.style.transition).toContain('width 200ms ease');
+    expect(list.style.overflow).toBe('hidden');
+    expect(screen.getByTestId('conversation-todos-chevron').style.transition).toContain('transform 200ms ease');
     expect(screen.getAllByTestId('conversation-todo')).toHaveLength(2);
     expect(screen.getByTestId('conversation-todos-toggle').getAttribute('aria-expanded')).toBe('true');
     fireEvent.click(screen.getByTestId('conversation-todos-toggle'));
-    expect(screen.queryByTestId('conversation-todo')).toBeNull();
+    expect(list.style.width).toBe('28px');
+    const panel = screen.getByTestId('conversation-todos-panel');
+    expect(panel.style.width).toBe('280px');
+    expect(list.contains(panel)).toBe(true);
+    expect(screen.getAllByTestId('conversation-todo')).toHaveLength(2);
     expect(screen.getByTestId('conversation-todos-toggle').getAttribute('aria-expanded')).toBe('false');
+    expect(screen.getByTestId('conversation-todos-chevron').style.transform).toBe('none');
+    fireEvent.click(screen.getByTestId('conversation-todos-toggle'));
+    expect(list.style.width).toBe('280px');
+    expect(screen.getAllByTestId('conversation-todo')).toHaveLength(2);
+    expect(screen.getByTestId('conversation-todos-title').textContent).toBe('Task list');
   });
 
   it('renders nothing when todos are absent', () => {

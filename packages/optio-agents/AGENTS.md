@@ -49,7 +49,10 @@ which leaves every other widgetData key in place and does nothing when
 widgetData is not already an object. A failed write is logged and does
 not undo the progress report. Writes are serialized, so an earlier todo
 event cannot land on top of a later one. The conversation view renders
-that list above the transcript; an empty list clears it. Resume
+that list in a column to the right of the transcript. The column starts
+open; its chevron collapses the column, and the width eases as it
+moves. A completed row shows a green check. A label ending in
+`(failed)`, in any case, shows a red ×. An empty list clears it. Resume
 publishes the restored list before the next todo write. Launch
 milestones do not clear the checklist.
 
