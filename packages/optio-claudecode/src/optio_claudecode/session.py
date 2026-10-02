@@ -47,7 +47,9 @@ from optio_claudecode import host_actions
 from optio_claudecode import models as cc_models
 from optio_claudecode.info import AGENT_INFO
 from optio_claudecode.conversation import ClaudeCodeConversation
-from optio_claudecode.todos import extract_claude_todo
+from optio_claudecode.todos import (
+    ClaudeTodoExtractor, todo_progress_from_transcript,
+)
 from optio_claudecode.conversation_listener import ConversationListener
 from optio_claudecode.input_listener import serialized, start_input_listener
 from optio_agents.account import EMPTY, accounts_to_metadata
@@ -708,10 +710,18 @@ async def run_claudecode_session(
 
         # After the launch lines, which pass percent None and would otherwise
         # leave the bar indeterminate. Claude does not replay history through
-        # on_event, so the tracker arms immediately.
-        todo_tracker = TodoTracker(extract_claude_todo, ctx)
+        # on_event. A resume folds the transcript when the task tools have
+        # written a list, and otherwise reloads the saved checklist. The
+        # same extractor stays armed, so a tool use the transcript has not
+        # answered yet still pairs with the live result.
+        extractor = ClaudeTodoExtractor()
+        todo_tracker = TodoTracker(extractor, ctx)
         if resuming:
-            await todo_tracker.restore(host)
+            rebuilt = await task_todos_from_transcript(host, extractor)
+            if rebuilt is not None:
+                await todo_tracker.use_rebuilt(rebuilt)
+            else:
+                await todo_tracker.restore(host)
         todo_tracker.arm(conversation)
 
         # Kickoff / resume notice as first stdin messages (print mode with
@@ -1381,13 +1391,8 @@ async def _call_maybe_async(fn, *args) -> None:
         await result
 
 
-async def _transcript_model(host: Host) -> str | None:
-    """Model the restored conversation ended on, or None if it cannot be read.
-
-    Claude records ``message.model`` on assistant turns in the project jsonl.
-    The newest transcript's tail is enough: the last model is the one
-    ``--continue`` would keep. A missing tree or an unreadable file leaves
-    the resume on whatever ``--continue`` chooses."""
+async def _newest_transcript_path(host: Host) -> str | None:
+    """Absolute path of the newest project ``*.jsonl``, or None."""
     workdir = host.workdir.rstrip("/")
     projects = f"{workdir}/home/.claude/projects"
     found = await host.run_command(
@@ -1398,6 +1403,34 @@ async def _transcript_model(host: Host) -> str | None:
     if "\t" not in line:
         return None
     path = line.split("\t", 1)[1]
+    return path or None
+
+
+async def task_todos_from_transcript(host: Host, extractor: ClaudeTodoExtractor):
+    """Checklist implied by the newest transcript, or None.
+
+    The whole file, not the model-id tail: a TaskCreate early in the
+    session is what gives the later list its subjects. None when the
+    file is missing or no task-tool result was accepted, so the caller
+    keeps the saved checklist.
+    """
+    path = await _newest_transcript_path(host)
+    if not path:
+        return None
+    body = await host.run_command(f"cat {shlex.quote(path)} 2>/dev/null")
+    return todo_progress_from_transcript(
+        getattr(body, "stdout", None) or "", extractor,
+    )
+
+
+async def _transcript_model(host: Host) -> str | None:
+    """Model the restored conversation ended on, or None if it cannot be read.
+
+    Claude records ``message.model`` on assistant turns in the project jsonl.
+    The newest transcript's tail is enough: the last model is the one
+    ``--continue`` would keep. A missing tree or an unreadable file leaves
+    the resume on whatever ``--continue`` chooses."""
+    path = await _newest_transcript_path(host)
     if not path:
         return None
     tail = await host.run_command(

@@ -926,10 +926,10 @@ def test_tmux_launch_env_disables_autoupdater(monkeypatch):
     assert "DISABLE_AUTOUPDATER=1" in cmd
 
 
-def test_tmux_launch_env_enables_todowrite(monkeypatch):
-    """Opus 5 and later omit the checklist tools unless the session opts in,
-    and the default of that family is the Task* tools. The iframe launch
-    must hand Claude TodoWrite."""
+def test_tmux_launch_env_enables_task_tools(monkeypatch):
+    """Opus 5 and later omit the checklist family unless the session opts
+    in. With the family present, Claude serves the Task tools unless
+    CLAUDE_CODE_ENABLE_TASKS=0 selects the legacy TodoWrite tool."""
     monkeypatch.delenv("OPTIO_CLAUDECODE_NETNS", raising=False)
     env, cmd = host_actions._build_claude_shell_command(
         claude_path="/wd/home/.local/bin/claude",
@@ -938,25 +938,25 @@ def test_tmux_launch_env_enables_todowrite(monkeypatch):
         claude_flags=[],
     )
     assert "CLAUDE_CODE_ENABLE_TODO_TOOLS=1" in env
-    assert "CLAUDE_CODE_ENABLE_TASKS=0" in env
+    assert "CLAUDE_CODE_ENABLE_TASKS=1" in env
     assert "CLAUDE_CODE_ENABLE_TODO_TOOLS=1" in cmd
-    assert "CLAUDE_CODE_ENABLE_TASKS=0" in cmd
+    assert "CLAUDE_CODE_ENABLE_TASKS=1" in cmd
 
 
-def test_tmux_launch_env_caller_overrides_todowrite_pins(monkeypatch):
+def test_tmux_launch_env_caller_overrides_task_tool_pins(monkeypatch):
     monkeypatch.delenv("OPTIO_CLAUDECODE_NETNS", raising=False)
     env, _cmd = host_actions._build_claude_shell_command(
         claude_path="/wd/home/.local/bin/claude",
         workdir="/wd",
         extra_env={
             "CLAUDE_CODE_ENABLE_TODO_TOOLS": "0",
-            "CLAUDE_CODE_ENABLE_TASKS": "1",
+            "CLAUDE_CODE_ENABLE_TASKS": "0",
         },
         claude_flags=[],
     )
     assert env[-2:] == [
         "CLAUDE_CODE_ENABLE_TODO_TOOLS=0",
-        "CLAUDE_CODE_ENABLE_TASKS=1",
+        "CLAUDE_CODE_ENABLE_TASKS=0",
     ]
 
 
@@ -989,24 +989,24 @@ def test_conversation_launch_env_enables_session_state_events():
     assert env["CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS"] == "1"
 
 
-def test_conversation_launch_env_enables_todowrite():
-    """Same TodoWrite opt-in as the iframe path: available on every model,
-    and selected instead of the Task* tools."""
+def test_conversation_launch_env_enables_task_tools():
+    """Same Task-tool pins as the iframe path: the checklist family is on,
+    and CLAUDE_CODE_ENABLE_TASKS=1 keeps TaskCreate and the rest."""
     env = host_actions.conversation_launch_env("/wd", None)
     assert env["CLAUDE_CODE_ENABLE_TODO_TOOLS"] == "1"
-    assert env["CLAUDE_CODE_ENABLE_TASKS"] == "0"
+    assert env["CLAUDE_CODE_ENABLE_TASKS"] == "1"
 
 
-def test_conversation_launch_env_extra_env_overrides_todowrite_pins():
+def test_conversation_launch_env_extra_env_overrides_task_tool_pins():
     env = host_actions.conversation_launch_env(
         "/wd",
         {
             "CLAUDE_CODE_ENABLE_TODO_TOOLS": "0",
-            "CLAUDE_CODE_ENABLE_TASKS": "1",
+            "CLAUDE_CODE_ENABLE_TASKS": "0",
         },
     )
     assert env["CLAUDE_CODE_ENABLE_TODO_TOOLS"] == "0"
-    assert env["CLAUDE_CODE_ENABLE_TASKS"] == "1"
+    assert env["CLAUDE_CODE_ENABLE_TASKS"] == "0"
 
 
 def test_build_claude_flags_model():

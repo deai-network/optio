@@ -52,7 +52,7 @@ def test_only_tested_agents_name_a_todo_tool():
     watched work. The others stay quiet until the same check is done."""
     named = {
         "optio_grok": "todo_write",
-        "optio_claudecode": "TodoWrite",
+        "optio_claudecode": "the `TaskCreate`, `TaskGet`, `TaskList`, and `TaskUpdate` tools",
     }
     for pkg in WRAPPERS:
         profile = importlib.import_module(f"{pkg}.prompt").PROFILE

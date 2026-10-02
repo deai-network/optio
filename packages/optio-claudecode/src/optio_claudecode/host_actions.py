@@ -29,13 +29,14 @@ if TYPE_CHECKING:
 
 _LOG = logging.getLogger(__name__)
 
-# Opus 5 and later omit the checklist family unless the session opts in, and
-# a session that has the family gets TaskCreate/TaskGet/TaskList/TaskUpdate
-# unless this second switch selects the legacy checklist. Both launches pin
-# TodoWrite; a caller's extra env is applied after these and can override.
-_TODOWRITE_ENV = {
+# Opus 5 and later omit the checklist family unless the session opts in.
+# With the family present, Claude serves TaskCreate, TaskGet, TaskList, and
+# TaskUpdate; CLAUDE_CODE_ENABLE_TASKS=0 selects the legacy TodoWrite tool
+# instead. Both launches pin the Task tools. A caller's extra env is applied
+# after these and can override either value.
+_CHECKLIST_ENV = {
     "CLAUDE_CODE_ENABLE_TODO_TOOLS": "1",
-    "CLAUDE_CODE_ENABLE_TASKS": "0",
+    "CLAUDE_CODE_ENABLE_TASKS": "1",
 }
 
 
@@ -690,7 +691,7 @@ def _build_claude_shell_command(
         # DISABLE_AUTOUPDATER → registered alongside CLAUDE_CODE_* env knobs).
         "DISABLE_AUTOUPDATER=1",
     ]
-    for k, v in _TODOWRITE_ENV.items():
+    for k, v in _CHECKLIST_ENV.items():
         env_assignments.append(f"{k}={v}")
     for k, v in extra.items():
         env_assignments.append(f"{k}={v}")
@@ -1230,7 +1231,7 @@ def conversation_launch_env(
         # (docs/2026-09-12-claudecode-conversation-rendering-design.md).
         "CLAUDE_CODE_THINKING_DISPLAY_UPDATES": "1",
         _EMIT_SESSION_STATE_EVENTS: "1",
-        **_TODOWRITE_ENV,
+        **_CHECKLIST_ENV,
         **extra,
     }
 

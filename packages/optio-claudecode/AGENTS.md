@@ -78,8 +78,18 @@ place. A fresh launch keeps its configured model. See
 
 Full design: `docs/2026-06-10-claudecode-conversation-gate-design.md`.
 
-A finished assistant `TodoWrite` updates the process percent and status
-line (`optio_agents.todos`). Streaming argument fragments do not.
+A finished assistant `TodoWrite` replaces the checklist and updates the
+process percent and status line (`optio_agents.todos`). `TaskCreate`
+adds a pending row: the id comes from the tool result, `activeForm`
+is taken from the tool call, and a non-empty description is stored
+with the row. `TaskUpdate` changes only the status, subject,
+`activeForm`, or description it sends, and `deleted` removes the row.
+`TaskList` replaces membership and keeps a description the list line
+does not carry, and `No tasks found` clears the list. A rejected
+call (`is_error`, including a status Claude does not accept) is ignored.
+On resume, a transcript that accepted one of those results rebuilds the
+list, and otherwise the saved checklist is kept. `TodoWrite` still applies.
+Streaming argument fragments do not.
 
 Three config fields control it (all defaults preserve today's behavior):
 
@@ -424,11 +434,15 @@ DONE / ERROR terminate the session.
   freshness is owned by this unconfined provisioning path. See the addendum
   in `docs/2026-05-31-optio-claudecode-runtime-cache-design.md`.
   Both the iframe and conversation launches also pin
-  `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` and `CLAUDE_CODE_ENABLE_TASKS=0`, so
-  Claude Code gets `TodoWrite` on models that omit the checklist family
-  (Opus 5 and later) instead of the TaskCreate/TaskGet/TaskList/TaskUpdate
-  set. `ClaudeCodeTaskConfig.env` is applied after these pins and can
-  override either value.
+  `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` and `CLAUDE_CODE_ENABLE_TASKS=1`, so
+  Claude Code gets TaskCreate, TaskGet, TaskList, and TaskUpdate on models
+  that omit the checklist family (Opus 5 and later). The composed
+  CLAUDE.md names those four tools, and asks Claude to fill a task description
+  with what it plans to do or what happened, including why a step failed,
+  because that text is shown to the person supervising the process.
+  `CLAUDE_CODE_ENABLE_TASKS=0` selects the legacy `TodoWrite` tool instead.
+  `ClaudeCodeTaskConfig.env` is applied after these pins and can override
+  either value.
   Conversation mode also pins `CLAUDE_CODE_THINKING_DISPLAY_UPDATES=1`
   (`conversation_launch_env`, set before `extra_env`, which can still
   override it). Since CLI 2.1.267 the model's between-tool narration arrives
