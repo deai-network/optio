@@ -21,6 +21,7 @@ SHARED_ONLY_PHRASES = (
     "### Detecting a resume",
     "originate from the harness coordinating this session",
     "**Filesystem access:**",
+    "Also use a TODO list to describe your progress",
 )
 
 
@@ -44,3 +45,15 @@ def test_wrapper_compose_signature_is_uniform(pkg):
         "host_protocol", "omit_task_framing", "fs_isolation_dirs", "file_download",
         "check_resume_log_every_message",
     ]
+
+
+def test_only_tested_agents_name_a_todo_tool():
+    """Grok and Claude Code are the engines whose checklist tools we have
+    watched work. The others stay quiet until the same check is done."""
+    named = {
+        "optio_grok": "todo_write",
+        "optio_claudecode": "TodoWrite",
+    }
+    for pkg in WRAPPERS:
+        profile = importlib.import_module(f"{pkg}.prompt").PROFILE
+        assert profile.todo_tool == named.get(pkg)

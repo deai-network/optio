@@ -144,3 +144,22 @@ def test_downloads_note_then_sandbox_note_after_body():
 def test_downloads_wording_follows_host_protocol():
     assert "Deliverables (the DELIVERABLE keyword)" in _c(file_download=True)
     assert "Deliverables (the DELIVERABLE keyword)" not in _c(file_download=True, host_protocol=False)
+
+
+def test_todo_note_names_the_profile_tool_and_sits_before_the_task():
+    out = _c(profile=AgentPromptProfile(todo_tool="TodoWrite"))
+    note = "Also use a TODO list to describe your progress, via the `TodoWrite` tool."
+    assert note in out
+    assert "with `(failed)` appended to the end of its label" in out
+    assert out.index("## Task") < out.index(note) < out.index("So:") < out.index("do X")
+    assert "TODO list" not in _c()
+
+
+def test_todo_note_survives_when_the_task_framing_is_omitted():
+    out = _c(
+        profile=AgentPromptProfile(todo_tool="todo_write"),
+        omit_task_framing=True,
+    )
+    assert "## Task" not in out
+    assert "via the `todo_write` tool" in out
+    assert out.index("via the `todo_write` tool") < out.index("do X")

@@ -21,6 +21,7 @@ PROFILE = AgentPromptProfile(
     state_dir="home/.grok/",
     state_dir_contents="the grok session store (conversation history, plans, session state)",
     preamble=_GROK_IDENTITY,
+    todo_tool="todo_write",
 )
 
 

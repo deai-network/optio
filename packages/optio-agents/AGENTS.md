@@ -56,6 +56,13 @@ moves. A completed row shows a green check. A label ending in
 publishes the restored list before the next todo write. Launch
 milestones do not clear the checklist.
 
+An engine whose checklist tool has been tested names it on
+`AgentPromptProfile.todo_tool`. The instructions file then tells the
+agent to keep that list with the named tool, and to append `(failed)`
+to a completed label when a step failed. Grok names `todo_write` and
+Claude Code names `TodoWrite`. The other engines leave the field unset,
+so their instructions say nothing about it.
+
 ## Shared config vocabulary (`optio_agents.config_types`)
 
 Engine `TaskConfig` dataclasses (all `frozen=True, kw_only=True`) compose

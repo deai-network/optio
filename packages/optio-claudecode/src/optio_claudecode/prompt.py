@@ -31,6 +31,7 @@ PROFILE = AgentPromptProfile(
     state_dir="home/.claude/",
     state_dir_contents="credentials, settings, and the conversation transcript",
     delivery_section=_DELIVERY_SECTION,
+    todo_tool="TodoWrite",
 )
 
 

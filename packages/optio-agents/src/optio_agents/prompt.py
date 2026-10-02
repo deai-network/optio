@@ -36,6 +36,7 @@ class AgentPromptProfile:
     preamble: str = ""                     # rendered first (grok's identity line)
     browser: BrowserMode = "redirect"      # fallback docs only, see module doc
     delivery_section: str = ""             # rendered just before the task framing
+    todo_tool: str | None = None           # checklist tool; None omits the note
 
 
 _INTRO = """# Coordination protocol with the host harness
@@ -58,6 +59,15 @@ the same goals. So:
 
 
 DEFAULT_CONVERSATION_INSTRUCTIONS = "Let's have a conversation with the user."
+
+
+def _todo_note(tool: str) -> str:
+    """Progress checklist, for an agent whose todo tool the harness reads."""
+    return (
+        f"Also use a TODO list to describe your progress, via the `{tool}` tool. "
+        "Express a failed step (an experiment that did not work, for example) "
+        "by adding a completed item with `(failed)` appended to the end of its label."
+    )
 
 
 # Added whenever the keyword-protocol docs (which explain the System:
@@ -285,6 +295,13 @@ def compose_instructions_file(
         profile.delivery_section.rstrip() + "\n\n" if profile.delivery_section else ""
     )
     framing = "" if omit_task_framing else BASE_PROMPT_POST + "\n"
+    if profile.todo_tool:
+        note = _todo_note(profile.todo_tool) + "\n\n"
+        handoff = "So:\n"
+        if handoff in framing:
+            framing = framing.replace(handoff, note + handoff, 1)
+        else:
+            framing = note + framing
     return f"{profile.preamble}{pre}{resume_block}{delivery}{framing}{body}\n"
 
 
