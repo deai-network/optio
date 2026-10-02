@@ -20,6 +20,9 @@ export function todosFromWidgetData(widgetData: unknown): ConversationTodo[] {
       status: row.status as ConversationTodo['status'],
     };
     if (typeof row.active === 'string') todo.active = row.active;
+    if (typeof row.description === 'string' && row.description.trim() !== '') {
+      todo.description = row.description;
+    }
     out.push(todo);
   }
   return out;

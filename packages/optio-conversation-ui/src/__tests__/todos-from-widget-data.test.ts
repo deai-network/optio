@@ -26,6 +26,20 @@ describe('todosFromWidgetData', () => {
     expect(todosFromWidgetData({ todos: 'nope' })).toEqual([]);
   });
 
+  it('keeps a description and ignores a blank one', () => {
+    expect(todosFromWidgetData({
+      todos: [
+        { id: '10', text: 'Get the source', status: 'pending', description: 'Ask where it lives.' },
+        { id: '11', text: 'No detail', status: 'pending', description: '   ' },
+        { id: '12', text: 'Weird', status: 'pending', description: 4 },
+      ],
+    })).toEqual([
+      { id: '10', text: 'Get the source', status: 'pending', description: 'Ask where it lives.' },
+      { id: '11', text: 'No detail', status: 'pending' },
+      { id: '12', text: 'Weird', status: 'pending' },
+    ]);
+  });
+
   it('drops entries that are not a checklist row', () => {
     expect(todosFromWidgetData({
       todos: [

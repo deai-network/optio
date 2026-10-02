@@ -4,13 +4,6 @@ import type { GlobalToken } from 'antd';
 import { ActionButton, CombinedActionButton, type ActionStatus } from 'vultus-antd';
 import type { TextAreaRef } from 'antd/es/input/TextArea';
 import type { ChatItem, ChatState, SessionControl } from './chat.js';
-
-export interface ConversationTodo {
-  id: string;
-  text: string;
-  status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
-  active?: string;
-}
 import { AnswerBlock } from './AnswerBlock.js';
 import { type Attachment, toAttachment, withinCap } from './attachments.js';
 import { FileDownloadContext } from './FileDownloadContext.js';
@@ -18,6 +11,47 @@ import { formatDuration } from './duration.js';
 import {
   formatMessageTime, formatMessageTimeFull, formatMessageTimeInterval, formatMessageTimeIntervalFull,
 } from './messageTime.js';
+
+export interface ConversationTodo {
+  id: string;
+  text: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+  active?: string;
+  description?: string;
+}
+
+/** A label ending in `(failed)` is a failed step. The mark carries that,
+ * so the suffix itself is not part of the name shown on the row. */
+function taskRowLabel(text: string): { failed: boolean; label: string } {
+  const trimmed = text.trimEnd();
+  const failed = trimmed.toLowerCase().endsWith('(failed)');
+  if (!failed) return { failed: false, label: text };
+  return { failed: true, label: trimmed.slice(0, -'(failed)'.length).trimEnd() };
+}
+
+/** Circle-with-i. This package does not depend on @ant-design/icons. */
+function TaskInfoIcon({ color }: { color: string }) {
+  return (
+    <svg
+      data-testid="conversation-todo-info"
+      width="12"
+      height="12"
+      viewBox="0 0 12 12"
+      aria-hidden="true"
+      focusable="false"
+      style={{
+        display: 'inline-block',
+        verticalAlign: 'text-bottom',
+        marginLeft: 6,
+        color,
+      }}
+    >
+      <circle cx="6" cy="6" r="5.25" fill="none" stroke="currentColor" strokeWidth="1.1" />
+      <circle cx="6" cy="3.55" r="0.7" fill="currentColor" />
+      <path d="M6 5.15v3.35" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
+    </svg>
+  );
+}
 
 // Shared conversation chrome for every engine view. Each engine view reduces
 // its native wire events into the engine-neutral ChatState, then hands the
@@ -912,6 +946,10 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   const [wide, setWide] = useState(false);
   // The task sidebar starts open. The chevron collapses the column itself.
   const [todosOpen, setTodosOpen] = useState(true);
+  // Which described task is shown in the column to the right of the list.
+  // Cleared when that task goes away or loses its description, so a later
+  // description does not reopen the column on its own.
+  const [selectedTodoId, setSelectedTodoId] = useState<string | null>(null);
   // description-while-active, description-only, and verbose share one
   // collapsible tool row. Verbose starts open; the two description levels
   // start closed. An entry here overrides that default. Running tools toggle
@@ -1490,6 +1528,15 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     }
   }
 
+  const selectedTodo = props.todos?.find((todo) => todo.id === selectedTodoId);
+  const selectedDescription = selectedTodo?.description?.trim()
+    ? selectedTodo.description
+    : undefined;
+  if (selectedTodoId !== null && selectedDescription === undefined) {
+    setSelectedTodoId(null);
+  }
+  const detailOpen = todosOpen && selectedDescription !== undefined;
+
   return (
     <FileDownloadContext.Provider value={fileDownload ? onFileDownload : null}>
       {/* Paint our own root surface from a bg token — the widget owns its
@@ -1739,6 +1786,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
         </div>
         </div>
         {props.todos && props.todos.length > 0 && (
+          <>
           <div
             data-testid="conversation-todos"
             style={{
@@ -1816,44 +1864,142 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               Task list
             </span>
             {props.todos.map((todo) => {
-              const failed = todo.text.trimEnd().toLowerCase().endsWith('(failed)');
+              const { failed, label } = taskRowLabel(todo.text);
+              const description = todo.description?.trim() ? todo.description : undefined;
+              const rowStyle = {
+                color: todo.status === 'cancelled'
+                  ? token.colorTextTertiary
+                  : token.colorText,
+                textDecoration: todo.status === 'cancelled' ? 'line-through' : undefined,
+              };
+              const rowBody = (
+                <>
+                  {todo.status === 'in_progress' && !failed ? (
+                    <span data-testid="conversation-todo-spinner" style={{ display: 'inline-flex', verticalAlign: 'middle', marginRight: 6 }}>
+                      <Spin size="small" />
+                    </span>
+                  ) : (
+                    <span
+                      data-testid="conversation-todo-mark"
+                      style={{
+                        color: failed
+                          ? token.colorError
+                          : todo.status === 'completed'
+                            ? token.colorSuccess
+                            : undefined,
+                      }}
+                    >
+                      {failed ? '×' : todo.status === 'completed' ? '✓' : '·'}
+                    </span>
+                  )}
+                  {todo.status === 'in_progress' && !failed ? null : ' '}
+                  {label}
+                </>
+              );
+              if (!description) {
+                return (
+                  <div key={todo.id}>
+                    <div data-testid="conversation-todo" data-status={todo.status} style={rowStyle}>
+                      {rowBody}
+                    </div>
+                  </div>
+                );
+              }
+              const selected = detailOpen && todo.id === selectedTodoId;
               return (
-              <div
-                key={todo.id}
-                data-testid="conversation-todo"
-                data-status={todo.status}
-                style={{
-                  color: todo.status === 'cancelled'
-                    ? token.colorTextTertiary
-                    : token.colorText,
-                  textDecoration: todo.status === 'cancelled' ? 'line-through' : undefined,
-                }}
-              >
-                {todo.status === 'in_progress' && !failed ? (
-                  <span data-testid="conversation-todo-spinner" style={{ display: 'inline-flex', verticalAlign: 'middle', marginRight: 6 }}>
-                    <Spin size="small" />
-                  </span>
-                ) : (
-                  <span
-                    data-testid="conversation-todo-mark"
-                    style={{
-                      color: failed
-                        ? token.colorError
-                        : todo.status === 'completed'
-                          ? token.colorSuccess
-                          : undefined,
-                    }}
-                  >
-                    {failed ? '×' : todo.status === 'completed' ? '✓' : '·'}
-                  </span>
-                )}
-                {todo.status === 'in_progress' && !failed ? null : ' '}
-                {todo.text}
-              </div>
+                <button
+                  key={todo.id}
+                  type="button"
+                  data-testid="conversation-todo"
+                  data-status={todo.status}
+                  onClick={() => setSelectedTodoId(todo.id)}
+                  style={{
+                    ...rowStyle,
+                    display: 'block',
+                    width: '100%',
+                    padding: '1px 4px',
+                    border: 'none',
+                    borderRadius: 4,
+                    background: selected ? token.colorPrimaryBg : 'transparent',
+                    textAlign: 'left',
+                    font: 'inherit',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {rowBody}
+                  <Tooltip title="Click for details" mouseEnterDelay={0}>
+                    <span style={{ display: 'inline-flex', verticalAlign: 'text-bottom' }}>
+                      <TaskInfoIcon color={token.colorTextSecondary} />
+                    </span>
+                  </Tooltip>
+                </button>
               );
             })}
             </div>
           </div>
+          <div
+            data-testid="conversation-todo-detail"
+            style={{
+              flex: detailOpen ? '0 0 360px' : '0 0 0px',
+              width: detailOpen ? 360 : 0,
+              minWidth: 0,
+              minHeight: 0,
+              overflow: 'hidden',
+              alignSelf: 'stretch',
+              boxSizing: 'border-box',
+              borderLeft: detailOpen ? `1px solid ${token.colorBorderSecondary}` : 'none',
+              background: token.colorBgContainer,
+              transition: 'width 200ms ease, flex-basis 200ms ease',
+            }}
+          >
+            <div
+              data-testid="conversation-todo-detail-body"
+              style={{
+                width: 360,
+                height: '100%',
+                display: 'flex',
+                flexDirection: 'column',
+                minHeight: 0,
+                boxSizing: 'border-box',
+              }}
+            >
+              {selectedTodo && selectedDescription && (
+                <>
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: 8,
+                    padding: '8px 8px 4px 12px',
+                    fontSize: 13,
+                    fontWeight: 600,
+                  }}>
+                    <span style={{ flex: 1, minWidth: 0 }}>{taskRowLabel(selectedTodo.text).label}</span>
+                    <button
+                      type="button"
+                      aria-label="Close task details"
+                      onClick={() => setSelectedTodoId(null)}
+                      style={{
+                        border: 'none',
+                        background: 'transparent',
+                        padding: '0 4px',
+                        cursor: 'pointer',
+                        color: token.colorTextSecondary,
+                        font: 'inherit',
+                        fontSize: 16,
+                        lineHeight: 1,
+                      }}
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, padding: '0 12px 12px', fontSize: 13 }}>
+                    <AnswerBlock text={selectedDescription} />
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+          </>
         )}
         </div>
       </div>

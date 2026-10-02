@@ -1441,10 +1441,147 @@ describe('ConversationView todo checklist', () => {
     expect(rows[1].style.color).toBe(css(tokens.colorText));
     expect(shouted.textContent).toBe('×');
     expect(shouted.style.color).toBe(css(tokens.colorError));
-    expect(rows[2].textContent).toContain('Build (FAILED)');
+    expect(rows[1].textContent).toContain('Deploy');
+    expect(rows[1].textContent).not.toContain('(failed)');
+    expect(rows[2].textContent).toContain('Build');
+    expect(rows[2].textContent).not.toMatch(/\(failed\)/i);
     expect(rows[2].textContent).not.toContain('✓');
     expect(pending.textContent).toBe('·');
     expect(rows[3].textContent).toContain('Keep going (failed) later');
+  });
+
+  const described = [
+    {
+      id: '10',
+      text: 'Get the source',
+      status: 'pending' as const,
+      description: 'Ask for the **source**.',
+    },
+    {
+      id: '11',
+      text: 'Deploy (failed)',
+      status: 'completed' as const,
+      description: 'The deploy **broke**.',
+    },
+    { id: '12', text: 'No detail', status: 'pending' as const },
+  ];
+
+  function describedProps(items: typeof described = described): ConversationViewProps {
+    return makeProps({
+      state: makeState([{ kind: 'user', text: 'hello from user', seq: 1 }]),
+      todos: items,
+    });
+  }
+
+  function highlightColor(): string {
+    const probe = document.createElement('div');
+    probe.style.backgroundColor = theme.getDesignToken().colorPrimaryBg;
+    return probe.style.backgroundColor;
+  }
+
+  it('marks a described task with an info icon and a Click for details tooltip', async () => {
+    renderView(describedProps());
+    const rows = screen.getAllByTestId('conversation-todo');
+    expect(rows[0].tagName).toBe('BUTTON');
+    expect(rows[2].tagName).toBe('DIV');
+    const info = rows[0].querySelector('[data-testid="conversation-todo-info"]') as HTMLElement;
+    expect(info).toBeTruthy();
+    expect(info.getAttribute('aria-hidden')).toBe('true');
+    const probe = document.createElement('div');
+    probe.style.color = theme.getDesignToken().colorTextSecondary;
+    expect(info.style.color).toBe(probe.style.color);
+    expect(rows[2].querySelector('[data-testid="conversation-todo-info"]')).toBeNull();
+    fireEvent.mouseEnter(rows[0]);
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    const infoTrigger = info.parentElement as HTMLElement;
+    fireEvent.mouseEnter(infoTrigger);
+    const tip = await screen.findByRole('tooltip', {}, { timeout: 60000 });
+    expect(tip.textContent).toBe('Click for details');
+    expect(tip.querySelector('strong')).toBeNull();
+    fireEvent.mouseLeave(infoTrigger);
+    await waitFor(() => expect(screen.queryByRole('tooltip')).toBeNull(), { timeout: 60000 });
+    fireEvent.click(info);
+    expect(screen.getByTestId('conversation-todo-detail').style.width).toBe('360px');
+    fireEvent.mouseEnter(rows[2]);
+    expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+
+  it('opens the description beside the list and highlights the selected row', () => {
+    renderView(describedProps());
+    const rows = screen.getAllByTestId('conversation-todo');
+    const list = screen.getByTestId('conversation-todos');
+    const detail = screen.getByTestId('conversation-todo-detail');
+    const split = screen.getByTestId('conversation-split');
+    const highlight = highlightColor();
+    expect(detail.parentElement).toBe(split);
+    expect(list.compareDocumentPosition(detail) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(detail.style.width).toBe('0px');
+    expect(detail.style.overflow).toBe('hidden');
+    expect(detail.style.transition).toContain('width 200ms ease');
+    expect(screen.getByTestId('conversation-todo-detail-body').style.width).toBe('360px');
+    fireEvent.click(rows[0]);
+    expect(detail.style.width).toBe('360px');
+    expect(detail.style.borderLeftStyle).toBe('solid');
+    expect(detail.querySelector('strong')?.textContent).toBe('source');
+    expect(rows[0].style.backgroundColor).toBe(highlight);
+    expect(rows[1].style.backgroundColor).not.toBe(highlight);
+    expect(list.style.width).toBe('280px');
+    fireEvent.click(rows[0]);
+    expect(detail.style.width).toBe('360px');
+    expect(detail.querySelector('strong')?.textContent).toBe('source');
+    fireEvent.click(rows[1]);
+    expect(detail.querySelector('strong')?.textContent).toBe('broke');
+    expect(detail.textContent).toContain('Deploy');
+    expect(detail.textContent).not.toMatch(/\(failed\)/i);
+    expect(rows[1].style.backgroundColor).toBe(highlight);
+    expect(rows[0].style.backgroundColor).not.toBe(highlight);
+    fireEvent.click(rows[2]);
+    expect(detail.style.width).toBe('360px');
+    expect(detail.querySelector('strong')?.textContent).toBe('broke');
+    expect(rows[1].style.backgroundColor).toBe(highlight);
+  });
+
+  it('closes the detail column from its own control and leaves the task list open', () => {
+    renderView(describedProps());
+    const rows = screen.getAllByTestId('conversation-todo');
+    const highlight = highlightColor();
+    fireEvent.click(rows[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Close task details' }));
+    const detail = screen.getByTestId('conversation-todo-detail');
+    expect(detail.style.width).toBe('0px');
+    expect(detail.style.borderLeftStyle).toBe('none');
+    expect(screen.getByTestId('conversation-todos').style.width).toBe('280px');
+    expect(rows[0].style.backgroundColor).not.toBe(highlight);
+    expect(screen.queryByRole('button', { name: 'Close task details' })).toBeNull();
+  });
+
+  it('hides the detail column while the task list is collapsed and restores it', () => {
+    renderView(describedProps());
+    const rows = screen.getAllByTestId('conversation-todo');
+    const highlight = highlightColor();
+    fireEvent.click(rows[0]);
+    fireEvent.click(screen.getByTestId('conversation-todos-toggle'));
+    const detail = screen.getByTestId('conversation-todo-detail');
+    expect(screen.getByTestId('conversation-todos').style.width).toBe('28px');
+    expect(detail.style.width).toBe('0px');
+    expect(rows[0].style.backgroundColor).not.toBe(highlight);
+    fireEvent.click(screen.getByTestId('conversation-todos-toggle'));
+    expect(screen.getByTestId('conversation-todos').style.width).toBe('280px');
+    expect(detail.style.width).toBe('360px');
+    expect(detail.querySelector('strong')?.textContent).toBe('source');
+    expect(rows[0].style.backgroundColor).toBe(highlight);
+  });
+
+  it('closes the detail column when the selected task loses its description', () => {
+    const view = renderView(describedProps());
+    fireEvent.click(screen.getAllByTestId('conversation-todo')[0]);
+    expect(screen.getByTestId('conversation-todo-detail').style.width).toBe('360px');
+    rerenderView(view, describedProps([
+      { id: '10', text: 'Get the source', status: 'pending', description: '   ' },
+    ]));
+    expect(screen.getByTestId('conversation-todo-detail').style.width).toBe('0px');
+    rerenderView(view, describedProps());
+    expect(screen.getByTestId('conversation-todo-detail').style.width).toBe('0px');
   });
 
   it('collapses the sidebar and leaves the task rows out of the layout', () => {
