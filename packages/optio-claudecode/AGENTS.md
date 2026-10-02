@@ -416,6 +416,12 @@ DONE / ERROR terminate the session.
   claustrum the cache is `--rox`, so in-session self-update can only EACCES;
   freshness is owned by this unconfined provisioning path. See the addendum
   in `docs/2026-05-31-optio-claudecode-runtime-cache-design.md`.
+  Both the iframe and conversation launches also pin
+  `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` and `CLAUDE_CODE_ENABLE_TASKS=0`, so
+  Claude Code gets `TodoWrite` on models that omit the checklist family
+  (Opus 5 and later) instead of the TaskCreate/TaskGet/TaskList/TaskUpdate
+  set. `ClaudeCodeTaskConfig.env` is applied after these pins and can
+  override either value.
   Conversation mode also pins `CLAUDE_CODE_THINKING_DISPLAY_UPDATES=1`
   (`conversation_launch_env`, set before `extra_env`, which can still
   override it). Since CLI 2.1.267 the model's between-tool narration arrives
