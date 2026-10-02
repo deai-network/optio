@@ -44,6 +44,14 @@ a resume whose history replay never arrives still blocks the plan.
 Grok's wire title for this tool call is "Updating plan"; the tool name
 is `_meta["x.ai/tool"].name` or `rawInput.variant`.
 
+Claude Code's TaskCreate, TaskUpdate, and TaskList are patches, removals,
+and a list snapshot. A partial update leaves an omitted field as it was,
+including status and description. `deleted` removes the row, and TaskList
+replaces membership (`No tasks found` clears it) while keeping a
+description the list line does not carry. On resume, a transcript that
+accepted one of those results rebuilds the list from the transcript
+instead of `.optio-todo.json`.
+
 The same list is written to `widgetData.todos` via `ctx.set_widget_todos`,
 which leaves every other widgetData key in place and does nothing when
 widgetData is not already an object. A failed write is logged and does
@@ -52,16 +60,29 @@ event cannot land on top of a later one. The conversation view renders
 that list in a column to the right of the transcript. The column starts
 open; its chevron collapses the column, and the width eases as it
 moves. A completed row shows a green check. A label ending in
-`(failed)`, in any case, shows a red ×. An empty list clears it. Resume
+`(failed)`, in any case, shows a red ×, and that suffix is left off
+the name on the row. A non-empty description marks the row with an info icon. Hovering
+the info icon says "Click for details". Clicking it opens a column to the right
+of the list, and that column renders the description with the same markdown
+as an assistant reply. The column eases open and shut like the list.
+Collapsing the list hides the column and keeps the selection; the column's
+close control closes only the column. The open row is highlighted. An empty
+list clears it. Resume
 publishes the restored list before the next todo write. Launch
 milestones do not clear the checklist.
 
 An engine whose checklist tool has been tested names it on
-`AgentPromptProfile.todo_tool`. The instructions file then tells the
-agent to keep that list with the named tool, and to append `(failed)`
-to a completed label when a step failed. Grok names `todo_write` and
-Claude Code names `TodoWrite`. The other engines leave the field unset,
-so their instructions say nothing about it.
+`AgentPromptProfile.todo_tool`. A bare name is wrapped as "the `<name>`
+tool". A value that contains a comma is the text after "via", so an
+engine with several tools can name all of them. The instructions then
+tell the agent to keep that list with the named tool or tools, and to
+append `(failed)` to a completed label when a step failed. When the tool
+has a description or details field, the note also tells the agent to
+record what it plans to do or what happened, including why a step failed,
+because that text is shown to the person supervising the process. Grok names
+`todo_write`. Claude Code names `TaskCreate`, `TaskGet`, `TaskList`,
+and `TaskUpdate`. The other engines leave the field unset, so their
+instructions say nothing about it.
 
 ## Shared config vocabulary (`optio_agents.config_types`)
 

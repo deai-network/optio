@@ -26,6 +26,22 @@ class TodoItem:
     text: str
     status: str
     active: str | None = None
+    description: str | None = None
+
+
+@dataclass(frozen=True)
+class TodoFieldPatch:
+    """One row, changing only the fields that are set.
+
+    ``None`` leaves that field as it was. A status the checklist does not
+    know is ignored, so a partial update cannot reset a row to pending.
+    """
+
+    id: str
+    text: str | None = None
+    status: str | None = None
+    active: str | None = None
+    description: str | None = None
 
 
 @dataclass(frozen=True)
@@ -35,7 +51,15 @@ class TodoUpdate:
     # "tool" is a todo_write/write_todo payload. "plan" is an ACP plan
     # snapshot. The tool is the authority for a row it named: a later plan
     # must not mark that row completed while the tool still says in_progress.
+    # "task" is a Claude TaskCreate / TaskUpdate: items are new rows, patches
+    # change named fields, remove_ids drops rows. "task_list" is a TaskList
+    # snapshot and replaces membership.
     source: str = "tool"
+    patches: tuple[TodoFieldPatch, ...] = ()
+    remove_ids: tuple[str, ...] = ()
+    # Several tool results arrived in one event. Applied in order; the
+    # fields above are ignored when this is set.
+    steps: tuple[TodoUpdate, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -52,6 +76,15 @@ def _status(value: str) -> str:
     return value if value in _STATUSES else "pending"
 
 
+def _known_status(value: str) -> str | None:
+    """A status the checklist stores, or None when the value is not one."""
+    if value == "canceled":
+        return "cancelled"
+    if value in _STATUSES:
+        return value
+    return None
+
+
 def assign_ids(items: list[TodoItem]) -> list[TodoItem]:
     """Fill blank ids from the text. A later duplicate gets ``#<index>``."""
     seen: set[str] = set()
@@ -63,6 +96,7 @@ def assign_ids(items: list[TodoItem]) -> list[TodoItem]:
         seen.add(id_)
         out.append(TodoItem(
             id=id_, text=item.text, status=_status(item.status), active=item.active,
+            description=item.description,
         ))
     return out
 
@@ -75,6 +109,30 @@ class TodoProgress:
         self._tool_status: dict[str, str] = {}
 
     def apply(self, update: TodoUpdate) -> ProgressReport | None:
+        if update.steps:
+            report = None
+            for step in update.steps:
+                report = self.apply(step)
+            return report
+        if update.source == "task_list":
+            self._replace_task_list(update.items)
+            self._remember_tool(self.items, replace=True)
+            return self.report()
+        if update.source == "task":
+            if update.items:
+                self._merge(update.items)
+            if update.patches:
+                self._apply_patches(update.patches)
+            if update.remove_ids:
+                self._remove(update.remove_ids)
+            touched = {item.id for item in update.items}
+            touched.update(patch.id for patch in update.patches)
+            touched.difference_update(update.remove_ids)
+            self._remember_tool(
+                [item for item in self.items if item.id in touched],
+                replace=False,
+            )
+            return self.report()
         items = update.items
         if update.source == "plan":
             items = [self._respect_tool(item) for item in items]
@@ -93,6 +151,7 @@ class TodoProgress:
         if status == "completed" and self._tool_status.get(item.text) == "in_progress":
             return TodoItem(
                 id=item.id, text=item.text, status="in_progress", active=item.active,
+                description=item.description,
             )
         return item
 
@@ -123,6 +182,7 @@ class TodoProgress:
             if status is not None and status != item.status:
                 updated.append(TodoItem(
                     id=item.id, text=item.text, status=status, active=item.active,
+                    description=item.description,
                 ))
                 changed = True
             else:
@@ -130,6 +190,76 @@ class TodoProgress:
         if changed:
             self.items = updated
         return changed
+
+    def _replace_task_list(self, items: list[TodoItem]) -> None:
+        """TaskList is the membership. A line can grow a suffix the row
+        does not store: `` (owner)`` or `` [blocked by #…]``. A subject we
+        already have is kept, and so are its active form and description,
+        which the line does not carry."""
+        previous = {item.id: item for item in self.items}
+        out: list[TodoItem] = []
+        for item in items:
+            text = item.text
+            active = None
+            description = None
+            old = previous.get(item.id)
+            if old is not None:
+                active = old.active
+                description = old.description
+                if (
+                    text == old.text
+                    or text.startswith(old.text + " (")
+                    or text.startswith(old.text + " [")
+                ):
+                    text = old.text
+            out.append(TodoItem(
+                id=item.id, text=text, status=_status(item.status), active=active,
+                description=description,
+            ))
+        self.items = out
+
+    def _apply_patches(self, patches: tuple[TodoFieldPatch, ...]) -> None:
+        index = {item.id: i for i, item in enumerate(self.items)}
+        for patch in patches:
+            status = _known_status(patch.status) if patch.status is not None else None
+            slot = index.get(patch.id)
+            if slot is None:
+                text = patch.text if patch.text is not None else f"#{patch.id}"
+                self.items.append(TodoItem(
+                    id=patch.id,
+                    text=text,
+                    status=status or "pending",
+                    active=patch.active,
+                    description=patch.description,
+                ))
+                index[patch.id] = len(self.items) - 1
+                continue
+            previous = self.items[slot]
+            text = previous.text if patch.text is None else patch.text
+            active = previous.active if patch.active is None else patch.active
+            description = (
+                previous.description if patch.description is None else patch.description
+            )
+            self.items[slot] = TodoItem(
+                id=previous.id,
+                text=text,
+                status=previous.status if status is None else status,
+                active=active,
+                description=description,
+            )
+            if text != previous.text and not any(
+                item.text == previous.text for item in self.items
+            ):
+                self._tool_status.pop(previous.text, None)
+
+    def _remove(self, ids: tuple[str, ...]) -> None:
+        drop = set(ids)
+        removed = [item.text for item in self.items if item.id in drop]
+        self.items = [item for item in self.items if item.id not in drop]
+        kept = {item.text for item in self.items}
+        for text in removed:
+            if text not in kept:
+                self._tool_status.pop(text, None)
 
     def _merge(self, incoming: list[TodoItem]) -> None:
         index = {item.id: i for i, item in enumerate(self.items)}
@@ -158,6 +288,7 @@ class TodoProgress:
             if slot is None:
                 stored = TodoItem(
                     id=id_, text=item.text, status=status, active=item.active,
+                    description=item.description,
                 )
                 index[id_] = len(self.items)
                 by_text.setdefault(item.text, len(self.items))
@@ -165,9 +296,12 @@ class TodoProgress:
                 continue
             previous = self.items[slot]
             active = item.active if item.active is not None else previous.active
+            description = (
+                item.description if item.description is not None else previous.description
+            )
             self.items[slot] = TodoItem(
                 id=previous.id, text=item.text or previous.text,
-                status=status, active=active,
+                status=status, active=active, description=description,
             )
             by_text.setdefault(item.text, slot)
 
@@ -199,6 +333,8 @@ class TodoProgress:
             row: dict = {"id": item.id, "text": item.text, "status": item.status}
             if item.active is not None:
                 row["active"] = item.active
+            if item.description:
+                row["description"] = item.description
             rows.append(row)
         return rows
 
@@ -208,6 +344,8 @@ class TodoProgress:
             row: dict = {"id": item.id, "text": item.text, "status": item.status}
             if item.active is not None:
                 row["active"] = item.active
+            if item.description:
+                row["description"] = item.description
             # The todo tool's last status. A later plan must not finish a row
             # this still says is in progress, including after a resume whose
             # history replay never arrives. Absent on rows no tool has named.
@@ -233,6 +371,11 @@ class TodoProgress:
             active = entry.get("active")
             if active is not None and not isinstance(active, str):
                 return None
+            description = entry.get("description")
+            if description is not None and not isinstance(description, str):
+                return None
+            if isinstance(description, str) and description.strip() == "":
+                description = None
             id_ = entry.get("id", "")
             if not isinstance(id_, str):
                 return None
@@ -247,7 +390,10 @@ class TodoProgress:
                 if tool == "in_progress" and _status(status) == "completed":
                     status = "in_progress"
                 tools[entry["text"]] = tool
-            items.append(TodoItem(id=id_, text=entry["text"], status=status, active=active))
+            items.append(TodoItem(
+                id=id_, text=entry["text"], status=status, active=active,
+                description=description,
+            ))
         progress = cls()
         progress.items = assign_ids(items)
         progress._tool_status = tools
@@ -479,6 +625,20 @@ class TodoTracker:
         if self._unsub is not None:
             self._unsub()
             self._unsub = None
+
+    async def use_rebuilt(self, progress: TodoProgress) -> None:
+        """Use a checklist folded from history instead of the saved file.
+
+        One progress line, then the widget publish. An empty fold clears
+        the bar the same way an emptied live list does.
+        """
+        self.progress = progress
+        self._save_ok = True
+        if not progress.items:
+            # _emit only clears the bar after a sentence this tracker logged.
+            self._logged_message = ""
+        self._emit(self.progress.report())
+        await self._publish_widget_todos()
 
     async def restore(self, host) -> bool:
         """Load ``.optio-todo.json``. True when a valid file was read."""

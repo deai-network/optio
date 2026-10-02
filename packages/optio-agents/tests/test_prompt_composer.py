@@ -151,8 +151,23 @@ def test_todo_note_names_the_profile_tool_and_sits_before_the_task():
     note = "Also use a TODO list to describe your progress, via the `TodoWrite` tool."
     assert note in out
     assert "with `(failed)` appended to the end of its label" in out
+    details = (
+        "If your relevant tools support task details or descriptions, "
+        "then also use those fields to describe what you plan to do, or what happened. "
+        "(For example, why did something fail.) "
+        "This information will be made available to the human supervisor watching over the whole process."
+    )
+    assert details in out
+    assert out.index("`(failed)`") < out.index(details)
     assert out.index("## Task") < out.index(note) < out.index("So:") < out.index("do X")
     assert "TODO list" not in _c()
+
+
+def test_todo_note_uses_a_multi_tool_phrase_verbatim():
+    phrase = "the `TaskCreate`, `TaskGet`, `TaskList`, and `TaskUpdate` tools"
+    out = _c(profile=AgentPromptProfile(todo_tool=phrase))
+    assert f"via {phrase}." in out
+    assert "`the `" not in out
 
 
 def test_todo_note_survives_when_the_task_framing_is_omitted():

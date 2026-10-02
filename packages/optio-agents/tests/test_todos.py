@@ -137,6 +137,56 @@ def test_replace_drops_old_ids():
     assert [item.id for item in progress.items] == ["new"]
 
 
+def test_a_patch_that_omits_status_keeps_it():
+    from optio_agents.todos import TodoFieldPatch
+
+    progress = TodoProgress()
+    progress.apply(TodoUpdate(items=[
+        _item("Name", "in_progress", "1", active="Doing"),
+    ], merge=False))
+    progress.apply(TodoUpdate(
+        items=[], merge=True, source="task",
+        patches=(TodoFieldPatch(id="1", text="Name (renamed)"),),
+    ))
+    assert [(item.text, item.status, item.active) for item in progress.items] == [
+        ("Name (renamed)", "in_progress", "Doing"),
+    ]
+    progress.apply(TodoUpdate(
+        items=[], merge=True, source="task",
+        patches=(TodoFieldPatch(id="1", status="failed"),),
+    ))
+    assert progress.items[0].status == "in_progress"
+
+
+def test_remove_ids_drop_the_row():
+    progress = TodoProgress()
+    progress.apply(TodoUpdate(items=[
+        _item("Gone", "pending", "9"),
+        _item("Stay", "pending", "1"),
+    ], merge=False))
+    report = progress.apply(TodoUpdate(
+        items=[], merge=True, source="task", remove_ids=("9",),
+    ))
+    assert [(item.id, item.text) for item in progress.items] == [("1", "Stay")]
+    assert report is not None and report.message == "0 of 1 done"
+
+
+def test_task_list_keeps_a_stored_subject_and_its_active_form():
+    progress = TodoProgress()
+    progress.apply(TodoUpdate(items=[
+        _item("Name (renamed)", "in_progress", "1", active="Doing"),
+    ], merge=False))
+    report = progress.apply(TodoUpdate(items=[
+        _item("Name (renamed) (demo-agent)", "completed", "1"),
+        _item("Other", "pending", "2"),
+    ], merge=False, source="task_list"))
+    assert [(item.id, item.text, item.status, item.active) for item in progress.items] == [
+        ("1", "Name (renamed)", "completed", "Doing"),
+        ("2", "Other", "pending", None),
+    ]
+    assert report is not None and report.percent == 50
+
+
 def test_merge_patches_and_appends():
     progress = TodoProgress()
     progress.apply(TodoUpdate(items=[
@@ -791,6 +841,33 @@ async def test_observe_publishes_the_todo_list():
         {"id": "1", "text": "Write", "status": "in_progress", "active": "Writing"},
         {"id": "2", "text": "Ship", "status": "pending"},
     ]
+
+
+async def test_a_rebuilt_list_is_announced_and_published():
+    ctx = PublishingCtx()
+    tracker = TodoTracker(lambda event: None, ctx)
+    progress = TodoProgress()
+    progress.apply(TodoUpdate(items=[
+        _item("Get the source", "in_progress", "1"),
+    ], merge=False))
+    await tracker.use_rebuilt(progress)
+    await _wait_published(ctx)
+    assert ctx.calls == [(0, 'Now working on Task 1/1, "Get the source"')]
+    assert ctx.published[-1] == [
+        {"id": "1", "text": "Get the source", "status": "in_progress"},
+    ]
+    host = FakeHost()
+    await tracker.save(host)
+    assert host.written is not None
+
+
+async def test_a_rebuilt_empty_list_clears_the_bar():
+    ctx = PublishingCtx()
+    tracker = TodoTracker(lambda event: None, ctx)
+    await tracker.use_rebuilt(TodoProgress())
+    await _wait_published(ctx)
+    assert ctx.calls == [(None, None)]
+    assert ctx.published[-1] == []
 
 
 async def test_observe_publishes_an_empty_list():

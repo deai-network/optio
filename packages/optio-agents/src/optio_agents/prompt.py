@@ -36,7 +36,7 @@ class AgentPromptProfile:
     preamble: str = ""                     # rendered first (grok's identity line)
     browser: BrowserMode = "redirect"      # fallback docs only, see module doc
     delivery_section: str = ""             # rendered just before the task framing
-    todo_tool: str | None = None           # checklist tool; None omits the note
+    todo_tool: str | None = None           # bare tool name, or a comma-containing via-phrase; None omits the note
 
 
 _INTRO = """# Coordination protocol with the host harness
@@ -62,11 +62,21 @@ DEFAULT_CONVERSATION_INSTRUCTIONS = "Let's have a conversation with the user."
 
 
 def _todo_note(tool: str) -> str:
-    """Progress checklist, for an agent whose todo tool the harness reads."""
+    """Progress checklist, for an agent whose todo tool the harness reads.
+
+    A bare name (``todo_write``) is wrapped as ``the `name` tool``. A value
+    that names several tools — it contains a comma — is the text after
+    ``via``, backticks included.
+    """
+    via = tool if "," in tool else f"the `{tool}` tool"
     return (
-        f"Also use a TODO list to describe your progress, via the `{tool}` tool. "
+        f"Also use a TODO list to describe your progress, via {via}. "
         "Express a failed step (an experiment that did not work, for example) "
-        "by adding a completed item with `(failed)` appended to the end of its label."
+        "by adding a completed item with `(failed)` appended to the end of its label. "
+        "If your relevant tools support task details or descriptions, then also use "
+        "those fields to describe what you plan to do, or what happened. "
+        "(For example, why did something fail.) "
+        "This information will be made available to the human supervisor watching over the whole process."
     )
 
 
