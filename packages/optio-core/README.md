@@ -547,6 +547,7 @@ class TaskInstance:
     special: bool = False                    # hidden from default UI views when special=True
     warning: str | None = None               # shown as confirmation prompt before launch
     cancellable: bool = True                 # whether this process can be cancelled
+    schedule_offset_seconds: int | None = None  # second within the minute at which `schedule` fires
 ```
 
 | Field | Type | Description |
@@ -561,6 +562,7 @@ class TaskInstance:
 | `special` | `bool` | Hidden from default UI views when `True` |
 | `warning` | `str \| None` | Warning message shown as confirmation prompt before launch |
 | `cancellable` | `bool` | Whether this process can be cancelled (default: `True`) |
+| `schedule_offset_seconds` | `int \| None` | Second (0–59) within each matching minute at which `schedule` fires; `None` fires at second 0. Use it to spread many minute-aligned schedules across the minute. |
 
 ### `ChildResult`
 

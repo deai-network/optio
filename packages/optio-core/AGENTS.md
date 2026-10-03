@@ -38,6 +38,26 @@ and the blob helpers to persist and restore checkpoint data.
 
 ---
 
+### TaskInstance.schedule_offset_seconds
+
+```python
+@dataclass
+class TaskInstance:
+    ...
+    schedule_offset_seconds: int | None = None
+```
+
+Optional field, last in the dataclass. A cron `schedule` has minute resolution, so every
+task scheduled `*/1 * * * *` fires at second 0 of the same minute. Setting an offset (0-59)
+makes the scheduler build the same `CronTrigger` that `CronTrigger.from_crontab` would,
+plus `second=offset`, so the task fires that many seconds into each matching minute.
+`None` keeps second 0. Applications with many per-item schedules (e.g. one heartbeat per
+item) can spread them by deriving a stable offset from the process id. An out-of-range or
+non-int value is logged as a schedule error and the task is not scheduled, like a bad
+crontab expression.
+
+---
+
 ### TaskInstance.auto_cancel_children
 
 ```python

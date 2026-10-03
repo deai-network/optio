@@ -78,6 +78,10 @@ class TaskInstance(TaskInstanceCore):
     # (resume=True) automatically after the next engine start, post-delay.
     # Requires supports_resume=True (validated at task-sync time).
     auto_resume: bool = False
+    # Second (0-59) within each matching minute at which `schedule` fires;
+    # None fires at second 0. Lets an application spread many minute-aligned
+    # schedules (e.g. one heartbeat per item) across the minute.
+    schedule_offset_seconds: int | None = None
 
 
 @dataclass

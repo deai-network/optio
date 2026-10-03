@@ -13,6 +13,26 @@ logger = logging.getLogger("optio_core_core.scheduler")
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 
+def _cron_trigger(task: TaskInstance):
+    """The CronTrigger for `task.schedule`, firing `task.schedule_offset_seconds`
+    into each matching minute (second 0 when unset)."""
+    from apscheduler.triggers.cron import CronTrigger
+
+    offset = task.schedule_offset_seconds
+    if offset is None:
+        return CronTrigger.from_crontab(task.schedule)
+    if isinstance(offset, bool) or not isinstance(offset, int) or not 0 <= offset <= 59:
+        raise ValueError(f"schedule_offset_seconds must be an int 0-59, got {offset!r}")
+    values = task.schedule.split()
+    if len(values) != 5:
+        raise ValueError(f"Wrong number of fields; got {len(values)}, expected 5")
+    # The fields CronTrigger.from_crontab sets, plus the second.
+    return CronTrigger(
+        second=offset, minute=values[0], hour=values[1], day=values[2],
+        month=values[3], day_of_week=values[4], timezone="local",
+    )
+
+
 class ProcessScheduler:
     """Manages cron schedules for process execution.
 
@@ -101,8 +121,7 @@ class ProcessScheduler:
                 except Exception as e:
                     logger.warning(f"Failed to remove scheduled job {job_id} prior to replace: {e}")
             try:
-                from apscheduler.triggers.cron import CronTrigger
-                trigger = CronTrigger.from_crontab(task.schedule)
+                trigger = _cron_trigger(task)
                 await self._scheduler.add_schedule(
                     self._launch_fn,
                     trigger,
@@ -110,6 +129,9 @@ class ProcessScheduler:
                     args=[task.process_id],
                 )
                 self._jobs[job_id] = task
-                logger.debug(f"Scheduled {task.process_id}: {task.schedule}")
+                logger.debug(
+                    f"Scheduled {task.process_id}: {task.schedule}"
+                    f" (+{task.schedule_offset_seconds or 0}s)"
+                )
             except Exception as e:
                 logger.error(f"Failed to schedule {task.process_id}: {e}")

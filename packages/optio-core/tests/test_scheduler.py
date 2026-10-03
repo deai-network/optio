@@ -162,3 +162,46 @@ async def test_start_actually_runs_trigger_loop():
         assert _test_fires, "trigger never fired — scheduler is initialized but not running"
     finally:
         await ps.stop()
+
+
+def _offset_task(pid: str, offset, schedule: str = "*/1 * * * *") -> TaskInstance:
+    async def fn(ctx):  # pragma: no cover
+        pass
+    return TaskInstance(
+        execute=fn, process_id=pid, name=pid, schedule=schedule,
+        schedule_offset_seconds=offset,
+    )
+
+
+@pytest.mark.asyncio
+async def test_schedule_without_offset_fires_at_second_zero():
+    ps, fake = _ps_with_fake()
+    await ps.sync_schedules([_offset_task("a", None)])
+    fire = fake.jobs["sched_a"]["trigger"].next()
+    assert (fire.second, fire.microsecond) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_schedule_offset_moves_the_fire_second():
+    ps, fake = _ps_with_fake()
+    await ps.sync_schedules([_offset_task("a", 17), _offset_task("b", 59)])
+    assert fake.jobs["sched_a"]["trigger"].next().second == 17
+    assert fake.jobs["sched_b"]["trigger"].next().second == 59
+
+
+@pytest.mark.asyncio
+async def test_schedule_offset_keeps_the_crontab_fields():
+    ps, fake = _ps_with_fake()
+    await ps.sync_schedules([_offset_task("a", 30, schedule="15 3 * * *")])
+    fire = fake.jobs["sched_a"]["trigger"].next()
+    assert (fire.hour, fire.minute, fire.second) == (3, 15, 30)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("offset", [60, -1, True, 1.5])
+async def test_invalid_schedule_offset_is_not_scheduled(offset, caplog):
+    ps, fake = _ps_with_fake()
+    await ps.sync_schedules([_offset_task("bad", offset), _offset_task("good", 5)])
+    assert "sched_bad" not in fake.jobs
+    assert "sched_good" in fake.jobs
+    assert "schedule_offset_seconds" in caplog.text

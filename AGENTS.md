@@ -218,6 +218,7 @@ class TaskInstance:
     cancellable: bool = True                 # whether this process can be cancelled
     ui_widget: str | None = None             # widget name registered via registerWidget() in optio-ui
     auto_cancel_children: bool = True        # cancel(this) recursively cancels active direct descendants; set False for tasks that finalize children themselves
+    schedule_offset_seconds: int | None = None  # second (0-59) within each matching minute at which `schedule` fires; None = second 0
 ```
 
 ---
