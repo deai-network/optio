@@ -343,19 +343,21 @@ def _mib_per_s(num_bytes: int, elapsed_s: float) -> float:
 
 
 # How often archive_workdir's generator emits a bytes-so-far progress trace
-# while streaming the remote tar.
+# while streaming the tar.
 _ARCHIVE_TRACE_PROGRESS_INTERVAL_S = 10.0
 
-# archive_workdir reads the remote archive in blocks of this size. asyncssh's
+# archive_workdir reads the archive in blocks of this size. asyncssh's
 # `async for` over stdout is a readline() loop, which cuts a gzip stream into
 # ~300-byte pieces, each one a GridFS write in the snapshot consumer (~1 MiB/s
 # overall). asyncssh returns at most ~200 KiB per read() however much is asked
 # for, so anything >= 256 KiB behaves the same. See
-# docs/2026-09-13-snapshot-archive-throughput-design.md.
+# docs/2026-09-13-snapshot-archive-throughput-design.md. LocalHost uses it as
+# its pipe reader's buffer limit too, so the archive is never buffered ahead
+# of the consumer by more than a couple of blocks.
 _ARCHIVE_READ_BLOCK = 256 * 1024
 
-# How much of the remote archive pipeline's stderr archive_workdir keeps for
-# its error message.
+# How much of the archive pipeline's stderr archive_workdir keeps for its
+# error message.
 _ARCHIVE_STDERR_TAIL_BYTES = 4096
 
 
@@ -371,9 +373,9 @@ def _archive_command(workdir: str, patterns: list[str], compressor: str) -> str:
     """Shell command that writes a gzip tar of ``workdir`` to stdout.
 
     ``compressor`` is ``"pigz -1"`` or ``"gzip -1"``; both emit gzip, so
-    ``restore_workdir``'s ``tar xzf -`` reads either. Runs under ``bash``
-    explicitly (the remote login shell may be dash) so ``pipefail`` carries a
-    tar failure through the pipe into the exit status.
+    either host's ``restore_workdir`` reads either. Runs under ``bash``
+    explicitly (the remote login shell, or the local ``/bin/sh``, may be dash)
+    so ``pipefail`` carries a tar failure through the pipe into the exit status.
     """
     excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in patterns)
     script = (
@@ -623,8 +625,76 @@ class LocalHost:
     def archive_workdir(
         self, exclude: list[str] | None,
     ) -> "AsyncIterator[bytes]":
-        from optio_host.archive import yield_workdir_archive
-        return yield_workdir_archive(self.workdir, exclude=exclude)
+        """Stream a gzip tar of the workdir through the same ``tar | pigz -1``
+        (or ``gzip -1``) pipeline RemoteHost runs over SSH. Python ``tarfile``
+        at level 9, buffered whole in memory, took 62 s for a 743 MiB workdir
+        against a 30 s cancel grace (docs/2026-10-03-local-archive-throughput-design.md);
+        it remains only as the fallback for hosts without ``tar`` or ``bash``.
+        """
+        from optio_host.archive import DEFAULT_WORKDIR_EXCLUDES, yield_workdir_archive
+        if shutil.which("tar") is None or shutil.which("bash") is None:
+            return yield_workdir_archive(self.workdir, exclude=exclude)
+        patterns = list(DEFAULT_WORKDIR_EXCLUDES) if exclude is None else list(exclude)
+
+        async def _gen() -> "AsyncIterator[bytes]":
+            compressor = "pigz -1" if shutil.which("pigz") else "gzip -1"
+            cmd = _archive_command(self.workdir, patterns, compressor)
+            _trace(
+                "LocalHost.archive_workdir START workdir=%s compressor=%s excludes=%r",
+                self.workdir, compressor, patterns,
+            )
+            t0 = _time.monotonic()
+            total = 0
+            last_report = t0
+            # Own process group, so an abandoned capture can kill tar and the
+            # compressor along with the bash wrapper.
+            proc = await asyncio.create_subprocess_exec(
+                "/bin/sh", "-c", cmd,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                limit=_ARCHIVE_READ_BLOCK,
+                start_new_session=True,
+            )
+            stderr_task = asyncio.create_task(
+                _read_tail(proc.stderr, _ARCHIVE_STDERR_TAIL_BYTES),
+            )
+            completed = False
+            try:
+                while chunk := await proc.stdout.read(_ARCHIVE_READ_BLOCK):
+                    total += len(chunk)
+                    yield chunk
+                    now = _time.monotonic()
+                    if now - last_report >= _ARCHIVE_TRACE_PROGRESS_INTERVAL_S:
+                        last_report = now
+                        _trace(
+                            "LocalHost.archive_workdir progress bytes=%d rate=%.1fMiB/s",
+                            total, _mib_per_s(total, now - t0),
+                        )
+                stderr_tail = await stderr_task
+                await proc.wait()
+                completed = True
+            finally:
+                if not completed:
+                    # Abandoned mid-stream (consumer closed or cancelled): the
+                    # pipeline would otherwise block on a full pipe for good.
+                    self._killpg(proc.pid, _signal.SIGKILL)
+                    stderr_task.cancel()
+                    await proc.wait()
+            elapsed = _time.monotonic() - t0
+            _trace(
+                "LocalHost.archive_workdir DONE bytes=%d elapsed=%.1fs "
+                "rate=%.1fMiB/s exit=%s",
+                total, elapsed, _mib_per_s(total, elapsed), proc.returncode,
+            )
+            if proc.returncode != 0:
+                detail = stderr_tail.decode("utf-8", errors="replace").strip()
+                raise RuntimeError(
+                    f"local workdir archive failed (exit {proc.returncode})"
+                    + (f": {detail}" if detail else "")
+                )
+
+        return _gen()
 
     async def restore_workdir(
         self, stream: "AsyncIterator[bytes]",

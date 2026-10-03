@@ -6,8 +6,10 @@ a stream, wiping the destination first and extracting in. Both run their
 synchronous tarfile work in a thread executor so the event loop stays
 responsive.
 
-These helpers back `LocalHost.archive_workdir` and `LocalHost.restore_workdir`.
-`RemoteHost` does not use them — it shells out to `tar` over SSH instead.
+`consume_workdir_archive` backs `LocalHost.restore_workdir`.
+`yield_workdir_archive` is only `LocalHost.archive_workdir`'s fallback for a
+host without `tar` or `bash`; normally both hosts stream `tar | pigz -1` (or
+`gzip -1`), RemoteHost over SSH and LocalHost as a local subprocess.
 """
 
 from __future__ import annotations
@@ -51,9 +53,13 @@ def _excluded(relpath: str, patterns: list[str]) -> bool:
 
 
 def _build_archive_bytes(root: str, patterns: list[str]) -> bytes:
-    """Build the entire tar.gz in memory and return it as bytes."""
+    """Build the entire tar.gz in memory and return it as bytes.
+
+    Level 1, not tarfile's default 9: level 9 is ~7x slower for ~10% smaller
+    output, and a snapshot capture runs against the cancel grace.
+    """
     buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+    with tarfile.open(fileobj=buf, mode="w:gz", compresslevel=1) as tar:
         for dirpath, dirnames, filenames in os.walk(root):
             rel_dir = os.path.relpath(dirpath, root)
             dirnames[:] = [

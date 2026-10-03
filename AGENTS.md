@@ -564,6 +564,9 @@ Compound index `{processId: 1, capturedAt: -1}`. Retention: keep latest 5; older
 **Host method additions** (both `LocalHost` and `RemoteHost`):
 `launch_opencode(..., env=None)`, `opencode_import(db_path, session_json)`, `opencode_export(db_path, session_id) -> bytes`,
 `archive_workdir(exclude) -> AsyncIterator[bytes]`, `restore_workdir(stream)`, `remove_file(path)`.
+`archive_workdir` streams `tar | pigz -1` (`gzip -1` without pigz) on both hosts: `RemoteHost` over SSH,
+`LocalHost` as a local subprocess group that is killed if the capture is abandoned. Only a local host without
+`tar` or `bash` falls back to in-process `tarfile` (level 1). See `docs/2026-10-03-local-archive-throughput-design.md`.
 
 Full details: `packages/optio-opencode/AGENTS.md`.
 
