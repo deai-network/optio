@@ -191,6 +191,44 @@ async def update_status(
     )
 
 
+async def finalize_if_active(
+    db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId,
+    status: ProcessStatus, *, expected_state: str | None = None,
+) -> bool:
+    """Conditionally write a terminal status onto a row that is still active.
+
+    Matches only while `status.state` is in ACTIVE_STATES -- or, with
+    `expected_state`, only while it is exactly that state -- so a writer that
+    already moved the row on is never overwritten. Also clears
+    `widgetUpstream`, clears `autoResumeScheduled` for `failed`, and sets
+    `expireAt` from the row's `ttlSeconds`. Returns True if the row was
+    updated.
+
+    Used to record a final state late, and to settle a row whose final write
+    was lost. Spec: docs/2026-10-03-lost-final-state-writes-design.md
+    """
+    from optio_core.state_machine import ACTIVE_STATES
+
+    coll = _collection(db, prefix)
+    now = datetime.now(timezone.utc)
+    ttl_doc = await coll.find_one({"_id": process_oid}, {"ttlSeconds": 1})
+    expire_at = compute_expire_at((ttl_doc or {}).get("ttlSeconds"), now=now)
+    set_doc: dict[str, Any] = {"status": status.to_dict(), "widgetUpstream": None}
+    if status.state == "failed":
+        set_doc["autoResumeScheduled"] = False
+    if expire_at is not None:
+        set_doc["expireAt"] = expire_at
+    state_match: Any = (
+        expected_state if expected_state is not None
+        else {"$in": list(ACTIVE_STATES)}
+    )
+    result = await coll.update_one(
+        {"_id": process_oid, "status.state": state_match},
+        {"$set": set_doc},
+    )
+    return bool(result.modified_count)
+
+
 async def set_auto_resume_scheduled(
     db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId, value: bool,
 ) -> None:

@@ -3,13 +3,16 @@
 import asyncio
 import logging
 import os as _os
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, Awaitable
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.errors import PyMongoError
 
+logger = logging.getLogger(__name__)
 _trace_logger = logging.getLogger("optio_core.cancel_trace")
 _CANCEL_TRACE = _os.environ.get("OPTIO_CANCEL_TRACE", "0").lower() in ("1", "true", "yes")
 
@@ -29,7 +32,7 @@ from optio_core.store import (
     update_status, clear_result_fields,
     create_child_process, append_log,
     clear_widget_upstream, compute_expire_at,
-    _collection,
+    finalize_if_active, _collection,
 )
 from optio_core.context import ProcessContext
 from optio_core.exceptions import ChildProcessFailed
@@ -45,6 +48,26 @@ class _CancelEntry:
     """
     flag: asyncio.Event
     deadline: float | None = None
+
+
+# Rule 3 retry backoff: first retry on the next supervisor tick, then doubling
+# from this delay up to the cap. No attempt limit.
+_FINAL_RETRY_FIRST_DELAY = 1.0
+_FINAL_RETRY_MAX_DELAY = 30.0
+
+
+@dataclass
+class _UnrecordedFinal:
+    """A final state that could not be written to Mongo, kept for retry.
+
+    `status` is the terminal status still to write (None once written).
+    `cascade` asks for the force-cancel cascade to direct active children to
+    be re-run. Spec: docs/2026-10-03-lost-final-state-writes-design.md
+    """
+    status: ProcessStatus | None
+    cascade: bool = False
+    attempts: int = 0
+    next_attempt: float = 0.0
 
 
 class Executor:
@@ -67,6 +90,11 @@ class Executor:
         self._notify_parent_failure = notify_parent_failure
         self._cancellation_flags: dict[ObjectId, _CancelEntry] = {}
         self._running_tasks: dict[ObjectId, asyncio.Task] = {}
+        # Rules 3 and 4 of docs/2026-10-03-lost-final-state-writes-design.md:
+        # final states that could not be written (retried by the supervisor
+        # loop), and OIDs whose force_cancel is still in flight.
+        self._unrecorded_finals: dict[ObjectId, _UnrecordedFinal] = {}
+        self._force_cancelling: set[ObjectId] = set()
         self._task_registry: dict[str, TaskInstance] = {}
         # Task→launcher return channel (in-memory only, same-process).
         # Keyed by processId string. Registry holds published objects for
@@ -189,6 +217,17 @@ class Executor:
         if current is None:
             raise RuntimeError("_execute_process must be called from within an asyncio Task")
         self._running_tasks[oid] = current
+        # A new run of this row supersedes a final state still parked from an
+        # earlier run (Rule 3): the row was launchable, so that write is moot.
+        self._unrecorded_finals.pop(oid, None)
+
+        # Rule 3 (docs/2026-10-03-lost-final-state-writes-design.md): `final`
+        # is the terminal status this run means to write, noted as soon as
+        # the outcome is known; `final_recorded` flips once that write has
+        # landed. If the finally below is reached without it, the status is
+        # parked for the supervisor loop to retry.
+        final: ProcessStatus | None = None
+        final_recorded = False
 
         try:
             now = datetime.now(timezone.utc)
@@ -231,14 +270,15 @@ class Executor:
                 ctx._parent_listener = _listener
 
             if execute_fn is None:
+                final = ProcessStatus(
+                    state="failed", error="No execute function found",
+                    failed_at=datetime.now(timezone.utc),
+                )
                 await update_status(
-                    self._db, self._prefix, oid,
-                    ProcessStatus(
-                        state="failed", error="No execute function found",
-                        failed_at=datetime.now(timezone.utc),
-                    ),
+                    self._db, self._prefix, oid, final,
                     expire_at=compute_expire_at(ttl_seconds),
                 )
+                final_recorded = True
                 return ("failed", None)
 
             start_time = time.monotonic()
@@ -286,15 +326,16 @@ class Executor:
                         "CANCEL-TRACE %s: executor write cancelled (raised CancelledError)",
                         proc["processId"],
                     )
+                    final = ProcessStatus(
+                        state="cancelled",
+                        stopped_at=datetime.now(timezone.utc),
+                    )
                     await ctx.flush_final_progress()
                     await update_status(
-                        self._db, self._prefix, oid,
-                        ProcessStatus(
-                            state="cancelled",
-                            stopped_at=datetime.now(timezone.utc),
-                        ),
+                        self._db, self._prefix, oid, final,
                         expire_at=compute_expire_at(ttl_seconds),
                     )
+                    final_recorded = True
                     await append_log(
                         self._db, self._prefix, oid, "event",
                         "State changed to cancelled (raised CancelledError)",
@@ -303,36 +344,37 @@ class Executor:
                     await self._cleanup_ephemeral(str(oid))
                 raise
             except Exception as e:
+                final = ProcessStatus(
+                    state="failed", error=str(e),
+                    failed_at=datetime.now(timezone.utc),
+                )
                 await ctx.flush_final_progress()
                 await update_status(
-                    self._db, self._prefix, oid,
-                    ProcessStatus(
-                        state="failed", error=str(e),
-                        failed_at=datetime.now(timezone.utc),
-                    ),
+                    self._db, self._prefix, oid, final,
                     expire_at=compute_expire_at(ttl_seconds),
                 )
+                final_recorded = True
                 await append_log(self._db, self._prefix, oid, "error", str(e))
                 await clear_widget_upstream(self._db, self._prefix, oid)
                 await self._cleanup_ephemeral(str(oid))
                 return ("failed", e)
 
+            # Note the outcome before flushing, so a flush that fails still
+            # leaves the right state to retry; rebuilt after the flush so the
+            # recorded timing matches what it was before.
+            final = self._terminal_status(end_state, start_time)
             await ctx.flush_final_progress()
-            elapsed = time.monotonic() - start_time
+            final = self._terminal_status(end_state, start_time)
 
             if end_state == "done":
                 _trace(
                     "CANCEL-TRACE %s: executor write done", proc["processId"],
                 )
                 await update_status(
-                    self._db, self._prefix, oid,
-                    ProcessStatus(
-                        state="done",
-                        done_at=datetime.now(timezone.utc),
-                        duration=round(elapsed, 2),
-                    ),
+                    self._db, self._prefix, oid, final,
                     expire_at=compute_expire_at(ttl_seconds),
                 )
+                final_recorded = True
                 await append_log(self._db, self._prefix, oid, "event", "State changed to done")
             elif end_state == "cancelled":
                 _trace(
@@ -340,13 +382,10 @@ class Executor:
                     proc["processId"],
                 )
                 await update_status(
-                    self._db, self._prefix, oid,
-                    ProcessStatus(
-                        state="cancelled",
-                        stopped_at=datetime.now(timezone.utc),
-                    ),
+                    self._db, self._prefix, oid, final,
                     expire_at=compute_expire_at(ttl_seconds),
                 )
+                final_recorded = True
                 await append_log(self._db, self._prefix, oid, "event", "State changed to cancelled")
 
             await clear_widget_upstream(self._db, self._prefix, oid)
@@ -363,6 +402,30 @@ class Executor:
             if _fut is not None and not _fut.done():
                 from optio_core.exceptions import ResultNotPublished
                 _fut.set_exception(ResultNotPublished(_pid))
+            # Rule 3: the final write never landed (Mongo unreachable, or an
+            # error before the outcome was known). A CancelledError unwind is
+            # left alone: force_cancel, shutdown (Rule 2) or the next start
+            # (Rule 1) owns that row.
+            _exc = sys.exc_info()[1]
+            if not final_recorded and not isinstance(_exc, asyncio.CancelledError):
+                if final is None:
+                    final = ProcessStatus(
+                        state="failed",
+                        error=f"Final state could not be recorded: {_exc!r}",
+                        failed_at=datetime.now(timezone.utc),
+                    )
+                self._park_final(oid, final, cause=_exc)
+
+    @staticmethod
+    def _terminal_status(end_state: str, start_time: float) -> ProcessStatus:
+        """Terminal status for a task body that returned ('done' or 'cancelled')."""
+        now = datetime.now(timezone.utc)
+        if end_state == "done":
+            return ProcessStatus(
+                state="done", done_at=now,
+                duration=round(time.monotonic() - start_time, 2),
+            )
+        return ProcessStatus(state="cancelled", stopped_at=now)
 
     async def execute_child(
         self,
@@ -476,48 +539,105 @@ class Executor:
         )
         return True
 
-    async def force_cancel(self, oid: ObjectId) -> None:
-        """Hard-cancel a process whose cooperative deadline has expired.
+    def owns(self, oid: ObjectId) -> bool:
+        """True while this executor still has a task, a cancel entry or a
+        force-cancel in flight for `oid`.
 
-        Calls Task.cancel() on the tracked asyncio Task, awaits a bounded
-        unwind, then writes the conditional 'failed' terminal state to
-        Mongo via _write_force_cancelled_state. After the local terminal
-        write, cascade unconditionally to direct active children —
-        captures both auto-propagate descendants (already in supervisor
-        map; idempotent) and opt-out descendants (only this cascade
-        reaches them).
+        A task registers its entry before it writes `running`, and writes its
+        final state before it drops the entry. So a row in `running`,
+        `cancel_requested` or `cancelling` for which this returns False has
+        lost its final write (Rule 4 of
+        docs/2026-10-03-lost-final-state-writes-design.md).
         """
-        from optio_core._force_cancel import _write_force_cancelled_state
+        return (
+            oid in self._cancellation_flags
+            or oid in self._running_tasks
+            or oid in self._force_cancelling
+        )
+
+    def _park_final(
+        self, oid: ObjectId, status: ProcessStatus | None, *,
+        cascade: bool = False, cause: BaseException | None = None,
+    ) -> None:
+        """Keep a final state (and/or a force-cancel cascade) that could not
+        be written, for retry_unrecorded_finals. A status already parked for
+        the same OID wins; cascade requests accumulate."""
+        entry = self._unrecorded_finals.get(oid)
+        if entry is None:
+            self._unrecorded_finals[oid] = _UnrecordedFinal(status=status, cascade=cascade)
+            logger.warning(
+                "Could not record the final state (%s) of process %s: %r. "
+                "Retrying in the background.",
+                status.state if status is not None else "child cascade", oid, cause,
+            )
+            return
+        if entry.status is None:
+            entry.status = status
+        entry.cascade = entry.cascade or cascade
+
+    async def _record_final(self, oid: ObjectId, entry: _UnrecordedFinal) -> None:
+        """Write a parked final state, then run a parked cascade. Raises
+        PyMongoError while Mongo is still unreachable; the entry then keeps
+        whatever is left to do."""
+        if entry.status is not None:
+            state = entry.status.state
+            written = await finalize_if_active(self._db, self._prefix, oid, entry.status)
+            entry.status = None
+            if written:
+                await append_log(
+                    self._db, self._prefix, oid, "event",
+                    f"State recorded late: {state} (database was unavailable)",
+                )
+                await self._cleanup_ephemeral(str(oid))
+        if entry.cascade:
+            await self._force_cancel_children(oid)
+            entry.cascade = False
+
+    async def retry_unrecorded_finals(self) -> None:
+        """Retry the parked final states that are due (Rule 3). Called by the
+        supervisor loop on every tick. A row that is no longer active is left
+        alone and its entry dropped; while Mongo stays unreachable the next
+        attempt backs off, doubling up to _FINAL_RETRY_MAX_DELAY."""
+        now = time.monotonic()
+        for oid, entry in list(self._unrecorded_finals.items()):
+            if entry.next_attempt > now or self.owns(oid):
+                continue
+            try:
+                await self._record_final(oid, entry)
+            except PyMongoError as e:
+                entry.attempts += 1
+                entry.next_attempt = time.monotonic() + min(
+                    _FINAL_RETRY_MAX_DELAY,
+                    _FINAL_RETRY_FIRST_DELAY * 2 ** (entry.attempts - 1),
+                )
+                logger.debug(
+                    "Final state of process %s still not recorded (retry %d): %r",
+                    oid, entry.attempts, e,
+                )
+                continue
+            self._unrecorded_finals.pop(oid, None)
+            logger.warning(
+                "Final state of process %s recorded late, after %d failed retries",
+                oid, entry.attempts,
+            )
+
+    async def record_parked_final_now(self, oid: ObjectId) -> bool:
+        """If a final state is parked for `oid`, write it now, ignoring the
+        backoff. Returns True if one was parked. Raises PyMongoError while
+        Mongo is still unreachable; the entry then stays parked."""
+        entry = self._unrecorded_finals.get(oid)
+        if entry is None:
+            return False
+        await self._record_final(oid, entry)
+        self._unrecorded_finals.pop(oid, None)
+        return True
+
+    async def _force_cancel_children(self, oid: ObjectId) -> None:
+        """Cascade a force-cancel to direct active children. Unconditional --
+        force is force."""
         from optio_core.store import list_direct_children
         from optio_core.state_machine import ACTIVE_STATES
 
-        task = self._running_tasks.get(oid)
-        _trace(
-            "force_cancel oid=%s task=%s done=%s",
-            oid, task, task.done() if task else None,
-        )
-        if task is not None and not task.done():
-            _trace("force_cancel oid=%s: calling task.cancel() + 2s shield wait", oid)
-            task.cancel()
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(task),
-                    timeout=self._optio._config.force_cancel_shield_seconds,
-                )
-                _trace("force_cancel oid=%s: task unwound within shield window", oid)
-            except asyncio.TimeoutError:
-                _trace("force_cancel oid=%s: 2s shield TIMEOUT — task still running", oid)
-                pass
-            except asyncio.CancelledError:
-                _trace("force_cancel oid=%s: task acknowledged Cancel", oid)
-                pass
-            except Exception as _e:
-                _trace("force_cancel oid=%s: task raised %s: %s",
-                       oid, type(_e).__name__, _e)
-                pass
-        await _write_force_cancelled_state(self._db, self._prefix, oid)
-
-        # Cascade to direct active children. Unconditional — force is force.
         children = await list_direct_children(
             self._db, self._prefix, oid, states=ACTIVE_STATES,
         )
@@ -530,3 +650,69 @@ class Executor:
                 *(self.force_cancel(c["_id"]) for c in children),
                 return_exceptions=True,
             )
+
+    async def force_cancel(self, oid: ObjectId) -> None:
+        """Hard-cancel a process whose cooperative deadline has expired.
+
+        Calls Task.cancel() on the tracked asyncio Task, awaits a bounded
+        unwind, then writes the conditional 'failed' terminal state to
+        Mongo via _write_force_cancelled_state. After the local terminal
+        write, cascade unconditionally to direct active children —
+        captures both auto-propagate descendants (already in supervisor
+        map; idempotent) and opt-out descendants (only this cascade
+        reaches them).
+
+        If Mongo is unreachable, the write and the cascade are parked for
+        retry_unrecorded_finals instead of raising (Rule 3 of
+        docs/2026-10-03-lost-final-state-writes-design.md).
+        """
+        from optio_core._force_cancel import (
+            FORCE_CANCEL_ERROR, _write_force_cancelled_state,
+        )
+
+        task = self._running_tasks.get(oid)
+        _trace(
+            "force_cancel oid=%s task=%s done=%s",
+            oid, task, task.done() if task else None,
+        )
+        # The row stays owned by this engine until our own write is done,
+        # even after the task's finally has dropped its entries (Rule 4).
+        self._force_cancelling.add(oid)
+        try:
+            if task is not None and not task.done():
+                _trace("force_cancel oid=%s: calling task.cancel() + 2s shield wait", oid)
+                task.cancel()
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(task),
+                        timeout=self._optio._config.force_cancel_shield_seconds,
+                    )
+                    _trace("force_cancel oid=%s: task unwound within shield window", oid)
+                except asyncio.TimeoutError:
+                    _trace("force_cancel oid=%s: 2s shield TIMEOUT — task still running", oid)
+                    pass
+                except asyncio.CancelledError:
+                    _trace("force_cancel oid=%s: task acknowledged Cancel", oid)
+                    pass
+                except Exception as _e:
+                    _trace("force_cancel oid=%s: task raised %s: %s",
+                           oid, type(_e).__name__, _e)
+                    pass
+            try:
+                await _write_force_cancelled_state(self._db, self._prefix, oid)
+            except PyMongoError as e:
+                self._park_final(
+                    oid,
+                    ProcessStatus(
+                        state="failed", error=FORCE_CANCEL_ERROR,
+                        failed_at=datetime.now(timezone.utc),
+                    ),
+                    cascade=True, cause=e,
+                )
+                return
+            try:
+                await self._force_cancel_children(oid)
+            except PyMongoError as e:
+                self._park_final(oid, None, cascade=True, cause=e)
+        finally:
+            self._force_cancelling.discard(oid)

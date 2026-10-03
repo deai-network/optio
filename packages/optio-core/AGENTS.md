@@ -266,6 +266,13 @@ await optio_core.group_cancel_and_wait(
            # whose metadata matches the filter — use group_cancel instead.
 ```
 
+A matching row in `running`, `cancel_requested` or `cancelling` that no task in
+this engine owns has lost its final-state write. Such a row is settled instead of
+waited on: to the final state the executor still has queued for it, if any, or else
+to `failed` with `"Process had no running task in this engine; its final state was
+never recorded"`. `cancel()` and `cancel_and_wait()` do the same. This assumes one
+engine per (database, prefix). Spec: `docs/2026-10-03-lost-final-state-writes-design.md`.
+
 `metadata_filter` is a non-empty `dict[str, Any]` (AND-equality match against task
 metadata); `{}` / `None` is rejected with `ValueError` (use `Optio.shutdown()` to
 drain everything).

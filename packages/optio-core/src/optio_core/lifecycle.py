@@ -34,6 +34,7 @@ from optio_core.store import (
     upsert_process, remove_stale_processes, find_stale_process_ids,
     get_process_by_process_id, update_status, clear_result_fields,
     append_log, compute_expire_at, purge_processes, set_auto_resume_scheduled,
+    finalize_if_active,
 )
 from optio_core.state_machine import (
     ACTIVE_STATES, CANCELLABLE_STATES, DISMISSABLE_STATES, END_STATES,
@@ -46,6 +47,14 @@ from clamator_over_redis import RedisRpcServer
 from optio_core.scheduler import ProcessScheduler
 
 logger = logging.getLogger("optio_core_core")
+
+# Rule 4 of docs/2026-10-03-lost-final-state-writes-design.md: states in which
+# a row with no owning task has lost its final write, and what it settles to.
+_ORPHAN_STATES = frozenset({"running", "cancel_requested", "cancelling"})
+ORPHAN_ERROR = (
+    "Process had no running task in this engine; "
+    "its final state was never recorded"
+)
 
 
 def _trace(fmt: str, *args: object) -> None:
@@ -674,6 +683,10 @@ class Optio:
                 "CANCEL-TRACE %s: request_cancel_with_deadline found=%s",
                 process_id, found,
             )
+            if not found:
+                # No task in this engine owns the row we just moved to
+                # cancel_requested: its final write was lost (Rule 4).
+                await self._settle_if_orphaned(proc, "cancel_requested")
             if found:
                 # Conditional: only advance to 'cancelling' if the row is
                 # still in 'cancel_requested'. If the executor has already
@@ -739,6 +752,8 @@ class Optio:
             state = proc["status"]["state"]
             if state not in ACTIVE_STATES:
                 return state
+            if await self._settle_if_orphaned(proc, state):
+                continue  # Rule 4: settled; the re-read returns its state
             if time.monotonic() >= deadline:
                 raise asyncio.TimeoutError(
                     f"Process {process_id} did not reach terminal state within {ceiling}s"
@@ -883,6 +898,8 @@ class Optio:
                 if proc is None or proc["status"]["state"] not in ACTIVE_STATES:
                     i += 1
                     continue
+                if await self._settle_if_orphaned(proc, proc["status"]["state"]):
+                    continue  # Rule 4: settled; the re-read sees it terminal
                 if time.monotonic() >= deadline:
                     remaining = len(pending) - i
                     raise asyncio.TimeoutError(
@@ -896,6 +913,46 @@ class Optio:
                     self._config.mongo_db, self._config.prefix, metadata_filter,
                 )
             return len(pending)
+
+    async def _settle_if_orphaned(self, proc: dict, observed_state: str) -> bool:
+        """Settle a row whose final write was lost, instead of waiting on it.
+
+        Applies to a row seen in `running`, `cancel_requested` or
+        `cancelling` that no task, cancel entry or force-cancel in this
+        engine owns (see Executor.owns). A final state parked for it
+        (Rule 3) is written as is; otherwise the row becomes `failed` with
+        ORPHAN_ERROR, but only while it is still in `observed_state`.
+        Returns True if the row is now settled. `scheduled` never
+        qualifies: launch_process writes it before the task registers.
+
+        Assumes one engine per (database, prefix), as Rule 1 does.
+        Spec: docs/2026-10-03-lost-final-state-writes-design.md (Rule 4)
+        """
+        if observed_state not in _ORPHAN_STATES or self._executor is None:
+            return False
+        oid = proc["_id"]
+        if self._executor.owns(oid):
+            return False
+        if await self._executor.record_parked_final_now(oid):
+            return True
+        db, prefix = self._config.mongo_db, self._config.prefix
+        status = ProcessStatus(
+            state="failed", error=ORPHAN_ERROR,
+            failed_at=datetime.now(timezone.utc),
+        )
+        if not await finalize_if_active(
+            db, prefix, oid, status, expected_state=observed_state,
+        ):
+            return False
+        await append_log(
+            db, prefix, oid, "event",
+            f"State reconciled: {observed_state} -> failed (no running task)",
+        )
+        logger.warning(
+            "Settled process %s (%s): it was %s with no running task in this engine",
+            proc.get("processId"), oid, observed_state,
+        )
+        return True
 
     async def dismiss(self, process_id: str) -> DismissOutcome:
         """Dismiss a completed process (reset to idle). Returns DismissOutcome
@@ -1210,7 +1267,9 @@ class Optio:
         logger.info(f"Reconciled {len(stale)} interrupted process(es) to 'failed'")
 
     async def _supervisor_loop(self) -> None:
-        """Scan for past-deadline cancellations every 500 ms; force-cancel them."""
+        """Scan for past-deadline cancellations every 500 ms; force-cancel them.
+        Also retries final states that could not be written (Rule 3 of
+        docs/2026-10-03-lost-final-state-writes-design.md)."""
         while self._running:
             try:
                 now = time.monotonic()
@@ -1227,6 +1286,11 @@ class Optio:
                         await self._executor.force_cancel(oid)
             except Exception as e:
                 logger.exception(f"Supervisor loop error: {e}")
+            try:
+                if self._executor is not None:
+                    await self._executor.retry_unrecorded_finals()
+            except Exception as e:
+                logger.exception(f"Supervisor loop error while retrying final states: {e}")
             await asyncio.sleep(0.5)
 
     async def _auto_resume_timer(self) -> None:
