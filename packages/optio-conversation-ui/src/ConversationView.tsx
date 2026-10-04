@@ -315,7 +315,8 @@ const SEND_BUTTON_WIDTH = 222;
 // Makes the reserved SEND_BUTTON_WIDTH slot actually filled by the button
 // rather than left-aligned inside empty space: the single-action case (a
 // plain antd Button) already fills its parent at width:100%, and the
-// dropdown-button case (Space.Compact, block=false so it does not fight
+// split-button case (vultus's Space.Compact group, found by its stable
+// `vultus-combined-action-button` class; not block, so it does not fight
 // other flex parents elsewhere) is told to fill this specific slot, with
 // the main half absorbing the extra room and the chevron half staying its
 // natural size.
@@ -326,8 +327,8 @@ function ensureSendButtonStyle(): void {
   el.id = SEND_BUTTON_STYLE_ID;
   el.textContent = `.optio-cc-send-btn { display: inline-flex; }
   .optio-cc-send-btn > .ant-btn { width: 100%; }
-  .optio-cc-send-btn > .ant-dropdown-button { width: 100%; }
-  .optio-cc-send-btn > .ant-dropdown-button > .ant-btn:first-child { flex: auto; }`;
+  .optio-cc-send-btn > .vultus-combined-action-button { width: 100%; }
+  .optio-cc-send-btn > .vultus-combined-action-button > .ant-btn:first-child { flex: auto; }`;
   document.head.appendChild(el);
 }
 

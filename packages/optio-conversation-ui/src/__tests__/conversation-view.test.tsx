@@ -810,6 +810,21 @@ describe('ConversationView steering', () => {
     expect(screen.queryByText('Interrupt and send')).toBeNull();
   });
 
+  // antd 6 pre-migration: vultus composes its split button from Space.Compact
+  // with a stable class instead of antd's Dropdown.Button. The send slot's
+  // fill rules must target that class (not antd's internal
+  // .ant-dropdown-button) and must actually match the rendered button.
+  it('send slot CSS targets the vultus split button by its stable class', () => {
+    renderView(makeProps({ busy: true, state: busyState(), onSteer: vi.fn(async () => true) }));
+    const css = document.getElementById('optio-cc-send-button-style')?.textContent ?? '';
+    expect(css).not.toContain('ant-dropdown-button');
+    const group = '.optio-cc-send-btn > .vultus-combined-action-button';
+    expect(css).toContain(`${group} { width: 100%; }`);
+    expect(css).toContain(`${group} > .ant-btn:first-child { flex: auto; }`);
+    expect(document.querySelector(group)).not.toBeNull();
+    expect(document.querySelector(`${group} > .ant-btn:first-child`)).not.toBeNull();
+  });
+
   it('busy without onSteer: the single Send stays (engines without steering)', () => {
     renderView(makeProps({ busy: true, state: busyState() }));
     const combined = screen.getByTestId('conversation-send-combined');
