@@ -76,3 +76,28 @@ describe('OptioProvider resolution', () => {
     expect(screen.getByTestId('live').textContent).toBe('false');
   });
 });
+
+describe('OptioProvider browser-open fallback notification', () => {
+  it('shows the popup-blocked fallback through antd notification under the app ConfigProvider', async () => {
+    const { ConfigProvider } = await import('antd');
+    const { waitFor } = await import('@testing-library/react');
+    const { handleBrowserOpenRequests, __resetBrowserOpenSeenForTest } = await import('../handlers/browserOpen.js');
+    __resetBrowserOpenSeenForTest();
+    const open = vi.spyOn(window, 'open').mockReturnValue(null); // popup blocked
+    mockDiscoveryResult = { instance: null, instances: [], isLoading: false };
+    render(
+      <ConfigProvider prefixCls="vx">
+        <QueryClientProvider client={new QueryClient()}>
+          <OptioProvider prefix="p" database="d">
+            <div />
+          </OptioProvider>
+        </QueryClientProvider>
+      </ConfigProvider>,
+    );
+    handleBrowserOpenRequests([{ requestId: 'nb1', url: 'https://example.test', createdAt: Date.now() }]);
+    await waitFor(() => {
+      expect(document.body.querySelector('.vx-notification')?.textContent).toContain('A task wants to open a page');
+    });
+    open.mockRestore();
+  });
+});

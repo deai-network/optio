@@ -1,5 +1,7 @@
 import { notification } from 'antd';
 
+type NotificationInstance = ReturnType<typeof notification.useNotification>[0];
+
 export interface BrowserOpenRequest {
   requestId: string;
   url: string;
@@ -33,7 +35,7 @@ export function isBrowserOpenStale(
 
 /**
  * Default view-scoped browser-open handler: best-effort `window.open(url)` with
- * an app-level antd notification fallback ("Open in a new tab ↗") when the popup
+ * an antd notification fallback ("Open in a new tab ↗") when the popup
  * is blocked (an SSE callback has no user gesture). Used unless a consumer
  * injects its own handler via `OptioProvider`'s `onBrowserOpen` prop
  * (`setBrowserOpenHandler`). Imperative/global.
@@ -57,7 +59,7 @@ export function defaultHandleBrowserOpenRequests(requests: BrowserOpenRequest[] 
       opened = null;
     }
     if (!opened) {
-      notification.info({
+      (_notifier ?? notification).info({
         message: 'A task wants to open a page',
         description: (
           // eslint-disable-next-line react/no-unknown-property
@@ -69,6 +71,16 @@ export function defaultHandleBrowserOpenRequests(requests: BrowserOpenRequest[] 
       });
     }
   }
+}
+
+// Notification API the default handler's fallback uses. OptioProvider installs
+// its hook-based instance (`notification.useNotification()`), which renders in
+// the app's tree and so follows the app's ConfigProvider (theme, prefix).
+// Outside a provider the static `notification` is the fallback.
+let _notifier: NotificationInstance | undefined;
+
+export function setBrowserOpenNotifier(api: NotificationInstance | undefined): void {
+  _notifier = api;
 }
 
 // Active handler — swapped by OptioProvider's `onBrowserOpen` prop. Mirrors how

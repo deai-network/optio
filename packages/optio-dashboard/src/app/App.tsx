@@ -65,16 +65,20 @@ function AppContent() {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [selectedProcessId, setSelectedProcessId] = useState<string | null>(null);
 
+  // Hook-based notifications (not antd's static `notification`): they render
+  // through `notificationHolder` in this tree, so they follow ConfigProvider.
+  const [notificationApi, notificationHolder] = notification.useNotification();
+
   // Initiator-scoped attention: navigate to the process that asked for it.
   const onAttention = (processId: string, reason: string) => {
     setSelectedProcessId(processId);
-    notification.info({ message: 'A task needs your attention', description: reason });
+    notificationApi.info({ message: 'A task needs your attention', description: reason });
   };
   // Client messages: surface to the console (apps can do richer handling).
   const onClientMessage = (processId: string, keyword: string, data: unknown) => {
     // eslint-disable-next-line no-console
     console.log('[optio client_message]', { processId, keyword, data });
-    notification.info({ message: `Client message: ${keyword}`, description: JSON.stringify(data) });
+    notificationApi.info({ message: `Client message: ${keyword}`, description: JSON.stringify(data) });
   };
 
   if (isLoading) return null;
@@ -143,6 +147,7 @@ function AppContent() {
       onAttention={onAttention}
       onClientMessage={onClientMessage}
     >
+      {notificationHolder}
       <Layout style={{ height: '100vh' }}>
         <Header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px' }}>
           <Title level={4} style={{ color: '#fff', margin: 0 }}>Optio Dashboard</Title>

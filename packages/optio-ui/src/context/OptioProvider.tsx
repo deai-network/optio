@@ -1,8 +1,9 @@
 import { createContext, useMemo, useEffect, type ReactNode } from 'react';
+import { notification } from 'antd';
 import { createOptioClient, type OptioClient } from '../client.js';
 import { useInstanceDiscovery } from '../hooks/useInstanceDiscovery.js';
 import { startSessionEvents, resetSession, type SessionEventCallbacks } from '../session/sessionEvents.js';
-import { setBrowserOpenHandler, type BrowserOpenHandler } from '../handlers/browserOpen.js';
+import { setBrowserOpenHandler, setBrowserOpenNotifier, type BrowserOpenHandler } from '../handlers/browserOpen.js';
 
 interface OptioContextValue {
   prefix: string;
@@ -66,8 +67,18 @@ export function OptioProvider({ prefix, database, live, baseUrl = '', onAttentio
     return () => setBrowserOpenHandler(undefined);
   }, [onBrowserOpen]);
 
+  // The default handler's popup-blocked notification renders through this
+  // hook instance (inside the app's tree, so under its ConfigProvider) rather
+  // than antd's static notification.
+  const [notificationApi, notificationHolder] = notification.useNotification();
+  useEffect(() => {
+    setBrowserOpenNotifier(notificationApi);
+    return () => setBrowserOpenNotifier(undefined);
+  }, [notificationApi]);
+
   return (
     <OptioContext.Provider value={{ prefix: prefix ?? 'optio', database, live: live ?? false, baseUrl, client, resetSession }}>
+      {notificationHolder}
       <OptioProviderInner explicitPrefix={prefix} explicitDatabase={database} explicitLive={live} baseUrl={baseUrl} client={client}>
         {children}
       </OptioProviderInner>
