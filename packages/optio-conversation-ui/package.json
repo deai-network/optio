@@ -37,10 +37,10 @@
     "optio-ui": "workspace:*",
     "rehype-katex": "^7.0.1",
     "remark-math": "^6.0.0",
-    "vultus-antd": "^0.1.0"
+    "vultus-antd": "^0.2.0"
   },
   "peerDependencies": {
-    "antd": ">=5",
+    "antd": ">=6",
     "react": ">=18",
     "react-dom": ">=18"
   },
@@ -50,7 +50,7 @@
     "@types/katex": "^0.16.8",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
-    "antd": "^5.29.3",
+    "antd": "^6.6.5",
     "jsdom": "^29.0.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

@@ -941,7 +941,7 @@ describe('ConversationView steering', () => {
 // Interrupt a stop icon. The owner asked for icons on every send-bar action,
 // all sitting on the RIGHT of the label — Send gets a paper plane, Send when
 // ready a clock, Interrupt and send a lightning bolt, and Interrupt keeps its
-// stop square. "On the right" is Fix 21's vultus `iconPosition="end"`, which
+// stop square. "On the right" is Fix 21's vultus `iconPlacement="end"`, which
 // antd exposes as the `ant-btn-icon-end` class on the rendered <button> (see
 // vultus-antd's own ActionButton/CombinedActionButton tests) — that class,
 // rather than DOM order, is what these tests assert, since antd renders the
@@ -970,9 +970,9 @@ describe('ConversationView send-bar icons (Fix 22)', () => {
   // ready' the instant the menu pick fires (see the pre-existing "the main
   // half stays Send when ready" test above), so the bolt can never be
   // observed on the main half — only in the dropdown menu row itself, which
-  // `iconPosition` deliberately does not touch (brief: "menu entries keep
+  // `iconPlacement` deliberately does not touch (brief: "menu entries keep
   // antd's menu icon placement").
-  it('busy with onSteer: the dropdown menu row for "Interrupt and send" carries the bolt icon, unaffected by iconPosition', async () => {
+  it('busy with onSteer: the dropdown menu row for "Interrupt and send" carries the bolt icon, unaffected by iconPlacement', async () => {
     const onSteer = vi.fn(async () => true);
     renderView(makeProps({ busy: true, state: busyState(), onSteer }));
     const combined = screen.getByTestId('conversation-send-combined');
@@ -1006,7 +1006,7 @@ describe('ConversationView send-bar icons (Fix 22)', () => {
 });
 
 // Owner feedback from manual testing, 2026-09-16: right-align every label on
-// the send split button, and (already reached via vultus `iconPosition="end"`
+// the send split button, and (already reached via vultus `iconPlacement="end"`
 // plus the new `align` prop) keep the open list's icons on the right of their
 // labels rather than antd's default left slot. jsdom does no layout, so these
 // assert the `justify-content` style vultus applies and DOM order, not actual
@@ -1037,7 +1037,7 @@ describe('ConversationView send-bar alignment', () => {
     const menuItem = await screen.findByRole('menuitem', { name: 'Interrupt and send' });
 
     // No antd icon slot left behind — align folds it into the row's own
-    // label node alongside the text, same as iconPosition="end" alone did.
+    // label node alongside the text, same as iconPlacement="end" alone did.
     expect(menuItem.querySelector('.ant-dropdown-menu-item-icon')).toBeNull();
 
     const titleContent = menuItem.querySelector('.ant-dropdown-menu-title-content') as HTMLElement;

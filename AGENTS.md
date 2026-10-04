@@ -85,13 +85,13 @@ run the file 10–20×, then `kill $hogs`.
 | 1 — Core runtime | `optio-core` | Python | `pip install optio-core` (MongoDB + APScheduler); add `[redis]` for Redis command bus |
 | 2 — Remote control | `optio-core[redis]` | Python | `pip install optio-core[redis]` |
 | 3 — REST API | `optio-api` | TypeScript | `npm install optio-api optio-contracts` |
-| 4 — React UI | `optio-ui` | TypeScript | `npm install optio-ui optio-contracts @tanstack/react-query react-i18next antd` |
+| 4 — React UI | `optio-ui` | TypeScript | `npm install optio-ui optio-contracts @tanstack/react-query react-i18next antd @ant-design/icons` |
 | 1+ — Opencode runner | `optio-opencode` | Python | workspace; runs `opencode web` as an optio task (local subprocess or remote via SSH) |
 | 1+ — Claude Code runner | `optio-claudecode` | Python | workspace; runs `claude` as an optio task via ttyd-served iframe (local subprocess or remote via SSH) |
 | — Filter language (core) | `filtrum-core` | TypeScript | `npm install filtrum-core` (backend-agnostic filter schema + builders + `Dialect<T>` compiler) |
 | — Filter language (Mongo) | `filtrum-mongo` | TypeScript | `npm install filtrum-mongo` (Mongo dialect + `createMongoFilterTranslator`; type-only `mongodb` peer) |
 
-Dependencies: Python requires `motor>=3.3.0`, `apscheduler>=4.0.0a5`, `mongo-quaestor` (the migration module; import name is still `quaestor` for backwards compatibility — note the upstream `quaestor` PyPI package is unrelated and will collide if installed). Redis support: `redis>=5.0.0` (optional extra). TypeScript API requires `mongodb`, `ioredis`, `@ts-rest/core`. UI requires React 19+, Ant Design 5+.
+Dependencies: Python requires `motor>=3.3.0`, `apscheduler>=4.0.0a5`, `mongo-quaestor` (the migration module; import name is still `quaestor` for backwards compatibility — note the upstream `quaestor` PyPI package is unrelated and will collide if installed). Redis support: `redis>=5.0.0` (optional extra). TypeScript API requires `mongodb`, `ioredis`, `@ts-rest/core`. UI requires React 19+, Ant Design 6+ (`antd` and `@ant-design/icons` are peers of `optio-ui`).
 
 ---
 

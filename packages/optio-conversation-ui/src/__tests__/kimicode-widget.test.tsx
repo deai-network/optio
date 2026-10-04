@@ -85,7 +85,7 @@ describe('KimiCodeView (Stage 7 parity)', () => {
         })}
       />,
     );
-    const combo = document.querySelector('[data-testid="control-model"] .ant-select-selector') as HTMLElement;
+    const combo = document.querySelector('[data-testid="control-model"]') as HTMLElement;
     fireEvent.mouseDown(combo);
     await waitFor(() => expect(screen.getByText('Kimi K2 Thinking')).toBeTruthy());
     fireEvent.click(screen.getByText('Kimi K2 Thinking'));

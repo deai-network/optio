@@ -72,13 +72,13 @@ function AppContent() {
   // Initiator-scoped attention: navigate to the process that asked for it.
   const onAttention = (processId: string, reason: string) => {
     setSelectedProcessId(processId);
-    notificationApi.info({ message: 'A task needs your attention', description: reason });
+    notificationApi.info({ title: 'A task needs your attention', description: reason });
   };
   // Client messages: surface to the console (apps can do richer handling).
   const onClientMessage = (processId: string, keyword: string, data: unknown) => {
     // eslint-disable-next-line no-console
     console.log('[optio client_message]', { processId, keyword, data });
-    notificationApi.info({ message: `Client message: ${keyword}`, description: JSON.stringify(data) });
+    notificationApi.info({ title: `Client message: ${keyword}`, description: JSON.stringify(data) });
   };
 
   if (isLoading) return null;
@@ -132,7 +132,7 @@ function AppContent() {
         </Header>
         <Alert
           type="info"
-          message="No optio instance detected in the database"
+          title="No optio instance detected in the database"
           style={{ margin: 24 }}
         />
       </Layout>

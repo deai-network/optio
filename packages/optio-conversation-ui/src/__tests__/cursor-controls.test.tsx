@@ -67,7 +67,7 @@ describe('CursorView session controls', () => {
     vi.stubGlobal('fetch', fetchMock as any);
     render(<ConversationWidget {...makeProps({ protocol: 'cursor', showSessionControls: true, controls: CONTROLS })} />);
 
-    const combo = document.querySelector('[data-testid="control-model"] .ant-select-selector') as HTMLElement;
+    const combo = document.querySelector('[data-testid="control-model"]') as HTMLElement;
     fireEvent.mouseDown(combo);
     await waitFor(() => expect(screen.getByText('Opus 4.5')).toBeTruthy());
     const opt = screen.getByText('Opus 4.5').closest('.ant-select-item');

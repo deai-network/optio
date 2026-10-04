@@ -36,7 +36,7 @@ describe('SessionControls renderer', () => {
   });
   it('disabled select option shows whyDisabled tooltip title', async () => {
     render(<ConversationView {...base(vi.fn())} />);
-    fireEvent.mouseDown(screen.getByTestId('control-model').querySelector('.ant-select-selector')!);
+    fireEvent.mouseDown(screen.getByTestId('control-model'));
     await waitFor(() => expect(screen.getByText('B')).toBeTruthy());
     const opt = screen.getByText('B').closest('.ant-select-item');
     expect(opt?.getAttribute('title')).toBe('plan-gated');

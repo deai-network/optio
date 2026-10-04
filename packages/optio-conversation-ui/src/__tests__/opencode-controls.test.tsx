@@ -127,7 +127,7 @@ describe('OpencodeView model control', () => {
       disabledModels: { 'opencode/deepseek-v4-flash': reason },
     })} />);
     await waitFor(() => expect(screen.getByTestId('control-model')).toBeTruthy());
-    fireEvent.mouseDown(screen.getByTestId('control-model').querySelector('.ant-select-selector')!);
+    fireEvent.mouseDown(screen.getByTestId('control-model'));
     await waitFor(() => expect(screen.getByText('DeepSeek V4 Flash')).toBeTruthy());
 
     const options = Array.from(document.querySelectorAll('.ant-select-item-option'));
@@ -148,7 +148,7 @@ describe('OpencodeView model control', () => {
 
     // Open the generic select + pick the option labelled "DeepSeek V4 Flash"
     // (value "opencode/deepseek-v4-flash"). Single provider → label unprefixed.
-    fireEvent.mouseDown(screen.getByTestId('control-model').querySelector('.ant-select-selector')!);
+    fireEvent.mouseDown(screen.getByTestId('control-model'));
     await waitFor(() => expect(screen.getByText('DeepSeek V4 Flash')).toBeTruthy());
     fireEvent.click(screen.getByText('DeepSeek V4 Flash'));
 
@@ -246,7 +246,7 @@ describe('OpencodeView effort control', () => {
     await waitFor(() => expect(screen.getByTestId('control-reasoning_effort')).toBeTruthy());
 
     // Switch from big-pickle (has variants) to deepseek-v4-flash (none).
-    fireEvent.mouseDown(screen.getByTestId('control-model').querySelector('.ant-select-selector')!);
+    fireEvent.mouseDown(screen.getByTestId('control-model'));
     await waitFor(() => expect(screen.getByText('DeepSeek V4 Flash')).toBeTruthy());
     fireEvent.click(screen.getByText('DeepSeek V4 Flash'));
 

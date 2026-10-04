@@ -70,7 +70,7 @@ describe('GrokView session controls', () => {
       />,
     );
     // antd Select: open the dropdown, then pick the second option.
-    const combo = document.querySelector('[data-testid="control-model"] .ant-select-selector') as HTMLElement;
+    const combo = document.querySelector('[data-testid="control-model"]') as HTMLElement;
     fireEvent.mouseDown(combo);
     await waitFor(() => expect(screen.getByText('Grok Build')).toBeTruthy());
     fireEvent.click(screen.getByText('Grok Build'));

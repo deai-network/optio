@@ -304,7 +304,7 @@ function barAction(
 // plus ~14px of horizontal padding (7px each side) and a separate ~32px
 // chevron half for the dropdown trigger. That was 200px before Fix 22.
 // Fix 22 (owner ruling 2026-09-15): every main-half caption now also carries
-// an icon on its right (iconPosition="end", Fix 21), so the longest state
+// an icon on its right (iconPlacement="end", Fix 21), so the longest state
 // budgets for that too — an antd small-button icon is 14px square plus an
 // 8px gap next to the label — adding 22px on top of the 200px above (not
 // measured in a real browser here; computed from those two figures, which
@@ -380,14 +380,14 @@ function InterruptStopIcon() {
 // action gets an icon, not just Interrupt — Send a paper plane, Send when
 // ready a clock, Interrupt and send a lightning bolt — and every icon (this
 // trio plus Fix 20's InterruptStopIcon) sits on the RIGHT of its label via
-// Fix 21's vultus `iconPosition="end"`. @ant-design/icons is still not a
+// Fix 21's vultus `iconPlacement="end"`. @ant-design/icons is still not a
 // dependency of this package, so these are small inline SVGs rather than
 // antd's SendOutlined/ClockCircleOutlined/ThunderboltOutlined, but they share
 // InterruptStopIcon's outer shape: a fixed 1em x 1em box (matching
 // @ant-design/icons' IconBase, and antd's LoadingOutlined spinner that takes
 // this slot while an action is pending) with the visible mark centered
 // inside — so idle (icon) and pending (spinner) stay the same width by
-// construction, same as Interrupt. `iconPosition="end"` and `align="end"`
+// construction, same as Interrupt. `iconPlacement="end"` and `align="end"`
 // (see the combined button below) also reach the open list: each row's own
 // icon follows its label, and the row's whole content sits flush right,
 // instead of antd's default left-icon, centered-content layout.
@@ -1669,9 +1669,8 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
           {error && (
             <Alert
               type="error"
-              closable
-              message={error}
-              onClose={() => setError(null)}
+              closable={{ onClose: () => setError(null) }}
+              title={error}
               data-testid="conversation-error"
               style={{ marginBottom: 4 }}
             />
@@ -1746,10 +1745,10 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                 fires, and back on 'Send' once idle. SEND_BUTTON_WIDTH pins
                 the footprint so it never resizes across any of that; the red
                 Interrupt beside it stops and sends nothing. Each
-                action's `icon` (plane / clock / bolt) plus iconPosition="end"
+                action's `icon` (plane / clock / bolt) plus iconPlacement="end"
                 puts that icon on the right of the label; align="end" right-
                 aligns every state's label within the fixed width, on the
-                main half and — since iconPosition="end" also reaches
+                main half and — since iconPlacement="end" also reaches
                 each open-list row — the row's own icon (after its
                 label) too. */}
             <span
@@ -1760,7 +1759,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               <CombinedActionButton
                 size="small"
                 keepOriginalDefault
-                iconPosition="end"
+                iconPlacement="end"
                 align="end"
                 actions={[
                   barAction('send', 'Send', 'primary', sending || !text || closed, () => void submit('send'), steerable, <SendPlaneIcon />),
@@ -1777,10 +1776,10 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                 square) occupies the same slot antd's spinner takes over
                 while pending, so the button's width no longer needs to be
                 reserved — this wrapper only keeps the stable test id. Fix
-                22: iconPosition="end" puts that icon on the right of the
+                22: iconPlacement="end" puts that icon on the right of the
                 label, matching every other send-bar action. */}
             <span data-testid="conversation-interrupt">
-              <ActionButton action={interruptAction} size="small" iconPosition="end" />
+              <ActionButton action={interruptAction} size="small" iconPlacement="end" />
             </span>
           </div>
           </div>

@@ -11,10 +11,10 @@
 - `optio-contracts: workspace:*`
 - `@ts-rest/core: ^3.51.0`
 - `@ts-rest/react-query: ^3.51.0`
-- `@ant-design/icons: ^5.6.0`
-- `antd: ^5.29.3`
 
 **Peer dependencies** (must be provided by the consuming app):
+- `antd: >=6`
+- `@ant-design/icons: >=6`
 - `react: >=18`
 - `react-dom: >=18`
 - `@tanstack/react-query: >=5`

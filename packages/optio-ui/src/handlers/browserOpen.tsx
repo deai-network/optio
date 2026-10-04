@@ -60,7 +60,7 @@ export function defaultHandleBrowserOpenRequests(requests: BrowserOpenRequest[] 
     }
     if (!opened) {
       (_notifier ?? notification).info({
-        message: 'A task wants to open a page',
+        title: 'A task wants to open a page',
         description: (
           // eslint-disable-next-line react/no-unknown-property
           <a href={url} target="_blank" rel="noopener noreferrer">
