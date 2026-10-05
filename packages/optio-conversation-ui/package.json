@@ -36,13 +36,13 @@
     "optio-agents-ui": "workspace:*",
     "optio-ui": "workspace:*",
     "rehype-katex": "^7.0.1",
-    "remark-math": "^6.0.0",
-    "vultus-antd": "^0.2.0"
+    "remark-math": "^6.0.0"
   },
   "peerDependencies": {
     "antd": ">=6",
     "react": ">=18",
-    "react-dom": ">=18"
+    "react-dom": ">=18",
+    "vultus-antd": ">=0.2.0"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
@@ -55,6 +55,7 @@
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "typescript": "^5.7.0",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "vultus-antd": "^0.3.0"
   }
 }

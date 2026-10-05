@@ -10,7 +10,9 @@ This package replaces the engine-specific `optio-claudecode-ui`. A single regist
 pnpm add optio-conversation-ui
 ```
 
-Peer deps: `react >=18`, `react-dom >=18`, `antd >=6`.
+Peer deps: `react >=18`, `react-dom >=18`, `antd >=6`, `vultus-antd >=0.2.0`. vultus
+is a peer so the app's one copy carries its `VultusProvider` context (error toasts, router
+links) into the conversation's buttons.
 
 ## Usage
 
