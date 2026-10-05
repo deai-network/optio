@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useMemo, type ReactNode } from 'react';
+import { createContext, useContext, useState, useMemo, type CSSProperties, type ReactNode } from 'react';
 import { Checkbox, Select, Space } from 'antd';
 import { useTranslation } from 'react-i18next';
 import { WithSearch, useFilterFunction } from '@quaesitor-textus/core';
@@ -68,12 +68,17 @@ export function useProcessFilter(): ProcessFilterContextValue {
   return useContext(ProcessFilterContext);
 }
 
-export function ProcessFilters() {
+/**
+ * The filter controls of a process list. `style`/`className` reach the row of
+ * controls (it keeps a 16px bottom margin unless the style sets another), so a
+ * host app can place it in its own filter bar.
+ */
+export function ProcessFilters({ className, style }: { className?: string; style?: CSSProperties } = {}) {
   const { filterGroup, setFilterGroup, showDetails, setShowDetails, showSpecial, setShowSpecial } = useProcessFilter();
   const { t } = useTranslation();
 
   return (
-    <Space size={[16, 8]} wrap style={{ marginBottom: 16 }}>
+    <Space size={[16, 8]} wrap className={className} style={{ marginBottom: 16, ...style }}>
       <SearchInput style={{ width: 200 }} placeholder={t('processes.search')} />
       <Select
         value={filterGroup}
