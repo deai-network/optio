@@ -59,9 +59,11 @@ interface ProcessStatusBadgeProps {
   /** When true, render a stopwatch indicator: this process is stamped for
    *  automatic resume after an engine restart. */
   autoResumeScheduled?: boolean;
+  /** Extra class on the status tag, e.g. a host app's tag look. */
+  className?: string;
 }
 
-export function ProcessStatusBadge({ state, error, runningSince, size = 'small', autoResumeScheduled }: ProcessStatusBadgeProps) {
+export function ProcessStatusBadge({ state, error, runningSince, size = 'small', autoResumeScheduled, className }: ProcessStatusBadgeProps) {
   const { t } = useTranslation();
   const color = STATUS_COLORS[state] ?? 'default';
   const label = t(`status.${state}`, state);
@@ -72,7 +74,7 @@ export function ProcessStatusBadge({ state, error, runningSince, size = 'small',
 
   return (
     <span>
-      <Tag color={color} style={SIZE_STYLE[size]}>
+      <Tag color={color} style={SIZE_STYLE[size]} className={className}>
         {label}
         {elapsed && ` (${elapsed})`}
       </Tag>
