@@ -1,8 +1,10 @@
 """resurrect_claudecode_session against a real LocalHost workdir + GridFS."""
 
 import asyncio
+import io
 import os
 import signal
+import tarfile
 
 import pytest
 from bson import ObjectId
@@ -59,6 +61,17 @@ async def _blob(ctx, name, payload=b"tar"):
     return w.file_id
 
 
+async def _archive_names(ctx, blob_id):
+    async with ctx.load_blob(blob_id) as r:
+        data = await r.read()
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as t:
+        return {os.path.normpath(n) for n in t.getnames()}
+
+
+def _under(names, top):
+    return [n for n in names if n == top or n.startswith(top + "/")]
+
+
 async def _snapshot_before_now(mongo_db, ctx, *, session_blob_id, workdir_blob_id, end_state="cancelled"):
     """Insert a snapshot and move its capturedAt one second back, so blobs
     stored after it are strictly newer (BSON dates have millisecond
@@ -78,12 +91,19 @@ async def test_resurrect_with_home_claude_present(mongo_db, host, ctx_and_captur
     await _prepare(mongo_db, ctx)
     _write(f"{host.workdir}/CLAUDE.md", "work")
     _write(f"{host.workdir}/home/.claude/.credentials.json", '{"t": 1}')
+    _write(f"{host.workdir}/{S._RESCUE_MARKER}", "")
+    _write(f"{host.workdir}/.git/HEAD", "ref")
     await R.resurrect_claudecode_session(ctx, _config())
     snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id)
     assert snap["endState"] == "resurrected"
     assert not os.path.exists(host.taskdir)
     doc = await mongo_db["test_processes"].find_one({"_id": ctx._process_oid})
     assert doc["hasSavedState"] is True
+    names = await _archive_names(ctx, snap["workdirBlobId"])
+    assert "CLAUDE.md" in names
+    # The rescue marker joins the default excludes (.git), it does not replace them.
+    assert not _under(names, S._RESCUE_MARKER) and not _under(names, ".git")
+    assert not _under(names, "home/.claude")
 
 
 @pytest.mark.asyncio
@@ -129,10 +149,12 @@ async def test_pending_record_partial_blob_deleted(mongo_db, host, ctx_and_captu
 
 
 @pytest.mark.asyncio
-async def test_pending_record_naming_a_snapshot_blob_keeps_it(mongo_db, host, ctx_and_captures):
+async def test_pending_record_naming_a_snapshot_blob_finishes_that_capture(mongo_db, host, ctx_and_captures):
     """A capture force-killed between insert_snapshot and
-    delete_pending_capture leaves a record naming the committed snapshot's
-    workdir blob: that blob stays, the record goes."""
+    delete_pending_capture (here: before mark_has_saved_state, on the
+    process's first snapshot) leaves a record naming the committed
+    snapshot's workdir blob. The work is saved: the blob stays, the
+    bookkeeping is finished, the record and the taskdir go."""
     ctx, _cap, _flag = ctx_and_captures
     await _prepare(mongo_db, ctx)
     s = await _blob(ctx, "session", b"s")
@@ -143,12 +165,38 @@ async def test_pending_record_naming_a_snapshot_blob_keeps_it(mongo_db, host, ct
                                     session_blob_id=s, workdir_blob_id=w)
     _write(f"{host.workdir}/CLAUDE.md", "work")  # home/.claude already removed
 
-    with pytest.raises(NothingToResurrect, match="session state not found"):
-        await R.resurrect_claudecode_session(ctx, _config())
+    await R.resurrect_claudecode_session(ctx, _config())
 
+    doc = await mongo_db["test_processes"].find_one({"_id": ctx._process_oid})
+    assert doc["hasSavedState"] is True
+    assert doc["hasUnsavedWork"] is False
+    assert not os.path.exists(host.taskdir)
     assert await mongo_db["fs.files"].count_documents({"_id": w}) == 1
     assert await mongo_db["fs.chunks"].count_documents({"files_id": w}) == 1
     assert await PC.load_pending_capture(mongo_db, "test", ctx.process_id) is None
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id)
+    assert snap["workdirBlobId"] == w  # no second snapshot
+
+
+@pytest.mark.asyncio
+async def test_no_session_blob_but_a_snapshot_offers_resume(mongo_db, host, ctx_and_captures):
+    """Nothing to save, but a snapshot exists that hasSavedState never
+    flagged (a capture cut off before mark_has_saved_state, record already
+    gone): flag it so Resume is offered; keep the taskdir."""
+    ctx, _cap, _flag = ctx_and_captures
+    await _prepare(mongo_db, ctx)
+    s = await _blob(ctx, "session", b"s")
+    w = await _blob(ctx, "workdir", b"w")
+    await insert_snapshot(mongo_db, prefix="test", process_id=ctx.process_id, end_state="cancelled",
+                          session_blob_id=s, workdir_blob_id=w, deliverables_emitted=[])
+    _write(f"{host.workdir}/CLAUDE.md", "work")
+
+    with pytest.raises(NothingToResurrect, match="session state not found"):
+        await R.resurrect_claudecode_session(ctx, _config())
+
+    doc = await mongo_db["test_processes"].find_one({"_id": ctx._process_oid})
+    assert doc["hasSavedState"] is True
+    assert os.path.exists(f"{host.workdir}/CLAUDE.md")
 
 
 @pytest.mark.asyncio
@@ -169,15 +217,45 @@ async def test_fallback_ignores_session_blob_older_than_latest_snapshot(mongo_db
 
 
 @pytest.mark.asyncio
-async def test_resurrect_without_credentials_saves_nothing(mongo_db, host, ctx_and_captures):
+async def test_home_claude_without_credentials_uses_session_blob_fallback(mongo_db, host, ctx_and_captures):
+    """An interrupted `rm -rf home/.claude` leaves the directory without its
+    credentials: the session blob the capture stored is used, and the
+    leftover home/.claude stays out of the plaintext workdir blob."""
+    ctx, _cap, _flag = ctx_and_captures
+    await _prepare(mongo_db, ctx)
+    older = await _blob(ctx, "session", b"old")
+    old_wd = await _blob(ctx, "workdir", b"oldwd")
+    await _snapshot_before_now(mongo_db, ctx, session_blob_id=older, workdir_blob_id=old_wd)
+    orphan = await _blob(ctx, "session", b"new-session")
+    _write(f"{host.workdir}/CLAUDE.md", "work")
+    _write(f"{host.workdir}/home/.claude/projects/t.jsonl", "{}")  # no .credentials.json
+    _write(f"{host.workdir}/{S._RESCUE_MARKER}", "")
+    _write(f"{host.workdir}/.git/HEAD", "ref")
+
+    await R.resurrect_claudecode_session(ctx, _config())
+
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id)
+    assert snap["sessionBlobId"] == orphan
+    assert snap["endState"] == "resurrected"
+    names = await _archive_names(ctx, snap["workdirBlobId"])
+    assert "CLAUDE.md" in names
+    assert not _under(names, "home/.claude")
+    assert not _under(names, S._RESCUE_MARKER) and not _under(names, ".git")
+    assert not os.path.exists(host.taskdir)
+
+
+@pytest.mark.asyncio
+async def test_home_claude_without_credentials_and_no_blob_keeps_taskdir(mongo_db, host, ctx_and_captures):
     ctx, _cap, _flag = ctx_and_captures
     await _prepare(mongo_db, ctx)
     _write(f"{host.workdir}/CLAUDE.md", "work")
     _write(f"{host.workdir}/home/.claude/settings.json", "{}")  # no .credentials.json
-    await R.resurrect_claudecode_session(ctx, _config())
+    with pytest.raises(NothingToResurrect, match="session state not found"):
+        await R.resurrect_claudecode_session(ctx, _config())
     assert await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id) is None
-    doc = await mongo_db["test_processes"].find_one({"_id": ctx._process_oid})
-    assert doc["hasUnsavedWork"] is False
+    # Nothing was saved, so nothing on the host is removed.
+    assert os.path.exists(f"{host.workdir}/CLAUDE.md")
+    assert os.path.exists(f"{host.workdir}/home/.claude/settings.json")
 
 
 @pytest.mark.asyncio
@@ -223,6 +301,39 @@ async def test_resurrect_stops_stray_optio_log_tail(mongo_db, host, ctx_and_capt
             if p.returncode is None:
                 p.kill()
     assert await asyncio.wait_for(other.wait(), 60) == -signal.SIGKILL
+
+
+@pytest.mark.asyncio
+async def test_resurrect_without_tmux_skips_the_tmux_tree(mongo_db, host, ctx_and_captures, monkeypatch):
+    """A worker without tmux (conversation mode) has no tmux session to stop;
+    the optio.log tail is still killed."""
+    ctx, _cap, _flag = ctx_and_captures
+    await _prepare(mongo_db, ctx)
+
+    async def _no_tmux(host_):
+        return None
+
+    async def _must_not_run(*a, **kw):
+        raise AssertionError("tmux probed on a worker without tmux")
+    monkeypatch.setattr(S.host_actions, "find_tmux", _no_tmux)
+    monkeypatch.setattr(S.host_actions, "tmux_session_alive", _must_not_run)
+    monkeypatch.setattr(S.host_actions, "teardown_session_tree", _must_not_run)
+    _write(f"{host.workdir}/CLAUDE.md", "work")
+    _write(f"{host.workdir}/home/.claude/.credentials.json", '{"t": 1}')
+    log = f"{host.workdir}/optio.log"
+    _write(log, "")
+    stray = await asyncio.create_subprocess_exec(
+        "tail", "-F", "-n", "+1", log,
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        await R.resurrect_claudecode_session(ctx, _config())
+        assert await asyncio.wait_for(stray.wait(), 60) == -signal.SIGTERM
+    finally:
+        if stray.returncode is None:
+            stray.kill()
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id)
+    assert snap["endState"] == "resurrected"
 
 
 def test_factory_attaches_hook_only_for_resumable_configs():

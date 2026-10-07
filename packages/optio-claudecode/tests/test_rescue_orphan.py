@@ -57,13 +57,15 @@ class _Ctx:
 
 @pytest.fixture
 def patched(monkeypatch):
-    rec = {"alive": False, "teardown": [], "capture": [], "fail_capture": False}
+    rec = {"alive": False, "teardown": [], "capture": [], "fail_capture": False,
+           "tmux": "tmux"}
 
     async def _alive(host, tmux_path, socket, session):
+        assert tmux_path is not None
         return rec["alive"]
 
-    async def _require_tmux(host):
-        return "tmux"
+    async def _find_tmux(host):
+        return rec["tmux"]
 
     def _socket(host):
         return "/tmp/optio-cc-deadbeef.sock"
@@ -77,7 +79,7 @@ def patched(monkeypatch):
             raise RuntimeError("capture failed")
 
     monkeypatch.setattr(S.host_actions, "tmux_session_alive", _alive)
-    monkeypatch.setattr(S.host_actions, "_require_tmux", _require_tmux)
+    monkeypatch.setattr(S.host_actions, "find_tmux", _find_tmux)
     monkeypatch.setattr(S.host_actions, "_tmux_socket_path", _socket)
     monkeypatch.setattr(S.host_actions, "teardown_session_tree", _teardown)
     monkeypatch.setattr(S, "_capture_snapshot", _capture)
@@ -122,6 +124,30 @@ async def test_triggers_on_marker_even_without_session(patched, tmp_path):
     # Detect-by-marker path still rescues (mid-rescue retry).
     assert len(patched["teardown"]) == 1
     assert len(patched["capture"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_noop_without_tmux_and_no_marker(patched, tmp_path):
+    # A failed capture keeps the workdir, so a Resume on a worker without tmux
+    # (conversation mode) reaches the rescue probe: no tmux, no session.
+    patched["tmux"] = None
+    patched["alive"] = True  # would rescue if the probe ran
+    host = _Host(str(tmp_path))
+    await S._rescue_orphan_if_present(_Ctx(), host, _Config())
+    assert patched["teardown"] == []
+    assert patched["capture"] == []
+    assert host.written == []
+
+
+@pytest.mark.asyncio
+async def test_marker_without_tmux_rescues_without_tmux_teardown(patched, tmp_path):
+    patched["tmux"] = None
+    marker = f"{str(tmp_path).rstrip('/')}/.optio-rescue-pending"
+    host = _Host(str(tmp_path), existing={marker})
+    await S._rescue_orphan_if_present(_Ctx(), host, _Config())
+    assert patched["teardown"] == []
+    assert len(patched["capture"]) == 1
+    assert marker in host.removed
 
 
 @pytest.mark.asyncio

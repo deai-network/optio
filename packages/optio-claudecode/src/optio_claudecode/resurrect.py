@@ -15,6 +15,7 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from optio_core import NothingToResurrect
 from optio_core.context import ProcessContext
+from optio_host.archive import DEFAULT_WORKDIR_EXCLUDES
 
 from optio_claudecode import host_actions
 from optio_claudecode import session as S
@@ -58,21 +59,37 @@ async def _workdir_has_content(host) -> bool:
     return "YES" in r.stdout
 
 
-async def _home_claude_present(host) -> bool:
+def _home_claude(host) -> str:
+    return host.workdir.rstrip("/") + "/home/.claude"
+
+
+async def _credentials_present(host) -> bool:
+    """The capture's own credentials guard: without them it refuses."""
     r = await host.run_command(
-        f"test -d {shlex.quote(host.workdir.rstrip('/') + '/home/.claude')} && echo YES || true",
+        f"test -s {shlex.quote(_home_claude(host) + '/.credentials.json')} && echo YES || true",
         cwd="/",
     )
     return "YES" in r.stdout
 
 
+def _workdir_exclude(config) -> list[str]:
+    """The capture's effective excludes plus the rescue marker, as crash-orphan
+    rescue excludes it. A given list replaces the defaults, so they are
+    spelled out when the config leaves it unset."""
+    base = DEFAULT_WORKDIR_EXCLUDES if config.workdir_exclude is None else config.workdir_exclude
+    return [*base, S._RESCUE_MARKER]
+
+
 async def _stop_leftovers(host) -> None:
     """Kill what the failed run may have left: the tmux/ttyd/claude tree on
     the task's socket, and `tail -F <workdir>/optio.log` readers. The pkill
-    pattern is anchored and escaped so it cannot match the shell running it."""
-    tmux_path = await host_actions._require_tmux(host)
+    pattern is anchored and escaped so it cannot match the shell running it.
+    No tmux on the worker (conversation mode): no tmux session to stop."""
+    tmux_path = await host_actions.find_tmux(host)
     socket = host_actions._tmux_socket_path(host)
-    if await host_actions.tmux_session_alive(host, tmux_path, socket, "optio"):
+    if tmux_path is not None and await host_actions.tmux_session_alive(
+        host, tmux_path, socket, "optio",
+    ):
         await host_actions.teardown_session_tree(
             host,
             tmux_path=tmux_path,
@@ -87,6 +104,24 @@ async def _stop_leftovers(host) -> None:
     await host.run_command(f"pkill -f -- {shlex.quote(pattern)} || true", cwd="/")
 
 
+async def _settle_pending_capture(ctx: ProcessContext) -> bool:
+    """Clear what a cut-off capture recorded. True when that capture had
+    inserted its snapshot (killed before deleting the record): its work is
+    saved, and the flags it did not get to set are set here."""
+    pending = await load_pending_capture(ctx._db, ctx._prefix, ctx.process_id)
+    if pending is None:
+        return False
+    committed = await discard_pending_workdir_blob(
+        ctx._db, ctx._prefix,
+        process_id=ctx.process_id, record=pending, delete_blob=ctx.delete_blob,
+    )
+    if committed:
+        await ctx.mark_has_saved_state()
+        await ctx.clear_unsaved_work()
+    await delete_pending_capture(ctx._db, ctx._prefix, ctx.process_id)
+    return committed
+
+
 async def resurrect_claudecode_session(ctx: ProcessContext, config) -> None:
     host = S._build_host(config, ctx.process_id)
     await host.connect()
@@ -96,32 +131,40 @@ async def resurrect_claudecode_session(ctx: ProcessContext, config) -> None:
         ctx.report_progress(None, "Resurrecting: stopping leftovers of the failed run…")
         await _stop_leftovers(host)
 
-        pending = await load_pending_capture(ctx._db, ctx._prefix, ctx.process_id)
-        if pending is not None:
-            await discard_pending_workdir_blob(
-                ctx._db, ctx._prefix,
-                process_id=ctx.process_id, record=pending, delete_blob=ctx.delete_blob,
-            )
-            await delete_pending_capture(ctx._db, ctx._prefix, ctx.process_id)
+        if await _settle_pending_capture(ctx):
+            await host.cleanup_taskdir(aggressive=False)
+            return
 
-        if await _home_claude_present(host):
+        exclude = _workdir_exclude(config)
+        if await _credentials_present(host):
             await S._capture_snapshot(
                 ctx, host,
                 end_state="resurrected",
-                workdir_exclude=config.workdir_exclude,
+                workdir_exclude=exclude,
                 session_blob_encrypt=config.session_blob_encrypt,
             )
         else:
+            # The capture's session step ran (its rm -rf home/.claude may have
+            # been cut off part-way); use the session blob it stored.
             session_blob_id = await find_unreferenced_session_blob(
                 ctx._db, ctx._prefix,
                 process_oid=ctx._process_oid, process_id=ctx.process_id,
             )
             if session_blob_id is None:
+                # Nothing to save, and the host is left as it is. A snapshot
+                # whose capture was cut off before flagging it is still
+                # resumable: flag it so Resume is offered.
+                if await load_latest_snapshot(
+                    ctx._db, prefix=ctx._prefix, process_id=ctx.process_id,
+                ) is not None:
+                    await ctx.mark_has_saved_state()
                 raise NothingToResurrect("session state not found")
+            # A leftover home/.claude must not enter the plaintext workdir blob.
+            await host.run_command(f"rm -rf {shlex.quote(_home_claude(host))}", cwd="/")
             await S._store_workdir_snapshot(
                 ctx, host,
                 end_state="resurrected",
-                workdir_exclude=config.workdir_exclude,
+                workdir_exclude=exclude,
                 session_blob_id=session_blob_id,
             )
         await host.cleanup_taskdir(aggressive=False)

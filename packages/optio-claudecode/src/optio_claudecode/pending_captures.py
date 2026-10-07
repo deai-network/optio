@@ -60,13 +60,16 @@ async def discard_pending_workdir_blob(
     db: AsyncIOMotorDatabase, prefix: str, *,
     process_id: str, record: dict,
     delete_blob: Callable[[ObjectId], Awaitable[None]],
-) -> None:
+) -> bool:
     """Delete the workdir blob a pending record names, unless a snapshot of
     this process references it (the capture was cut off after inserting the
-    snapshot record). Leaves the pending record itself alone."""
+    snapshot record). Leaves the pending record itself alone. Returns True
+    when a snapshot references the blob, i.e. that capture had committed."""
     blob_id = record["workdirBlobId"]
     referenced = await _snapshots(db, prefix).find_one(
         {"processId": process_id, "workdirBlobId": blob_id}, projection={"_id": 1},
     )
     if referenced is None:
         await delete_blob(blob_id)
+        return False
+    return True

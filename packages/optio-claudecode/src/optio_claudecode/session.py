@@ -1577,8 +1577,10 @@ async def _rescue_orphan_if_present(
     session = "optio"
     marker_path = f"{host.workdir.rstrip('/')}/{_RESCUE_MARKER}"
 
-    tmux_path = await host_actions._require_tmux(host)
-    alive = await host_actions.tmux_session_alive(
+    # No tmux on the worker (conversation mode never needs it): no session to
+    # probe. A failed capture keeps the workdir, so a Resume gets here.
+    tmux_path = await host_actions.find_tmux(host)
+    alive = tmux_path is not None and await host_actions.tmux_session_alive(
         host, tmux_path, socket, session,
     )
     if not alive and not await _marker_present(host, marker_path):
@@ -1593,16 +1595,18 @@ async def _rescue_orphan_if_present(
     await host.write_text(_RESCUE_MARKER, "")
 
     # 2. Kill the orphan tree (handle-less: orphan ttyd reaped by socket).
-    claude_path = _claude_bin_path(host)
-    await host_actions.teardown_session_tree(
-        host,
-        tmux_path=tmux_path,
-        tmux_socket=socket,
-        tmux_session=session,
-        claude_path=claude_path,
-        ttyd_handle=None,
-        aggressive=True,
-    )
+    #    Without tmux there is no tree (a marker alone brought us here).
+    if tmux_path is not None:
+        claude_path = _claude_bin_path(host)
+        await host_actions.teardown_session_tree(
+            host,
+            tmux_path=tmux_path,
+            tmux_socket=socket,
+            tmux_session=session,
+            claude_path=claude_path,
+            ttyd_handle=None,
+            aggressive=True,
+        )
 
     # 3. Capture the now-static workdir — identical artifacts to a normal
     #    teardown capture. Exclude the marker so a restored workdir cannot

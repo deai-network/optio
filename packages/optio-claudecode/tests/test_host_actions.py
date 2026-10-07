@@ -744,6 +744,16 @@ async def test_require_tmux_does_not_depend_on_workdir(tmp_path):
     assert await host_actions._require_tmux(host) == "/usr/bin/tmux"
 
 
+async def test_find_tmux_returns_path_or_none():
+    assert await host_actions.find_tmux(_RequireTmuxFakeHost(tmux_ok=True)) == "/usr/bin/tmux"
+    assert await host_actions.find_tmux(_RequireTmuxFakeHost(tmux_ok=False)) is None
+
+
+async def test_find_tmux_does_not_depend_on_workdir(tmp_path):
+    host = _RemoteLikeTmuxHost(str(tmp_path / "missing"))
+    assert await host_actions.find_tmux(host) == "/usr/bin/tmux"
+
+
 async def test_require_tmux_error_includes_lookup_stderr():
     class _FailingHost(_RequireTmuxFakeHost):
         async def run_command(self, cmd, **kwargs):

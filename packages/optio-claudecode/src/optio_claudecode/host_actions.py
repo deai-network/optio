@@ -441,6 +441,18 @@ async def _require_tmux(host: "Host") -> str:
     return path
 
 
+async def find_tmux(host: "Host") -> str | None:
+    """Absolute path to tmux on the host, or None when it is not installed.
+
+    The same lookup as ``_require_tmux`` (login shell, from ``/``), for
+    callers that only probe for a session tmux would hold: no tmux on the
+    worker (conversation mode never needs it) means no such session.
+    """
+    result = await host.run_command("bash -lc 'command -v tmux || true'", cwd="/")
+    path = (result.stdout or "").strip()
+    return path if result.exit_code == 0 and path else None
+
+
 async def _detect_ttyd_asset_name(host: "Host") -> str:
     """Return the upstream release-asset filename for the host's arch/OS.
 
