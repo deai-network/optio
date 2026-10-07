@@ -27,20 +27,21 @@ except ImportError:
 
 from optio_core.models import (
     TaskInstance, OptioConfig, MongoStore, ProcessStatus, ProcessMetadataFilter,
-    matches_filter, LaunchBlocked,
-    LaunchOutcome, CancelOutcome, DismissOutcome,
+    matches_filter, LaunchBlocked, Progress,
+    LaunchOutcome, CancelOutcome, DismissOutcome, ResurrectOutcome,
 )
 from optio_core.store import (
     upsert_process, remove_stale_processes, find_stale_process_ids,
     get_process_by_process_id, update_status, clear_result_fields,
     append_log, compute_expire_at, purge_processes, set_auto_resume_scheduled,
-    finalize_if_active,
+    finalize_if_active, set_has_unsaved_work, update_progress,
 )
 from optio_core.state_machine import (
     ACTIVE_STATES, CANCELLABLE_STATES, DISMISSABLE_STATES, END_STATES,
     LAUNCHABLE_STATES,
 )
-from optio_core.exceptions import LaunchError
+from optio_core.exceptions import LaunchError, NothingToResurrect
+from optio_core.context import ProcessContext
 from optio_core.executor import Executor
 from clamator_protocol import RpcServerCore
 from clamator_over_redis import RedisRpcServer
@@ -104,6 +105,10 @@ class Optio:
         # clamator RPC handler) to resolve a writer by process_id. In-memory
         # only — the writer holds this worker's live Host.
         self._upload_writers: dict[ObjectId, Callable[[str, bytes], Awaitable[str]]] = {}
+        # Resurrects in progress: process ObjectId -> background task running
+        # the resurrect hook. While a process is here, launch and a second
+        # resurrect are refused.
+        self._resurrecting: dict[ObjectId, asyncio.Task] = {}
 
     @property
     def mongo_store(self) -> MongoStore:
@@ -415,7 +420,8 @@ class Optio:
         self, process_id: str, resume: bool = False, *, session_id: str | None,
     ) -> LaunchOutcome:
         """Fire-and-forget launch. Returns LaunchOutcome with a typed reason on
-        precondition failure (not-found, not-launchable, no-resume-support,
+        precondition failure (not-found, not-launchable -- also while a
+        resurrect of the process is in progress --, no-resume-support,
         launch-blocked); on success the executor task is scheduled in the
         background and the outcome is ok=True with `proc` populated from a
         post-schedule re-read (state will typically be 'scheduled' or
@@ -428,6 +434,9 @@ class Optio:
         proc = await self._resolve(process_id)
         if proc is None:
             return LaunchOutcome(ok=False, reason="not-found")
+        if proc["_id"] in self._resurrecting:
+            # The resurrect in progress ends in its own resume.
+            return LaunchOutcome(ok=False, reason="not-launchable")
         if proc["status"]["state"] not in LAUNCHABLE_STATES:
             return LaunchOutcome(ok=False, reason="not-launchable")
         if resume and not proc.get("supportsResume", False):
@@ -505,6 +514,105 @@ class Optio:
         if timeout is not None:
             return await asyncio.wait_for(fut, timeout)
         return await fut
+
+    async def resurrect(
+        self, process_id: str, *, session_id: str | None,
+    ) -> ResurrectOutcome:
+        """Save the work a failed run left on its host, then resume.
+
+        Fire-and-forget like `launch`: preconditions are answered here with a
+        typed reason; the task's resurrect hook and the follow-up resume run
+        in a background task, reported through the process's progress and
+        log. Spec: docs/2026-10-07-resurrect-failed-session-design.md
+        """
+        if self._shutting_down:
+            return ResurrectOutcome(ok=False, reason="shutting-down")
+        proc = await self._resolve(process_id)
+        if proc is None:
+            return ResurrectOutcome(ok=False, reason="not-found")
+        task = self._executor._task_registry.get(proc["processId"])
+        if task is None or getattr(task, "resurrect", None) is None:
+            return ResurrectOutcome(ok=False, reason="no-resurrect-support")
+        oid = proc["_id"]
+        if oid in self._resurrecting:
+            return ResurrectOutcome(ok=False, reason="resurrect-in-progress")
+        if (
+            proc["status"]["state"] not in LAUNCHABLE_STATES
+            or not proc.get("hasUnsavedWork", False)
+        ):
+            return ResurrectOutcome(ok=False, reason="not-resurrectable")
+        if self._matches_block(task.metadata):
+            return ResurrectOutcome(ok=False, reason="launch-blocked")
+        self._resurrecting[oid] = asyncio.create_task(
+            self._run_resurrect(proc, task, session_id),
+        )
+        return ResurrectOutcome(ok=True, proc=proc)
+
+    async def _run_resurrect(
+        self, proc: dict, task: TaskInstance, session_id: str | None,
+    ) -> None:
+        oid = proc["_id"]
+        db, prefix = self._config.mongo_db, self._config.prefix
+        saved = False
+        try:
+            await append_log(db, prefix, oid, "event", "Resurrect requested")
+            await update_progress(db, prefix, oid, Progress(
+                percent=None, message="Resurrecting: saving the unsaved work…",
+            ))
+            ctx = ProcessContext(
+                process_oid=oid,
+                process_id=proc["processId"],
+                root_oid=proc.get("rootId") or oid,
+                depth=proc.get("depth", 0),
+                params=proc.get("params", {}),
+                metadata=proc.get("metadata", {}),
+                services=self._executor._services,
+                db=db,
+                prefix=prefix,
+                cancellation_flag=asyncio.Event(),
+                child_counter={"next": 0},
+                resume=False,
+                session_id=session_id,
+            )
+            ctx._executor = self._executor
+            try:
+                try:
+                    await task.resurrect(ctx)
+                finally:
+                    # Land the hook's pending progress writes before ours, so
+                    # a late flush cannot overwrite the cleared progress.
+                    await ctx.flush_final_progress()
+            except NothingToResurrect as exc:
+                await set_has_unsaved_work(db, prefix, oid, False)
+                await append_log(db, prefix, oid, "event", f"Nothing to resurrect: {exc}")
+                return
+            except asyncio.CancelledError:
+                await append_log(
+                    db, prefix, oid, "event",
+                    "Resurrect interrupted (engine shutting down); unsaved work kept",
+                )
+                raise
+            except Exception as exc:
+                logger.exception("resurrect of %s failed", proc["processId"])
+                await append_log(db, prefix, oid, "error", f"Resurrect failed: {exc}")
+                return
+            await set_has_unsaved_work(db, prefix, oid, False)
+            await append_log(
+                db, prefix, oid, "event", "Resurrected: unsaved work saved; resuming",
+            )
+            saved = True
+        finally:
+            try:
+                await update_progress(db, prefix, oid, Progress(percent=None, message=None))
+            finally:
+                self._resurrecting.pop(oid, None)
+        if saved:
+            outcome = await self.launch(str(oid), resume=True, session_id=session_id)
+            if not outcome.ok:
+                await append_log(
+                    db, prefix, oid, "event",
+                    f"Resume after resurrect not started: {outcome.reason}",
+                )
 
     def get_published_result(self, process_id: str) -> Any | None:
         """Live published object for a running process, or None.
@@ -1199,6 +1307,13 @@ class Optio:
                 # (Handles the case where the supervisor was slow or already stopped.)
                 for oid in list(self._executor._cancellation_flags.keys()):
                     await self._executor.force_cancel(oid)
+
+            # 3b. Resurrects in progress: cancel; their flag stays set.
+            for t in list(self._resurrecting.values()):
+                t.cancel()
+            if self._resurrecting:
+                await asyncio.gather(*self._resurrecting.values(), return_exceptions=True)
+            self._resurrecting.clear()
 
             # 4. Stop supervisor (after final force-cancel pass).
             if self._supervisor_task:

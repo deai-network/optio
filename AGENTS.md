@@ -156,6 +156,18 @@ await optio_core.shutdown(grace_seconds=5.0)  # graceful shutdown; force-finaliz
 # Commands
 await optio_core.launch(process_id: str, resume: bool = False) -> None           # fire-and-forget
 await optio_core.launch_and_wait(process_id: str, resume: bool = False) -> None  # blocks until done
+await optio_core.resurrect(process_id: str, *, session_id: str | None) -> ResurrectOutcome  # fire-and-forget
+# Saves the work a failed run left on its host, then resumes. Refusals come back as
+# ResurrectOutcome(ok=False, reason=...), checked in this order: shutting-down, not-found,
+# no-resurrect-support (no TaskInstance.resurrect hook), resurrect-in-progress,
+# not-resurrectable (state not launchable, or hasUnsavedWork false), launch-blocked.
+# On ok=True a background task runs the hook (ctx.resume=False) under progress
+# "Resurrecting: saving the unsaved work…". Hook returns: hasUnsavedWork cleared, then
+# launch(resume=True, same session_id); a refused launch is logged. Hook raises
+# NothingToResurrect: flag cleared, reason logged, no resume. Any other exception: logged,
+# flag kept (retry possible). Progress is cleared in every case. While the hook runs,
+# launch returns not-launchable and a second resurrect resurrect-in-progress. shutdown()
+# cancels a resurrect in progress; the flag stays set.
 await optio_core.cancel(process_id: str) -> None
 # Cancels the named process. Recursively cancels active direct descendants whose
 # TaskInstance has auto_cancel_children=True (default). Opt-out parents handle
@@ -539,7 +551,7 @@ Collection: `{prefix}_processes`
 | `supportsResume` | bool | Task opted into resume support; refreshed via `$set` on every sync |
 | `hasSavedState` | bool | Task has a valid checkpoint; `$setOnInsert: false`; mutated only by `mark/clear_has_saved_state` |
 | `supportsResurrect` | bool | Task has a `resurrect` hook; refreshed via `$set` on every sync; absent reads as false |
-| `hasUnsavedWork` | bool | Host workdir holds work newer than the last snapshot; `$setOnInsert: false`; set by `mark/clear_unsaved_work`, cleared by optio-core when a launch starts; absent reads as false |
+| `hasUnsavedWork` | bool | Host workdir holds work newer than the last snapshot; `$setOnInsert: false`; set by `mark/clear_unsaved_work`, cleared by optio-core when a launch starts and when a resurrect saves the work or finds nothing; absent reads as false |
 | `createdAt` | datetime | Document creation timestamp |
 
 ---

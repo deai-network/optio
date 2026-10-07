@@ -53,7 +53,8 @@ Optional hook that saves the work a failed run left on its host (snapshot +
 to save. Requires `supports_resume=True`; task sync raises `ValueError` otherwise. Task sync
 publishes `supportsResurrect` (whether the hook is set) into the process document. The task
 flags unsaved host work with `ProcessContext.mark_unsaved_work()` / `clear_unsaved_work()`
-(`hasUnsavedWork`); a launch clears the flag.
+(`hasUnsavedWork`); a launch clears the flag, and so does a resurrect that saved the work or
+found nothing.
 
 `optio_core.ResurrectOutcome` (`ok`, `reason`, `proc`) is the result type of `Optio.resurrect`.
 `reason` is one of `not-found`, `not-resurrectable`, `no-resurrect-support`,
@@ -270,7 +271,7 @@ await ctx.clear_widget_data() -> None
 | `supportsResume` | `bool` | Whether the task opted into resume support; refreshed via `$set` on every sync |
 | `hasSavedState` | `bool` | Whether the task has a valid checkpoint; `$setOnInsert: false`; mutated only by `mark/clear_has_saved_state` |
 | `supportsResurrect` | `bool` | Whether the task has a `resurrect` hook; refreshed via `$set` on every sync |
-| `hasUnsavedWork` | `bool` | The host workdir holds work newer than the last snapshot; `$setOnInsert: false`; set by `mark/clear_unsaved_work`, cleared by optio-core when a launch starts |
+| `hasUnsavedWork` | `bool` | The host workdir holds work newer than the last snapshot; `$setOnInsert: false`; set by `mark/clear_unsaved_work`, cleared by optio-core when a launch starts and when a resurrect saves the work or finds nothing |
 
 `hasSavedState` is backfilled to `false` on all existing documents by migration `m003_backfill_has_saved_state`
 (runs on startup; depends on m002). `supportsResurrect` and `hasUnsavedWork` have no backfill; an
@@ -289,6 +290,40 @@ await optio_core.launch_and_wait(process_id: str, resume: bool = False) -> None
 
 When `resume=True`, the value is forwarded through the Redis command payload so the
 executor sets `ctx.resume = True` when the task starts.
+
+While a resurrect of the process is in progress, `launch` returns `not-launchable`.
+
+---
+
+### Optio.resurrect
+
+```python
+await optio_core.resurrect(process_id: str, *, session_id: str | None) -> ResurrectOutcome
+```
+
+Saves the work a failed run left on its host, then resumes. Fire-and-forget like `launch`:
+preconditions are answered at once, checked in this order, as `ResurrectOutcome(ok=False,
+reason=...)`: `shutting-down`, `not-found`, `no-resurrect-support` (the task has no
+`resurrect` hook), `resurrect-in-progress`, `not-resurrectable` (state not launchable, or
+`hasUnsavedWork` false), `launch-blocked` (it ends in a launch, so launch blocks apply).
+
+On `ok=True` (`proc` is the process document at that moment) a background task logs
+"Resurrect requested", sets progress "Resurrecting: saving the unsaved work…" and runs the
+task's `resurrect` hook with a `ProcessContext` for the process (`resume=False`). Then:
+
+- hook returns: `hasUnsavedWork` is cleared, then the process is launched with
+  `resume=True` and the same `session_id`. If that launch is refused (e.g. a launch block
+  appeared meanwhile), the reason is logged ("Resume after resurrect not started: ...").
+- hook raises `NothingToResurrect`: `hasUnsavedWork` is cleared and the reason logged; no
+  resume.
+- hook raises anything else: the error is logged at `error` level and `hasUnsavedWork` stays
+  set, so the resurrect can be retried.
+
+Progress is cleared in every case, and the process state is not changed by the resurrect
+itself. While the hook runs, `launch` on the process returns `not-launchable` and a second
+`resurrect` returns `resurrect-in-progress`. `shutdown()` cancels a resurrect in progress
+(after cancelling running tasks); `hasUnsavedWork` stays set. Spec:
+`docs/2026-10-07-resurrect-failed-session-design.md`.
 
 ---
 
