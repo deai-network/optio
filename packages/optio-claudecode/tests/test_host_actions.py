@@ -744,9 +744,31 @@ async def test_require_tmux_does_not_depend_on_workdir(tmp_path):
     assert await host_actions._require_tmux(host) == "/usr/bin/tmux"
 
 
+class _FindTmuxFakeHost:
+    """`command -v tmux || true` exits 0 either way; only a broken lookup
+    (login shell, cd) exits non-zero."""
+
+    def __init__(self, *, stdout="", exit_code=0, stderr=""):
+        self._result = _RequireTmuxFakeResult(exit_code, stdout, stderr)
+        self.workdir = "/wd"
+
+    async def run_command(self, cmd, **kwargs):
+        assert "command -v tmux" in cmd
+        return self._result
+
+
 async def test_find_tmux_returns_path_or_none():
-    assert await host_actions.find_tmux(_RequireTmuxFakeHost(tmux_ok=True)) == "/usr/bin/tmux"
-    assert await host_actions.find_tmux(_RequireTmuxFakeHost(tmux_ok=False)) is None
+    assert await host_actions.find_tmux(_FindTmuxFakeHost(stdout="/usr/bin/tmux\n")) == "/usr/bin/tmux"
+    assert await host_actions.find_tmux(_FindTmuxFakeHost(stdout="")) is None
+
+
+async def test_find_tmux_raises_when_the_lookup_fails():
+    # A broken login shell must not read as "no tmux": rescue would then
+    # skip a live orphan before setup_workdir wipes its state.
+    with pytest.raises(RuntimeError, match="something broke"):
+        await host_actions.find_tmux(
+            _FindTmuxFakeHost(exit_code=1, stderr="bash: something broke"),
+        )
 
 
 async def test_find_tmux_does_not_depend_on_workdir(tmp_path):

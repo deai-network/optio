@@ -112,6 +112,70 @@ async def test_credentials_guard_clears_unsaved_work(mongo_db, tmp_path, ctx_and
     assert doc["hasUnsavedWork"] is False
 
 
+class _StopAfterSettle(Exception):
+    pass
+
+
+async def _start_session_until_rescue(ctx, host, monkeypatch):
+    """Run run_claudecode_session up to crash-orphan rescue (which still sees
+    the workdir) and stop there."""
+    async def _stop(*a, **kw):
+        raise _StopAfterSettle()
+    monkeypatch.setattr(S, "_build_host", lambda config, process_id: host)
+    monkeypatch.setattr(S, "_rescue_orphan_if_present", _stop)
+    from optio_claudecode import ClaudeCodeTaskConfig
+    cfg = ClaudeCodeTaskConfig(consumer_instructions="x", fs_isolation=False, supports_resume=True)
+    with pytest.raises(_StopAfterSettle):
+        await S.run_claudecode_session(ctx, cfg)
+
+
+async def _blob(ctx, name, payload):
+    async with ctx.store_blob(name) as w:
+        await w.write(payload)
+    return w.file_id
+
+
+@pytest.mark.asyncio
+async def test_launch_settles_a_committed_pending_capture(mongo_db, tmp_path, ctx_and_captures, monkeypatch):
+    """A capture cut off between insert_snapshot and delete_pending_capture,
+    then a Resume/Restart: the record must not outlive the launch (a later
+    Resurrect would trust it); its blob is the snapshot's and stays."""
+    from optio_claudecode.snapshots import insert_snapshot
+    ctx, _cap, _flag = ctx_and_captures
+    await _flags(mongo_db, ctx, supportsResume=True, supportsResurrect=True)
+    s = await _blob(ctx, "session", b"s")
+    w = await _blob(ctx, "workdir", b"w")
+    await insert_snapshot(mongo_db, prefix="test", process_id=ctx.process_id, end_state="cancelled",
+                          session_blob_id=s, workdir_blob_id=w, deliverables_emitted=[])
+    await PC.record_pending_capture(mongo_db, "test", process_id=ctx.process_id,
+                                    session_blob_id=s, workdir_blob_id=w)
+
+    await _start_session_until_rescue(ctx, _local_host(tmp_path), monkeypatch)
+
+    assert await PC.load_pending_capture(mongo_db, "test", ctx.process_id) is None
+    assert await mongo_db["fs.files"].count_documents({"_id": w}) == 1
+    assert await mongo_db["fs.chunks"].count_documents({"files_id": w}) == 1
+    doc = await mongo_db["test_processes"].find_one({"_id": ctx._process_oid})
+    assert doc["hasSavedState"] is True
+
+
+@pytest.mark.asyncio
+async def test_launch_settles_an_uncommitted_pending_capture(mongo_db, tmp_path, ctx_and_captures, monkeypatch):
+    ctx, _cap, _flag = ctx_and_captures
+    await _flags(mongo_db, ctx, supportsResume=True, supportsResurrect=True)
+    partial = ObjectId()
+    await mongo_db["fs.chunks"].insert_one({"files_id": partial, "n": 0, "data": b"partial"})
+    await PC.record_pending_capture(mongo_db, "test", process_id=ctx.process_id,
+                                    session_blob_id=ObjectId(), workdir_blob_id=partial)
+
+    await _start_session_until_rescue(ctx, _local_host(tmp_path), monkeypatch)
+
+    assert await PC.load_pending_capture(mongo_db, "test", ctx.process_id) is None
+    assert await mongo_db["fs.chunks"].count_documents({"files_id": partial}) == 0
+    doc = await mongo_db["test_processes"].find_one({"_id": ctx._process_oid})
+    assert "hasSavedState" not in doc
+
+
 class _Cfg:
     def __init__(self, supports_resume):
         self.supports_resume = supports_resume

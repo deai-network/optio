@@ -72,9 +72,16 @@ blob. Hence the referenced-blob guard: `discard_pending_workdir_blob(db,
 prefix, *, process_id, record, delete_blob)` deletes the recorded workdir blob
 only when no `{prefix}_claudecode_session_snapshots` document of the process
 has it as `workdirBlobId`, and returns whether one does; it never deletes
-the record. Before recording its
-own, `_store_workdir_snapshot` discards the blob of a record left by an
-earlier cut-off capture that was never resurrected (the upsert would orphan it).
+the record. A record must not outlive the next launch, or a later Resurrect
+would take it for that run's capture: `run_claudecode_session` calls
+`pending_captures.settle_pending_capture(ctx) -> bool` right after
+connecting, before crash-orphan rescue, on every launch (fresh or resume).
+It discards the recorded workdir blob (guarded), deletes the record, and,
+when a snapshot references the blob (that capture had committed), calls
+`mark_has_saved_state()`; it does not touch `hasUnsavedWork` (optio-core
+clears it at launch). Before recording its own, `_store_workdir_snapshot`
+also discards the blob of any record still present (the upsert would
+orphan it).
 
 `hasUnsavedWork`: `session._on_agent_live` calls `ctx.mark_unsaved_work()`
 when claude goes live (the iframe launch, after the tmux path is resolved so a
@@ -108,16 +115,21 @@ from the snapshot it stored. The hook is
    `host_actions.find_tmux` finds tmux and the tmux session `optio` on the
    task's socket is alive, `host_actions.teardown_session_tree(aggressive=True)`
    (as crash-orphan rescue does); no tmux on the worker (conversation mode)
-   means no session. Then, always,
+   means no session. `find_tmux` returns None only when the lookup
+   succeeds with empty output; a failing lookup (non-zero exit) raises.
+   Then, always,
    `pkill -f -- '^tail -F -n \+1 <workdir>/optio.log$'` with the path
    regex-escaped: anchored, so it matches only the failed run's log reader
    and never the shell running pkill.
-3. A pending-capture record: `discard_pending_workdir_blob` (chunks too; the
-   `fs.files` document may not exist), then the record is deleted. When a
-   snapshot references the recorded blob, that capture had committed (cut
-   off after inserting the snapshot record): the hook keeps the blob, calls
-   `mark_has_saved_state()` and `clear_unsaved_work()`, removes the task
-   directory and returns.
+3. `settle_pending_capture` (the partial blob goes, chunks too; the
+   `fs.files` document may not exist). Since every launch settles records,
+   one found here was written by the failed run's own capture. Short-circuit
+   only when that capture had committed (a snapshot references the blob)
+   AND the workdir has no credentials (step 4's test; the capture removes
+   `home/.claude` before recording): the work is in that snapshot, so the
+   hook calls `clear_unsaved_work()` (settle already called
+   `mark_has_saved_state()`), removes the task directory and returns. With
+   credentials present the workdir holds newer work: go on to step 4.
 4. Save. Excludes: the effective `workdir_exclude` (the archive defaults
    when unset) plus the rescue marker. The branch is chosen by
    `home/.claude/.credentials.json` being non-empty (`test -s`), the same
@@ -149,8 +161,8 @@ leftover rescue marker still triggers a rescue, minus the tmux-tree
 teardown).
 
 `hasUnsavedWork` is set by `_on_agent_live` and cleared by a completed save
-or the credentials guard (above), and by the hook when the pending record
-shows a committed capture; optio-core also clears it when a launch starts,
+or the credentials guard (above), and by the hook's step-3 short-circuit;
+optio-core also clears it when a launch starts,
 when the hook returns, and when it raises `NothingToResurrect`.
 
 ## ClaudeCodeTaskConfig field semantics

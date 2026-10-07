@@ -446,11 +446,18 @@ async def find_tmux(host: "Host") -> str | None:
 
     The same lookup as ``_require_tmux`` (login shell, from ``/``), for
     callers that only probe for a session tmux would hold: no tmux on the
-    worker (conversation mode never needs it) means no such session.
+    worker (conversation mode never needs it) means no such session. A lookup
+    that itself fails (non-zero exit) raises: it must not read as "no tmux",
+    or rescue would skip a live orphan before the workdir is wiped.
     """
     result = await host.run_command("bash -lc 'command -v tmux || true'", cwd="/")
-    path = (result.stdout or "").strip()
-    return path if result.exit_code == 0 and path else None
+    if result.exit_code != 0:
+        detail = (result.stderr or "").strip()
+        raise RuntimeError(
+            f"tmux lookup failed on the worker (exit {result.exit_code})"
+            + (f": {detail[:300]}" if detail else "")
+        )
+    return (result.stdout or "").strip() or None
 
 
 async def _detect_ttyd_asset_name(host: "Host") -> str:

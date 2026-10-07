@@ -68,6 +68,7 @@ from optio_claudecode.pending_captures import (
     discard_pending_workdir_blob,
     load_pending_capture,
     record_pending_capture,
+    settle_pending_capture,
 )
 from optio_claudecode.prompt import DEFAULT_CONVERSATION_INSTRUCTIONS, compose_agents_md
 from optio_claudecode.snapshots import (
@@ -212,6 +213,10 @@ async def run_claudecode_session(
     lease_holder: str | None = None
 
     await host.connect()
+
+    # A pending-capture record left by a cut-off capture must not outlive
+    # this launch: a later Resurrect would take it for this run's capture.
+    await settle_pending_capture(ctx)
 
     # Crash-orphan rescue: if a non-graceful host death left this task's
     # tmux/ttyd/claude tree running with unsaved state, harvest it into a fresh

@@ -179,6 +179,36 @@ async def test_pending_record_naming_a_snapshot_blob_finishes_that_capture(mongo
 
 
 @pytest.mark.asyncio
+async def test_committed_record_with_credentials_saves_the_new_work(mongo_db, host, ctx_and_captures):
+    """A committed record next to a workdir that still has its credentials
+    is not this run's cut-off capture (that removes home/.claude before
+    recording): the workdir holds newer work and is saved."""
+    ctx, _cap, _flag = ctx_and_captures
+    await _prepare(mongo_db, ctx)
+    s = await _blob(ctx, "session", b"s")
+    w = await _blob(ctx, "workdir", b"w")
+    await _snapshot_before_now(mongo_db, ctx, session_blob_id=s, workdir_blob_id=w)
+    await PC.record_pending_capture(mongo_db, "test", process_id=ctx.process_id,
+                                    session_blob_id=s, workdir_blob_id=w)
+    _write(f"{host.workdir}/CLAUDE.md", "new work")
+    _write(f"{host.workdir}/home/.claude/.credentials.json", '{"t": 1}')
+
+    await R.resurrect_claudecode_session(ctx, _config())
+
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id)
+    assert snap["endState"] == "resurrected"
+    assert snap["workdirBlobId"] != w
+    async with ctx.load_blob(snap["workdirBlobId"]) as r:
+        data = await r.read()
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as t:
+        assert t.extractfile("./CLAUDE.md").read() == b"new work"
+    assert not os.path.exists(host.taskdir)
+    assert await mongo_db["fs.files"].count_documents({"_id": w}) == 1
+    assert await mongo_db["fs.chunks"].count_documents({"files_id": w}) == 1
+    assert await PC.load_pending_capture(mongo_db, "test", ctx.process_id) is None
+
+
+@pytest.mark.asyncio
 async def test_no_session_blob_but_a_snapshot_offers_resume(mongo_db, host, ctx_and_captures):
     """Nothing to save, but a snapshot exists that hasSavedState never
     flagged (a capture cut off before mark_has_saved_state, record already

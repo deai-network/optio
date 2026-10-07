@@ -19,11 +19,7 @@ from optio_host.archive import DEFAULT_WORKDIR_EXCLUDES
 
 from optio_claudecode import host_actions
 from optio_claudecode import session as S
-from optio_claudecode.pending_captures import (
-    delete_pending_capture,
-    discard_pending_workdir_blob,
-    load_pending_capture,
-)
+from optio_claudecode.pending_captures import settle_pending_capture
 from optio_claudecode.snapshots import _collection as _snapshots, load_latest_snapshot
 
 
@@ -104,24 +100,6 @@ async def _stop_leftovers(host) -> None:
     await host.run_command(f"pkill -f -- {shlex.quote(pattern)} || true", cwd="/")
 
 
-async def _settle_pending_capture(ctx: ProcessContext) -> bool:
-    """Clear what a cut-off capture recorded. True when that capture had
-    inserted its snapshot (killed before deleting the record): its work is
-    saved, and the flags it did not get to set are set here."""
-    pending = await load_pending_capture(ctx._db, ctx._prefix, ctx.process_id)
-    if pending is None:
-        return False
-    committed = await discard_pending_workdir_blob(
-        ctx._db, ctx._prefix,
-        process_id=ctx.process_id, record=pending, delete_blob=ctx.delete_blob,
-    )
-    if committed:
-        await ctx.mark_has_saved_state()
-        await ctx.clear_unsaved_work()
-    await delete_pending_capture(ctx._db, ctx._prefix, ctx.process_id)
-    return committed
-
-
 async def resurrect_claudecode_session(ctx: ProcessContext, config) -> None:
     host = S._build_host(config, ctx.process_id)
     await host.connect()
@@ -131,12 +109,17 @@ async def resurrect_claudecode_session(ctx: ProcessContext, config) -> None:
         ctx.report_progress(None, "Resurrecting: stopping leftovers of the failed run…")
         await _stop_leftovers(host)
 
-        if await _settle_pending_capture(ctx):
+        committed = await settle_pending_capture(ctx)
+        credentials = await _credentials_present(host)
+        if committed and not credentials:
+            # This run's capture was cut off after inserting its snapshot (it
+            # removes home/.claude before recording): the work is saved.
+            await ctx.clear_unsaved_work()
             await host.cleanup_taskdir(aggressive=False)
             return
 
         exclude = _workdir_exclude(config)
-        if await _credentials_present(host):
+        if credentials:
             await S._capture_snapshot(
                 ctx, host,
                 end_state="resurrected",
