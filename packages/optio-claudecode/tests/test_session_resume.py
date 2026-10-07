@@ -346,3 +346,180 @@ async def test_resume_relocates_old_root_claude_json(
 
     assert observed.get("new") is True, "resume must relocate .claude.json into .claude/"
     assert observed.get("old") is False, "old-root .claude.json must be removed after relocation"
+
+
+# --------------------------------------------------------------------------
+# Resurrect: a capture cut off after its session step (the 2026-10-06 shape),
+# then the Resurrect hook, then a real resume from the resurrected snapshot.
+# Spec: docs/2026-10-07-resurrect-failed-session-design.md, Testing.
+# --------------------------------------------------------------------------
+
+_WORK_MARKER = "UNSAVED-WORK.txt"
+
+
+async def _resurrectable_ctx(mongo_db, process_id: str, *, resume: bool, state: str = "running"):
+    """Like _make_ctx, for a task that has a resurrect hook (supportsResurrect),
+    so mark_unsaved_work is honoured as in production."""
+    async def _hook(ctx):  # never called: the test calls the real hook
+        raise AssertionError("not used")
+    task = TaskInstance(
+        execute=lambda c: None,  # type: ignore[arg-type, return-value]
+        process_id=process_id, name=process_id, supports_resume=True,
+        resurrect=_hook,
+    )
+    proc = await upsert_process(mongo_db, "test", task)
+    await mongo_db["test_processes"].update_one(
+        {"_id": proc["_id"]}, {"$set": {"status": {"state": state}}},
+    )
+    return ProcessContext(
+        process_oid=proc["_id"],
+        process_id=process_id,
+        root_oid=proc["_id"],
+        depth=0,
+        params={},
+        services={},
+        db=mongo_db,
+        prefix="test",
+        cancellation_flag=asyncio.Event(),
+        child_counter={"next": 0},
+        resume=resume,
+    )
+
+
+def _local_taskdir(process_id: str) -> tuple[str, str]:
+    from optio_host.paths import task_dir
+    taskdir = task_dir(ssh=None, process_id=process_id, consumer_name="optio-claudecode")
+    return taskdir, os.path.join(taskdir, "workdir")
+
+
+async def _session_argv_lines(mongo_db, blob_id) -> list[list[str]]:
+    import io, tarfile
+    bucket = AsyncIOMotorGridFSBucket(mongo_db)
+    stream = await bucket.open_download_stream(blob_id)
+    data = await stream.read()
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        member = next(m for m in tar.getmembers() if m.name.endswith("fake_claude_argv.json"))
+        lines = tar.extractfile(member).read().decode("utf-8").splitlines()
+    return [json.loads(line) for line in lines if line]
+
+
+async def test_resume_after_resurrect_restores_the_cut_off_runs_work(
+    mongo_db, task_root, shim_install_dir, claude_cache_dir, monkeypatch,
+):
+    import optio_claudecode.session as S
+    from optio_claudecode import pending_captures as PC
+    from optio_claudecode.resurrect import resurrect_claudecode_session
+
+    pid = "cc_resurrect_resume"
+    scenario = "idempotent_done"  # writes a transcript: a resume passes --continue
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", scenario)
+    cfg = _cfg(shim_install_dir, claude_cache_dir, scenario)
+    taskdir, workdir = _local_taskdir(pid)
+
+    # 1) A first run saves snapshot A normally (without the work below).
+    await run_claudecode_session(await _resurrectable_ctx(mongo_db, pid, resume=False), cfg)
+    snap_a = await load_latest_snapshot(mongo_db, prefix="test", process_id=pid)
+    assert snap_a is not None
+    assert not os.path.exists(taskdir)
+
+    # 2) A resumed run goes live and does work (after_execute runs after the
+    #    session, before the teardown capture). Its capture is cut off while
+    #    streaming the workdir: session blob stored, home/.claude removed,
+    #    pending record written, partial workdir chunks, no snapshot record.
+    async def _do_work(hook_ctx):
+        await hook_ctx.run_on_host(f"echo 'six hours of work' > {hook_ctx._host.workdir}/{_WORK_MARKER}")
+
+    real_stream = S._stream_archive_to_blob
+
+    async def _cut_off(ctx_, host_, exclude, wwriter, **kw):
+        # GridFS buffers up to 32 MB before inserting chunks; a real archive
+        # (784 MB on 2026-10-06) cut off mid-stream leaves flushed chunks of
+        # the recorded blob and no fs.files document. Model that directly.
+        await mongo_db["fs.chunks"].insert_one(
+            {"files_id": wwriter.file_id, "n": 0, "data": b"partial"},
+        )
+        raise RuntimeError("capture cut off (simulated force-cancel)")
+    monkeypatch.setattr(S, "_stream_archive_to_blob", _cut_off)
+    ctx2 = await _resurrectable_ctx(mongo_db, pid, resume=True)
+    await run_claudecode_session(ctx2, dataclasses.replace(cfg, after_execute=_do_work))
+    monkeypatch.setattr(S, "_stream_archive_to_blob", real_stream)
+
+    # The 2026-10-06 shape, left by the run itself.
+    assert os.path.isfile(os.path.join(workdir, _WORK_MARKER)), "taskdir must be kept"
+    assert not os.path.exists(os.path.join(workdir, "home", ".claude"))
+    pending = await PC.load_pending_capture(mongo_db, "test", pid)
+    assert pending is not None
+    assert await mongo_db["fs.chunks"].count_documents({"files_id": pending["workdirBlobId"]}) >= 1
+    assert await mongo_db["fs.files"].count_documents({"_id": pending["workdirBlobId"]}) == 0
+    assert (await load_latest_snapshot(mongo_db, prefix="test", process_id=pid))["_id"] == snap_a["_id"]
+    doc = await mongo_db["test_processes"].find_one({"processId": pid})
+    assert doc["hasUnsavedWork"] is True
+    # The engine force-fails the run.
+    await mongo_db["test_processes"].update_one(
+        {"processId": pid}, {"$set": {"status": {"state": "failed"}}},
+    )
+
+    # 3) Resurrect (the hook optio-core runs; ctx.resume=False).
+    ctx_r = await _resurrectable_ctx(mongo_db, pid, resume=False, state="failed")
+    await resurrect_claudecode_session(ctx_r, cfg)
+    snap_r = await load_latest_snapshot(mongo_db, prefix="test", process_id=pid)
+    assert snap_r["endState"] == "resurrected"
+    assert snap_r["sessionBlobId"] == pending["sessionBlobId"]
+    assert await PC.load_pending_capture(mongo_db, "test", pid) is None
+    assert await mongo_db["fs.chunks"].count_documents({"files_id": pending["workdirBlobId"]}) == 0
+    assert not os.path.exists(taskdir)
+
+    # 4) The resume optio-core launches next restores that snapshot.
+    observed: dict[str, bool] = {}
+
+    async def _observe(hook_ctx):
+        wd = hook_ctx._host.workdir
+        observed["work"] = os.path.isfile(f"{wd}/{_WORK_MARKER}")
+        observed["transcript"] = os.path.isfile(
+            f"{wd}/home/.claude/projects/resumed/session.jsonl",
+        )
+        observed["argv"] = os.path.isfile(f"{wd}/home/.claude/fake_claude_argv.json")
+
+    ctx3 = await _resurrectable_ctx(mongo_db, pid, resume=True)
+    await run_claudecode_session(ctx3, dataclasses.replace(cfg, before_execute=_observe))
+    assert observed == {"work": True, "transcript": True, "argv": True}, observed
+
+    # home/.claude came from the cut-off run's session blob: its argv log
+    # holds runs 1 and 2 (snapshot A's would hold only run 1), and run 3 was
+    # launched with --continue.
+    snap_c = await load_latest_snapshot(mongo_db, prefix="test", process_id=pid)
+    assert snap_c["_id"] != snap_r["_id"]
+    launches = await _session_argv_lines(mongo_db, snap_c["sessionBlobId"])
+    assert len(launches) == 3, launches
+    assert "--continue" not in launches[0]
+    assert "--continue" in launches[1]
+    assert "--continue" in launches[2]
+
+
+async def test_teardown_keeps_the_taskdir_when_the_capture_raises(
+    mongo_db, task_root, shim_install_dir, claude_cache_dir, monkeypatch,
+):
+    """Wiring: a capture that raises inside the teardown leaves the task
+    directory on the host and hasUnsavedWork set (the run went live)."""
+    import optio_claudecode.session as S
+
+    pid = "cc_capture_raises"
+    monkeypatch.setenv("FAKE_CLAUDE_SCENARIO", "happy")
+    calls = []
+
+    async def _boom(*a, **kw):
+        calls.append(kw.get("end_state"))
+        raise RuntimeError("capture failed")
+    monkeypatch.setattr(S, "_capture_snapshot", _boom)
+    taskdir, workdir = _local_taskdir(pid)
+
+    await run_claudecode_session(
+        await _resurrectable_ctx(mongo_db, pid, resume=False),
+        _cfg(shim_install_dir, claude_cache_dir, "happy"),
+    )
+
+    assert calls == ["done"]
+    assert os.path.isdir(workdir) and os.listdir(workdir)
+    doc = await mongo_db["test_processes"].find_one({"processId": pid})
+    assert doc["hasUnsavedWork"] is True
+    assert doc.get("hasSavedState") is not True
