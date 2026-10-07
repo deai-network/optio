@@ -1308,11 +1308,16 @@ class Optio:
                 for oid in list(self._executor._cancellation_flags.keys()):
                     await self._executor.force_cancel(oid)
 
-            # 3b. Resurrects in progress: cancel; their flag stays set.
+            # 3b. Resurrects in progress: cancel; their flag stays set. The
+            # wait is bounded like force_cancel's: a hook that ignores the
+            # cancel is abandoned, not waited on.
             for t in list(self._resurrecting.values()):
                 t.cancel()
             if self._resurrecting:
-                await asyncio.gather(*self._resurrecting.values(), return_exceptions=True)
+                await asyncio.wait(
+                    set(self._resurrecting.values()),
+                    timeout=self._config.force_cancel_shield_seconds,
+                )
             self._resurrecting.clear()
 
             # 4. Stop supervisor (after final force-cancel pass).

@@ -19,6 +19,7 @@ adhoc_delete = _instance.adhoc_delete
 launch = _instance.launch
 launch_and_wait = _instance.launch_and_wait
 launch_and_await_result = _instance.launch_and_await_result
+resurrect = _instance.resurrect
 get_published_result = _instance.get_published_result
 cancel = _instance.cancel
 dismiss = _instance.dismiss
@@ -37,7 +38,7 @@ __all__ = [
     "LaunchError", "ResultNotPublished", "NothingToResurrect",
     "init", "run", "shutdown",
     "adhoc_define", "adhoc_delete",
-    "launch", "launch_and_wait", "launch_and_await_result",
+    "launch", "launch_and_wait", "launch_and_await_result", "resurrect",
     "get_published_result", "cancel", "dismiss", "resync",
     "get_process", "list_processes",
     "block_launches", "unblock_launches",

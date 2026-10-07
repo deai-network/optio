@@ -167,7 +167,8 @@ await optio_core.resurrect(process_id: str, *, session_id: str | None) -> Resurr
 # NothingToResurrect: flag cleared, reason logged, no resume. Any other exception: logged,
 # flag kept (retry possible). Progress is cleared in every case. While the hook runs,
 # launch returns not-launchable and a second resurrect resurrect-in-progress. shutdown()
-# cancels a resurrect in progress; the flag stays set.
+# cancels a resurrect in progress and waits at most force_cancel_shield_seconds for it (a
+# hook ignoring the cancel is abandoned); the flag stays set.
 await optio_core.cancel(process_id: str) -> None
 # Cancels the named process. Recursively cancels active direct descendants whose
 # TaskInstance has auto_cancel_children=True (default). Opt-out parents handle

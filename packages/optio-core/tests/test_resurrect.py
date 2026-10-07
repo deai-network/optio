@@ -23,9 +23,11 @@ async def _wait_until(pred, timeout=60.0):
     raise AssertionError("condition not reached within the hang ceiling")
 
 
-async def _setup(mongo_db, prefix, hook, *, state="failed", unsaved=True, metadata=None):
+async def _setup(
+    mongo_db, prefix, hook, *, state="failed", unsaved=True, metadata=None, **init_kwargs,
+):
     fw = Optio()
-    await fw.init(mongo_db=mongo_db, prefix=prefix)
+    await fw.init(mongo_db=mongo_db, prefix=prefix, **init_kwargs)
     proc = await fw.adhoc_define(TaskInstance(
         execute=_noop, process_id="r1", name="R1", supports_resume=True,
         resurrect=hook, metadata=metadata or {},
@@ -191,3 +193,35 @@ async def test_shutdown_cancels_running_resurrect_and_keeps_flag(mongo_db):
     assert doc["hasUnsavedWork"] is True
     assert fw._resurrecting == {}
     assert (await fw.resurrect("r1", session_id=None)).reason == "shutting-down"
+
+
+@pytest.mark.asyncio
+async def test_shutdown_wait_on_stubborn_resurrect_is_bounded(mongo_db):
+    started = asyncio.Event()
+
+    async def hook(ctx):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.Event().wait()
+    fw, coll, proc, _ = await _setup(
+        mongo_db, "res10", hook, force_cancel_shield_seconds=0.2,
+    )
+    assert (await fw.resurrect("r1", session_id=None)).ok is True
+    stubborn = fw._resurrecting[proc["_id"]]
+    await asyncio.wait_for(started.wait(), 60)
+    await asyncio.wait_for(fw.shutdown(grace_seconds=0.1), 60)
+    assert fw._resurrecting == {}
+    assert not stubborn.done()
+    stubborn.cancel()
+    await asyncio.gather(stubborn, return_exceptions=True)
+    doc = await coll.find_one({"_id": proc["_id"]})
+    assert doc["hasUnsavedWork"] is True
+
+
+def test_resurrect_exported_from_package():
+    """Bound to the module-level singleton, like launch."""
+    import optio_core
+    assert optio_core.resurrect == optio_core._instance.resurrect
+    assert "resurrect" in optio_core.__all__

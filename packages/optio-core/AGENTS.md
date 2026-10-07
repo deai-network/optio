@@ -322,7 +322,9 @@ task's `resurrect` hook with a `ProcessContext` for the process (`resume=False`)
 Progress is cleared in every case, and the process state is not changed by the resurrect
 itself. While the hook runs, `launch` on the process returns `not-launchable` and a second
 `resurrect` returns `resurrect-in-progress`. `shutdown()` cancels a resurrect in progress
-(after cancelling running tasks); `hasUnsavedWork` stays set. Spec:
+(after cancelling running tasks) and waits at most `force_cancel_shield_seconds` (an `init()`
+parameter) for it to unwind; a hook that ignores the cancel is abandoned, not waited on.
+`hasUnsavedWork` stays set. Spec:
 `docs/2026-10-07-resurrect-failed-session-design.md`.
 
 ---
