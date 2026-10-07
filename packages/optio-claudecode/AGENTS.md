@@ -47,6 +47,38 @@ dated snapshot. A catalog that only lists older ids leaves the saved model in
 place. A fresh launch keeps its configured model. See
 `docs/2026-05-29-optio-claudecode-resume-design.md`.
 
+## Snapshot capture and unsaved work
+
+`session._capture_snapshot` runs at teardown (only when `supports_resume`
+and claude came up) and in crash-orphan rescue. Its first half: the credentials guard (no
+`home/.claude/.credentials.json` → no snapshot), the session blob (tar of
+`home/.claude`, through `session_blob_encrypt`), then `rm -rf home/.claude`
+and the regenerable mozilla dirs. Its second half is
+`session._store_workdir_snapshot(ctx, host, *, end_state, workdir_exclude,
+session_blob_id)`, callable on its own: it records
+`{processId, sessionBlobId, workdirBlobId, startedAt}` in
+`{prefix}_claudecode_pending_captures` (one document per processId, upserted;
+`optio_claudecode.pending_captures`: `record_pending_capture`,
+`load_pending_capture`, `delete_pending_capture`), streams the workdir into a
+GridFS blob opened with that pre-generated `workdirBlobId`, inserts the
+snapshot record, deletes the pending record, prunes, and calls
+`mark_has_saved_state()` then `clear_unsaved_work()`. A capture cut off while
+streaming the workdir leaves the pending record behind, naming the partial
+workdir blob.
+
+`hasUnsavedWork`: `session._on_agent_live` calls `ctx.mark_unsaved_work()`
+when claude goes live (the iframe launch and the conversation launch; not
+the conversation's model/effort respawn), only when `supports_resume`.
+optio-core ignores it, with a warning, unless the task has a resurrect hook.
+It is cleared by `clear_unsaved_work()` after a completed save, and by the
+credentials guard when it refuses the snapshot (a later save would be refused
+too, so nothing is left to resurrect).
+
+Teardown (`session._cleanup_after_capture`): when the capture raises, the
+task directory is kept on the host (logged as "snapshot capture failed;
+keeping the task directory for Resurrect") and `hasUnsavedWork` stays set;
+otherwise `cleanup_taskdir(aggressive=cancelled)` runs as before.
+
 ## ClaudeCodeTaskConfig field semantics
 
 * `credentials_json` — opaque payload; planted at

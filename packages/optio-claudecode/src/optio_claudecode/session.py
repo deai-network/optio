@@ -25,6 +25,8 @@ import time as _time
 from datetime import datetime, timezone
 from typing import AsyncIterator, Callable
 
+from bson import ObjectId
+
 from optio_core.context import ProcessContext
 from optio_core.models import BasicAuth, TaskInstance
 
@@ -61,6 +63,7 @@ from optio_claudecode.seed_manifest import (
     CLAUDE_SEED_SUFFIX,
     _rekey_claude_json_projects,
 )
+from optio_claudecode.pending_captures import delete_pending_capture, record_pending_capture
 from optio_claudecode.prompt import DEFAULT_CONVERSATION_INSTRUCTIONS, compose_agents_md
 from optio_claudecode.snapshots import (
     insert_snapshot,
@@ -410,6 +413,7 @@ async def run_claudecode_session(
             claustrum_wrap=claustrum_wrap,
         )
         launched_handle = handle
+        await _on_agent_live(ctx, config)
         tmux_path = await host_actions._require_tmux(host)
 
         worker_port = await host.establish_tunnel(ttyd_port, bind_addr=bind_addr)
@@ -624,6 +628,7 @@ async def run_claudecode_session(
         ctx.report_progress(None, f"Launching {AGENT_INFO.name} (conversation)…")
         handle, reader_task = await _spawn(current_model, do_continue=pass_continue)
         launched_handle = handle
+        await _on_agent_live(ctx, config)
 
         ctx.publish_result(conversation)
         ctx.report_progress(None, f"{AGENT_INFO.name} conversation is live")
@@ -1162,6 +1167,7 @@ async def run_claudecode_session(
             # fully planted+seeded and claude live. An interrupt or merge_seed
             # failure before launch leaves it None — skip capture entirely (do
             # NOT touch hasSavedState, so any prior good snapshot survives).
+            capture_failed = False
             if config.supports_resume and launched_handle is not None:
                 if todo_tracker is not None:
                     await todo_tracker.save(host)
@@ -1179,19 +1185,18 @@ async def run_claudecode_session(
                         _time.monotonic() - _snapshot_t0,
                     )
                 except Exception as exc:
+                    capture_failed = True
                     _LOG.exception(
-                        "snapshot capture failed; proceeding with workdir wipe",
+                        "snapshot capture failed; keeping the task directory for Resurrect",
                     )
                     _trace(
                         "finally: capture_snapshot RAISED %s (%.1fs)",
                         type(exc).__name__, _time.monotonic() - _snapshot_t0,
                     )
 
-            async with _traced(f"finally: cleanup_taskdir aggressive={cancelled}"):
-                try:
-                    await host.cleanup_taskdir(aggressive=cancelled)
-                except Exception:
-                    _LOG.exception("cleanup_taskdir failed")
+            await _cleanup_after_capture(
+                host, capture_failed=capture_failed, cancelled=cancelled,
+            )
             async with _traced("finally: disconnect"):
                 try:
                     await host.disconnect()
@@ -1680,6 +1685,29 @@ async def _stream_archive_to_blob(
     return total
 
 
+async def _on_agent_live(ctx: ProcessContext, config: ClaudeCodeTaskConfig) -> None:
+    """claude is up: from here the workdir holds work the last snapshot lacks,
+    so a failure leaves something Resurrect can save."""
+    if config.supports_resume:
+        await ctx.mark_unsaved_work()
+
+
+async def _cleanup_after_capture(host: Host, *, capture_failed: bool, cancelled: bool) -> None:
+    """Remove the task directory, unless the capture failed: then it stays on
+    the host (hasUnsavedWork stays set) so Resurrect can save it later."""
+    if capture_failed:
+        _LOG.warning(
+            "snapshot capture failed; keeping task directory %s for Resurrect",
+            getattr(host, "taskdir", "?"),
+        )
+        return
+    async with _traced(f"finally: cleanup_taskdir aggressive={cancelled}"):
+        try:
+            await host.cleanup_taskdir(aggressive=cancelled)
+        except Exception:
+            _LOG.exception("cleanup_taskdir failed")
+
+
 async def _capture_snapshot(
     ctx: ProcessContext,
     host: Host,
@@ -1705,6 +1733,9 @@ async def _capture_snapshot(
             "snapshot capture skipped: home/.claude/.credentials.json "
             "absent/empty; refusing to mark resumable",
         )
+        # A snapshot without credentials is refused, so a later Resurrect
+        # could not save this workdir either: nothing resurrectable is left.
+        await ctx.clear_unsaved_work()
         return
 
     # 1-3. tar the sensitive subtree, encrypt, write the session blob.
@@ -1735,14 +1766,43 @@ async def _capture_snapshot(
             f"{shlex.quote(workdir)}/home/.mozilla"
         )
 
+    await _store_workdir_snapshot(
+        ctx, host,
+        end_state=end_state,
+        workdir_exclude=workdir_exclude,
+        session_blob_id=session_blob_id,
+    )
+
+
+async def _store_workdir_snapshot(
+    ctx: ProcessContext,
+    host: Host,
+    *,
+    end_state: str,
+    workdir_exclude: list[str] | None,
+    session_blob_id: ObjectId,
+) -> None:
+    """Second half of a capture: archive the workdir, insert the snapshot
+    record, prune, flag the state. Resurrect calls it alone when a cut-off
+    capture had already stored the session blob and removed home/.claude.
+    """
+    # 4c. Record the blobs before streaming: a capture cut off past the cancel
+    # grace leaves this record, naming the partial workdir blob to delete.
+    workdir_blob_id = ObjectId()
+    await record_pending_capture(
+        ctx._db, ctx._prefix,
+        process_id=ctx.process_id,
+        session_blob_id=session_blob_id,
+        workdir_blob_id=workdir_blob_id,
+    )
+
     # 5. stream the plaintext workdir tar.
     ctx.report_progress(None, "Snapshot: archiving workdir…")
     async with _traced("capture: archive_workdir+store") as t:
-        async with ctx.store_blob("workdir") as wwriter:
+        async with ctx.store_blob("workdir", file_id=workdir_blob_id) as wwriter:
             total_bytes = await _stream_archive_to_blob(
                 ctx, host, workdir_exclude, wwriter, start=t.start,
             )
-            workdir_blob_id = wwriter.file_id
     _trace("capture: archive_workdir+store id=%s bytes=%d", workdir_blob_id, total_bytes)
     ctx.report_progress(
         None,
@@ -1761,6 +1821,7 @@ async def _capture_snapshot(
             workdir_blob_id=workdir_blob_id,
             deliverables_emitted=[],
         )
+    await delete_pending_capture(ctx._db, ctx._prefix, ctx.process_id)
     ctx.report_progress(None, "Snapshot saved")
 
     # 7. prune + delete stale blobs.
@@ -1783,6 +1844,7 @@ async def _capture_snapshot(
     async with _traced("capture: mark_has_saved_state"):
         await ctx.mark_has_saved_state()
     _trace("capture: mark_has_saved_state DONE")
+    await ctx.clear_unsaved_work()
 
 
 async def _rotate_optio_log(host: Host) -> None:

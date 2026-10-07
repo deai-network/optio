@@ -85,6 +85,8 @@ async def test_capture_writes_through_session_blob_encrypt(monkeypatch):
     )
     monkeypatch.setattr(session_mod, "insert_snapshot", AsyncMock(return_value={}))
     monkeypatch.setattr(session_mod, "prune_snapshots", AsyncMock(return_value=[]))
+    monkeypatch.setattr(session_mod, "record_pending_capture", AsyncMock())
+    monkeypatch.setattr(session_mod, "delete_pending_capture", AsyncMock())
 
     captured: dict[str, bytes] = {}
 
@@ -107,12 +109,13 @@ async def test_capture_writes_through_session_blob_encrypt(monkeypatch):
         async def __aexit__(self, *exc): return False
 
     fake_ctx = MagicMock()
-    fake_ctx.store_blob = lambda slot: _FakeBlobCtx(slot)
+    fake_ctx.store_blob = lambda slot, file_id=None: _FakeBlobCtx(slot)
     fake_ctx._db = None
     fake_ctx._prefix = "test"
     fake_ctx.process_id = "pid-x"
     fake_ctx.delete_blob = AsyncMock()
     fake_ctx.mark_has_saved_state = AsyncMock()
+    fake_ctx.clear_unsaved_work = AsyncMock()
 
     async def _fake_archive(_excl):
         yield b"workdir-bytes"
