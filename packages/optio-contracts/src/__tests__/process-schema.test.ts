@@ -311,3 +311,8 @@ it('accepts supportsResurrect and hasUnsavedWork', () => {
   expect(parsed.supportsResurrect).toBe(true);
   expect(parsed.hasUnsavedWork).toBe(true);
 });
+
+it('accepts resurrecting', () => {
+  const parsed = ProcessSchema.parse({ ...baseProcess(), resurrecting: true });
+  expect(parsed.resurrecting).toBe(true);
+});

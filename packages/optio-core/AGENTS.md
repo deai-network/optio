@@ -272,11 +272,12 @@ await ctx.clear_widget_data() -> None
 | `hasSavedState` | `bool` | Whether the task has a valid checkpoint; `$setOnInsert: false`; mutated only by `mark/clear_has_saved_state` |
 | `supportsResurrect` | `bool` | Whether the task has a `resurrect` hook; refreshed via `$set` on every sync |
 | `hasUnsavedWork` | `bool` | The host workdir holds work newer than the last snapshot; `$setOnInsert: false`; set by `mark/clear_unsaved_work`, cleared by optio-core when a launch starts and when a resurrect saves the work or finds nothing |
+| `resurrecting` | `bool` | Transient: true while a resurrect's background run is in progress; set and cleared by optio-core only (see `Optio.resurrect`); `init()` clears any marker a dead engine left behind |
 
 `hasSavedState` is backfilled to `false` on all existing documents by migration `m003_backfill_has_saved_state`
-(runs on startup; depends on m002). `supportsResurrect` and `hasUnsavedWork` have no backfill; an
-absent field reads as `false`. Both are wire keys: the engine RPC's process payloads (`launch`,
-`cancel`, `dismiss`, `resurrect` results) carry them.
+(runs on startup; depends on m002). `supportsResurrect`, `hasUnsavedWork` and `resurrecting` have
+no backfill; an absent field reads as `false`. All three are wire keys: the engine RPC's process
+payloads (`launch`, `cancel`, `dismiss`, `resurrect` results) carry them.
 
 ---
 
@@ -309,8 +310,9 @@ reason=...)`: `shutting-down`, `not-found`, `no-resurrect-support` (the task has
 `hasUnsavedWork` false), `launch-blocked` (it ends in a launch, so launch blocks apply).
 
 On `ok=True` (`proc` is the process document at that moment) a background task logs
-"Resurrect requested", sets progress "Resurrecting: saving the unsaved work…" and runs the
-task's `resurrect` hook with a `ProcessContext` for the process (`resume=False`). Then:
+"Resurrect requested", sets `resurrecting` to true, sets progress "Resurrecting: saving the
+unsaved work…" and runs the task's `resurrect` hook with a `ProcessContext` for the process
+(`resume=False`). Then:
 
 - hook returns: `hasUnsavedWork` is cleared, then the process is launched with
   `resume=True` and the same `session_id`. If that launch is refused (e.g. a launch block
@@ -320,8 +322,10 @@ task's `resurrect` hook with a `ProcessContext` for the process (`resume=False`)
 - hook raises anything else: the error is logged at `error` level and `hasUnsavedWork` stays
   set, so the resurrect can be retried.
 
-Progress is cleared in every case, and the process state is not changed by the resurrect
-itself. While the hook runs, `launch` on the process returns `not-launchable` and a second
+Progress is cleared and `resurrecting` set back to false in every case, before the follow-up
+resume is launched; the process state is not changed by the resurrect itself. A marker left
+set by an engine that died mid-resurrect is cleared by the next `init()` (with the reset of
+interrupted processes). While the hook runs, `launch` on the process returns `not-launchable` and a second
 `resurrect` returns `resurrect-in-progress`. `shutdown()` cancels a resurrect in progress
 (after cancelling running tasks) and waits at most `force_cancel_shield_seconds` (an `init()`
 parameter) for it to unwind; a hook that ignores the cancel is abandoned, not waited on.

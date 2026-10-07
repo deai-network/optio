@@ -69,6 +69,15 @@ Absent fields read as false (no migration).
 The UI offers Resurrect when `supportsResurrect && hasUnsavedWork` and the state is
 launchable (`LAUNCHABLE_STATES`).
 
+A third, transient field marks a resurrect in flight: `resurrecting` (absent = false).
+optio-core sets it right after logging "Resurrect requested" and clears it when the
+background run ends, whatever the outcome, before the follow-up resume is launched; engine
+startup clears any marker a dead engine left behind (with the reset of interrupted
+processes). The state stays the failed state during a resurrect, and the UI shows progress
+only for active states, so this field is what the UI keys on: while it is set, the process
+shows its progress message ("Resurrecting: saving the unsaved work…") and the launch
+controls are a disabled "Resurrecting" indicator instead of the Resurrect button.
+
 ### Task hook
 
 `TaskInstance.resurrect: Callable[[ProcessContext], Awaitable[None]] | None = None`.

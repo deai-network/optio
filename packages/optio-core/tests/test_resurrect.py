@@ -220,6 +220,70 @@ async def test_shutdown_wait_on_stubborn_resurrect_is_bounded(mongo_db):
     assert doc["hasUnsavedWork"] is True
 
 
+async def _resurrecting_on_doc(ctx):
+    doc = await ctx._db[f"{ctx._prefix}_processes"].find_one({"_id": ctx._process_oid})
+    return doc.get("resurrecting")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "nothing", "error"])
+async def test_resurrecting_marker_set_while_hook_runs(mongo_db, outcome):
+    """`resurrecting` is True on the doc while the hook runs and False once the
+    resurrect is over, whatever the hook did; False before the resume launch."""
+    seen = []
+
+    async def hook(ctx):
+        seen.append(await _resurrecting_on_doc(ctx))
+        if outcome == "nothing":
+            raise NothingToResurrect("workdir no longer on the host")
+        if outcome == "error":
+            raise RuntimeError("disk full")
+    fw, coll, proc, _ = await _setup(mongo_db, f"res11-{outcome}", hook)
+    at_launch = []
+
+    async def _spy(oid, *, resume, session_id):
+        at_launch.append((await coll.find_one({"_id": proc["_id"]})).get("resurrecting"))
+    fw._executor.launch_process = _spy
+    assert (await fw.resurrect("r1", session_id=None)).ok is True
+
+    async def finished():
+        if proc["_id"] in fw._resurrecting:
+            return False
+        return outcome != "success" or bool(at_launch)
+    await _wait_until(finished)
+    assert seen == [True]
+    doc = await coll.find_one({"_id": proc["_id"]})
+    assert doc["resurrecting"] is False
+    assert at_launch == ([False] if outcome == "success" else [])
+
+
+@pytest.mark.asyncio
+async def test_init_clears_stale_resurrecting_marker(mongo_db):
+    """A marker left by an engine that died mid-resurrect is cleared on startup."""
+    prefix = "res12"
+    coll = mongo_db[f"{prefix}_processes"]
+    await coll.insert_one({
+        "processId": "r1", "name": "R1", "params": {}, "metadata": {},
+        "parentId": None, "rootId": None, "depth": 0, "order": 0,
+        "adhoc": False, "ephemeral": False,
+        "status": {"state": "failed"},
+        "progress": {"percent": None, "message": None}, "log": [],
+        "hasUnsavedWork": True, "resurrecting": True,
+    })
+
+    async def get_tasks(_services, metadata_filter=None):
+        return [TaskInstance(
+            execute=_noop, process_id="r1", name="R1", supports_resume=True,
+            resurrect=_noop,
+        )]
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix=prefix, get_task_definitions=get_tasks)
+    doc = await coll.find_one({"processId": "r1"})
+    assert doc["resurrecting"] is False
+    assert doc["status"]["state"] == "failed"
+    assert doc["hasUnsavedWork"] is True
+
+
 def test_resurrect_exported_from_package():
     """Bound to the module-level singleton, like launch."""
     import optio_core

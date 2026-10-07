@@ -425,4 +425,15 @@ async def test_resurrect_reason(fake_optio):
 
 def test_wire_keys_carry_resurrect_fields():
     from optio_core._engine_service import _PROCESS_WIRE_KEYS
-    assert {"supportsResurrect", "hasUnsavedWork"} <= _PROCESS_WIRE_KEYS
+    assert {"supportsResurrect", "hasUnsavedWork", "resurrecting"} <= _PROCESS_WIRE_KEYS
+
+
+@pytest.mark.asyncio
+async def test_resurrecting_passes_the_generated_process_model(fake_optio, sample_idle_proc):
+    """The wire key and the generated (extra="forbid") Process model agree."""
+    from optio_core._engine_service import OptioEngineService
+    proc = {**sample_idle_proc, "status": {"state": "failed"}, "resurrecting": True}
+    fake_optio.resurrect = AsyncMock(return_value=ResurrectOutcome(ok=True, proc=proc))
+    svc = OptioEngineService(fake_optio)
+    res = await svc.resurrect(ResurrectParams.model_validate({"processId": "p1", "sessionId": None}))
+    assert res.root.process.resurrecting is True

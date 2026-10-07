@@ -79,6 +79,8 @@ export const ProcessSchema = z.object({
   // newer than the last snapshot. Missing = false.
   supportsResurrect: z.boolean().optional(),
   hasUnsavedWork: z.boolean().optional(),
+  // Transient: true while a resurrect saves the unsaved work. Missing = false.
+  resurrecting: z.boolean().optional(),
 
   // Auto-resume on restart: set on a cancelled, state-saved top-level process
   // whose task opted into auto_resume; the engine re-launches it (resume=true)

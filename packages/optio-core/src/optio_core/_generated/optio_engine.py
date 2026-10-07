@@ -183,6 +183,7 @@ class Process(BaseModel):
     has_saved_state: bool | None = Field(None, alias="hasSavedState")
     supports_resurrect: bool | None = Field(None, alias="supportsResurrect")
     has_unsaved_work: bool | None = Field(None, alias="hasUnsavedWork")
+    resurrecting: bool | None = None
     auto_resume_scheduled: bool | None = Field(None, alias="autoResumeScheduled")
     browser_open_requests: list[BrowserOpenRequest] | None = Field(
         None, alias="browserOpenRequests"
@@ -256,6 +257,7 @@ class Process1(BaseModel):
     has_saved_state: bool | None = Field(None, alias="hasSavedState")
     supports_resurrect: bool | None = Field(None, alias="supportsResurrect")
     has_unsaved_work: bool | None = Field(None, alias="hasUnsavedWork")
+    resurrecting: bool | None = None
     auto_resume_scheduled: bool | None = Field(None, alias="autoResumeScheduled")
     browser_open_requests: list[BrowserOpenRequest] | None = Field(
         None, alias="browserOpenRequests"
@@ -434,6 +436,7 @@ class Process2(BaseModel):
     has_saved_state: bool | None = Field(None, alias="hasSavedState")
     supports_resurrect: bool | None = Field(None, alias="supportsResurrect")
     has_unsaved_work: bool | None = Field(None, alias="hasUnsavedWork")
+    resurrecting: bool | None = None
     auto_resume_scheduled: bool | None = Field(None, alias="autoResumeScheduled")
     browser_open_requests: list[BrowserOpenRequest] | None = Field(
         None, alias="browserOpenRequests"
@@ -544,6 +547,7 @@ class Process3(BaseModel):
     has_saved_state: bool | None = Field(None, alias="hasSavedState")
     supports_resurrect: bool | None = Field(None, alias="supportsResurrect")
     has_unsaved_work: bool | None = Field(None, alias="hasUnsavedWork")
+    resurrecting: bool | None = None
     auto_resume_scheduled: bool | None = Field(None, alias="autoResumeScheduled")
     browser_open_requests: list[BrowserOpenRequest] | None = Field(
         None, alias="browserOpenRequests"

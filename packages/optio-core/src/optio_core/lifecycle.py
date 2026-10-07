@@ -34,7 +34,7 @@ from optio_core.store import (
     upsert_process, remove_stale_processes, find_stale_process_ids,
     get_process_by_process_id, update_status, clear_result_fields,
     append_log, compute_expire_at, purge_processes, set_auto_resume_scheduled,
-    finalize_if_active, set_has_unsaved_work, update_progress,
+    finalize_if_active, set_has_unsaved_work, set_resurrecting, update_progress,
 )
 from optio_core.state_machine import (
     ACTIVE_STATES, CANCELLABLE_STATES, DISMISSABLE_STATES, END_STATES,
@@ -556,6 +556,7 @@ class Optio:
         saved = False
         try:
             await append_log(db, prefix, oid, "event", "Resurrect requested")
+            await set_resurrecting(db, prefix, oid, True)
             await update_progress(db, prefix, oid, Progress(
                 percent=None, message="Resurrecting: saving the unsaved work…",
             ))
@@ -603,7 +604,12 @@ class Optio:
             saved = True
         finally:
             try:
-                await update_progress(db, prefix, oid, Progress(percent=None, message=None))
+                try:
+                    await update_progress(db, prefix, oid, Progress(percent=None, message=None))
+                finally:
+                    # Cleared before the entry leaves _resurrecting, hence
+                    # before the resume launch below.
+                    await set_resurrecting(db, prefix, oid, False)
             finally:
                 self._resurrecting.pop(oid, None)
         if saved:
@@ -1355,8 +1361,12 @@ class Optio:
         definitely gone), and append a log entry. `widgetData` is preserved
         intentionally — the widget-extensions spec keeps it across terminal
         states for post-mortem inspection.
+
+        Also clears every `resurrecting` marker: no resurrect runs in a fresh
+        engine, so a marker still set was left by a dead one.
         """
         coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
+        await coll.update_many({"resurrecting": True}, {"$set": {"resurrecting": False}})
         cursor = coll.find(
             {"status.state": {"$in": list(ACTIVE_STATES)}},
             {"_id": 1, "status.state": 1},

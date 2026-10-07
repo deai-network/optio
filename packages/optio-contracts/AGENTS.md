@@ -133,6 +133,7 @@ z.enum(['idle', 'scheduled', 'running', 'done', 'failed',
 | `hasSavedState` | `boolean` | optional — task has a valid checkpoint ready to restore |
 | `supportsResurrect` | `boolean` | optional — task has a resurrect hook (missing = false) |
 | `hasUnsavedWork` | `boolean` | optional — the host workdir holds work newer than the last snapshot (missing = false) |
+| `resurrecting` | `boolean` | optional — transient, true while a resurrect saves the unsaved work (missing = false) |
 | `warning` | `string` | optional |
 | `status` | `ProcessStatusSchema` | see below |
 | `progress` | `ProgressSchema` | see below |

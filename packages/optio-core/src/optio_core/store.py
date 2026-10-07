@@ -258,6 +258,18 @@ async def set_has_unsaved_work(
     )
 
 
+async def set_resurrecting(
+    db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId, value: bool,
+) -> None:
+    """Set `resurrecting`: transient, True while a resurrect's background run
+    is in progress. Set and cleared by optio-core around the run; engine
+    startup clears any marker a dead engine left behind."""
+    await _collection(db, prefix).update_one(
+        {"_id": process_oid},
+        {"$set": {"resurrecting": value}},
+    )
+
+
 async def update_progress(
     db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId, progress: Progress,
 ) -> None:
