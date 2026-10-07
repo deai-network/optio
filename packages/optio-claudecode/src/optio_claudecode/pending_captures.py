@@ -82,12 +82,20 @@ async def discard_pending_workdir_blob(
     return True
 
 
-async def settle_pending_capture(ctx: "ProcessContext") -> bool:
+async def settle_pending_capture(
+    ctx: "ProcessContext", *, discard_session_blob: bool = False,
+) -> bool:
     """Clear what a cut-off capture of this process recorded: discard its
     workdir blob (guarded as above) and delete the record. True when a
     snapshot references the blob (the capture was cut off after inserting
     its snapshot record); then `mark_has_saved_state()` is called, which
-    that capture did not get to."""
+    that capture did not get to.
+
+    ``discard_session_blob`` (the launch path only): for a capture that did
+    not commit, also delete the record's session blob unless a snapshot
+    references it as ``sessionBlobId``. After a launch it is garbage, and
+    left in GridFS a later session-blob fallback could adopt it. The
+    Resurrect hook settles without it: its fallback needs that blob."""
     record = await load_pending_capture(ctx._db, ctx._prefix, ctx.process_id)
     if record is None:
         return False
@@ -97,5 +105,13 @@ async def settle_pending_capture(ctx: "ProcessContext") -> bool:
     )
     if committed:
         await ctx.mark_has_saved_state()
+    elif discard_session_blob:
+        session_blob_id = record["sessionBlobId"]
+        referenced = await _snapshots(ctx._db, ctx._prefix).find_one(
+            {"processId": ctx.process_id, "sessionBlobId": session_blob_id},
+            projection={"_id": 1},
+        )
+        if referenced is None:
+            await ctx.delete_blob(session_blob_id)
     await delete_pending_capture(ctx._db, ctx._prefix, ctx.process_id)
     return committed

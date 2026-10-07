@@ -217,7 +217,8 @@ async def run_claudecode_session(
 
     # A pending-capture record left by a cut-off capture must not outlive
     # this launch: a later Resurrect would take it for this run's capture.
-    await settle_pending_capture(ctx)
+    # An uncommitted capture's session blob is garbage from here on.
+    await settle_pending_capture(ctx, discard_session_blob=True)
 
     # Crash-orphan rescue: if a non-graceful host death left this task's
     # tmux/ttyd/claude tree running with unsaved state, harvest it into a fresh

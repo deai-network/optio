@@ -156,6 +156,7 @@ async def test_launch_settles_a_committed_pending_capture(mongo_db, tmp_path, ct
     assert await PC.load_pending_capture(mongo_db, "test", ctx.process_id) is None
     assert await mongo_db["fs.files"].count_documents({"_id": w}) == 1
     assert await mongo_db["fs.chunks"].count_documents({"files_id": w}) == 1
+    assert await mongo_db["fs.files"].count_documents({"_id": s}) == 1  # the snapshot's
     doc = await mongo_db["test_processes"].find_one({"_id": ctx._process_oid})
     assert doc["hasSavedState"] is True
 
@@ -175,6 +176,56 @@ async def test_launch_settles_an_uncommitted_pending_capture(mongo_db, tmp_path,
     assert await mongo_db["fs.chunks"].count_documents({"files_id": partial}) == 0
     doc = await mongo_db["test_processes"].find_one({"_id": ctx._process_oid})
     assert "hasSavedState" not in doc
+
+
+@pytest.mark.asyncio
+async def test_launch_settle_deletes_an_uncommitted_records_session_blob(mongo_db, tmp_path, ctx_and_captures, monkeypatch):
+    """The session blob of a capture that never committed is garbage after a
+    launch; left in GridFS, a later session-blob fallback could adopt it."""
+    ctx, _cap, _flag = ctx_and_captures
+    await _flags(mongo_db, ctx, supportsResume=True, supportsResurrect=True)
+    s = await _blob(ctx, "session", b"cut-off capture's session")
+    partial = ObjectId()
+    await mongo_db["fs.chunks"].insert_one({"files_id": partial, "n": 0, "data": b"partial"})
+    await PC.record_pending_capture(mongo_db, "test", process_id=ctx.process_id,
+                                    session_blob_id=s, workdir_blob_id=partial)
+
+    await _start_session_until_rescue(ctx, _local_host(tmp_path), monkeypatch)
+
+    assert await PC.load_pending_capture(mongo_db, "test", ctx.process_id) is None
+    assert await mongo_db["fs.files"].count_documents({"_id": s}) == 0
+    assert await mongo_db["fs.chunks"].count_documents({"files_id": s}) == 0
+
+
+@pytest.mark.asyncio
+async def test_launch_settle_keeps_a_session_blob_a_snapshot_references(mongo_db, tmp_path, ctx_and_captures, monkeypatch):
+    from optio_claudecode.snapshots import insert_snapshot
+    ctx, _cap, _flag = ctx_and_captures
+    await _flags(mongo_db, ctx, supportsResume=True, supportsResurrect=True)
+    s = await _blob(ctx, "session", b"s")
+    w = await _blob(ctx, "workdir", b"w")
+    await insert_snapshot(mongo_db, prefix="test", process_id=ctx.process_id, end_state="done",
+                          session_blob_id=s, workdir_blob_id=w, deliverables_emitted=[])
+    partial = ObjectId()
+    await PC.record_pending_capture(mongo_db, "test", process_id=ctx.process_id,
+                                    session_blob_id=s, workdir_blob_id=partial)
+
+    await _start_session_until_rescue(ctx, _local_host(tmp_path), monkeypatch)
+
+    assert await PC.load_pending_capture(mongo_db, "test", ctx.process_id) is None
+    assert await mongo_db["fs.files"].count_documents({"_id": s}) == 1
+
+
+@pytest.mark.asyncio
+async def test_hook_settle_keeps_the_session_blob(mongo_db, ctx_and_captures):
+    """Without discard_session_blob (the Resurrect hook's settle) the session
+    blob stays: the session-blob fallback needs it."""
+    ctx, _cap, _flag = ctx_and_captures
+    s = await _blob(ctx, "session", b"s")
+    await PC.record_pending_capture(mongo_db, "test", process_id=ctx.process_id,
+                                    session_blob_id=s, workdir_blob_id=ObjectId())
+    assert await PC.settle_pending_capture(ctx) is False
+    assert await mongo_db["fs.files"].count_documents({"_id": s}) == 1
 
 
 class _Cfg:

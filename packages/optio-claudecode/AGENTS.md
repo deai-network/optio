@@ -76,12 +76,17 @@ only when no `{prefix}_claudecode_session_snapshots` document of the process
 has it as `workdirBlobId`, and returns whether one does; it never deletes
 the record. A record must not outlive the next launch, or a later Resurrect
 would take it for that run's capture: `run_claudecode_session` calls
-`pending_captures.settle_pending_capture(ctx) -> bool` right after
+`pending_captures.settle_pending_capture(ctx, *, discard_session_blob=False)
+-> bool` with `discard_session_blob=True` right after
 connecting, before crash-orphan rescue, on every launch (fresh or resume).
 It discards the recorded workdir blob (guarded), deletes the record, and,
 when a snapshot references the blob (that capture had committed), calls
 `mark_has_saved_state()`; it does not touch `hasUnsavedWork` (optio-core
-clears it at launch). Before recording its own, `_store_workdir_snapshot`
+clears it at launch). With `discard_session_blob` (the launch path only),
+for a capture that had not committed it also deletes the record's session
+blob unless a snapshot has it as `sessionBlobId`: after a launch it is
+garbage, and a later session-blob fallback could adopt it. The Resurrect
+hook settles without it (its fallback needs that blob). Before recording its own, `_store_workdir_snapshot`
 also discards the blob of any record still present (the upsert would
 orphan it).
 
