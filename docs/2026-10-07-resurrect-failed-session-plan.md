@@ -2148,4 +2148,4 @@ Stop the engine and the dashboard API; drop the `resurrect_e2e` database. Record
 
 - Push `csillag/resurrect` / merge to `main`.
 - Releases (optio `docs/release-cookbook.md`, npm and PyPI): optio-contracts + optio-core (`make release-wire`), optio-api, optio-ui, optio-claudecode, optio-dashboard.
-- excavator: bump optio packages; add `'resurrect'` to the `launch`/`cancel`/`dismiss` case of `packages/api/src/auth/optio-access.ts`; wire `onResurrect` at the six `onLaunch` sites; owner deploys bobcat with failed workdirs backed up and restored by hand around the deploy.
+- excavator: bump optio packages; add `'resurrect'` to the `launch`/`cancel`/`dismiss` case of `packages/api/src/auth/optio-access.ts`; wire `onResurrect` at the five `onLaunch` sites (checked on excavator `main` dcf02767); owner deploys bobcat with failed workdirs backed up and restored by hand around the deploy.

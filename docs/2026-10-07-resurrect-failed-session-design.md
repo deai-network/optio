@@ -2,7 +2,7 @@
 
 Status: design, awaiting the owner's review. Branch `csillag/resurrect` (from `main`
 d775a7d5, which has the optio-api access scope/authorize hooks). Excavator facts checked
-against excavator `main` 7b84ca39.
+against excavator `main` dcf02767.
 
 ## Problem
 
@@ -185,15 +185,16 @@ The existing crash-orphan rescue at the start of a resume stays as it is.
 
 ### Consumers
 
-- excavator (checked on `main` 7b84ca39):
+- excavator (checked on `main` dcf02767):
   - bump the optio packages (the API also needs the optio-api release that carries the
     access hooks; excavator `main` already passes them since 6efee8af);
   - `packages/api/src/auth/optio-access.ts` `optioAuthorize`: add `'resurrect'` to the
     `launch`/`cancel`/`dismiss` case so it honours `metadata.requiredRoles` (it would
     otherwise fall to `default: true`);
-  - wire `onResurrect` next to `onLaunch` (`ProcessesPage`, `SourceProcesses`,
-    `SourceConfig`, `TargetConfig`, `EntityOverview`, and `ProcessTreeView` on
-    `ProcessDetailPage`);
+  - wire `onResurrect` next to the five `onLaunch` sites (`ProcessesPage`,
+    `SourceProcesses`, `SourceConfig`, `TargetConfig`, `EntityOverview`);
+    `ProcessDetailPage` passes only `onCancel` to its `ProcessTreeView`, so it gets
+    no launch controls and needs nothing;
   - `free_style/task.py` `_finalize_ti` mutates the TaskInstance in place (params,
     `auto_resume`, wrapped `execute`), so the `resurrect` hook set by
     `create_claudecode_task` survives; the hook bypasses the state-tracking wrapper, and
