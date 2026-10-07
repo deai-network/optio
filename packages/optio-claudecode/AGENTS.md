@@ -130,8 +130,9 @@ from the snapshot it stored. The hook is
    hook calls `clear_unsaved_work()` (settle already called
    `mark_has_saved_state()`), removes the task directory and returns. With
    credentials present the workdir holds newer work: go on to step 4.
-4. Save. Excludes: the effective `workdir_exclude` (the archive defaults
-   when unset) plus the rescue marker. The branch is chosen by
+4. Save. Excludes: `session._excludes_with_rescue_marker(config)`, the
+   effective `workdir_exclude` (the archive defaults when unset) plus the
+   rescue marker, as crash-orphan rescue uses. The branch is chosen by
    `home/.claude/.credentials.json` being non-empty (`test -s`), the same
    test as the capture's credentials guard.
    - Present (crash while running, or the capture failed before its session
@@ -158,7 +159,9 @@ A failed capture keeps the task directory (see Teardown above), so a plain
 Resume can also find it: crash-orphan rescue (`_rescue_orphan_if_present`)
 uses the same `find_tmux` lookup and, without tmux, probes no session (a
 leftover rescue marker still triggers a rescue, minus the tmux-tree
-teardown).
+teardown). Its capture uses the same excludes as the hook
+(`_excludes_with_rescue_marker`), so with `workdir_exclude` unset a rescued
+snapshot leaves out `.git`, `node_modules`, `.venv` etc. like a normal one.
 
 `hasUnsavedWork` is set by `_on_agent_live` and cleared by a completed save
 or the credentials guard (above), and by the hook's step-3 short-circuit;

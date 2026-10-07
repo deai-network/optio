@@ -15,7 +15,6 @@ from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from optio_core import NothingToResurrect
 from optio_core.context import ProcessContext
-from optio_host.archive import DEFAULT_WORKDIR_EXCLUDES
 
 from optio_claudecode import host_actions
 from optio_claudecode import session as S
@@ -68,14 +67,6 @@ async def _credentials_present(host) -> bool:
     return "YES" in r.stdout
 
 
-def _workdir_exclude(config) -> list[str]:
-    """The capture's effective excludes plus the rescue marker, as crash-orphan
-    rescue excludes it. A given list replaces the defaults, so they are
-    spelled out when the config leaves it unset."""
-    base = DEFAULT_WORKDIR_EXCLUDES if config.workdir_exclude is None else config.workdir_exclude
-    return [*base, S._RESCUE_MARKER]
-
-
 async def _stop_leftovers(host) -> None:
     """Kill what the failed run may have left: the tmux/ttyd/claude tree on
     the task's socket, and `tail -F <workdir>/optio.log` readers. The pkill
@@ -118,7 +109,7 @@ async def resurrect_claudecode_session(ctx: ProcessContext, config) -> None:
             await host.cleanup_taskdir(aggressive=False)
             return
 
-        exclude = _workdir_exclude(config)
+        exclude = S._excludes_with_rescue_marker(config)
         if credentials:
             await S._capture_snapshot(
                 ctx, host,

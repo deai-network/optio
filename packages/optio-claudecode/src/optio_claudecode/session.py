@@ -37,6 +37,7 @@ from optio_agents.protocol.session import _SessionFailed, run_log_protocol_sessi
 from optio_host.host import (
     Host, LocalHost, ProcessHandle, RemoteHost, proc_wait, unwind_tracing,
 )
+from optio_host.archive import DEFAULT_WORKDIR_EXCLUDES
 from optio_host.paths import task_dir
 from optio_agents import seeds as _seeds
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, claustrum, get_protocol
@@ -1531,6 +1532,18 @@ async def _extract_home_claude(host: Host, plain: bytes) -> None:
 _RESCUE_MARKER = ".optio-rescue-pending"
 
 
+def _excludes_with_rescue_marker(config: ClaudeCodeTaskConfig) -> list[str]:
+    """The capture's effective workdir excludes plus the rescue marker, for
+    the captures of crash-orphan rescue and Resurrect (a restored marker would
+    re-trigger rescue). A given list replaces the archive defaults, so they are
+    spelled out when the config leaves ``workdir_exclude`` unset."""
+    base = (
+        DEFAULT_WORKDIR_EXCLUDES if config.workdir_exclude is None
+        else config.workdir_exclude
+    )
+    return [*base, _RESCUE_MARKER]
+
+
 def _claude_bin_path(host: "Host") -> str:
     """Deterministic launch path of claude inside the isolated HOME."""
     return f"{host.workdir.rstrip('/')}/home/.local/bin/claude"
@@ -1616,7 +1629,7 @@ async def _rescue_orphan_if_present(
     # 3. Capture the now-static workdir — identical artifacts to a normal
     #    teardown capture. Exclude the marker so a restored workdir cannot
     #    re-trigger rescue in a loop.
-    exclude = [*(config.workdir_exclude or []), _RESCUE_MARKER]
+    exclude = _excludes_with_rescue_marker(config)
     await _capture_snapshot(
         ctx, host,
         end_state="rescued",

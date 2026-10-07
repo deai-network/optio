@@ -116,6 +116,28 @@ async def test_triggers_on_live_session_kill_before_capture(patched, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_rescue_capture_keeps_the_default_excludes(patched, tmp_path):
+    """Unset workdir_exclude means the archive defaults (.git, node_modules,
+    .venv, ...); adding the rescue marker must not replace them."""
+    from optio_host.archive import DEFAULT_WORKDIR_EXCLUDES
+    patched["alive"] = True
+    await S._rescue_orphan_if_present(_Ctx(), _Host(str(tmp_path)), _Config())
+    exclude = patched["capture"][0]["workdir_exclude"]
+    assert exclude == [*DEFAULT_WORKDIR_EXCLUDES, ".optio-rescue-pending"]
+
+
+@pytest.mark.asyncio
+async def test_rescue_capture_with_a_configured_exclude_list(patched, tmp_path):
+    """A configured list replaces the defaults (as in a normal capture); the
+    marker is added to it."""
+    class _Configured(_Config):
+        workdir_exclude = [".env"]
+    patched["alive"] = True
+    await S._rescue_orphan_if_present(_Ctx(), _Host(str(tmp_path)), _Configured())
+    assert patched["capture"][0]["workdir_exclude"] == [".env", ".optio-rescue-pending"]
+
+
+@pytest.mark.asyncio
 async def test_triggers_on_marker_even_without_session(patched, tmp_path):
     patched["alive"] = False
     marker = f"{str(tmp_path).rstrip('/')}/.optio-rescue-pending"
