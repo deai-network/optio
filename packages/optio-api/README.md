@@ -188,6 +188,30 @@ directly.
 Stream pollers expose a `{ start(), stop() }` handle; call `start()` when the
 client connects and `stop()` when they disconnect.
 
+## Multi-tenant access
+
+Besides `authenticate` (viewer / operator), every adapter accepts two optional
+hooks for hosts that serve several tenants from one optio database:
+
+```typescript
+registerOptioApi(app, {
+  ctx,
+  authenticate: (req) => (req.user ? 'operator' : null),
+  // Confine the request to its tenant: a flat exact-match metadata map, or
+  // null for an unrestricted user. Other tenants' processes behave as missing.
+  scope: (req) => (req.user.admin ? null : { customerId: req.user.customerId }),
+  // Decide individual actions: launch, cancel, dismiss, resync, the widget
+  // routes and instance discovery. false -> 403.
+  authorize: (req, { action, process, clean }) =>
+    action === 'instances' ? req.user.admin
+      : action === 'resync' && clean ? req.user.admin
+      : true,
+});
+```
+
+Without them nothing changes. The exact enforcement per route is in
+`AGENTS.md` ("Access scope and authorization").
+
 ## Return value
 
 `registerOptioApi`, `createOptioRouteHandlers`, and `createOptioHandler`

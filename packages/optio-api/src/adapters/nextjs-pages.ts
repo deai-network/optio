@@ -13,7 +13,12 @@ import { createListPoller, createTreePoller, createMultiTreePoller } from '../st
 import { discoverInstances } from '../discovery.js';
 import { resolveDb, type DbOptions } from '../resolve.js';
 import type { AuthCallback } from '../auth.js';
-import { checkAuth } from '../auth.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import {
+  accessFor, checkAuth, UNRESTRICTED,
+  type Access, type AccessHooks, type AuthorizeCallback, type ScopeCallback,
+} from '../auth.js';
+import { gateInstances, inScope } from '../access-scope.js';
 import { isWriteMethod } from '../widget-proxy-core.js';
 import {
   detectLegacyMetadataParams,
@@ -42,6 +47,10 @@ export type OptioApiOptions =
 interface BaseOptioApiOptions {
   prefix?: string;
   authenticate: AuthCallback<NextApiRequest>;
+  /** Confine each request to a tenant's processes (see auth.ts). */
+  scope?: ScopeCallback<NextApiRequest>;
+  /** Decide mutating actions and instance discovery (see auth.ts). */
+  authorize?: AuthorizeCallback<NextApiRequest>;
 }
 
 const c = initContract();
@@ -62,46 +71,61 @@ export function createOptioHandler(opts: OptioApiOptions): OptioPagesHandler {
     ctx = createOptioContext({ dbOpts, redis });
   }
 
+  // The request's access travels to the ts-rest routes in an
+  // AsyncLocalStorage set around the ts-rest call (as in nextjs-app).
+  const hooks: AccessHooks<NextApiRequest> = { scope: opts.scope, authorize: opts.authorize };
+  const requestAccess = new AsyncLocalStorage<Access>();
+  function currentAccess(): Access {
+    const access = requestAccess.getStore();
+    if (access) return access;
+    if (!hooks.scope && !hooks.authorize) return UNRESTRICTED;
+    throw new Error('optio-api: route reached without the request\'s access');
+  }
+
   const tsRestHandler = createNextRouter(apiContract.processes, {
     list: async ({ query }) => {
-      const result = await handlers.listProcesses(ctx, query);
+      const result = await handlers.listProcesses(ctx, query, await currentAccess());
       return { status: 200 as const, body: result };
     },
     get: async ({ params, query }) => {
-      const result = await handlers.getProcess(ctx, query, params.id);
+      const result = await handlers.getProcess(ctx, query, params.id, await currentAccess());
       if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
       return { status: 200 as const, body: result };
     },
     getTree: async ({ params, query }) => {
-      const result = await handlers.getProcessTree(ctx, query, params.id);
+      const result = await handlers.getProcessTree(ctx, query, params.id, await currentAccess());
       if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
       return { status: 200 as const, body: result };
     },
     getLog: async ({ params, query }) => {
-      const result = await handlers.getProcessLog(ctx, query, params.id);
+      const result = await handlers.getProcessLog(ctx, query, params.id, await currentAccess());
       if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
       return { status: 200 as const, body: result };
     },
     getTreeLog: async ({ params, query }) => {
-      const result = await handlers.getProcessTreeLog(ctx, query, params.id);
+      const result = await handlers.getProcessTreeLog(ctx, query, params.id, await currentAccess());
       if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
       return { status: 200 as const, body: result };
     },
     launch: async ({ params, query, body }) => {
-      const result = await handlers.launchProcess(ctx, query, params.id, body?.resume === true);
+      const result = await handlers.launchProcess(
+        ctx, query, params.id, body?.resume === true, null, await currentAccess(),
+      );
       return result as any;
     },
     cancel: async ({ params, query }) => {
-      const result = await handlers.cancelProcess(ctx, query, params.id);
+      const result = await handlers.cancelProcess(ctx, query, params.id, await currentAccess());
       return result as any;
     },
     dismiss: async ({ params, query }) => {
-      const result = await handlers.dismissProcess(ctx, query, params.id);
+      const result = await handlers.dismissProcess(ctx, query, params.id, await currentAccess());
       return result as any;
     },
     resync: async ({ query, body }: { query: { database?: string; prefix?: string }; body: { clean?: boolean; metadataFilter?: import('../types.js').ProcessMetadataFilter } }) => {
-      const result = await handlers.resyncProcesses(ctx, query, body.clean, body.metadataFilter);
-      return { status: 202 as const, body: result };
+      const result = await handlers.resyncProcesses(
+        ctx, query, body.clean, body.metadataFilter, await currentAccess(),
+      );
+      return result as any;
     },
   });
 
@@ -112,6 +136,7 @@ export function createOptioHandler(opts: OptioApiOptions): OptioPagesHandler {
       return;
     }
 
+    const access = await accessFor(req, hooks);
     const url = req.url ?? '';
     const method = req.method ?? '';
     // Strip query string for path comparisons — req.url includes it on Pages Router.
@@ -128,6 +153,10 @@ export function createOptioHandler(opts: OptioApiOptions): OptioPagesHandler {
 
     // Discovery endpoint: /api/optio/instances
     if (url === '/api/optio/instances' && method === 'GET') {
+      if (!(await gateInstances(access))) {
+        res.status(403).json({ message: 'Forbidden' });
+        return;
+      }
       const instances = await discoverInstances(dbOpts, redis);
       res.status(200).json({ instances });
       return;
@@ -147,7 +176,8 @@ export function createOptioHandler(opts: OptioApiOptions): OptioPagesHandler {
       const { db, prefix } = resolveDb(dbOpts, sseOpts);
 
       const col = db.collection(`${prefix}_processes`);
-      const proc = await col.findOne({ _id: new ObjectId(id) });
+      const found = await col.findOne({ _id: new ObjectId(id) });
+      const proc = found && (await inScope(col, found, access.scope)) ? found : null;
       if (!proc) {
         res.status(404).json({ message: 'Process not found' });
         return;
@@ -206,7 +236,8 @@ export function createOptioHandler(opts: OptioApiOptions): OptioPagesHandler {
 
       async function resolveOne(id: string): Promise<{ id: string; proc: any | null }> {
         try {
-          const proc = await col.findOne({ _id: new ObjectId(id) });
+          const found = await col.findOne({ _id: new ObjectId(id) });
+          const proc = found && (await inScope(col, found, access.scope)) ? found : null;
           return { id, proc };
         } catch {
           return { id, proc: null };
@@ -296,6 +327,7 @@ export function createOptioHandler(opts: OptioApiOptions): OptioPagesHandler {
         sendEvent,
         onError: () => res.end(),
         metadataFilter: sseOpts.metadataFilter,
+        scope: access.scope,
       });
 
       poller.start();
@@ -304,7 +336,7 @@ export function createOptioHandler(opts: OptioApiOptions): OptioPagesHandler {
     }
 
     // Delegate to ts-rest handler for all other routes
-    return tsRestHandler(req, res);
+    return requestAccess.run(access, () => tsRestHandler(req, res));
   };
 
   return explicit ? { handler } : { handler, ctx };

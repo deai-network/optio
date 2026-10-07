@@ -12,7 +12,12 @@ import { createListPoller, createTreePoller } from '../stream-poller.js';
 import { discoverInstances } from '../discovery.js';
 import { resolveDb, type DbOptions } from '../resolve.js';
 import type { AuthCallback } from '../auth.js';
-import { checkAuth } from '../auth.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import {
+  accessFor, checkAuth, UNRESTRICTED,
+  type Access, type AccessHooks, type AuthorizeCallback, type ScopeCallback,
+} from '../auth.js';
+import { gateInstances, inScope } from '../access-scope.js';
 import { isWriteMethod } from '../widget-proxy-core.js';
 import {
   detectLegacyMetadataParams,
@@ -42,6 +47,10 @@ export type OptioApiOptions =
 interface BaseOptioApiOptions {
   prefix?: string;
   authenticate: AuthCallback<Request>;
+  /** Confine each request to a tenant's processes (see auth.ts). */
+  scope?: ScopeCallback<Request>;
+  /** Decide mutating actions and instance discovery (see auth.ts). */
+  authorize?: AuthorizeCallback<Request>;
 }
 
 const c = initContract();
@@ -62,6 +71,18 @@ export function createOptioRouteHandlers(opts: OptioApiOptions): OptioRouteHandl
     ctx = createOptioContext({ dbOpts, redis });
   }
 
+  // ts-rest's app-router handler sees its own request object, not the
+  // caller's, so the request's access travels to the routes in an
+  // AsyncLocalStorage set around the ts-rest call.
+  const hooks: AccessHooks<Request> = { scope: opts.scope, authorize: opts.authorize };
+  const requestAccess = new AsyncLocalStorage<Access>();
+  function currentAccess(): Access {
+    const access = requestAccess.getStore();
+    if (access) return access;
+    if (!hooks.scope && !hooks.authorize) return UNRESTRICTED;
+    throw new Error('optio-api: route reached without the request\'s access');
+  }
+
   async function authGate(request: Request): Promise<Response | null> {
     const authResult = await checkAuth(request, opts.authenticate, isWriteMethod(request.method));
     if (!authResult) return null;
@@ -75,44 +96,48 @@ export function createOptioRouteHandlers(opts: OptioApiOptions): OptioRouteHandl
     apiContract.processes,
     {
       list: async ({ query }) => {
-        const result = await handlers.listProcesses(ctx, query);
+        const result = await handlers.listProcesses(ctx, query, await currentAccess());
         return { status: 200 as const, body: result };
       },
       get: async ({ params, query }) => {
-        const result = await handlers.getProcess(ctx, query, params.id);
+        const result = await handlers.getProcess(ctx, query, params.id, await currentAccess());
         if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
         return { status: 200 as const, body: result };
       },
       getTree: async ({ params, query }) => {
-        const result = await handlers.getProcessTree(ctx, query, params.id);
+        const result = await handlers.getProcessTree(ctx, query, params.id, await currentAccess());
         if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
         return { status: 200 as const, body: result };
       },
       getLog: async ({ params, query }) => {
-        const result = await handlers.getProcessLog(ctx, query, params.id);
+        const result = await handlers.getProcessLog(ctx, query, params.id, await currentAccess());
         if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
         return { status: 200 as const, body: result };
       },
       getTreeLog: async ({ params, query }) => {
-        const result = await handlers.getProcessTreeLog(ctx, query, params.id);
+        const result = await handlers.getProcessTreeLog(ctx, query, params.id, await currentAccess());
         if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
         return { status: 200 as const, body: result };
       },
       launch: async ({ params, query, body }) => {
-        const result = await handlers.launchProcess(ctx, query, params.id, body?.resume === true);
+        const result = await handlers.launchProcess(
+          ctx, query, params.id, body?.resume === true, null, await currentAccess(),
+        );
         return result as any;
       },
       cancel: async ({ params, query }) => {
-        const result = await handlers.cancelProcess(ctx, query, params.id);
+        const result = await handlers.cancelProcess(ctx, query, params.id, await currentAccess());
         return result as any;
       },
       dismiss: async ({ params, query }) => {
-        const result = await handlers.dismissProcess(ctx, query, params.id);
+        const result = await handlers.dismissProcess(ctx, query, params.id, await currentAccess());
         return result as any;
       },
       resync: async ({ query, body }: { query: { database?: string; prefix?: string }; body: { clean?: boolean; metadataFilter?: import('../types.js').ProcessMetadataFilter } }) => {
-        const result = await handlers.resyncProcesses(ctx, query, body.clean, body.metadataFilter);
-        return { status: 202 as const, body: result };
+        const result = await handlers.resyncProcesses(
+          ctx, query, body.clean, body.metadataFilter, await currentAccess(),
+        );
+        return result as any;
       },
     },
     { handlerType: 'app-router' },
@@ -125,7 +150,15 @@ export function createOptioRouteHandlers(opts: OptioApiOptions): OptioRouteHandl
     const { pathname } = url;
 
     // Discovery: /api/optio/instances
+    const access = await accessFor(request, hooks);
+
     if (pathname === '/api/optio/instances') {
+      if (!(await gateInstances(access))) {
+        return new Response(JSON.stringify({ message: 'Forbidden' }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
       const instances = await discoverInstances(dbOpts, redis);
       return new Response(JSON.stringify({ instances }), {
         status: 200,
@@ -150,7 +183,8 @@ export function createOptioRouteHandlers(opts: OptioApiOptions): OptioRouteHandl
       const { db, prefix: resolvedPrefix } = resolveDb(dbOpts, sseOpts);
 
       const col = db.collection(`${resolvedPrefix}_processes`);
-      const proc = await col.findOne({ _id: new ObjectId(id) });
+      const found = await col.findOne({ _id: new ObjectId(id) });
+      const proc = found && (await inScope(col, found, access.scope)) ? found : null;
       if (!proc) {
         return new Response(JSON.stringify({ message: 'Process not found' }), {
           status: 404,
@@ -241,6 +275,7 @@ export function createOptioRouteHandlers(opts: OptioApiOptions): OptioRouteHandl
             sendEvent,
             onError: () => controller.close(),
             metadataFilter: sseOpts.metadataFilter,
+            scope: access.scope,
           });
 
           poller.start();
@@ -261,13 +296,14 @@ export function createOptioRouteHandlers(opts: OptioApiOptions): OptioRouteHandl
       });
     }
 
-    return tsRestHandlers(request);
+    return requestAccess.run(access, () => tsRestHandlers(request));
   }
 
   async function POST(request: Request): Promise<Response> {
     const denied = await authGate(request);
     if (denied) return denied;
-    return tsRestHandlers(request);
+    const access = await accessFor(request, hooks);
+    return requestAccess.run(access, () => tsRestHandlers(request));
   }
 
   return explicit ? { GET, POST } : { GET, POST, ctx };

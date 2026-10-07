@@ -8,14 +8,14 @@ import type { Db } from 'mongodb';
 import type { MongoClient } from 'mongodb';
 import type { Redis } from 'ioredis';
 import * as handlers from '../handlers.js';
-import { findProcessByEitherId } from '../process-id-resolver.js';
 import { createListPoller, createTreePoller, createMultiTreePoller, createSessionEventsPoller } from '../stream-poller.js';
 import { discoverInstances } from '../discovery.js';
 import { resolveDb, type DbOptions } from '../resolve.js';
 import httpProxy from '@fastify/http-proxy';
 import { createHash } from 'node:crypto';
-import type { AuthCallback } from '../auth.js';
-import { checkAuth } from '../auth.js';
+import type { AuthCallback, AccessHooks, AuthorizeCallback, ScopeCallback } from '../auth.js';
+import { accessFor, checkAuth } from '../auth.js';
+import { findScopedProcess, gateInstances, gateProcess } from '../access-scope.js';
 import { createWidgetUpstreamRegistry } from '../widget-upstream-registry.js';
 import {
   resolveWidgetUpstream,
@@ -57,6 +57,7 @@ const WIDGET_PREFIX_STRIP = /^\/api\/widget\/[^/]+\/[^/]+\/[a-f0-9]{24}/i;
 interface WidgetProxyInternalOptions {
   dbOpts: DbOptions;
   authenticate: AuthCallback<import('fastify').FastifyRequest>;
+  hooks: AccessHooks<import('fastify').FastifyRequest>;
   ttlMs?: number;
   verbose?: boolean;
 }
@@ -238,6 +239,16 @@ function registerWidgetProxy(app: FastifyInstance, opts: WidgetProxyInternalOpti
         ({ db } = resolveDb(opts.dbOpts, { database, prefix }));
       } catch {
         reply.code(404).send({ message: 'Widget upstream not found' });
+        return;
+      }
+
+      const gate = await gateProcess(
+        db.collection(`${prefix}_processes`), processId, await accessFor(req, opts.hooks), 'widget',
+      );
+      if (!gate.ok) {
+        reply.code(gate.status).send({
+          message: gate.status === 404 ? 'Widget upstream not found' : 'Forbidden',
+        });
         return;
       }
 
@@ -423,6 +434,10 @@ export type OptioApiOptions =
 interface BaseOptioApiOptions {
   prefix?: string;
   authenticate: AuthCallback<import('fastify').FastifyRequest>;
+  /** Confine each request to a tenant's processes (see auth.ts). */
+  scope?: ScopeCallback<import('fastify').FastifyRequest>;
+  /** Decide mutating actions and instance discovery (see auth.ts). */
+  authorize?: AuthorizeCallback<import('fastify').FastifyRequest>;
   verbose?: boolean;
 }
 
@@ -444,6 +459,11 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
     ctx = createOptioContext({ dbOpts, redis });
     app.addHook('onClose', () => ctx.closeAll());
   }
+  const hooks: AccessHooks<import('fastify').FastifyRequest> = {
+    scope: opts.scope,
+    authorize: opts.authorize,
+  };
+  const access = (request: any) => accessFor(request, hooks);
 
   // Global auth enforcement. Runs before route handlers (and before the
   // widget-proxy plugin's preHandler), so REST, SSE, discovery, and widget
@@ -467,53 +487,56 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
   registerWidgetProxy(app, {
     dbOpts,
     authenticate: opts.authenticate,
+    hooks,
     verbose: opts.verbose,
   });
 
   const s = initServer();
 
   const routes = s.router(apiContract.processes, {
-    list: async ({ query }) => {
-      const result = await handlers.listProcesses(ctx, query);
+    list: async ({ query, request }) => {
+      const result = await handlers.listProcesses(ctx, query, await access(request));
       return { status: 200 as const, body: result };
     },
-    get: async ({ params, query }) => {
-      const result = await handlers.getProcess(ctx, query, params.id);
+    get: async ({ params, query, request }) => {
+      const result = await handlers.getProcess(ctx, query, params.id, await access(request));
       if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
       return { status: 200 as const, body: result };
     },
-    getTree: async ({ params, query }) => {
-      const result = await handlers.getProcessTree(ctx, query, params.id);
+    getTree: async ({ params, query, request }) => {
+      const result = await handlers.getProcessTree(ctx, query, params.id, await access(request));
       if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
       return { status: 200 as const, body: result };
     },
-    getLog: async ({ params, query }) => {
-      const result = await handlers.getProcessLog(ctx, query, params.id);
+    getLog: async ({ params, query, request }) => {
+      const result = await handlers.getProcessLog(ctx, query, params.id, await access(request));
       if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
       return { status: 200 as const, body: result };
     },
-    getTreeLog: async ({ params, query }) => {
-      const result = await handlers.getProcessTreeLog(ctx, query, params.id);
+    getTreeLog: async ({ params, query, request }) => {
+      const result = await handlers.getProcessTreeLog(ctx, query, params.id, await access(request));
       if (!result) return { status: 404 as const, body: { message: 'Process not found' } };
       return { status: 200 as const, body: result };
     },
-    launch: async ({ params, query, body }) => {
+    launch: async ({ params, query, body, request }) => {
       const result = await handlers.launchProcess(
-        ctx, query, params.id, body?.resume === true, body?.sessionId ?? null,
+        ctx, query, params.id, body?.resume === true, body?.sessionId ?? null, await access(request),
       );
       return result as any;
     },
-    cancel: async ({ params, query }) => {
-      const result = await handlers.cancelProcess(ctx, query, params.id);
+    cancel: async ({ params, query, request }) => {
+      const result = await handlers.cancelProcess(ctx, query, params.id, await access(request));
       return result as any;
     },
-    dismiss: async ({ params, query }) => {
-      const result = await handlers.dismissProcess(ctx, query, params.id);
+    dismiss: async ({ params, query, request }) => {
+      const result = await handlers.dismissProcess(ctx, query, params.id, await access(request));
       return result as any;
     },
-    resync: async ({ query, body }: { query: { database?: string; prefix?: string }; body: { clean?: boolean; metadataFilter?: import('../types.js').ProcessMetadataFilter } }) => {
-      const result = await handlers.resyncProcesses(ctx, query, body.clean, body.metadataFilter);
-      return { status: 202 as const, body: result };
+    resync: async ({ query, body, request }: { query: { database?: string; prefix?: string }; body: { clean?: boolean; metadataFilter?: import('../types.js').ProcessMetadataFilter }; request: any }) => {
+      const result = await handlers.resyncProcesses(
+        ctx, query, body.clean, body.metadataFilter, await access(request),
+      );
+      return result as any;
     },
   });
 
@@ -531,7 +554,11 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
 
   app.register(s.plugin(routes));
 
-  app.get('/api/optio/instances', async (_request: any, reply: any) => {
+  app.get('/api/optio/instances', async (request: any, reply: any) => {
+    if (!(await gateInstances(await access(request)))) {
+      reply.code(403).send({ message: 'Forbidden' });
+      return;
+    }
     const instances = await discoverInstances(dbOpts, redis);
     reply.send({ instances });
   });
@@ -561,6 +588,15 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
         reply.code(404).send({ message: 'session not running' });
         return;
       }
+      const gate = await gateProcess(
+        db.collection(`${prefix}_processes`), processId, await access(request), 'widget-control',
+      );
+      if (!gate.ok) {
+        reply.code(gate.status).send({
+          message: gate.status === 404 ? 'session not running' : 'Forbidden',
+        });
+        return;
+      }
       const result = await forwardAgentInput(db, prefix, processId, payload);
       reply.code(result.status).send(result.body);
     },
@@ -575,6 +611,23 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       const { database, prefix, processId } = request.params as {
         database: string; prefix: string; processId: string;
       };
+      let db;
+      try {
+        ({ db } = resolveDb(dbOpts, { database, prefix }));
+      } catch {
+        reply.code(404).send({ message: 'session not running' });
+        return;
+      }
+      const gate = await gateProcess(
+        db.collection(`${prefix}_processes`), processId, await access(request), 'widget-upload',
+      );
+      if (!gate.ok) {
+        reply.code(gate.status).send({
+          ok: false,
+          message: gate.status === 404 ? 'session not running' : 'Forbidden',
+        });
+        return;
+      }
       let part;
       try {
         part = await request.file();
@@ -584,13 +637,6 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       }
       if (!part) {
         reply.code(400).send({ message: 'no file part in request' });
-        return;
-      }
-      let db;
-      try {
-        ({ db } = resolveDb(dbOpts, { database, prefix }));
-      } catch {
-        reply.code(404).send({ message: 'session not running' });
         return;
       }
       const bucket = new GridFSBucket(db);
@@ -617,7 +663,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
     const { db, prefix } = resolveDb(dbOpts, sseOpts);
 
     const col = db.collection(`${prefix}_processes`);
-    const proc = await findProcessByEitherId(col, id);
+    const proc = await findScopedProcess(col, id, (await access(request)).scope);
     if (!proc) {
       reply.code(404).send({ message: 'Process not found' });
       return;
@@ -667,9 +713,10 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
     }
     const { db, prefix } = resolveDb(dbOpts, sseOpts);
     const col = db.collection(`${prefix}_processes`);
+    const { scope } = await access(request);
 
     async function resolveOne(id: string): Promise<{ id: string; proc: any | null }> {
-      const proc = await findProcessByEitherId(col, id);
+      const proc = await findScopedProcess(col, id, scope);
       return { id, proc };
     }
     const [treeResolved, flatResolved] = await Promise.all([
@@ -737,6 +784,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       return;
     }
     const { db, prefix } = resolveDb(dbOpts, sseOpts);
+    const { scope } = await access(request);
 
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -754,6 +802,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       sendEvent,
       onError: () => reply.raw.end(),
       metadataFilter: sseOpts.metadataFilter,
+      scope,
     });
 
     poller.start();
@@ -771,6 +820,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       return;
     }
     const { db, prefix } = resolveDb(dbOpts, sseOpts);
+    const { scope } = await access(request);
 
     reply.raw.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -796,6 +846,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       sessionId,
       sendEvent,
       onError: () => reply.raw.end(),
+      scope,
     });
 
     poller.start();

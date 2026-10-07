@@ -15,7 +15,41 @@ export {
   type LaunchCommandResult,
   type CancelCommandResult,
   type DismissCommandResult,
+  type ResyncCommandResult,
+  type ForbiddenResult,
 } from './handlers.js';
+
+// Authentication + per-request access (scope / authorize hooks)
+export {
+  checkAuth,
+  accessFor,
+  resolveAccess,
+  UNRESTRICTED,
+  type OptioRole,
+  type AuthCallback,
+  type AuthResult,
+  type Access,
+  type AccessHooks,
+  type ScopeCallback,
+  type ScopeFilter,
+  type AuthorizeCallback,
+  type AuthorizeInput,
+  type OptioAction,
+  type ProcessRef,
+} from './auth.js';
+// Scope helpers (for custom adapters)
+export {
+  andScope,
+  scopeToMongo,
+  inScope,
+  findScopedProcess,
+  gateProcess,
+  gateInstances,
+  scopedResyncFilter,
+  toProcessRef,
+  type GateResult,
+  type ScopedFilterResult,
+} from './access-scope.js';
 
 export type { ProcessMetadataFilter } from './types.js';
 

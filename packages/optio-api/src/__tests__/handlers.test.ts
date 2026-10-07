@@ -462,7 +462,7 @@ describe('resyncProcesses — RPC notification', () => {
     const ctx = makeCtxWithMockEngine(db, engine);
     const result = await resyncProcesses(ctx, { prefix: PREFIX }, true, { tag: ['demo'] });
     expect(engine.resync).toHaveBeenCalledWith({ clean: true, metadataFilter: { tag: ['demo'] } });
-    expect(result).toEqual({ message: 'Nuke and resync requested' });
+    expect(result).toEqual({ status: 202, body: { message: 'Nuke and resync requested' } });
   });
 
   it('passes clean=false when omitted', async () => {
@@ -470,7 +470,7 @@ describe('resyncProcesses — RPC notification', () => {
     const ctx = makeCtxWithMockEngine(db, engine);
     const result = await resyncProcesses(ctx, { prefix: PREFIX });
     expect(engine.resync).toHaveBeenCalledWith({ clean: false, metadataFilter: undefined });
-    expect(result).toEqual({ message: 'Resync requested' });
+    expect(result).toEqual({ status: 202, body: { message: 'Resync requested' } });
   });
 });
 

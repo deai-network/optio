@@ -754,18 +754,38 @@ interface SugarOptioApiOptions {
   redis: Redis;
   prefix?: string;                            // optional; default 'optio'
   authenticate: AuthCallback<TRequest>;
+  scope?: ScopeCallback<TRequest>;            // optional tenant boundary (see below)
+  authorize?: AuthorizeCallback<TRequest>;    // optional per-action decision (see below)
 }
 
 // Explicit form: caller supplies a pre-built OptioContext. Returns void.
 interface ExplicitOptioApiOptions {
   ctx: OptioContext;
   authenticate: AuthCallback<TRequest>;
+  scope?: ScopeCallback<TRequest>;
+  authorize?: AuthorizeCallback<TRequest>;
 }
 
 // AuthCallback returns 'viewer' (read-only) | 'operator' (read+write) | null (deny).
 // Enforced on every request to every route across all four adapters: REST,
 // SSE streams, /api/optio/instances discovery, and the /api/widget/* proxy.
 // Reads (GET/HEAD/OPTIONS) require viewer or operator; writes require operator.
+//
+// scope(req) -> ScopeFilter | null: a flat exact-match metadata map
+// ({ customerId: 3 }) confining the request to processes whose metadata
+// matches it (a child lacking the keys is judged by its root). Applied to
+// every process lookup: lists and list/session-events streams (ANDed into the
+// query), single-process reads and tree streams, launch/cancel/dismiss, the
+// widget proxy, widget-control and widget-upload. Outside the scope a process
+// behaves as not found (404; missing in multi-tree resolution). A scoped
+// resync runs with the client's flat filter plus the scope keys; a filter
+// contradicting the scope is 403, a predicate tree 400.
+//
+// authorize(req, { role, action, process?, metadataFilter?, clean? }) -> boolean:
+// called after the scope check for launch/cancel/dismiss/resync, the three
+// widget routes and instance discovery; false gives 403 { message: 'Forbidden' }.
+//
+// Without scope/authorize nothing changes (no extra lookups).
 ```
 
 ### Fastify Adapter

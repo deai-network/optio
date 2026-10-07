@@ -86,6 +86,8 @@ interface OptioApiOptions {
   authenticate: AuthCallback<TRequest>;    // TRequest depends on adapter (FastifyRequest,
                                            // express Request, web Request, NextApiRequest).
                                            // Returns 'viewer' | 'operator' | null.
+  scope?: ScopeCallback<TRequest>;         // Optional tenant boundary. See "Access scope".
+  authorize?: AuthorizeCallback<TRequest>; // Optional per-action decision. See "Access scope".
 }
 ```
 
@@ -110,6 +112,60 @@ hook (Fastify `onRequest`, Express `app.use('/api', …)`, Next.js inline at
 the top of `GET`/`POST` or the returned Pages handler). The Fastify
 widget-proxy plugin's `preHandler` retains its own `checkAuth` call as
 defense in depth.
+
+## Access scope and authorization
+
+Two optional hooks, accepted by all four adapters next to `authenticate`, let
+a multi-tenant host confine each request to its tenant's processes and decide
+individual actions. Types live in `auth.ts`; the shared enforcement in
+`access-scope.ts` and the handlers.
+
+```typescript
+type ScopeFilter = Record<string, string | number | boolean | null>;
+type ScopeCallback<TRequest> = (req: TRequest) => ScopeFilter | null | Promise<ScopeFilter | null>;
+
+type OptioAction = 'read' | 'launch' | 'cancel' | 'dismiss' | 'resync'
+  | 'widget' | 'widget-control' | 'widget-upload' | 'instances';
+interface ProcessRef { _id: string; processId: string; name: string; parentId?: string; rootId: string; metadata: Record<string, unknown> }
+interface AuthorizeInput {
+  role: OptioRole; action: OptioAction;
+  process?: ProcessRef;                       // single-process actions
+  metadataFilter?: Record<string, unknown>;   // resync: the effective (scoped) filter
+  clean?: boolean;                            // resync
+}
+type AuthorizeCallback<TRequest> = (req: TRequest, input: AuthorizeInput) => boolean | Promise<boolean>;
+```
+
+**`scope(req)`** returns a flat exact-match metadata map, or `null` / `{}` for
+an unscoped request. A process is in scope when every key equals its
+`metadata` value (strict equality); a process whose own metadata lacks a key is
+judged by its root's; one whose root lacks it too is out (fail closed).
+Enforcement:
+
+| Route | Out of scope |
+|---|---|
+| `GET /api/processes`, list stream, session-events stream | excluded: the scope is `$and`ed into the query, so a client filter cannot widen it |
+| `GET /api/processes/:id`, `/tree`, `/log`, `/tree/log`, `/:id/tree/stream` | 404 `Process not found` |
+| `GET /api/processes/tree/multi/stream` | reported in `missing` |
+| `POST /api/processes/:id/launch` / `cancel` / `dismiss` | 404 `{ reason: 'not-found' }`; the engine is not called |
+| widget proxy, `widget-control`, `widget-upload` (Fastify) | the route's not-found response |
+| `POST /api/processes/resync` | runs with the client's flat filter plus the scope keys (the engine filters regenerated tasks and pruned records by it); 403 if the filter contradicts the scope, 400 for a predicate-tree filter |
+
+**`authorize(req, input)`** runs after the scope check for launch, cancel,
+dismiss, resync, the three widget routes and `GET /api/optio/instances`;
+`false` gives **403** `{ message: 'Forbidden' }` and the engine is not called.
+
+Without either hook behaviour is exactly as before: commands go straight to
+the engine and no extra lookups run.
+
+Per request, `checkAuth` records the authenticated role (keyed by the native
+request object) and `accessFor(req, hooks)` resolves the hooks once into an
+`Access` (`{ restricted, scope, authorize }`) that adapters pass to the
+handlers. The Next.js adapters carry it into the ts-rest routes through an
+`AsyncLocalStorage`, because ts-rest's Next handlers see their own request
+objects. Custom adapters: call `checkAuth`, then `accessFor`, then pass the
+`Access` as the handlers' trailing argument and use `findScopedProcess` /
+`gateProcess` / `gateInstances` for routes outside the handlers.
 
 ## Fastify Adapter
 
@@ -175,9 +231,12 @@ All handlers are exported from `optio-api` (main entry point).
 
 ```typescript
 // Query handlers
+// Every handler takes an optional trailing `access: Access` (default
+// UNRESTRICTED); see "Access scope and authorization".
 async function listProcesses(
   ctx: OptioContext,
   query: ListProcessesQuery,
+  access?: Access,
 ): Promise<{ items: any[]; nextCursor: string | null; totalCount: number }>
 
 async function getProcess(
@@ -233,8 +292,12 @@ async function resyncProcesses(
   query: { database?: string; prefix?: string },
   clean?: boolean,  // default: false
   metadataFilter?: ProcessMetadataFilter,  // omit or pass {} for full sync
-): Promise<{ message: string }>
+  access?: Access,
+): Promise<ResyncCommandResult>  // { status: 202; body: { message } } | { status: 400 | 403; body: { message } }
 ```
+
+Command results also carry `{ status: 403; body: { message: 'Forbidden' } }`
+(`ForbiddenResult`) when the host's `authorize` hook refuses.
 
 The 404/409 response body for `launchProcess` / `cancelProcess` / `dismissProcess` is
 `{ reason, message }`, typed via `LaunchErrorBody` / `CancelErrorBody` / `DismissErrorBody`
@@ -294,6 +357,8 @@ interface StreamPollerOptions {
   prefix: string;
   sendEvent: (data: unknown) => void;  // called with JSON-serializable event objects
   onError: () => void;                 // called on poll failure; poller stops itself first
+  metadataFilter?: ProcessMetadataFilter;
+  scope?: ScopeFilter | null;          // access scope; $and-ed into the query
 }
 
 interface TreePollerOptions extends StreamPollerOptions {

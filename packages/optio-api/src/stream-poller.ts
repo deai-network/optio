@@ -1,6 +1,8 @@
 import { ObjectId, type Db } from 'mongodb';
 import type { ProcessMetadataFilter } from 'optio-contracts';
 import { metadataFilterToMongo } from './metadata-filter-query.js';
+import { andScope } from './access-scope.js';
+import type { ScopeFilter } from './auth.js';
 
 export interface StreamPollerOptions {
   db: Db;
@@ -8,6 +10,8 @@ export interface StreamPollerOptions {
   sendEvent: (data: unknown) => void;
   onError: () => void;
   metadataFilter?: ProcessMetadataFilter;
+  /** Access scope (auth.ts): only processes inside it are emitted. */
+  scope?: ScopeFilter | null;
 }
 
 export interface ListPollerHandle {
@@ -16,9 +20,9 @@ export interface ListPollerHandle {
 }
 
 export function createListPoller(opts: StreamPollerOptions): ListPollerHandle {
-  const { db, prefix, sendEvent, onError, metadataFilter } = opts;
+  const { db, prefix, sendEvent, onError, metadataFilter, scope } = opts;
   const col = db.collection(`${prefix}_processes`);
-  const filter = metadataFilterToMongo(metadataFilter);
+  const filter = andScope(metadataFilterToMongo(metadataFilter), scope ?? null);
   let interval: ReturnType<typeof setInterval> | null = null;
   let lastSnapshot = '';
 
@@ -80,7 +84,7 @@ export function createListPoller(opts: StreamPollerOptions): ListPollerHandle {
   return { start, stop };
 }
 
-export interface TreePollerOptions extends Omit<StreamPollerOptions, 'metadataFilter'> {
+export interface TreePollerOptions extends Omit<StreamPollerOptions, 'metadataFilter' | 'scope'> {
   rootId: string;
   baseDepth: number;
   maxDepth?: number;
@@ -341,6 +345,8 @@ export interface SessionEventsPollerOptions {
   sessionId: string;
   sendEvent: (data: unknown) => void;
   onError: () => void;
+  /** Access scope (auth.ts): only processes inside it are read. */
+  scope?: ScopeFilter | null;
 }
 
 /**
@@ -349,15 +355,16 @@ export interface SessionEventsPollerOptions {
  * sessionEvents (deduped by length high-water mark per process). Read-only.
  */
 export function createSessionEventsPoller(opts: SessionEventsPollerOptions): ListPollerHandle {
-  const { db, prefix, sessionId, sendEvent, onError } = opts;
+  const { db, prefix, sessionId, sendEvent, onError, scope } = opts;
   const col = db.collection(`${prefix}_processes`);
+  const filter = andScope({ originatingSessionId: sessionId }, scope ?? null);
   let interval: ReturnType<typeof setInterval> | null = null;
   const lastCounts = new Map<string, number>();
 
   async function poll() {
     try {
       const procs = await col
-        .find({ originatingSessionId: sessionId })
+        .find(filter)
         .project({ sessionEvents: 1 })
         .toArray();
       for (const p of procs) {
