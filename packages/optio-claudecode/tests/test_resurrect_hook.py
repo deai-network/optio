@@ -107,6 +107,31 @@ async def test_resurrect_with_home_claude_present(mongo_db, host, ctx_and_captur
 
 
 @pytest.mark.asyncio
+async def test_credentials_gone_during_the_save_keeps_the_taskdir(mongo_db, host, ctx_and_captures, monkeypatch):
+    """The hook saw credentials, but the capture's own guard then refused
+    (they disappeared in between): no snapshot was inserted, so the host is
+    not cleaned up and the hook reports nothing saved."""
+    ctx, _cap, _flag = ctx_and_captures
+    await _prepare(mongo_db, ctx)
+    _write(f"{host.workdir}/CLAUDE.md", "work")
+    creds = f"{host.workdir}/home/.claude/.credentials.json"
+    _write(creds, '{"t": 1}')
+    real_check = R._credentials_present
+
+    async def _check_then_lose_them(host_):
+        present = await real_check(host_)
+        os.remove(creds)
+        return present
+    monkeypatch.setattr(R, "_credentials_present", _check_then_lose_them)
+
+    with pytest.raises(NothingToResurrect, match="credentials disappeared during the save"):
+        await R.resurrect_claudecode_session(ctx, _config())
+
+    assert await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id) is None
+    assert os.path.exists(f"{host.workdir}/CLAUDE.md")
+
+
+@pytest.mark.asyncio
 async def test_resurrect_old_code_shape(mongo_db, host, ctx_and_captures):
     """2026-10-06: session blob stored, home/.claude removed, workdir archive
     cut off (partial chunks, no fs.files), no pending record (old code)."""

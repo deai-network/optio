@@ -106,7 +106,8 @@ async def test_credentials_guard_clears_unsaved_work(mongo_db, tmp_path, ctx_and
     ctx, _cap, _flag = ctx_and_captures
     await _flags(mongo_db, ctx, supportsResume=True, supportsResurrect=True, hasUnsavedWork=True)
     host = _local_host(tmp_path)  # no home/.claude/.credentials.json
-    await S._capture_snapshot(ctx, host, end_state="done", workdir_exclude=None)
+    saved = await S._capture_snapshot(ctx, host, end_state="done", workdir_exclude=None)
+    assert saved is False
     assert await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id) is None
     doc = await mongo_db["test_processes"].find_one({"_id": ctx._process_oid})
     assert doc["hasUnsavedWork"] is False
@@ -207,3 +208,16 @@ async def test_cleanup_after_capture_keeps_taskdir_when_capture_failed():
     assert h.calls == []
     await S._cleanup_after_capture(h, capture_failed=False, cancelled=True)
     assert h.calls == [True]
+
+
+@pytest.mark.asyncio
+async def test_capture_snapshot_reports_an_inserted_snapshot(mongo_db, tmp_path, ctx_and_captures):
+    ctx, _cap, _flag = ctx_and_captures
+    await _flags(mongo_db, ctx, supportsResume=True, supportsResurrect=True, hasUnsavedWork=True)
+    host = _local_host(tmp_path)
+    os.makedirs(os.path.join(host.workdir, "home/.claude"))
+    with open(os.path.join(host.workdir, "home/.claude/.credentials.json"), "w") as f:
+        f.write('{"t": 1}')
+    saved = await S._capture_snapshot(ctx, host, end_state="done", workdir_exclude=None)
+    assert saved is True
+    assert await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id) is not None

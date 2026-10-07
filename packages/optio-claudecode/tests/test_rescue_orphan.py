@@ -77,6 +77,7 @@ def patched(monkeypatch):
         rec["capture"].append(kw)
         if rec["fail_capture"]:
             raise RuntimeError("capture failed")
+        return True
 
     monkeypatch.setattr(S.host_actions, "tmux_session_alive", _alive)
     monkeypatch.setattr(S.host_actions, "find_tmux", _find_tmux)

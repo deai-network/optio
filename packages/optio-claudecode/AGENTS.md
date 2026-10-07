@@ -51,7 +51,9 @@ place. A fresh launch keeps its configured model. See
 ## Snapshot capture and unsaved work
 
 `session._capture_snapshot` runs at teardown (only when `supports_resume`
-and claude came up) and in crash-orphan rescue. Its first half: the credentials guard (no
+and claude came up) and in crash-orphan rescue. It returns `True` when it
+inserted a snapshot record and `False` when its credentials guard refused
+(teardown ignores the result; rescue logs which one happened). Its first half: the credentials guard (no
 `home/.claude/.credentials.json` → no snapshot), the session blob (tar of
 `home/.claude`, through `session_blob_encrypt`), then `rm -rf home/.claude`
 and the regenerable mozilla dirs. Its second half is
@@ -136,7 +138,11 @@ from the snapshot it stored. The hook is
    `home/.claude/.credentials.json` being non-empty (`test -s`), the same
    test as the capture's credentials guard.
    - Present (crash while running, or the capture failed before its session
-     step): `_capture_snapshot(end_state="resurrected")`.
+     step): `_capture_snapshot(end_state="resurrected")`. If its own guard
+     refuses after all (the credentials disappeared since the hook's test),
+     it returns `False` and the hook raises
+     `NothingToResurrect("credentials disappeared during the save")`, leaving
+     the host as it is.
    - Absent (the capture was cut off after its session step, including part
      way through its `rm -rf home/.claude`; also every run that failed on
      code before Resurrect): the session-blob fallback.

@@ -111,12 +111,16 @@ async def resurrect_claudecode_session(ctx: ProcessContext, config) -> None:
 
         exclude = S._excludes_with_rescue_marker(config)
         if credentials:
-            await S._capture_snapshot(
+            saved = await S._capture_snapshot(
                 ctx, host,
                 end_state="resurrected",
                 workdir_exclude=exclude,
                 session_blob_encrypt=config.session_blob_encrypt,
             )
+            if not saved:
+                # The capture's own guard refused after our check: nothing
+                # was stored, so the host is left as it is.
+                raise NothingToResurrect("credentials disappeared during the save")
         else:
             # The capture's session step ran (its rm -rf home/.claude may have
             # been cut off part-way); use the session blob it stored.

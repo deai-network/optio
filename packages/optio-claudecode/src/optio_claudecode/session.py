@@ -1630,16 +1630,21 @@ async def _rescue_orphan_if_present(
     #    teardown capture. Exclude the marker so a restored workdir cannot
     #    re-trigger rescue in a loop.
     exclude = _excludes_with_rescue_marker(config)
-    await _capture_snapshot(
+    saved = await _capture_snapshot(
         ctx, host,
         end_state="rescued",
         workdir_exclude=exclude,
         session_blob_encrypt=config.session_blob_encrypt,
     )
 
-    # 4. Capture durable — clear the marker.
+    # 4. Capture durable (or refused by the credentials guard) — clear the marker.
     await host.run_command(f"rm -f {shlex.quote(marker_path)}")
-    _LOG.warning("crash-orphan rescue: fresh snapshot captured; orphan killed")
+    if saved:
+        _LOG.warning("crash-orphan rescue: fresh snapshot captured; orphan killed")
+    else:
+        _LOG.warning(
+            "crash-orphan rescue: orphan killed; no snapshot (credentials guard refused)",
+        )
 
 
 async def _store_session_blob(
@@ -1740,7 +1745,12 @@ async def _capture_snapshot(
     end_state: str,
     workdir_exclude: list[str] | None,
     session_blob_encrypt: "Callable[[bytes], bytes] | None" = None,
-) -> None:
+) -> bool:
+    """Capture a snapshot: session blob, then workdir blob and record.
+
+    Returns True when a snapshot record was inserted, False when the
+    credentials guard refused (nothing stored). Raises on any other failure.
+    """
     # 0. Credentials-present guard. Refuse to snapshot an unconfigured
     # environment: without home/.claude/.credentials.json a restored snapshot
     # drops the agent to /login (looking like a zero-config seed session).
@@ -1761,7 +1771,7 @@ async def _capture_snapshot(
         # A snapshot without credentials is refused, so a later Resurrect
         # could not save this workdir either: nothing resurrectable is left.
         await ctx.clear_unsaved_work()
-        return
+        return False
 
     # 1-3. tar the sensitive subtree, encrypt, write the session blob.
     async with _traced("capture: store_session_blob") as t:
@@ -1797,6 +1807,7 @@ async def _capture_snapshot(
         workdir_exclude=workdir_exclude,
         session_blob_id=session_blob_id,
     )
+    return True
 
 
 async def _store_workdir_snapshot(
