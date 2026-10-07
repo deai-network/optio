@@ -25,6 +25,7 @@ export {
   LaunchFailureReason,
   CancelFailureReason,
   DismissFailureReason,
+  ResurrectFailureReason,
   GroupCancelFailureReason,
   BlockLaunchesFailureReason,
 } from './engine-failure-reasons.js';

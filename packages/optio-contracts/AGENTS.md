@@ -131,6 +131,8 @@ z.enum(['idle', 'scheduled', 'running', 'done', 'failed',
 | `special` | `boolean` | optional |
 | `supportsResume` | `boolean` | optional — task opted into resume/checkpoint support |
 | `hasSavedState` | `boolean` | optional — task has a valid checkpoint ready to restore |
+| `supportsResurrect` | `boolean` | optional — task has a resurrect hook (missing = false) |
+| `hasUnsavedWork` | `boolean` | optional — the host workdir holds work newer than the last snapshot (missing = false) |
 | `warning` | `string` | optional |
 | `status` | `ProcessStatusSchema` | see below |
 | `progress` | `ProgressSchema` | see below |
@@ -195,6 +197,7 @@ processes to a named domain (e.g., a specific application or worker).
 | `launch` | POST | `/processes/:prefix/:id/launch` | `prefix: string`, `id: ObjectId` | — | 200: `Process`, 404: `Error`, 409: `Error` (body: `{ resume?: boolean }` — optional; omitting the body entirely is valid) |
 | `cancel` | POST | `/processes/:prefix/:id/cancel` | `prefix: string`, `id: ObjectId` | — | 200: `Process`, 404: `Error`, 409: `Error` |
 | `dismiss` | POST | `/processes/:prefix/:id/dismiss` | `prefix: string`, `id: ObjectId` | — | 200: `Process`, 404: `Error`, 409: `Error` |
+| `resurrect` | POST | `/processes/:id/resurrect` | `id: string` | `database?`, `prefix?` | 200: `Process`, 404/409: `{ reason: ResurrectFailureReason, message: string }` (body: `{ sessionId?: string \| null }` — optional; omitting the body entirely is valid) |
 | `resync` | POST | `/processes/:prefix/resync` | `prefix: string` | — | 200: `{ message: string }` (body: `{ clean?: boolean; metadataFilter?: ProcessMetadataFilter }` — both optional) |
 
 **Notes on specific endpoints:**
@@ -204,4 +207,39 @@ processes to a named domain (e.g., a specific application or worker).
 - `getTreeLog` — returns merged log entries across the process subtree, each augmented with `processId` (ObjectId) and `processLabel` (string) to identify the source process.
 - `launch` — optional body `{ resume?: boolean }`. Clients may omit the body entirely; setting `resume: true` requests a resume. 409 indicates a state conflict (e.g., launching an already-running process) **or** `resume: true` against a task whose `supportsResume` is `false`.
 - `cancel` / `dismiss` — no request body. 409 indicates a state conflict.
+- `resurrect` — saves the work a failed run left on its host, then resumes (engine RPC `resurrect`). Optional body `{ sessionId?: string | null }`, the initiating session. Error responses carry a typed `{ reason, message }` body, `reason` being a `ResurrectFailureReason`.
 - `resync` — body: `{ clean?: boolean; metadataFilter?: ProcessMetadataFilter }`. Triggers re-sync of process definitions from the server-side registry. `metadataFilter` (when present) scopes the re-sync to tasks whose stored metadata matches.
+
+## Contract: optioEngineContract
+
+clamator RPC contract exported from `optio-engine-to-api.ts` (service `'optio-engine'`).
+`processId` is a non-empty string; `process` is a `Process`.
+
+| Method | Params | Result |
+|--------|--------|--------|
+| `launch` | `{ processId, resume?: boolean, sessionId: string \| null }` | `{ ok: true, process } \| { ok: false, reason: LaunchFailureReason }` |
+| `cancel` | `{ processId }` | `{ ok: true, process } \| { ok: false, reason: CancelFailureReason }` |
+| `dismiss` | `{ processId }` | `{ ok: true, process } \| { ok: false, reason: DismissFailureReason }` |
+| `resurrect` | `{ processId, sessionId: string \| null }` | `{ ok: true, process } \| { ok: false, reason: ResurrectFailureReason }` |
+| `groupCancel` / `groupCancelAndWait` | `{ metadataFilter, blockNewLaunches?, persist?, reason?, purgeRecords? }` | `{ ok: true, cancelledCount } \| { ok: false, reason: GroupCancelFailureReason }` |
+| `blockLaunches` | `{ launchFilter, reason? }` | `{ ok: true } \| { ok: false, reason: BlockLaunchesFailureReason }` |
+| `unblockLaunches` | `{ launchFilter }` | `{ removed: number }` |
+| `materializeUpload` | `{ processId, blobId, filename }` | `{ ok: true, path } \| { ok: false, reason: string }` |
+| `resync` (notification) | `{ clean?, metadataFilter? }` | — |
+
+`sessionId` on `launch` and `resurrect` is required but nullable: the initiating session
+token, or explicit `null` for unattended calls.
+
+## Failure-reason enums
+
+Zod enums (each also exported as a type of the same name) in `engine-failure-reasons.ts`,
+re-exported from the package root. Browser-safe: they do not pull in `@clamator/protocol`.
+
+| Enum | Values |
+|------|--------|
+| `LaunchFailureReason` | `not-found`, `not-launchable`, `no-resume-support`, `launch-blocked` |
+| `CancelFailureReason` | `not-found`, `not-cancellable` |
+| `DismissFailureReason` | `not-found`, `not-dismissable` |
+| `ResurrectFailureReason` | `not-found`, `not-resurrectable`, `no-resurrect-support`, `resurrect-in-progress`, `launch-blocked`, `shutting-down` |
+| `GroupCancelFailureReason` | `invalid-persist-without-block` |
+| `BlockLaunchesFailureReason` | `invalid-filter` |

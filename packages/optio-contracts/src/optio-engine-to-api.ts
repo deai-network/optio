@@ -5,6 +5,7 @@ import {
   LaunchFailureReason,
   CancelFailureReason,
   DismissFailureReason,
+  ResurrectFailureReason,
   GroupCancelFailureReason,
   BlockLaunchesFailureReason,
 } from './engine-failure-reasons.js';
@@ -24,6 +25,11 @@ const cancelResult = z.discriminatedUnion('ok', [
 const dismissResult = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true), process: ProcessSchema }),
   z.object({ ok: z.literal(false), reason: DismissFailureReason }),
+]);
+
+const resurrectResult = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), process: ProcessSchema }),
+  z.object({ ok: z.literal(false), reason: ResurrectFailureReason }),
 ]);
 
 const groupCancelResult = z.discriminatedUnion('ok', [
@@ -69,6 +75,14 @@ export const optioEngineContract = defineContract('optio-engine', {
   dismiss: defineMethod({
     params: z.object({ processId: ProcessIdParam }),
     result: dismissResult,
+  }),
+  resurrect: defineMethod({
+    params: z.object({
+      processId: ProcessIdParam,
+      // Like launch: the initiating session, or explicit null.
+      sessionId: z.string().nullable(),
+    }),
+    result: resurrectResult,
   }),
   groupCancel: defineMethod({
     params: z.object({

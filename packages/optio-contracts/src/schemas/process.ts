@@ -75,6 +75,11 @@ export const ProcessSchema = z.object({
   supportsResume: z.boolean().optional(),
   hasSavedState: z.boolean().optional(),
 
+  // Resurrect: the task has a resurrect hook / the host workdir holds work
+  // newer than the last snapshot. Missing = false.
+  supportsResurrect: z.boolean().optional(),
+  hasUnsavedWork: z.boolean().optional(),
+
   // Auto-resume on restart: set on a cancelled, state-saved top-level process
   // whose task opted into auto_resume; the engine re-launches it (resume=true)
   // after a post-boot delay. Cleared on resume / manual launch / failed.

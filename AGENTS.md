@@ -168,7 +168,8 @@ await optio_core.resurrect(process_id: str, *, session_id: str | None) -> Resurr
 # flag kept (retry possible). Progress is cleared in every case. While the hook runs,
 # launch returns not-launchable and a second resurrect resurrect-in-progress. shutdown()
 # cancels a resurrect in progress and waits at most force_cancel_shield_seconds for it (a
-# hook ignoring the cancel is abandoned); the flag stays set.
+# hook ignoring the cancel is abandoned); the flag stays set. Engine RPC: resurrect({ processId,
+# sessionId }) -> { ok: true, process } | { ok: false, reason } (OptioEngineService.resurrect).
 await optio_core.cancel(process_id: str) -> None
 # Cancels the named process. Recursively cancels active direct descendants whose
 # TaskInstance has auto_cancel_children=True (default). Opt-out parents handle
@@ -677,6 +678,8 @@ Package: `optio-contracts`
 - `widgetData`: unknown (optional) — live data delivered to the widget component
 - `supportsResume`: boolean (optional) — task opted into resume support
 - `hasSavedState`: boolean (optional) — task has a valid checkpoint ready to restore
+- `supportsResurrect`: boolean (optional) — task has a resurrect hook (missing = false)
+- `hasUnsavedWork`: boolean (optional) — the host workdir holds work newer than the last snapshot (missing = false)
 - `createdAt`: Date
 
 **`ProcessStateSchema`** — enum:
@@ -717,9 +720,23 @@ type LogEntry = z.infer<typeof LogEntrySchema>;
 | `launch` | POST | `/processes/:prefix/:id/launch` | `prefix, id` | — | `{ resume?: boolean }` (optional; body may be omitted entirely) | `200: Process`, `404: Error`, `409: Error` |
 | `cancel` | POST | `/processes/:prefix/:id/cancel` | `prefix, id` | — | (none) | `200: Process`, `404: Error`, `409: Error` |
 | `dismiss` | POST | `/processes/:prefix/:id/dismiss` | `prefix, id` | — | (none) | `200: Process`, `404: Error`, `409: Error` |
+| `resurrect` | POST | `/processes/:id/resurrect` | `id` | `database?, prefix?` | `{ sessionId?: string \| null }` (optional; body may be omitted entirely) | `200: Process`, `404`/`409`: `{ reason: ResurrectFailureReason, message }` |
 | `resync` | POST | `/processes/:prefix/resync` | `prefix` | — | `{ clean?: boolean; metadataFilter?: ProcessMetadataFilter }` (omit or send `{}` for full sync) | `200: { message: string }` |
 
 Note: The Fastify adapter mounts the entire contract under `/api`, so effective paths are `/api/processes/:prefix/...`.
+
+### Engine RPC contract
+
+`optioEngineContract` (clamator, service `optio-engine`): methods `launch`, `cancel`, `dismiss`,
+`resurrect`, `groupCancel`, `groupCancelAndWait`, `blockLaunches`, `unblockLaunches`,
+`materializeUpload`; notification `resync`. `resurrect({ processId, sessionId: string | null })`
+returns `{ ok: true, process } | { ok: false, reason: ResurrectFailureReason }`.
+
+Failure-reason enums (zod enum + type of the same name, browser-safe, exported from the package
+root): `LaunchFailureReason`, `CancelFailureReason`, `DismissFailureReason`,
+`ResurrectFailureReason` (`not-found`, `not-resurrectable`, `no-resurrect-support`,
+`resurrect-in-progress`, `launch-blocked`, `shutting-down`), `GroupCancelFailureReason`,
+`BlockLaunchesFailureReason`.
 
 ---
 

@@ -181,6 +181,8 @@ class Process(BaseModel):
     widget_data: Any | None = Field(None, alias="widgetData")
     supports_resume: bool | None = Field(None, alias="supportsResume")
     has_saved_state: bool | None = Field(None, alias="hasSavedState")
+    supports_resurrect: bool | None = Field(None, alias="supportsResurrect")
+    has_unsaved_work: bool | None = Field(None, alias="hasUnsavedWork")
     auto_resume_scheduled: bool | None = Field(None, alias="autoResumeScheduled")
     browser_open_requests: list[BrowserOpenRequest] | None = Field(
         None, alias="browserOpenRequests"
@@ -252,6 +254,8 @@ class Process1(BaseModel):
     widget_data: Any | None = Field(None, alias="widgetData")
     supports_resume: bool | None = Field(None, alias="supportsResume")
     has_saved_state: bool | None = Field(None, alias="hasSavedState")
+    supports_resurrect: bool | None = Field(None, alias="supportsResurrect")
+    has_unsaved_work: bool | None = Field(None, alias="hasUnsavedWork")
     auto_resume_scheduled: bool | None = Field(None, alias="autoResumeScheduled")
     browser_open_requests: list[BrowserOpenRequest] | None = Field(
         None, alias="browserOpenRequests"
@@ -428,6 +432,8 @@ class Process2(BaseModel):
     widget_data: Any | None = Field(None, alias="widgetData")
     supports_resume: bool | None = Field(None, alias="supportsResume")
     has_saved_state: bool | None = Field(None, alias="hasSavedState")
+    supports_resurrect: bool | None = Field(None, alias="supportsResurrect")
+    has_unsaved_work: bool | None = Field(None, alias="hasUnsavedWork")
     auto_resume_scheduled: bool | None = Field(None, alias="autoResumeScheduled")
     browser_open_requests: list[BrowserOpenRequest] | None = Field(
         None, alias="browserOpenRequests"
@@ -490,6 +496,90 @@ class MaterializeUploadResult(
     RootModel[MaterializeUploadResult1 | MaterializeUploadResult2]
 ):
     root: MaterializeUploadResult1 | MaterializeUploadResult2
+
+
+class ResurrectParams(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    process_id: str = Field(..., alias="processId", min_length=1)
+    session_id: str | None = Field(..., alias="sessionId")
+
+
+class Progress3(Progress):
+    pass
+
+
+class SessionEvents6(SessionEvents):
+    pass
+
+
+class SessionEvents7(SessionEvents1):
+    pass
+
+
+class Process3(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    field_id: str = Field(..., alias="_id", pattern="^[a-f\\d]{24}$")
+    process_id: str = Field(..., alias="processId")
+    name: str
+    params: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
+    parent_id: str | None = Field(None, alias="parentId", pattern="^[a-f\\d]{24}$")
+    root_id: str = Field(..., alias="rootId", pattern="^[a-f\\d]{24}$")
+    depth: int = Field(..., ge=0)
+    order: int = Field(..., ge=0)
+    cancellable: bool
+    special: bool | None = None
+    warning: str | None = None
+    description: str | None = None
+    status: Status
+    progress: Progress3
+    log: list[LogItem]
+    ui_widget: str | None = Field(None, alias="uiWidget")
+    widget_data: Any | None = Field(None, alias="widgetData")
+    supports_resume: bool | None = Field(None, alias="supportsResume")
+    has_saved_state: bool | None = Field(None, alias="hasSavedState")
+    supports_resurrect: bool | None = Field(None, alias="supportsResurrect")
+    has_unsaved_work: bool | None = Field(None, alias="hasUnsavedWork")
+    auto_resume_scheduled: bool | None = Field(None, alias="autoResumeScheduled")
+    browser_open_requests: list[BrowserOpenRequest] | None = Field(
+        None, alias="browserOpenRequests"
+    )
+    session_events: list[SessionEvents6 | SessionEvents7] | None = Field(
+        None, alias="sessionEvents"
+    )
+    originating_session_id: str | None = Field(None, alias="originatingSessionId")
+    created_at: AwareDatetime = Field(..., alias="createdAt")
+
+
+class ResurrectResult1(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    ok: Literal[True]
+    process: Process3
+
+
+class ResurrectResult2(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+    )
+    ok: Literal[False]
+    reason: Literal[
+        "not-found",
+        "not-resurrectable",
+        "no-resurrect-support",
+        "resurrect-in-progress",
+        "launch-blocked",
+        "shutting-down",
+    ]
+
+
+class ResurrectResult(RootModel[ResurrectResult1 | ResurrectResult2]):
+    root: ResurrectResult1 | ResurrectResult2
 
 
 class MetadataFilter8(LaunchFilter):
@@ -591,6 +681,10 @@ class OptioEngineClient:
         raw = await self._client.call("optio-engine", "materializeUpload", params.model_dump(mode='json', by_alias=True), timeout_ms=timeout_ms)
         return MaterializeUploadResult.model_validate(raw)
 
+    async def resurrect(self, params: ResurrectParams, *, timeout_ms: int | None = None) -> ResurrectResult:
+        raw = await self._client.call("optio-engine", "resurrect", params.model_dump(mode='json', by_alias=True), timeout_ms=timeout_ms)
+        return ResurrectResult.model_validate(raw)
+
     async def resync(self, params: ResyncParams) -> None:
         await self._client.notify("optio-engine", "resync", params.model_dump(mode='json', by_alias=True))
 
@@ -622,6 +716,9 @@ class OptioEngineService(ABC):
     async def materialize_upload(self, params: MaterializeUploadParams) -> MaterializeUploadResult: ...
 
     @abstractmethod
+    async def resurrect(self, params: ResurrectParams) -> ResurrectResult: ...
+
+    @abstractmethod
     async def resync(self, params: ResyncParams) -> None: ...
 
     @abstractmethod
@@ -636,6 +733,7 @@ METHODS = {
     "groupCancelAndWait": MethodEntry(params_model=GroupCancelAndWaitParams, result_model=GroupCancelAndWaitResult, handler_attr="group_cancel_and_wait"),
     "launch": MethodEntry(params_model=LaunchParams, result_model=LaunchResult, handler_attr="launch"),
     "materializeUpload": MethodEntry(params_model=MaterializeUploadParams, result_model=MaterializeUploadResult, handler_attr="materialize_upload"),
+    "resurrect": MethodEntry(params_model=ResurrectParams, result_model=ResurrectResult, handler_attr="resurrect"),
     "resync": MethodEntry(params_model=ResyncParams, result_model=None, handler_attr="resync"),
     "unblockLaunches": MethodEntry(params_model=UnblockLaunchesParams, result_model=UnblockLaunchesResult, handler_attr="unblock_launches"),
 }

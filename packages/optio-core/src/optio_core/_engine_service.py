@@ -12,6 +12,7 @@ from optio_core._generated.optio_engine import (
     LaunchParams, LaunchResult,
     CancelParams, CancelResult,
     DismissParams, DismissResult,
+    ResurrectParams, ResurrectResult,
     GroupCancelParams, GroupCancelResult,
     GroupCancelAndWaitParams, GroupCancelAndWaitResult,
     BlockLaunchesParams, BlockLaunchesResult,
@@ -31,8 +32,8 @@ _PROCESS_WIRE_KEYS = frozenset({
     "_id", "processId", "name", "params", "metadata", "parentId", "rootId",
     "depth", "order", "cancellable", "special", "warning", "description",
     "status", "progress", "log", "uiWidget", "widgetData", "supportsResume",
-    "hasSavedState", "autoResumeScheduled", "createdAt", "browserOpenRequests",
-    "sessionEvents",
+    "hasSavedState", "supportsResurrect", "hasUnsavedWork",
+    "autoResumeScheduled", "createdAt", "browserOpenRequests", "sessionEvents",
 })
 
 
@@ -107,6 +108,19 @@ class OptioEngineService(OptioEngineServiceBase):
                 {"ok": False, "reason": outcome.reason}
             )
         return DismissResult.model_validate(
+            {"ok": True, "process": _to_process_dict(outcome.proc)}
+        )
+
+    # --------------------------------------------------------------- resurrect
+    async def resurrect(self, params: ResurrectParams) -> ResurrectResult:
+        outcome = await self._optio.resurrect(
+            params.process_id, session_id=params.session_id,
+        )
+        if not outcome.ok:
+            return ResurrectResult.model_validate(
+                {"ok": False, "reason": outcome.reason}
+            )
+        return ResurrectResult.model_validate(
             {"ok": True, "process": _to_process_dict(outcome.proc)}
         )
 

@@ -305,3 +305,9 @@ describe('process-filter-helpers', () => {
     });
   });
 });
+
+it('accepts supportsResurrect and hasUnsavedWork', () => {
+  const parsed = ProcessSchema.parse({ ...baseProcess(), supportsResurrect: true, hasUnsavedWork: true });
+  expect(parsed.supportsResurrect).toBe(true);
+  expect(parsed.hasUnsavedWork).toBe(true);
+});

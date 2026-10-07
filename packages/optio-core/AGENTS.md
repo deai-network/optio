@@ -275,7 +275,8 @@ await ctx.clear_widget_data() -> None
 
 `hasSavedState` is backfilled to `false` on all existing documents by migration `m003_backfill_has_saved_state`
 (runs on startup; depends on m002). `supportsResurrect` and `hasUnsavedWork` have no backfill; an
-absent field reads as `false`.
+absent field reads as `false`. Both are wire keys: the engine RPC's process payloads (`launch`,
+`cancel`, `dismiss`, `resurrect` results) carry them.
 
 ---
 
@@ -326,6 +327,10 @@ itself. While the hook runs, `launch` on the process returns `not-launchable` an
 parameter) for it to unwind; a hook that ignores the cancel is abandoned, not waited on.
 `hasUnsavedWork` stays set. Spec:
 `docs/2026-10-07-resurrect-failed-session-design.md`.
+
+Engine RPC: `resurrect({ processId, sessionId })` (`OptioEngineService.resurrect`) calls
+`Optio.resurrect` and returns `{ ok: true, process }` or `{ ok: false, reason }` with the
+reasons above.
 
 ---
 

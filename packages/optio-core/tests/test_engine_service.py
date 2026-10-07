@@ -14,10 +14,12 @@ from optio_core._generated.optio_engine import (
     GroupCancelAndWaitParams, GroupCancelAndWaitResult,
     BlockLaunchesParams, BlockLaunchesResult,
     UnblockLaunchesParams, UnblockLaunchesResult,
+    ResurrectParams, ResurrectResult,
     ResyncParams,
 )
 from optio_core.models import (
     LaunchBlocked, LaunchOutcome, CancelOutcome, DismissOutcome,
+    ResurrectOutcome,
 )
 
 _OBJECTID_RE = re.compile(r"^[a-fA-F0-9]{24}$")
@@ -399,3 +401,28 @@ def test_to_process_dict_carries_auto_resume_scheduled():
     doc = {"_id": oid, "processId": "p", "name": "n", "autoResumeScheduled": True}
     out = _to_process_dict(doc)
     assert out["autoResumeScheduled"] is True
+
+
+@pytest.mark.asyncio
+async def test_resurrect_ok(fake_optio, sample_idle_proc):
+    from optio_core._engine_service import OptioEngineService
+    fake_optio.resurrect = AsyncMock(return_value=ResurrectOutcome(ok=True, proc=sample_idle_proc))
+    svc = OptioEngineService(fake_optio)
+    res = await svc.resurrect(ResurrectParams.model_validate({"processId": "p1", "sessionId": "s"}))
+    assert isinstance(res, ResurrectResult)
+    fake_optio.resurrect.assert_awaited_once_with("p1", session_id="s")
+    assert res.root.ok is True
+
+
+@pytest.mark.asyncio
+async def test_resurrect_reason(fake_optio):
+    from optio_core._engine_service import OptioEngineService
+    fake_optio.resurrect = AsyncMock(return_value=ResurrectOutcome(ok=False, reason="not-resurrectable"))
+    svc = OptioEngineService(fake_optio)
+    res = await svc.resurrect(ResurrectParams.model_validate({"processId": "p1", "sessionId": None}))
+    assert res.root.ok is False and res.root.reason == "not-resurrectable"
+
+
+def test_wire_keys_carry_resurrect_fields():
+    from optio_core._engine_service import _PROCESS_WIRE_KEYS
+    assert {"supportsResurrect", "hasUnsavedWork"} <= _PROCESS_WIRE_KEYS

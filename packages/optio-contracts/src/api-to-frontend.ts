@@ -2,7 +2,7 @@ import { initContract } from '@ts-rest/core';
 import { z } from 'zod';
 import { PaginationQuerySchema, PaginatedResponseSchema, ErrorSchema, ObjectIdSchema, ProcessIdParamSchema } from './schemas/common.js';
 import { ProcessSchema, ProcessStateSchema, LogEntrySchema, ProcessMetadataFilterSchema, MetadataFilterQueryParamSchema } from './schemas/process.js';
-import { LaunchFailureReason, CancelFailureReason, DismissFailureReason } from './engine-failure-reasons.js';
+import { LaunchFailureReason, CancelFailureReason, DismissFailureReason, ResurrectFailureReason } from './engine-failure-reasons.js';
 
 const c = initContract();
 
@@ -20,6 +20,8 @@ const DismissErrorBody = z.object({
   reason: DismissFailureReason,
   message: z.string(),
 });
+
+const ResurrectErrorBody = z.object({ reason: ResurrectFailureReason, message: z.string() });
 
 const ProcessTreeNodeSchema = ProcessSchema.extend({
   children: z.array(z.lazy(() => ProcessSchema.extend({ children: z.array(z.any()) }))),
@@ -145,6 +147,21 @@ export const processesContract = c.router({
       409: DismissErrorBody,
     },
     summary: 'Dismiss process (reset to idle)',
+  },
+  resurrect: {
+    method: 'POST',
+    path: '/processes/:id/resurrect',
+    pathParams: z.object({ id: ProcessIdParamSchema }),
+    query: InstanceQuerySchema,
+    body: z.object({
+      sessionId: z.string().nullable().optional(),
+    }).optional(),
+    responses: {
+      200: ProcessSchema,
+      404: ResurrectErrorBody,
+      409: ResurrectErrorBody,
+    },
+    summary: 'Save the work a failed run left on its host, then resume',
   },
   resync: {
     method: 'POST',

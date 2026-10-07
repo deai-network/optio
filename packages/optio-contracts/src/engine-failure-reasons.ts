@@ -24,6 +24,15 @@ export const DismissFailureReason = z.enum([
   'not-dismissable',
 ]);
 
+export const ResurrectFailureReason = z.enum([
+  'not-found',
+  'not-resurrectable',
+  'no-resurrect-support',
+  'resurrect-in-progress',
+  'launch-blocked',
+  'shutting-down',
+]);
+
 export const GroupCancelFailureReason = z.enum([
   'invalid-persist-without-block',
 ]);
@@ -35,5 +44,6 @@ export const BlockLaunchesFailureReason = z.enum([
 export type LaunchFailureReason = z.infer<typeof LaunchFailureReason>;
 export type CancelFailureReason = z.infer<typeof CancelFailureReason>;
 export type DismissFailureReason = z.infer<typeof DismissFailureReason>;
+export type ResurrectFailureReason = z.infer<typeof ResurrectFailureReason>;
 export type GroupCancelFailureReason = z.infer<typeof GroupCancelFailureReason>;
 export type BlockLaunchesFailureReason = z.infer<typeof BlockLaunchesFailureReason>;

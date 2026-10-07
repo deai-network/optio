@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { optioEngineContract } from '../optio-engine-to-api.js';
-import { LaunchFailureReason } from '../engine-failure-reasons.js';
+import { LaunchFailureReason, ResurrectFailureReason } from '../engine-failure-reasons.js';
 
 describe('optioEngineContract', () => {
   it('declares the expected service name', () => {
@@ -40,5 +40,20 @@ describe('optioEngineContract', () => {
     const resync = optioEngineContract.methods.resync;
     expect(resync).toBeDefined();
     expect((resync as { result?: unknown }).result).toBeUndefined();
+  });
+
+  it('exposes resurrect with the launch-shaped result', () => {
+    const resurrect = optioEngineContract.methods.resurrect;
+    expect(resurrect).toBeDefined();
+    expect(resurrect.params.parse({ processId: 'p1', sessionId: null })).toEqual({ processId: 'p1', sessionId: null });
+    const fail = resurrect.result.parse({ ok: false, reason: 'resurrect-in-progress' });
+    expect(fail.ok).toBe(false);
+  });
+
+  it('knows exactly the resurrect failure reasons', () => {
+    expect(ResurrectFailureReason.options).toEqual([
+      'not-found', 'not-resurrectable', 'no-resurrect-support',
+      'resurrect-in-progress', 'launch-blocked', 'shutting-down',
+    ]);
   });
 });
