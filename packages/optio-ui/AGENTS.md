@@ -27,8 +27,8 @@
 
 **The only acceptable way to make decisions about task lifecycle state is by
 calling a predicate from `src/process-state.ts`.** That file is the single
-source of truth for what counts as "launchable", "active", "terminal", or
-"resumable".
+source of truth for what counts as "launchable", "active", "terminal",
+"resumable", or "resurrectable".
 
 Do **not**:
 
@@ -46,7 +46,8 @@ Do:
   `isTerminal(process)` / `isTerminalState(state)`,
   `isWidgetLive(process)` / `isWidgetLiveState(state)`,
   `isCancellable(process)` / `isCancellableState(state)`,
-  `isResumable(process)`.
+  `isResumable(process)`, `isResurrectable(process)` (launchable AND
+  `supportsResurrect === true` AND `hasUnsavedWork === true`).
 - If you genuinely need a new state-derived concept (e.g. "show widget UI" —
   which is *almost* `isActive` but excludes `scheduled`), add a named
   predicate to `process-state.ts` rather than spelling out the set at the
@@ -93,6 +94,7 @@ interface OptioContextValue {
 interface LaunchControlsProps {
   process: any;
   onLaunch?: (id: string, opts?: { resume?: boolean }) => void;
+  onResurrect?: (id: string) => void;  // save a failed run's host work, then resume
   size?: ButtonProps['size'];
 }
 ```
@@ -101,6 +103,12 @@ Smart launch button (`packages/optio-ui/src/components/LaunchControls.tsx`).
 
 Rendering rules:
 - Renders **nothing** when the process is not in a launchable state (`idle | done | failed | cancelled`), or when `onLaunch` is not provided.
+- Renders a **Resurrect** split button when `onResurrect` is provided and `isResurrectable(process)` (`supportsResurrect=true` and `hasUnsavedWork=true`); it takes precedence over the two cases below (a non-empty `denyReason` still wins):
+  - Primary button: **Resurrect** (medicine-box icon, `aria-label` "Resurrect") — calls `onResurrect(id)`.
+  - Menu item **Resume from last snapshot**, only when `isResumable(process)` — calls `onLaunch(id, { resume: true })`.
+  - Menu item **Restart** — calls `onLaunch(id, { resume: false })`.
+  - Both menu items first open a confirmation modal ("This discards the unsaved work left by the failed run.", danger OK button **Discard and continue**); `onLaunch` runs only on OK. The modal comes from `Modal.useModal()`, so it is themed without an antd `<App>` ancestor.
+  - Without `onResurrect`, a resurrectable process falls through to the cases below.
 - Renders a single play button (calls `onLaunch(id)` with no opts) when `supportsResume=false` **or** `hasSavedState=false`.
 - Renders an Ant Design `Dropdown.Button` when both `supportsResume=true` and `hasSavedState=true`:
   - Primary button: **Resume** — calls `onLaunch(id, { resume: true })`.
@@ -117,12 +125,14 @@ interface ProcessListProps {
   processes: any[];
   loading: boolean;
   onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
+  onResurrect?: (processId: string) => void;
   onCancel?: (processId: string) => void;
   onProcessClick?: (processId: string) => void;
 }
 ```
 
-Renders an Ant Design `List`. Each item delegates to `ProcessItem`. The launch button is provided via `LaunchControls`.
+Renders an Ant Design `List`. Each item delegates to `ProcessItem`. The launch button is provided via `LaunchControls`; `onResurrect` is forwarded to it through `ProcessItem`.
+`FilteredProcessList` (`ProcessFilter.tsx`) takes the same callbacks, including `onResurrect`, and forwards them to `ProcessList`.
 
 Launchable states: `idle | done | failed | cancelled`.
 Active states: `running | scheduled | cancel_requested | cancelling`.
@@ -137,6 +147,7 @@ type ProcessItemSize = 'small' | 'default' | 'big';
 interface ProcessItemProps {
   process: any;
   onLaunch?: (id: string) => void;
+  onResurrect?: (id: string) => void;  // forwarded to LaunchControls
   onCancel?: (id: string) => void;
   readonly?: boolean;
   onProcessClick?: (id: string) => void;
@@ -213,6 +224,10 @@ interface ProcessNode {
   status: { state: string; error?: string; runningSince?: string };
   progress: { percent: number | null; message?: string };
   cancellable?: boolean;
+  supportsResume?: boolean;     // the four flags are read by LaunchControls
+  hasSavedState?: boolean;
+  supportsResurrect?: boolean;
+  hasUnsavedWork?: boolean;
   children?: ProcessNode[];
 }
 
@@ -224,6 +239,8 @@ interface ProcessTreeViewProps {
   treeData: ProcessNode | null;   // root node; renders null when treeData is null
   sseState: SseState;             // used to show 'Live' / 'Disconnected' label
   onCancel?: (processId: string) => void;
+  onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
+  onResurrect?: (processId: string) => void;
 }
 ```
 
@@ -241,6 +258,8 @@ Progress bar visibility rules (identical to `ProcessList`/`ProcessItem`):
 - Not active: hidden.
 
 Cancel button appears per-node when `state in ACTIVE_STATES && node.cancellable && onCancel provided`.
+
+Launch affordances appear per-node via `LaunchControls` when `onLaunch` is provided; `onResurrect` is forwarded to it.
 
 ---
 
@@ -312,7 +331,7 @@ Self-fetching detail panel. Uses `useProcessStream` internally. Rendering branch
   `{ process: tree, apiBaseUrl, widgetProxyUrl, prefix }`.
 - **`tree.uiWidget` is set but unregistered** — warns to `console.warn` and falls back to
   the default tree+log view.
-- **No `uiWidget`** — renders `ProcessTreeView` + `ProcessLogPanel`.
+- **No `uiWidget`** — renders `ProcessTreeView` (its `onLaunch`, `onResurrect` and `onCancel` wired to `useProcessActions()` unless the `readOnly` prop is set) + `ProcessLogPanel`.
 
 `widgetProxyUrl` shape passed to widget components: `${apiBaseUrl}/api/widget/${process._id}/`
 (trailing slash is load-bearing for relative URLs inside iframes).
@@ -404,6 +423,7 @@ function useProcessActions(options?: {
   launch: (processId: string, opts?: { resume?: boolean }) => void;
   cancel: (processId: string) => void;
   dismiss: (processId: string) => void;
+  resurrect: (processId: string) => void;
   resync: () => void;
   resyncClean: () => void;
   isResyncing: boolean;
@@ -414,6 +434,7 @@ All mutations invalidate the `['processes']` query key on success.
 `resync` sends `body: {}`, `resyncClean` sends `body: { clean: true }`.
 `onResyncSuccess(clean)` is called after a successful resync with the `clean` flag value.
 `launch` sends `body: { resume: true }` when `opts.resume` is true; empty body otherwise.
+`resurrect` POSTs `/processes/:id/resurrect` with `body: { sessionId: getSessionId() }`.
 
 ---
 
@@ -575,6 +596,12 @@ Complete list of all translation keys used in component source files:
 | `processes.launch` | `ProcessItem` | Tooltip on launch button |
 | `processes.resume` | `LaunchControls` | Primary button label when `hasSavedState=true` (default: "Resume") |
 | `processes.restart` | `LaunchControls` | Dropdown menu item label (default: "Restart (discard saved state)") |
+| `processes.resurrect` | `LaunchControls` | Resurrect button `aria-label` (default: "Resurrect") |
+| `processes.resurrectHint` | `LaunchControls` | Resurrect button tooltip (default: "Save the work left by the failed run, then resume") |
+| `processes.resumeFromSnapshot` | `LaunchControls` | Resurrect menu item and confirmation title (default: "Resume from last snapshot") |
+| `processes.restartDiscarding` | `LaunchControls` | Resurrect menu item and confirmation title (default: "Restart") |
+| `processes.discardUnsavedWork` | `LaunchControls` | Confirmation body (default: "This discards the unsaved work left by the failed run.") |
+| `processes.discardAndContinue` | `LaunchControls` | Confirmation OK button (default: "Discard and continue") |
 | `processes.cancel` | `ProcessItem`, `ProcessTreeView` | Tooltip on cancel button |
 | `processes.filterAll` | `ProcessFilters` | Select option label |
 | `processes.filterActive` | `ProcessFilters` | Select option label |

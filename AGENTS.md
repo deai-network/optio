@@ -974,11 +974,16 @@ Wrap your application (or subtree):
 interface LaunchControlsProps {
   process: any;
   onLaunch?: (id: string, opts?: { resume?: boolean }) => void;
+  onResurrect?: (id: string) => void;  // save a failed run's host work, then resume
   size?: ButtonProps['size'];
 }
 ```
 
 Smart launch button. Renders nothing when not in a launchable state or `onLaunch` is absent.
+When `onResurrect` is given and `isResurrectable(process)` (`supportsResurrect` and `hasUnsavedWork` both true),
+renders a split button: primary = Resurrect (calls `onResurrect(id)`), menu = Resume from last snapshot (only
+when resumable) and Restart; both menu items first confirm "This discards the unsaved work left by the failed
+run." (OK = "Discard and continue", via `Modal.useModal()`) before calling `onLaunch`. Otherwise:
 Renders a single play button when `supportsResume=false` or `hasSavedState=false`.
 Renders an Ant Design `Dropdown.Button` (primary = Resume, menu = Restart) when both flags are true.
 Used by `ProcessList` and `ProcessDetailView`.
@@ -990,12 +995,13 @@ interface ProcessListProps {
   processes: any[];
   loading: boolean;
   onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
+  onResurrect?: (processId: string) => void;
   onCancel?: (processId: string) => void;
   onProcessClick?: (processId: string) => void;
 }
 ```
 
-Ant Design `List` of `ProcessItem`. Shows name (with description tooltip if set), status badge, progress bar, launch/cancel buttons. Launch button rendered via `LaunchControls`.
+Ant Design `List` of `ProcessItem`. Shows name (with description tooltip if set), status badge, progress bar, launch/cancel buttons. Launch button rendered via `LaunchControls` (`onResurrect` forwarded to it). `FilteredProcessList` takes the same callbacks, including `onResurrect`.
 
 **`ProcessItem`**
 
@@ -1003,6 +1009,7 @@ Ant Design `List` of `ProcessItem`. Shows name (with description tooltip if set)
 interface ProcessItemProps {
   process: any;
   onLaunch?: (id: string) => void;
+  onResurrect?: (id: string) => void;  // forwarded to LaunchControls
   onCancel?: (id: string) => void;
   readonly?: boolean;
   onProcessClick?: (id: string) => void;
@@ -1040,10 +1047,12 @@ interface ProcessTreeViewProps {
   treeData: ProcessNode | null;
   sseState: { connected: boolean };
   onCancel?: (processId: string) => void;
+  onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
+  onResurrect?: (processId: string) => void;  // forwarded to each node's LaunchControls
 }
 ```
 
-Ant Design `Tree` rendering process hierarchy with status badges, progress bars, and cancel buttons. Has built-in "Hide finished sub-tasks" toggle (default: on).
+Ant Design `Tree` rendering process hierarchy with status badges, progress bars, cancel buttons, and (when `onLaunch` is given) `LaunchControls`. Has built-in "Hide finished sub-tasks" toggle (default: on).
 
 `ProcessNode` shape expected by this component:
 ```typescript
@@ -1054,6 +1063,10 @@ interface ProcessNode {
   status: { state: string; error?: string; runningSince?: string };
   progress: { percent: number | null; message?: string };
   cancellable?: boolean;
+  supportsResume?: boolean;     // the four flags are read by LaunchControls
+  hasSavedState?: boolean;
+  supportsResurrect?: boolean;
+  hasUnsavedWork?: boolean;
   children?: ProcessNode[];
 }
 ```
@@ -1137,11 +1150,13 @@ useProcessActions(options?: ProcessActionsOptions): {
   launch: (processId: string, opts?: { resume?: boolean }) => void;
   cancel: (processId: string) => void;
   dismiss: (processId: string) => void;
+  resurrect: (processId: string) => void;
   resync: () => void;
   resyncClean: () => void;
   isResyncing: boolean;
 }
 // launch sends body: { resume: true } when opts.resume is true; empty body otherwise.
+// resurrect POSTs /processes/:id/resurrect with body: { sessionId: getSessionId() }.
 ```
 
 Note: `processId` arguments are MongoDB `_id` strings (ObjectId hex), not `processId` strings.
@@ -1248,6 +1263,12 @@ All components use `react-i18next`. Required keys:
 | `processes.launch` | ProcessItem (launch button tooltip) |
 | `processes.resume` | LaunchControls (primary button label when hasSavedState=true; default "Resume") |
 | `processes.restart` | LaunchControls (dropdown menu item; default "Restart (discard saved state)") |
+| `processes.resurrect` | LaunchControls (Resurrect button aria-label; default "Resurrect") |
+| `processes.resurrectHint` | LaunchControls (Resurrect button tooltip; default "Save the work left by the failed run, then resume") |
+| `processes.resumeFromSnapshot` | LaunchControls (Resurrect menu item + confirmation title; default "Resume from last snapshot") |
+| `processes.restartDiscarding` | LaunchControls (Resurrect menu item + confirmation title; default "Restart") |
+| `processes.discardUnsavedWork` | LaunchControls (confirmation body; default "This discards the unsaved work left by the failed run.") |
+| `processes.discardAndContinue` | LaunchControls (confirmation OK button; default "Discard and continue") |
 | `processes.cancel` | ProcessItem, ProcessTreeView (cancel button tooltip) |
 | `processes.filterAll` | ProcessFilters |
 | `processes.filterActive` | ProcessFilters |

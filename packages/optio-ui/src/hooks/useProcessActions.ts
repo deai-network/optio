@@ -18,6 +18,7 @@ export function useProcessActions(options?: ProcessActionsOptions) {
   const launchMutation = api.processes.launch.useMutation({ onSuccess: invalidate });
   const cancelMutation = api.processes.cancel.useMutation({ onSuccess: invalidate });
   const dismissMutation = api.processes.dismiss.useMutation({ onSuccess: invalidate });
+  const resurrectMutation = api.processes.resurrect.useMutation({ onSuccess: invalidate });
   const resyncMutation = api.processes.resync.useMutation({
     onSuccess: (_data: any, variables: any) => {
       options?.onResyncSuccess?.(variables.body?.clean ?? false);
@@ -34,6 +35,12 @@ export function useProcessActions(options?: ProcessActionsOptions) {
       }),
     cancel: (processId: string) => cancelMutation.mutate({ params: { id: processId }, query: { database, prefix } }),
     dismiss: (processId: string) => dismissMutation.mutate({ params: { id: processId }, query: { database, prefix } }),
+    resurrect: (processId: string) =>
+      resurrectMutation.mutate({
+        params: { id: processId },
+        query: { database, prefix },
+        body: { sessionId: getSessionId() },
+      }),
     resync: (metadataFilter?: ProcessMetadataFilter) =>
       resyncMutation.mutate({
         query: { database, prefix },

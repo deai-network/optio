@@ -44,6 +44,8 @@ export interface ProcessStateLike {
   cancellable?: boolean;
   supportsResume?: boolean;
   hasSavedState?: boolean;
+  supportsResurrect?: boolean;
+  hasUnsavedWork?: boolean;
   autoResumeScheduled?: boolean;
 }
 
@@ -89,4 +91,11 @@ export function isCancellable(process: ProcessStateLike | null | undefined): boo
 
 export function isResumable(process: ProcessStateLike | null | undefined): boolean {
   return process?.supportsResume === true && process?.hasSavedState === true;
+}
+
+/** The host still holds a failed run's unsaved work and the task can save it. */
+export function isResurrectable(process: ProcessStateLike | null | undefined): boolean {
+  return isLaunchable(process)
+    && process?.supportsResurrect === true
+    && process?.hasUnsavedWork === true;
 }

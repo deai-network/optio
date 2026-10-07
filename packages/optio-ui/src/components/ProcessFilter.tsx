@@ -105,6 +105,7 @@ interface FilteredProcessListProps {
   processes: any[];
   loading: boolean;
   onLaunch?: (processId: string) => void;
+  onResurrect?: (processId: string) => void;
   onCancel?: (processId: string) => void;
   onProcessClick?: (processId: string) => void;
 }

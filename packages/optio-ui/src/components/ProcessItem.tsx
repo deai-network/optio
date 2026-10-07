@@ -30,6 +30,7 @@ const SIZE_TOKENS: Record<ProcessItemSize, SizeTokens> = {
 export interface ProcessItemProps {
   process: any;
   onLaunch?: (id: string, opts?: { resume?: boolean }) => void;
+  onResurrect?: (id: string) => void;
   onCancel?: (id: string) => void;
   readonly?: boolean;
   onProcessClick?: (id: string) => void;
@@ -53,7 +54,7 @@ export interface ProcessItemProps {
 }
 
 export function ProcessItem({
-  process, onLaunch, onCancel, readonly, onProcessClick,
+  process, onLaunch, onResurrect, onCancel, readonly, onProcessClick,
   size = 'default', inline = false, inactiveContent, launchDenyReason,
 }: ProcessItemProps) {
   const { t } = useTranslation();
@@ -113,6 +114,7 @@ export function ProcessItem({
         <LaunchControls
           process={process}
           onLaunch={onLaunch}
+          onResurrect={onResurrect}
           size={tokens.button}
           iconFontSize={tokens.iconFontSize}
           denyReason={launchDenyReason}

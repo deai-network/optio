@@ -1,12 +1,16 @@
-import { Button, Dropdown, Space, Tooltip, Popconfirm } from 'antd';
+import { Button, Dropdown, Modal, Space, Tooltip, Popconfirm } from 'antd';
 import type { MenuProps, ButtonProps } from 'antd';
-import { DownOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons';
+import { DownOutlined, MedicineBoxOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import { isLaunchable, isResumable } from '../process-state.js';
+import { isLaunchable, isResumable, isResurrectable } from '../process-state.js';
 
 export interface LaunchControlsProps {
   process: any;
   onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
+  /** Save the work a failed run left on its host, then resume. When given
+   *  and the process is resurrectable, Resurrect becomes the primary action;
+   *  Resume-from-snapshot and Restart move to the menu behind a confirmation. */
+  onResurrect?: (processId: string) => void;
   size?: ButtonProps['size'];
   /** Optional pixel size for the inner icons (Play/Down/Reload). When unset,
    *  the icon inherits antd's default sizing for the chosen button size. */
@@ -23,6 +27,11 @@ export interface LaunchControlsProps {
 /**
  * Renders launch affordances for a process:
  *   * Nothing when the process is in a non-launchable state.
+ *   * Split button (primary = Resurrect, menu = Resume from last snapshot /
+ *     Restart, each behind a "discards the unsaved work" confirmation) when
+ *     `onResurrect` is given and the process is resurrectable
+ *     (supportsResurrect AND hasUnsavedWork). The resume item is shown only
+ *     when the process is also resumable.
  *   * Single play button when the task does not support resume (or has no
  *     saved state yet).
  *   * Split button (primary = Resume, menu = Restart) when supportsResume
@@ -31,7 +40,9 @@ export interface LaunchControlsProps {
  * Defensive defaults: missing fields on the process document are treated
  * as false so the UI works against an unmigrated DB.
  */
-export function LaunchControls({ process, onLaunch, size = 'small', iconFontSize, denyReason }: LaunchControlsProps) {
+export function LaunchControls({
+  process, onLaunch, onResurrect, size = 'small', iconFontSize, denyReason,
+}: LaunchControlsProps) {
   const { t } = useTranslation();
   if (!isLaunchable(process) || !onLaunch) return null;
   const iconStyle = iconFontSize ? { fontSize: iconFontSize } : undefined;
@@ -53,6 +64,16 @@ export function LaunchControls({ process, onLaunch, size = 'small', iconFontSize
           />
         </span>
       </Tooltip>
+    );
+  }
+
+  // Case 0: resurrect — the host still holds a failed run's unsaved work.
+  if (onResurrect && isResurrectable(process)) {
+    return (
+      <ResurrectControls
+        process={process} onLaunch={onLaunch} onResurrect={onResurrect}
+        size={size} iconStyle={iconStyle}
+      />
     );
   }
 
@@ -116,5 +137,71 @@ export function LaunchControls({ process, onLaunch, size = 'small', iconFontSize
         </Tooltip>
       </Dropdown>
     </Space.Compact>
+  );
+}
+
+function ResurrectControls({ process, onLaunch, onResurrect, size, iconStyle }: {
+  process: any;
+  onLaunch: (processId: string, opts?: { resume?: boolean }) => void;
+  onResurrect: (processId: string) => void;
+  size: ButtonProps['size'];
+  iconStyle: { fontSize: number } | undefined;
+}) {
+  const { t } = useTranslation();
+  const [modal, contextHolder] = Modal.useModal();
+  const confirmDiscard = (title: string, action: () => void) => {
+    modal.confirm({
+      title,
+      content: t('processes.discardUnsavedWork', {
+        defaultValue: 'This discards the unsaved work left by the failed run.',
+      }),
+      okText: t('processes.discardAndContinue', { defaultValue: 'Discard and continue' }),
+      okButtonProps: { danger: true },
+      onOk: action,
+    });
+  };
+  const resumeLabel = t('processes.resumeFromSnapshot', { defaultValue: 'Resume from last snapshot' });
+  const restartLabel = t('processes.restartDiscarding', { defaultValue: 'Restart' });
+  const items: MenuProps['items'] = [];
+  if (isResumable(process)) {
+    items.push({
+      key: 'resume',
+      icon: <PlayCircleOutlined />,
+      label: resumeLabel,
+      onClick: () => confirmDiscard(resumeLabel, () => onLaunch(process._id, { resume: true })),
+    });
+  }
+  items.push({
+    key: 'restart',
+    icon: <ReloadOutlined />,
+    label: restartLabel,
+    onClick: () => confirmDiscard(restartLabel, () => onLaunch(process._id, { resume: false })),
+  });
+  return (
+    <>
+      {contextHolder}
+      <Space.Compact>
+        <Tooltip title={t('processes.resurrectHint', {
+          defaultValue: 'Save the work left by the failed run, then resume',
+        })}>
+          <Button
+            type="text"
+            size={size}
+            aria-label={t('processes.resurrect', { defaultValue: 'Resurrect' })}
+            icon={<MedicineBoxOutlined style={iconStyle} />}
+            style={{ color: '#fa8c16' }}
+            onClick={(e) => {
+              e.preventDefault();
+              onResurrect(process._id);
+            }}
+          />
+        </Tooltip>
+        <Dropdown menu={{ items }} trigger={['click']}>
+          <Tooltip title={t('processes.moreOptions', { defaultValue: 'More options' })}>
+            <Button type="text" size={size} icon={<DownOutlined style={iconStyle} />} />
+          </Tooltip>
+        </Dropdown>
+      </Space.Compact>
+    </>
   );
 }

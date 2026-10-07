@@ -11,6 +11,7 @@ import {
   isCancellable,
   isCancellableState,
   isResumable,
+  isResurrectable,
 } from '../process-state.js';
 
 describe('isWidgetLiveState', () => {
@@ -203,5 +204,15 @@ describe('isResumable', () => {
   it('truthy non-boolean values do not count as true', () => {
     // Defensive: only literal `true` qualifies.
     expect(isResumable({ supportsResume: 1 as unknown as boolean, hasSavedState: 1 as unknown as boolean })).toBe(false);
+  });
+});
+
+describe('isResurrectable', () => {
+  it('needs a launchable state, supportsResurrect and hasUnsavedWork', () => {
+    expect(isResurrectable({ status: { state: 'failed' }, supportsResurrect: true, hasUnsavedWork: true })).toBe(true);
+    expect(isResurrectable({ status: { state: 'running' }, supportsResurrect: true, hasUnsavedWork: true })).toBe(false);
+    expect(isResurrectable({ status: { state: 'failed' }, supportsResurrect: false, hasUnsavedWork: true })).toBe(false);
+    expect(isResurrectable({ status: { state: 'failed' }, supportsResurrect: true })).toBe(false);
+    expect(isResurrectable(null)).toBe(false);
   });
 });

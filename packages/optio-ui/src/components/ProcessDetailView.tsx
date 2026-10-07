@@ -35,7 +35,7 @@ export function ProcessDetailView({
 }: ProcessDetailViewProps) {
   const { tree, logs, connected, processNotFound, error } =
     useProcessStream(processId ?? undefined);
-  const { launch, cancel } = useProcessActions();
+  const { launch, cancel, resurrect } = useProcessActions();
   const widget = useProcessWidget(tree);
 
   if (!processId) {
@@ -96,6 +96,7 @@ export function ProcessDetailView({
         treeData={tree}
         sseState={{ connected }}
         onLaunch={readOnly ? undefined : (id, opts) => launch(id, opts)}
+        onResurrect={readOnly ? undefined : (id) => resurrect(id)}
         onCancel={readOnly ? undefined : (id) => cancel(id)}
       />
       {showLogs && <ProcessLogPanel logs={logs} tree={tree} />}

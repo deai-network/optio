@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { I18nextProvider } from 'react-i18next';
 import i18next from 'i18next';
 
@@ -8,12 +8,12 @@ import { LaunchControls } from '../components/LaunchControls.js';
 const i18n = i18next.createInstance();
 i18n.init({ lng: 'en', resources: { en: { translation: {} } } });
 
-function renderWith(process: any, onLaunch = vi.fn()) {
+function renderWith(process: any, onLaunch = vi.fn(), onResurrect?: (processId: string) => void) {
   return {
     onLaunch,
     ...render(
       <I18nextProvider i18n={i18n}>
-        <LaunchControls process={process} onLaunch={onLaunch} size="small" />
+        <LaunchControls process={process} onLaunch={onLaunch} onResurrect={onResurrect} size="small" />
       </I18nextProvider>,
     ),
   };
@@ -123,5 +123,82 @@ describe('LaunchControls', () => {
     expect((btn as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(btn);
     expect(onLaunch).toHaveBeenCalledWith('8', undefined);
+  });
+});
+
+function renderResurrect(process: any) {
+  const onLaunch = vi.fn();
+  const onResurrect = vi.fn();
+  render(
+    <I18nextProvider i18n={i18n}>
+      <LaunchControls process={process} onLaunch={onLaunch} onResurrect={onResurrect} size="small" />
+    </I18nextProvider>,
+  );
+  return { onLaunch, onResurrect };
+}
+
+const failedWithWork = {
+  _id: '9', status: { state: 'failed' },
+  supportsResume: true, hasSavedState: true, supportsResurrect: true, hasUnsavedWork: true,
+};
+
+describe('LaunchControls resurrect', () => {
+  // antd's confirm modal locks body scroll and measures the scrollbar via
+  // getComputedStyle(el, '::-webkit-scrollbar'). jsdom ignores the
+  // pseudo-element and logs "Not implemented" to stderr; drop the argument
+  // (same result) to keep the test output clean.
+  beforeAll(() => {
+    const real = globalThis.getComputedStyle.bind(globalThis);
+    vi.spyOn(globalThis, 'getComputedStyle').mockImplementation((elt) => real(elt));
+  });
+  afterAll(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('primary button resurrects', () => {
+    const { onResurrect, onLaunch } = renderResurrect(failedWithWork);
+    fireEvent.click(screen.getByRole('button', { name: /resurrect/i }));
+    expect(onResurrect).toHaveBeenCalledWith('9');
+    expect(onLaunch).not.toHaveBeenCalled();
+  });
+
+  it('resume from last snapshot asks for confirmation first', async () => {
+    const { onLaunch } = renderResurrect(failedWithWork);
+    const buttons = screen.getAllByRole('button');
+    fireEvent.click(buttons[buttons.length - 1]);
+    fireEvent.click(await screen.findByText(/resume from last snapshot/i));
+    expect(onLaunch).not.toHaveBeenCalled();
+    expect(await screen.findByText(/discards the unsaved work/i)).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: /discard and continue/i }));
+    await vi.waitFor(() => expect(onLaunch).toHaveBeenCalledWith('9', { resume: true }));
+  });
+
+  it('restart asks for confirmation first', async () => {
+    const { onLaunch } = renderResurrect(failedWithWork);
+    const buttons = screen.getAllByRole('button');
+    fireEvent.click(buttons[buttons.length - 1]);
+    fireEvent.click(await screen.findByText(/^restart$/i));
+    fireEvent.click(await screen.findByRole('button', { name: /discard and continue/i }));
+    await vi.waitFor(() => expect(onLaunch).toHaveBeenCalledWith('9', { resume: false }));
+  });
+
+  it('no resume item without saved state', async () => {
+    renderResurrect({ ...failedWithWork, hasSavedState: false });
+    const buttons = screen.getAllByRole('button');
+    fireEvent.click(buttons[buttons.length - 1]);
+    await screen.findByText(/^restart$/i);
+    expect(screen.queryByText(/resume from last snapshot/i)).toBeNull();
+  });
+
+  it('falls back to the resume split button without onResurrect or without the flag', () => {
+    const { onLaunch } = renderWith({ ...failedWithWork });
+    fireEvent.click(screen.getAllByRole('button')[0]);
+    expect(onLaunch).toHaveBeenCalledWith('9', { resume: true });
+
+    const onResurrect = vi.fn();
+    const flagless = renderWith({ ...failedWithWork, supportsResurrect: false }, vi.fn(), onResurrect);
+    fireEvent.click(within(flagless.container).getAllByRole('button')[0]);
+    expect(flagless.onLaunch).toHaveBeenCalledWith('9', { resume: true });
+    expect(onResurrect).not.toHaveBeenCalled();
   });
 });

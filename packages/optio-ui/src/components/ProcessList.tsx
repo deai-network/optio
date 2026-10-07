@@ -5,11 +5,12 @@ interface ProcessListProps {
   processes: any[];
   loading: boolean;
   onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
+  onResurrect?: (processId: string) => void;
   onCancel?: (processId: string) => void;
   onProcessClick?: (processId: string) => void;
 }
 
-export function ProcessList({ processes, loading, onLaunch, onCancel, onProcessClick }: ProcessListProps) {
+export function ProcessList({ processes, loading, onLaunch, onResurrect, onCancel, onProcessClick }: ProcessListProps) {
   return (
     <List
       loading={loading}
@@ -17,7 +18,10 @@ export function ProcessList({ processes, loading, onLaunch, onCancel, onProcessC
       pagination={{ pageSize: 16 }}
       renderItem={(item: any) => (
         <List.Item>
-          <ProcessItem process={item} onLaunch={onLaunch} onCancel={onCancel} onProcessClick={onProcessClick} size="small" />
+          <ProcessItem
+            process={item} onLaunch={onLaunch} onResurrect={onResurrect} onCancel={onCancel}
+            onProcessClick={onProcessClick} size="small"
+          />
         </List.Item>
       )}
     />

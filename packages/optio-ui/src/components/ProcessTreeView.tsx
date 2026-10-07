@@ -19,6 +19,8 @@ interface ProcessNode {
   warning?: string;
   supportsResume?: boolean;
   hasSavedState?: boolean;
+  supportsResurrect?: boolean;
+  hasUnsavedWork?: boolean;
   autoResumeScheduled?: boolean;
   children?: ProcessNode[];
 }
@@ -32,6 +34,7 @@ interface ProcessTreeViewProps {
   sseState: SseState;
   onCancel?: (processId: string) => void;
   onLaunch?: (processId: string, opts?: { resume?: boolean }) => void;
+  onResurrect?: (processId: string) => void;
 }
 
 function filterDoneChildren(node: ProcessNode): ProcessNode {
@@ -55,6 +58,7 @@ function treeNodeToDataNode(
   node: ProcessNode,
   onCancel: ((id: string) => void) | undefined,
   onLaunch: ((id: string, opts?: { resume?: boolean }) => void) | undefined,
+  onResurrect: ((id: string) => void) | undefined,
   t: (key: string) => string,
 ): DataNode {
   const isActive = isProcessActive(node);
@@ -115,7 +119,7 @@ function treeNodeToDataNode(
             </Tooltip>
           )}
           {onLaunch && (
-            <LaunchControls process={node as any} onLaunch={onLaunch} size="small" />
+            <LaunchControls process={node as any} onLaunch={onLaunch} onResurrect={onResurrect} size="small" />
           )}
         </span>
         {isActive && node.progress.message && (
@@ -123,11 +127,11 @@ function treeNodeToDataNode(
         )}
       </div>
     ),
-    children: node.children?.map((child) => treeNodeToDataNode(child, onCancel, onLaunch, t)) ?? [],
+    children: node.children?.map((child) => treeNodeToDataNode(child, onCancel, onLaunch, onResurrect, t)) ?? [],
   };
 }
 
-export function ProcessTreeView({ treeData, sseState, onCancel, onLaunch }: ProcessTreeViewProps) {
+export function ProcessTreeView({ treeData, sseState, onCancel, onLaunch, onResurrect }: ProcessTreeViewProps) {
   const { t } = useTranslation();
   const [hideFinishedLeaves, setHideFinishedLeaves] = useState(true);
 
@@ -136,7 +140,7 @@ export function ProcessTreeView({ treeData, sseState, onCancel, onLaunch }: Proc
 
   if (!treeData || !filtered) return null;
 
-  const treeNodes = [treeNodeToDataNode(filtered, onCancel, onLaunch, t)];
+  const treeNodes = [treeNodeToDataNode(filtered, onCancel, onLaunch, onResurrect, t)];
 
   return (
     <div>
