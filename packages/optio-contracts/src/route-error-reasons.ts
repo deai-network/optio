@@ -11,12 +11,14 @@ import {
   LaunchFailureReason,
   CancelFailureReason,
   DismissFailureReason,
+  ResurrectFailureReason,
 } from './engine-failure-reasons.js';
 
 export const apiToFrontendRouteErrorReasons = {
-  'processes.launch':  LaunchFailureReason.options,
-  'processes.cancel':  CancelFailureReason.options,
-  'processes.dismiss': DismissFailureReason.options,
+  'processes.launch':    LaunchFailureReason.options,
+  'processes.cancel':    CancelFailureReason.options,
+  'processes.dismiss':   DismissFailureReason.options,
+  'processes.resurrect': ResurrectFailureReason.options,
 } as const;
 
 export type ApiToFrontendRouteId = keyof typeof apiToFrontendRouteErrorReasons;
