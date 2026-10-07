@@ -214,6 +214,7 @@ class TaskInstance:
     schedule: str | None = None              # cron expression, e.g. "0 3 * * *"
     special: bool = False                    # hidden from default UI views when special=True
     supports_resume: bool = False            # opt-in: enable resume/checkpoint support
+    resurrect: Callable[[ProcessContext], Awaitable[None]] | None = None  # saves a failed run's host work (snapshot + mark_has_saved_state) and removes host leftovers; raises NothingToResurrect when nothing is left; requires supports_resume=True (ValueError at sync)
     warning: str | None = None              # shown as confirmation prompt before launch
     cancellable: bool = True                 # whether this process can be cancelled
     ui_widget: str | None = None             # widget name registered via registerWidget() in optio-ui
@@ -370,8 +371,16 @@ await ctx.mark_has_saved_state() -> None
 await ctx.clear_has_saved_state() -> None
 # Set hasSavedState=False. Idempotent. Warn-and-noop when supports_resume=False.
 
+await ctx.mark_unsaved_work() -> None
+# Set hasUnsavedWork=True: the host workdir holds work newer than the last snapshot.
+# Idempotent. Warn-and-noop when the task has no resurrect hook (supportsResurrect=False).
+
+await ctx.clear_unsaved_work() -> None
+# Set hasUnsavedWork=False (a save completed). Idempotent; silent when already clear.
+
 # GridFS blob helpers (blobs tagged with metadata {processId, prefix, name})
-async with ctx.store_blob(name: str) as stream:
+# file_id pre-selects the blob's id (so it can be recorded before writing); default: GridFS generates one.
+async with ctx.store_blob(name: str, file_id: ObjectId | None = None) as stream:
     stream.file_id  # assigned GridFS file_id
     await stream.write(data: bytes)
 
@@ -529,6 +538,8 @@ Collection: `{prefix}_processes`
 | `widgetData` | any JSON \| null | Live data delivered to the widget component via tree stream |
 | `supportsResume` | bool | Task opted into resume support; refreshed via `$set` on every sync |
 | `hasSavedState` | bool | Task has a valid checkpoint; `$setOnInsert: false`; mutated only by `mark/clear_has_saved_state` |
+| `supportsResurrect` | bool | Task has a `resurrect` hook; refreshed via `$set` on every sync; absent reads as false |
+| `hasUnsavedWork` | bool | Host workdir holds work newer than the last snapshot; `$setOnInsert: false`; set by `mark/clear_unsaved_work`, cleared by optio-core when a launch starts; absent reads as false |
 | `createdAt` | datetime | Document creation timestamp |
 
 ---

@@ -2,9 +2,11 @@
 
 from optio_core.models import (
     TaskInstance, TaskInstanceCore, ChildResult, ChildHandle, LaunchBlocked,
-    LaunchOutcome, CancelOutcome, DismissOutcome, MongoStore,
+    LaunchOutcome, CancelOutcome, DismissOutcome, ResurrectOutcome, MongoStore,
 )
-from optio_core.exceptions import LaunchError, ResultNotPublished
+from optio_core.exceptions import (
+    LaunchError, ResultNotPublished, NothingToResurrect,
+)
 from optio_core.lifecycle import Optio
 
 _instance = Optio()
@@ -31,8 +33,8 @@ group_cancel_and_wait = _instance.group_cancel_and_wait
 __all__ = [
     "TaskInstance", "TaskInstanceCore", "ChildResult", "ChildHandle",
     "LaunchBlocked",
-    "LaunchOutcome", "CancelOutcome", "DismissOutcome",
-    "LaunchError", "ResultNotPublished",
+    "LaunchOutcome", "CancelOutcome", "DismissOutcome", "ResurrectOutcome",
+    "LaunchError", "ResultNotPublished", "NothingToResurrect",
     "init", "run", "shutdown",
     "adhoc_define", "adhoc_delete",
     "launch", "launch_and_wait", "launch_and_await_result",

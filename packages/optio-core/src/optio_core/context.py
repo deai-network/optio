@@ -424,12 +424,57 @@ class ProcessContext:
             {"$set": {"hasSavedState": value}},
         )
 
+    async def mark_unsaved_work(self) -> None:
+        """Flag that the host workdir now holds work newer than the last
+        snapshot (Resurrect can save it if the run fails).
+
+        No-op with a warning when the task has no resurrect hook.
+        Idempotent: a second call with the same value issues no update.
+        """
+        await self._set_unsaved_work(True)
+
+    async def clear_unsaved_work(self) -> None:
+        """Flag that nothing unsaved is left on the host (a save completed).
+
+        Idempotent and silent when the flag is already clear.
+        """
+        await self._set_unsaved_work(False)
+
+    async def _set_unsaved_work(self, value: bool) -> None:
+        from optio_core.store import _collection
+        coll = _collection(self._db, self._prefix)
+        current = await coll.find_one(
+            {"_id": self._process_oid},
+            {"supportsResurrect": 1, "hasUnsavedWork": 1},
+        )
+        if current is None:
+            _log.warning(
+                "mark/clear_unsaved_work: process %s not found", self._process_oid,
+            )
+            return
+        if bool(current.get("hasUnsavedWork", False)) == value:
+            return  # Idempotent: no redundant write.
+        if not current.get("supportsResurrect", False):
+            _log.warning(
+                "mark_unsaved_work called on task %s which has no resurrect hook "
+                "(supportsResurrect=False); ignored",
+                self.process_id,
+            )
+            return
+        await coll.update_one(
+            {"_id": self._process_oid},
+            {"$set": {"hasUnsavedWork": value}},
+        )
+
     def _gridfs(self) -> AsyncIOMotorGridFSBucket:
         return AsyncIOMotorGridFSBucket(self._db)
 
     @asynccontextmanager
-    async def store_blob(self, name: str):
+    async def store_blob(self, name: str, file_id: ObjectId | None = None):
         """Open a GridFS upload stream tagged with processId + prefix.
+
+        ``file_id`` pre-selects the blob's id (so a caller can record it
+        before writing); default: GridFS generates one.
 
         Usage:
             async with ctx.store_blob("session") as writer:
@@ -444,7 +489,11 @@ class ProcessContext:
             "prefix": self._prefix,
             "name": name,
         }
-        async with bucket.open_upload_stream(name, metadata=metadata) as stream:
+        if file_id is None:
+            stream_cm = bucket.open_upload_stream(name, metadata=metadata)
+        else:
+            stream_cm = bucket.open_upload_stream_with_id(file_id, name, metadata=metadata)
+        async with stream_cm as stream:
             yield _GridInWrapper(stream)
 
     @asynccontextmanager

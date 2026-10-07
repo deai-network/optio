@@ -60,3 +60,9 @@ class NoUploadWriter(Exception):
         super().__init__(
             f"no upload writer registered for process '{process_id}'"
         )
+
+
+class NothingToResurrect(Exception):
+    """Raised by a task's resurrect hook when nothing is left to save
+    (no workdir on the host, an empty one, or no session state). optio-core
+    then clears the process's hasUnsavedWork flag."""

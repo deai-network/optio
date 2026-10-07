@@ -38,6 +38,29 @@ and the blob helpers to persist and restore checkpoint data.
 
 ---
 
+### TaskInstance.resurrect
+
+```python
+@dataclass
+class TaskInstance:
+    ...
+    resurrect: Callable[[ProcessContext], Awaitable[None]] | None = None
+```
+
+Optional hook that saves the work a failed run left on its host (snapshot +
+`mark_has_saved_state()`) and removes the host leftovers. Run by `Optio.resurrect` outside
+`execute`, followed by a resume. Raises `optio_core.NothingToResurrect` when nothing is left
+to save. Requires `supports_resume=True`; task sync raises `ValueError` otherwise. Task sync
+publishes `supportsResurrect` (whether the hook is set) into the process document. The task
+flags unsaved host work with `ProcessContext.mark_unsaved_work()` / `clear_unsaved_work()`
+(`hasUnsavedWork`); a launch clears the flag.
+
+`optio_core.ResurrectOutcome` (`ok`, `reason`, `proc`) is the result type of `Optio.resurrect`.
+`reason` is one of `not-found`, `not-resurrectable`, `no-resurrect-support`,
+`resurrect-in-progress`, `launch-blocked`, `shutting-down`.
+
+---
+
 ### TaskInstance.schedule_offset_seconds
 
 ```python
@@ -181,6 +204,13 @@ await ctx.mark_has_saved_state() -> None
 # Clear the saved-state flag (call after the task finishes consuming its checkpoint).
 # Idempotent; warn-and-noop when supports_resume=False.
 await ctx.clear_has_saved_state() -> None
+
+# Flag that the host workdir holds work newer than the last snapshot (hasUnsavedWork=True).
+# Idempotent; warn-and-noop when the task has no resurrect hook (supportsResurrect=False).
+await ctx.mark_unsaved_work() -> None
+
+# Clear hasUnsavedWork (a save completed). Idempotent; silent when already clear.
+await ctx.clear_unsaved_work() -> None
 ```
 
 ---
@@ -190,7 +220,8 @@ await ctx.clear_has_saved_state() -> None
 ```python
 # Store a blob.  Returns an async context manager; the yielded stream has a .file_id attribute.
 # All blobs are tagged with metadata {processId, prefix, name}.
-async with ctx.store_blob(name: str) as stream:
+# file_id pre-selects the blob's id (so it can be recorded before writing); default: GridFS generates one.
+async with ctx.store_blob(name: str, file_id: ObjectId | None = None) as stream:
     stream.file_id  # GridFS file_id assigned to this blob
     await stream.write(data: bytes)  # write content
 
@@ -238,9 +269,12 @@ await ctx.clear_widget_data() -> None
 | `widgetData` | `<any JSON> \| null` | Live data delivered to the widget component via tree stream |
 | `supportsResume` | `bool` | Whether the task opted into resume support; refreshed via `$set` on every sync |
 | `hasSavedState` | `bool` | Whether the task has a valid checkpoint; `$setOnInsert: false`; mutated only by `mark/clear_has_saved_state` |
+| `supportsResurrect` | `bool` | Whether the task has a `resurrect` hook; refreshed via `$set` on every sync |
+| `hasUnsavedWork` | `bool` | The host workdir holds work newer than the last snapshot; `$setOnInsert: false`; set by `mark/clear_unsaved_work`, cleared by optio-core when a launch starts |
 
 `hasSavedState` is backfilled to `false` on all existing documents by migration `m003_backfill_has_saved_state`
-(runs on startup; depends on m002).
+(runs on startup; depends on m002). `supportsResurrect` and `hasUnsavedWork` have no backfill; an
+absent field reads as `false`.
 
 ---
 

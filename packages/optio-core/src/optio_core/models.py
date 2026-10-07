@@ -45,6 +45,18 @@ class DismissOutcome:
     proc: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class ResurrectOutcome:
+    """Result of Optio.resurrect. ok=True means the save was started in the
+    background; `proc` is the process doc at that moment."""
+    ok: bool
+    reason: Literal[
+        "not-found", "not-resurrectable", "no-resurrect-support",
+        "resurrect-in-progress", "launch-blocked", "shutting-down",
+    ] | None = None
+    proc: dict[str, Any] | None = None
+
+
 @dataclass
 class TaskInstanceCore:
     """The subset of TaskInstance fields that apply to child execution.
@@ -78,6 +90,12 @@ class TaskInstance(TaskInstanceCore):
     # (resume=True) automatically after the next engine start, post-delay.
     # Requires supports_resume=True (validated at task-sync time).
     auto_resume: bool = False
+    # Optional "resurrect" hook: saves the work a failed run left on its host
+    # (snapshot + mark_has_saved_state) and removes the host leftovers. Run by
+    # Optio.resurrect outside `execute`, followed by a resume. Raises
+    # NothingToResurrect when nothing is left to save. Requires
+    # supports_resume=True (validated at task-sync time).
+    resurrect: Callable[..., Awaitable[None]] | None = None
     # Second (0-59) within each matching minute at which `schedule` fires;
     # None fires at second 0. Lets an application spread many minute-aligned
     # schedules (e.g. one heartbeat per item) across the minute.

@@ -32,7 +32,7 @@ from optio_core.store import (
     update_status, clear_result_fields,
     create_child_process, append_log,
     clear_widget_upstream, compute_expire_at,
-    finalize_if_active, _collection,
+    finalize_if_active, _collection, set_has_unsaved_work,
 )
 from optio_core.context import ProcessContext
 from optio_core.exceptions import ChildProcessFailed
@@ -186,6 +186,10 @@ class Executor:
             ProcessStatus(state="scheduled"),
         )
         await append_log(self._db, self._prefix, proc["_id"], "event", "State changed to scheduled")
+        # A launch rebuilds the workdir: whatever unsaved work a failed run
+        # left there is gone from now on (Resurrect no longer applies).
+        if proc.get("hasUnsavedWork"):
+            await set_has_unsaved_work(self._db, self._prefix, proc["_id"], False)
 
         # Use resolved doc's processId for the registry — caller may have
         # passed OID hex, but _task_registry is processId-keyed.

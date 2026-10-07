@@ -61,6 +61,7 @@ async def upsert_process(db: AsyncIOMotorDatabase, prefix: str, task: TaskInstan
                 "warning": task.warning,
                 "uiWidget": task.ui_widget,
                 "supportsResume": task.supports_resume,
+                "supportsResurrect": getattr(task, "resurrect", None) is not None,
                 "ttlSeconds": task.ttl_seconds,
             },
             "$setOnInsert": {
@@ -75,6 +76,7 @@ async def upsert_process(db: AsyncIOMotorDatabase, prefix: str, task: TaskInstan
                 "log": [],
                 "createdAt": now,
                 "hasSavedState": False,
+                "hasUnsavedWork": False,
                 "autoResumeScheduled": False,
             },
         },
@@ -241,6 +243,18 @@ async def set_auto_resume_scheduled(
     await _collection(db, prefix).update_one(
         {"_id": process_oid},
         {"$set": {"autoResumeScheduled": value}},
+    )
+
+
+async def set_has_unsaved_work(
+    db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId, value: bool,
+) -> None:
+    """Set `hasUnsavedWork`: the host workdir holds work newer than the last
+    snapshot. Agents set it through ProcessContext; optio-core clears it when
+    a launch starts and when a resurrect saved the work or found nothing."""
+    await _collection(db, prefix).update_one(
+        {"_id": process_oid},
+        {"$set": {"hasUnsavedWork": value}},
     )
 
 

@@ -1429,6 +1429,11 @@ class Optio:
                     f"Task '{task.process_id}': auto_resume=True requires "
                     f"supports_resume=True"
                 )
+            if task.resurrect is not None and not task.supports_resume:
+                raise ValueError(
+                    f"Task '{task.process_id}': resurrect requires "
+                    f"supports_resume=True"
+                )
 
         pid_to_oid: dict[str, str] = {}
         for task in tasks:
