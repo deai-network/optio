@@ -532,6 +532,12 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       const result = await handlers.dismissProcess(ctx, query, params.id, await access(request));
       return result as any;
     },
+    resurrect: async ({ params, query, body, request }) => {
+      const result = await handlers.resurrectProcess(
+        ctx, query, params.id, body?.sessionId ?? null, await access(request),
+      );
+      return result as any;
+    },
     resync: async ({ query, body, request }: { query: { database?: string; prefix?: string }; body: { clean?: boolean; metadataFilter?: import('../types.js').ProcessMetadataFilter }; request: any }) => {
       const result = await handlers.resyncProcesses(
         ctx, query, body.clean, body.metadataFilter, await access(request),

@@ -37,7 +37,10 @@ function makeEngine() {
     ok: true,
     process: { _id: new ObjectId(), processId: params.processId, rootId: new ObjectId(), name: 'P' },
   });
-  return { launch: vi.fn(ok), cancel: vi.fn(ok), dismiss: vi.fn(ok), resync: vi.fn(async () => undefined) };
+  return {
+    launch: vi.fn(ok), cancel: vi.fn(ok), dismiss: vi.fn(ok), resurrect: vi.fn(ok),
+    resync: vi.fn(async () => undefined),
+  };
 }
 
 function makeCtx(engine: any): OptioContext {
@@ -169,11 +172,24 @@ for (const [name, makeDriver] of drivers) {
       expect((await call('POST', `/api/processes/${otherId}/launch?${q}`)).status).toBe(404);
       expect((await call('POST', `/api/processes/${guardedId}/cancel?${q}`)).status).toBe(403);
       expect((await call('POST', `/api/processes/${otherId}/dismiss?${q}`)).status).toBe(404);
+      expect((await call('POST', `/api/processes/${otherId}/resurrect?${q}`)).status).toBe(404);
+      expect((await call('POST', `/api/processes/${guardedId}/resurrect?${q}`)).status).toBe(403);
       expect(engine.launch).not.toHaveBeenCalled();
       expect(engine.cancel).not.toHaveBeenCalled();
       expect(engine.dismiss).not.toHaveBeenCalled();
+      expect(engine.resurrect).not.toHaveBeenCalled();
       expect((await call('POST', `/api/processes/${mineId}/launch?${q}`)).status).toBe(200);
       expect(engine.launch).toHaveBeenCalledTimes(1);
+    });
+
+    it('forwards resurrect with the body\'s session id', async () => {
+      const engine = makeEngine();
+      const call = makeDriver(engine);
+      const res = await call('POST', `/api/processes/${mineId}/resurrect?${q}`, { sessionId: 's1' });
+      expect(res.status).toBe(200);
+      expect(engine.resurrect).toHaveBeenCalledWith({ processId: String(mineId), sessionId: 's1' });
+      expect((await call('POST', `/api/processes/${mineId}/resurrect?${q}`)).status).toBe(200);
+      expect(engine.resurrect).toHaveBeenLastCalledWith({ processId: String(mineId), sessionId: null });
     });
 
     it('narrows resync to the caller\'s scope', async () => {

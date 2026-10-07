@@ -31,7 +31,7 @@ export type ScopeFilter = Record<string, string | number | boolean | null>;
 
 export type OptioAction =
   | 'read'
-  | 'launch' | 'cancel' | 'dismiss' | 'resync'
+  | 'launch' | 'cancel' | 'dismiss' | 'resurrect' | 'resync'
   | 'widget' | 'widget-control' | 'widget-upload'
   | 'instances';
 

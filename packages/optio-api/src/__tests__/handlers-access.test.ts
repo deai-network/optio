@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vites
 import { MongoClient, ObjectId, type Db } from 'mongodb';
 import {
   getProcess, getProcessTree, getProcessLog, getProcessTreeLog,
-  listProcesses, launchProcess, cancelProcess, dismissProcess, resyncProcesses,
+  listProcesses, launchProcess, cancelProcess, dismissProcess, resurrectProcess, resyncProcesses,
 } from '../handlers.js';
 import type { OptioContext } from '../context.js';
 import type { Access } from '../auth.js';
@@ -42,6 +42,7 @@ function makeEngine() {
     launch: vi.fn(ok),
     cancel: vi.fn(ok),
     dismiss: vi.fn(ok),
+    resurrect: vi.fn(ok),
     resync: vi.fn(async () => undefined),
   };
 }
@@ -121,6 +122,7 @@ describe('command handlers under a scope', () => {
     ['launch', (ctx: OptioContext, id: string, a?: Access) => launchProcess(ctx, { prefix: PREFIX }, id, false, null, a)],
     ['cancel', (ctx: OptioContext, id: string, a?: Access) => cancelProcess(ctx, { prefix: PREFIX }, id, a)],
     ['dismiss', (ctx: OptioContext, id: string, a?: Access) => dismissProcess(ctx, { prefix: PREFIX }, id, a)],
+    ['resurrect', (ctx: OptioContext, id: string, a?: Access) => resurrectProcess(ctx, { prefix: PREFIX }, id, null, a)],
   ] as const;
 
   for (const [name, run] of commands) {
@@ -157,6 +159,33 @@ describe('command handlers under a scope', () => {
       expect((engine as any)[name]).toHaveBeenCalledTimes(1);
     });
   }
+});
+
+describe('resurrectProcess', () => {
+  it('asks authorize with action resurrect and the process', async () => {
+    await insertTree(1);
+    const engine = makeEngine();
+    const access = scoped(1);
+    const result: any = await resurrectProcess(makeCtx(engine), { prefix: PREFIX }, 'root-1', 's1', access);
+    expect(result.status).toBe(200);
+    expect(access.authorize).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'resurrect',
+      process: expect.objectContaining({ processId: 'root-1' }),
+    }));
+    expect(engine.resurrect).toHaveBeenCalledWith({ processId: 'root-1', sessionId: 's1' });
+  });
+
+  it('maps engine reasons to 404/409', async () => {
+    await insertTree(1);
+    const engine = makeEngine();
+    engine.resurrect = vi.fn(() => ({ ok: false, reason: 'not-resurrectable' })) as any;
+    const r1: any = await resurrectProcess(makeCtx(engine), { prefix: PREFIX }, 'root-1', null);
+    expect(r1.status).toBe(409);
+    expect(r1.body.reason).toBe('not-resurrectable');
+    engine.resurrect = vi.fn(() => ({ ok: false, reason: 'not-found' })) as any;
+    const r2: any = await resurrectProcess(makeCtx(engine), { prefix: PREFIX }, 'root-1', null);
+    expect(r2.status).toBe(404);
+  });
 });
 
 describe('resyncProcesses', () => {

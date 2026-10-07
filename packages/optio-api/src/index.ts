@@ -8,6 +8,7 @@ export {
   launchProcess,
   cancelProcess,
   dismissProcess,
+  resurrectProcess,
   resyncProcesses,
   type ListQuery,
   type PaginationQuery,
@@ -15,6 +16,7 @@ export {
   type LaunchCommandResult,
   type CancelCommandResult,
   type DismissCommandResult,
+  type ResurrectCommandResult,
   type ResyncCommandResult,
   type ForbiddenResult,
 } from './handlers.js';

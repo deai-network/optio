@@ -33,6 +33,7 @@ function makeEngine() {
     launch: vi.fn(ok),
     cancel: vi.fn(ok),
     dismiss: vi.fn(ok),
+    resurrect: vi.fn(ok),
     resync: vi.fn(async () => undefined),
     materializeUpload: vi.fn(async () => ({ ok: true, path: '/x' })),
   };
@@ -132,7 +133,7 @@ describe('fastify adapter with scope + authorize', () => {
   it('404s commands on other customers\' processes and 403s denied ones, without reaching the engine', async () => {
     const engine = makeEngine();
     const app = await buildApp(engine);
-    for (const cmd of ['launch', 'cancel', 'dismiss']) {
+    for (const cmd of ['launch', 'cancel', 'dismiss', 'resurrect']) {
       const out = await app.inject({ method: 'POST', url: `/api/processes/${otherId}/${cmd}?${q}`, headers: as1, payload: {} });
       expect(out.statusCode, cmd).toBe(404);
       const denied = await app.inject({ method: 'POST', url: `/api/processes/${guardedId}/${cmd}?${q}`, headers: as1, payload: {} });
@@ -141,9 +142,24 @@ describe('fastify adapter with scope + authorize', () => {
     expect(engine.launch).not.toHaveBeenCalled();
     expect(engine.cancel).not.toHaveBeenCalled();
     expect(engine.dismiss).not.toHaveBeenCalled();
+    expect(engine.resurrect).not.toHaveBeenCalled();
     const ok = await app.inject({ method: 'POST', url: `/api/processes/${mineId}/launch?${q}`, headers: as1, payload: {} });
     expect(ok.statusCode).toBe(200);
     expect(engine.launch).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+
+  it('forwards resurrect with the body\'s session id', async () => {
+    const engine = makeEngine();
+    const app = await buildApp(engine);
+    const res = await app.inject({
+      method: 'POST', url: `/api/processes/${mineId}/resurrect?${q}`, headers: as1, payload: { sessionId: 's1' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(engine.resurrect).toHaveBeenCalledWith({ processId: String(mineId), sessionId: 's1' });
+    const bare = await app.inject({ method: 'POST', url: `/api/processes/${mineId}/resurrect?${q}`, headers: as1, payload: {} });
+    expect(bare.statusCode).toBe(200);
+    expect(engine.resurrect).toHaveBeenLastCalledWith({ processId: String(mineId), sessionId: null });
     await app.close();
   });
 

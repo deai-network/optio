@@ -764,9 +764,11 @@ When N projects need the same code — especially interface, contract, or wire-f
 ```typescript
 // Handlers (framework-agnostic)
 export { listProcesses, getProcess, getProcessTree, getProcessLog, getProcessTreeLog,
-         launchProcess, cancelProcess, dismissProcess, resyncProcesses } from 'optio-api';
+         launchProcess, cancelProcess, dismissProcess, resurrectProcess,
+         resyncProcesses } from 'optio-api';
 export type { ListQuery, PaginationQuery, TreeLogQuery,
-              LaunchCommandResult, CancelCommandResult, DismissCommandResult } from 'optio-api';
+              LaunchCommandResult, CancelCommandResult, DismissCommandResult,
+              ResurrectCommandResult } from 'optio-api';
 
 // Layered RPC access
 //   Layer 1 (Transport cache): createOptioTransports / OptioTransports
@@ -816,15 +818,16 @@ interface ExplicitOptioApiOptions {
 // ({ customerId: 3 }) confining the request to processes whose metadata
 // matches it (a child lacking the keys is judged by its root). Applied to
 // every process lookup: lists and list/session-events streams (ANDed into the
-// query), single-process reads and tree streams, launch/cancel/dismiss, the
-// widget proxy, widget-control and widget-upload. Outside the scope a process
+// query), single-process reads and tree streams, launch/cancel/dismiss/resurrect,
+// the widget proxy, widget-control and widget-upload. Outside the scope a process
 // behaves as not found (404; missing in multi-tree resolution). A scoped
 // resync runs with the client's flat filter plus the scope keys; a filter
 // contradicting the scope is 403, a predicate tree 400.
 //
 // authorize(req, { role, action, process?, metadataFilter?, clean? }) -> boolean:
-// called after the scope check for launch/cancel/dismiss/resync, the three
-// widget routes and instance discovery; false gives 403 { message: 'Forbidden' }.
+// called after the scope check for launch/cancel/dismiss/resurrect/resync, the
+// three widget routes and instance discovery; false gives 403 { message: 'Forbidden' }.
+// action 'resurrect' is a single-process action like 'launch' (input.process set).
 //
 // Without scope/authorize nothing changes (no extra lookups).
 ```
@@ -874,6 +877,10 @@ async function launchProcess(db: Db, redis: Redis, database: string, prefix: str
 // Returns 409 "This task does not support resume" when resume=true and supportsResume=false.
 async function cancelProcess(db: Db, redis: Redis, prefix: string, id: string): Promise<CommandResult>
 async function dismissProcess(db: Db, redis: Redis, prefix: string, id: string): Promise<CommandResult>
+async function resurrectProcess(ctx: OptioContext, query: { database?: string; prefix?: string }, id: string,
+                                sessionId?: string | null, access?: Access): Promise<ResurrectCommandResult>
+// POST /processes/:id/resurrect. 200: Process; 404/409: { reason: ResurrectFailureReason, message }
+// (not-found is 404, every other reason 409); 403 when authorize refuses.
 async function resyncProcesses(redis: Redis, prefix: string, clean?: boolean, metadataFilter?: ProcessMetadataFilter): Promise<{ message: string }>
 ```
 
@@ -923,6 +930,9 @@ function createTreePoller(opts: TreePollerOptions): ListPollerHandle
 ```typescript
 { _id, parentId: string | null, name, description, status, progress, cancellable, depth, order, widgetData }
 ```
+
+Both streams also carry `supportsResurrect` and `hasUnsavedWork` (`false` when absent), tracked
+in the snapshot fingerprint.
 
 `widgetData` is included in tree-stream payloads and tracked in the snapshot fingerprint so
 worker-side mutations trigger SSE events. The list stream does **not** include `widgetData`.

@@ -589,3 +589,44 @@ describe('autoResumeScheduled propagation', () => {
     expect(update.processes[0].autoResumeScheduled).toBe(true);
   });
 });
+
+describe('resurrect fields propagation', () => {
+  async function insertRoot(extra: Record<string, unknown>) {
+    const rootId = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertOne({
+      _id: rootId, processId: 'res', name: 'RES', rootId, parentId: null,
+      depth: 0, order: 0, status: { state: 'failed' }, progress: { percent: null },
+      cancellable: true, log: [], ...extra,
+    });
+    return rootId;
+  }
+
+  it('createTreePoller forwards supportsResurrect and hasUnsavedWork', async () => {
+    const rootId = await insertRoot({ supportsResurrect: true, hasUnsavedWork: true });
+    const events: any[] = [];
+    const poller = createTreePoller({
+      db, prefix: PREFIX, sendEvent: (d) => events.push(d), onError: () => {},
+      rootId: rootId.toString(), baseDepth: 0,
+    });
+    poller.start();
+    await waitUntil(() => events.some((e) => e.type === 'update'));
+    poller.stop();
+    const p = events.find((e) => e.type === 'update').processes[0];
+    expect(p.supportsResurrect).toBe(true);
+    expect(p.hasUnsavedWork).toBe(true);
+  });
+
+  it('createListPoller defaults both to false when absent', async () => {
+    await insertRoot({});
+    const events: any[] = [];
+    const poller = createListPoller({
+      db, prefix: PREFIX, sendEvent: (e) => events.push(e), onError: () => {},
+    });
+    poller.start();
+    await waitUntil(() => events.some((e) => e.type === 'update'));
+    poller.stop();
+    const p = events.find((e) => e.type === 'update').processes.find((x: any) => x.processId === 'res');
+    expect(p.supportsResurrect).toBe(false);
+    expect(p.hasUnsavedWork).toBe(false);
+  });
+});

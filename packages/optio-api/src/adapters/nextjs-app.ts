@@ -133,6 +133,12 @@ export function createOptioRouteHandlers(opts: OptioApiOptions): OptioRouteHandl
         const result = await handlers.dismissProcess(ctx, query, params.id, await currentAccess());
         return result as any;
       },
+      resurrect: async ({ params, query, body }) => {
+        const result = await handlers.resurrectProcess(
+          ctx, query, params.id, body?.sessionId ?? null, await currentAccess(),
+        );
+        return result as any;
+      },
       resync: async ({ query, body }: { query: { database?: string; prefix?: string }; body: { clean?: boolean; metadataFilter?: import('../types.js').ProcessMetadataFilter } }) => {
         const result = await handlers.resyncProcesses(
           ctx, query, body.clean, body.metadataFilter, await currentAccess(),

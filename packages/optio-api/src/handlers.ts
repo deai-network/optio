@@ -9,6 +9,7 @@ import type {
   LaunchFailureReason as LaunchFailureReasonType,
   CancelFailureReason as CancelFailureReasonType,
   DismissFailureReason as DismissFailureReasonType,
+  ResurrectFailureReason as ResurrectFailureReasonType,
 } from 'optio-contracts';
 
 function col(db: Db, prefix: string) {
@@ -229,6 +230,11 @@ export type DismissCommandResult =
   | { status: 404 | 409; body: { reason: DismissFailureReasonType; message: string } }
   | ForbiddenResult;
 
+export type ResurrectCommandResult =
+  | { status: 200; body: any }
+  | { status: 404 | 409; body: { reason: ResurrectFailureReasonType; message: string } }
+  | ForbiddenResult;
+
 export type ResyncCommandResult =
   | { status: 202; body: { message: string } }
   | { status: 400 | 403; body: { message: string } };
@@ -321,6 +327,44 @@ export async function dismissProcess(
   const result = await engine.dismiss({ processId: id });
   if (result.ok) return { status: 200, body: toResponse(result.process) };
   return dismissFail(result.reason);
+}
+
+const RESURRECT_STATUS: Record<ResurrectFailureReasonType, 404 | 409> = {
+  'not-found': 404,
+  'not-resurrectable': 409,
+  'no-resurrect-support': 409,
+  'resurrect-in-progress': 409,
+  'launch-blocked': 409,
+  'shutting-down': 409,
+};
+
+const RESURRECT_MESSAGES: Record<ResurrectFailureReasonType, string> = {
+  'not-found': 'Process not found',
+  'not-resurrectable': 'Process has no unsaved work to resurrect, or is still active',
+  'no-resurrect-support': 'This task does not support resurrect',
+  'resurrect-in-progress': 'A resurrect of this process is already running',
+  'launch-blocked': 'Launches matching this filter are currently blocked',
+  'shutting-down': 'The engine is shutting down',
+};
+
+function resurrectFail(reason: ResurrectFailureReasonType): ResurrectCommandResult {
+  return { status: RESURRECT_STATUS[reason], body: { reason, message: RESURRECT_MESSAGES[reason] } };
+}
+
+export async function resurrectProcess(
+  ctx: OptioContext,
+  query: { database?: string; prefix?: string },
+  id: string,
+  sessionId: string | null = null,
+  access: Access = UNRESTRICTED,
+): Promise<ResurrectCommandResult> {
+  const { db, prefix } = resolveDb(ctx.dbOpts, query);
+  const gate = await gateProcess(col(db, prefix), id, access, 'resurrect');
+  if (!gate.ok) return gate.status === 404 ? resurrectFail('not-found') : FORBIDDEN;
+  const engine = resolveOptioEngine(ctx, query);
+  const result = await engine.resurrect({ processId: id, sessionId });
+  if (result.ok) return { status: 200, body: toResponse(result.process) };
+  return resurrectFail(result.reason);
 }
 
 export async function resyncProcesses(

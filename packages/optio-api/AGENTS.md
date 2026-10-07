@@ -124,7 +124,7 @@ individual actions. Types live in `auth.ts`; the shared enforcement in
 type ScopeFilter = Record<string, string | number | boolean | null>;
 type ScopeCallback<TRequest> = (req: TRequest) => ScopeFilter | null | Promise<ScopeFilter | null>;
 
-type OptioAction = 'read' | 'launch' | 'cancel' | 'dismiss' | 'resync'
+type OptioAction = 'read' | 'launch' | 'cancel' | 'dismiss' | 'resurrect' | 'resync'
   | 'widget' | 'widget-control' | 'widget-upload' | 'instances';
 interface ProcessRef { _id: string; processId: string; name: string; parentId?: string; rootId: string; metadata: Record<string, unknown> }
 interface AuthorizeInput {
@@ -135,6 +135,9 @@ interface AuthorizeInput {
 }
 type AuthorizeCallback<TRequest> = (req: TRequest, input: AuthorizeInput) => boolean | Promise<boolean>;
 ```
+
+`'resurrect'` is a single-process action like `'launch'`: `authorize` receives the
+target `process`.
 
 **`scope(req)`** returns a flat exact-match metadata map, or `null` / `{}` for
 an unscoped request. A process is in scope when every key equals its
@@ -147,12 +150,12 @@ Enforcement:
 | `GET /api/processes`, list stream, session-events stream | excluded: the scope is `$and`ed into the query, so a client filter cannot widen it |
 | `GET /api/processes/:id`, `/tree`, `/log`, `/tree/log`, `/:id/tree/stream` | 404 `Process not found` |
 | `GET /api/processes/tree/multi/stream` | reported in `missing` |
-| `POST /api/processes/:id/launch` / `cancel` / `dismiss` | 404 `{ reason: 'not-found' }`; the engine is not called |
+| `POST /api/processes/:id/launch` / `cancel` / `dismiss` / `resurrect` | 404 `{ reason: 'not-found' }`; the engine is not called |
 | widget proxy, `widget-control`, `widget-upload` (Fastify) | the route's not-found response |
 | `POST /api/processes/resync` | runs with the client's flat filter plus the scope keys (the engine filters regenerated tasks and pruned records by it); 403 if the filter contradicts the scope, 400 for a predicate-tree filter |
 
 **`authorize(req, input)`** runs after the scope check for launch, cancel,
-dismiss, resync, the three widget routes and `GET /api/optio/instances`;
+dismiss, resurrect, resync, the three widget routes and `GET /api/optio/instances`;
 `false` gives **403** `{ message: 'Forbidden' }` and the engine is not called.
 
 Without either hook behaviour is exactly as before: commands go straight to
@@ -264,7 +267,7 @@ async function getProcessTreeLog(
 ): Promise<{ items: any[]; nextCursor: string | null; totalCount: number } | null>
 
 // Command handlers route to the optio-engine clamator contract via
-// `resolveOptioEngine(ctx, query).{launch,cancel,dismiss,resync}(...)`. Engine
+// `resolveOptioEngine(ctx, query).{launch,cancel,dismiss,resurrect,resync}(...)`. Engine
 // owns all command-acceptance rules (state allowlists, supportsResume guard,
 // persistent launch blocks); API handlers translate the discriminated-union
 // result into HTTP status + body.
@@ -287,6 +290,17 @@ async function dismissProcess(
   id: string,
 ): Promise<DismissCommandResult>
 
+// POST /api/processes/:id/resurrect: saves the work a failed run left on its
+// host, then resumes (engine RPC `resurrect`). `sessionId` is the initiating
+// session (request body `{ sessionId?: string | null }`).
+async function resurrectProcess(
+  ctx: OptioContext,
+  query: { database?: string; prefix?: string },
+  id: string,
+  sessionId?: string | null,  // default: null
+  access?: Access,
+): Promise<ResurrectCommandResult>
+
 async function resyncProcesses(
   ctx: OptioContext,
   query: { database?: string; prefix?: string },
@@ -299,19 +313,22 @@ async function resyncProcesses(
 Command results also carry `{ status: 403; body: { message: 'Forbidden' } }`
 (`ForbiddenResult`) when the host's `authorize` hook refuses.
 
-The 404/409 response body for `launchProcess` / `cancelProcess` / `dismissProcess` is
-`{ reason, message }`, typed via `LaunchErrorBody` / `CancelErrorBody` / `DismissErrorBody`
-in `optio-contracts/src/api-to-frontend.ts`. The `reason` discriminator is one of the
-engine failure-reason enums from `optio-contracts/src/engine-failure-reasons.ts`.
+The 404/409 response body for `launchProcess` / `cancelProcess` / `dismissProcess` /
+`resurrectProcess` is `{ reason, message }`, typed via `LaunchErrorBody` / `CancelErrorBody` /
+`DismissErrorBody` / `ResurrectErrorBody` in `optio-contracts/src/api-to-frontend.ts`. The
+`reason` discriminator is one of the engine failure-reason enums from
+`optio-contracts/src/engine-failure-reasons.ts`.
 
 **Adapters** (`fastify`, `express`, `nextjs-app`, `nextjs-pages`): all four extract `body?.resume`
-from the request body and forward it to `launchProcess` as the sixth argument.
+from the request body and forward it to `launchProcess` as the sixth argument. For resurrect they
+forward `body?.sessionId ?? null` (the body is optional) to `resurrectProcess` as the fourth argument.
 
 Per the architectural rule above, command handlers do not validate state — they forward the raw
-id to the engine via `engine.launch / cancel / dismiss` and translate the discriminated-union
+id to the engine via `engine.launch / cancel / dismiss / resurrect` and translate the discriminated-union
 result into HTTP status + body. Failure reasons (`not-found`, `not-launchable`, `no-resume-support`,
-`launch-blocked`, `not-cancellable`, `not-dismissable`) come from the engine; the API only maps
-each to 404 or 409.
+`launch-blocked`, `not-cancellable`, `not-dismissable`, and for resurrect `not-resurrectable`,
+`no-resurrect-support`, `resurrect-in-progress`, `shutting-down`) come from the engine; the API only
+maps each to 404 or 409 (`not-found` is 404, every other reason 409).
 
 ## Types
 
@@ -347,6 +364,10 @@ type CancelCommandResult =
 type DismissCommandResult =
   | { status: 200; body: any }
   | { status: 404 | 409; body: { reason: DismissFailureReasonType; message: string } };
+
+type ResurrectCommandResult =
+  | { status: 200; body: any }
+  | { status: 404 | 409; body: { reason: ResurrectFailureReasonType; message: string } };
 ```
 
 ## Stream Poller
@@ -389,6 +410,9 @@ function createTreePoller(opts: TreePollerOptions): ListPollerHandle
 { type: 'log'; entries: Array<{ ...logEntry, processId, processLabel }> }
 { type: 'log-clear' }
 ```
+
+Every poller's `update` processes also carry `supportsResurrect` and `hasUnsavedWork`
+(`false` when absent), both part of the snapshot fingerprint.
 
 `createTreePoller` sends all existing log entries on the first poll, then only deltas. It detects log truncation (e.g. after resync) and emits `log-clear` before new entries.
 

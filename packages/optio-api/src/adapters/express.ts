@@ -163,6 +163,12 @@ export function registerOptioApi(app: Express, opts: OptioApiOptions): OptioCont
       const result = await handlers.dismissProcess(ctx, query, params.id, await access(req));
       return result as any;
     },
+    resurrect: async ({ params, query, body, req }) => {
+      const result = await handlers.resurrectProcess(
+        ctx, query, params.id, body?.sessionId ?? null, await access(req),
+      );
+      return result as any;
+    },
     resync: async ({ query, body, req }: { query: { database?: string; prefix?: string }; body: { clean?: boolean; metadataFilter?: import('../types.js').ProcessMetadataFilter }; req: any }) => {
       const result = await handlers.resyncProcesses(
         ctx, query, body.clean, body.metadataFilter, await access(req),

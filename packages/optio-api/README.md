@@ -135,6 +135,7 @@ All adapters mount the same endpoints under `/api/processes/:prefix/...`:
 | POST | `/api/processes/:prefix/:id/launch` | Forward launch to engine. 200 on success; 404/409 with `{reason, message}` per `LaunchFailureReason`. |
 | POST | `/api/processes/:prefix/:id/cancel` | Forward cancel to engine. 200 on success; 404/409 per `CancelFailureReason`. |
 | POST | `/api/processes/:prefix/:id/dismiss` | Forward dismiss to engine. 200 on success; 404/409 per `DismissFailureReason`. |
+| POST | `/api/processes/:prefix/:id/resurrect` | Forward resurrect (save a failed run's unsaved work, then resume) to engine; optional body `{ sessionId?: string \| null }`. 200 on success; 404/409 per `ResurrectFailureReason`. |
 | POST | `/api/processes/:prefix/resync` | 202 Accepted; engine handles resync asynchronously. |
 
 Command endpoints do not validate state in this package. The engine owns all command-acceptance rules; the API translates the engine's discriminated-union result into HTTP status + body. See the architectural rule at the top of `AGENTS.md`.
@@ -168,10 +169,11 @@ import {
   createOptioContext, type OptioContext,
   listProcesses, getProcess, getProcessTree,
   getProcessLog, getProcessTreeLog,
-  launchProcess, cancelProcess, dismissProcess, resyncProcesses,
+  launchProcess, cancelProcess, dismissProcess, resurrectProcess, resyncProcesses,
   createListPoller, createTreePoller,
   type ListQuery, type PaginationQuery, type TreeLogQuery,
   type LaunchCommandResult, type CancelCommandResult, type DismissCommandResult,
+  type ResurrectCommandResult,
   type StreamPollerOptions, type TreePollerOptions, type ListPollerHandle,
 } from 'optio-api';
 ```
@@ -180,10 +182,10 @@ Handler functions take an `OptioContext` (constructed once via
 `createOptioContext({ dbOpts, redis })`) as the first argument, a per-request
 `query` object as the second, and an optional `id` / additional parameters as
 later positional args. Command handlers (`launchProcess`, `cancelProcess`,
-`dismissProcess`) return per-command result unions
-(`LaunchCommandResult` / `CancelCommandResult` / `DismissCommandResult`)
-whose 404/409 bodies are `{ reason, message }` — map these to HTTP responses
-directly.
+`dismissProcess`, `resurrectProcess`) return per-command result unions
+(`LaunchCommandResult` / `CancelCommandResult` / `DismissCommandResult` /
+`ResurrectCommandResult`) whose 404/409 bodies are `{ reason, message }` —
+map these to HTTP responses directly.
 
 Stream pollers expose a `{ start(), stop() }` handle; call `start()` when the
 client connects and `stop()` when they disconnect.
@@ -200,8 +202,9 @@ registerOptioApi(app, {
   // Confine the request to its tenant: a flat exact-match metadata map, or
   // null for an unrestricted user. Other tenants' processes behave as missing.
   scope: (req) => (req.user.admin ? null : { customerId: req.user.customerId }),
-  // Decide individual actions: launch, cancel, dismiss, resync, the widget
-  // routes and instance discovery. false -> 403.
+  // Decide individual actions: launch, cancel, dismiss, resurrect (a
+  // single-process action like launch), resync, the widget routes and
+  // instance discovery. false -> 403.
   authorize: (req, { action, process, clean }) =>
     action === 'instances' ? req.user.admin
       : action === 'resync' && clean ? req.user.admin
