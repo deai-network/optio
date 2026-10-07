@@ -71,5 +71,6 @@ export {
   isCancellableState,
   isResumable,
   isResurrectable,
+  isResurrecting,
 } from './process-state.js';
 export type { ProcessStateLike } from './process-state.js';

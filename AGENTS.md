@@ -984,6 +984,8 @@ interface LaunchControlsProps {
 ```
 
 Smart launch button. Renders nothing when not in a launchable state or `onLaunch` is absent.
+While `isResurrecting(process)` (`resurrecting` true) it renders a single disabled "Resurrecting" indicator
+(spinning icon, tooltip "Resurrecting: saving the unsaved work…") and nothing clickable.
 When `onResurrect` is given and `isResurrectable(process)` (`supportsResurrect` and `hasUnsavedWork` both true),
 renders a split button: primary = Resurrect (calls `onResurrect(id)`), menu = Resume from last snapshot (only
 when resumable) and Restart; both menu items first confirm "This discards the unsaved work left by the failed
@@ -1020,7 +1022,8 @@ interface ProcessItemProps {
 }
 ```
 
-Single process row. Launch button shows `Popconfirm` when `process.warning` is set.
+Single process row. Launch button shows `Popconfirm` when `process.warning` is set. The progress
+message is shown while the process is active or resurrecting (`isResurrecting`).
 
 **`ProcessStatusBadge`**
 
@@ -1056,7 +1059,7 @@ interface ProcessTreeViewProps {
 }
 ```
 
-Ant Design `Tree` rendering process hierarchy with status badges, progress bars, cancel buttons, and (when `onLaunch` is given) `LaunchControls`. Has built-in "Hide finished sub-tasks" toggle (default: on).
+Ant Design `Tree` rendering process hierarchy with status badges, progress bars, cancel buttons, and (when `onLaunch` is given) `LaunchControls`. A node's progress message is shown while it is active or resurrecting (`isResurrecting`). Has built-in "Hide finished sub-tasks" toggle (default: on).
 
 `ProcessNode` shape expected by this component:
 ```typescript
@@ -1067,10 +1070,11 @@ interface ProcessNode {
   status: { state: string; error?: string; runningSince?: string };
   progress: { percent: number | null; message?: string };
   cancellable?: boolean;
-  supportsResume?: boolean;     // the four flags are read by LaunchControls
+  supportsResume?: boolean;     // these flags are read by LaunchControls
   hasSavedState?: boolean;
   supportsResurrect?: boolean;
   hasUnsavedWork?: boolean;
+  resurrecting?: boolean;
   children?: ProcessNode[];
 }
 ```
@@ -1273,6 +1277,7 @@ All components use `react-i18next`. Required keys:
 | `processes.restartDiscarding` | LaunchControls (Resurrect menu item + confirmation title; default "Restart") |
 | `processes.discardUnsavedWork` | LaunchControls (confirmation body; default "This discards the unsaved work left by the failed run.") |
 | `processes.discardAndContinue` | LaunchControls (confirmation OK button; default "Discard and continue") |
+| `processes.resurrecting` | LaunchControls (Resurrecting indicator tooltip; default "Resurrecting: saving the unsaved work…") |
 | `processes.cancel` | ProcessItem, ProcessTreeView (cancel button tooltip) |
 | `processes.filterAll` | ProcessFilters |
 | `processes.filterActive` | ProcessFilters |

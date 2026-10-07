@@ -46,6 +46,7 @@ export interface ProcessStateLike {
   hasSavedState?: boolean;
   supportsResurrect?: boolean;
   hasUnsavedWork?: boolean;
+  resurrecting?: boolean;
   autoResumeScheduled?: boolean;
 }
 
@@ -93,9 +94,17 @@ export function isResumable(process: ProcessStateLike | null | undefined): boole
   return process?.supportsResume === true && process?.hasSavedState === true;
 }
 
-/** The host still holds a failed run's unsaved work and the task can save it. */
+/** A resurrect is saving the unsaved work right now (the state stays as it
+ *  was, typically `failed`; launching is locked until it ends). */
+export function isResurrecting(process: ProcessStateLike | null | undefined): boolean {
+  return process?.resurrecting === true;
+}
+
+/** The host still holds a failed run's unsaved work and the task can save it
+ *  (and no resurrect is already saving it). */
 export function isResurrectable(process: ProcessStateLike | null | undefined): boolean {
   return isLaunchable(process)
+    && !isResurrecting(process)
     && process?.supportsResurrect === true
     && process?.hasUnsavedWork === true;
 }

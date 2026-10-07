@@ -4,7 +4,7 @@ import { CloseCircleOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { ProcessStatusBadge } from './ProcessStatusBadge.js';
 import { LaunchControls } from './LaunchControls.js';
-import { isActive as isProcessActive } from '../process-state.js';
+import { isActive as isProcessActive, isResurrecting } from '../process-state.js';
 import type { DataNode } from 'antd/es/tree';
 
 const { Text } = Typography;
@@ -21,6 +21,7 @@ interface ProcessNode {
   hasSavedState?: boolean;
   supportsResurrect?: boolean;
   hasUnsavedWork?: boolean;
+  resurrecting?: boolean;
   autoResumeScheduled?: boolean;
   children?: ProcessNode[];
 }
@@ -62,6 +63,8 @@ function treeNodeToDataNode(
   t: (key: string) => string,
 ): DataNode {
   const isActive = isProcessActive(node);
+  // A resurrect runs while the state stays failed; show its progress message.
+  const showsProgressMessage = isActive || isResurrecting(node);
   const isCancellable = isActive && node.cancellable;
   const hasPercent = node.progress.percent != null;
 
@@ -122,7 +125,7 @@ function treeNodeToDataNode(
             <LaunchControls process={node as any} onLaunch={onLaunch} onResurrect={onResurrect} size="small" />
           )}
         </span>
-        {isActive && node.progress.message && (
+        {showsProgressMessage && node.progress.message && (
           <Text style={{ width: '100%', fontSize: 12, color: '#1890ff' }}>— {node.progress.message}</Text>
         )}
       </div>

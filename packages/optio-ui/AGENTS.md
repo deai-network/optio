@@ -28,7 +28,7 @@
 **The only acceptable way to make decisions about task lifecycle state is by
 calling a predicate from `src/process-state.ts`.** That file is the single
 source of truth for what counts as "launchable", "active", "terminal",
-"resumable", or "resurrectable".
+"resumable", "resurrectable", or "resurrecting".
 
 Do **not**:
 
@@ -46,8 +46,10 @@ Do:
   `isTerminal(process)` / `isTerminalState(state)`,
   `isWidgetLive(process)` / `isWidgetLiveState(state)`,
   `isCancellable(process)` / `isCancellableState(state)`,
-  `isResumable(process)`, `isResurrectable(process)` (launchable AND
-  `supportsResurrect === true` AND `hasUnsavedWork === true`).
+  `isResumable(process)`, `isResurrectable(process)` (launchable AND not
+  resurrecting AND `supportsResurrect === true` AND `hasUnsavedWork === true`),
+  `isResurrecting(process)` (`resurrecting === true`: a resurrect is saving the
+  unsaved work while the state stays as it was).
 - If you genuinely need a new state-derived concept (e.g. "show widget UI" —
   which is *almost* `isActive` but excludes `scheduled`), add a named
   predicate to `process-state.ts` rather than spelling out the set at the
@@ -103,6 +105,7 @@ Smart launch button (`packages/optio-ui/src/components/LaunchControls.tsx`).
 
 Rendering rules:
 - Renders **nothing** when the process is not in a launchable state (`idle | done | failed | cancelled`), or when `onLaunch` is not provided.
+- Renders a single disabled **Resurrecting** indicator while `isResurrecting(process)` (spinning loading icon, `aria-label` "Resurrecting", tooltip "Resurrecting: saving the unsaved work…"); clicking it does nothing. It takes precedence over all the cases below (a non-empty `denyReason` still wins).
 - Renders a **Resurrect** split button when `onResurrect` is provided and `isResurrectable(process)` (`supportsResurrect=true` and `hasUnsavedWork=true`); it takes precedence over the two cases below (a non-empty `denyReason` still wins):
   - Primary button: **Resurrect** (medicine-box icon, `aria-label` "Resurrect") — calls `onResurrect(id)`.
   - Menu item **Resume from last snapshot**, only when `isResumable(process)` — calls `onLaunch(id, { resume: true })`.
@@ -163,7 +166,7 @@ Single process row. Behavioral rules:
 - Cancel button visible when `!readonly && isCancellable(process) && onCancel provided` — i.e. state is `scheduled | running` AND `process.cancellable === true`. Hidden during `cancel_requested`/`cancelling` (cancel already in flight; re-click is a no-op).
 - Progress bar: active + `progress.percent != null` → determinate bar; active + no percent → indeterminate animated gradient bar; not active → hidden.
 - Name rendered as `Button[type=link]` when `onProcessClick` provided, plain `Text` otherwise. If `process.description` is set, the name is wrapped in a `Tooltip` showing the description.
-- Progress message shown inline (blue) when process is active and `progress.message` is set.
+- Progress message shown inline (blue) when `progress.message` is set and the process is active or `isResurrecting(process)` (a resurrect keeps the state `failed`, so its progress message is the only feedback).
 
 Size mapping (one knob → progress bar height, button size, badge size):
 
@@ -224,10 +227,11 @@ interface ProcessNode {
   status: { state: string; error?: string; runningSince?: string };
   progress: { percent: number | null; message?: string };
   cancellable?: boolean;
-  supportsResume?: boolean;     // the four flags are read by LaunchControls
+  supportsResume?: boolean;     // these flags are read by LaunchControls
   hasSavedState?: boolean;
   supportsResurrect?: boolean;
   hasUnsavedWork?: boolean;
+  resurrecting?: boolean;
   children?: ProcessNode[];
 }
 
@@ -256,6 +260,9 @@ Progress bar visibility rules (identical to `ProcessList`/`ProcessItem`):
 - Active + percent: determinate bar + percentage text label.
 - Active + no percent: indeterminate animated gradient bar.
 - Not active: hidden.
+
+Progress message (blue, own line) shown when `progress.message` is set and the node is active
+or `isResurrecting(node)`.
 
 Cancel button appears per-node when `state in ACTIVE_STATES && node.cancellable && onCancel provided`.
 
@@ -602,6 +609,7 @@ Complete list of all translation keys used in component source files:
 | `processes.restartDiscarding` | `LaunchControls` | Resurrect menu item and confirmation title (default: "Restart") |
 | `processes.discardUnsavedWork` | `LaunchControls` | Confirmation body (default: "This discards the unsaved work left by the failed run.") |
 | `processes.discardAndContinue` | `LaunchControls` | Confirmation OK button (default: "Discard and continue") |
+| `processes.resurrecting` | `LaunchControls` | Resurrecting indicator tooltip (default: "Resurrecting: saving the unsaved work…") |
 | `processes.cancel` | `ProcessItem`, `ProcessTreeView` | Tooltip on cancel button |
 | `processes.filterAll` | `ProcessFilters` | Select option label |
 | `processes.filterActive` | `ProcessFilters` | Select option label |

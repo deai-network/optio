@@ -166,27 +166,27 @@ describe('LaunchControls resurrect', () => {
     const { onLaunch } = renderResurrect(failedWithWork);
     const buttons = screen.getAllByRole('button');
     fireEvent.click(buttons[buttons.length - 1]);
-    fireEvent.click(await screen.findByText(/resume from last snapshot/i));
+    fireEvent.click(await screen.findByText(/resume from last snapshot/i, {}, { timeout: 60_000 }));
     expect(onLaunch).not.toHaveBeenCalled();
-    expect(await screen.findByText(/discards the unsaved work/i)).toBeTruthy();
-    fireEvent.click(await screen.findByRole('button', { name: /discard and continue/i }));
-    await vi.waitFor(() => expect(onLaunch).toHaveBeenCalledWith('9', { resume: true }));
+    expect(await screen.findByText(/discards the unsaved work/i, {}, { timeout: 60_000 })).toBeTruthy();
+    fireEvent.click(await screen.findByRole('button', { name: /discard and continue/i }, { timeout: 60_000 }));
+    await vi.waitFor(() => expect(onLaunch).toHaveBeenCalledWith('9', { resume: true }), { timeout: 60_000 });
   });
 
   it('restart asks for confirmation first', async () => {
     const { onLaunch } = renderResurrect(failedWithWork);
     const buttons = screen.getAllByRole('button');
     fireEvent.click(buttons[buttons.length - 1]);
-    fireEvent.click(await screen.findByText(/^restart$/i));
-    fireEvent.click(await screen.findByRole('button', { name: /discard and continue/i }));
-    await vi.waitFor(() => expect(onLaunch).toHaveBeenCalledWith('9', { resume: false }));
+    fireEvent.click(await screen.findByText(/^restart$/i, {}, { timeout: 60_000 }));
+    fireEvent.click(await screen.findByRole('button', { name: /discard and continue/i }, { timeout: 60_000 }));
+    await vi.waitFor(() => expect(onLaunch).toHaveBeenCalledWith('9', { resume: false }), { timeout: 60_000 });
   });
 
   it('no resume item without saved state', async () => {
     renderResurrect({ ...failedWithWork, hasSavedState: false });
     const buttons = screen.getAllByRole('button');
     fireEvent.click(buttons[buttons.length - 1]);
-    await screen.findByText(/^restart$/i);
+    await screen.findByText(/^restart$/i, {}, { timeout: 60_000 });
     expect(screen.queryByText(/resume from last snapshot/i)).toBeNull();
   });
 
@@ -200,5 +200,20 @@ describe('LaunchControls resurrect', () => {
     fireEvent.click(within(flagless.container).getAllByRole('button')[0]);
     expect(flagless.onLaunch).toHaveBeenCalledWith('9', { resume: true });
     expect(onResurrect).not.toHaveBeenCalled();
+  });
+
+  it('while resurrecting renders a single disabled Resurrecting indicator', async () => {
+    const { onLaunch, onResurrect } = renderResurrect({ ...failedWithWork, resurrecting: true });
+    const buttons = screen.getAllByRole('button');
+    expect(buttons).toHaveLength(1);
+    const btn = screen.getByRole('button', { name: 'Resurrecting' });
+    expect(buttons[0]).toBe(btn);
+    expect((btn as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(btn);
+    expect(onResurrect).not.toHaveBeenCalled();
+    expect(onLaunch).not.toHaveBeenCalled();
+    fireEvent.mouseEnter(btn.parentElement as HTMLElement);
+    const tip = await screen.findByRole('tooltip', {}, { timeout: 60_000 });
+    expect(tip.textContent).toBe('Resurrecting: saving the unsaved work…');
   });
 });

@@ -1,8 +1,10 @@
 import { Button, Dropdown, Modal, Space, Tooltip, Popconfirm } from 'antd';
 import type { MenuProps, ButtonProps } from 'antd';
-import { DownOutlined, MedicineBoxOutlined, PlayCircleOutlined, ReloadOutlined } from '@ant-design/icons';
+import {
+  DownOutlined, LoadingOutlined, MedicineBoxOutlined, PlayCircleOutlined, ReloadOutlined,
+} from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import { isLaunchable, isResumable, isResurrectable } from '../process-state.js';
+import { isLaunchable, isResumable, isResurrectable, isResurrecting } from '../process-state.js';
 
 export interface LaunchControlsProps {
   process: any;
@@ -12,21 +14,24 @@ export interface LaunchControlsProps {
    *  Resume-from-snapshot and Restart move to the menu behind a confirmation. */
   onResurrect?: (processId: string) => void;
   size?: ButtonProps['size'];
-  /** Optional pixel size for the inner icons (Play/Down/Reload). When unset,
-   *  the icon inherits antd's default sizing for the chosen button size. */
+  /** Optional pixel size for the inner icons of all the buttons rendered
+   *  here. When unset, the icons inherit antd's default sizing for the
+   *  chosen button size. */
   iconFontSize?: number;
   /** When set + non-empty, the launch button is rendered disabled with this
    *  string as the hover tooltip. Domain-specific launch gate: the caller
    *  decides launchability beyond the process state machine (e.g., from
-   *  task metadata) and renders the operator-facing reason. Suppresses both
-   *  the single-button and split-button (resume) branches; cancel/etc. are
-   *  unaffected. */
+   *  task metadata) and renders the operator-facing reason. Suppresses all
+   *  the launch branches (single, split/resume, resurrect, resurrecting);
+   *  cancel/etc. are unaffected. */
   denyReason?: string | null;
 }
 
 /**
  * Renders launch affordances for a process:
  *   * Nothing when the process is in a non-launchable state.
+ *   * A single disabled "Resurrecting" indicator while a resurrect of the
+ *     process saves its unsaved work (`resurrecting`); nothing is clickable.
  *   * Split button (primary = Resurrect, menu = Resume from last snapshot /
  *     Restart, each behind a "discards the unsaved work" confirmation) when
  *     `onResurrect` is given and the process is resurrectable
@@ -59,6 +64,27 @@ export function LaunchControls({
             type="text"
             size={size}
             icon={<PlayCircleOutlined style={iconStyle} />}
+            disabled
+            style={{ pointerEvents: 'none' }}
+          />
+        </span>
+      </Tooltip>
+    );
+  }
+
+  // A resurrect is saving the unsaved work: launching is locked until it
+  // ends. Disabled button, so the tooltip needs the span wrapper as above.
+  if (isResurrecting(process)) {
+    return (
+      <Tooltip title={t('processes.resurrecting', {
+        defaultValue: 'Resurrecting: saving the unsaved work…',
+      })}>
+        <span style={{ display: 'inline-block', cursor: 'not-allowed' }}>
+          <Button
+            type="text"
+            size={size}
+            aria-label="Resurrecting"
+            icon={<LoadingOutlined spin style={iconStyle} />}
             disabled
             style={{ pointerEvents: 'none' }}
           />

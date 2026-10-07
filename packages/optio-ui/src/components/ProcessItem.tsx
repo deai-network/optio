@@ -6,7 +6,9 @@ import { useTranslation } from 'react-i18next';
 import { HighlightedText } from '@quaesitor-textus/core';
 import { ProcessStatusBadge } from './ProcessStatusBadge.js';
 import { LaunchControls } from './LaunchControls.js';
-import { isActive as isProcessActive, isCancellable as isProcessCancellable } from '../process-state.js';
+import {
+  isActive as isProcessActive, isCancellable as isProcessCancellable, isResurrecting,
+} from '../process-state.js';
 
 const { Text } = Typography;
 
@@ -60,6 +62,9 @@ export function ProcessItem({
   const { t } = useTranslation();
   const state = process.status?.state ?? 'idle';
   const isActive = isProcessActive(process);
+  // A resurrect runs while the state stays failed; its progress is the
+  // only feedback, so the message shows then too.
+  const showsProgressMessage = isActive || isResurrecting(process);
   const isCancellable = !readonly && isProcessCancellable(process);
   const hasPercent = process.progress?.percent != null;
   const tokens = SIZE_TOKENS[size];
@@ -84,7 +89,7 @@ export function ProcessItem({
   const nameBlock = (
     <span>
       {nameElement}
-      {isActive && process.progress?.message && (
+      {showsProgressMessage && process.progress?.message && (
         <Text style={{ marginLeft: 8, color: '#1890ff' }}>— {process.progress.message}</Text>
       )}
     </span>

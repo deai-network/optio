@@ -12,6 +12,7 @@ import {
   isCancellableState,
   isResumable,
   isResurrectable,
+  isResurrecting,
 } from '../process-state.js';
 
 describe('isWidgetLiveState', () => {
@@ -214,5 +215,21 @@ describe('isResurrectable', () => {
     expect(isResurrectable({ status: { state: 'failed' }, supportsResurrect: false, hasUnsavedWork: true })).toBe(false);
     expect(isResurrectable({ status: { state: 'failed' }, supportsResurrect: true })).toBe(false);
     expect(isResurrectable(null)).toBe(false);
+  });
+
+  it('false while a resurrect is in progress', () => {
+    expect(isResurrectable({
+      status: { state: 'failed' }, supportsResurrect: true, hasUnsavedWork: true, resurrecting: true,
+    })).toBe(false);
+  });
+});
+
+describe('isResurrecting', () => {
+  it('true only for a literal resurrecting: true', () => {
+    expect(isResurrecting({ status: { state: 'failed' }, resurrecting: true })).toBe(true);
+    expect(isResurrecting({ status: { state: 'failed' }, resurrecting: false })).toBe(false);
+    expect(isResurrecting({ status: { state: 'failed' } })).toBe(false);
+    expect(isResurrecting(null)).toBe(false);
+    expect(isResurrecting(undefined)).toBe(false);
   });
 });
