@@ -45,13 +45,25 @@ async def find_unreferenced_session_blob(
     return None
 
 
+async def _probe(host, condition: str, what: str) -> bool:
+    """Run ``<condition> && echo YES || true`` on the host: True on YES,
+    False on a clean answer without it. The command cannot fail on its own
+    (``|| true``), so a non-zero exit means it did not run (connection,
+    shell, ``cd``): raise rather than take it for "absent", which would end
+    in NothingToResurrect, a cleared flag and a Resume that wipes the work."""
+    r = await host.run_command(f"{condition} && echo YES || true", cwd="/")
+    if r.exit_code != 0:
+        raise RuntimeError(
+            f"{what} probe failed (exit {r.exit_code}): {r.stderr.strip()[:500]}"
+        )
+    return "YES" in r.stdout
+
+
 async def _workdir_has_content(host) -> bool:
     w = shlex.quote(host.workdir)
-    r = await host.run_command(
-        f'test -d {w} && [ -n "$(ls -A {w} 2>/dev/null)" ] && echo YES || true',
-        cwd="/",
+    return await _probe(
+        host, f'test -d {w} && [ -n "$(ls -A {w} 2>/dev/null)" ]', "workdir",
     )
-    return "YES" in r.stdout
 
 
 def _home_claude(host) -> str:
@@ -60,11 +72,11 @@ def _home_claude(host) -> str:
 
 async def _credentials_present(host) -> bool:
     """The capture's own credentials guard: without them it refuses."""
-    r = await host.run_command(
-        f"test -s {shlex.quote(_home_claude(host) + '/.credentials.json')} && echo YES || true",
-        cwd="/",
+    return await _probe(
+        host,
+        f"test -s {shlex.quote(_home_claude(host) + '/.credentials.json')}",
+        "credentials",
     )
-    return "YES" in r.stdout
 
 
 async def _stop_leftovers(host) -> None:

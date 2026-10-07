@@ -112,7 +112,12 @@ from the snapshot it stored. The hook is
 `session._build_host`:
 
 1. Connect. Workdir missing or empty: raise
-   `NothingToResurrect("workdir no longer on the host (or empty)")`.
+   `NothingToResurrect("workdir no longer on the host (or empty)")`. The
+   host probes (this one and step 4's credentials test) run
+   `<test> && echo YES || true`; a non-zero exit means the probe did not run
+   (connection, shell) and raises `RuntimeError` with the exit code and
+   stderr, never "absent": an error keeps `hasUnsavedWork`, so the
+   resurrect can be retried.
 2. Progress "Resurrecting: stopping leftovers of the failed run…". When
    `host_actions.find_tmux` finds tmux and the tmux session `optio` on the
    task's socket is alive, `host_actions.teardown_session_tree(aggressive=True)`

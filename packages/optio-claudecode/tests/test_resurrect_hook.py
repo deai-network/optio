@@ -391,6 +391,52 @@ async def test_resurrect_without_tmux_skips_the_tmux_tree(mongo_db, host, ctx_an
     assert snap["endState"] == "resurrected"
 
 
+class _ProbeHost:
+    """A host whose every command returns the given result."""
+
+    workdir = "/srv/task/workdir"
+
+    def __init__(self, stdout="", stderr="", exit_code=0):
+        from optio_host.host import RunResult
+        self.result = RunResult(stdout=stdout, stderr=stderr, exit_code=exit_code)
+
+    async def run_command(self, cmd, **kw):
+        return self.result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("probe", ["_workdir_has_content", "_credentials_present"])
+async def test_a_failed_probe_raises_instead_of_answering_absent(probe):
+    """A probe whose command fails (connection lost, shell error) gives no
+    answer: taking it for "absent" would end in NothingToResurrect, a cleared
+    flag and a Resume that wipes the work."""
+    fn = getattr(R, probe)
+    with pytest.raises(RuntimeError, match=r"exit 255.*connection lost"):
+        await fn(_ProbeHost(stderr="ssh: connection lost", exit_code=255))
+    # Clean answers stay answers.
+    assert await fn(_ProbeHost(stdout="")) is False
+    assert await fn(_ProbeHost(stdout="YES\n")) is True
+
+
+@pytest.mark.asyncio
+async def test_failed_workdir_probe_is_an_error_not_nothing_to_resurrect(mongo_db, host, ctx_and_captures, monkeypatch):
+    from optio_host.host import RunResult
+    ctx, _cap, _flag = ctx_and_captures
+    await _prepare(mongo_db, ctx)
+    _write(f"{host.workdir}/CLAUDE.md", "work")
+    real_run = host.run_command
+
+    async def _flaky(cmd, **kw):
+        if "ls -A" in cmd:
+            return RunResult(stdout="", stderr="ssh: connection lost", exit_code=255)
+        return await real_run(cmd, **kw)
+    monkeypatch.setattr(host, "run_command", _flaky)
+
+    with pytest.raises(RuntimeError, match="exit 255"):
+        await R.resurrect_claudecode_session(ctx, _config())
+    assert os.path.exists(f"{host.workdir}/CLAUDE.md")
+
+
 def test_factory_attaches_hook_only_for_resumable_configs():
     cfg = _config()
     ti = S.create_claudecode_task(process_id="p", name="P", config=cfg)
