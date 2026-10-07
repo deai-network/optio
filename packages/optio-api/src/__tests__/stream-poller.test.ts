@@ -601,8 +601,8 @@ describe('resurrect fields propagation', () => {
     return rootId;
   }
 
-  it('createTreePoller forwards supportsResurrect and hasUnsavedWork', async () => {
-    const rootId = await insertRoot({ supportsResurrect: true, hasUnsavedWork: true });
+  it('createTreePoller forwards supportsResurrect, hasUnsavedWork and resurrecting', async () => {
+    const rootId = await insertRoot({ supportsResurrect: true, hasUnsavedWork: true, resurrecting: true });
     const events: any[] = [];
     const poller = createTreePoller({
       db, prefix: PREFIX, sendEvent: (d) => events.push(d), onError: () => {},
@@ -614,9 +614,10 @@ describe('resurrect fields propagation', () => {
     const p = events.find((e) => e.type === 'update').processes[0];
     expect(p.supportsResurrect).toBe(true);
     expect(p.hasUnsavedWork).toBe(true);
+    expect(p.resurrecting).toBe(true);
   });
 
-  it('createListPoller defaults both to false when absent', async () => {
+  it('createListPoller defaults all three to false when absent', async () => {
     await insertRoot({});
     const events: any[] = [];
     const poller = createListPoller({
@@ -628,5 +629,32 @@ describe('resurrect fields propagation', () => {
     const p = events.find((e) => e.type === 'update').processes.find((x: any) => x.processId === 'res');
     expect(p.supportsResurrect).toBe(false);
     expect(p.hasUnsavedWork).toBe(false);
+    expect(p.resurrecting).toBe(false);
   });
+
+  it.each(['list', 'tree', 'multiTree'] as const)(
+    '%s poller emits a new update when only resurrecting changes',
+    async (kind) => {
+      const rootId = await insertRoot({ supportsResurrect: true, hasUnsavedWork: true });
+      const updates: any[] = [];
+      const sendEvent = (e: any) => { if (e.type === 'update') updates.push(e); };
+      const base = { db, prefix: PREFIX, sendEvent, onError: () => {} };
+      const { createMultiTreePoller } = await import('../stream-poller.js');
+      const poller = kind === 'list'
+        ? createListPoller(base)
+        : kind === 'tree'
+          ? createTreePoller({ ...base, rootId: rootId.toString(), baseDepth: 0 })
+          : createMultiTreePoller({ ...base, treeRoots: [{ rootId, baseDepth: 0 }], flatIds: [] });
+      const marker = () => updates.at(-1)?.processes.find((x: any) => x._id === rootId.toString())?.resurrecting;
+      poller.start();
+      try {
+        await waitUntil(() => marker() === false);
+        await db.collection(`${PREFIX}_processes`).updateOne({ _id: rootId }, { $set: { resurrecting: true } });
+        await waitUntil(() => marker() === true);
+      } finally {
+        poller.stop();
+      }
+    },
+    120_000,
+  );
 });

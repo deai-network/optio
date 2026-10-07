@@ -411,8 +411,8 @@ function createTreePoller(opts: TreePollerOptions): ListPollerHandle
 { type: 'log-clear' }
 ```
 
-Every poller's `update` processes also carry `supportsResurrect` and `hasUnsavedWork`
-(`false` when absent), both part of the snapshot fingerprint.
+Every poller's `update` processes also carry `supportsResurrect`, `hasUnsavedWork` and
+`resurrecting` (`false` when absent), all part of the snapshot fingerprint.
 
 `createTreePoller` sends all existing log entries on the first poll, then only deltas. It detects log truncation (e.g. after resync) and emits `log-clear` before new entries.
 

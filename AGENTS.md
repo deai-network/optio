@@ -935,8 +935,8 @@ function createTreePoller(opts: TreePollerOptions): ListPollerHandle
 { _id, parentId: string | null, name, description, status, progress, cancellable, depth, order, widgetData }
 ```
 
-Both streams also carry `supportsResurrect` and `hasUnsavedWork` (`false` when absent), tracked
-in the snapshot fingerprint.
+Both streams also carry `supportsResurrect`, `hasUnsavedWork` and `resurrecting` (`false` when
+absent), tracked in the snapshot fingerprint.
 
 `widgetData` is included in tree-stream payloads and tracked in the snapshot fingerprint so
 worker-side mutations trigger SSE events. The list stream does **not** include `widgetData`.
