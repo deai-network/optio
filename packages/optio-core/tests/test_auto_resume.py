@@ -476,3 +476,162 @@ async def test_timer_does_not_fire_if_shutdown_first(mongo_db):
     proc = await get_process_by_process_id(mongo_db, prefix, "r")
     assert proc["status"]["state"] == "cancelled"  # not resumed
     assert proc.get("autoResumeScheduled") is True  # stamp survives
+
+
+async def _noop_hook(ctx):  # noqa: ARG001
+    pass
+
+
+async def _sweep_unsaved_setup(mongo_db, prefix, *, hook, supports_resurrect_doc=None):
+    """A stamped, cancelled, saved process whose host still holds unsaved
+    work (a teardown capture raised during shutdown). Spies on launch and
+    resurrect; returns (fw, coll, launched, resurrected)."""
+    coll = mongo_db[f"{prefix}_processes"]
+
+    async def get_tasks(_services, metadata_filter=None):
+        return [TaskInstance(
+            execute=_noop, process_id="r", name="R",
+            supports_resume=True, auto_resume=True, resurrect=hook,
+        )]
+
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix=prefix, get_task_definitions=get_tasks)
+    fields = {
+        "status": {"state": "cancelled"},
+        "hasSavedState": True,
+        "hasUnsavedWork": True,
+        "autoResumeScheduled": True,
+    }
+    if supports_resurrect_doc is not None:
+        fields["supportsResurrect"] = supports_resurrect_doc
+    await coll.update_one({"processId": "r"}, {"$set": fields})
+    launched, resurrected = [], []
+
+    async def _launch_spy(process_id, resume=False, *, session_id):
+        launched.append((process_id, resume, session_id))
+        raise AssertionError("auto-resume must not launch a process with unsaved work")
+
+    async def _resurrect_spy(process_id, *, session_id):
+        from optio_core import ResurrectOutcome
+        resurrected.append((process_id, session_id))
+        return ResurrectOutcome(ok=True, proc=None)
+
+    fw.launch = _launch_spy
+    fw.resurrect = _resurrect_spy
+    return fw, coll, launched, resurrected
+
+
+async def test_sweep_resurrects_unsaved_work_instead_of_resuming(mongo_db):
+    """A resume would wipe the kept workdir: the sweep calls resurrect (save,
+    then resume) and clears the stamp."""
+    prefix = "arsweep_unsaved"
+    fw, coll, launched, resurrected = await _sweep_unsaved_setup(
+        mongo_db, prefix, hook=_noop_hook,
+    )
+    try:
+        doc = await coll.find_one({"processId": "r"})
+        assert doc["supportsResurrect"] is True  # written by task sync
+        await fw._auto_resume_scheduled_processes()
+        assert launched == []
+        assert resurrected == [(str(doc["_id"]), None)]
+        doc = await coll.find_one({"processId": "r"})
+        assert doc["autoResumeScheduled"] is False
+        assert doc["hasUnsavedWork"] is True  # the resurrect clears it, not the sweep
+    finally:
+        await fw.shutdown()
+
+
+@pytest.mark.parametrize("supports_resurrect_doc", [None, True])
+async def test_sweep_skips_unsaved_work_without_resurrect_hook(
+    mongo_db, caplog, supports_resurrect_doc,
+):
+    """No resurrect hook registered (whatever the document says): neither
+    launch nor resurrect; the stamp is cleared and the skip logged."""
+    import logging
+    prefix = f"arsweep_unsaved_nohook_{supports_resurrect_doc}"
+    fw, coll, launched, resurrected = await _sweep_unsaved_setup(
+        mongo_db, prefix, hook=None, supports_resurrect_doc=supports_resurrect_doc,
+    )
+    try:
+        with caplog.at_level(logging.WARNING, logger="optio_core_core"):
+            await fw._auto_resume_scheduled_processes()
+        assert launched == []
+        assert resurrected == []
+        doc = await coll.find_one({"processId": "r"})
+        assert doc["autoResumeScheduled"] is False
+        assert doc["status"]["state"] == "cancelled"
+        assert doc["hasUnsavedWork"] is True
+        assert any(
+            "auto-resume skipped" in r.getMessage().lower()
+            and "unsaved work on the host (use Resurrect)" in r.getMessage()
+            for r in caplog.records
+        ), [r.getMessage() for r in caplog.records]
+    finally:
+        await fw.shutdown()
+
+
+async def test_sweep_resurrect_refused_still_clears_stamp(mongo_db, caplog):
+    """A refused resurrect (e.g. launch-blocked) is logged and un-stamped
+    like a refused launch; no launch is attempted."""
+    import logging
+    from optio_core import ResurrectOutcome
+    prefix = "arsweep_unsaved_refused"
+    fw, coll, launched, resurrected = await _sweep_unsaved_setup(
+        mongo_db, prefix, hook=_noop_hook,
+    )
+
+    async def _refuse(process_id, *, session_id):
+        resurrected.append((process_id, session_id))
+        return ResurrectOutcome(ok=False, reason="launch-blocked")
+    fw.resurrect = _refuse
+    try:
+        with caplog.at_level(logging.WARNING, logger="optio_core_core"):
+            await fw._auto_resume_scheduled_processes()
+        assert launched == []
+        assert len(resurrected) == 1
+        doc = await coll.find_one({"processId": "r"})
+        assert doc["autoResumeScheduled"] is False
+        assert any("launch-blocked" in r.getMessage() for r in caplog.records)
+    finally:
+        await fw.shutdown()
+
+
+async def test_sweep_resurrect_end_to_end_saves_then_resumes(mongo_db):
+    """Real resurrect path: the hook runs (saving the work) before the resume
+    launch, and the flag is cleared; nothing launches the process first."""
+    prefix = "arsweep_unsaved_e2e"
+    coll = mongo_db[f"{prefix}_processes"]
+    order = []
+
+    async def hook(ctx):
+        order.append("hook")
+
+    async def get_tasks(_services, metadata_filter=None):
+        return [TaskInstance(
+            execute=_noop, process_id="r", name="R",
+            supports_resume=True, auto_resume=True, resurrect=hook,
+        )]
+
+    fw = Optio()
+    await fw.init(mongo_db=mongo_db, prefix=prefix, get_task_definitions=get_tasks)
+    try:
+        await coll.update_one({"processId": "r"}, {"$set": {
+            "status": {"state": "cancelled"}, "hasSavedState": True,
+            "hasUnsavedWork": True, "autoResumeScheduled": True,
+        }})
+
+        async def _spy(oid, *, resume, session_id):
+            order.append(("launch", resume))
+        fw._executor.launch_process = _spy
+        await fw._auto_resume_scheduled_processes()
+        deadline = time.monotonic() + 60.0
+        while len(order) < 2:
+            if time.monotonic() >= deadline:
+                raise AssertionError(f"resurrect did not resume: {order}")
+            await asyncio.sleep(0.02)
+        assert order == ["hook", ("launch", True)]
+        doc = await coll.find_one({"processId": "r"})
+        assert doc["hasUnsavedWork"] is False
+        assert doc["autoResumeScheduled"] is False
+    finally:
+        await fw.shutdown()

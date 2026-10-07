@@ -332,6 +332,14 @@ parameter) for it to unwind; a hook that ignores the cancel is abandoned, not wa
 `hasUnsavedWork` stays set. Spec:
 `docs/2026-10-07-resurrect-failed-session-design.md`.
 
+Auto-resume: the post-restart sweep (tasks with `auto_resume`) does not resume a stamped
+process whose `hasUnsavedWork` is set, since a resume rebuilds the workdir and would wipe that
+work. When the process has `supportsResurrect` and its task a registered `resurrect` hook, the
+sweep calls `resurrect(process_id, session_id=None)` instead (save, then resume); otherwise it
+skips the process and logs "Auto-resume skipped <processId>: unsaved work on the host (use
+Resurrect)". The `autoResumeScheduled` stamp is cleared in both cases; a refused resurrect is
+logged like a refused launch.
+
 Engine RPC: `resurrect({ processId, sessionId })` (`OptioEngineService.resurrect`) calls
 `Optio.resurrect` and returns `{ ok: true, process }` or `{ ok: false, reason }` with the
 reasons above.

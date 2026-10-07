@@ -1444,7 +1444,13 @@ class Optio:
         its state: autoResumeScheduled=True AND state='cancelled' AND
         hasSavedState=True. Force-killed (failed) and unsaved processes are
         excluded by the query. On a blocked / non-launchable target, log, clear
-        the stamp, and skip (no retry). launch() clears the stamp on success."""
+        the stamp, and skip (no retry). launch() clears the stamp on success.
+
+        A process whose host still holds unsaved work (hasUnsavedWork, e.g. a
+        teardown capture that raised during shutdown) is not resumed: a resume
+        rebuilds the workdir and would wipe that work. It is resurrected
+        instead (save, then resume) when its task has a resurrect hook, and
+        otherwise left for a human; the stamp is cleared either way."""
         coll = self._config.mongo_db[f"{self._config.prefix}_processes"]
         cursor = coll.find(
             {
@@ -1452,13 +1458,16 @@ class Optio:
                 "status.state": "cancelled",
                 "hasSavedState": True,
             },
-            {"_id": 1, "processId": 1},
+            {"_id": 1, "processId": 1, "hasUnsavedWork": 1, "supportsResurrect": 1},
         )
         docs = [doc async for doc in cursor]
         if not docs:
             return
         logger.info(f"Auto-resuming {len(docs)} scheduled process(es)")
         for doc in docs:
+            if doc.get("hasUnsavedWork", False):
+                await self._auto_resume_unsaved(doc)
+                continue
             outcome = await self.launch(str(doc["_id"]), resume=True, session_id=None)
             if outcome.ok:
                 logger.info(f"Auto-resumed {doc['processId']}")
@@ -1469,6 +1478,30 @@ class Optio:
                 await set_auto_resume_scheduled(
                     self._config.mongo_db, self._config.prefix, doc["_id"], False,
                 )
+
+    async def _auto_resume_unsaved(self, doc: dict) -> None:
+        """Auto-resume of a process with unsaved work on its host: resurrect
+        it when the task can (the resurrect saves, then resumes), else skip.
+        Clears the stamp in every case (no retry)."""
+        pid = doc["processId"]
+        task = self._executor._task_registry.get(pid)
+        if (
+            doc.get("supportsResurrect", False)
+            and task is not None
+            and getattr(task, "resurrect", None) is not None
+        ):
+            outcome = await self.resurrect(str(doc["_id"]), session_id=None)
+            if outcome.ok:
+                logger.info(f"Auto-resume of {pid}: resurrecting (unsaved work on the host)")
+            else:
+                logger.warning(f"Auto-resume skipped {pid}: resurrect refused: {outcome.reason}")
+        else:
+            logger.warning(
+                f"Auto-resume skipped {pid}: unsaved work on the host (use Resurrect)"
+            )
+        await set_auto_resume_scheduled(
+            self._config.mongo_db, self._config.prefix, doc["_id"], False,
+        )
 
     async def _heartbeat_loop(self) -> None:
         """Periodically set a heartbeat key in Redis with TTL."""

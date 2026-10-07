@@ -172,6 +172,10 @@ await optio_core.resurrect(process_id: str, *, session_id: str | None) -> Resurr
 # force_cancel_shield_seconds for it (a hook ignoring the cancel is abandoned); the flag
 # stays set. Engine RPC: resurrect({ processId, sessionId }) -> { ok: true, process } |
 # { ok: false, reason } (OptioEngineService.resurrect).
+# The post-restart auto-resume sweep never resumes a process with hasUnsavedWork (the resume
+# would wipe the work): with supportsResurrect and a registered hook it calls resurrect
+# (session_id=None) instead; otherwise it skips it and logs "Auto-resume skipped <processId>:
+# unsaved work on the host (use Resurrect)". The autoResumeScheduled stamp is cleared either way.
 await optio_core.cancel(process_id: str) -> None
 # Cancels the named process. Recursively cancels active direct descendants whose
 # TaskInstance has auto_cancel_children=True (default). Opt-out parents handle
