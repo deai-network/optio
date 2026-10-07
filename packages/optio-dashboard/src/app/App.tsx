@@ -30,7 +30,7 @@ function Dashboard({
   setSelectedProcessId: (id: string | null) => void;
 }) {
   const { processes, connected: listConnected } = useProcessListStream();
-  const { launch, cancel, dismiss } = useProcessActions();
+  const { launch, resurrect, cancel, dismiss } = useProcessActions();
   const live = useOptioLive();
 
   return (
@@ -43,6 +43,7 @@ function Dashboard({
               processes={processes}
               loading={!listConnected}
               onLaunch={live ? launch : undefined}
+              onResurrect={live ? resurrect : undefined}
               onCancel={live ? cancel : undefined}
               onProcessClick={setSelectedProcessId}
             />

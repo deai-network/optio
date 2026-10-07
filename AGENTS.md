@@ -238,6 +238,10 @@ class TaskInstance:
     schedule_offset_seconds: int | None = None  # second (0-59) within each matching minute at which `schedule` fires; None = second 0
 ```
 
+`NothingToResurrect` and `ResurrectOutcome` are exported from `optio_core`. The only task
+that sets `resurrect` today is optio-claudecode's (`create_claudecode_task`, when
+`supports_resume`); its hook is described under "Resurrect" in `packages/optio-claudecode/AGENTS.md`.
+
 ---
 
 ### ChildResult Fields
@@ -890,8 +894,8 @@ async function resyncProcesses(redis: Redis, prefix: string, clean?: boolean, me
 
 ### In-process triggers
 
-In-process domain code that needs to launch / cancel / dismiss / resync calls the
-`Optio` methods directly (`optio_core.launch` / `cancel` / `dismiss` / `resync`);
+In-process domain code that needs to launch / cancel / dismiss / resurrect / resync calls the
+`Optio` methods directly (`optio_core.launch` / `cancel` / `dismiss` / `resurrect` / `resync`);
 no wire involved. External services use the clamator RPC channel — see "Control-plane
 convergence" above for the architectural rule, and the optio-core README's
 "Remote Control via Clamator RPC" section for the client-construction details.
@@ -935,8 +939,9 @@ function createTreePoller(opts: TreePollerOptions): ListPollerHandle
 { _id, parentId: string | null, name, description, status, progress, cancellable, depth, order, widgetData }
 ```
 
-Both streams also carry `supportsResurrect`, `hasUnsavedWork` and `resurrecting` (`false` when
-absent), tracked in the snapshot fingerprint.
+Both streams, and the multi-tree stream (`GET /api/processes/tree/multi/stream`), also carry
+`supportsResurrect`, `hasUnsavedWork` and `resurrecting` (`false` when absent), tracked in the
+snapshot fingerprint.
 
 `widgetData` is included in tree-stream payloads and tracked in the snapshot fingerprint so
 worker-side mutations trigger SSE events. The list stream does **not** include `widgetData`.
@@ -986,7 +991,8 @@ interface LaunchControlsProps {
 Smart launch button. Renders nothing when not in a launchable state or `onLaunch` is absent.
 While `isResurrecting(process)` (`resurrecting` true) it renders a single disabled "Resurrecting" indicator
 (spinning icon, tooltip "Resurrecting: saving the unsaved work…") and nothing clickable.
-When `onResurrect` is given and `isResurrectable(process)` (`supportsResurrect` and `hasUnsavedWork` both true),
+When `onResurrect` is given and `isResurrectable(process)` (launchable, not resurrecting, and `supportsResurrect`
+and `hasUnsavedWork` both true; `isResurrectable` and `isResurrecting` are exported from `optio-ui`),
 renders a split button: primary = Resurrect (calls `onResurrect(id)`), menu = Resume from last snapshot (only
 when resumable) and Restart; both menu items first confirm "This discards the unsaved work left by the failed
 run." (OK = "Discard and continue", via `Modal.useModal()`) before calling `onLaunch`. Otherwise:
@@ -1007,7 +1013,7 @@ interface ProcessListProps {
 }
 ```
 
-Ant Design `List` of `ProcessItem`. Shows name (with description tooltip if set), status badge, progress bar, launch/cancel buttons. Launch button rendered via `LaunchControls` (`onResurrect` forwarded to it). `FilteredProcessList` takes the same callbacks, including `onResurrect`.
+Ant Design `List` of `ProcessItem`. Shows name (with description tooltip if set), status badge, progress bar, launch/cancel buttons. Launch button rendered via `LaunchControls` (`onResurrect` forwarded to it). `FilteredProcessList` takes the same callbacks, including `onResurrect`. optio-dashboard passes `useProcessActions()`'s `launch`, `resurrect` and `cancel` to its `FilteredProcessList` as `onLaunch` / `onResurrect` / `onCancel` when the selected instance is live (none for an offline one).
 
 **`ProcessItem`**
 
@@ -1109,6 +1115,7 @@ type FilterGroup = 'all' | 'active' | 'hide_completed' | 'errors';
 ```typescript
 interface ProcessDetailViewProps {
   processId: string | null | undefined;
+  readOnly?: boolean;  // default false; true hides the launch / resurrect / cancel affordances
 }
 ```
 
@@ -1116,7 +1123,9 @@ Self-fetching detail panel (uses `useProcessStream` internally). Renders a place
 `processId` is falsy, a loading state while the SSE stream connects, a named widget when
 `tree.uiWidget` is a registered name, or the default `ProcessTreeView` + `ProcessLogPanel`
 layout otherwise. Warns to `console.warn` and falls back to default when `uiWidget` is set
-but no matching widget is registered.
+but no matching widget is registered. The default layout wires `ProcessTreeView`'s `onLaunch`,
+`onResurrect` and `onCancel` to `useProcessActions()` itself (none when `readOnly`), so the host
+passes no action callbacks to it.
 
 ---
 
