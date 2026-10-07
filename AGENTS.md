@@ -165,7 +165,8 @@ await optio_core.resurrect(process_id: str, *, session_id: str | None) -> Resurr
 # (ctx.resume=False) under progress "Resurrecting: saving the unsaved work…". Hook returns:
 # hasUnsavedWork cleared, then launch(resume=True, same session_id); a refused launch is
 # logged. Hook raises NothingToResurrect: flag cleared, reason logged, no resume. Any other
-# exception: logged, flag kept (retry possible). Progress and resurrecting are cleared in
+# exception: logged, flag kept (retry possible); an error escaping the background run
+# (e.g. a Mongo write) is logged by its done-callback. Progress and resurrecting are cleared in
 # every case, before the resume launch; init() clears a marker left by a dead engine. While
 # the hook runs, launch returns not-launchable and a second resurrect
 # resurrect-in-progress. shutdown() cancels a resurrect in progress and waits at most

@@ -289,3 +289,40 @@ def test_resurrect_exported_from_package():
     import optio_core
     assert optio_core.resurrect == optio_core._instance.resurrect
     assert "resurrect" in optio_core.__all__
+
+
+@pytest.mark.asyncio
+async def test_background_failure_is_logged(mongo_db, monkeypatch, caplog):
+    """An exception escaping the background run (here the post-hook Mongo
+    write) is logged by the task's done-callback, and asyncio never reports
+    "Task exception was never retrieved"."""
+    import gc
+    import logging
+    from optio_core import lifecycle as L
+
+    async def hook(ctx):
+        pass
+    fw, coll, proc, launched = await _setup(mongo_db, "res13", hook)
+
+    async def _boom(db, prefix, oid, value):
+        raise RuntimeError("mongo write failed")
+    monkeypatch.setattr(L, "set_has_unsaved_work", _boom)
+    caplog.set_level(logging.ERROR)
+    assert (await fw.resurrect("r1", session_id=None)).ok is True
+    tasks = [fw._resurrecting[proc["_id"]]]
+
+    async def finished():
+        return tasks[0].done()
+    await _wait_until(finished)
+    await asyncio.sleep(0)  # a yield: done-callbacks run before this resumes
+    tasks.clear()  # the last reference: the task is collected below
+    gc.collect()
+    messages = [r.getMessage() for r in caplog.records]
+    ours = [
+        r for r in caplog.records
+        if r.name == "optio_core_core" and "r1" in r.getMessage()
+        and r.exc_info and "mongo write failed" in str(r.exc_info[1])
+    ]
+    assert ours, messages
+    assert not any("never retrieved" in m for m in messages), messages
+    assert launched == []

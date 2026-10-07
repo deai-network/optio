@@ -1,6 +1,7 @@
 """Optio lifecycle management — init, run, shutdown."""
 
 import asyncio
+import functools
 import logging
 import os as _os
 import re as _re
@@ -48,6 +49,18 @@ from clamator_over_redis import RedisRpcServer
 from optio_core.scheduler import ProcessScheduler
 
 logger = logging.getLogger("optio_core_core")
+
+
+def _log_resurrect_failure(process_id: str, task: "asyncio.Task") -> None:
+    """Done-callback of a resurrect's background task. The hook's own errors
+    are handled inside the run; this logs what escapes it (e.g. a failed
+    Mongo write), and retrieves the exception so asyncio does not warn
+    "Task exception was never retrieved" later. A cancel is not a failure."""
+    if not task.cancelled() and task.exception() is not None:
+        logger.error(
+            "resurrect of %s: background run failed", process_id,
+            exc_info=task.exception(),
+        )
 
 # Rule 4 of docs/2026-10-03-lost-final-state-writes-design.md: states in which
 # a row with no owning task has lost its final write, and what it settles to.
@@ -543,9 +556,9 @@ class Optio:
             return ResurrectOutcome(ok=False, reason="not-resurrectable")
         if self._matches_block(task.metadata):
             return ResurrectOutcome(ok=False, reason="launch-blocked")
-        self._resurrecting[oid] = asyncio.create_task(
-            self._run_resurrect(proc, task, session_id),
-        )
+        run = asyncio.create_task(self._run_resurrect(proc, task, session_id))
+        run.add_done_callback(functools.partial(_log_resurrect_failure, proc["processId"]))
+        self._resurrecting[oid] = run
         return ResurrectOutcome(ok=True, proc=proc)
 
     async def _run_resurrect(

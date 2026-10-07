@@ -322,6 +322,10 @@ unsaved work…" and runs the task's `resurrect` hook with a `ProcessContext` fo
 - hook raises anything else: the error is logged at `error` level and `hasUnsavedWork` stays
   set, so the resurrect can be retried.
 
+An error escaping the background run itself (e.g. a failed Mongo write after the hook) is
+logged by the task's done-callback on the `optio_core_core` logger ("resurrect of
+<processId>: background run failed", with the exception); a cancel is not logged.
+
 Progress is cleared and `resurrecting` set back to false in every case, before the follow-up
 resume is launched; the process state is not changed by the resurrect itself. A marker left
 set by an engine that died mid-resurrect is cleared by the next `init()` (with the reset of
