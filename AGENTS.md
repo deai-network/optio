@@ -1292,6 +1292,7 @@ All components use `react-i18next`. Required keys:
 | `processes.discardUnsavedWork` | LaunchControls (confirmation body; default "This discards the unsaved work left by the failed run.") |
 | `processes.discardAndContinue` | LaunchControls (confirmation OK button; default "Discard and continue") |
 | `processes.resurrecting` | LaunchControls (Resurrecting indicator tooltip; default "Resurrecting: saving the unsaved work…") |
+| `processes.resurrectingLabel` | LaunchControls (Resurrecting indicator aria-label; default "Resurrecting") |
 | `processes.cancel` | ProcessItem, ProcessTreeView (cancel button tooltip) |
 | `processes.filterAll` | ProcessFilters |
 | `processes.filterActive` | ProcessFilters |

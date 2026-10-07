@@ -83,7 +83,7 @@ export function LaunchControls({
           <Button
             type="text"
             size={size}
-            aria-label="Resurrecting"
+            aria-label={t('processes.resurrectingLabel', { defaultValue: 'Resurrecting' })}
             icon={<LoadingOutlined spin style={iconStyle} />}
             disabled
             style={{ pointerEvents: 'none' }}

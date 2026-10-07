@@ -216,4 +216,21 @@ describe('LaunchControls resurrect', () => {
     const tip = await screen.findByRole('tooltip', {}, { timeout: 60_000 });
     expect(tip.textContent).toBe('Resurrecting: saving the unsaved work…');
   });
+
+  it('the Resurrecting indicator is named through i18n (processes.resurrectingLabel)', () => {
+    const hu = i18next.createInstance();
+    hu.init({
+      lng: 'hu',
+      resources: { hu: { translation: { processes: { resurrectingLabel: 'Feltámasztás' } } } },
+    });
+    render(
+      <I18nextProvider i18n={hu}>
+        <LaunchControls
+          process={{ ...failedWithWork, resurrecting: true }}
+          onLaunch={vi.fn()} onResurrect={vi.fn()} size="small"
+        />
+      </I18nextProvider>,
+    );
+    expect(screen.getByRole('button', { name: 'Feltámasztás' })).toBeTruthy();
+  });
 });

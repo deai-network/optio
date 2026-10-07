@@ -610,6 +610,7 @@ Complete list of all translation keys used in component source files:
 | `processes.discardUnsavedWork` | `LaunchControls` | Confirmation body (default: "This discards the unsaved work left by the failed run.") |
 | `processes.discardAndContinue` | `LaunchControls` | Confirmation OK button (default: "Discard and continue") |
 | `processes.resurrecting` | `LaunchControls` | Resurrecting indicator tooltip (default: "Resurrecting: saving the unsaved work…") |
+| `processes.resurrectingLabel` | `LaunchControls` | Resurrecting indicator `aria-label` (default: "Resurrecting") |
 | `processes.cancel` | `ProcessItem`, `ProcessTreeView` | Tooltip on cancel button |
 | `processes.filterAll` | `ProcessFilters` | Select option label |
 | `processes.filterActive` | `ProcessFilters` | Select option label |
