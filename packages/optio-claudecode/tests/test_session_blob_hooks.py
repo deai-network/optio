@@ -85,6 +85,7 @@ async def test_capture_writes_through_session_blob_encrypt(monkeypatch):
     )
     monkeypatch.setattr(session_mod, "insert_snapshot", AsyncMock(return_value={}))
     monkeypatch.setattr(session_mod, "prune_snapshots", AsyncMock(return_value=[]))
+    monkeypatch.setattr(session_mod, "load_pending_capture", AsyncMock(return_value=None))
     monkeypatch.setattr(session_mod, "record_pending_capture", AsyncMock())
     monkeypatch.setattr(session_mod, "delete_pending_capture", AsyncMock())
 

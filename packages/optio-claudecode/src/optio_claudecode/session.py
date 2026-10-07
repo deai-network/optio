@@ -63,7 +63,12 @@ from optio_claudecode.seed_manifest import (
     CLAUDE_SEED_SUFFIX,
     _rekey_claude_json_projects,
 )
-from optio_claudecode.pending_captures import delete_pending_capture, record_pending_capture
+from optio_claudecode.pending_captures import (
+    delete_pending_capture,
+    discard_pending_workdir_blob,
+    load_pending_capture,
+    record_pending_capture,
+)
 from optio_claudecode.prompt import DEFAULT_CONVERSATION_INSTRUCTIONS, compose_agents_md
 from optio_claudecode.snapshots import (
     insert_snapshot,
@@ -413,8 +418,8 @@ async def run_claudecode_session(
             claustrum_wrap=claustrum_wrap,
         )
         launched_handle = handle
-        await _on_agent_live(ctx, config)
         tmux_path = await host_actions._require_tmux(host)
+        await _on_agent_live(ctx, config)
 
         worker_port = await host.establish_tunnel(ttyd_port, bind_addr=bind_addr)
         await ctx.set_widget_upstream(f"http://{upstream_host}:{worker_port}")
@@ -1186,9 +1191,7 @@ async def run_claudecode_session(
                     )
                 except Exception as exc:
                     capture_failed = True
-                    _LOG.exception(
-                        "snapshot capture failed; keeping the task directory for Resurrect",
-                    )
+                    _LOG.exception("snapshot capture failed")
                     _trace(
                         "finally: capture_snapshot RAISED %s (%.1fs)",
                         type(exc).__name__, _time.monotonic() - _snapshot_t0,
@@ -1788,6 +1791,15 @@ async def _store_workdir_snapshot(
     """
     # 4c. Record the blobs before streaming: a capture cut off past the cancel
     # grace leaves this record, naming the partial workdir blob to delete.
+    # A record still here is from a cut-off capture nobody resurrected (the
+    # run was resumed or restarted instead); the upsert below would orphan
+    # its partial blob, so discard that first (kept if a snapshot names it).
+    stale = await load_pending_capture(ctx._db, ctx._prefix, ctx.process_id)
+    if stale is not None:
+        await discard_pending_workdir_blob(
+            ctx._db, ctx._prefix,
+            process_id=ctx.process_id, record=stale, delete_blob=ctx.delete_blob,
+        )
     workdir_blob_id = ObjectId()
     await record_pending_capture(
         ctx._db, ctx._prefix,
@@ -1980,6 +1992,10 @@ def create_claudecode_task(
     async def _execute(ctx: ProcessContext) -> None:
         await run_claudecode_session(ctx, config)
 
+    async def _resurrect(ctx: ProcessContext) -> None:
+        from optio_claudecode.resurrect import resurrect_claudecode_session
+        await resurrect_claudecode_session(ctx, config)
+
     return TaskInstance(
         execute=_execute,
         process_id=process_id,
@@ -1990,5 +2006,6 @@ def create_claudecode_task(
             else ("conversation" if config.conversation_ui else None)
         ),
         supports_resume=config.supports_resume,
+        resurrect=_resurrect if config.supports_resume else None,
         metadata=metadata or {},
     )

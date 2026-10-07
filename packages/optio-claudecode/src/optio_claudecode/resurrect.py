@@ -1,0 +1,129 @@
+"""Resurrect hook for optio-claudecode (TaskInstance.resurrect).
+
+Saves the work a failed run left on its host as a fresh snapshot, then
+removes the task directory; optio-core resumes from that snapshot afterwards.
+Spec: docs/2026-10-07-resurrect-failed-session-design.md
+"""
+
+from __future__ import annotations
+
+import re
+import shlex
+
+from bson import ObjectId
+from motor.motor_asyncio import AsyncIOMotorDatabase
+
+from optio_core import NothingToResurrect
+from optio_core.context import ProcessContext
+
+from optio_claudecode import host_actions
+from optio_claudecode import session as S
+from optio_claudecode.pending_captures import (
+    delete_pending_capture,
+    discard_pending_workdir_blob,
+    load_pending_capture,
+)
+from optio_claudecode.snapshots import _collection as _snapshots, load_latest_snapshot
+
+
+async def find_unreferenced_session_blob(
+    db: AsyncIOMotorDatabase, prefix: str, *, process_oid: ObjectId, process_id: str,
+) -> ObjectId | None:
+    """Newest session blob of this process stored after its latest snapshot
+    and referenced by no snapshot: what a capture cut off after its session
+    step left behind."""
+    latest = await load_latest_snapshot(db, prefix=prefix, process_id=process_id)
+    query: dict = {
+        "metadata.processId": str(process_oid),
+        "metadata.prefix": prefix,
+        "metadata.name": "session",
+    }
+    if latest is not None:
+        query["uploadDate"] = {"$gt": latest["capturedAt"]}
+    referenced = set(await _snapshots(db, prefix).distinct(
+        "sessionBlobId", {"processId": process_id},
+    ))
+    async for f in db["fs.files"].find(query).sort("uploadDate", -1):
+        if f["_id"] not in referenced:
+            return f["_id"]
+    return None
+
+
+async def _workdir_has_content(host) -> bool:
+    w = shlex.quote(host.workdir)
+    r = await host.run_command(
+        f'test -d {w} && [ -n "$(ls -A {w} 2>/dev/null)" ] && echo YES || true',
+        cwd="/",
+    )
+    return "YES" in r.stdout
+
+
+async def _home_claude_present(host) -> bool:
+    r = await host.run_command(
+        f"test -d {shlex.quote(host.workdir.rstrip('/') + '/home/.claude')} && echo YES || true",
+        cwd="/",
+    )
+    return "YES" in r.stdout
+
+
+async def _stop_leftovers(host) -> None:
+    """Kill what the failed run may have left: the tmux/ttyd/claude tree on
+    the task's socket, and `tail -F <workdir>/optio.log` readers. The pkill
+    pattern is anchored and escaped so it cannot match the shell running it."""
+    tmux_path = await host_actions._require_tmux(host)
+    socket = host_actions._tmux_socket_path(host)
+    if await host_actions.tmux_session_alive(host, tmux_path, socket, "optio"):
+        await host_actions.teardown_session_tree(
+            host,
+            tmux_path=tmux_path,
+            tmux_socket=socket,
+            tmux_session="optio",
+            claude_path=S._claude_bin_path(host),
+            ttyd_handle=None,
+            aggressive=True,
+        )
+    log_path = f"{host.workdir.rstrip('/')}/optio.log"
+    pattern = "^tail -F -n \\+1 " + re.escape(log_path) + "$"
+    await host.run_command(f"pkill -f -- {shlex.quote(pattern)} || true", cwd="/")
+
+
+async def resurrect_claudecode_session(ctx: ProcessContext, config) -> None:
+    host = S._build_host(config, ctx.process_id)
+    await host.connect()
+    try:
+        if not await _workdir_has_content(host):
+            raise NothingToResurrect("workdir no longer on the host (or empty)")
+        ctx.report_progress(None, "Resurrecting: stopping leftovers of the failed run…")
+        await _stop_leftovers(host)
+
+        pending = await load_pending_capture(ctx._db, ctx._prefix, ctx.process_id)
+        if pending is not None:
+            await discard_pending_workdir_blob(
+                ctx._db, ctx._prefix,
+                process_id=ctx.process_id, record=pending, delete_blob=ctx.delete_blob,
+            )
+            await delete_pending_capture(ctx._db, ctx._prefix, ctx.process_id)
+
+        if await _home_claude_present(host):
+            await S._capture_snapshot(
+                ctx, host,
+                end_state="resurrected",
+                workdir_exclude=config.workdir_exclude,
+                session_blob_encrypt=config.session_blob_encrypt,
+            )
+        else:
+            session_blob_id = await find_unreferenced_session_blob(
+                ctx._db, ctx._prefix,
+                process_oid=ctx._process_oid, process_id=ctx.process_id,
+            )
+            if session_blob_id is None:
+                raise NothingToResurrect("session state not found")
+            await S._store_workdir_snapshot(
+                ctx, host,
+                end_state="resurrected",
+                workdir_exclude=config.workdir_exclude,
+                session_blob_id=session_blob_id,
+            )
+        await host.cleanup_taskdir(aggressive=False)
+    finally:
+        await host.disconnect()

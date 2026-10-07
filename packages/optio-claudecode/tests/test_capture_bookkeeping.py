@@ -62,6 +62,29 @@ async def test_store_workdir_snapshot_records_then_clears(mongo_db, tmp_path, ct
 
 
 @pytest.mark.asyncio
+async def test_store_workdir_snapshot_discards_stale_pending_blob(mongo_db, tmp_path, ctx_and_captures):
+    """A cut-off capture followed by Resume/Restart instead of Resurrect
+    leaves a stale pending record; the next capture deletes its partial
+    workdir blob (referenced by no snapshot) before recording its own."""
+    ctx, _cap, _flag = ctx_and_captures
+    await _flags(mongo_db, ctx, supportsResume=True, supportsResurrect=True, hasUnsavedWork=True)
+    host = _local_host(tmp_path)
+    partial = ObjectId()
+    await mongo_db["fs.chunks"].insert_one({"files_id": partial, "n": 0, "data": b"partial"})
+    await PC.record_pending_capture(mongo_db, "test", process_id=ctx.process_id,
+                                    session_blob_id=ObjectId(), workdir_blob_id=partial)
+
+    session_id = ObjectId()
+    await S._store_workdir_snapshot(ctx, host, end_state="done", workdir_exclude=None, session_blob_id=session_id)
+
+    assert await mongo_db["fs.chunks"].count_documents({"files_id": partial}) == 0
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id)
+    assert snap["sessionBlobId"] == session_id
+    assert snap["workdirBlobId"] != partial
+    assert await PC.load_pending_capture(mongo_db, "test", ctx.process_id) is None
+
+
+@pytest.mark.asyncio
 async def test_interrupted_workdir_store_leaves_pending_record(mongo_db, tmp_path, ctx_and_captures, monkeypatch):
     ctx, _cap, _flag = ctx_and_captures
     await _flags(mongo_db, ctx, supportsResume=True, supportsResurrect=True, hasUnsavedWork=True)
