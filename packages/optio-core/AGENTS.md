@@ -357,13 +357,16 @@ await optio_core.count_processes(
     *,
     states: Collection[str] | None = None,       # any of these states
     metadata: dict[str, str | list[str]] | None = None,  # AND; list value = any of
+    roots_only: bool = False,                    # top-level processes only
 ) -> int
 ```
 
 Counts process documents with a `count_documents` query; nothing is loaded. Meant
 for frequent checks, e.g. a scheduler counting a source's active syncs before
 launching another: `count_processes(states=ACTIVE_STATES, metadata={"sourceId": s,
-"kind": ["sync", "sync-dry"]})`. Store-level function: `optio_core.store.count_processes`.
+"kind": ["sync", "sync-dry"]}, roots_only=True)`. Child processes inherit their
+parent's metadata, so `roots_only=True` is what counts each sync once. Store-level
+function: `optio_core.store.count_processes`.
 
 ---
 

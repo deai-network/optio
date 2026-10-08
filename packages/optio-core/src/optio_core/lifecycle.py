@@ -1179,16 +1179,19 @@ class Optio:
         *,
         states: Collection[str] | None = None,
         metadata: dict[str, str | list[str]] | None = None,
+        roots_only: bool = False,
     ) -> int:
         """Count processes in any of ``states`` whose metadata matches
         ``metadata`` (a list value matches any of its items), without loading
-        them."""
+        them. ``roots_only`` leaves out child processes, which inherit their
+        parent's metadata."""
         from optio_core.store import count_processes as _count_processes
         return await _count_processes(
             self._config.mongo_db,
             self._config.prefix,
             states=states,
             metadata=metadata,
+            roots_only=roots_only,
         )
 
     async def run(self) -> None:

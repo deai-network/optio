@@ -77,3 +77,21 @@ async def test_count_with_no_match_is_zero(mongo_db):
 def test_count_processes_is_exported():
     assert "count_processes" in optio_core.__all__
     assert callable(optio_core.count_processes)
+
+
+async def test_roots_only_leaves_out_children(mongo_db):
+    """Children inherit their parent's metadata, so a metadata count alone
+    would count a running parent once per child; roots_only counts the
+    top-level processes."""
+    from optio_core.store import create_child_process
+    parent = await _add(mongo_db, "sync", state="running", sourceId="s1", kind="entity-sync")
+    for i in range(3):
+        child = await create_child_process(
+            mongo_db, "test", parent_oid=parent["_id"], root_oid=parent["_id"],
+            process_id=f"child-{i}", name=f"child {i}", params={}, depth=1, order=i,
+            metadata=parent["metadata"],  # what the executor passes a child
+        )
+        await update_status(mongo_db, "test", child["_id"], ProcessStatus(state="running"))
+    filters = dict(states=["running"], metadata={"sourceId": "s1", "kind": "entity-sync"})
+    assert await count_processes(mongo_db, "test", **filters) == 4
+    assert await count_processes(mongo_db, "test", roots_only=True, **filters) == 1

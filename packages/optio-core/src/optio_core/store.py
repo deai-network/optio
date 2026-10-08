@@ -492,13 +492,16 @@ async def count_processes(
     *,
     states: Collection[str] | None = None,
     metadata: dict[str, str | list[str]] | None = None,
+    roots_only: bool = False,
 ) -> int:
     """Count processes matching the filters, without loading them.
 
     ``states``: the process is in any of these states. ``metadata``: each
     key-value pair matches ``metadata.{key}``, combined with AND; a list value
-    matches any of its items."""
-    filter: dict = {}
+    matches any of its items. ``roots_only``: only top-level processes --
+    children inherit their parent's metadata, so without it a running parent
+    counts once per matching child."""
+    filter: dict = {"parentId": None} if roots_only else {}
     if states is not None:
         filter["status.state"] = {"$in": list(states)}
     for key, value in (metadata or {}).items():

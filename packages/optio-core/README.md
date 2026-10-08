@@ -457,6 +457,7 @@ await optio_core.count_processes(
     *,
     states: Collection[str] | None = None,
     metadata: dict[str, str | list[str]] | None = None,
+    roots_only: bool = False,
 ) -> int
 ```
 
@@ -468,6 +469,7 @@ this source are active".
 |-----------|------|---------|-------------|
 | `states` | `Collection[str] \| None` | `None` | The process is in any of these states, e.g. `ACTIVE_STATES` |
 | `metadata` | `dict[str, str \| list[str]] \| None` | `None` | Each key-value pair matches `metadata.{key}`, combined with AND. A list value matches any of its items: `{"kind": ["sync", "sync-dry"]}` |
+| `roots_only` | `bool` | `False` | Count top-level processes only. Children inherit their parent's metadata, so without it a running parent counts once per matching child |
 
 ## Ad-hoc Processes
 

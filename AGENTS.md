@@ -197,9 +197,10 @@ await optio_core.adhoc_delete(process_id: str) -> None
 # Queries
 await optio_core.get_process(process_id: str) -> dict | None
 await optio_core.list_processes(state=None, root_id=None, metadata=None) -> list[dict]
-await optio_core.count_processes(*, states=None, metadata=None) -> int
+await optio_core.count_processes(*, states=None, metadata=None, roots_only=False) -> int
 # Counts without loading documents. states: any of these. metadata: AND of
-# metadata.{key} matches; a list value matches any of its items.
+# metadata.{key} matches; a list value matches any of its items. roots_only:
+# top-level processes only (children inherit their parent's metadata).
 
 # RPC server (set after init(); None if no Redis configured).
 # Register custom clamator services on it before run() for app-specific verbs.
