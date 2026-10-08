@@ -1,6 +1,7 @@
 """MongoDB operations for process records."""
 
 import re as _re
+from collections.abc import Collection
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
@@ -483,6 +484,29 @@ async def list_processes(
     return await coll.find(filter).sort([
         ("depth", 1), ("order", 1), ("_id", 1),
     ]).to_list(None)
+
+
+async def count_processes(
+    db: AsyncIOMotorDatabase,
+    prefix: str,
+    *,
+    states: Collection[str] | None = None,
+    metadata: dict[str, str | list[str]] | None = None,
+) -> int:
+    """Count processes matching the filters, without loading them.
+
+    ``states``: the process is in any of these states. ``metadata``: each
+    key-value pair matches ``metadata.{key}``, combined with AND; a list value
+    matches any of its items."""
+    filter: dict = {}
+    if states is not None:
+        filter["status.state"] = {"$in": list(states)}
+    for key, value in (metadata or {}).items():
+        filter[f"metadata.{key}"] = (
+            {"$in": list(value)} if isinstance(value, (list, tuple, set, frozenset))
+            else value
+        )
+    return await _collection(db, prefix).count_documents(filter)
 
 
 async def update_widget_upstream(

@@ -26,6 +26,7 @@ dismiss = _instance.dismiss
 resync = _instance.resync
 get_process = _instance.get_process
 list_processes = _instance.list_processes
+count_processes = _instance.count_processes
 block_launches = _instance.block_launches
 unblock_launches = _instance.unblock_launches
 group_cancel = _instance.group_cancel
@@ -40,7 +41,7 @@ __all__ = [
     "adhoc_define", "adhoc_delete",
     "launch", "launch_and_wait", "launch_and_await_result", "resurrect",
     "get_published_result", "cancel", "dismiss", "resync",
-    "get_process", "list_processes",
+    "get_process", "list_processes", "count_processes",
     "block_launches", "unblock_launches",
     "group_cancel", "group_cancel_and_wait",
     "rpc_server", "mongo_store", "MongoStore",

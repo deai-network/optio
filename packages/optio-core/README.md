@@ -450,6 +450,25 @@ List processes with optional filters. Results are sorted by `depth`, `order`, th
 | `root_id` | `str \| None` | `None` | Filter by `rootId` (string; converted to ObjectId internally) |
 | `metadata` | `dict[str, str] \| None` | `None` | Filter by metadata fields. Each key-value pair matches against `metadata.{key}` in the process document. Multiple entries are combined with AND. For example, `metadata={"customer": "2"}` returns all processes tagged with that customer. |
 
+### `count_processes()`
+
+```python
+await optio_core.count_processes(
+    *,
+    states: Collection[str] | None = None,
+    metadata: dict[str, str | list[str]] | None = None,
+) -> int
+```
+
+Count processes matching the filters without loading their documents (a
+`count_documents` query). Useful for frequent checks such as "how many syncs of
+this source are active".
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `states` | `Collection[str] \| None` | `None` | The process is in any of these states, e.g. `ACTIVE_STATES` |
+| `metadata` | `dict[str, str \| list[str]] \| None` | `None` | Each key-value pair matches `metadata.{key}`, combined with AND. A list value matches any of its items: `{"kind": ["sync", "sync-dry"]}` |
+
 ## Ad-hoc Processes
 
 Ad-hoc processes are created at runtime rather than from the task generator. They are useful for one-off operations or dynamically spawned work.

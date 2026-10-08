@@ -15,7 +15,7 @@ import uuid
 # cancel-propagation races; safe to leave compiled in because each log
 # call is guarded by the module-level flag below.
 _CANCEL_TRACE = _os.environ.get("OPTIO_CANCEL_TRACE", "0").lower() in ("1", "true", "yes")
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Collection
 from contextlib import asynccontextmanager, AsyncExitStack
 from datetime import datetime, timezone
 from typing import Any, Callable, Awaitable
@@ -1171,6 +1171,23 @@ class Optio:
             self._config.prefix,
             state=state,
             root_id=OID(root_id) if root_id else None,
+            metadata=metadata,
+        )
+
+    async def count_processes(
+        self,
+        *,
+        states: Collection[str] | None = None,
+        metadata: dict[str, str | list[str]] | None = None,
+    ) -> int:
+        """Count processes in any of ``states`` whose metadata matches
+        ``metadata`` (a list value matches any of its items), without loading
+        them."""
+        from optio_core.store import count_processes as _count_processes
+        return await _count_processes(
+            self._config.mongo_db,
+            self._config.prefix,
+            states=states,
             metadata=metadata,
         )
 
