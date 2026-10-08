@@ -239,9 +239,11 @@ describe('claudecode session end: messages re-queued on resume', () => {
 
   it('a bubble x-optio-resumed does not list becomes Not delivered; the listed one stays queued below it', () => {
     const s = run([running, user('q'), queued('q1', 'a'), queued('q2', 'b'), resumed(['q2'])]);
-    expect(s.items.map((i) => ('text' in i ? i.text : i.kind))).toEqual(['q', 'Not delivered: a', 'b']);
+    // The resume band (owner request 2026-10-08) closes the old run: after its
+    // Not delivered note, in front of the bubble the new run re-queues.
+    expect(s.items.map((i) => ('text' in i ? i.text : i.kind))).toEqual(['q', 'Not delivered: a', 'resumed', 'b']);
     expect(s.items[1]).toMatchObject({ kind: 'activity', muted: true, requeueId: 'q1' });
-    expect(s.items[2]).toMatchObject({ kind: 'user', queued: true, queueId: 'q2' });
+    expect(s.items[3]).toMatchObject({ kind: 'user', queued: true, queueId: 'q2' });
   });
 });
 

@@ -15,7 +15,7 @@
 //   * synthetic x-optio-* events (permission-answered / closed / local-user).
 
 import type { ChatItem, ChatState } from '../chat.js';
-import { foldControlUpdate } from '../chat.js';
+import { appendBand, foldControlUpdate, hasResumeNotice } from '../chat.js';
 import { explainApiError } from '../apiError.js';
 import { parseUploadNotice, uploadNoticeActivityText } from '../uploads.js';
 export { initialChatState } from '../chat.js';
@@ -100,6 +100,19 @@ function acpEventTime(ev: any): number | undefined {
   const meta = ev?.params?._meta ?? ev?._meta;
   const ms = meta?.agentTimestampMs;
   return typeof ms === 'number' ? ms : undefined;
+}
+
+// grok: the start of the model response an answer chunk belongs to.
+function acpStreamStart(ev: any): number | undefined {
+  const meta = ev?.params?._meta ?? ev?._meta;
+  const ms = meta?.streamStartMs;
+  return typeof ms === 'number' ? ms : undefined;
+}
+
+// Message timestamps (owner request 2026-10-08): stamp a user/System row with
+// the wire time, only when the wire carries one (never invented).
+function stamped<T extends Extract<ChatItem, { kind: 'user' | 'activity' }>>(item: T, at: number | undefined): T {
+  return at === undefined ? item : { ...item, timestamp: at };
 }
 
 // Grok's title is "Execute `<the whole command>`" or "Read `<path>`". The
@@ -207,16 +220,27 @@ function acpToolStatus(status: unknown): 'running' | 'done' | 'failed' | undefin
 // keeps the whole turn's answer in one bubble regardless of interleaving. A new
 // turn (turn-end → turn++) yields a new msgId, so the next answer opens a fresh
 // bubble; the prior turn's bubble is finalized (pending=false) and never matches.
-function appendPending(items: ChatItem[], seq: number, text: string, msgId: string): ChatItem[] {
+// Message timestamps (owner request 2026-10-08): `at` is the chunk's wire
+// time and `start` the start of its model response (grok's _meta, both
+// optional). A new bubble starts at `start`, else at its first chunk; every
+// chunk moves its end, so the view shows the same interval as for claudecode.
+function appendPending(
+  items: ChatItem[], seq: number, text: string, msgId: string, at?: number, start?: number,
+): ChatItem[] {
   const idx = items.findIndex(
     (i) => i.kind === 'assistant' && i.pending && i.msgId === msgId,
   );
   if (idx !== -1) {
     const cur = items[idx] as Extract<ChatItem, { kind: 'assistant' }>;
     const next: ChatItem = { ...cur, text: cur.text + text };
+    if (at !== undefined) next.endTimestamp = at;
     return [...items.slice(0, idx), next, ...items.slice(idx + 1)];
   }
-  return [...items, { kind: 'assistant', text, pending: true, seq, msgId }];
+  const bubble: ChatItem = { kind: 'assistant', text, pending: true, seq, msgId };
+  const first = start ?? at;
+  if (first !== undefined) bubble.timestamp = first;
+  if (at !== undefined) bubble.endTimestamp = at;
+  return [...items, bubble];
 }
 
 // Finalize the in-flight assistant bubble (pending -> false), if any.
@@ -271,7 +295,10 @@ function reduce(st: AcpChatState, ev: any, seq: number): AcpChatState {
   if (synthetic === 'x-optio-local-user') {
     const text = typeof ev.text === 'string' ? ev.text : '';
     if (text === '') return st;
-    return { ...st, busy: true, items: [...st.items, { kind: 'user', text, seq, local: true }] };
+    // `time`: the send moment the view stamps on its echo (grok echoes no
+    // operator message live, so this is the only time it gets).
+    const time = typeof ev.time === 'number' ? ev.time : undefined;
+    return { ...st, busy: true, items: [...st.items, stamped({ kind: 'user', text, seq, local: true }, time)] };
   }
   if (synthetic === 'x-optio-local-error') {
     // A client-side upload failure the view surfaces immediately (transient —
@@ -379,7 +406,9 @@ function reduce(st: AcpChatState, ev: any, seq: number): AcpChatState {
       // No dropTools: tool rows persist. Because `tool_call` finalizes the
       // prior bubble, this append opens a NEW bubble after a tool (the fixed
       // boundary) while still coalescing plain streamed text into one bubble.
-      return { ...st, busy: true, items: appendPending(st.items, seq, text, msgId) };
+      return {
+        ...st, busy: true, items: appendPending(st.items, seq, text, msgId, acpEventTime(ev), acpStreamStart(ev)),
+      };
     }
 
     if (kind === 'agent_thought_chunk') {
@@ -523,6 +552,9 @@ function reduce(st: AcpChatState, ev: any, seq: number): AcpChatState {
       const turn = (st.turn ?? 0) + 1;
       const attach: ChatItem | null =
         uploads.length > 0 ? { kind: 'activity', text: uploadNoticeActivityText(uploads), seq } : null;
+      // Message timestamps (owner request 2026-10-08): the echo's wire time,
+      // replayed history included.
+      const at = acpEventTime(ev);
 
       // Harness System: notice (resume/auto-start), or an upload with no prompt
       // body — render the attachment row (if any) then, for a harness message,
@@ -532,24 +564,28 @@ function reduce(st: AcpChatState, ev: any, seq: number): AcpChatState {
         if (text !== '') {
           const last = base[base.length - 1];
           if (!attach && last && last.kind === 'activity' && last.text === text) return st;
-          items = [...items, { kind: 'activity', text, seq }];
+          // Resume band (owner request 2026-10-08): ACP agents have no resume
+          // marker, so the resume notice draws the band in front of its row.
+          if (hasResumeNotice(text)) items = appendBand(items, 'resumed', seq);
+          items = [...items, stamped({ kind: 'activity', text, seq }, at)];
         }
         return { ...st, items, turn };
       }
       // Real operator prompt: confirm the optimistic local echo in place (the
       // attachment row slots in just before it to stay chronological), else
-      // append the attachment row then the user bubble.
+      // append the attachment row then the user bubble. A wire time replaces
+      // the echo's own send time.
       const idx = base.findIndex((i) => i.kind === 'user' && i.local && i.text === text);
       if (idx !== -1) {
         const cur = base[idx] as Extract<ChatItem, { kind: 'user' }>;
-        const confirmed = { ...cur, local: false };
+        const confirmed = stamped({ ...cur, local: false }, at);
         const items = attach
           ? [...base.slice(0, idx), attach, confirmed, ...base.slice(idx + 1)]
           : [...base.slice(0, idx), confirmed, ...base.slice(idx + 1)];
         return { ...st, items, turn };
       }
       const appended = attach ? [...base, attach] : base;
-      return { ...st, items: [...appended, { kind: 'user', text, seq }], turn };
+      return { ...st, items: [...appended, stamped({ kind: 'user', text, seq }, at)], turn };
     }
 
     // No-ops (no dedicated rendering):

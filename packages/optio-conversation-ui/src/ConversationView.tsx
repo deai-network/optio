@@ -191,6 +191,49 @@ function ensureInterruptedStyle(): void {
   document.head.appendChild(el);
 }
 
+// Padding of the transcript's scroll container; the bands reach through it to
+// the container's edges.
+const TRANSCRIPT_PADDING = 8;
+
+// Resume and compaction bands (owner request 2026-10-08): where the session
+// was saved and resumed, or its context compacted, a band with zig-zag top
+// and bottom edges. Same conic-gradient zigzag as the interrupted answer
+// above, once per edge. It spans the whole transcript area, not just the
+// reading column: the scroll container is a size container, so 100cqw is its
+// width inside the padding, and the margin shifts the band from the centred
+// column's left edge to the container's.
+const BAND_STYLE_ID = 'optio-cc-band-style';
+function ensureBandStyle(): void {
+  if (typeof document === 'undefined') return;
+  const mask = `conic-gradient(from 135deg at top, #0000, #000 1deg 89deg, #0000 90deg) top / 12px 51% repeat-x,
+      conic-gradient(from -45deg at bottom, #0000, #000 1deg 89deg, #0000 90deg) bottom / 12px 51% repeat-x`;
+  // Reuse the element, but always write the current rules: a hot reload
+  // keeps the page, and an older version's rules with it.
+  const existing = document.getElementById(BAND_STYLE_ID);
+  const el = existing ?? document.createElement('style');
+  el.id = BAND_STYLE_ID;
+  // The band paints its edge colour; its fill sits inset 1.5px from the top
+  // and bottom under the same zigzag, so the edge colour shows as a ~1px line
+  // along both zig-zag edges (a plain border would be cut off by the mask).
+  el.textContent = `.optio-cc-band {
+    position: relative;
+    width: calc(100cqw + ${2 * TRANSCRIPT_PADDING}px);
+    margin-left: calc(50% - 50cqw - ${TRANSCRIPT_PADDING}px);
+    -webkit-mask: ${mask};
+    mask: ${mask};
+  }
+  .optio-cc-band-fill {
+    position: absolute;
+    inset: 1.5px 0;
+    -webkit-mask: ${mask};
+    mask: ${mask};
+  }
+  .optio-cc-band-label {
+    position: relative;
+  }`;
+  if (!existing) document.head.appendChild(el);
+}
+
 // Fix 16 (owner ruling 2026-09-15, manual-test finding): an interrupted
 // answer's cut-off text (the jagged-edge bubble above) also trails off with
 // an ellipsis, unless the text already ends with one. Render only: this
@@ -729,6 +772,49 @@ function renderTimeLabel(timestamp: number | undefined, now: number, token: Glob
   );
 }
 
+// The summary the agent continues from after a compaction (owner ruling
+// 2026-10-08): kept, as a centred System-style row (the lavender bubble) that
+// shows its first line and expands to the whole summary, rendered as
+// markdown, on click. Its own component for the expanded state.
+function CompactSummaryRow({ item, now, token }: {
+  item: Extract<ChatItem, { kind: 'summary' }>; now: number; token: GlobalToken;
+}) {
+  const [open, setOpen] = useState(false);
+  const [first, ...rest] = item.text.split('\n');
+  const body = rest.join('\n').trim();
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignSelf: 'center', alignItems: 'center', maxWidth: '80%' }}>
+      <div
+        data-testid="compaction-summary"
+        style={{
+          ...bubbleBase,
+          background: token.purple1,
+          border: `1px solid ${token.purple3}`,
+          color: token.colorTextSecondary,
+          fontSize: 12,
+          borderRadius: 14,
+        }}
+      >
+        {first}
+        {body !== '' && (
+          <>
+            {' '}
+            <Button type="link" size="small" style={{ fontSize: 12, padding: 0, height: 'auto' }} onClick={() => setOpen(!open)}>
+              {open ? 'Hide summary' : 'Show summary'}
+            </Button>
+            {open && (
+              <div style={{ whiteSpace: 'normal', marginTop: 6 }}>
+                <AnswerBlock text={body} />
+              </div>
+            )}
+          </>
+        )}
+      </div>
+      {renderTimeLabel(item.timestamp, now, token)}
+    </div>
+  );
+}
+
 // Fix 12 (owner ruling 2026-09-14): the assistant-only variant of
 // renderTimeLabel above, showing a "HH:MM - HH:MM" interval when the
 // message's start and end fall in different local minutes (a single time
@@ -1049,6 +1135,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     ensureFlashStyle();
     ensureCopyStyle();
     ensureInterruptedStyle();
+    ensureBandStyle();
     ensureSendButtonStyle();
     inputRef.current?.focus();
     const timers = [100, 400, 1000].map((ms) => setTimeout(() => inputRef.current?.focus(), ms));
@@ -1526,7 +1613,55 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             <div style={{ flex: 1, borderTop: `1px solid ${token.colorBorderSecondary}` }} />
           </div>
         );
+      case 'resumed':
+        // Resume band (owner request 2026-10-08): the session was captured
+        // here and resumed later.
+        return renderBand(`resumed-${item.seq}`, 'resume-band', 'Session has been saved and resumed.',
+          { fill: token.colorFillSecondary, text: token.colorTextTertiary });
+      case 'compacting':
+      case 'compacted':
+        // Compaction bands (owner request 2026-10-08), around the summary:
+        // the agent's context is being compacted, then has been. The System
+        // bubble's colours (the activity row above): its fill, and its border
+        // along the zig-zag edges.
+        return item.kind === 'compacting'
+          ? renderBand(`compacting-${item.seq}`, 'compaction-start-band', 'Context is being compacted.',
+            { fill: token.purple1, edge: token.purple3, text: token.colorTextSecondary })
+          : renderBand(`compacted-${item.seq}`, 'compaction-end-band', 'Context has been compacted.',
+            { fill: token.purple1, edge: token.purple3, text: token.colorTextSecondary });
+      case 'summary':
+        return <CompactSummaryRow key={item.seq} item={item} now={renderedAt} token={token} />;
     }
+  }
+
+  // A resume or compaction band. Width and zig-zag edges come from the
+  // mount-installed classes: the band paints `edge` (none: the fill colour),
+  // its inset fill paints `fill`. The padding keeps the label clear of the
+  // 6px teeth. Keyed apart from the row that may draw it (a resume notice, a
+  // compaction summary), which carries the same seq.
+  function renderBand(
+    key: string, testId: string, label: string, colors: { fill: string; edge?: string; text: string },
+  ) {
+    return (
+      <div
+        key={key}
+        data-testid={testId}
+        className="optio-cc-band"
+        style={{
+          alignSelf: 'stretch',
+          marginTop: 8,
+          marginBottom: 8,
+          padding: '14px 12px',
+          background: colors.edge ?? colors.fill,
+          color: colors.text,
+          fontSize: 12,
+          textAlign: 'center',
+        }}
+      >
+        <div data-testid="band-fill" className="optio-cc-band-fill" style={{ background: colors.fill }} />
+        <span className="optio-cc-band-label">{label}</span>
+      </div>
+    );
   }
 
   const selectedTodo = props.todos?.find((todo) => todo.id === selectedTodoId);
@@ -1577,7 +1712,10 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
           ref={scrollRef}
           onScroll={onScroll}
           style={{
-            flex: 1, minHeight: 0, overflowY: 'auto', padding: 8,
+            flex: 1, minHeight: 0, overflowY: 'auto', padding: TRANSCRIPT_PADDING,
+            // A size container, so the resume band can span its full width
+            // (100cqw) from inside the centred reading column.
+            containerType: 'inline-size',
             // The scrollbar is browser-painted (not antd-tokened); drive it from
             // tokens so it follows light/dark. Standard property — modern
             // Chrome/Firefox/Safari support it; older engines fall back to default.

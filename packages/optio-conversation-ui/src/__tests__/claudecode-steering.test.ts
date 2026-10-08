@@ -626,7 +626,7 @@ describe('review of fix 13b, finding 2: a lifecycle "Not delivered" note eventua
       { type: 'x-optio-resumed' },
       user('next'), assistantText('answer', 'm1'), result('answer'),
     ]);
-    expect(texts(s)).toEqual(['q', 'Not delivered: later', 'next', 'answer']);
+    expect(texts(s)).toEqual(['q', 'Not delivered: later', 'resumed', 'next', 'answer']);
   });
 
   it('x-optio-closed unpins it the same way', () => {

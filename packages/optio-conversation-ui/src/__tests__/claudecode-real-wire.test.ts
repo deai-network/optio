@@ -13,6 +13,13 @@
 //    then task_updated + task_notification while idle and the follow-up turn
 //    the CLI starts on its own. Only user and assistant events carry a
 //    timestamp.
+//  - claudecode-compact-manual.jsonl (CLI 2.1.294, claude-opus-5-5, captured
+//    2026-10-08 from an optio listener on the excavator stack): an answer,
+//    then /compact sent through the listener: status compacting, init,
+//    compact_boundary, the summary (a user event, isSynthetic, its text
+//    redacted after the first sentence), the command's own replay echoes,
+//    result and idle. command_uuids renamed, rate_limit_event and
+//    thinking_tokens dropped.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -138,5 +145,23 @@ describe('claudecode real wire: a background task', () => {
     const cut = events.findIndex((e) => e.type === 'result');
     const s = reduceEvent(replay(events.slice(0, cut + 1)), { type: 'x-optio-resumed' }, 999, NOW);
     expect(bgRow(s)).toMatchObject({ status: 'stopped', endedAt: Date.parse('2026-09-12T04:10:42.198Z') });
+  });
+});
+
+// Compaction bands (owner request 2026-10-08).
+describe('claudecode real wire: context compaction', () => {
+  const events = load('claudecode-compact-manual.jsonl');
+
+  it('the compaction ends the transcript with its two bands around the summary row; the command echoes are absorbed', () => {
+    const s = replay(events);
+    expect(s.items.map((i) => i.kind)).toEqual(['user', 'assistant', 'compacting', 'summary', 'compacted']);
+    expect(s.items[3]).toMatchObject({ kind: 'summary', timestamp: Date.parse('2026-10-08T12:48:30.412Z') });
+    expect((s.items[3] as Extract<ChatItem, { kind: 'summary' }>).text)
+      .toMatch(/^This session is being continued from a previous conversation/);
+    expect(s.busy).toBe(false);
+  });
+
+  it('live (with stream_events) and replay (without) give the same items', () => {
+    expect(withoutSeq(live(events).items)).toEqual(withoutSeq(replay(events).items));
   });
 });

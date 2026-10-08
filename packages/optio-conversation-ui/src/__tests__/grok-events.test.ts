@@ -155,6 +155,90 @@ describe('grok/cursor shared ACP reducer — resume replay rendering', () => {
   });
 });
 
+// Resume band (owner request 2026-10-08): ACP agents have no resume marker;
+// the resume notice in the replayed (or live) history is the trace. It draws
+// the band in front of its own System row.
+describe('grok/cursor shared ACP reducer — resume band', () => {
+  it('a resume notice draws the band, then its System row', () => {
+    const s = play([
+      userChunk('prior question'), chunk('prior answer'),
+      userChunk('System: you have been resumed'),
+      chunk('back again'),
+    ]);
+    expect(s.items.map((i) => i.kind)).toEqual(['user', 'assistant', 'resumed', 'activity', 'assistant']);
+  });
+
+  it('draws one band per resume in a replayed history', () => {
+    const s = play([
+      userChunk('q'), chunk('a'),
+      userChunk('System: you have been resumed'), chunk('b'),
+      userChunk('System: you have been resumed'), chunk('c'),
+    ]);
+    expect(s.items.filter((i) => i.kind === 'resumed')).toHaveLength(2);
+  });
+
+  it('a duplicate resume notice adds neither a second band nor a second row', () => {
+    const s = play([
+      userChunk('System: you have been resumed'),
+      userChunk('System: you have been resumed'),
+    ]);
+    expect(s.items.map((i) => i.kind)).toEqual(['resumed', 'activity']);
+  });
+
+  it('other System notices draw no band', () => {
+    const s = play([userChunk('System: deliverable report.md: accepted.')]);
+    expect(s.items.map((i) => i.kind)).toEqual(['activity']);
+  });
+});
+
+// Message timestamps (owner request 2026-10-08): grok stamps its updates with
+// _meta.agentTimestampMs (epoch ms), replayed history included, and answer
+// chunks with streamStartMs, the start of the model response they belong to.
+// Absent on the wire means absent on the row: never invented.
+describe('grok message timestamps', () => {
+  const T1 = Date.parse('2026-10-08T11:48:56.666Z');
+  const T2 = Date.parse('2026-10-08T11:48:58.865Z');
+  const T3 = Date.parse('2026-10-08T11:49:01.152Z');
+  const T4 = Date.parse('2026-10-08T11:49:03.000Z');
+  const withMeta = (ev: any, meta: Record<string, unknown>) => ({ ...ev, params: { ...ev.params, _meta: meta } });
+
+  it('a replayed user message carries its agent timestamp', () => {
+    const s = play([withMeta(userChunk('q'), { agentTimestampMs: T1, isReplay: true })]);
+    expect(s.items[0]).toMatchObject({ kind: 'user', text: 'q', timestamp: T1 });
+  });
+
+  it('a System row carries its agent timestamp', () => {
+    const s = play([withMeta(userChunk('System: you have been resumed'), { agentTimestampMs: T1 })]);
+    expect(s.items.find((i) => i.kind === 'activity')).toMatchObject({ timestamp: T1 });
+  });
+
+  it('an answer spans its response start to its last chunk', () => {
+    const s = play([
+      withMeta(chunk('Hel'), { agentTimestampMs: T3, streamStartMs: T2 }),
+      withMeta(chunk('lo'), { agentTimestampMs: T4, streamStartMs: T2 }),
+    ]);
+    expect(s.items[0]).toMatchObject({ kind: 'assistant', text: 'Hello', timestamp: T2, endTimestamp: T4 });
+  });
+
+  it('an answer with no response start begins at its first chunk', () => {
+    const s = play([withMeta(chunk('Hi'), { agentTimestampMs: T3 })]);
+    expect(s.items[0]).toMatchObject({ kind: 'assistant', timestamp: T3, endTimestamp: T3 });
+  });
+
+  it('no _meta, no time', () => {
+    const s = play([userChunk('q'), userChunk('System: x'), chunk('a')]);
+    for (const item of s.items) {
+      expect('timestamp' in item).toBe(false);
+      expect('endTimestamp' in item).toBe(false);
+    }
+  });
+
+  it('the optimistic local echo shows the send time the view gives it', () => {
+    const s = play([{ type: 'x-optio-local-user', text: 'say PONG', time: T1 }]);
+    expect(s.items[0]).toMatchObject({ kind: 'user', local: true, timestamp: T1 });
+  });
+});
+
 describe('grok/cursor shared ACP reducer — upload notice → attachment row', () => {
   it('splits an upload notice into a clean bubble + attachment row, deduping the optimistic echo (live path)', () => {
     const s = play([

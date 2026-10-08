@@ -254,7 +254,8 @@ describe('reduceEvent', () => {
       user('System: you have been resumed'),
       user('[Request interrupted by user]'),
     ]);
-    expect(s.items.map((i) => i.kind)).toEqual(['assistant', 'activity', 'user']);
+    // The resume notice draws the resume band in front of its row.
+    expect(s.items.map((i) => i.kind)).toEqual(['assistant', 'resumed', 'activity', 'user']);
     expect(ofKind(s, 'user')[0].text).toBe('[Request interrupted by user]');
   });
 
@@ -983,8 +984,9 @@ describe('resume marker (x-optio-resumed)', () => {
     const s = run([...bgStarted, result('started it'), resumed], initialChatState, HOURS_LATER);
     const [row] = ofKind(s, 'tool');
     expect(row).toMatchObject({ background: true, status: 'stopped', startedAt: Date.parse(T0), endedAt: Date.parse(T5) });
-    // No closed divider: the resumed session is live.
-    expect(s.items.map((i) => i.kind)).toEqual(['tool', 'assistant']);
+    // No closed divider: the resumed session is live. The resume band marks
+    // where the dead run ended.
+    expect(s.items.map((i) => i.kind)).toEqual(['tool', 'assistant', 'resumed']);
     expect(s.closed).toBe(false);
   });
 
@@ -1006,10 +1008,110 @@ describe('resume marker (x-optio-resumed)', () => {
     expect(run([user('q'), resumed]).busy).toBe(false);
   });
 
+  // Resume band (owner request 2026-10-08): a full-width zig-zag band where
+  // the session was captured and resumed. The System: row the resume notice
+  // makes stays: it is what the agent was told, a different thing.
+  it('draws a resume band where the restored history ends', () => {
+    const s = run([user('q'), assistantText('a', 'msg_1'), result('a'), resumed]);
+    expect(s.items.map((i) => i.kind)).toEqual(['user', 'assistant', 'resumed']);
+  });
+
+  it('keeps the "System: you have been resumed" row after the band, without a second band', () => {
+    const s = run([assistantText('a', 'msg_1'), result('a'), resumed, user('System: you have been resumed')]);
+    expect(s.items.map((i) => i.kind)).toEqual(['assistant', 'resumed', 'activity']);
+    expect(ofKind(s, 'activity')[0]).toMatchObject({ text: 'System: you have been resumed', system: true });
+    expect(s.busy).toBe(true);
+  });
+
+  it('a resume notice with no marker before it draws the band itself, in front of its row', () => {
+    const s = run([assistantText('a', 'msg_1'), result('a'), user('System: you have been resumed')]);
+    expect(s.items.map((i) => i.kind)).toEqual(['assistant', 'resumed', 'activity']);
+  });
+
+  it('draws one band per resume', () => {
+    const resumeOnce = [resumed, user('System: you have been resumed'), assistantText('back', 'msg_2'), result('back')];
+    const s = run([assistantText('a', 'msg_1'), result('a'), ...resumeOnce, ...resumeOnce]);
+    expect(s.items.map((i) => i.kind)).toEqual([
+      'assistant', 'resumed', 'activity', 'assistant', 'resumed', 'activity', 'assistant',
+    ]);
+  });
+
+  it('a resume notice the CLI folded with other notices still gets its band', () => {
+    const ev = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'System: you have been resumed' },
+          { type: 'text', text: 'System: second notice' },
+        ],
+      },
+    };
+    const s = run([assistantText('a', 'msg_1'), result('a'), ev]);
+    expect(s.items.map((i) => i.kind)).toEqual(['assistant', 'resumed', 'activity']);
+    expect(ofKind(s, 'activity')[0].text).toBe('System: you have been resumed\nSystem: second notice');
+  });
+
   it('other engines ignore it (unknown event type)', () => {
     for (const reduce of [reduceAcpEvent, reduceAntigravityEvent, reduceCodexEvent, reduceCursorEvent, reduceGrokEvent, reduceKimiCodeEvent]) {
       expect(reduce(initialChatState, resumed, 1)).toEqual(initialChatState);
     }
     expect(reduceOpencodeEvent(initialChatState, resumed, 1, 'ses_1')).toEqual(initialChatState);
+  });
+});
+
+// Compaction bands (owner request 2026-10-08, two bands per compaction):
+// the CLI's compact_boundary draws the "being compacted" band; the summary
+// user event that follows it (isSynthetic) is a summary row, closed by the
+// "has been compacted" band, which absorbs a /compact command's own replay
+// echoes (its local-command-stdout and the command itself).
+describe('context compaction (compact_boundary)', () => {
+  const boundary = { type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'auto', pre_tokens: 967119, post_tokens: 5870 } };
+  const SUMMARY = 'This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nSummary:\n1. Primary Request and Intent: x';
+  const summary = { type: 'user', message: { role: 'user', content: SUMMARY }, timestamp: T5, isSynthetic: true };
+  const stdoutEcho = { type: 'user', message: { role: 'user', content: '<local-command-stdout>Compacted </local-command-stdout>' }, timestamp: T5, isReplay: true };
+  const commandEcho = {
+    type: 'user', timestamp: T0, isReplay: true,
+    message: { role: 'user', content: '<command-name>/compact</command-name>\n            <command-message>compact</command-message>\n            <command-args></command-args>' },
+  };
+
+  it('compact_boundary draws the "being compacted" band', () => {
+    const s = run([assistantText('a', 'msg_1'), result('a'), boundary]);
+    expect(s.items.map((i) => i.kind)).toEqual(['assistant', 'compacting']);
+  });
+
+  it('the summary is a summary row with its wire time, between the two bands', () => {
+    const s = run([assistantText('a', 'msg_1'), result('a'), boundary, summary]);
+    expect(s.items.map((i) => i.kind)).toEqual(['assistant', 'compacting', 'summary', 'compacted']);
+    expect(ofKind(s, 'summary')[0]).toMatchObject({ text: SUMMARY, timestamp: Date.parse(T5) });
+  });
+
+  it('a summary with no boundary before it draws both bands itself', () => {
+    const s = run([assistantText('a', 'msg_1'), result('a'), summary]);
+    expect(s.items.map((i) => i.kind)).toEqual(['assistant', 'compacting', 'summary', 'compacted']);
+  });
+
+  it("the end band absorbs the /compact command's own echoes", () => {
+    const s = run([assistantText('a', 'msg_1'), result('a'), boundary, summary, stdoutEcho, commandEcho, result('')]);
+    expect(s.items.map((i) => i.kind)).toEqual(['assistant', 'compacting', 'summary', 'compacted']);
+  });
+
+  it('those echoes render as before when no compaction just ended', () => {
+    const s = run([assistantText('a', 'msg_1'), result('a'), stdoutEcho]);
+    expect(s.items.map((i) => i.kind)).toEqual(['assistant', 'user']);
+  });
+
+  it('draws one pair of bands per compaction', () => {
+    const once = [boundary, summary, assistantText('next', 'msg_2'), result('next')];
+    const s = run([assistantText('a', 'msg_1'), result('a'), ...once, ...once]);
+    expect(s.items.map((i) => i.kind)).toEqual([
+      'assistant', 'compacting', 'summary', 'compacted', 'assistant',
+      'compacting', 'summary', 'compacted', 'assistant',
+    ]);
+  });
+
+  it('a resume band and a compaction band next to each other stay two bands', () => {
+    const s = run([{ type: 'x-optio-resumed' }, boundary]);
+    expect(s.items.map((i) => i.kind)).toEqual(['resumed', 'compacting']);
   });
 });

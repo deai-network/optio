@@ -8,7 +8,8 @@
 
 import type { ChatItem, ChatState } from '../chat.js';
 import {
-  INTERRUPTED_BY_YOU, INTERRUPTED_SESSION_ENDED, addQueued, appendItems, dropUndelivered, foldControlUpdate, isPinned, isQueued, takeQueuedAt, takeQueuedIds,
+  COMPACT_SUMMARY_PREFIX, INTERRUPTED_BY_YOU, INTERRUPTED_SESSION_ENDED, addQueued, appendItems, appendBand, dropUndelivered, foldControlUpdate, hasResumeNotice,
+  isPinned, isQueued, takeQueuedAt, takeQueuedIds,
 } from '../chat.js';
 import { explainApiError } from '../apiError.js';
 import { parseUploadNotice, uploadNoticeActivityText } from '../uploads.js';
@@ -24,6 +25,18 @@ const PART_SEPARATOR = '\n\n';
 // an interrupted turn, and the terminal reasons of that turn's error result.
 const INTERRUPT_ECHO = /^\[Request interrupted by user( for tool use)?\]$/;
 const ABORTED = new Set<string>(['aborted_streaming', 'aborted_tools']);
+
+// A /compact command's own replay echoes, after its summary (CLI 2.1.294):
+// its output, then the command itself.
+function isCompactCommandEcho(text: string): boolean {
+  return text.startsWith('<local-command-stdout>Compacted') || text.includes('<command-name>/compact</command-name>');
+}
+
+// The kind of the last conversation item, the pinned queued tail left out.
+function lastContentKind(items: ChatItem[]): ChatItem['kind'] | undefined {
+  for (let i = items.length - 1; i >= 0; i--) if (!isPinned(items[i])) return items[i].kind;
+  return undefined;
+}
 
 type AssistantItem = Extract<ChatItem, { kind: 'assistant' }>;
 type UserItem = Extract<ChatItem, { kind: 'user' }>;
@@ -791,6 +804,21 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // happens to start with the literal text renders normally. Fall back to
       // the text-prefix sniff only for older replays that carry no origin.
       const rawText = extractText(ev.message?.content);
+      // Compaction bands (owner request 2026-10-08): the summary the CLI
+      // continues from after a compaction (a synthetic user event right after
+      // compact_boundary) is a summary row, not a user bubble, between the
+      // "being compacted" band (drawn here when no boundary came first) and
+      // the "has been compacted" one it closes with.
+      if (rawText.startsWith(COMPACT_SUMMARY_PREFIX)) {
+        const row: Extract<ChatItem, { kind: 'summary' }> = { kind: 'summary', text: rawText, seq };
+        const t = wireTime(ev);
+        if (t !== null) row.timestamp = t;
+        const items = appendItems(appendBand(state.items, 'compacting', seq), [row]);
+        return { ...state, items: appendBand(items, 'compacted', seq) };
+      }
+      // A /compact command's own replay echoes (its "Compacted" output, then
+      // the command) come after the summary: the closing band absorbs them.
+      if (lastContentKind(state.items) === 'compacted' && isCompactCommandEcho(rawText)) return state;
       // The CLI's own marker for the turn optio interrupted: its row says so.
       if (state.interrupt && INTERRUPT_ECHO.test(rawText.trim())) return state;
       const isInjectedNotification =
@@ -819,6 +847,10 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
       // (never the reducer's clock) — never invented when the wire carries none.
       if (text === '' || text.startsWith(HARNESS_PREFIX)) {
         let items = attach ? appendItems(state.items, [attach]) : state.items;
+        // Resume band (owner request 2026-10-08): the resume notice keeps its
+        // System row, behind the band x-optio-resumed drew just before it,
+        // or behind one it draws itself when no marker came first.
+        if (hasResumeNotice(text)) items = appendBand(items, 'resumed', seq);
         if (text !== '') {
           // Fix 14, owner ruling 2026-09-15: flagged `system: true` so the
           // view can give it the user bubble's corner radius and a
@@ -1389,7 +1421,9 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
         settleNotes(dropUndelivered(freezeRunning(state.items, lastWireTime(state, now), 'session'), requeued)),
         requeued,
       );
-      return { ...state, items, busy: false };
+      // Resume band (owner request 2026-10-08): mark where the old run ended,
+      // in front of the bubbles this run re-queues.
+      return { ...state, items: appendBand(items, 'resumed', seq), busy: false };
     }
 
     case 'system': {
@@ -1403,6 +1437,12 @@ export function reduceEvent(state: ChatState, ev: any, seq: number, now: number 
           return ended.busy ? { ...ended, busy: false } : ended;
         }
         return state;
+      }
+      // Compaction bands (owner request 2026-10-08): the CLI compacted the
+      // context here (auto or /compact): the "being compacted" band; its
+      // summary follows as a user event.
+      if (ev.subtype === 'compact_boundary') {
+        return { ...state, items: appendBand(state.items, 'compacting', seq) };
       }
       // Background shell commands: task_started marks the Bash row (its
       // immediate tool_result then does not finish it); task_updated carries

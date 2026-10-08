@@ -156,7 +156,21 @@ export type ChatItem =
       // Epoch ms this error was produced. See messageTime.ts.
       timestamp?: number;
     }
-  | { kind: 'closed'; reason: string; seq: number };
+  | { kind: 'closed'; reason: string; seq: number }
+  // Resume band (owner request 2026-10-08): the session was captured here and
+  // resumed later. Rendered as a full-width zig-zag band, in front of the
+  // harness "System: you have been resumed" row.
+  | { kind: 'resumed'; seq: number }
+  // Compaction bands (owner request 2026-10-08), two per compaction, around
+  // its summary: 'compacting' where the CLI compacted the context, and
+  // 'compacted' after the summary. The same band, in the System bubble's
+  // colours.
+  | { kind: 'compacting'; seq: number }
+  | { kind: 'compacted'; seq: number }
+  // The summary the agent continues from after a compaction (owner ruling
+  // 2026-10-08): a System-style row showing its first line, expanding on
+  // click. `timestamp`: its wire time, when known.
+  | { kind: 'summary'; text: string; seq: number; timestamp?: number };
 
 // Engine-neutral session control — one live, UI-renderable knob a wrapper
 // exposes for its running session (model, thinking effort, mode, ...). Mirrors
@@ -224,6 +238,29 @@ export const INTERRUPTED_BY_YOU = '⏹ Interrupted by you';
 // Fix 19 (owner ruling 2026-09-15, finding 6 #1): the row a session that
 // ended mid-turn adds, in the same place and style.
 export const INTERRUPTED_SESSION_ENDED = '⏹ Interrupted: session ended';
+
+// The harness notice every engine sends a resumed session
+// (optio_agents RESUME_NOTICE behind SYSTEM_MESSAGE_PREFIX).
+export const RESUME_NOTICE = 'System: you have been resumed';
+
+// Whether a harness System: text carries the resume notice, alone or folded
+// with other notices into one message.
+export function hasResumeNotice(text: string): boolean {
+  return text.split('\n').some((l) => l.trim() === RESUME_NOTICE);
+}
+
+// The opening of the summary Claude Code continues from after a compaction.
+export const COMPACT_SUMMARY_PREFIX = 'This session is being continued from a previous conversation';
+
+// Append a resume or compaction band, unless the conversation already ends in
+// one of that kind: a marker draws it (claudecode's x-optio-resumed or
+// compact_boundary), and the message that follows the marker (the resume
+// notice, the compaction summary) must not draw a second.
+export function appendBand(items: ChatItem[], kind: 'resumed' | 'compacting' | 'compacted', seq: number): ChatItem[] {
+  const content = items.filter((i) => !isPinned(i));
+  if (content.length > 0 && content[content.length - 1].kind === kind) return items;
+  return appendItems(items, [{ kind, seq }]);
+}
 
 // -- Steering: queued bubbles (engine-neutral; every reducer uses these) ----
 

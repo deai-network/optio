@@ -126,8 +126,9 @@ export function GrokView(props: WidgetProps) {
         if (ok) {
           // Optimistic local echo: show the message now (grok emits no user
           // echo of its own). Negative seqs keep React keys clear of wire seqs.
+          // `time`: the send moment, read here (the view), not by the reducer.
           localSeqRef.current -= 1;
-          dispatch({ ev: { type: 'x-optio-local-user', text: body }, seq: localSeqRef.current });
+          dispatch({ ev: { type: 'x-optio-local-user', text: body, time: Date.now() }, seq: localSeqRef.current });
         }
         return ok;
       }}

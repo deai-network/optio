@@ -88,6 +88,19 @@ describe('GrokView (Stage 7 parity)', () => {
     expect(screen.getByText('summarize this')).toBeTruthy();
   });
 
+  // Message timestamps (owner request 2026-10-08): grok echoes no operator
+  // message live, so the bubble shows the send time the view stamps on it.
+  it('a sent message shows its send time', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 })) as any);
+    render(<ConversationWidget {...makeProps()} />);
+    fireEvent.change(screen.getByTestId('conversation-input-box'), { target: { value: 'hello grok' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    });
+    await waitFor(() => expect(screen.getByText('hello grok')).toBeTruthy());
+    expect(screen.getAllByTestId('message-time')).toHaveLength(1);
+  });
+
   it('an optio-file: link fetches /download and triggers a blob save', async () => {
     const bytes = new Uint8Array([1, 2, 3]);
     const fetchMock = vi.fn(async () => new Response(bytes, { status: 200, headers: { 'content-type': 'text/markdown' } }));
