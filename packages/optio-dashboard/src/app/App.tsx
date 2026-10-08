@@ -14,6 +14,7 @@ import {
 import { registerConversationWidget } from 'optio-conversation-ui';
 import { LoginForm } from './LoginForm.js';
 import { useSession, signOut } from './auth-client.js';
+import { useProcessRoute } from './processRoute.js';
 
 // The dashboard has no ConfigProvider of its own, so let the conversation
 // widget own its light/dark toggle (☀/🌙 in the conversation header).
@@ -64,7 +65,8 @@ function instanceKey(inst: { database: string; prefix: string }) {
 function AppContent() {
   const { instances, isLoading, refetch } = useInstances();
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [selectedProcessId, setSelectedProcessId] = useState<string | null>(null);
+  // Kept in the URL (/process/<id>), so a reload keeps the selection.
+  const [selectedProcessId, setSelectedProcessId] = useProcessRoute();
 
   // Hook-based notifications (not antd's static `notification`): they render
   // through `notificationHolder` in this tree, so they follow ConfigProvider.
