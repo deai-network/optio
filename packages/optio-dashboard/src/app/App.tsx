@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { Alert, Button, Layout, Select, Typography, notification } from 'antd';
+import { MenuFoldOutlined, MenuUnfoldOutlined } from '@ant-design/icons';
 import {
   OptioProvider,
   WithFilteredProcesses,
@@ -23,12 +24,27 @@ registerConversationWidget({ ownTheme: true });
 const { Header, Sider, Content } = Layout;
 const { Title } = Typography;
 
+// The process list can be collapsed, giving the process view the full width.
+// The choice is kept in localStorage, so a reload keeps it.
+const SIDER_COLLAPSED_KEY = 'optio-dashboard.siderCollapsed';
+
+function useSiderCollapsed(): [boolean, (collapsed: boolean) => void] {
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(SIDER_COLLAPSED_KEY) === '1');
+  const set = useCallback((value: boolean) => {
+    localStorage.setItem(SIDER_COLLAPSED_KEY, value ? '1' : '0');
+    setCollapsed(value);
+  }, []);
+  return [collapsed, set];
+}
+
 function Dashboard({
   selectedProcessId,
   setSelectedProcessId,
+  siderCollapsed,
 }: {
   selectedProcessId: string | null;
   setSelectedProcessId: (id: string | null) => void;
+  siderCollapsed: boolean;
 }) {
   const { processes, connected: listConnected } = useProcessListStream();
   const { launch, resurrect, cancel, dismiss } = useProcessActions();
@@ -38,7 +54,16 @@ function Dashboard({
     <WithFilteredProcesses>
       <Layout>
         <Layout>
-          <Sider width={400} style={{ background: '#fff', overflow: 'auto' }}>
+          {/* Collapses to nothing (no trigger of its own: the header has the
+              toggle). It stays mounted, so the filters and page survive. */}
+          <Sider
+            width={400}
+            collapsible
+            collapsed={siderCollapsed}
+            collapsedWidth={0}
+            trigger={null}
+            style={{ background: '#fff', overflow: 'auto' }}
+          >
             <ProcessFilters />
             <FilteredProcessList
               processes={processes}
@@ -67,6 +92,7 @@ function AppContent() {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   // Kept in the URL (/process/<id>), so a reload keeps the selection.
   const [selectedProcessId, setSelectedProcessId] = useProcessRoute();
+  const [siderCollapsed, setSiderCollapsed] = useSiderCollapsed();
 
   // Hook-based notifications (not antd's static `notification`): they render
   // through `notificationHolder` in this tree, so they follow ConfigProvider.
@@ -158,10 +184,24 @@ function AppContent() {
       {notificationHolder}
       <Layout style={{ height: '100vh' }}>
         <Header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px' }}>
-          <Title level={4} style={{ color: '#fff', margin: 0 }}>Optio Dashboard</Title>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Button
+              type="text"
+              icon={siderCollapsed ? <MenuUnfoldOutlined /> : <MenuFoldOutlined />}
+              title={siderCollapsed ? 'Show the process list' : 'Hide the process list'}
+              aria-label={siderCollapsed ? 'Show the process list' : 'Hide the process list'}
+              onClick={() => setSiderCollapsed(!siderCollapsed)}
+              style={{ color: '#fff' }}
+            />
+            <Title level={4} style={{ color: '#fff', margin: 0 }}>Optio Dashboard</Title>
+          </div>
           {headerRight}
         </Header>
-        <Dashboard selectedProcessId={selectedProcessId} setSelectedProcessId={setSelectedProcessId} />
+        <Dashboard
+          selectedProcessId={selectedProcessId}
+          setSelectedProcessId={setSelectedProcessId}
+          siderCollapsed={siderCollapsed}
+        />
       </Layout>
     </OptioProvider>
   );
