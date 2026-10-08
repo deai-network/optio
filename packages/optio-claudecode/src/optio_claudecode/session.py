@@ -169,7 +169,21 @@ async def _build_claustrum_wrap(
         extra_allowed_dirs=config.extra_allowed_dirs,
         host_home=host_home,
     )
-    return claustrum.build_claustrum_wrap(claustrum_path, grants)
+    # Claude Code cannot reach /tmp under claustrum: it refuses its default
+    # temp dir /tmp/claude-<uid> ("not readable") and exits 1, interactive and
+    # -p alike (owner report 2026-10-08). Point CLAUDE_CODE_TMPDIR into the
+    # task's own, granted workdir instead (claude creates it). Set inside the
+    # wrap, after claustrum's `--`, so every confined launch gets it and an
+    # unconfined one keeps the default.
+    tmpdir = f"{host.workdir.rstrip('/')}/{_SANDBOX_TMPDIR}"
+    return [
+        *claustrum.build_claustrum_wrap(claustrum_path, grants),
+        "env", f"CLAUDE_CODE_TMPDIR={tmpdir}",
+    ]
+
+
+# Claude Code's temp dir inside the workdir, for claustrum-confined launches.
+_SANDBOX_TMPDIR = ".claude-tmp"
 
 
 def _partials_enabled(config: ClaudeCodeTaskConfig) -> bool:
