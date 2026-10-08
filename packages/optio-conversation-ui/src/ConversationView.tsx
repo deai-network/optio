@@ -7,8 +7,10 @@ import {
 } from 'vultus-antd';
 import type { TextAreaRef } from 'antd/es/input/TextArea';
 import type { ChatItem, ChatState, SessionControl } from './chat.js';
-import { Actions, Bubble, XProvider } from '@ant-design/x';
+import { Actions, Bubble, ThoughtChain, XProvider } from '@ant-design/x';
+import type { ThoughtChainItemType } from '@ant-design/x';
 import { AnswerBlock } from './AnswerBlock.js';
+import { CodeBlock } from './CodeBlock.js';
 import { type Attachment, toAttachment, withinCap } from './attachments.js';
 import { FileDownloadContext } from './FileDownloadContext.js';
 import { formatDuration } from './duration.js';
@@ -621,6 +623,80 @@ function renderInputKV(input: unknown, token: GlobalToken): React.ReactNode {
   );
 }
 
+// Ant Design X experiment: a tool row's details as X CodeHighlighter blocks.
+// A shell command is bash, an edit a diff, a written file in its file's
+// language; the remaining input fields (or all of them, for any other tool)
+// are JSON. Fields the row's one-line summary already shows (description) are
+// left out. Long blocks scroll.
+const TOOL_CODE_MAX_HEIGHT = 360;
+const LANG_BY_EXT: Record<string, string> = {
+  ts: 'typescript', tsx: 'tsx', js: 'javascript', jsx: 'jsx', mjs: 'javascript', cjs: 'javascript',
+  py: 'python', sh: 'bash', bash: 'bash', json: 'json', md: 'markdown', yml: 'yaml', yaml: 'yaml',
+  toml: 'toml', css: 'css', html: 'markup', xml: 'markup', svg: 'markup', sql: 'sql', rs: 'rust', go: 'go',
+};
+
+function langForPath(path: string): string {
+  const ext = path.split('.').pop()?.toLowerCase() ?? '';
+  return LANG_BY_EXT[ext] ?? 'log';
+}
+
+function looksLikeJson(text: string): boolean {
+  const t = text.trim();
+  if (!(t.startsWith('{') || t.startsWith('['))) return false;
+  try { JSON.parse(t); return true; } catch { return false; }
+}
+
+// old_string/new_string as a unified-diff-looking block (no context lines).
+function editDiff(oldText: string, newText: string): string {
+  const mark = (prefix: string, text: string) => text.split('\n').map((l) => prefix + l).join('\n');
+  return `${mark('- ', oldText)}\n${mark('+ ', newText)}`;
+}
+
+function renderToolInput(input: unknown, preview: string | undefined): React.ReactNode {
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    const fields = { ...(input as Record<string, unknown>) };
+    delete fields.description;
+    const blocks: React.ReactNode[] = [];
+    if (typeof fields.command === 'string') {
+      blocks.push(<CodeBlock key="command" lang="bash" maxHeight={TOOL_CODE_MAX_HEIGHT}>{fields.command}</CodeBlock>);
+      delete fields.command;
+    }
+    if (typeof fields.old_string === 'string' && typeof fields.new_string === 'string') {
+      blocks.push(
+        <CodeBlock key="edit" lang="diff" title={typeof fields.file_path === 'string' ? fields.file_path : 'diff'} maxHeight={TOOL_CODE_MAX_HEIGHT}>
+          {editDiff(fields.old_string, fields.new_string)}
+        </CodeBlock>,
+      );
+      delete fields.old_string;
+      delete fields.new_string;
+      delete fields.file_path;
+    }
+    if (typeof fields.content === 'string' && typeof fields.file_path === 'string') {
+      blocks.push(
+        <CodeBlock key="content" lang={langForPath(fields.file_path)} title={fields.file_path} maxHeight={TOOL_CODE_MAX_HEIGHT}>
+          {fields.content}
+        </CodeBlock>,
+      );
+      delete fields.content;
+      delete fields.file_path;
+    }
+    if (Object.keys(fields).length > 0) {
+      blocks.push(
+        <CodeBlock key="input" lang="json" title="input" maxHeight={TOOL_CODE_MAX_HEIGHT}>
+          {JSON.stringify(fields, null, 2)}
+        </CodeBlock>,
+      );
+    }
+    if (blocks.length > 0) return <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>{blocks}</div>;
+  } else if (input !== undefined && input !== null) {
+    return <CodeBlock lang="json" title="input" maxHeight={TOOL_CODE_MAX_HEIGHT}>{JSON.stringify(input, null, 2)}</CodeBlock>;
+  }
+  // No input fields (kimi/cursor permission-less tool calls carry their
+  // detail only in the ACP content text): the preview.
+  if (preview) return <CodeBlock lang="log" title="preview" maxHeight={TOOL_CODE_MAX_HEIGHT}>{preview}</CodeBlock>;
+  return null;
+}
+
 // Render a tool/permission's detail: the `input` KV table when it has fields,
 // else the `content`-derived text `preview`. kimi/cursor permission cards and
 // lazy/pending tool_calls carry NO rawInput — their detail lives only in the
@@ -1141,13 +1217,6 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   // start closed. An entry here overrides that default. Running tools toggle
   // the same way as finished ones. Silent does not use this.
   const [toolOpen, setToolOpen] = useState<Map<number, boolean>>(() => new Map());
-  const toggleTool = (seq: number) =>
-    setToolOpen((prev) => {
-      const next = new Map(prev);
-      const current = prev.has(seq) ? prev.get(seq)! : toolVerbosity === 'verbose';
-      next.set(seq, !current);
-      return next;
-    });
 
   // The wall clock for message-time formatting (Fix 4): read fresh at each
   // render — the formatter itself is pure and never reads the clock (see
@@ -1403,6 +1472,93 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     }
   }
 
+  // Ant Design X experiment: tool rows are X ThoughtChain nodes. A run of
+  // consecutive tool calls is one chain (its line links the steps); any other
+  // item ends the run. Silent keeps its own rendering (renderItem).
+  function renderTranscript(items: ChatItem[]): React.ReactNode[] {
+    const out: React.ReactNode[] = [];
+    let run: Extract<ChatItem, { kind: 'tool' }>[] = [];
+    const flush = () => {
+      if (run.length > 0) out.push(renderToolChain(run));
+      run = [];
+    };
+    for (const item of items) {
+      if (item.kind === 'tool' && toolVerbosity !== 'silent') {
+        run.push(item);
+        continue;
+      }
+      flush();
+      out.push(renderItem(item));
+    }
+    flush();
+    return out;
+  }
+
+  function renderToolChain(run: Extract<ChatItem, { kind: 'tool' }>[]): React.ReactNode {
+    const isOpen = (seq: number) => (toolOpen.has(seq) ? toolOpen.get(seq)! : toolVerbosity === 'verbose');
+    return (
+      <ThoughtChain
+        key={`tools-${run[0].seq}`}
+        data-testid="tool-chain"
+        items={run.map(toolChainItem)}
+        // Open/closed stays ours (toolOpen + the verbosity default), so a
+        // verbosity change re-opens or closes the untouched rows.
+        expandedKeys={run.filter((t) => isOpen(t.seq)).map((t) => String(t.seq))}
+        onExpand={(keys) => setToolOpen((prev) => {
+          const next = new Map(prev);
+          for (const t of run) next.set(t.seq, keys.includes(String(t.seq)));
+          return next;
+        })}
+      />
+    );
+  }
+
+  // One tool call as a ThoughtChain node: X's status icon for running / done /
+  // failed / stopped, the tool name as title, our one-line summary and elapsed
+  // time as description, and the input and result as its collapsible content.
+  function toolChainItem(item: Extract<ChatItem, { kind: 'tool' }>): ThoughtChainItemType {
+    const { finished, failed } = toolLifecycle(item);
+    const stopped = item.status === 'stopped';
+    const elapsed =
+      item.startedAt !== undefined ? formatDuration((item.endedAt ?? now) - item.startedAt) : null;
+    let summary = toolSummary(item.input);
+    if (failed && item.result) summary = item.result.split('\n')[0].slice(0, 160);
+    else if (!summary && item.preview) summary = item.preview.split('\n')[0].slice(0, 120);
+    // Summary, then a finished background job's outcome, then the elapsed
+    // time: " · " between whichever are present.
+    const line = [summary, item.background && finished ? item.result : ''].filter(Boolean).join(' · ');
+    const detail = renderToolInput(item.input, item.preview);
+    const hasContent = detail !== null || !!item.result;
+    return {
+      key: String(item.seq),
+      status: !finished ? 'loading' : stopped ? 'abort' : failed ? 'error' : 'success',
+      blink: !finished,
+      title: item.name,
+      description: (
+        <span
+          data-testid="tool-call"
+          data-tool-status={finished ? (stopped ? 'stopped' : failed ? 'failed' : 'done') : 'running'}
+        >
+          {line}
+          {elapsed ? <span data-testid="tool-elapsed">{`${line ? ' · ' : ''}${elapsed}`}</span> : null}
+        </span>
+      ),
+      collapsible: hasContent,
+      content: hasContent ? (
+        <>
+          {detail}
+          {item.result ? (
+            <div data-testid="tool-result" style={{ marginTop: 8 }}>
+              <CodeBlock lang={looksLikeJson(item.result) ? 'json' : 'log'} title="output" maxHeight={TOOL_CODE_MAX_HEIGHT}>
+                {item.result}
+              </CodeBlock>
+            </div>
+          ) : null}
+        </>
+      ) : undefined,
+    };
+  }
+
   function renderItem(item: ChatItem) {
     switch (item.kind) {
       // Ant Design X experiment (owner request 2026-10-08): user messages and
@@ -1602,35 +1758,9 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             : renderBackgroundRunning(item, elapsed, token);
         }
 
-        let summary = toolSummary(item.input);
-        if (failed && item.result) summary = item.result.split('\n')[0].slice(0, 160);
-        else if (!summary && item.preview) summary = item.preview.split('\n')[0].slice(0, 120);
-        const glyph = !finished ? '⟳' : stopped ? '⏹' : failed ? '✗' : '✓';
-        const open = toolOpen.has(item.seq) ? toolOpen.get(item.seq)! : toolVerbosity === 'verbose';
-        return (
-          <div key={item.seq} data-testid="tool-call" data-tool-status={finished ? (stopped ? 'stopped' : failed ? 'failed' : 'done') : 'running'}
-               style={{ color: failed ? token.colorError : token.colorTextTertiary, fontSize: 12 }}>
-            <div
-              style={{ fontFamily: 'monospace', cursor: 'pointer' }}
-              onClick={() => toggleTool(item.seq)}
-            >
-              {!finished && !stopped ? <Spin size="small" /> : glyph}{' '}
-              <strong>{item.name}</strong>{summary ? `: ${summary}` : ''}
-              {item.background && finished && item.result ? ` · ${item.result}` : ''}
-              {elapsed ? <span data-testid="tool-elapsed">{` · ${elapsed}`}</span> : null}
-              <span style={{ marginLeft: 6 }}>{open ? '▾' : '▸'}</span>
-            </div>
-            {open ? renderDetail(item.input, item.preview, token) : null}
-            {open && item.result ? (
-              <div
-                data-testid="tool-result"
-                style={{ fontFamily: 'monospace', fontSize: 12, color: token.colorTextSecondary, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', marginTop: 4 }}
-              >
-                {item.result}
-              </div>
-            ) : null}
-          </div>
-        );
+        // Every other level: rendered as part of a ThoughtChain by
+        // renderTranscript, never through here.
+        return null;
       }
       case 'question':
         return (
@@ -1850,7 +1980,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
           >
             {/* Items are kept in conversation order by the reducer; render in
                 array order (seq is a React key, not a sort key). */}
-            {state.items.map(renderItem)}
+            {renderTranscript(state.items)}
             {/* The process died (or the conversation was closed engine-side):
                 append the ended divider after the transcript. */}
             {closed && (

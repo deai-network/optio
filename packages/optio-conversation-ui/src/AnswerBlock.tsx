@@ -1,10 +1,11 @@
 import { useContext } from 'react';
 import { Typography, theme } from 'antd';
-import { CodeHighlighter, Mermaid } from '@ant-design/x';
+import { Mermaid } from '@ant-design/x';
 import XMarkdown, { type ComponentProps } from '@ant-design/x-markdown';
 import Latex from '@ant-design/x-markdown/plugins/Latex';
 import '@ant-design/x-markdown/themes/light.css';
 import '@ant-design/x-markdown/themes/dark.css';
+import { CodeBlock } from './CodeBlock.js';
 import { FileDownloadContext } from './FileDownloadContext.js';
 
 // The one public seam for rendering an assistant answer (also the compaction
@@ -36,7 +37,8 @@ function Code({ className, children, block, lang }: ComponentProps) {
   const language = lang ?? className?.match(/language-(\w+)/)?.[1] ?? '';
   if (!block || typeof children !== 'string') return <code className={className}>{children}</code>;
   if (language === 'mermaid') return <Mermaid>{children}</Mermaid>;
-  return <CodeHighlighter lang={language}>{children}</CodeHighlighter>;
+  if (!language) return <code className={className}>{children}</code>;
+  return <CodeBlock lang={language}>{children}</CodeBlock>;
 }
 
 // An agent's `[name](optio-file:relpath)` downloads that workdir file through
