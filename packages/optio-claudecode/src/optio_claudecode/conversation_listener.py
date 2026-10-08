@@ -57,6 +57,17 @@ RESUMED_EVENT_TYPE = "x-optio-resumed"
 # so the exact same value comes back on replay.
 MESSAGE_START_EVENT_TYPE = "x-optio-message-start"
 UNBUFFERED_TYPES = {"stream_event"}
+# system subtypes that also flow live only (owner request 2026-10-08):
+# thinking_tokens just counts reasoning tokens, the widget ignores it, and it
+# filled up to 60% of the replay buffer, pushing real history out.
+UNBUFFERED_SYSTEM_SUBTYPES = {"thinking_tokens"}
+
+
+def _buffered(event: dict) -> bool:
+    """Whether an event goes into the replay buffer (and so is persisted)."""
+    if event.get("type") in UNBUFFERED_TYPES:
+        return False
+    return not (event.get("type") == "system" and event.get("subtype") in UNBUFFERED_SYSTEM_SUBTYPES)
 # Fix 19 (owner rulings 2026-09-15, finding 6; see
 # docs/2026-09-15-steering-session-end-design.md): the text a message had
 # streamed when the session ended, if its final assistant event never came:
@@ -109,8 +120,12 @@ class ConversationListener:
         # (old id, text); requeue_undelivered() re-sends it once.
         self._undelivered: list[tuple[str, str]] = []
         if initial_events:
+            # A buffer persisted before an event type became unbuffered may
+            # still carry it: drop it here. seq still continues above the
+            # restored maximum, dropped events included.
             for seq, event in initial_events:
-                self._buffer.append((seq, event))
+                if _buffered(event):
+                    self._buffer.append((seq, event))
             self._seq = max(seq for seq, _ in initial_events)
             self._undelivered = undelivered_queued(initial_events)
             # Mark where the prior run's history ends, so the widget stops the
@@ -214,7 +229,7 @@ class ConversationListener:
     def _broadcast(self, event: dict) -> None:
         self._seq += 1
         item = (self._seq, event)
-        if event.get("type") not in UNBUFFERED_TYPES:
+        if _buffered(event):
             self._buffer.append(item)
         for q in list(self._subscribers):
             q.put_nowait(item)

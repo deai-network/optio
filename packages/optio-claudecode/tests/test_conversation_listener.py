@@ -282,6 +282,53 @@ async def test_fresh_start_has_no_resumed_marker():
     assert list(empty._buffer) == []
 
 
+# -- thinking_tokens (owner request 2026-10-08) -------------------------------
+# system/thinking_tokens only counts reasoning tokens; the widget ignores it,
+# yet it filled up to 60% of the 1000-event replay buffer. Like stream_event,
+# it flows live but is never buffered or persisted.
+
+_THINKING_TOKENS = {"type": "system", "subtype": "thinking_tokens", "estimated_tokens": 207, "estimated_tokens_delta": 157}
+
+
+async def test_thinking_tokens_flow_live_but_are_neither_buffered_nor_exported(listener):
+    conv, lst, url = listener
+    conv.fire({"type": "user", "n": 1})
+    conv.fire(_THINKING_TOKENS)
+    conv.fire({"type": "result", "n": 2})
+    assert [e.get("subtype", e["type"]) for _, e in lst._buffer] == ["user", "result"]
+    assert [e["type"] for _, e in lst.export_buffer()] == ["user", "result"]
+    async with aiohttp.ClientSession() as s:
+        async with s.get(f"{url}/events", headers=_auth("pw")) as resp:
+            replay = await _read_events(resp, 2)
+            assert [e["type"] for e in replay] == ["user", "result"]
+            conv.fire(_THINKING_TOKENS)
+            live = await _read_events(resp, 1)
+            assert live[0] == _THINKING_TOKENS
+
+
+async def test_reprime_drops_thinking_tokens_a_restored_buffer_still_carries():
+    # A buffer persisted before this change still holds them; the re-prime
+    # drops them, and seq still continues above the restored maximum.
+    lst = ConversationListener(
+        FakeConversation(), password="pw",
+        initial_events=[
+            (1, {"type": "user"}), (2, dict(_THINKING_TOKENS)),
+            (3, {"type": "result"}), (4, dict(_THINKING_TOKENS)),
+        ],
+    )
+    assert list(lst._buffer) == [
+        (1, {"type": "user"}), (3, {"type": "result"}),
+        (5, {"type": "x-optio-resumed"}),
+    ]
+
+
+async def test_a_restored_buffer_of_only_thinking_tokens_still_continues_seq():
+    lst = ConversationListener(
+        FakeConversation(), password="pw", initial_events=[(7, dict(_THINKING_TOKENS))],
+    )
+    assert list(lst._buffer) == [(8, {"type": "x-optio-resumed"})]
+
+
 # -- steering routes (docs/2026-09-13-conversation-steering-design.md) --------
 
 async def test_send_returns_id_and_queued_and_buffers_the_queued_event(listener):

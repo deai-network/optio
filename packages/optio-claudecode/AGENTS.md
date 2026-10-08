@@ -366,9 +366,12 @@ Replay-buffer semantics:
   monotonic `seq`. Session-persistent only — nothing goes to Mongo;
   after the task ends the conversation view is gone.
 * Mechanical type filter, not interpretation: events of type
-  `stream_event` (the partial-message deltas) are forwarded live but
-  never buffered. Everything else — `system`, `user`, `assistant`,
-  `result`, `control_request`, `x-optio-*` — is buffered.
+  `stream_event` (the partial-message deltas) and `system` events of
+  subtype `thinking_tokens` (a reasoning-token count the widget ignores,
+  which filled up to 60% of the buffer; owner request 2026-10-08) are
+  forwarded live but never buffered. A re-primed buffer drops them too,
+  for buffers persisted before. Everything else — `system`, `user`,
+  `assistant`, `result`, `control_request`, `x-optio-*` — is buffered.
 * The engine channels raw stream-json events through untouched; all
   interpretation happens client-side in `optio-conversation-ui`. The
   listener adds synthetic events of its own:
