@@ -1327,6 +1327,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
       // Ant Design X experiment (owner request 2026-10-08): user messages and
       // answers are X Bubbles. Bubble places itself (start/end), so these rows
       // stretch across the column; our time labels go in its footer slot.
+      // Variant and shape are X's defaults (filled), as in X's own templates.
       case 'user':
         // A Send when ready the agent has not taken yet: dashed and muted; the
         // reducer keeps it pinned at the bottom.
@@ -1337,7 +1338,6 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               data-testid="queued-bubble"
               placement="end"
               variant="outlined"
-              shape="corner"
               style={{ alignSelf: 'stretch' }}
               styles={{ content: { ...BUBBLE_TEXT, borderStyle: 'dashed', opacity: 0.6 } }}
               content={item.text}
@@ -1373,8 +1373,6 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
           <Bubble
             key={item.seq}
             placement="end"
-            variant="filled"
-            shape="corner"
             style={{ alignSelf: 'stretch' }}
             styles={{ content: BUBBLE_TEXT }}
             content={item.text}
@@ -1392,8 +1390,6 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             // jagged bottom edge (the class is installed on mount).
             data-testid={item.interrupted ? 'answer-interrupted' : undefined}
             placement="start"
-            variant="outlined"
-            shape="corner"
             style={{ alignSelf: 'stretch' }}
             classNames={{ content: item.interrupted ? 'optio-cc-interrupted' : undefined }}
             streaming={item.pending}
@@ -1707,10 +1703,12 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
       {/* Paint our own root surface from a bg token — the widget owns its
           background (don't rely on an inherited host surface), or dark mode
           shows the light host page behind transparent divs. colorText sets a
-          themed default for any inherited-color text inside. */}
+          themed default for any inherited-color text inside. colorBgContainer,
+          not colorBgLayout: X's templates put the chat on it, and its filled
+          bubbles (colorFillContent) are drawn to stand out against it. */}
       <div style={{
         display: 'flex', flexDirection: 'column', width: '100%', height: '100%',
-        background: token.colorBgLayout, color: token.colorText,
+        background: token.colorBgContainer, color: token.colorText,
       }}>
         <div
           data-testid="conversation-split"
