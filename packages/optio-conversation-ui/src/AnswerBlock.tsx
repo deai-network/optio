@@ -1,40 +1,82 @@
-import { Markdown } from './Markdown.js';
+import { useContext } from 'react';
+import { Typography, theme } from 'antd';
+import { CodeHighlighter, Mermaid } from '@ant-design/x';
+import XMarkdown, { type ComponentProps } from '@ant-design/x-markdown';
+import Latex from '@ant-design/x-markdown/plugins/Latex';
+import '@ant-design/x-markdown/themes/light.css';
+import '@ant-design/x-markdown/themes/dark.css';
+import { FileDownloadContext } from './FileDownloadContext.js';
 
-// The one public seam for rendering an assistant answer outside the chat
-// widget: markdown with embedded mermaid diagrams and all the rendering
-// fixes (stable component map, list spacing, GFM tables, streaming-safe
-// diagram fallback) baked in. Consumers pass the answer text and stay
-// ignorant of the machinery — improvements land here and flow everywhere.
+// The one public seam for rendering an assistant answer (also the compaction
+// summary and task descriptions): pass the markdown text, get it rendered.
 //
-// ── Consumer requirements (this component is NOT fully self-contained) ──
-// This package ships TypeScript *source* (package.json `main`/`types` point
-// at src/), so the consuming application's bundler compiles `Markdown.tsx`
-// directly. That transitively imposes these requirements on the consumer:
+// Ant Design X experiment (owner request 2026-10-08): rendered by XMarkdown,
+// X's streaming markdown engine, wired the way X's own templates and demos
+// do: LaTeX through its Latex plugin, code blocks through X's
+// CodeHighlighter, mermaid fences through X's Mermaid, and its light/dark
+// theme stylesheets picked from the antd theme. Mermaid, KaTeX and the code
+// highlighter come with @ant-design/x and @ant-design/x-markdown.
 //
-//  1. CSS-import handling. `Markdown.tsx` does `import 'katex/dist/katex.min.css'`
-//     (a side-effect import) so LaTeX math renders styled. The consumer's
-//     bundler MUST handle `.css` side-effect imports — Vite and webpack (with
-//     a css loader) do this out of the box. A plain `tsc`/node-ESM consumer
-//     with no bundler will fail to resolve the `.css` import at load time.
-//
-//  2. KaTeX fonts. That stylesheet references ~20 woff2 files via url(). The
-//     bundler must emit them as assets and serve them on the same origin/path
-//     it serves the CSS from. If the CSS loads but fonts don't, math glyphs
-//     render as tofu boxes. (Both `katex` and its CSS come in as a dependency
-//     of this package — nothing extra to install, only to *bundle/serve*.)
-//
-//  3. Mermaid runtime. ```mermaid fences render client-side via the `mermaid`
-//     library (a dependency of this package). It needs a DOM — render on the
-//     client; it is not SSR-safe. No CSS import is required for mermaid.
-//
-//  4. antd theme (optional). Colors for tables/blockquotes/code/math follow
-//     the host's antd theme tokens via `theme.useToken()`. Without a
-//     surrounding <ConfigProvider> the default (light) token set is used;
-//     wrap the app in ConfigProvider to get dark mode / custom themes.
-//
-// In short: math (KaTeX CSS + fonts) is the only piece that must arrive via a
-// route outside this component — through the consumer's bundler/asset pipeline,
-// not through the JS import alone.
-export function AnswerBlock({ text }: { text: string }) {
-  return <Markdown>{text}</Markdown>;
+// ── Consumer requirements ──
+// This package ships TypeScript source, so the consumer's bundler compiles
+// this file: it must handle `.css` side-effect imports (the x-markdown themes,
+// and the KaTeX stylesheet the Latex plugin imports) and serve the KaTeX
+// fonts that stylesheet references. Mermaid needs a DOM (client-side only).
+
+const CONFIG = { extensions: Latex() };
+
+// DOMPurify's default URI allow-list plus our optio-file: download sentinel,
+// so XMarkdown's sanitizer keeps those links' href.
+const PURIFY = {
+  ALLOWED_URI_REGEXP:
+    /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix|optio-file):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
+};
+
+function Code({ className, children, block, lang }: ComponentProps) {
+  const language = lang ?? className?.match(/language-(\w+)/)?.[1] ?? '';
+  if (!block || typeof children !== 'string') return <code className={className}>{children}</code>;
+  if (language === 'mermaid') return <Mermaid>{children}</Mermaid>;
+  return <CodeHighlighter lang={language}>{children}</CodeHighlighter>;
+}
+
+// An agent's `[name](optio-file:relpath)` downloads that workdir file through
+// the host's FileDownloadContext handler (plain text when there is none);
+// any other link opens in a new tab.
+function Link({ href, children }: ComponentProps<{ href?: string }>) {
+  const onDownload = useContext(FileDownloadContext);
+  if (typeof href === 'string' && href.startsWith('optio-file:')) {
+    const relpath = href.slice('optio-file:'.length);
+    const filename = relpath.split('/').pop() || relpath;
+    return onDownload ? (
+      <Typography.Link onClick={() => onDownload(relpath, filename)} style={{ cursor: 'pointer' }}>
+        ⬇ {children}
+      </Typography.Link>
+    ) : (
+      <Typography.Text>{children}</Typography.Text>
+    );
+  }
+  return (
+    <a href={href} target="_blank" rel="noreferrer">
+      {children}
+    </a>
+  );
+}
+
+const COMPONENTS = { code: Code, a: Link };
+
+/** `pending`: the text is still streaming in (XMarkdown animates it and shows
+ *  its tail cursor). */
+export function AnswerBlock({ text, pending = false }: { text: string; pending?: boolean }) {
+  const { theme: antdTheme } = theme.useToken();
+  return (
+    <XMarkdown
+      className={antdTheme.id === 0 ? 'x-markdown-light' : 'x-markdown-dark'}
+      paragraphTag="div"
+      content={text}
+      config={CONFIG}
+      components={COMPONENTS}
+      dompurifyConfig={PURIFY}
+      streaming={{ hasNextChunk: pending, enableAnimation: true, tail: true }}
+    />
+  );
 }

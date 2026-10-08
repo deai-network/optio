@@ -33,12 +33,8 @@
   "dependencies": {
     "@ant-design/x": "^2.9.0",
     "@ant-design/x-markdown": "^2.9.0",
-    "katex": "^0.16.47",
-    "mermaid": "^11.4.0",
     "optio-agents-ui": "workspace:*",
-    "optio-ui": "workspace:*",
-    "rehype-katex": "^7.0.1",
-    "remark-math": "^6.0.0"
+    "optio-ui": "workspace:*"
   },
   "peerDependencies": {
     "antd": ">=6",
