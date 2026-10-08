@@ -6,6 +6,14 @@ import { createHash } from 'crypto';
 
 const ADMIN_EMAIL = 'admin@optio.local';
 
+// Dev servers reached under another hostname (e.g. https://excavator:5180):
+// extra trusted origins, comma-separated, in OPTIO_TRUSTED_ORIGINS. Better
+// Auth rejects a request whose Origin is not trusted ("Invalid origin").
+const extraTrustedOrigins = (process.env.OPTIO_TRUSTED_ORIGINS ?? '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter((origin) => origin !== '');
+
 export function createAuth(db: Db, password: string, baseURL: string) {
   const secret = createHash('sha256')
     .update('optio-dashboard-auth:' + password)
@@ -23,6 +31,7 @@ export function createAuth(db: Db, password: string, baseURL: string) {
       'http://localhost:5173',
       'http://localhost:5174',
       'http://localhost:5175',
+      ...extraTrustedOrigins,
     ],
   });
 }
