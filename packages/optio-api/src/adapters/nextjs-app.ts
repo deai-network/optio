@@ -165,7 +165,7 @@ export function createOptioRouteHandlers(opts: OptioApiOptions): OptioRouteHandl
           headers: { 'Content-Type': 'application/json' },
         });
       }
-      const instances = await discoverInstances(dbOpts, redis);
+      const instances = await discoverInstances(dbOpts, redis, opts.prefix);
       return new Response(JSON.stringify({ instances }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },

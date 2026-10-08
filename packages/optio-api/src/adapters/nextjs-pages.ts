@@ -163,7 +163,7 @@ export function createOptioHandler(opts: OptioApiOptions): OptioPagesHandler {
         res.status(403).json({ message: 'Forbidden' });
         return;
       }
-      const instances = await discoverInstances(dbOpts, redis);
+      const instances = await discoverInstances(dbOpts, redis, opts.prefix);
       res.status(200).json({ instances });
       return;
     }

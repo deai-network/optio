@@ -812,7 +812,7 @@ interface SugarOptioApiOptions {
   db?: Db;                                    // single-db mode
   mongoClient?: MongoClient;                  // multi-db mode (alternative to db)
   redis: Redis;
-  prefix?: string;                            // optional; default 'optio'
+  prefix?: string;                            // optional; limits instance discovery to this prefix
   authenticate: AuthCallback<TRequest>;
   scope?: ScopeCallback<TRequest>;            // optional tenant boundary (see below)
   authorize?: AuthorizeCallback<TRequest>;    // optional per-action decision (see below)

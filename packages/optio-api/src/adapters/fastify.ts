@@ -565,7 +565,7 @@ export function registerOptioApi(app: FastifyInstance, opts: OptioApiOptions): O
       reply.code(403).send({ message: 'Forbidden' });
       return;
     }
-    const instances = await discoverInstances(dbOpts, redis);
+    const instances = await discoverInstances(dbOpts, redis, opts.prefix);
     reply.send({ instances });
   });
 

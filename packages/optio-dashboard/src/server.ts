@@ -16,6 +16,11 @@ export interface DashboardConfig {
   port: number;
   password: string;
   verbose: boolean;
+  /** Serve only the MONGODB_URL database (single-db API) instead of every
+   *  optio database on the server. */
+  pinDatabase?: boolean;
+  /** Offer only this prefix in instance discovery. */
+  prefix?: string;
 }
 
 export async function startServer(config: DashboardConfig) {
@@ -67,8 +72,12 @@ export async function startServer(config: DashboardConfig) {
   });
 
   // Register Optio API routes with session-based authenticate
+  // A pinned database runs the API in single-db mode: discovery and every
+  // route stay in it. Otherwise it serves every optio database on the server.
+  const dbOpts = config.pinDatabase ? { db } : { mongoClient };
   await registerOptioApi(app, {
-    mongoClient,
+    ...dbOpts,
+    prefix: config.prefix,
     redis,
     verbose: config.verbose,
     authenticate: async (request: import('fastify').FastifyRequest) => {

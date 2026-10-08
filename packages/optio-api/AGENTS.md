@@ -81,8 +81,11 @@ const ctx = registerOptioApi(app, { db, redis, authenticate });
 interface OptioApiOptions {
   db: Db;                                  // MongoDB Db instance
   redis: Redis;                            // ioredis Redis instance
-  prefix?: string;                         // Collection prefix; default 'optio'.
-                                           // Reads/writes `{prefix}_processes`.
+  prefix?: string;                         // Limits instance discovery
+                                           // (GET /api/optio/instances) to this
+                                           // prefix; unset, every prefix. Routes
+                                           // take the prefix from each request's
+                                           // query (default 'optio').
   authenticate: AuthCallback<TRequest>;    // TRequest depends on adapter (FastifyRequest,
                                            // express Request, web Request, NextApiRequest).
                                            // Returns 'viewer' | 'operator' | null.

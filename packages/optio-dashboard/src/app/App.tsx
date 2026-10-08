@@ -108,7 +108,12 @@ function AppContent() {
 
   const headerRight = (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      {instances.length > 0 && (
+      {/* One instance (e.g. pinned by MONGODB_URL + OPTIO_PREFIX): nothing to
+          pick, so name it instead of offering a selector. */}
+      {instances.length === 1 && selected && (
+        <span style={{ color: 'rgba(255, 255, 255, 0.65)' }}>{instanceKey(selected)}</span>
+      )}
+      {instances.length > 1 && (
         <>
           <Select
             style={{ minWidth: 200 }}
