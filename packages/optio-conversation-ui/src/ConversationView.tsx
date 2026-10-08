@@ -7,6 +7,7 @@ import {
 } from 'vultus-antd';
 import type { TextAreaRef } from 'antd/es/input/TextArea';
 import type { ChatItem, ChatState, SessionControl } from './chat.js';
+import { Actions, Bubble } from '@ant-design/x';
 import { AnswerBlock } from './AnswerBlock.js';
 import { type Attachment, toAttachment, withinCap } from './attachments.js';
 import { FileDownloadContext } from './FileDownloadContext.js';
@@ -147,6 +148,10 @@ const bubbleBase: React.CSSProperties = {
 // 2026-09-15, gives a "System: " activity row this same radius instead of a
 // second copy of the shorthand.
 const USER_BUBBLE_RADIUS = '14px 14px 4px 14px';
+
+// Plain-text bubble content (an X Bubble holding a user message): keep the
+// operator's line breaks, and wrap a long unbroken word instead of overflowing.
+const BUBBLE_TEXT: React.CSSProperties = { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' };
 
 // One-time mount flash: a thick pulsating ring (box-shadow, so it doesn't
 // shift layout) that plays ~4×0.5s = 2s then stops. Injected once into the
@@ -1319,102 +1324,96 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
 
   function renderItem(item: ChatItem) {
     switch (item.kind) {
+      // Ant Design X experiment (owner request 2026-10-08): user messages and
+      // answers are X Bubbles. Bubble places itself (start/end), so these rows
+      // stretch across the column; our time labels go in its footer slot.
       case 'user':
-        // A Send when ready the agent has not taken yet: user colours, dashed
-        // and muted; the reducer keeps it pinned at the bottom.
+        // A Send when ready the agent has not taken yet: dashed and muted; the
+        // reducer keeps it pinned at the bottom.
         if (item.queued) {
-          return withTimeLabel(
-            item.seq,
-            'flex-end',
-            'flex-end',
-            <div
+          return (
+            <Bubble
+              key={item.seq}
               data-testid="queued-bubble"
-              style={{
-                ...bubbleBase,
-                background: token.colorPrimaryBg,
-                border: `1px dashed ${token.colorPrimaryBorder}`,
-                borderRadius: USER_BUBBLE_RADIUS,
-                color: token.colorText,
-                opacity: 0.6,
-              }}
-            >
-              {item.text}
-              <div style={{ fontSize: 12, color: token.colorTextSecondary, marginTop: 4, whiteSpace: 'normal' }}>
-                Queued — the agent reads it when ready
-                {steerable ? (
-                  <>
-                    {' · '}
-                    <Button
-                      type="link"
-                      size="small"
-                      data-testid="queued-send-now"
-                      disabled={sending}
-                      style={{ padding: 0, height: 'auto', fontSize: 12 }}
-                      onClick={() => void sendQueuedNow(item.queueId)}
-                    >
-                      Send now
-                    </Button>
-                  </>
-                ) : null}
-              </div>
-            </div>,
-            renderTimeLabel(item.timestamp, renderedAt, token),
+              placement="end"
+              variant="outlined"
+              shape="corner"
+              style={{ alignSelf: 'stretch' }}
+              styles={{ content: { ...BUBBLE_TEXT, borderStyle: 'dashed', opacity: 0.6 } }}
+              content={item.text}
+              contentRender={(text) => (
+                <>
+                  {text}
+                  <div style={{ fontSize: 12, color: token.colorTextSecondary, marginTop: 4, whiteSpace: 'normal' }}>
+                    Queued — the agent reads it when ready
+                    {steerable ? (
+                      <>
+                        {' · '}
+                        <Button
+                          type="link"
+                          size="small"
+                          data-testid="queued-send-now"
+                          disabled={sending}
+                          style={{ padding: 0, height: 'auto', fontSize: 12 }}
+                          onClick={() => void sendQueuedNow(item.queueId)}
+                        >
+                          Send now
+                        </Button>
+                      </>
+                    ) : null}
+                  </div>
+                </>
+              )}
+              footer={renderTimeLabel(item.timestamp, renderedAt, token)}
+              footerPlacement="outer-end"
+            />
           );
         }
-        return withTimeLabel(
-          item.seq,
-          'flex-end',
-          'flex-end',
-          <div
-            style={{
-              ...bubbleBase,
-              background: token.colorPrimaryBg,
-              border: `1px solid ${token.colorPrimaryBorder}`,
-              borderRadius: USER_BUBBLE_RADIUS,
-              // Explicit token color — without it the text inherits the host's
-              // default and is unreadable on the dark-mode bubble.
-              color: token.colorText,
-            }}
-          >
-            {item.text}
-          </div>,
-          renderTimeLabel(item.timestamp, renderedAt, token),
+        return (
+          <Bubble
+            key={item.seq}
+            placement="end"
+            variant="filled"
+            shape="corner"
+            style={{ alignSelf: 'stretch' }}
+            styles={{ content: BUBBLE_TEXT }}
+            content={item.text}
+            footer={renderTimeLabel(item.timestamp, renderedAt, token)}
+            footerPlacement="outer-end"
+          />
         );
       case 'assistant': {
         const ellipsis = withInterruptEllipsis(item.text, item.interrupted);
-        return withTimeLabel(
-          item.seq,
-          'flex-start',
-          'flex-start',
-          <div
+        const timeLabel = renderTimeLabelRange(item.timestamp, item.endTimestamp, renderedAt, token);
+        return (
+          <Bubble
+            key={item.seq}
             // An answer the operator interrupted keeps its text and gets a
             // jagged bottom edge (the class is installed on mount).
             data-testid={item.interrupted ? 'answer-interrupted' : undefined}
-            className={item.interrupted ? 'optio-cc-interrupted' : undefined}
-            style={{
-              ...bubbleBase,
-              background: token.colorBgContainer,
-              border: `1px solid ${token.colorBorderSecondary}`,
-              borderRadius: '14px 14px 14px 4px',
-            }}
-          >
-            <div className="optio-cc-answer" style={{ position: 'relative' }}>
-              <AnswerBlock text={ellipsis.markdownText} />
-              {ellipsis.trailingSpan && <span data-testid="answer-interrupt-ellipsis">{ELLIPSIS}</span>}
-              <Button
-                size="small"
-                type="text"
-                className="optio-cc-copy"
-                data-testid="answer-copy"
-                style={{ position: 'absolute', top: 0, right: 0 }}
-                onClick={() => void navigator.clipboard?.writeText(item.text)}
-              >
-                ⧉
-              </Button>
-            </div>
-            {item.pending && <span style={{ color: token.colorTextTertiary }}>▍</span>}
-          </div>,
-          renderTimeLabelRange(item.timestamp, item.endTimestamp, renderedAt, token),
+            placement="start"
+            variant="outlined"
+            shape="corner"
+            style={{ alignSelf: 'stretch' }}
+            classNames={{ content: item.interrupted ? 'optio-cc-interrupted' : undefined }}
+            streaming={item.pending}
+            loading={item.pending && item.text === ''}
+            content={item.text}
+            contentRender={() => (
+              <div className="optio-cc-answer">
+                <AnswerBlock text={ellipsis.markdownText} />
+                {ellipsis.trailingSpan && <span data-testid="answer-interrupt-ellipsis">{ELLIPSIS}</span>}
+                {item.pending && <span style={{ color: token.colorTextTertiary }}>▍</span>}
+              </div>
+            )}
+            footer={
+              <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                {timeLabel}
+                {!item.pending && <Actions.Copy data-testid="answer-copy" text={item.text} />}
+              </div>
+            }
+            footerPlacement="outer-start"
+          />
         );
       }
       case 'activity':
