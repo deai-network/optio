@@ -30,8 +30,10 @@ export default defineConfig({
       // Object form with `ws: true` is required so WebSocket upgrades under
       // /api (e.g. the widget reverse-proxy at /api/widget/…/ws) are forwarded
       // to the backend. With the bare-string form, Vite only proxies HTTP.
+      // OPTIO_API_URL: where the dashboard API (`make run-api`, port from
+      // PORT) listens, when not on :3000 (e.g. beside another stack).
       '/api': {
-        target: 'http://localhost:3000',
+        target: process.env.OPTIO_API_URL ?? 'http://localhost:3000',
         ws: true,
       },
     },
