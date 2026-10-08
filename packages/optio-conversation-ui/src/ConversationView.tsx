@@ -1,5 +1,5 @@
-import { useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Alert, Button, Input, Spin, Switch, Tooltip, Typography, theme } from 'antd';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Alert, Button, Input, Spin, Switch, Tooltip, theme } from 'antd';
 import type { GlobalToken } from 'antd';
 import {
   ActionButton, BoolSwitch, CombinedActionButton, OneOfSegmented, OneOfSelect, OneOfSlider,
@@ -7,11 +7,7 @@ import {
 } from 'vultus-antd';
 import type { TextAreaRef } from 'antd/es/input/TextArea';
 import type { ChatItem, ChatState, SessionControl } from './chat.js';
-import { Actions, Bubble, CodeHighlighter, Mermaid as XMermaid } from '@ant-design/x';
-import XMarkdown, { type ComponentProps as XMarkdownComponentProps } from '@ant-design/x-markdown';
-import Latex from '@ant-design/x-markdown/plugins/Latex';
-import '@ant-design/x-markdown/themes/light.css';
-import '@ant-design/x-markdown/themes/dark.css';
+import { Actions, Bubble } from '@ant-design/x';
 import { AnswerBlock } from './AnswerBlock.js';
 import { type Attachment, toAttachment, withinCap } from './attachments.js';
 import { FileDownloadContext } from './FileDownloadContext.js';
@@ -152,51 +148,6 @@ const bubbleBase: React.CSSProperties = {
 // 2026-09-15, gives a "System: " activity row this same radius instead of a
 // second copy of the shorthand.
 const USER_BUBBLE_RADIUS = '14px 14px 4px 14px';
-
-// Ant Design X experiment (owner request 2026-10-08): answers render with
-// XMarkdown, X's streaming markdown engine, wired the way X's own templates
-// and demos do: LaTeX through its plugin, code blocks through X's
-// CodeHighlighter, mermaid fences through X's Mermaid, and its light/dark
-// theme stylesheets (picked by the antd theme in the view). Our own renderer
-// (AnswerBlock) still draws the compaction summary and task descriptions.
-const XMARKDOWN_CONFIG = { extensions: Latex() };
-// DOMPurify's default URI allow-list plus our optio-file: download sentinel,
-// so XMarkdown's sanitizer keeps those links' href.
-const XMARKDOWN_PURIFY = {
-  ALLOWED_URI_REGEXP:
-    /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix|optio-file):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
-};
-
-function XMarkdownCode({ className, children, block, lang }: XMarkdownComponentProps) {
-  const language = lang ?? className?.match(/language-(\w+)/)?.[1] ?? '';
-  if (!block || typeof children !== 'string') return <code className={className}>{children}</code>;
-  if (language === 'mermaid') return <XMermaid>{children}</XMermaid>;
-  return <CodeHighlighter lang={language}>{children}</CodeHighlighter>;
-}
-
-// An agent's `[name](optio-file:relpath)` downloads that workdir file (see
-// Markdown.tsx); any other link opens in a new tab.
-function XMarkdownLink({ href, children }: XMarkdownComponentProps<{ href?: string }>) {
-  const onDownload = useContext(FileDownloadContext);
-  if (typeof href === 'string' && href.startsWith('optio-file:')) {
-    const relpath = href.slice('optio-file:'.length);
-    const filename = relpath.split('/').pop() || relpath;
-    return onDownload ? (
-      <Typography.Link onClick={() => onDownload(relpath, filename)} style={{ cursor: 'pointer' }}>
-        ⬇ {children}
-      </Typography.Link>
-    ) : (
-      <Typography.Text>{children}</Typography.Text>
-    );
-  }
-  return (
-    <a href={href} target="_blank" rel="noreferrer">
-      {children}
-    </a>
-  );
-}
-
-const XMARKDOWN_COMPONENTS = { code: XMarkdownCode, a: XMarkdownLink };
 
 // Plain-text bubble content (an X Bubble holding a user message): keep the
 // operator's line breaks, and wrap a long unbroken word instead of overflowing.
@@ -1075,9 +1026,7 @@ function SessionControls({
 }
 
 export function ConversationView(props: ConversationViewProps): React.JSX.Element {
-  const { token, theme: antdTheme } = theme.useToken();
-  // XMarkdown's theme stylesheet follows the antd theme (as X's demos do).
-  const xMarkdownTheme = antdTheme.id === 0 ? 'x-markdown-light' : 'x-markdown-dark';
+  const { token } = theme.useToken();
   const {
     state,
     closed,
@@ -1452,15 +1401,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             content={item.text}
             contentRender={() => (
               <div className="optio-cc-answer">
-                <XMarkdown
-                  className={xMarkdownTheme}
-                  paragraphTag="div"
-                  content={ellipsis.markdownText}
-                  config={XMARKDOWN_CONFIG}
-                  components={XMARKDOWN_COMPONENTS}
-                  dompurifyConfig={XMARKDOWN_PURIFY}
-                  streaming={{ hasNextChunk: item.pending, enableAnimation: true, tail: true }}
-                />
+                <AnswerBlock text={ellipsis.markdownText} pending={item.pending} />
                 {ellipsis.trailingSpan && <span data-testid="answer-interrupt-ellipsis">{ELLIPSIS}</span>}
               </div>
             )}

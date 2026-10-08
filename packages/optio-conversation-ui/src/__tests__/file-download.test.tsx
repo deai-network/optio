@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { Markdown } from '../Markdown.js';
+import { AnswerBlock } from '../AnswerBlock.js';
 import { FileDownloadContext } from '../FileDownloadContext.js';
 
 describe('Markdown optio-file: sentinel rendering', () => {
@@ -8,7 +8,7 @@ describe('Markdown optio-file: sentinel rendering', () => {
     const spy = vi.fn();
     render(
       <FileDownloadContext.Provider value={spy}>
-        <Markdown>{'[r.md](optio-file:out/r.md)'}</Markdown>
+        <AnswerBlock text={'[r.md](optio-file:out/r.md)'} />
       </FileDownloadContext.Provider>,
     );
 
@@ -24,7 +24,7 @@ describe('Markdown optio-file: sentinel rendering', () => {
   });
 
   it('degrades to plain text (no navigation) when no provider wraps the renderer', () => {
-    const { container } = render(<Markdown>{'[r.md](optio-file:out/r.md)'}</Markdown>);
+    const { container } = render(<AnswerBlock text={'[r.md](optio-file:out/r.md)'} />);
 
     // No handler → the sentinel link renders as plain text, never an anchor.
     expect(container.querySelector('a')).toBeNull();
@@ -36,7 +36,7 @@ describe('Markdown optio-file: sentinel rendering', () => {
     const spy = vi.fn();
     const { container } = render(
       <FileDownloadContext.Provider value={spy}>
-        <Markdown>{'[x](https://e.com)'}</Markdown>
+        <AnswerBlock text={'[x](https://e.com)'} />
       </FileDownloadContext.Provider>,
     );
 
