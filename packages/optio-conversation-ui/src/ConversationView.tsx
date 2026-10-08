@@ -7,7 +7,7 @@ import {
 } from 'vultus-antd';
 import type { TextAreaRef } from 'antd/es/input/TextArea';
 import type { ChatItem, ChatState, SessionControl } from './chat.js';
-import { Actions, Bubble } from '@ant-design/x';
+import { Actions, Bubble, XProvider } from '@ant-design/x';
 import { AnswerBlock } from './AnswerBlock.js';
 import { type Attachment, toAttachment, withinCap } from './attachments.js';
 import { FileDownloadContext } from './FileDownloadContext.js';
@@ -142,13 +142,6 @@ const bubbleBase: React.CSSProperties = {
   overflowWrap: 'anywhere',
 };
 
-// The user bubble's own corner treatment: full top corners, a flattened
-// bottom-right one (its "tail", pointing at its own right-aligned time
-// label). Named so it can be reused verbatim — Fix 14, owner ruling
-// 2026-09-15, gives a "System: " activity row this same radius instead of a
-// second copy of the shorthand.
-const USER_BUBBLE_RADIUS = '14px 14px 4px 14px';
-
 // Plain-text bubble content (an X Bubble holding a user message): keep the
 // operator's line breaks, and wrap a long unbroken word instead of overflowing.
 const BUBBLE_TEXT: React.CSSProperties = { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' };
@@ -198,6 +191,93 @@ function ensureInterruptedStyle(): void {
   }`;
   document.head.appendChild(el);
 }
+
+// The "glass" bubble of X's own homepage (owner request 2026-10-09): copied
+// from ant-design/x packages/x/.dumi/pages/index/common/CustomizationProvider.tsx
+// (useCustomizationBgStyle), which X's site sets on Bubble's content through
+// classNames. A translucent gradient fill plus a 1px edge fading out downwards
+// (an ::after ring cut out with a mask). The base class draws the shape from
+// three variables; the colour classes below set them.
+//
+// - Agent bubbles: the homepage's white glass (dark; the original) and our
+//   black-tinted counterpart with a drop shadow (light).
+// - User bubbles: the same glass tinted with the theme's accent, colorPrimary,
+//   which the view publishes as --optio-x-accent on its root. So the user
+//   bubble follows whatever theme the host sets (e.g. daeo-style's accent).
+// - System rows (X's Bubble.System): tinted with the theme's preset purple,
+//   published as --optio-x-system, as the lavender rows were before.
+//
+// XProvider gives every Bubble the base and mode classes (see the view's
+// root); user bubbles add GLASS_USER, System rows GLASS_SYSTEM.
+const GLASS_STYLE_ID = 'optio-x-glass-style';
+const GLASS_MODE = { dark: 'optio-x-glass optio-x-glass-dark', light: 'optio-x-glass optio-x-glass-light' } as const;
+const GLASS_USER = 'optio-x-glass-user';
+const GLASS_SYSTEM = 'optio-x-glass-system';
+function ensureGlassStyle(): void {
+  if (typeof document === 'undefined') return;
+  const accent = (pct: number) => `color-mix(in srgb, var(--optio-x-accent) ${pct}%, transparent)`;
+  const system = (pct: number) => `color-mix(in srgb, var(--optio-x-system) ${pct}%, transparent)`;
+  // Rewritten when present rather than skipped, so a hot reload of this module
+  // updates an already-open page.
+  let el = document.getElementById(GLASS_STYLE_ID);
+  if (!el) {
+    el = document.createElement('style');
+    el.id = GLASS_STYLE_ID;
+    document.head.appendChild(el);
+  }
+  el.textContent = `.optio-x-glass {
+    background: var(--optio-x-glass-fill) !important;
+    box-shadow: var(--optio-x-glass-shadow, none);
+    overflow: hidden;
+  }
+  .optio-x-glass::after {
+    content: '';
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    border-radius: inherit;
+    pointer-events: none;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    inset-inline-start: 0;
+    inset-inline-end: 0;
+    padding: 1px;
+    background: var(--optio-x-glass-edge);
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask-composite: exclude;
+  }
+  .optio-x-glass-dark {
+    --optio-x-glass-fill: linear-gradient(135deg, #ffffff26 14%, #ffffff0d 59%);
+    --optio-x-glass-edge: linear-gradient(180deg, #ffffff26 0%, #ffffff00 100%);
+  }
+  .optio-x-glass-light {
+    --optio-x-glass-fill: linear-gradient(135deg, #0000000f 14%, #00000005 59%);
+    --optio-x-glass-edge: linear-gradient(180deg, #0000001a 0%, #00000000 100%);
+    --optio-x-glass-shadow: 0 1px 2px #0000000f, 0 4px 14px #00000012;
+  }
+  .optio-x-glass-dark.${GLASS_USER} {
+    --optio-x-glass-fill: linear-gradient(135deg, ${accent(40)} 14%, ${accent(14)} 59%);
+    --optio-x-glass-edge: linear-gradient(180deg, ${accent(60)} 0%, ${accent(0)} 100%);
+  }
+  .optio-x-glass-light.${GLASS_USER} {
+    --optio-x-glass-fill: linear-gradient(135deg, ${accent(20)} 14%, ${accent(7)} 59%);
+    --optio-x-glass-edge: linear-gradient(180deg, ${accent(35)} 0%, ${accent(0)} 100%);
+    --optio-x-glass-shadow: 0 1px 2px ${accent(12)}, 0 4px 14px ${accent(18)};
+  }
+  .optio-x-glass-dark.${GLASS_SYSTEM} {
+    --optio-x-glass-fill: linear-gradient(135deg, ${system(40)} 14%, ${system(14)} 59%);
+    --optio-x-glass-edge: linear-gradient(180deg, ${system(60)} 0%, ${system(0)} 100%);
+  }
+  .optio-x-glass-light.${GLASS_SYSTEM} {
+    --optio-x-glass-fill: linear-gradient(135deg, ${system(16)} 14%, ${system(5)} 59%);
+    --optio-x-glass-edge: linear-gradient(180deg, ${system(30)} 0%, ${system(0)} 100%);
+    --optio-x-glass-shadow: 0 1px 2px ${system(10)}, 0 4px 14px ${system(14)};
+  }`;
+}
+// Also on module load: a hot reload re-runs this module but not the view's
+// mount effect, so without this an open page keeps the old stylesheet.
+ensureGlassStyle();
 
 // Padding of the transcript's scroll container; the bands reach through it to
 // the container's edges.
@@ -1026,7 +1106,7 @@ function SessionControls({
 }
 
 export function ConversationView(props: ConversationViewProps): React.JSX.Element {
-  const { token } = theme.useToken();
+  const { token, theme: antdTheme } = theme.useToken();
   const {
     state,
     closed,
@@ -1173,6 +1253,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     ensureBandStyle();
     ensureSendButtonStyle();
     ensureCompactStyle();
+    ensureGlassStyle();
     inputRef.current?.focus();
     const timers = [100, 400, 1000].map((ms) => setTimeout(() => inputRef.current?.focus(), ms));
     return () => timers.forEach(clearTimeout);
@@ -1339,6 +1420,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               placement="end"
               variant="outlined"
               style={{ alignSelf: 'stretch' }}
+              classNames={{ content: GLASS_USER }}
               styles={{ content: { ...BUBBLE_TEXT, borderStyle: 'dashed', opacity: 0.6 } }}
               content={item.text}
               contentRender={(text) => (
@@ -1374,6 +1456,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
             key={item.seq}
             placement="end"
             style={{ alignSelf: 'stretch' }}
+            classNames={{ content: GLASS_USER }}
             styles={{ content: BUBBLE_TEXT }}
             content={item.text}
             footer={renderTimeLabel(item.timestamp, renderedAt, token)}
@@ -1464,22 +1547,16 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               maxWidth: '80%',
             }}
           >
-            <div
+            {/* X's Bubble.System (Ant Design X experiment): centred, its own
+                size and shape; the glass tinted with the theme's purple. No
+                maxWidth here — the wrapper above caps the row's width against
+                the transcript column; see the comment there. */}
+            <Bubble.System
               data-testid="activity-bubble"
-              style={{
-                ...bubbleBase,
-                // No maxWidth here — the wrapper above caps the row's width
-                // against the transcript column; see the comment there.
-                alignSelf: 'center',
-                background: token.purple1,
-                border: `1px solid ${token.purple3}`,
-                color: token.colorTextSecondary,
-                fontSize: 12,
-                borderRadius: item.system ? USER_BUBBLE_RADIUS : 14,
-              }}
-            >
-              {item.text}
-            </div>
+              classNames={{ content: GLASS_SYSTEM }}
+              styles={{ content: BUBBLE_TEXT }}
+              content={item.text}
+            />
             {renderTimeLabel(item.timestamp, renderedAt, token)}
           </div>
         );
@@ -1700,6 +1777,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
 
   return (
     <FileDownloadContext.Provider value={fileDownload ? onFileDownload : null}>
+      <XProvider bubble={{ classNames: { content: antdTheme.id === 0 ? GLASS_MODE.light : GLASS_MODE.dark } }}>
       {/* Paint our own root surface from a bg token — the widget owns its
           background (don't rely on an inherited host surface), or dark mode
           shows the light host page behind transparent divs. colorText sets a
@@ -1709,6 +1787,10 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
       <div style={{
         display: 'flex', flexDirection: 'column', width: '100%', height: '100%',
         background: token.colorBgContainer, color: token.colorText,
+        // Theme colours for the bubbles' glass (ensureGlassStyle): the accent
+        // tints user bubbles, the preset purple System rows.
+        ['--optio-x-accent' as string]: token.colorPrimary,
+        ['--optio-x-system' as string]: token.purple,
       }}>
         <div
           data-testid="conversation-split"
@@ -2168,6 +2250,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
         )}
         </div>
       </div>
+      </XProvider>
     </FileDownloadContext.Provider>
   );
 }
