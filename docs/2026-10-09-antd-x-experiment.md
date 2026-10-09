@@ -23,10 +23,9 @@ on vultus) are done and merged; see §4.
 2. ~~Compact controls bar; Claude's model list reviewed and committed~~ (resume decision:
    all three picks kept, a vanished model matches its family).
 3. ~~Demo rebuilt on the session controls~~ (two worktrees now, §3).
-4. **Back to the reason for detour 1: the owner reviews the permission card** in the gated
-   "Claude Code conversation — Config #1" task (process 6ac7ee8304fb01ee4e6f26a1; the
-   "conversation+task" task has no gate and runs bypass, so it can show no card). The card is
-   the uncommitted change in the antd-x worktree; commit it on antd-x if approved.
+4. ~~The owner reviews the permission card~~: approved and committed (a9f21949), reviewed in
+   the gated "Claude Code conversation — Config #1" task (process 6ac7ee8304fb01ee4e6f26a1;
+   the "conversation+task" task has no gate and runs bypass, so it shows no card).
 5. ~~Push session controls to optio main; vultus release~~ (17:15, 17:07).
 6. **Resume the main goal: the remaining X candidates (§2).**
 
@@ -61,14 +60,22 @@ preset purple, via CSS vars on the view root; stylesheet rewritten at module loa
 `Ant Design X experiment dependencies` (@ant-design/x, x-markdown; lockfile resolved
 lockfile-only). The dev-server knobs and trusted origins went to main.
 
-Uncommitted in the antd-x worktree: the permission card shows tool input as code blocks
-(`renderToolInput`; description next to the tool name; old KV table removed), awaiting the
-owner's live review (step 4).
+Also committed: `permission card shows the tool input as code blocks` (a9f21949, owner-approved;
+description next to the tool name; the warning-coloured KV table removed).
 
 Remaining X candidates: Think (thinking rows, compaction summary), Bubble.Divider (conversation
 ended), error rows as error-tinted glass, Bubble.List + role map, Sender (+ Attachments),
-FileCard for downloads, Prompts for single-choice questions. Tests: 9 view tests fail by design
-(they pin the old bubble DOM).
+FileCard for downloads, Prompts for single-choice questions.
+
+Tests: optio-conversation-ui's vitest does not run cleanly in the antd-x worktree any more:
+its vultus resolves through the unitas worktree, whose package node_modules belong to the
+session-controls store, so vultus's react-i18next brings a second React ("reading
+'useContext'"). Deduping antd and inlining react-i18next/vultus in vitest.config got most
+tests running (tried, reverted): 18 failures left in conversation-view + claudecode-widget,
+some pinning the X DOM (bubbles, tool rows), some still two-React (`useSyncExternalStore`).
+Proposed (owner to decide): antd-x takes vultus from npm (0.5.0 is released) instead of the
+workspace link, so it has its own install and clean tests; then rewrite the tests that pin
+widgets we kept (bubbles, tool rows, the card).
 
 ## 3. Methodology
 
