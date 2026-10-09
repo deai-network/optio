@@ -139,6 +139,10 @@ class ProcessContext:
         self._executor: "Executor | None" = None
         # The process's ttlSeconds, passed on to its children (set by the executor).
         self._ttl_seconds: int | None = None
+        # This run's result channel (set by the executor): its launcher's
+        # future, and the token its published result carries.
+        self._result_future: asyncio.Future | None = None
+        self._run_token: object | None = None
 
     def report_progress(
         self,
@@ -257,7 +261,7 @@ class ProcessContext:
             raise RuntimeError(
                 "publish_result: no executor attached to this context"
             )
-        self._executor.publish_result(self.process_id, obj)
+        self._executor.publish_result(self.process_id, obj, run=self)
 
     @property
     def cancellation_flag(self) -> asyncio.Event:

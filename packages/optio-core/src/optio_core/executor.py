@@ -101,6 +101,8 @@ class Executor:
         # launch_and_await_result caller is (about to be) waiting.
         self._result_registry: dict[str, Any] = {}
         self._result_futures: dict[str, asyncio.Future] = {}
+        # The run (its token) that published each _result_registry entry.
+        self._result_owner: dict[str, object] = {}
 
     def register_tasks(
         self,
@@ -125,15 +127,24 @@ class Executor:
         for t in tasks:
             self._task_registry[t.process_id] = t
 
-    def publish_result(self, process_id: str, obj: Any) -> None:
-        """Register a task-published result; resolve any waiting launcher."""
-        if process_id in self._result_registry:
+    def publish_result(
+        self, process_id: str, obj: Any, *, run: "ProcessContext | None" = None,
+    ) -> None:
+        """Register a task-published result; resolve any waiting launcher.
+
+        `run` is the publishing run's context: its launcher's future is the one
+        resolved, and an entry left by an earlier run of the same process that
+        has not been torn down yet is replaced, not refused.
+        """
+        token = run._run_token if run is not None else None
+        if process_id in self._result_registry and self._result_owner.get(process_id) is token:
             raise RuntimeError(
                 f"publish_result: '{process_id}' already published a result "
                 "for this run"
             )
         self._result_registry[process_id] = obj
-        fut = self._result_futures.get(process_id)
+        self._result_owner[process_id] = token
+        fut = run._result_future if run is not None else self._result_futures.get(process_id)
         if fut is not None and not fut.done():
             fut.set_result(obj)
 
@@ -216,11 +227,22 @@ class Executor:
         ttl_seconds = proc.get("ttlSeconds")
 
         cancel_flag = asyncio.Event()
-        self._cancellation_flags[oid] = _CancelEntry(flag=cancel_flag, deadline=None)
+        cancel_entry = _CancelEntry(flag=cancel_flag, deadline=None)
+        self._cancellation_flags[oid] = cancel_entry
         current = asyncio.current_task()
         if current is None:
             raise RuntimeError("_execute_process must be called from within an asyncio Task")
         self._running_tasks[oid] = current
+        # This run's result channel. A relaunch reuses the document, so the
+        # next run of this process shares its processId and OID and may start
+        # before this run's teardown: the teardown below releases only what
+        # this run owns. The launcher's future is claimed (a later launcher
+        # registers its own) and published results carry this run's token.
+        _pid = proc["processId"]
+        run_future = self._result_futures.pop(_pid, None)
+        if run_future is not None and run_future.done():
+            run_future = None
+        run_token = object()
         # A new run of this row supersedes a final state still parked from an
         # earlier run (Rule 3): the row was launchable, so that write is moot.
         self._unrecorded_finals.pop(oid, None)
@@ -262,6 +284,8 @@ class Executor:
             )
             ctx._executor = self
             ctx._ttl_seconds = ttl_seconds
+            ctx._result_future = run_future
+            ctx._run_token = run_token
 
             if parent_ctx is not None and parent_ctx._on_child_progress is not None:
                 child_process_id = proc["processId"]
@@ -392,16 +416,20 @@ class Executor:
             await self._cleanup_ephemeral(str(oid))
             return (end_state, None)
         finally:
-            self._cancellation_flags.pop(oid, None)
-            self._running_tasks.pop(oid, None)
-            # Result channel teardown: drop the registry entry; fail any
-            # still-waiting launcher with ResultNotPublished.
-            _pid = proc["processId"]
-            self._result_registry.pop(_pid, None)
-            _fut = self._result_futures.pop(_pid, None)
-            if _fut is not None and not _fut.done():
+            # Release only this run's entries: a next run of the same process
+            # may already have registered its own (see run_token above).
+            if self._cancellation_flags.get(oid) is cancel_entry:
+                self._cancellation_flags.pop(oid, None)
+            if self._running_tasks.get(oid) is current:
+                self._running_tasks.pop(oid, None)
+            # Result channel teardown: drop this run's registry entry; fail
+            # this run's still-waiting launcher with ResultNotPublished.
+            if _pid in self._result_owner and self._result_owner[_pid] is run_token:
+                self._result_registry.pop(_pid, None)
+                self._result_owner.pop(_pid, None)
+            if run_future is not None and not run_future.done():
                 from optio_core.exceptions import ResultNotPublished
-                _fut.set_exception(ResultNotPublished(_pid))
+                run_future.set_exception(ResultNotPublished(_pid))
             # Rule 3: the final write never landed (Mongo unreachable, or an
             # error before the outcome was known). A CancelledError unwind is
             # left alone: force_cancel, shutdown (Rule 2) or the next start
