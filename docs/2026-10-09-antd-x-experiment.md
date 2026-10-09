@@ -11,6 +11,16 @@ work" runs the optio release batch). vultus **core 0.3.0 / antd 0.5.0** are on n
 41cb663). `csillag/antd-x` is rebased onto that main. Left: the permission card review (step 4
 below), then the remaining X candidates.
 
+**PARKED 2026-10-09 ~18:00 (owner: more pressing work).** Everything non-X is on optio main and
+released (optio-conversation-ui 0.7.0, optio-claudecode 0.6.9, optio-agents 0.6.7, ...; vultus
+0.3.0/0.5.0; excavator main 461e46f5 consumes them). This branch is pushed to origin as
+`csillag/antd-x` (backup, not for main). The demo (tmux `antd-x-demo`) is stopped, and the
+`session-controls` and `unitas` worktrees are removed; only the `antd-x` worktree remains. To
+resume: rebase antd-x onto origin/main; either recreate the unitas worktree
+(`git -C ~/deai/unitas worktree add ~/deai/optio/.worktrees/csillag/unitas --detach main`) for
+live vultus, or take vultus 0.5 from npm (the proposal in §2); start the demo as in §3 (vite
+binary, never `pnpm ... dev`). Next X step: the owner picks from the candidates in §2.
+
 ## 00. Goal hierarchy: why we are where we are (read this first)
 
 The **main goal** is the Ant Design X experiment (§1–2): replace optio-conversation-ui's
