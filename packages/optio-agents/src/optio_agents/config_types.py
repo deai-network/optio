@@ -7,6 +7,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Literal, get_args
 
+from optio_agents.session_controls import validate_session_controls
+
 ConversationMode = Literal["iframe", "conversation"]
 # Tool-use reporting level (ascending). "description-while-active" shows a tool's
 # one-line description WHILE it runs, then hides it once finished (the analysis
@@ -116,3 +118,35 @@ class BlobCryptoConfigMixin:
                 f"{type(self).__name__}: seed_blob_encrypt and seed_blob_decrypt "
                 "must be set together or both left as None."
             )
+
+
+@dataclass(frozen=True)
+class SessionControlsConfigMixin:
+    """The conversation widget's session-controls bar, shared by every engine
+    TaskConfig via inheritance. Fields stay top-level on each config (no
+    nesting) so callers write ``show_session_controls=`` verbatim.
+
+    ``show_session_controls`` shows the bar: the engine's live controls (model,
+    reasoning effort, permission/plan mode, ...); the engine says which
+    configurations allow it. ``session_controls`` optionally narrows the bar to
+    the listed control ids; None (the default) offers every control the engine
+    builds. A control left out is neither shown nor settable through the
+    widget's /control endpoint: engines filter every controls snapshot through
+    ``session_controls.filter_controls`` and gate /control with
+    ``settable_controls``."""
+    show_session_controls: bool = False
+    session_controls: list[str] | None = None
+
+    @property
+    def settable_controls(self) -> list[str] | None:
+        """The control ids /control may change: none while the bar is off, else
+        the allowlist (None: every control)."""
+        return self.session_controls if self.show_session_controls else []
+
+    def _validate_session_controls(self) -> None:
+        """Raise if the allowlist is malformed or set without the bar. Call
+        from each engine config's ``__post_init__``."""
+        validate_session_controls(
+            self.session_controls, show_session_controls=self.show_session_controls,
+            owner=type(self).__name__,
+        )

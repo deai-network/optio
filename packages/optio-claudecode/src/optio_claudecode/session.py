@@ -706,9 +706,7 @@ async def run_claudecode_session(
                 max_download_bytes=config.max_download_bytes,
                 # Only the controls the widget shows may be set: none when the
                 # controls bar is off, else the session_controls allowlist.
-                allowed_controls=(
-                    config.session_controls if config.show_session_controls else []
-                ),
+                allowed_controls=config.settable_controls,
             )
             listener_port = await conv_listener.start(bind_addr)
             await ctx.set_widget_upstream(

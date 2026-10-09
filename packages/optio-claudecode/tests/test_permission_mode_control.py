@@ -104,6 +104,12 @@ def _cfg(**kw):
     return ClaudeCodeTaskConfig(**base)
 
 
+def test_the_controls_settings_come_from_the_shared_mixin():
+    from optio_agents.config_types import SessionControlsConfigMixin
+    assert issubclass(ClaudeCodeTaskConfig, SessionControlsConfigMixin)
+    assert _cfg(show_session_controls=True, session_controls=["model"]).settable_controls == ["model"]
+
+
 def test_session_controls_defaults_to_offering_everything():
     assert _cfg(show_session_controls=True).session_controls is None
 
