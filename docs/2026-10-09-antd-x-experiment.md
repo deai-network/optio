@@ -5,6 +5,48 @@ picks this up after a context reset. The first version of this log (2026-10-09 0
 "conversation-ui tweaks", aoe:c1d32028376a) covered only the X experiment; that session
 handed over and lingers for questions.
 
+## 00. Goal hierarchy: why we are where we are (read this first)
+
+The **main goal** is the Ant Design X experiment (§1–2): replace optio-conversation-ui's
+widgets with X ones, one at a time, compared live against the vanilla UI. Everything else is
+a detour, nested like this:
+
+1. **Main goal: the X experiment.** Last X step done: tool rows as ThoughtChain +
+   CodeHighlighter. Next X step that was waiting: the **permission card** as code blocks
+   (implemented, uncommitted), which the owner could not review because his test session ran
+   without a permission gate.
+   - **Detour 1: a Claude Code permission-mode selector** (`csillag/session-controls`, for
+     optio main), so the card can be reviewed in a session that asks. It grew while
+     answering the owner's questions: the `session_controls` allowlist, the shared
+     `SessionControlsConfigMixin`, the rollout to all agents, all six modes with tri-state
+     `allow_bypass_permissions`. Side requests done along the way, on the same branch or
+     main: the `System:` kickoff, the collapsible dashboard process list (main 660ce909).
+     - **Detour 2: the vultus one-of field** (unitas), because the modes need explanations
+       and disabled reasons and vultus had only boolean fields. Done and merged
+       (unitas main dbdaf2a): OneOfSelect, OneOfSegmented, variants, icons, markdown,
+       tooltip signs.
+       - **Detour 3: the session controls on vultus**: every select control on OneOfSelect
+         (done, 197bf962), model descriptions (done), Claude's model list from the CLI
+         (helper done, uncommitted, one owner decision open), the **compact controls bar**
+         (descriptions as questions done 10381b0f; label hiding and the other control kinds
+         still to do), which needs **OneOfSlider** for the effort slider (in progress).
+
+**Unwind order**, innermost first, each step closing a level:
+1. OneOfSlider: fix the arrow-key test, story, docs, owner review, merge to unitas main.
+2. Compact controls bar (BoolSwitch / OneOfSegmented / OneOfSlider, labels hidden when they do
+   not fit); review and commit the model-list work after the owner's resume decision.
+   Detour 3 closed.
+3. Rebase antd-x and antd-x-base onto session-controls, link vultus in both (`pnpm install`),
+   owner reviews the controls on :5180/:5181. Detour 2's consumer closed.
+4. **Back to the reason for detour 1**: the owner reviews the permission card in the gated
+   "Claude Code conversation — Config #1" task with Permissions on Manual; commit the card on
+   antd-x if approved.
+5. Push session-controls to optio main (§4 checklist); vultus release before the next optio
+   release. Detour 1 closed.
+6. Resume the main goal: the remaining X candidates (§2).
+
+Do not start new side work before the stack is unwound, unless the owner asks.
+
 ## 0. Work streams at a glance
 
 | Stream | Where | State |
