@@ -371,3 +371,105 @@ async def test_list_direct_children_no_states_returns_all(mongo_db):
 
     rows = await list_direct_children(mongo_db, prefix, parent_oid)
     assert len(rows) == 3
+
+
+# ---- one update per step (docs/2026-10-09-fewer-process-writes-design.md) ----
+
+def _entries(doc):
+    return [(e["level"], e["message"]) for e in doc["log"]]
+
+
+async def test_update_status_with_log_and_fields_is_one_update(mongo_db):
+    from process_write_counter import CountingDb
+    task = TaskInstance(execute=dummy_execute, process_id="st1", name="S")
+    oid = (await upsert_process(mongo_db, "test", task))["_id"]
+    db = CountingDb(mongo_db, "test")
+
+    await update_status(
+        db, "test", oid, ProcessStatus(state="running"),
+        log=("event", "State changed to running"),
+        set_fields={"originatingSessionId": "tok-1"},
+    )
+
+    assert len(db.updates_on(oid)) == 1
+    doc = await mongo_db["test_processes"].find_one({"_id": oid})
+    assert doc["status"]["state"] == "running"
+    assert doc["originatingSessionId"] == "tok-1"
+    assert _entries(doc) == [("event", "State changed to running")]
+    assert isinstance(doc["log"][0]["timestamp"], str)
+
+
+async def test_update_progress_with_log_is_one_update(mongo_db):
+    from process_write_counter import CountingDb
+    task = TaskInstance(execute=dummy_execute, process_id="pr1", name="P")
+    oid = (await upsert_process(mongo_db, "test", task))["_id"]
+    db = CountingDb(mongo_db, "test")
+
+    await update_progress(
+        db, "test", oid, Progress(percent=None, message="hello"), log=("info", "hello"),
+    )
+
+    assert len(db.updates_on(oid)) == 1
+    doc = await mongo_db["test_processes"].find_one({"_id": oid})
+    assert doc["progress"] == {"percent": None, "message": "hello"}
+    assert _entries(doc) == [("info", "hello")]
+
+
+async def _seed_finished_run(mongo_db, process_id):
+    """A row as a failed run leaves it, with a child of that run."""
+    from datetime import datetime, timezone
+    task = TaskInstance(execute=dummy_execute, process_id=process_id, name="R")
+    proc = await upsert_process(mongo_db, "test", task)
+    oid = proc["_id"]
+    await mongo_db["test_processes"].update_one({"_id": oid}, {"$set": {
+        "status": ProcessStatus(
+            state="failed", error="boom", failed_at=datetime.now(timezone.utc),
+        ).to_dict(),
+        "progress": {"percent": 40, "message": "x"},
+        "log": [
+            {"timestamp": "t1", "level": "event", "message": "State changed to running"},
+            {"timestamp": "t2", "level": "info", "message": "x"},
+            {"timestamp": "t3", "level": "error", "message": "boom"},
+        ],
+        "widgetData": {"a": 1},
+        "widgetUpstream": {"url": "http://w", "innerAuth": None},
+    }})
+    child = await create_child_process(mongo_db, "test", oid, oid, f"{process_id}.c", "C", {}, 1, 0)
+    return oid, child["_id"]
+
+
+async def test_relaunch_reset_is_one_update_and_resets_like_clear_result_fields(mongo_db):
+    from process_write_counter import CountingDb
+    from optio_core.store import relaunch_reset
+    oid, child_oid = await _seed_finished_run(mongo_db, "rr1")
+    db = CountingDb(mongo_db, "test")
+
+    await relaunch_reset(
+        db, "test", oid, ProcessStatus(state="scheduled"),
+        ("event", "State changed to scheduled"),
+    )
+
+    assert [w.op for w in db.writes] == ["update"]
+    doc = await mongo_db["test_processes"].find_one({"_id": oid})
+    assert doc["status"] == {
+        "state": "scheduled", "error": None, "runningSince": None, "doneAt": None,
+        "duration": None, "failedAt": None, "stoppedAt": None,
+    }
+    assert doc["progress"] == {"percent": 0.0, "message": None}
+    assert _entries(doc) == [("event", "State changed to scheduled")]
+    assert doc["widgetData"] is None
+    assert doc["widgetUpstream"] is None
+    # Deleting the previous run's children is the caller's step.
+    assert await mongo_db["test_processes"].find_one({"_id": child_oid}) is not None
+
+
+async def test_relaunch_reset_without_log_empties_the_log(mongo_db):
+    from optio_core.store import relaunch_reset
+    oid, _ = await _seed_finished_run(mongo_db, "rr2")
+
+    await relaunch_reset(mongo_db, "test", oid, ProcessStatus(state="idle"), None)
+
+    doc = await mongo_db["test_processes"].find_one({"_id": oid})
+    assert doc["status"]["state"] == "idle"
+    assert doc["status"]["error"] is None
+    assert doc["log"] == []

@@ -176,6 +176,9 @@ async def get_process_by_process_id(
 async def update_status(
     db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId, status: ProcessStatus,
     expire_at: datetime | None = None,
+    *,
+    log: tuple[str, str] | None = None,
+    set_fields: dict[str, Any] | None = None,
 ) -> None:
     """Update the status sub-document of a process.
 
@@ -184,13 +187,19 @@ async def update_status(
     the record after `expire_at` passes. Callers in terminal-state writers
     pass `now + ttl_seconds` when the process record carries a `ttlSeconds`
     field.
+
+    `log` is a `(level, message)` entry appended and `set_fields` are further
+    top-level fields set, both in the same update: a state change and its log
+    line are one write. Spec: docs/2026-10-09-fewer-process-writes-design.md
     """
     update: dict[str, Any] = {"status": status.to_dict()}
     if expire_at is not None:
         update["expireAt"] = expire_at
+    if set_fields:
+        update.update(set_fields)
     await _collection(db, prefix).update_one(
         {"_id": process_oid},
-        {"$set": update},
+        _with_log({"$set": update}, log),
     )
 
 
@@ -273,19 +282,19 @@ async def set_resurrecting(
 
 async def update_progress(
     db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId, progress: Progress,
+    *,
+    log: tuple[str, str] | None = None,
 ) -> None:
-    """Update the progress of a process."""
+    """Update the progress of a process; `log` is a `(level, message)` entry
+    appended in the same update."""
     await _collection(db, prefix).update_one(
         {"_id": process_oid},
-        {"$set": {"progress": progress.to_dict()}},
+        _with_log({"$set": {"progress": progress.to_dict()}}, log),
     )
 
 
-async def append_log(
-    db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId,
-    level: str, message: str, data: dict | None = None,
-) -> None:
-    """Append a log entry to a process."""
+def _log_entry(level: str, message: str, data: dict | None = None) -> dict:
+    """A log entry, timestamped now."""
     entry: dict = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "level": level,
@@ -293,9 +302,24 @@ async def append_log(
     }
     if data:
         entry["data"] = data
+    return entry
+
+
+def _with_log(update: dict, log: tuple[str, str] | None) -> dict:
+    """`update` plus a `$push` of the `(level, message)` entry, if any."""
+    if log is not None:
+        update["$push"] = {"log": _log_entry(*log)}
+    return update
+
+
+async def append_log(
+    db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId,
+    level: str, message: str, data: dict | None = None,
+) -> None:
+    """Append a log entry to a process."""
     await _collection(db, prefix).update_one(
         {"_id": process_oid},
-        {"$push": {"log": entry}},
+        {"$push": {"log": _log_entry(level, message, data)}},
     )
 
 
@@ -393,6 +417,22 @@ async def purge_processes(
     return deleted
 
 
+def _reset_fields() -> dict[str, Any]:
+    """The fields a re-launch resets: the previous run's results."""
+    return {
+        "status.error": None,
+        "status.runningSince": None,
+        "status.doneAt": None,
+        "status.duration": None,
+        "status.failedAt": None,
+        "status.stoppedAt": None,
+        "progress": Progress().to_dict(),
+        "log": [],
+        "widgetData": None,
+        "widgetUpstream": None,
+    }
+
+
 async def clear_result_fields(
     db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId,
 ) -> None:
@@ -403,20 +443,28 @@ async def clear_result_fields(
     await delete_descendants(db, prefix, process_oid)
     await _collection(db, prefix).update_one(
         {"_id": process_oid},
-        {
-            "$set": {
-                "status.error": None,
-                "status.runningSince": None,
-                "status.doneAt": None,
-                "status.duration": None,
-                "status.failedAt": None,
-                "status.stoppedAt": None,
-                "progress": Progress().to_dict(),
-                "log": [],
-                "widgetData": None,
-                "widgetUpstream": None,
-            }
-        },
+        {"$set": _reset_fields()},
+    )
+
+
+async def relaunch_reset(
+    db: AsyncIOMotorDatabase, prefix: str, process_oid: ObjectId,
+    status: ProcessStatus, log: tuple[str, str] | None,
+) -> None:
+    """Reset the previous run's result fields and set `status`, in one update.
+
+    The log becomes `[<log entry>]`, or empty without `log`. Unlike
+    clear_result_fields this does not delete descendants: the caller runs
+    delete_descendants first. Spec: docs/2026-10-09-fewer-process-writes-design.md
+    """
+    # The whole `status` replaces the `status.*` resets: to_dict() writes every
+    # field, and one $set may not hold both `status` and `status.<x>`.
+    fields = {k: v for k, v in _reset_fields().items() if not k.startswith("status.")}
+    fields["status"] = status.to_dict()
+    fields["log"] = [_log_entry(*log)] if log is not None else []
+    await _collection(db, prefix).update_one(
+        {"_id": process_oid},
+        {"$set": fields},
     )
 
 
