@@ -119,7 +119,8 @@ stay top-level on each config — callers write `fs_isolation=` /
 ## Session controls (`optio_agents.session_controls`)
 
 * `SessionControl` / `ControlOption` — one engine-neutral live control and a
-  select's option (`description`, `disabled` + `why_disabled`), serialized with
+  select's option (`description`, `disabled` + `why_disabled`, `variant`
+  primary / danger, `confirm`: a question asked before switching), serialized with
   `to_dict()` for widgetData and `x-optio-control-update` snapshots.
   `model_control` / `effort_control` build the common two.
 * `filter_controls(controls, allowed)` — narrows a serialized snapshot to the

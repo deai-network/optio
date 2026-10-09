@@ -95,7 +95,7 @@ describe('KimiCodeView session controls', () => {
     vi.stubGlobal('fetch', fetchMock);
     render(<ConversationWidget {...seededProps()} />);
 
-    const combo = document.querySelector('[data-testid="control-model"]') as HTMLElement;
+    const combo = document.querySelector('[data-testid="control-model"] [role="combobox"]') as HTMLElement;
     fireEvent.mouseDown(combo);
     await waitFor(() => expect(screen.getByText('Kimi K2 Thinking')).toBeTruthy());
     fireEvent.click(screen.getByText('Kimi K2 Thinking'));
@@ -129,7 +129,7 @@ describe('KimiCodeView session controls', () => {
     vi.stubGlobal('fetch', fetchMock);
     render(<ConversationWidget {...seededProps()} />);
 
-    const combo = document.querySelector('[data-testid="control-mode"]') as HTMLElement;
+    const combo = document.querySelector('[data-testid="control-mode"] [role="combobox"]') as HTMLElement;
     fireEvent.mouseDown(combo);
     await waitFor(() => expect(screen.getByText('Yolo')).toBeTruthy());
     fireEvent.click(screen.getByText('Yolo'));

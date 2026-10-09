@@ -141,3 +141,14 @@ def test_fallback_contents():
     ids = [m["id"] for m in FALLBACK_MODELS["models"]]
     assert ids == ["gpt-5.5", "gpt-5.4-mini"]
     assert FALLBACK_MODELS["default"] == "gpt-5.5"
+
+
+
+def test_parse_model_list_keeps_a_models_description():
+    from optio_codex.models import parse_model_list
+    out = parse_model_list({"data": [
+        {"id": "gpt-x", "displayName": "GPT X", "description": "Optimized for coding"},
+        {"id": "gpt-y", "displayName": "GPT Y"},
+    ]})
+    assert out["models"][0]["description"] == "Optimized for coding"
+    assert out["models"][1].get("description") is None

@@ -143,3 +143,19 @@ def test_validate_session_controls_rejects_anything_but_a_list_of_ids(bad):
     from optio_agents.session_controls import validate_session_controls
     with pytest.raises(ValueError, match="session_controls"):
         validate_session_controls(bad, show_session_controls=True, owner="XConfig")
+
+
+# --- model descriptions; option variant and confirmation -----------------------
+
+def test_model_control_carries_a_models_description():
+    c = model_control(models=[{"id": "m1", "label": "M1", "description": "Fast and cheap"}, {"id": "m2"}], current="m1")
+    opts = c.to_dict()["options"]
+    assert opts[0]["description"] == "Fast and cheap"
+    assert "description" not in opts[1]
+
+
+def test_an_option_may_be_primary_or_danger_and_ask_a_confirmation():
+    o = ControlOption("bypass", "Bypass", variant="danger", confirm="Switch to Bypass?").to_dict()
+    assert o["variant"] == "danger" and o["confirm"] == "Switch to Bypass?"
+    plain = ControlOption("a", "A").to_dict()
+    assert "variant" not in plain and "confirm" not in plain

@@ -35,6 +35,7 @@ from optio_claudecode import host_actions
 
 
 _TERMINAL = {"done", "failed", "cancelled"}
+BYPASS_CONFIRM = "Switch to Bypass? Claude will run everything without asking."
 NEEDS_GATE = ("Needs the permission gate: this task has no one to answer Claude's "
               "questions (permission_gate is off).")
 
@@ -325,7 +326,8 @@ async def test_conversation_ui_session_lifecycle(
                          "description": "Runs only pre-approved tools; refuses anything that would need approval",
                          "disabled": False},
                         {"value": "bypassPermissions", "label": "Bypass",
-                         "description": "Runs everything without asking", "disabled": False},
+                         "description": "Runs everything without asking", "disabled": False,
+                         "variant": "danger", "confirm": BYPASS_CONFIRM},
                     ],
                 },
             ],

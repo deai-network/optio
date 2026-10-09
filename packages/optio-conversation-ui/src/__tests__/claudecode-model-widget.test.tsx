@@ -67,7 +67,7 @@ describe('ClaudeCodeView session controls', () => {
 
     // antd Select renders the options into a popup on open; open it via the
     // selector node, then click the labelled option (value = the model id).
-    fireEvent.mouseDown(screen.getByTestId('control-model'));
+    fireEvent.mouseDown(screen.getByTestId('control-model').querySelector('[role=\"combobox\"]')!);
     await waitFor(() => expect(screen.getByText('Opus 4.1')).toBeTruthy());
     fireEvent.click(screen.getByText('Opus 4.1'));
 

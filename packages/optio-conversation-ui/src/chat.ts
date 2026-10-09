@@ -179,9 +179,11 @@ export type ChatItem =
 export interface ControlOption {
   value: string;
   label: string;
-  description?: string;
+  description?: string; // markdown, shown on hover
   disabled?: boolean;
   whyDisabled?: string;
+  variant?: 'primary' | 'danger'; // styled as an action's variant
+  confirm?: string; // asked before switching to this option
 }
 
 export interface SessionControl {

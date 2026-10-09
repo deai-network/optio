@@ -62,6 +62,13 @@ def test_without_the_gate_the_modes_that_ask_are_disabled_with_a_reason():
         assert not opts[mode].disabled and opts[mode].why_disabled is None
 
 
+def test_bypass_is_a_danger_choice_that_asks_first():
+    opts = _opts(permission_gate=True, bypass_allowed=True)
+    assert opts["bypassPermissions"].variant == "danger"
+    assert opts["bypassPermissions"].confirm
+    assert all(opts[m].variant is None and opts[m].confirm is None for m in ALL_MODES[:-1])
+
+
 def test_settable_modes_are_the_enabled_ones():
     opts = permission_mode_options(permission_gate=False, bypass_allowed=False)
     assert settable_permission_modes(opts) == ["acceptEdits", "auto", "dontAsk"]

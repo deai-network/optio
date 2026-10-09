@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Input, Segmented, Select, Slider, Spin, Switch, Tooltip, theme } from 'antd';
+import { Alert, Button, Input, Segmented, Slider, Spin, Switch, Tooltip, theme } from 'antd';
 import type { GlobalToken } from 'antd';
-import { ActionButton, CombinedActionButton, type ActionStatus } from 'vultus-antd';
+import { ActionButton, CombinedActionButton, OneOfSelect, denyWithReason, useOneOfField, type ActionStatus } from 'vultus-antd';
 import type { TextAreaRef } from 'antd/es/input/TextArea';
 import type { ChatItem, ChatState, SessionControl } from './chat.js';
 import { AnswerBlock } from './AnswerBlock.js';
@@ -894,10 +894,49 @@ function withTimeLabel(
   );
 }
 
+// A select control as vultus's one-of field (OneOfSelect): each option's
+// description on hover (markdown), a disabled one with its reason, primary /
+// danger options styled as action variants, and an option's `confirm`
+// question asked before switching to it. The control's own description and
+// the current option's describe the closed select.
+function SessionSelect({ control: c, disabled, onChange }: {
+  control: SessionControl;
+  disabled: boolean;
+  onChange: (id: string, value: string | boolean) => void;
+}) {
+  const options = c.options ?? [];
+  const field = useOneOfField<string>({
+    id: c.id,
+    label: c.label,
+    description: c.description,
+    enabled: disabled ? (c.whyDisabled ? denyWithReason(c.whyDisabled) : false) : true,
+    choices: options.map((o) => ({
+      value: o.value,
+      label: o.label,
+      description: o.description,
+      enabled: o.disabled ? (o.whyDisabled ? denyWithReason(o.whyDisabled) : false) : true,
+      variant: o.variant,
+    })),
+    value: c.value === undefined || c.value === null ? '' : String(c.value),
+    commit: {
+      fire: (next) => onChange(c.id, next),
+      confirmation: (next) => {
+        const question = options.find((o) => o.value === next)?.confirm;
+        return question ? { kind: 'popconfirm', question } : undefined;
+      },
+    },
+  });
+  return (
+    <span data-testid={`control-${c.id}`} style={{ alignSelf: 'center' }}>
+      <OneOfSelect field={field} size="small" style={{ minWidth: 180 }} />
+    </span>
+  );
+}
+
 // Generic renderer for engine-neutral session controls. Each control renders by
 // kind: boolean -> <Switch>, segmented -> <Segmented>, slider -> <Slider>,
-// select -> <Select> (disabled options greyed with a whyDisabled tooltip
-// title). Every control carries a `control-<id>` data-testid.
+// select -> vultus OneOfSelect (SessionSelect). Every control carries a
+// `control-<id>` data-testid.
 function SessionControls({
   controls, disabled, onChange,
 }: {
@@ -964,23 +1003,7 @@ function SessionControls({
             </span>
           );
         } else {
-          node = (
-            <Select
-              data-testid={`control-${c.id}`}
-              size="small"
-              style={{ minWidth: 180, alignSelf: 'center' }}
-              placeholder={c.label}
-              disabled={dis}
-              value={c.value ? String(c.value) : undefined}
-              onChange={(v: string) => onChange(c.id, v)}
-              options={(c.options ?? []).map((o) => ({
-                label: o.label,
-                value: o.value,
-                disabled: o.disabled,
-                title: o.whyDisabled,
-              }))}
-            />
-          );
+          node = <SessionSelect control={c} disabled={dis} onChange={onChange} />;
         }
         // Prefix each control with its (muted) label so "Thinking"/"Mode" are
         // named — a bare Select/Segmented/Switch shows only its value.
@@ -994,7 +1017,8 @@ function SessionControls({
         );
         // A disabled antd control emits no hover events, so hang the tooltip on
         // the (enabled) labeled wrapper — hovering the label/name still fires.
-        return c.disabled && c.whyDisabled ? (
+        // A select explains itself (vultus OneOfSelect's own tooltip).
+        return c.disabled && c.whyDisabled && c.kind !== 'select' ? (
           <Tooltip key={c.id} title={c.whyDisabled}>
             {labeled}
           </Tooltip>

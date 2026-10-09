@@ -198,3 +198,14 @@ def test_parse_acp_models_real_meta_surfaces_no_effort_capability():
     for entry in out["models"]:
         assert "reasoningEfforts" not in entry
         assert "supportsReasoningEffort" not in entry
+
+
+
+def test_parse_acp_models_keeps_a_models_description():
+    from optio_grok.models import parse_acp_models
+    out = parse_acp_models({"currentModelId": "a", "availableModels": [
+        {"modelId": "a", "name": "A", "description": "The default model"},
+        {"modelId": "b", "name": "B"},
+    ]})
+    assert out["models"][0]["description"] == "The default model"
+    assert out["models"][1].get("description") is None

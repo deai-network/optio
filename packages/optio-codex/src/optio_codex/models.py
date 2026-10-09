@@ -68,7 +68,7 @@ def parse_model_list(result: "dict | None") -> dict:
         if not isinstance(mid, str) or not mid or m.get("hidden"):
             continue
         efforts = m.get("supportedReasoningEfforts")
-        out.append({
+        entry = {
             "id": mid,
             "label": m.get("displayName") or mid,
             "disabled": False,
@@ -77,7 +77,10 @@ def parse_model_list(result: "dict | None") -> dict:
                 if isinstance(e, dict) and isinstance(e.get("reasoningEffort"), str)
             ] if isinstance(efforts, list) else [],
             "defaultEffort": m.get("defaultReasoningEffort"),
-        })
+        }
+        if isinstance(m.get("description"), str) and m["description"]:
+            entry["description"] = m["description"]
+        out.append(entry)
         if m.get("isDefault"):
             default = mid
     if not out:

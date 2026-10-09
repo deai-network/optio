@@ -72,7 +72,7 @@ describe('CodexView SessionControls', () => {
         {...makeProps({ protocol: 'codex', showSessionControls: true, controls: [MODEL_CONTROL] })}
       />,
     );
-    const combo = document.querySelector('[data-testid="control-model"]') as HTMLElement;
+    const combo = document.querySelector('[data-testid="control-model"] [role="combobox"]') as HTMLElement;
     fireEvent.mouseDown(combo);
     await waitFor(() => expect(screen.getByText('GPT-5.4 Mini')).toBeTruthy());
     await act(async () => {

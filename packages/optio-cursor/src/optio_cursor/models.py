@@ -78,7 +78,10 @@ def parse_acp_models(session_models: "dict | None") -> dict:
             continue
         mid = m.get("modelId")
         if isinstance(mid, str) and mid:
-            out.append({"id": mid, "label": m.get("name") or mid, "disabled": False})
+            entry = {"id": mid, "label": m.get("name") or mid, "disabled": False}
+            if isinstance(m.get("description"), str) and m["description"]:
+                entry["description"] = m["description"]
+            out.append(entry)
     if not out:
         return _copy_fallback()
     return {"models": out, "default": session_models.get("currentModelId")}

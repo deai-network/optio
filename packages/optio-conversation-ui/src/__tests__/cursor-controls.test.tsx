@@ -62,17 +62,18 @@ describe('CursorView session controls', () => {
     expect(screen.getByTestId('control-model')).toBeTruthy();
   });
 
-  it('surfaces a plan-gated model as a disabled option carrying whyDisabled as its title', async () => {
+  it('surfaces a plan-gated model as a disabled option explaining whyDisabled on hover', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock as any);
     render(<ConversationWidget {...makeProps({ protocol: 'cursor', showSessionControls: true, controls: CONTROLS })} />);
 
-    const combo = document.querySelector('[data-testid="control-model"]') as HTMLElement;
+    const combo = document.querySelector('[data-testid="control-model"] [role="combobox"]') as HTMLElement;
     fireEvent.mouseDown(combo);
     await waitFor(() => expect(screen.getByText('Opus 4.5')).toBeTruthy());
-    const opt = screen.getByText('Opus 4.5').closest('.ant-select-item');
-    expect(opt?.getAttribute('title')).toBe('Upgrade your plan to continue');
-    expect(opt?.className).toContain('ant-select-item-option-disabled');
+    const opt = screen.getByText('Opus 4.5').closest('.ant-select-item') as HTMLElement;
+    expect(opt.className).toContain('ant-select-item-option-disabled');
+    fireEvent.mouseEnter(opt.querySelector('span[style]')!);
+    await waitFor(() => expect(screen.getByText('Upgrade your plan to continue')).toBeTruthy());
   });
 
   it('does not render controls when showSessionControls is false', () => {

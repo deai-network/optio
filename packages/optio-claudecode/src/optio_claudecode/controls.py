@@ -35,6 +35,9 @@ _ASKING_MODES = {"default", "plan"}
 _NEEDS_GATE = ("Needs the permission gate: this task has no one to answer Claude's "
                "questions (permission_gate is off).")
 _BYPASS_NOT_ALLOWED = "Not allowed for this task (allow_bypass_permissions)."
+# Bypass is the dangerous mode: styled so, and switching to it asks first
+# (owner ruling 2026-10-09: a simple confirmation).
+_BYPASS_CONFIRM = "Switch to Bypass? Claude will run everything without asking."
 
 
 def canonical_permission_mode(mode: str | None) -> str | None:
@@ -54,9 +57,12 @@ def permission_mode_options(*, permission_gate: bool, bypass_allowed: bool) -> l
             reason = _NEEDS_GATE
         elif mode == "bypassPermissions" and not bypass_allowed:
             reason = _BYPASS_NOT_ALLOWED
+        bypass = mode == "bypassPermissions"
         options.append(ControlOption(
             value=mode, label=label, description=description,
             disabled=reason is not None, why_disabled=reason,
+            variant="danger" if bypass else None,
+            confirm=_BYPASS_CONFIRM if bypass else None,
         ))
     return options
 

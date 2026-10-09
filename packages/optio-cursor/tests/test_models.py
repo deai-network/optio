@@ -226,3 +226,14 @@ def test_model_is_ungated_single_field():
     assert cfg_iframe.model == "gpt-5"
     cfg_conv = _cfg(mode="conversation", conversation_ui=True, model="gpt-5")
     assert cfg_conv.model == "gpt-5"
+
+
+
+def test_parse_acp_models_keeps_a_models_description():
+    from optio_cursor.models import parse_acp_models
+    out = parse_acp_models({"currentModelId": "a", "availableModels": [
+        {"modelId": "a", "name": "A", "description": "The default model"},
+        {"modelId": "b", "name": "B"},
+    ]})
+    assert out["models"][0]["description"] == "The default model"
+    assert out["models"][1].get("description") is None

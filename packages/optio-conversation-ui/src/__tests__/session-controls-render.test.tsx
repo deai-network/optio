@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { ConversationView } from '../ConversationView';
 import { initialChatState, SessionControl } from '../chat';
 
@@ -10,6 +10,17 @@ const controls: SessionControl[] = [
   { id: 'thinking', kind: 'segmented', label: 'Thinking', value: 'low', levels: ['low', 'high'] },
   { id: 'wide', kind: 'boolean', label: 'Wide', value: false },
 ];
+
+/** Opens a select control's list (vultus OneOfSelect inside its control-<id> wrapper). */
+async function openSelect(id: string) {
+  fireEvent.mouseDown(within(screen.getByTestId(`control-${id}`)).getByRole('combobox'));
+  await waitFor(() => expect(document.querySelector('.ant-select-item-option')).toBeTruthy());
+}
+
+/** An option row of the open list, by its text. */
+function option(text: string): HTMLElement {
+  return Array.from(document.querySelectorAll<HTMLElement>('.ant-select-item-option')).find((o) => o.textContent === text)!;
+}
 
 function base(onControlChange: any) {
   return {
@@ -34,12 +45,16 @@ describe('SessionControls renderer', () => {
     fireEvent.click(screen.getByText('High'));
     expect(cb).toHaveBeenCalledWith('thinking', 'high');
   });
-  it('disabled select option shows whyDisabled tooltip title', async () => {
-    render(<ConversationView {...base(vi.fn())} />);
-    fireEvent.mouseDown(screen.getByTestId('control-model'));
-    await waitFor(() => expect(screen.getByText('B')).toBeTruthy());
-    const opt = screen.getByText('B').closest('.ant-select-item');
-    expect(opt?.getAttribute('title')).toBe('plan-gated');
+  it('disabled select option: its reason on hover (no native title), not choosable', async () => {
+    const cb = vi.fn();
+    render(<ConversationView {...base(cb)} />);
+    await openSelect('model');
+    const opt = option('B');
+    expect(opt.getAttribute('title')).toBeFalsy();
+    fireEvent.mouseEnter(opt.querySelector('span[style]')!);
+    await waitFor(() => expect(screen.getByText('plan-gated')).toBeTruthy());
+    fireEvent.click(opt);
+    expect(cb).not.toHaveBeenCalled();
   });
 
   it('renders a slider control with a control-reasoning_effort testid', () => {
@@ -90,5 +105,53 @@ describe('SessionControls renderer', () => {
     // hover the (enabled) labeled wrapper -> tooltip explains why
     fireEvent.mouseEnter(screen.getByText('Thinking'));
     await waitFor(() => expect(screen.getByText('always on')).toBeTruthy());
+  });
+});
+
+describe('select controls as vultus one-of selects', () => {
+  const modes: SessionControl[] = [
+    { id: 'permission_mode', kind: 'select', label: 'Permissions', value: 'acceptEdits',
+      description: 'How Claude asks before it acts.',
+      options: [
+        { value: 'acceptEdits', label: 'Accept edits', description: 'Edits files without asking' },
+        { value: 'auto', label: 'Auto', description: 'A classifier reviews **each** action' },
+        { value: 'bypassPermissions', label: 'Bypass', description: 'Runs everything', variant: 'danger',
+          confirm: 'Switch to Bypass?' },
+      ] },
+  ];
+
+  it('choosing an option fires onControlChange(id, value)', async () => {
+    const cb = vi.fn();
+    render(<ConversationView {...{ ...base(cb), controls: modes }} />);
+    await openSelect('permission_mode');
+    fireEvent.click(option('Auto'));
+    await waitFor(() => expect(cb).toHaveBeenCalledWith('permission_mode', 'auto'));
+  });
+
+  it('hovering an option shows its description, as markdown', async () => {
+    render(<ConversationView {...{ ...base(vi.fn()), controls: modes }} />);
+    await openSelect('permission_mode');
+    fireEvent.mouseEnter(option('Auto').querySelector('span[style]')!);
+    await waitFor(() => expect(screen.getByText('each', { selector: 'strong' })).toBeTruthy());
+  });
+
+  it('the closed select: the control description, then the current option as its current state', async () => {
+    render(<ConversationView {...{ ...base(vi.fn()), controls: modes }} />);
+    fireEvent.mouseEnter(screen.getByTestId('control-permission_mode').querySelector('span[style]')!);
+    await waitFor(() => expect(screen.getByText('How Claude asks before it acts.')).toBeTruthy());
+    expect(screen.getByText('Current state: Edits files without asking')).toBeTruthy();
+  });
+
+  it('a danger option is styled danger and its confirmation asks first', async () => {
+    const cb = vi.fn();
+    render(<ConversationView {...{ ...base(cb), controls: modes }} />);
+    await openSelect('permission_mode');
+    const label = within(option('Bypass')).getByText('Bypass');
+    expect(label.style.color).not.toBe('');
+    fireEvent.click(option('Bypass'));
+    expect(await screen.findByText('Switch to Bypass?')).toBeTruthy();
+    expect(cb).not.toHaveBeenCalled();
+    fireEvent.click(screen.getAllByRole('button').find((b) => b.textContent?.includes('OK'))!);
+    await waitFor(() => expect(cb).toHaveBeenCalledWith('permission_mode', 'bypassPermissions'));
   });
 });

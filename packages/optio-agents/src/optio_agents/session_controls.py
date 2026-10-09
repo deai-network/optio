@@ -28,6 +28,10 @@ class ControlOption:
     description: str | None = None
     disabled: bool = False
     why_disabled: str | None = None
+    # Shown as the main or a dangerous option, like an action's variant.
+    variant: "Literal['primary', 'danger'] | None" = None
+    # A question to confirm before switching to this option.
+    confirm: str | None = None
 
     def to_dict(self) -> dict:
         d: dict = {"value": self.value, "label": self.label, "disabled": self.disabled}
@@ -35,6 +39,10 @@ class ControlOption:
             d["description"] = self.description
         if self.why_disabled is not None:
             d["whyDisabled"] = self.why_disabled
+        if self.variant is not None:
+            d["variant"] = self.variant
+        if self.confirm is not None:
+            d["confirm"] = self.confirm
         return d
 
 
@@ -76,12 +84,13 @@ def model_control(
     *, models: list[dict], current: str | None, label: str = "Model"
 ) -> SessionControl:
     """Build the ``id="model"`` select from a wrapper's model catalog
-    (``[{id,label,disabled?,disabledReason?}]`` — the shape every wrapper's
-    ``models.py`` already produces)."""
+    (``[{id,label,description?,disabled?,disabledReason?}]`` — the shape every
+    wrapper's ``models.py`` already produces)."""
     options = [
         ControlOption(
             value=m["id"],
             label=m.get("label", m["id"]),
+            description=m.get("description"),
             disabled=bool(m.get("disabled", False)),
             why_disabled=m.get("disabledReason"),
         )
