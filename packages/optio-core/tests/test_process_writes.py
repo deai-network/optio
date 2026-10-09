@@ -140,15 +140,45 @@ async def test_no_execute_function_ends_in_one_update_with_widget_clear(mongo_db
     assert "$push" not in end
 
 
-async def _child(ctx):  # noqa: ARG001
-    return None
+async def test_two_messages_add_one_update_each(mongo_db):
+    async def body(ctx):
+        ctx.report_progress(None, "a")
+        ctx.report_progress(50, "b", level="warning")
+
+    task = TaskInstance(execute=body, process_id="w.msgs", name="Messages")
+
+    db, oid, _, doc = await _run(mongo_db, task)
+
+    assert len(db.updates_on(oid)) == 5
+    assert _entries(doc) == [
+        ("event", "State changed to scheduled"), ("event", "State changed to running"),
+        ("info", "a"), ("warning", "b"), ("event", "State changed to done"),
+    ]
+
+
+async def test_percent_only_progress_writes_no_log_line(mongo_db):
+    async def body(ctx):
+        ctx.report_progress(30)
+
+    task = TaskInstance(execute=body, process_id="w.pct", name="Percent")
+
+    db, oid, _, doc = await _run(mongo_db, task)
+
+    updates = db.updates_on(oid)
+    assert len(updates) == 4
+    assert updates[2] == {"$set": {"progress": {"percent": 30, "message": None}}}
+    assert len(doc["log"]) == 3
+
+
+async def _child(ctx):
+    ctx.report_progress(None, "c1")
 
 
 async def _parent(ctx):
     await ctx.run_child(_child, "w.parent.c", "C")
 
 
-async def test_child_run_is_insert_and_two_updates_plus_one_on_the_parent(mongo_db):
+async def test_child_run_is_insert_and_three_updates_plus_one_on_the_parent(mongo_db):
     task = TaskInstance(execute=_parent, process_id="w.parent", name="Parent")
 
     db, oid, state, doc = await _run(mongo_db, task)
@@ -156,10 +186,10 @@ async def test_child_run_is_insert_and_two_updates_plus_one_on_the_parent(mongo_
     assert state == "done"
     child = await mongo_db["test_processes"].find_one({"parentId": oid})
     assert [w.oid for w in db.writes if w.op == "insert"] == [child["_id"]]
-    assert len(db.updates_on(child["_id"])) == 2  # start, end
+    assert len(db.updates_on(child["_id"])) == 3  # start, "c1", end
     assert len(db.updates_on(oid)) == 4
     assert "Spawned child: C" in _messages(doc)
-    assert _messages(child) == ["State changed to running", "State changed to done"]
+    assert _messages(child) == ["State changed to running", "c1", "State changed to done"]
 
 
 async def test_relaunch_deletes_the_previous_runs_children(mongo_db):

@@ -706,16 +706,13 @@ class ProcessContext:
     async def _write_progress(
         self, progress: Progress, level: ProgressLogLevel = "info",
     ) -> None:
-        """Write a single Progress to the DB and append to the log."""
-        from optio_core.store import update_progress, append_log
+        """Write a single Progress to the DB and append its message to the
+        log, in one update."""
+        from optio_core.store import update_progress
         await update_progress(
             self._db, self._prefix, self._process_oid, progress,
+            log=(level, progress.message) if progress.message else None,
         )
-        if progress.message:
-            await append_log(
-                self._db, self._prefix, self._process_oid,
-                level, progress.message,
-            )
 
     async def _flush_progress(self) -> None:
         await self._drain_pending()

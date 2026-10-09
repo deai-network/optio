@@ -164,12 +164,12 @@ async def test_quiet_message_during_avalanche_flush_is_written_once(
     in_flight = asyncio.Event()
     release = asyncio.Event()
 
-    async def gated_update_progress(db, prefix, oid, progress):
+    async def gated_update_progress(db, prefix, oid, progress, **kw):
         message = progress.message or ""
         if message.endswith(" messages dropped)") and not release.is_set():
             in_flight.set()
             await release.wait()
-        await real_update_progress(db, prefix, oid, progress)
+        await real_update_progress(db, prefix, oid, progress, **kw)
 
     monkeypatch.setattr(store, "update_progress", gated_update_progress)
 
@@ -203,11 +203,11 @@ async def test_percent_update_during_flush_is_not_lost(mongo_db, monkeypatch):
     in_flight = asyncio.Event()
     release = asyncio.Event()
 
-    async def gated_update_progress(db, prefix, oid, progress):
+    async def gated_update_progress(db, prefix, oid, progress, **kw):
         if progress.percent == 50 and not release.is_set():
             in_flight.set()
             await release.wait()
-        await real_update_progress(db, prefix, oid, progress)
+        await real_update_progress(db, prefix, oid, progress, **kw)
 
     monkeypatch.setattr(store, "update_progress", gated_update_progress)
 
@@ -236,11 +236,11 @@ async def test_cancelling_the_final_flush_keeps_the_write_in_flight(
     in_flight = asyncio.Event()
     release = asyncio.Event()
 
-    async def gated_update_progress(db, prefix, oid, progress):
+    async def gated_update_progress(db, prefix, oid, progress, **kw):
         if progress.message == "msg-2" and not release.is_set():
             in_flight.set()
             await release.wait()
-        await real_update_progress(db, prefix, oid, progress)
+        await real_update_progress(db, prefix, oid, progress, **kw)
 
     monkeypatch.setattr(store, "update_progress", gated_update_progress)
 
@@ -314,10 +314,10 @@ async def test_a_failed_flush_is_logged_when_it_fails(
 
     real_update_progress = store.update_progress
 
-    async def failing_update_progress(db, prefix, oid, progress):
+    async def failing_update_progress(db, prefix, oid, progress, **kw):
         if progress.message == "boom":
             raise RuntimeError("db down")
-        await real_update_progress(db, prefix, oid, progress)
+        await real_update_progress(db, prefix, oid, progress, **kw)
 
     monkeypatch.setattr(store, "update_progress", failing_update_progress)
 
@@ -424,11 +424,11 @@ async def test_flush_final_progress_keeps_the_message_being_written(
     in_flight = asyncio.Event()
     release = asyncio.Event()
 
-    async def gated_update_progress(db, prefix, oid, progress):
+    async def gated_update_progress(db, prefix, oid, progress, **kw):
         if progress.message == "msg-2" and not release.is_set():
             in_flight.set()
             await release.wait()
-        await real_update_progress(db, prefix, oid, progress)
+        await real_update_progress(db, prefix, oid, progress, **kw)
 
     monkeypatch.setattr(store, "update_progress", gated_update_progress)
 
