@@ -658,3 +658,95 @@ describe('resurrect fields propagation', () => {
     120_000,
   );
 });
+
+describe('createListPoller reads only what it sends', () => {
+  const LIST_FIELDS = {
+    processId: 1, name: 1, status: 1, progress: 1, cancellable: 1, special: 1,
+    warning: 1, metadata: 1, depth: 1, supportsResume: 1, hasSavedState: 1,
+    supportsResurrect: 1, hasUnsavedWork: 1, resurrecting: 1,
+    autoResumeScheduled: 1, browserOpenRequests: 1,
+  };
+
+  /** `db` whose process collection records the options of every find(). */
+  function recordingDb(findOptions: any[]): Db {
+    return new Proxy(db, {
+      get(target, prop) {
+        if (prop === 'collection') {
+          return (name: string) => {
+            const coll = target.collection(name);
+            return new Proxy(coll, {
+              get(c, p) {
+                if (p === 'find') {
+                  return (filter: any, options?: any) => {
+                    findOptions.push(options);
+                    return c.find(filter, options);
+                  };
+                }
+                const v = Reflect.get(c, p, c);
+                return typeof v === 'function' ? v.bind(c) : v;
+              },
+            });
+          };
+        }
+        const v = Reflect.get(target, prop, target);
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+  }
+
+  async function insertBusyProc() {
+    const oid = new ObjectId();
+    await db.collection(`${PREFIX}_processes`).insertOne({
+      _id: oid, processId: 'busy', name: 'Busy', rootId: oid, parentId: null,
+      depth: 0, order: 0, status: { state: 'running' },
+      progress: { percent: 40, message: 'working' }, cancellable: true,
+      special: false, warning: null, metadata: { project: 'x' },
+      log: Array.from({ length: 500 }, (_, i) => ({
+        timestamp: new Date().toISOString(), level: 'info', message: `line ${i}`,
+      })),
+      widgetData: { big: 'x'.repeat(10_000) },
+      params: { p: 1 },
+      sessionEvents: [{ kind: 'e' }],
+    });
+    return oid;
+  }
+
+  it('asks MongoDB only for the fields the list stream sends', async () => {
+    await insertBusyProc();
+    const findOptions: any[] = [];
+    const events: any[] = [];
+    const poller = createListPoller({
+      db: recordingDb(findOptions), prefix: PREFIX,
+      sendEvent: (e) => events.push(e),
+      onError: () => {},
+    });
+    poller.start();
+    await waitUntil(() => events.some((e) => e.type === 'update'));
+    poller.stop();
+
+    expect(findOptions[0]?.projection).toEqual(LIST_FIELDS);
+  });
+
+  it('sends the same process summary as before', async () => {
+    const oid = await insertBusyProc();
+    const events: any[] = [];
+    const poller = createListPoller({
+      db, prefix: PREFIX,
+      sendEvent: (e) => events.push(e),
+      onError: () => {},
+    });
+    poller.start();
+    await waitUntil(() => events.some((e) => e.type === 'update'));
+    poller.stop();
+
+    const update = events.find((e) => e.type === 'update');
+    expect(update.processes).toEqual([{
+      _id: oid.toString(), processId: 'busy', name: 'Busy',
+      status: { state: 'running' }, progress: { percent: 40, message: 'working' },
+      cancellable: true, special: false, warning: null, metadata: { project: 'x' },
+      depth: 0, supportsResume: false, hasSavedState: false,
+      supportsResurrect: false, hasUnsavedWork: false, resurrecting: false,
+      autoResumeScheduled: false, browserOpenRequests: [],
+    }]);
+  });
+});

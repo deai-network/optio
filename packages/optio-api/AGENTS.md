@@ -421,6 +421,8 @@ Every poller's `update` processes also carry `supportsResurrect`, `hasUnsavedWor
 
 The `widgetData` field is included in tree-stream `update` events and is part of the snapshot fingerprint, so worker-side mutations (via `ctx.set_widget_data`) trigger a new SSE event. The list stream (`createListPoller`) does **not** include `widgetData` — it is omitted from sidebar payloads.
 
+`createListPoller` reads only the fields it sends (a projection: no `log`, `widgetData`, `params` or `sessionEvents`), so a poll costs the summary, not the processes' logs.
+
 `widgetUpstream` is **never** included in any client-facing payload (list stream, tree stream, or REST responses).
 
 ## Building Custom Adapters

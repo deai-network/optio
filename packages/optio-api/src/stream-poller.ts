@@ -19,6 +19,17 @@ export interface ListPollerHandle {
   stop(): void;
 }
 
+/**
+ * The fields the list stream compares and sends; the poll reads nothing else
+ * (no log, widgetData, params or sessionEvents), so each tick stays small.
+ */
+const LIST_PROJECTION = {
+  processId: 1, name: 1, status: 1, progress: 1, cancellable: 1, special: 1,
+  warning: 1, metadata: 1, depth: 1, supportsResume: 1, hasSavedState: 1,
+  supportsResurrect: 1, hasUnsavedWork: 1, resurrecting: 1,
+  autoResumeScheduled: 1, browserOpenRequests: 1,
+} as const;
+
 export function createListPoller(opts: StreamPollerOptions): ListPollerHandle {
   const { db, prefix, sendEvent, onError, metadataFilter, scope } = opts;
   const col = db.collection(`${prefix}_processes`);
@@ -28,7 +39,10 @@ export function createListPoller(opts: StreamPollerOptions): ListPollerHandle {
 
   async function poll() {
     try {
-      const allProcs = await col.find(filter).sort({ depth: 1, order: 1, _id: 1 }).toArray();
+      const allProcs = await col
+        .find(filter, { projection: LIST_PROJECTION })
+        .sort({ depth: 1, order: 1, _id: 1 })
+        .toArray();
       const snapshot = JSON.stringify(
         allProcs.map((p: any) => ({
           id: p._id,
