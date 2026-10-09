@@ -70,11 +70,14 @@ def test_the_family_match_never_picks_default():
     assert cc_models.restore_model(later, saved="opus[1m]", resolved="claude-opus-5[1m]") is None
 
 
-def test_the_cli_echo_of_a_launch_value_does_not_count_as_offered():
-    # The CLI lists a --model it does not know as an entry of its own
-    # (resolvedModel = the value itself, "Custom model").
-    echoed = _catalog(*CLI_MODELS, _entry("claude-opus-4-8", "claude-opus-4-8", description="Custom model"))
-    assert cc_models.restore_model(echoed, saved="claude-opus-4-8", resolved="claude-opus-4-8") == "opus[1m]"
+def test_an_older_version_listed_as_its_own_entry_is_offered():
+    # A logged-in CLI lists older versions as entries resolving to themselves.
+    listed = _catalog(*CLI_MODELS, _entry("claude-opus-4-8", "claude-opus-4-8"))
+    assert cc_models.restore_model(listed, saved="claude-opus-4-8", resolved="claude-opus-4-8") == "claude-opus-4-8"
+
+
+def test_an_older_version_no_longer_listed_moves_to_its_family():
+    assert cc_models.restore_model(NOW, saved="claude-opus-4-8", resolved="claude-opus-4-8") == "opus[1m]"
 
 
 def test_an_alias_saved_without_its_full_id_still_finds_its_family():

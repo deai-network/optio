@@ -184,6 +184,7 @@ export interface ControlOption {
   whyDisabled?: string;
   variant?: 'primary' | 'danger'; // styled as an action's variant
   confirm?: string; // asked before switching to this option
+  group?: string; // listed under this heading, after the options without one
 }
 
 export interface SessionControl {

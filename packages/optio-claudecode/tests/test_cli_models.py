@@ -275,3 +275,54 @@ async def test_a_new_process_has_not_reported_its_model_yet():
     # the relaunched process names its model in its own system/init
     assert conv.runtime_model is None
     assert not conv.runtime_model_observed.is_set()
+
+
+# --- current models first, older versions after them -------------------------
+
+# What a logged-in CLI lists (2.1.29x, as the demo showed): the aliases, then
+# older versions as entries of their own, in no useful order.
+LOGGED_IN = [
+    {"value": "default", "resolvedModel": "claude-opus-5-5", "displayName": "Default (recommended)"},
+    {"value": "opus", "resolvedModel": "claude-opus-5-5", "displayName": "Opus 5.5"},
+    {"value": "fable", "resolvedModel": "claude-fable-5-1", "displayName": "Fable 5.1"},
+    {"value": "sonnet", "resolvedModel": "claude-sonnet-5-5", "displayName": "Sonnet 5.5"},
+    {"value": "haiku", "resolvedModel": "claude-haiku-5-5", "displayName": "Haiku 5.5"},
+    {"value": "claude-haiku-4-5-20251001", "resolvedModel": "claude-haiku-4-5-20251001", "displayName": "Haiku 4.5"},
+    {"value": "claude-sonnet-5", "resolvedModel": "claude-sonnet-5", "displayName": "Sonnet 5"},
+    {"value": "claude-opus-5", "resolvedModel": "claude-opus-5", "displayName": "Opus 5"},
+    {"value": "claude-fable-5", "resolvedModel": "claude-fable-5", "displayName": "Fable 5"},
+    {"value": "claude-opus-4-8", "resolvedModel": "claude-opus-4-8", "displayName": "Opus 4.8"},
+    {"value": "claude-opus-4-7", "resolvedModel": "claude-opus-4-7", "displayName": "Opus 4.7"},
+    {"value": "claude-opus-4-6", "resolvedModel": "claude-opus-4-6", "displayName": "Opus 4.6"},
+    {"value": "claude-sonnet-4-6", "resolvedModel": "claude-sonnet-4-6", "displayName": "Sonnet 4.6"},
+]
+
+
+def _listed(model):
+    return [(o["label"], o.get("group")) for o in model["options"]]
+
+
+def test_current_models_first_in_the_clis_order_then_older_versions_by_family_newest_first():
+    model = _controls(cc_models.parse_cli_models(LOGGED_IN))["model"]
+    older = cc_models.OLDER_VERSIONS
+    assert _listed(model) == [
+        ("Default (recommended)", None), ("Opus 5.5", None), ("Fable 5.1", None),
+        ("Sonnet 5.5", None), ("Haiku 5.5", None),
+        ("Opus 5", older), ("Opus 4.8", older), ("Opus 4.7", older), ("Opus 4.6", older),
+        ("Fable 5", older), ("Sonnet 5", older), ("Sonnet 4.6", older), ("Haiku 4.5", older),
+    ]
+
+
+def test_a_list_without_older_versions_has_no_group():
+    assert all(o.get("group") is None for o in _controls()["model"]["options"])
+
+
+def test_a_selected_older_version_stays_selected_in_its_group():
+    model = _controls(cc_models.parse_cli_models(LOGGED_IN), model="claude-opus-4-8")["model"]
+    assert model["value"] == "claude-opus-4-8"
+    assert ("Opus 4.8", cc_models.OLDER_VERSIONS) in _listed(model)
+
+
+def test_a_saved_older_version_the_cli_still_lists_is_kept_on_resume():
+    catalog = cc_models.parse_cli_models(LOGGED_IN)
+    assert cc_models.restore_model(catalog, saved="claude-opus-4-8", resolved="claude-opus-4-8") == "claude-opus-4-8"

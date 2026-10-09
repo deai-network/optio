@@ -533,7 +533,8 @@ async def run_claudecode_session(
         picks = saved_picks or cc_picks.Picks()
         correcting_restore = False
         if saved_picks is not None:
-            current_model = saved_picks.model or current_model
+            # The model stays the launch value until the CLI's list says the
+            # saved one is still offered (_restore_picks).
             current_effort = saved_picks.effort or current_effort
         # The CLI's own model list (its answer to the stream-json control
         # request initialize), asked once claude is up; None until then, and
@@ -574,32 +575,34 @@ async def run_claudecode_session(
             return next((m.get("resolved") for m in cli_models or [] if m["id"] == value), None)
 
         def _restore_picks(catalog: list[dict]) -> bool:
-            # The restored picks against the CLI's list: a model it no longer
-            # lists moves to its family (models.restore_model; else the
-            # configured model, else default), an effort level the model lacks
-            # gives way to its default. True when either changed.
+            # The restored picks against the CLI's list, asked of a claude
+            # launched without the saved model (so the list holds no echo of
+            # it): the saved model while listed, else its family
+            # (models.restore_model), else the configured model, else default;
+            # an effort level that model lacks gives way to its default. True
+            # when the model or effort to run is not the one launched.
             nonlocal current_model, current_effort, picks
-            changed = False
+            launched = (current_model, current_effort)
             if saved_picks.model:
                 restored = cc_models.restore_model(
                     catalog, saved=saved_picks.model, resolved=saved_picks.model_resolved,
                 )
+                target = restored or cc_models.launch_model(config.model, continuing=True)
                 if restored != saved_picks.model:
-                    target = restored or cc_models.launch_model(config.model, continuing=True)
                     label = next((m["label"] for m in catalog if m["id"] == target), target)
                     ctx.report_progress(
                         None, f"Resuming on {label}: {saved_picks.model} is no longer offered",
                     )
                     picks = dataclasses.replace(picks, model=restored, model_resolved=next(
                         (m.get("resolved") for m in catalog if m["id"] == restored), None))
-                    current_model, changed = target, True
+                current_model = target
             if saved_picks.effort:
                 shown = cc_models.shown_model(catalog, picked=current_model, runtime=None)
                 levels, _ = cc_models.model_effort(shown, catalog)
                 if levels and current_effort not in levels:
                     picks = dataclasses.replace(picks, effort=None)
-                    current_effort, changed = None, True
-            return changed
+                    current_effort = None
+            return (current_model, current_effort) != launched
 
         async def _spawn(model: str | None, *, do_continue: bool):
             claude_flags = host_actions.build_claude_flags(
@@ -755,15 +758,10 @@ async def run_claudecode_session(
             )
             # Before the first message: claude answers initialize at once.
             cli_models = await cc_models.fetch_cli_models(conversation)
-            if restore_pending and cli_models is not None:
-                saved_model = saved_picks.model
-                if _restore_picks(cli_models):
-                    if saved_model and saved_model not in (current_model, config.model):
-                        # Listed only as the echo of this launch's --model.
-                        cli_models = [m for m in cli_models if m["id"] != saved_model] or None
-                    correcting_restore = True
-                    conversation.requested_model = current_model
-                    conversation.model_change_requested.set()
+            if restore_pending and cli_models is not None and _restore_picks(cli_models):
+                correcting_restore = True
+                conversation.requested_model = current_model
+                conversation.model_change_requested.set()
 
             def build_controls(model, effort):
                 # See controls.build_controls: the model select over the CLI's

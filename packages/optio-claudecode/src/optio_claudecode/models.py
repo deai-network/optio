@@ -174,15 +174,14 @@ def restore_model(catalog: list[dict], *, saved: str, resolved: str | None) -> s
     against the CLI's list now.
 
     ``saved`` while the list still offers it: an entry of that value, or one
-    resolving to it. The CLI's echo of a launch value it does not know (an
-    entry whose resolvedModel is the value itself) does not count. Otherwise
+    resolving to it (the list must come from a launch without ``--model
+    saved``, whose echo would always be listed). Otherwise
     the newest entry of the same family (``claude-<family>-<version>`` of
     ``resolved``, else of ``saved``, else the alias name), preferring one
     with the same ``[variant]``; never ``default``, whose model changes under
     it. None when no entry is of that family (the caller falls back to the
     configured model)."""
-    own = [m for m in catalog if m.get("resolved") != m.get("id")]
-    if _by_id(own, saved) is not None or _resolving_to(own, saved) is not None:
+    if _by_id(catalog, saved) is not None or _resolving_to(catalog, saved) is not None:
         return saved
     source = resolved or saved
     base, variant = _split_variant(source)
@@ -196,7 +195,7 @@ def restore_model(catalog: list[dict], *, saved: str, resolved: str | None) -> s
         return None
     best_key: tuple | None = None
     best: str | None = None
-    for m in own:
+    for m in catalog:
         if m["id"] == DEFAULT_MODEL or not isinstance(m.get("resolved"), str):
             continue
         r_base, r_variant = _split_variant(m["resolved"])
@@ -207,3 +206,36 @@ def restore_model(catalog: list[dict], *, saved: str, resolved: str | None) -> s
         if best_key is None or key > best_key:
             best_key, best = key, m["id"]
     return best
+
+
+# The heading the model select lists older versions under.
+OLDER_VERSIONS = "Older versions"
+
+
+def with_older_versions_last(catalog: list[dict]) -> list[dict]:
+    """The catalog with the current models first, in its own order, and the
+    older versions after them, marked ``group: OLDER_VERSIONS``: grouped by
+    family in the order the current models name the families, newest first.
+    An entry is an older version when another entry of its family
+    (``claude-<family>-<version>`` of the full id it resolves to) is newer;
+    an entry whose model cannot be parsed counts as current."""
+    def parsed(m: dict):
+        r = m.get("resolved")
+        fv = _family_version(_split_variant(r)[0]) if isinstance(r, str) else None
+        return None if fv is None else (fv[0], (fv[1], fv[2]))
+    keyed = [(m, parsed(m)) for m in catalog]
+    newest: dict[str, tuple] = {}
+    for _, k in keyed:
+        if k is not None and (k[0] not in newest or k[1] > newest[k[0]]):
+            newest[k[0]] = k[1]
+    is_older = [k is not None and k[1] < newest[k[0]] for _, k in keyed]
+    if not any(is_older):
+        return catalog
+    current = [m for (m, _), old in zip(keyed, is_older) if not old]
+    older = [(m, k) for (m, k), old in zip(keyed, is_older) if old]
+    families = list(dict.fromkeys(
+        [k[0] for (_, k), old in zip(keyed, is_older) if k is not None and not old]
+        + [k[0] for _, k in older]))
+    older.sort(key=lambda mk: mk[1][1], reverse=True)       # newest first (stable)
+    older.sort(key=lambda mk: families.index(mk[1][0]))     # then by family
+    return current + [{**m, "group": OLDER_VERSIONS} for m, _ in older]

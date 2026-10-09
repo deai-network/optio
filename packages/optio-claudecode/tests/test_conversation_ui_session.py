@@ -538,7 +538,8 @@ async def test_a_pinned_full_model_id_launches_and_shows_selected(
     mongo_db,
 ):
     """config.model names a full id no alias stands for: claude runs on it,
-    and the CLI lists it as an entry of its own, selected."""
+    and the CLI lists it as an entry of its own, selected; an older Opus than
+    the listed one, so under Older versions."""
     optio = await _make_optio(mongo_db, "ccui-pin")
     try:
         task = create_claudecode_task(
@@ -552,7 +553,7 @@ async def test_a_pinned_full_model_id_launches_and_shows_selected(
         assert model["value"] == "claude-opus-4-8"
         assert model["options"][-1] == {
             "value": "claude-opus-4-8", "label": "claude-opus-4-8",
-            "description": "Custom model", "disabled": False,
+            "description": "Custom model", "disabled": False, "group": "Older versions",
         }
         await conv.close()
         await _wait_terminal(optio, "cc-conv-pin")

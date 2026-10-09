@@ -101,7 +101,7 @@ def build_controls(
     the first usable one). ``allowed`` is the task's session_controls
     allowlist (None: all)."""
     shown = cc_models.shown_model(catalog, picked=model, runtime=runtime_model)
-    options = cc_models.catalog_with(catalog, shown)
+    options = cc_models.with_older_versions_last(cc_models.catalog_with(catalog, shown))
     ctrls = [model_control(models=options, current=shown)]
     levels, default = cc_models.model_effort(shown, options)
     if levels:

@@ -245,3 +245,19 @@ describe('compact controls bar', () => {
     });
   });
 });
+
+describe('select option groups', () => {
+  it('options with a group are listed after the others, under its heading', async () => {
+    const grouped: SessionControl[] = [
+      { id: 'model', kind: 'select', label: 'Model', value: 'opus',
+        options: [{ value: 'opus', label: 'Opus 5.5' },
+                  { value: 'claude-opus-5', label: 'Opus 5', group: 'Older versions' },
+                  { value: 'sonnet', label: 'Sonnet 5.5' }] },
+    ];
+    render(<ConversationView {...{ ...base(vi.fn()), controls: grouped }} />);
+    await openSelect('model');
+    const rows = Array.from(document.querySelectorAll('.ant-select-item')).map((r) => (
+      r.classList.contains('ant-select-item-group') ? `## ${r.textContent}` : r.textContent));
+    expect(rows).toEqual(['Opus 5.5', 'Sonnet 5.5', '## Older versions', 'Opus 5']);
+  });
+});

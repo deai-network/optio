@@ -173,3 +173,10 @@ def test_the_model_and_effort_controls_ask_their_question():
 def test_an_engine_may_word_the_question_itself():
     c = model_control(models=[{"id": "m"}], current="m", description="Which Kimi model answers?")
     assert c.to_dict()["description"] == "Which Kimi model answers?"
+
+
+def test_an_option_may_be_listed_under_a_group():
+    assert ControlOption("o4", "Opus 4", group="Older versions").to_dict()["group"] == "Older versions"
+    assert "group" not in ControlOption("a", "A").to_dict()
+    c = model_control(models=[{"id": "m1"}, {"id": "m0", "group": "Older versions"}], current="m1")
+    assert [o.get("group") for o in c.to_dict()["options"]] == [None, "Older versions"]

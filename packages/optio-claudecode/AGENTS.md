@@ -51,15 +51,17 @@ The operator's picks in the conversation widget (model, reasoning effort,
 permission mode) are kept across an optio resume (`picks.py`: a file in
 `home/.claude`, so in the session blob; only an optio resume reads it back, not
 `session_restore_from` or a seed). Before the resumed launch a short-lived
-claude (same env and isolation, no `--continue`, no turn, no transcript) is
-asked only `initialize`, and each pick is checked against that list: a model it
-no longer offers (the CLI's echo of an unknown `--model` does not count) moves
-to the newest entry of its family (`models.restore_model`: the
+claude (same env and isolation, no `--continue`, no turn, no transcript;
+`--model` the configured model or `default`, never the saved one, so the list
+holds no echo of it) is asked only `initialize`, and each pick is checked
+against that list: a model it no longer lists moves to the newest entry of its
+family (`models.restore_model`: the
 `claude-<family>-<version>` of the full id saved with the pick, its `[variant]`
 kept when offered, never `default`), else the configured model, else
 `default`; an effort level the model lacks gives way to its default; a
 permission mode the task does not offer is dropped. When that probe cannot
-tell, the launched process's list is used and a correction relaunches. See
+tell, claude is launched on the configured model (else `default`), its list is
+used, and a correction relaunches. See
 `docs/2026-05-29-optio-claudecode-resume-design.md`.
 
 ## Snapshot capture and unsaved work
@@ -241,7 +243,11 @@ when the hook returns, and when it raises `NothingToResurrect`.
   control request `initialize` (`ClaudeCodeConversation.initialize`, whose
   answer is not fanned out to on_event; `models.fetch_cli_models`), asked once
   claude is up, before the first message: the list Claude Code's own /model
-  picker shows, in its order. Option value = the alias (`default`,
+  picker shows: the current models in its order, then the older versions (an
+  entry whose family, `claude-<family>-<version>` of its `resolvedModel`, has a
+  newer entry) under the heading "Older versions" (`ControlOption.group`;
+  `models.with_older_versions_last`), by family, newest first. Option value =
+  the alias (`default`,
   `opus[1m]`, `sonnet`, `haiku`, ...; `--model` takes these), label =
   `displayName`, description = `description`. The reasoning_effort slider
   offers the selected model's `supportedEffortLevels` (no slider when it does

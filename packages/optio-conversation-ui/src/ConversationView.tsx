@@ -935,6 +935,7 @@ function useControlOneOf(c: SessionControl, disabled: boolean, onChange: (id: st
         description: o.description,
         enabled: o.disabled ? (o.whyDisabled ? denyWithReason(o.whyDisabled) : false) : true,
         variant: o.variant,
+        group: o.group,
       }))
       : (c.levels ?? []).map((l) => ({ value: l, label: capitalize(l) })),
     value: c.value === undefined || c.value === null ? '' : String(c.value),

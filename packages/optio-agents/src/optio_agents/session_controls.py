@@ -38,6 +38,9 @@ class ControlOption:
     variant: "Literal['primary', 'danger'] | None" = None
     # A question to confirm before switching to this option.
     confirm: str | None = None
+    # A heading the option is listed under, after the options without one
+    # (e.g. the older versions of a model).
+    group: str | None = None
 
     def to_dict(self) -> dict:
         d: dict = {"value": self.value, "label": self.label, "disabled": self.disabled}
@@ -49,6 +52,8 @@ class ControlOption:
             d["variant"] = self.variant
         if self.confirm is not None:
             d["confirm"] = self.confirm
+        if self.group is not None:
+            d["group"] = self.group
         return d
 
 
@@ -91,8 +96,8 @@ def model_control(
     description: str = MODEL_DESCRIPTION,
 ) -> SessionControl:
     """Build the ``id="model"`` select from a wrapper's model catalog
-    (``[{id,label,description?,disabled?,disabledReason?}]`` — the shape every
-    wrapper's ``models.py`` already produces)."""
+    (``[{id,label,description?,disabled?,disabledReason?,group?}]`` — the shape
+    every wrapper's ``models.py`` already produces)."""
     options = [
         ControlOption(
             value=m["id"],
@@ -100,6 +105,7 @@ def model_control(
             description=m.get("description"),
             disabled=bool(m.get("disabled", False)),
             why_disabled=m.get("disabledReason"),
+            group=m.get("group"),
         )
         for m in models
     ]
