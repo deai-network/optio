@@ -153,11 +153,14 @@ async def test_an_adhoc_child_takes_its_parents_ttl(mongo_db):
 - [ ] **Step 5: Run the whole optio-core suite** -- `pytest -n 4 --dist loadscope -q`; expected all pass (491 + the new tests).
 - [ ] **Step 6: Commit** -- `fix(optio-core): a relaunch clears expireAt; children inherit the parent's TTL`.
 
-### Task 4: land, release, bump, measure
+### Task 4: land, measure, then release for other deployments
 
-- [ ] **Step 1:** Baseline on the dev stack: a 30 s profiler sample of `gm_processes` (documents examined per `processId` / `parentId` query) and two minutes of `/tmp/fwmeasure/sample2.py`.
+Measured on the excavator host's dev stack (tmux `excavator-stack`, main MongoDB
+`excavator-mongodb-1`). Its engine runs optio from the `~/deai/optio` checkout,
+so landing there is what the measurement needs; no release is involved.
+
+- [ ] **Step 1:** Baseline: a 30 s profiler sample of `gm_processes` (documents examined per `processId` / `parentId` query) and two minutes of `/tmp/fwmeasure/sample2.py`.
 - [ ] **Step 2:** Announce in topics.log, then fast-forward `main` in `~/deai/optio` to the branch and push to GitHub. The dev engine restarts once and creates the indexes on `gm_processes`; check them with pymongo.
-- [ ] **Step 3:** Add a line to the AGENTS.md feature list ("Process indexes: ...", with the spec path) and update the "Child processes" architecture note if it still names `clear_result_fields`; commit and push.
-- [ ] **Step 4:** Wire patch release per `docs/release-cookbook.md` (0.5.3 → 0.5.4).
-- [ ] **Step 5:** Excavator: `optio-core>=0.5.4,<0.6` in `packages/engine/pyproject.toml` with a comment line; engine suite; commit; push.
-- [ ] **Step 6:** Re-measure as in Step 1 and record both in `~/chat/idlecost/fw/indexes-{before,after}.log`.
+- [ ] **Step 3:** Re-measure as in Step 1; record both in `~/chat/idlecost/fw/indexes-{before,after}.log`.
+- [ ] **Step 4:** Add a line to the AGENTS.md feature list ("Process indexes: ...", with the spec path) and update the "Child processes" architecture note if it still names `clear_result_fields`; commit and push.
+- [ ] **Step 5 (other deployments, whose images install optio-core from PyPI):** wire patch release per `docs/release-cookbook.md` (0.5.3 → 0.5.4), then excavator's `optio-core>=0.5.4,<0.6` in `packages/engine/pyproject.toml` with a comment line, engine suite, commit, push.
