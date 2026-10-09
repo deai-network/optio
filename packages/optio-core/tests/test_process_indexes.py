@@ -85,3 +85,14 @@ async def test_lookups_use_the_indexes(mongo_db):
 
     assert "processId_1__id_-1" in _ixscans(by_pid["queryPlanner"]["winningPlan"])
     assert "parentId_1_order_1" in _ixscans(children["queryPlanner"]["winningPlan"])
+
+
+async def test_init_ensures_the_indexes(mongo_db):
+    from optio_core.lifecycle import Optio
+
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix="idxinit")
+    try:
+        assert await _indexes(mongo_db["idxinit_processes"]) == EXPECTED
+    finally:
+        await optio.shutdown()

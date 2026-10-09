@@ -241,6 +241,11 @@ class Optio:
         from optio_core.migrations import fw_migrations
         await fw_migrations.run(mongo_db, prefix=f"{prefix}_fw")
 
+        # The process collection's indexes, on every start (new prefixes and
+        # rebuilt databases included). Spec: docs/2026-10-09-process-indexes-design.md
+        from optio_core.store import ensure_process_indexes
+        await ensure_process_indexes(mongo_db, prefix)
+
         # Load persisted launch blocks ("perma-bans"). Spec:
         # docs/2026-04-30-persistent-launch-blocks-design.md.
         await self._load_persisted_blocks()
