@@ -5,6 +5,10 @@ picks this up after a context reset. The first version of this log (2026-10-09 0
 "conversation-ui tweaks", aoe:c1d32028376a) covered only the X experiment; that session
 handed over and lingers for questions.
 
+**Current holder since 12:38: "antd port 3" (aoe:ebb2453dfe4c).** "antd port 2"
+(aoe:fa9e60c76e02) retired to an advisory role at 12:36. Updated 13:10: unwind step 1 is done
+(OneOfSlider and the tooltip hold-back on unitas main eb66a0e, §5.1).
+
 ## 00. Goal hierarchy: why we are where we are (read this first)
 
 The **main goal** is the Ant Design X experiment (§1–2): replace optio-conversation-ui's
@@ -29,10 +33,12 @@ a detour, nested like this:
          (done, 197bf962), model descriptions (done), Claude's model list from the CLI
          (helper done, uncommitted, one owner decision open), the **compact controls bar**
          (descriptions as questions done 10381b0f; label hiding and the other control kinds
-         still to do), which needs **OneOfSlider** for the effort slider (in progress).
+         still to do), which needs **OneOfSlider** for the effort slider (done, unitas main
+         eb66a0e).
 
 **Unwind order**, innermost first, each step closing a level:
-1. OneOfSlider: fix the arrow-key test, story, docs, owner review, merge to unitas main.
+1. ~~OneOfSlider: fix the arrow-key test, story, docs, owner review, merge to unitas main.~~
+   Done 13:05, unitas main eb66a0e (pushed); see §5.1.
 2. Compact controls bar (BoolSwitch / OneOfSegmented / OneOfSlider, labels hidden when they do
    not fit); review and commit the model-list work after the owner's resume decision.
    Detour 3 closed.
@@ -55,7 +61,7 @@ Do not start new side work before the stack is unwound, unless the owner asks.
 | Vanilla baseline | `csillag/antd-x-base` = session-controls + 2 dev-setup commits, worktree `.worktrees/csillag/antd-x-base`, https://excavator:5181 | needs re-reset after the next rebase |
 | Session controls etc. (for optio **main**) | optio branch `csillag/session-controls`, worktree `.worktrees/csillag/session-controls` (own `.venv`, node_modules linked to the unitas worktree) | 7 local commits (§4); a helper was reworking Claude Code's model list at handoff (§5.3) |
 | vultus one-of field | unitas `main` dbdaf2a (pushed) | done: useOneOfField, OneOfSelect, OneOfSegmented |
-| vultus OneOfSlider | unitas branch `csillag/one-of-slider` in worktree `~/deai/optio/.worktrees/csillag/unitas` | in progress, uncommitted (§5.1) |
+| vultus OneOfSlider + tooltip hold-back | unitas `main` eb66a0e (pushed); worktree `~/deai/optio/.worktrees/csillag/unitas` detached at it, branch deleted | done (§5.1) |
 | optio main | origin/main 8d76a82c (optio perf work's docs commit on top of my 660ce909) | 660ce909 = hide the process list (pushed 00:37) |
 
 All paths are on host `excavator` (`ssh -F /home/csillag/share/fleet-ssh/config excavator`),
@@ -125,14 +131,22 @@ next optio release, then raise optio-conversation-ui's vultus-antd range.
 
 ## 5. In flight at handoff
 
-1. **OneOfSlider** (unitas worktree, branch `csillag/one-of-slider`, uncommitted:
-   `packages/vultus-antd/src/OneOfSlider.tsx`, `src/__tests__/OneOfSlider.test.tsx`, export in
-   `index.ts`). Owner-requested third widget for the one-of field. Design: choices as marks
-   (ChoiceLabel, choiceTooltip), handle tooltip = fieldTooltip, request on `onChangeComplete`
-   only (one request per move), disabled choice snaps back, `markStyle` prop. 9/10 tests pass;
-   **the arrow-key test fails** (rc-slider keyboard may not call onChangeComplete; check and
-   handle). Then: story in `packages/vultus-gallery/src/fields/OneOfField.stories.tsx`, README +
-   design-doc decision 25, owner review on :6008, merge to unitas main.
+1. **OneOfSlider: done**, unitas main eb66a0e (pushed 13:05; 051bcee + eb66a0e on dbdaf2a).
+   - The arrow-key failure was the test: @rc-component/slider 1.1.1 (antd 6.6.5) moves on keydown
+     and ends the move (onChangeComplete) on **keyup**; the test sent keydown only. A held key
+     repeats keydown and ends with one keyup, so a held key is still one request.
+   - Owner review on :6008 (story Fields/One of/Effort): the handle used to jump back to the old
+     choice while the commit ran. Now it stays on the requested choice while the confirmation
+     is asked and the commit runs (`asking || field.pending`), then shows the stored value (the
+     old one after Cancel or a failure). Verified in Chromium with an in-page
+     MutationObserver: one handle change only (`probe-slider-trace.mjs`).
+   - Found while testing, fixed in **all six confirming widgets** (owner's choice): the
+     widget's own tooltip stayed open over its popconfirm and covered the question and
+     buttons (OneOfSegmented on main had it too). `useConfirm` returns `asking` (popconfirm,
+     cascade modal or typing confirmation open; `useOneOfRequest` passes it on); ActionButton
+     (iconOnly), BoolSwitch, BoolCheckbox, OneOfSelect, OneOfSegmented, OneOfSlider hold back
+     their tooltips meanwhile. Design doc decisions 25 (tooltips) and 26 (slider).
+   - vultus-antd 174/174, tsc clean (vultus-antd and gallery); logs /tmp/vultus-tests/*-eb66a0e.log.
 2. **Compact controls bar** (approved): in optio-conversation-ui `SessionControls`:
    boolean -> vultus `BoolSwitch`, segmented -> `OneOfSegmented`, slider -> `OneOfSlider`
    (small marks), all with the control description; labels get class `optio-cc-control-label`
@@ -167,7 +181,9 @@ vultus one-of field: per-choice description (+ optional valueDescriptions), Sele
 (+ Slider), variants like actions (disabled never tinted, closed select mirrors, danger
 confirmation OK), icons + iconOnly, markdown descriptions, tooltip paragraphs led by an info
 sign (description) and a **gray** no-entry sign (reason; red rejected: disabled is no danger),
-no native titles; Bypass gets a simple confirmation.
+no native titles; Bypass gets a simple confirmation. Later the same day (to antd port 3):
+OneOfSlider approved; its handle must not jump back while a choice is asked or committed; a
+widget's tooltips are held back while its confirmation is open, in every confirming widget.
 
 ## 7. Conventions learned (keep)
 
@@ -185,6 +201,13 @@ no native titles; Bypass gets a simple confirmation.
   via `node_modules/.bin/vitest run` per package; unitas releases from excavator (npm login,
   annotated tags).
 - vultus-core is antd-free; vultus-antd inlines antd icons (no @ant-design/icons dependency).
+- In jsdom a closed antd tooltip stays mounted in its `-leave` motion; assert with
+  `openTooltips()` (vultus-antd `src/__tests__/helpers/tooltips.ts`), not with text presence.
+- The unitas worktree's packages resolve node_modules through the session-controls worktree's
+  pnpm store (relinked by its 11:39 install); antd 6.6.5 and @rc-component/slider 1.1.1 match
+  unitas's own lockfile (checked), so vultus tests there are representative.
+- Browser probes for vultus stories: superego `~/chat/antd-x-shots/probe-slider*.mjs`,
+  `probe-confirm-overlap.mjs` (Storybook iframe URLs, http://excavator:6008).
 
 ## 8. Coordination
 
