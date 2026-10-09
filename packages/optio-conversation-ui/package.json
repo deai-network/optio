@@ -42,7 +42,7 @@
     "antd": ">=6",
     "react": ">=18",
     "react-dom": ">=18",
-    "vultus-antd": ">=0.2.0"
+    "vultus-antd": ">=0.5.0"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
@@ -56,6 +56,6 @@
     "react-dom": "^19.2.4",
     "typescript": "^5.7.0",
     "vitest": "^3.2.4",
-    "vultus-antd": "^0.4.0"
+    "vultus-antd": "^0.5.0"
   }
 }
