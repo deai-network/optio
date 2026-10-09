@@ -1,3 +1,5 @@
+import pytest
+
 from optio_agents.session_controls import (
     SINGLE_OPTION_REASON,
     ControlOption,
@@ -89,3 +91,55 @@ def test_effort_control_disabled_locks():
                        disabled=True, why_disabled="always on")
     d = c.to_dict()
     assert d["disabled"] is True and d["whyDisabled"] == "always on"
+
+
+# --- per-task allowlist of offered controls (session_controls) ---------------
+
+def _snapshot():
+    return [
+        {"id": "model", "kind": "select", "value": "a"},
+        {"id": "reasoning_effort", "kind": "slider", "value": "high"},
+        {"id": "permission_mode", "kind": "select", "value": "default"},
+    ]
+
+
+def test_filter_controls_without_allowlist_keeps_everything():
+    from optio_agents.session_controls import filter_controls
+    assert filter_controls(_snapshot(), None) == _snapshot()
+
+
+def test_filter_controls_keeps_only_the_listed_ids_in_their_own_order():
+    from optio_agents.session_controls import filter_controls
+    kept = filter_controls(_snapshot(), ["permission_mode", "model"])
+    assert [c["id"] for c in kept] == ["model", "permission_mode"]
+
+
+def test_filter_controls_with_an_empty_allowlist_offers_nothing():
+    from optio_agents.session_controls import filter_controls
+    assert filter_controls(_snapshot(), []) == []
+
+
+def test_control_allowed():
+    from optio_agents.session_controls import control_allowed
+    assert control_allowed("anything", None) is True
+    assert control_allowed("model", ["model"]) is True
+    assert control_allowed("permission_mode", ["model"]) is False
+
+
+def test_validate_session_controls_accepts_none_and_a_list_with_controls_shown():
+    from optio_agents.session_controls import validate_session_controls
+    validate_session_controls(None, show_session_controls=False, owner="XConfig")
+    validate_session_controls(["model"], show_session_controls=True, owner="XConfig")
+
+
+def test_validate_session_controls_requires_the_controls_to_be_shown():
+    from optio_agents.session_controls import validate_session_controls
+    with pytest.raises(ValueError, match="XConfig.*session_controls.*show_session_controls"):
+        validate_session_controls(["model"], show_session_controls=False, owner="XConfig")
+
+
+@pytest.mark.parametrize("bad", ["model", ["model", ""], ["model", 3]])
+def test_validate_session_controls_rejects_anything_but_a_list_of_ids(bad):
+    from optio_agents.session_controls import validate_session_controls
+    with pytest.raises(ValueError, match="session_controls"):
+        validate_session_controls(bad, show_session_controls=True, owner="XConfig")

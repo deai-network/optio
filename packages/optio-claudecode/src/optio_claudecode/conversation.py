@@ -29,6 +29,11 @@ from optio_claudecode.info import AGENT_INFO
 _LOG = logging.getLogger(__name__)
 
 
+class ControlRejected(Exception):
+    """Claude Code answered a session-control change with an error (e.g. a
+    permission mode it will not switch to); the message is its reason."""
+
+
 def _user_message_line(text: str, message_uuid: str) -> bytes:
     # No "priority": the schema defaults an omitted one to "next", which is
     # exactly what optio always wants (cli-queue-lifecycle.md §1). The uuid
@@ -90,6 +95,16 @@ class ClaudeCodeConversation:
         # the reader for it.
         self.runtime_model: str | None = None
         self.runtime_model_observed: asyncio.Event = asyncio.Event()
+        # The running permission mode, as the stream reports it (system/init,
+        # and system/status on every switch, ours or Claude's own, e.g. on
+        # leaving plan mode). The Event wakes the owning body to re-emit the
+        # controls snapshot; it is also set when a switch is refused, so the
+        # widget's optimistic value is replaced by the real one.
+        self.permission_mode: str | None = None
+        self.permission_mode_observed: asyncio.Event = asyncio.Event()
+        # The modes set_control("permission_mode", ...) may switch to; set by
+        # the owning body (controls.offered_permission_modes).
+        self.permission_modes_offered: list[str] = []
         self._write_lock = asyncio.Lock()
         self._event_queue: asyncio.Queue[dict] = asyncio.Queue()
         self._event_handlers: list = []
@@ -200,6 +215,9 @@ class ClaudeCodeConversation:
             if isinstance(model, str) and model:
                 self.runtime_model = model
                 self.runtime_model_observed.set()
+            self._observe_permission_mode(obj)
+        elif t == "system" and obj.get("subtype") == "status":
+            self._observe_permission_mode(obj)
         elif t == "system" and obj.get("subtype") == "session_state_changed":
             # The CLI brackets every turn with running/idle. A message sent
             # while a turn runs joins that turn (one result for two sends), so
@@ -354,6 +372,39 @@ class ClaudeCodeConversation:
         elif control_id == "reasoning_effort":
             self.requested_effort = value
             self.effort_change_requested.set()
+        elif control_id == "permission_mode":
+            await self._set_permission_mode(value)
+
+    def _observe_permission_mode(self, obj: dict) -> None:
+        mode = obj.get("permissionMode")
+        if isinstance(mode, str) and mode:
+            self.permission_mode = mode
+            self.permission_mode_observed.set()
+
+    async def _set_permission_mode(self, mode) -> None:
+        """Switch the running Claude's permission mode in place: a
+        ``set_permission_mode`` control_request, awaiting Claude's answer. No
+        restart (unlike model and effort)."""
+        if mode not in self.permission_modes_offered:
+            raise ValueError(f"permission mode {mode!r} is not offered by this session")
+        if self._closed.is_set():
+            raise ConversationClosed(self._close_reason or "conversation closed")
+        self._next_request_id += 1
+        rid = f"optio-{self._next_request_id}"
+        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._control_acks[rid] = fut
+        await self._write_json({
+            "type": "control_request",
+            "request_id": rid,
+            "request": {"subtype": "set_permission_mode", "mode": mode},
+        })
+        obj = await fut
+        response = obj.get("response") or {}
+        if response.get("subtype") == "error":
+            self.permission_mode_observed.set()
+            raise ControlRejected(str(response.get("error") or "refused"))
+        self.permission_mode = mode
+        self.permission_mode_observed.set()
 
     def emit_control_update(self, controls: list[dict]) -> None:
         """Fan out a synthetic ``x-optio-control-update`` carrying a full

@@ -10,7 +10,7 @@ transport. Mirrors the frozen-dataclass style of ``seeds.SeedManifest``.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Sequence
 
 ControlKind = Literal["select", "boolean", "segmented", "slider"]
 
@@ -103,3 +103,44 @@ def effort_control(*, levels, current, disabled=False, why_disabled=None, label=
         value=(current or (levels[0] if levels else "")), levels=list(levels),
         disabled=disabled, why_disabled=why_disabled,
     )
+
+
+# --- per-task allowlist of offered controls ----------------------------------
+# A task config's optional ``session_controls`` names the control ids the
+# operator is offered, on top of ``show_session_controls`` (which shows the bar
+# at all). None (the default) offers every control the wrapper builds. A
+# wrapper filters every controls snapshot it emits through filter_controls and
+# refuses a /control change to an id control_allowed rejects, so a hidden
+# control cannot be set by posting to the endpoint directly either.
+
+def filter_controls(controls: list[dict], allowed: "Sequence[str] | None") -> list[dict]:
+    """The serialized controls whose id is in ``allowed``, in their own order;
+    all of them when ``allowed`` is None."""
+    if allowed is None:
+        return list(controls)
+    return [c for c in controls if c.get("id") in allowed]
+
+
+def control_allowed(control_id: str, allowed: "Sequence[str] | None") -> bool:
+    """Whether a /control change to ``control_id`` may go through."""
+    return allowed is None or control_id in allowed
+
+
+def validate_session_controls(
+    value: object, *, show_session_controls: bool, owner: str,
+) -> None:
+    """Config validation for ``session_controls``: None, or a list of non-empty
+    control ids, and only together with ``show_session_controls``. ``owner``
+    names the config class in the error."""
+    if value is None:
+        return
+    if not isinstance(value, list) or not all(isinstance(v, str) and v for v in value):
+        raise ValueError(
+            f"{owner}: session_controls must be a list of control ids (or None), "
+            f"got {value!r}"
+        )
+    if not show_session_controls:
+        raise ValueError(
+            f"{owner}: session_controls narrows the controls shown by "
+            "show_session_controls=True; set that too"
+        )

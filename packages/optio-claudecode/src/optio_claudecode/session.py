@@ -41,7 +41,7 @@ from optio_host.archive import DEFAULT_WORKDIR_EXCLUDES
 from optio_host.paths import task_dir
 from optio_agents import seeds as _seeds
 from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX, claustrum, get_protocol
-from optio_agents.session_controls import effort_control, model_control
+from optio_claudecode import controls as cc_controls
 from optio_agents.todos import TodoTracker
 from optio_agents.uploads import materialize, upload_url_token
 
@@ -542,10 +542,18 @@ async def run_claudecode_session(
         # effort relaunch to re-emit the controls snapshot (effort presence and
         # preselected level follow the running model).
         build_controls = None
+        # The permission modes this session can switch between (the
+        # permission_mode control); switched live, so a relaunch keeps the
+        # running one, and may return to bypass when launched in it.
+        permission_modes = cc_controls.offered_permission_modes(
+            permission_gate=config.permission_gate, launch_mode=config.permission_mode,
+        )
+        conversation.permission_modes_offered = permission_modes
 
         async def _spawn(model: str | None, *, do_continue: bool):
             claude_flags = host_actions.build_claude_flags(
-                permission_mode=config.permission_mode,
+                permission_mode=conversation.permission_mode or config.permission_mode,
+                allow_bypass="bypassPermissions" in permission_modes,
                 allowed_tools=config.allowed_tools,
                 disallowed_tools=config.disallowed_tools,
                 model=model,
@@ -696,6 +704,11 @@ async def run_claudecode_session(
                 initial_events=initial_events,
                 download_reader=_read_download,
                 max_download_bytes=config.max_download_bytes,
+                # Only the controls the widget shows may be set: none when the
+                # controls bar is off, else the session_controls allowlist.
+                allowed_controls=(
+                    config.session_controls if config.show_session_controls else []
+                ),
             )
             listener_port = await conv_listener.start(bind_addr)
             await ctx.set_widget_upstream(
@@ -708,19 +721,17 @@ async def run_claudecode_session(
                 )
 
             def build_controls(model, effort):
-                # The model select is always present; the reasoning_effort
-                # slider is appended only when the running model advertises
-                # graded effort (else omitted — model-dependent presence).
+                # See controls.build_controls: model select, effort slider for a
+                # graded-effort model, permission_mode select showing the
+                # running mode; narrowed by the session_controls allowlist.
                 # current model may be None (no --model): the view sniffs the
                 # runtime model from system/init and folds it into the value.
-                ctrls = [model_control(models=model_list["models"], current=model)]
-                levels, default = (
-                    cc_models.model_effort(model, model_list["models"])
-                    if model else (None, None)
+                return cc_controls.build_controls(
+                    catalog=model_list["models"], model=model, effort=effort,
+                    permission_mode=conversation.permission_mode or config.permission_mode,
+                    permission_modes=permission_modes,
+                    allowed=config.session_controls,
                 )
-                if levels:
-                    ctrls.append(effort_control(levels=levels, current=effort or default))
-                return [c.to_dict() for c in ctrls]
 
             # widgetData.uploadUrl token; see optio_agents.uploads.upload_url_token.
             upload_url = upload_url_token(ctx._db.name, ctx._prefix, ctx.process_id)
@@ -791,7 +802,8 @@ async def run_claudecode_session(
                 model_task = asyncio.create_task(conversation.model_change_requested.wait())
                 effort_task = asyncio.create_task(conversation.effort_change_requested.wait())
                 init_task = asyncio.create_task(conversation.runtime_model_observed.wait())
-                waiters = (wait_task, close_task, model_task, effort_task, init_task)
+                perm_task = asyncio.create_task(conversation.permission_mode_observed.wait())
+                waiters = (wait_task, close_task, model_task, effort_task, init_task, perm_task)
                 try:
                     done, _ = await asyncio.wait(
                         set(waiters), return_when=asyncio.FIRST_COMPLETED,
@@ -823,6 +835,19 @@ async def run_claudecode_session(
                                 build_controls(current_model, current_effort)
                             )
                     continue
+
+                if perm_task in done and close_task not in done and wait_task not in done:
+                    # --- the running permission mode changed (our live switch,
+                    # a refused one, or Claude's own, e.g. leaving plan mode):
+                    # re-emit the controls snapshot so the select shows it. Not
+                    # a relaunch. ---
+                    conversation.permission_mode_observed.clear()
+                    if build_controls is not None:
+                        conversation.emit_control_update(
+                            build_controls(current_model, current_effort)
+                        )
+                    if not (model_task in done or effort_task in done):
+                        continue
 
                 relaunch = model_task in done or effort_task in done
                 if relaunch and close_task not in done and wait_task not in done:

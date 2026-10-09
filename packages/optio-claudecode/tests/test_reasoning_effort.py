@@ -17,7 +17,6 @@ from optio_claudecode.models import (
     _effort_tiers,
 )
 from optio_claudecode.host_actions import build_claude_flags
-from optio_agents.session_controls import effort_control, model_control
 
 
 def _cfg(**kw):
@@ -189,13 +188,11 @@ def test_build_claude_flags_omits_effort_when_none():
 
 
 def _build_controls(catalog, model, effort):
-    """Mirror of session.py's build_controls closure so the presence gate is
-    unit-testable without a live host — reads per-model effort from the catalog."""
-    ctrls = [model_control(models=catalog, current=model)]
-    levels, default = model_effort(model, catalog) if model else (None, None)
-    if levels:
-        ctrls.append(effort_control(levels=levels, current=effort or default))
-    return [c.to_dict() for c in ctrls]
+    """The session's controls snapshot (controls.build_controls) without a
+    permission mode: the model select and the effort slider's presence gate."""
+    from optio_claudecode.controls import build_controls
+    return build_controls(catalog=catalog, model=model, effort=effort,
+                          permission_mode=None, permission_modes=[])
 
 
 def test_controls_include_effort_for_capable_model():

@@ -39,8 +39,10 @@ from typing import Awaitable, Callable
 from aiohttp import web
 
 from optio_agents.conversation import ConversationClosed, PermissionDecision
+from optio_agents.session_controls import control_allowed
 from optio_agents.steering import INTERRUPT_EVENT, Steering
 
+from optio_claudecode.conversation import ControlRejected
 from optio_claudecode.steering import make_steering, undelivered_queued
 
 _LOG = logging.getLogger(__name__)
@@ -102,8 +104,13 @@ class ConversationListener:
         max_download_bytes: int = 10_000_000,
         steering: "Steering | None" = None,
         clock: "Callable[[], float]" = _wall_clock_ms,
+        allowed_controls: "list[str] | None" = None,
     ) -> None:
         self._conversation = conversation
+        # The task's session_controls allowlist (None: every control): /control
+        # refuses any other id, so a control hidden from the widget cannot be
+        # set by posting here directly.
+        self._allowed_controls = allowed_controls
         self._password = password
         self._download_reader = download_reader
         self._max_download_bytes = max_download_bytes
@@ -475,11 +482,19 @@ class ConversationListener:
         cid = payload.get("id")
         if not isinstance(cid, str) or not cid:
             return web.json_response({"ok": False, "reason": "bad-id"}, status=400)
+        if not control_allowed(cid, self._allowed_controls):
+            return web.json_response({"ok": False, "reason": "not-allowed"}, status=403)
         value = payload.get("value")
         try:
             await self._conversation.set_control(cid, value)
         except ConversationClosed:
             return web.json_response({"ok": False, "reason": "closed"}, status=409)
+        except ValueError:
+            # A value the control does not offer.
+            return web.json_response({"ok": False, "reason": "bad-value"}, status=400)
+        except ControlRejected as e:
+            # Claude itself refused the change.
+            return web.json_response({"ok": False, "reason": "rejected", "error": str(e)}, status=409)
         return web.json_response({"ok": True})
 
     async def _handle_download(self, request: web.Request) -> web.Response:

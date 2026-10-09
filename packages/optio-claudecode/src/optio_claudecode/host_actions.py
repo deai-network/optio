@@ -1149,6 +1149,7 @@ def build_claude_flags(
     resuming: bool = False,
     model: str | None = None,
     effort: str | None = None,
+    allow_bypass: bool = False,
 ) -> list[str]:
     """Translate ClaudeCodeTaskConfig permission knobs to an argv list.
 
@@ -1159,6 +1160,9 @@ def build_claude_flags(
     ``effort`` emits `--effort <value>` (graded reasoning effort); applied only
     for effort-capable models, validated as ``reasoning_effort`` in
     ``ClaudeCodeTaskConfig.__post_init__``.
+    ``allow_bypass`` emits ``--allow-dangerously-skip-permissions``, which lets
+    the running session switch (back) into bypassPermissions: needed when a
+    session launched in it is relaunched in another mode.
     Validation of ``permission_mode`` values lives in
     ``ClaudeCodeTaskConfig.__post_init__``.
     """
@@ -1175,6 +1179,8 @@ def build_claude_flags(
         out += ["--model", model]
     if effort:
         out += ["--effort", effort]
+    if allow_bypass:
+        out += ["--allow-dangerously-skip-permissions"]
     return out
 
 

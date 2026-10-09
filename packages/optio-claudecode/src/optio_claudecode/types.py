@@ -20,6 +20,7 @@ from optio_agents import (
     ToolVerbosity,
 )
 from optio_agents.config_types import BlobCryptoConfigMixin, ClaustrumConfigMixin
+from optio_agents.session_controls import validate_session_controls
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -224,6 +225,11 @@ class ClaudeCodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
     # conversation_ui=True. The default model is config.model (no separate
     # field).
     show_session_controls: bool = False
+    # Optional allowlist on top of show_session_controls: the ids of the
+    # controls the operator is offered ("model", "reasoning_effort",
+    # "permission_mode"). None (the default) offers all of them. A control left
+    # out is neither shown nor settable through the widget's /control endpoint.
+    session_controls: list[str] | None = None
     # Replace the generic working-spinner with claudecode's on-brand native
     # spinner in the conversation widget. Requires mode="conversation" and
     # conversation_ui=True.
@@ -332,6 +338,10 @@ class ClaudeCodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
                 "ClaudeCodeTaskConfig: show_session_controls=True requires "
                 "mode='conversation' and conversation_ui=True."
             )
+        validate_session_controls(
+            self.session_controls, show_session_controls=self.show_session_controls,
+            owner="ClaudeCodeTaskConfig",
+        )
         if self.native_spinner and not (self.mode == "conversation" and self.conversation_ui):
             raise ValueError(
                 "ClaudeCodeTaskConfig: native_spinner=True requires "

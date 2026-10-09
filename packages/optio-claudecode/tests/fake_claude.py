@@ -194,8 +194,17 @@ def run_stream_json_mode(argv: list[str]) -> int:
     exit_after = int(os.environ.get("FAKE_CLAUDE_EXIT_AFTER", "0"))
     hold_turn = os.environ.get("FAKE_CLAUDE_HOLD_TURN") == "1"
     session_id = "fake-session-0000"
+    # Permission mode as the real CLI reports and switches it (verified on
+    # 2.1.268): init names the launch mode; set_permission_mode answers, then
+    # announces the new mode in a system/status event; bypassPermissions only
+    # when the process was launched able to bypass.
+    mode = (argv[argv.index("--permission-mode") + 1]
+            if "--permission-mode" in argv else "default")
+    bypass_ok = (mode == "bypassPermissions"
+                 or "--allow-dangerously-skip-permissions" in argv
+                 or "--dangerously-skip-permissions" in argv)
     emit({"type": "system", "subtype": "init", "session_id": session_id,
-          "model": "fake-model", "cwd": os.getcwd()})
+          "model": "fake-model", "cwd": os.getcwd(), "permissionMode": mode})
     n = 0
     for line in sys.stdin:
         line = line.strip()
@@ -204,6 +213,24 @@ def run_stream_json_mode(argv: list[str]) -> int:
         msg = json.loads(line)
         if msg.get("type") == "control_request":
             sub = (msg.get("request") or {}).get("subtype")
+            if sub == "set_permission_mode":
+                want = (msg.get("request") or {}).get("mode")
+                if want == "bypassPermissions" and not bypass_ok:
+                    emit({"type": "control_response", "response": {
+                        "subtype": "error", "request_id": msg.get("request_id"),
+                        "error": "Cannot set permission mode to bypassPermissions "
+                                 "because the session was not launched with "
+                                 "--dangerously-skip-permissions",
+                    }})
+                else:
+                    mode = want
+                    emit({"type": "control_response", "response": {
+                        "subtype": "success", "request_id": msg.get("request_id"),
+                        "response": {"mode": want},
+                    }})
+                    emit({"type": "system", "subtype": "status", "status": None,
+                          "permissionMode": want, "session_id": session_id})
+                continue
             if sub == "interrupt":
                 emit({"type": "control_response", "response": {
                     "subtype": "success", "request_id": msg.get("request_id"),

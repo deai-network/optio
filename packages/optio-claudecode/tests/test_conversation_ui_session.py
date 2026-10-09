@@ -297,6 +297,25 @@ async def test_conversation_ui_session_lifecycle(
                         {"value": "claude-haiku-4-5", "label": "Claude Haiku 4.5", "disabled": False},
                     ],
                 },
+                {
+                    # Launched in bypassPermissions without the permission gate:
+                    # the modes that never ask, and bypass (launched in it).
+                    "id": "permission_mode",
+                    "kind": "select",
+                    "label": "Permissions",
+                    "category": "mode",
+                    "value": "bypassPermissions",
+                    "disabled": False,
+                    "options": [
+                        {"value": "acceptEdits", "label": "Accept edits",
+                         "description": "Edit files without asking", "disabled": False},
+                        {"value": "dontAsk", "label": "Don't ask",
+                         "description": "Run only pre-approved tools; refuse the rest without asking",
+                         "disabled": False},
+                        {"value": "bypassPermissions", "label": "Bypass",
+                         "description": "Run everything without asking", "disabled": False},
+                    ],
+                },
             ],
             "showFileUpload": False,
             "maxUploadBytes": 10_000_000,
@@ -333,5 +352,106 @@ async def test_conversation_ui_session_lifecycle(
         # Teardown stopped the listener: the port refuses connections.
         port = int(upstream["url"].rsplit(":", 1)[1])
         await _wait_port_refused(port)
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
+def _basic(password: str) -> dict:
+    token = base64.b64encode(f"optio:{password}".encode()).decode()
+    return {"Authorization": f"Basic {token}"}
+
+
+def _has_control(event: dict, cid: str, value) -> bool:
+    return event.get("type") == "x-optio-control-update" and any(
+        c.get("id") == cid and c.get("value") == value for c in event.get("controls") or []
+    )
+
+
+@pytest.mark.asyncio
+async def test_permission_mode_switches_live_and_the_allowlist_holds(
+    shim_install_dir: pathlib.Path,
+    claude_cache_dir: pathlib.Path,
+    task_root,
+    mongo_db,
+):
+    """session_controls=["permission_mode"]: only that control is offered, a
+    hidden one cannot be set through /control, and a mode switch is applied
+    live (control protocol) and re-emitted in the controls snapshot."""
+    optio = await _make_optio(mongo_db, "ccui-perm")
+    try:
+        task = create_claudecode_task(
+            process_id="cc-conv-perm", name="Permission mode",
+            config=_ui_config(
+                shim_install_dir, claude_cache_dir,
+                show_session_controls=True, session_controls=["permission_mode"],
+            ),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result("cc-conv-perm", session_id=None, timeout=60)
+        upstream = (await _wait_widget_upstream(optio, "cc-conv-perm"))["widgetUpstream"]
+        proc = await _wait_widget_data(optio, "cc-conv-perm")
+        assert [c["id"] for c in proc["widgetData"]["controls"]] == ["permission_mode"]
+
+        url, headers = upstream["url"], _basic(upstream["innerAuth"]["password"])
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{url}/control", headers=headers,
+                                    json={"id": "model", "value": "claude-haiku-4-5"}) as r:
+                assert r.status == 403
+            async with session.get(f"{url}/events", headers=headers) as events:
+                async with session.post(f"{url}/control", headers=headers,
+                                        json={"id": "permission_mode", "value": "acceptEdits"}) as r:
+                    assert r.status == 200
+                upd = await _read_until(events, lambda e: _has_control(e, "permission_mode", "acceptEdits"))
+                assert [c["id"] for c in upd["controls"]] == ["permission_mode"]
+            # Launched in bypassPermissions: switching back into it is allowed.
+            async with session.post(f"{url}/control", headers=headers,
+                                    json={"id": "permission_mode", "value": "bypassPermissions"}) as r:
+                assert r.status == 200
+
+        await conv.close()
+        await _wait_terminal(optio, "cc-conv-perm")
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
+@pytest.mark.asyncio
+async def test_a_model_relaunch_keeps_the_picked_permission_mode(
+    shim_install_dir: pathlib.Path,
+    claude_cache_dir: pathlib.Path,
+    task_root,
+    mongo_db,
+):
+    """A model change relaunches claude: it comes back in the mode the operator
+    picked, not the launch mode, and still able to return to bypass."""
+    optio = await _make_optio(mongo_db, "ccui-perm2")
+    try:
+        task = create_claudecode_task(
+            process_id="cc-conv-perm2", name="Permission mode relaunch",
+            config=_ui_config(shim_install_dir, claude_cache_dir, show_session_controls=True),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result("cc-conv-perm2", session_id=None, timeout=60)
+        upstream = (await _wait_widget_upstream(optio, "cc-conv-perm2"))["widgetUpstream"]
+        await _wait_widget_data(optio, "cc-conv-perm2")
+        url, headers = upstream["url"], _basic(upstream["innerAuth"]["password"])
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{url}/events", headers=headers) as events:
+                async with session.post(f"{url}/control", headers=headers,
+                                        json={"id": "permission_mode", "value": "acceptEdits"}) as r:
+                    assert r.status == 200
+                await _read_until(events, lambda e: _has_control(e, "permission_mode", "acceptEdits"))
+                async with session.post(f"{url}/control", headers=headers,
+                                        json={"id": "model", "value": "claude-haiku-4-5"}) as r:
+                    assert r.status == 200
+                # The relaunched process's own init reports the picked mode.
+                await _read_until(events, lambda e: e.get("type") == "system"
+                                  and e.get("subtype") == "init"
+                                  and e.get("permissionMode") == "acceptEdits")
+            async with session.post(f"{url}/control", headers=headers,
+                                    json={"id": "permission_mode", "value": "bypassPermissions"}) as r:
+                assert r.status == 200
+
+        await conv.close()
+        await _wait_terminal(optio, "cc-conv-perm2")
     finally:
         await optio.shutdown(grace_seconds=1.0)
