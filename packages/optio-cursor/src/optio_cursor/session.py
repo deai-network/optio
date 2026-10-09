@@ -35,7 +35,7 @@ from optio_agents import seeds as _seeds
 from optio_agents.account import EMPTY, accounts_to_metadata
 from optio_agents.fs_grants import fs_isolation_dirs
 from optio_agents.input_listener import serialized, start_input_listener
-from optio_agents.session_controls import model_control
+from optio_agents.session_controls import filter_controls, model_control
 from optio_agents.todos import TodoTracker, extract_acp_todo
 from optio_agents.uploads import materialize, upload_url_token
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
@@ -665,6 +665,9 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                 conversation, password=listener_password,
                 download_reader=_read_download,
                 max_download_bytes=config.max_download_bytes,
+                # Only the controls the widget shows may be set: none when the
+                # controls bar is off, else the session_controls allowlist.
+                allowed_controls=config.settable_controls,
             )
             # The listener is an in-process aiohttp app (not a remote-host
             # process like ttyd), so it binds directly to the widget-tunnel
@@ -681,8 +684,11 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
             current_model = config.model or model_list.get("default")
             # The model picker is now the engine-neutral id="model" session
             # control (probed catalogue → disabled ControlOptions carry
-            # whyDisabled for plan-gated ids). Serialized camelCase for the UI.
+            # whyDisabled for plan-gated ids). Serialized camelCase for the UI,
+            # narrowed by the session_controls allowlist (cursor emits no
+            # x-optio-control-update snapshot, so this is the only one).
             control = model_control(models=model_list["models"], current=current_model)
+            controls = filter_controls([control.to_dict()], config.session_controls)
             # widgetData.uploadUrl token; see optio_agents.uploads.upload_url_token.
             upload_url = upload_url_token(ctx._db.name, ctx._prefix, ctx.process_id)
             await ctx.set_widget_data({
@@ -691,7 +697,7 @@ async def run_cursor_session(ctx: ProcessContext, config: CursorTaskConfig) -> N
                 "thinkingVerbosity": config.thinking_verbosity,
                 "showSessionControls": config.show_session_controls,
                 "nativeSpinner": config.native_spinner,
-                "controls": [control.to_dict()],
+                "controls": controls,
                 "showFileUpload": config.show_file_upload,
                 "maxUploadBytes": config.max_upload_bytes,
                 "fileDownload": config.file_download,

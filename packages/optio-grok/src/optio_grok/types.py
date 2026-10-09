@@ -22,7 +22,11 @@ from optio_agents import (
     TOOL_VERBOSITIES,
     ToolVerbosity,
 )
-from optio_agents.config_types import BlobCryptoConfigMixin, ClaustrumConfigMixin
+from optio_agents.config_types import (
+    BlobCryptoConfigMixin,
+    ClaustrumConfigMixin,
+    SessionControlsConfigMixin,
+)
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -82,17 +86,19 @@ def _identity_resume_refresh(config: "GrokTaskConfig") -> "GrokTaskConfig":
 
 
 @dataclass(frozen=True, kw_only=True)
-class GrokTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
+class GrokTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin):
     """Configuration for one optio-grok task instance.
 
     Inherits the claustrum filesystem-isolation triad (``fs_isolation`` /
-    ``extra_allowed_dirs`` / ``delivery_type``) from ``ClaustrumConfigMixin``
-    and the GridFS blob-crypto quartet (``session_blob_encrypt/decrypt`` /
-    ``seed_blob_encrypt/decrypt``) from ``BlobCryptoConfigMixin``; those
-    fields stay top-level (callers write ``fs_isolation=`` /
-    ``session_blob_encrypt=`` verbatim). Frozen because the mixins are frozen;
-    ``kw_only`` because the mixins contribute defaulted fields ahead of the
-    required ``consumer_instructions``.
+    ``extra_allowed_dirs`` / ``delivery_type``) from ``ClaustrumConfigMixin``,
+    the GridFS blob-crypto quartet (``session_blob_encrypt/decrypt`` /
+    ``seed_blob_encrypt/decrypt``) from ``BlobCryptoConfigMixin``, and the
+    session-controls pair (``show_session_controls`` / ``session_controls``)
+    from ``SessionControlsConfigMixin``; those fields stay top-level
+    (callers write ``fs_isolation=`` / ``session_blob_encrypt=`` verbatim).
+    Frozen because the mixins are frozen; ``kw_only`` because the mixins
+    contribute defaulted fields ahead of the required
+    ``consumer_instructions``.
     """
 
     consumer_instructions: str
@@ -216,11 +222,10 @@ class GrokTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
     thinking_verbosity: ThinkingVerbosity = "hidden"
 
     # --- conversation frontend parity (Stage 7) -------------------------
-    # Show the engine-neutral session controls in the conversation widget.
-    # Grok exposes only the model control, switched inline over ACP
-    # (session/set_model) — no process restart. Requires mode="conversation"
-    # and conversation_ui=True.
-    show_session_controls: bool = False
+    # show_session_controls / session_controls come from
+    # SessionControlsConfigMixin. Grok's only control is "model", switched
+    # inline over ACP (session/set_model) — no process restart. The bar
+    # requires mode="conversation" and conversation_ui=True.
     # Replace the generic working-spinner with grok's on-brand native spinner
     # in the conversation widget. Requires mode="conversation" and
     # conversation_ui=True.
@@ -258,9 +263,11 @@ class GrokTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
     def __post_init__(self) -> None:
         # Validate the claustrum triad first so a missing delivery_type fails
         # fast (before the other, engine-specific checks below), then the
-        # blob-crypto pairing (both session and seed pairs all-or-nothing).
+        # blob-crypto pairing (both session and seed pairs all-or-nothing),
+        # then the session_controls allowlist (only with show_session_controls).
         self._validate_claustrum()
         self._validate_blob_crypto()
+        self._validate_session_controls()
         if (
             self.permission_mode is not None
             and self.permission_mode not in _VALID_PERMISSION_MODES

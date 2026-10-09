@@ -239,6 +239,44 @@ async def test_control_route_forwards_to_conversation(listener):
         assert r.status == 409
 
 
+async def _post_control(body, allowed):
+    """POST /control to a listener built with the given allowlist; returns
+    (status, json body, the conversation)."""
+    conv = FakeConversation()
+    lst = ConversationListener(conv, password="pw", allowed_controls=allowed)
+    port = await lst.start("127.0.0.1")
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(f"http://127.0.0.1:{port}/control", json=body,
+                              headers=_auth("pw")) as r:
+                return r.status, await r.json(), conv
+    finally:
+        await lst.stop()
+
+
+async def test_control_route_refuses_an_id_outside_the_allowlist():
+    # A control hidden by session_controls cannot be set by posting directly.
+    status, body, conv = await _post_control(
+        {"id": "model", "value": "kimi-k2-thinking"}, allowed=["reasoning_effort", "mode"],
+    )
+    assert status == 403 and body["reason"] == "not-allowed"
+    assert conv.controls == []
+
+
+async def test_control_route_refuses_every_id_with_an_empty_allowlist():
+    # settable_controls is [] while the controls bar is off.
+    status, body, conv = await _post_control({"id": "mode", "value": "yolo"}, allowed=[])
+    assert status == 403 and body["reason"] == "not-allowed"
+    assert conv.controls == []
+
+
+async def test_control_route_passes_an_allowed_id_through():
+    status, _, conv = await _post_control(
+        {"id": "reasoning_effort", "value": "high"}, allowed=["reasoning_effort", "mode"],
+    )
+    assert status == 200 and conv.controls == [("reasoning_effort", "high")]
+
+
 async def test_permission_roundtrip_by_jsonrpc_id(listener):
     # KimiCode's PermissionRequest.raw is the full ACP session/request_permission
     # JSON-RPC object; the listener correlates by its `id`.

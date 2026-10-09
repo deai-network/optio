@@ -19,6 +19,7 @@ from optio_agents import seeds as _seeds
 from optio_agents.fs_grants import fs_isolation_dirs
 from optio_agents.input_listener import serialized, start_input_listener
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
+from optio_agents.session_controls import filter_controls
 from optio_agents.account import EMPTY, accounts_to_metadata
 from optio_agents.todos import TodoTracker
 from optio_agents.uploads import materialize, upload_url_token
@@ -457,6 +458,8 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
             # instead of starting a fresh one. resume_session_id is the codex
             # thread id recorded in the restored snapshot.
             resume_thread_id=resume_session_id if resuming else None,
+            # Narrows the controls snapshot re-emitted on a model switch.
+            session_controls=config.session_controls,
         )
         # Stage 9: Landlock-confine the app-server process tree (None when
         # fs_isolation is off).
@@ -536,6 +539,9 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                 # a fresh viewer attach replays before the live tail — so a long
                 # session stays scrollable to its start past the bounded buffer.
                 codex_home=host_actions._isolation_env(host.workdir)["CODEX_HOME"],
+                # Only the controls the widget shows may be set: none when the
+                # controls bar is off, else the session_controls allowlist.
+                allowed_controls=config.settable_controls,
             )
             # In-process aiohttp app: binds directly on the widget-tunnel
             # interface, no host tunnel needed.
@@ -569,7 +575,9 @@ async def run_codex_session(ctx: ProcessContext, config: CodexTaskConfig) -> Non
                 "thinkingVerbosity": config.thinking_verbosity,
                 "showSessionControls": config.show_session_controls,
                 "nativeSpinner": config.native_spinner,
-                "controls": [c.to_dict() for c in controls],
+                "controls": filter_controls(
+                    [c.to_dict() for c in controls], config.session_controls,
+                ),
                 "showFileUpload": config.show_file_upload,
                 "maxUploadBytes": config.max_upload_bytes,
                 "fileDownload": config.file_download,

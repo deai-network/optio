@@ -217,6 +217,40 @@ def test_frontend_parity_flags_ok_with_conversation_ui():
     assert cfg.show_session_controls is True
 
 
+# --- session_controls allowlist (SessionControlsConfigMixin) ---------------
+
+
+def _ui_cfg(**kw) -> KimiCodeTaskConfig:
+    return _cfg(consumer_instructions="x", mode="conversation", conversation_ui=True, **kw)
+
+
+def test_the_controls_settings_come_from_the_shared_mixin():
+    from optio_agents.config_types import SessionControlsConfigMixin
+    assert issubclass(KimiCodeTaskConfig, SessionControlsConfigMixin)
+    # /control may change only the allowlisted ids while the bar is on ...
+    assert _ui_cfg(
+        show_session_controls=True, session_controls=["model", "mode"],
+    ).settable_controls == ["model", "mode"]
+    # ... every control when no allowlist is given ...
+    assert _ui_cfg(show_session_controls=True).settable_controls is None
+    # ... and none at all while the bar is off.
+    assert _ui_cfg().settable_controls == []
+
+
+def test_session_controls_defaults_to_offering_everything():
+    assert _ui_cfg(show_session_controls=True).session_controls is None
+
+
+def test_session_controls_needs_show_session_controls():
+    with pytest.raises(ValueError, match="session_controls"):
+        _ui_cfg(session_controls=["model"])
+
+
+def test_session_controls_must_be_a_list_of_ids():
+    with pytest.raises(ValueError, match="session_controls"):
+        _ui_cfg(show_session_controls=True, session_controls="model")  # type: ignore[arg-type]
+
+
 # --- verbosity enums -------------------------------------------------------
 
 

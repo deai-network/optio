@@ -100,6 +100,7 @@ from optio_agents.conversation import (
     PermissionDecision,
     PermissionRequest,
 )
+from optio_agents.session_controls import filter_controls
 from optio_codex import models as codex_models
 from optio_codex import rollout as codex_rollout
 from optio_codex.info import AGENT_INFO
@@ -128,8 +129,13 @@ class CodexConversation:
         reasoning_effort: str | None = None,
         sandbox: str = "workspace-write",
         resume_thread_id: str | None = None,
+        session_controls: "list[str] | None" = None,
     ) -> None:
         self._cwd = cwd
+        # The task's session_controls allowlist (None: every control): the
+        # controls snapshot re-emitted on a model switch is narrowed to it, so
+        # a control hidden from the widget does not reappear.
+        self._session_controls = session_controls
         self._agent_label = agent_label
         # When False, requestApproval is answered with a defensive deny
         # instead of being queued for a handler.
@@ -613,7 +619,9 @@ class CodexConversation:
         )
         await self._emit_event({
             "type": "x-optio-control-update",
-            "controls": [c.to_dict() for c in controls],
+            "controls": filter_controls(
+                [c.to_dict() for c in controls], self._session_controls,
+            ),
         })
 
     async def close(self) -> None:

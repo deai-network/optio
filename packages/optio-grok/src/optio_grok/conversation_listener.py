@@ -9,7 +9,8 @@ widget proxy (which injects the basic-auth credential):
   POST /interrupt  — {}                     -> conversation.interrupt
   POST /control    — {id, value}            -> conversation.set_control
                      (the model control switches INLINE via session/set_model —
-                     no process restart; Stage 7)
+                     no process restart; Stage 7). An id outside the task's
+                     allowed_controls is refused with 403 not-allowed.
   GET  /download   — ?path=<relpath>        -> download_reader; returns the
                      bytes with Content-Disposition: attachment (Stage 7)
   POST /permission — {request_id, behavior, updated_input?, message?}
@@ -39,6 +40,7 @@ from typing import Awaitable, Callable
 from aiohttp import web
 
 from optio_agents.conversation import ConversationClosed, PermissionDecision
+from optio_agents.session_controls import control_allowed
 
 _LOG = logging.getLogger(__name__)
 
@@ -57,8 +59,13 @@ class ConversationListener:
         self, conversation, *, password: str,
         download_reader: "Callable[[str], Awaitable[tuple[bytes, str]]] | None" = None,
         max_download_bytes: int = 10_000_000,
+        allowed_controls: "list[str] | None" = None,
     ) -> None:
         self._conversation = conversation
+        # The task's session_controls allowlist (None: every control): /control
+        # refuses any other id, so a control hidden from the widget cannot be
+        # set by posting here directly.
+        self._allowed_controls = allowed_controls
         self._password = password
         self._download_reader = download_reader
         self._max_download_bytes = max_download_bytes
@@ -270,6 +277,8 @@ class ConversationListener:
         cid, value = payload.get("id"), payload.get("value")
         if not isinstance(cid, str) or not cid:
             return web.json_response({"ok": False, "reason": "bad-id"}, status=400)
+        if not control_allowed(cid, self._allowed_controls):
+            return web.json_response({"ok": False, "reason": "not-allowed"}, status=403)
         try:
             await self._conversation.set_control(cid, value)
         except ConversationClosed:

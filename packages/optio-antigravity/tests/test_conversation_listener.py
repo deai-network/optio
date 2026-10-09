@@ -186,6 +186,37 @@ async def test_control_route_forwards_to_conversation(listener):
         assert r.status == 409
 
 
+async def _post_control(body, allowed):
+    """POST /control to a listener built with the given allowlist."""
+    conv = FakeConversation()
+    lst = ConversationListener(conv, password="pw", allowed_controls=allowed)
+    port = await lst.start("127.0.0.1")
+    try:
+        async with aiohttp.ClientSession() as s:
+            r = await s.post(f"http://127.0.0.1:{port}/control", json=body, headers=_auth("pw"))
+            return conv, r.status, await r.json()
+    finally:
+        await lst.stop()
+
+
+async def test_control_route_refuses_an_id_outside_the_allowlist():
+    # A control the widget does not show cannot be set by posting directly.
+    conv, status, body = await _post_control({"id": "model", "value": "x"}, allowed=["thinking"])
+    assert status == 403 and body["reason"] == "not-allowed"
+    assert conv.controls == []
+    # The controls bar off (settable_controls == []): nothing is settable.
+    conv, status, body = await _post_control({"id": "model", "value": "x"}, allowed=[])
+    assert status == 403 and body["reason"] == "not-allowed"
+    assert conv.controls == []
+
+
+async def test_control_route_passes_an_allowed_id_through():
+    conv, status, _ = await _post_control(
+        {"id": "model", "value": "gemini-2.5-pro"}, allowed=["model"],
+    )
+    assert status == 200 and conv.controls == [("model", "gemini-2.5-pro")]
+
+
 async def test_permission_roundtrip_by_request_id(listener):
     # The listener correlates a /permission answer by the request's raw `id`
     # (engine-neutral surface; antigravity's own turns never fire this).

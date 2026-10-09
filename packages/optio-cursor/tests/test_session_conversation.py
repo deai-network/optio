@@ -12,9 +12,11 @@ Adapted from optio-grok's test_session_conversation.py.
 from __future__ import annotations
 
 import asyncio
+import base64
 import pathlib
 import time as _time
 
+import aiohttp
 import pytest
 
 from optio_core.lifecycle import Optio
@@ -488,6 +490,56 @@ async def test_conversation_ui_file_upload_materialize(
         assert rel == "uploads/note.txt"
         assert seen == ["uploads/note.txt"]
         assert landed["uploads/note.txt"] == b"hello-bytes"
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allowlist, shown", [
+    (["model"], ["model"]),
+    # Only a control cursor does not build: the bar offers nothing.
+    (["permission_mode"], []),
+])
+async def test_session_controls_allowlist_narrows_the_widget_controls(
+    shim_install_dir, task_root, mongo_db, monkeypatch, allowlist, shown,
+):
+    """session_controls narrows widgetData.controls to the listed ids, and
+    the listener's /control refuses an id left out (403 not-allowed)."""
+    # The ACP session/new models block feeds the model select directly (the
+    # shim does not answer the `cursor-agent models` CLI fallback).
+    monkeypatch.setenv("FAKE_CURSOR_ACP_MODELS", "m1")
+    optio = await _make_optio(mongo_db, "cuctlallow")
+    try:
+        task = create_cursor_task(
+            process_id="cu-ctl-allow",
+            name="Session controls allowlist",
+            config=_conversation_config(
+                shim_install_dir, conversation_ui=True,
+                show_session_controls=True, session_controls=allowlist,
+            ),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result(
+            "cu-ctl-allow", session_id=None, timeout=60,
+        )
+        wd = await _wait_widget_data(optio, "cu-ctl-allow")
+        assert [c["id"] for c in wd["controls"]] == shown
+
+        # widgetUpstream is written before widgetData.
+        upstream = (await optio.get_process("cu-ctl-allow"))["widgetUpstream"]
+        token = base64.b64encode(
+            f"optio:{upstream['innerAuth']['password']}".encode()
+        ).decode()
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{upstream['url']}/control",
+                headers={"Authorization": f"Basic {token}"},
+                json={"id": "model", "value": "m1"},
+            ) as r:
+                assert r.status == (200 if "model" in allowlist else 403)
+
+        await conv.close()
+        await _wait_terminal(optio, "cu-ctl-allow")
     finally:
         await optio.shutdown(grace_seconds=1.0)
 

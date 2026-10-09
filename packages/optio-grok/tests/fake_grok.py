@@ -356,6 +356,12 @@ def _run_acp_stdio() -> int:
                            "result": {"stopReason": "end_turn"}})
             if exit_after and turn >= exit_after:
                 return 7
+        elif method == "session/set_model":
+            # Inline model switch (no restart), answered like the real grok
+            # (models.py's probe transcript).
+            model_id = (msg.get("params") or {}).get("modelId")
+            _acp_send({"jsonrpc": "2.0", "id": mid, "result": {
+                "_meta": {"model": {"Ok": model_id}}}})
         elif method == "session/cancel":
             # Notification: a real grok would abort the in-flight turn. The
             # fake's turns are instantaneous, so nothing to abort.

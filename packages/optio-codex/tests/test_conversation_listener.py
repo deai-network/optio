@@ -311,6 +311,49 @@ async def test_control_route_forwards_to_conversation(listener):
         assert r.status == 409
 
 
+async def _post_control(conv, body, *, allowed):
+    lst = ConversationListener(conv, password="pw", allowed_controls=allowed)
+    port = await lst.start("127.0.0.1")
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(f"http://127.0.0.1:{port}/control", json=body,
+                              headers=_auth("pw")) as r:
+                return r.status, await r.json()
+    finally:
+        await lst.stop()
+
+
+async def test_control_route_refuses_an_id_outside_the_allowlist():
+    # A control session_controls hides from the widget cannot be set by
+    # posting its id here directly either.
+    conv = FakeConversation()
+    status, body = await _post_control(
+        conv, {"id": "model", "value": "gpt-5.4-mini"}, allowed=["reasoning_effort"],
+    )
+    assert status == 403 and body["reason"] == "not-allowed"
+    assert conv.control_changes == []
+
+
+async def test_control_route_refuses_every_id_while_the_bar_is_off():
+    # The session passes config.settable_controls: [] while
+    # show_session_controls is off.
+    conv = FakeConversation()
+    status, body = await _post_control(
+        conv, {"id": "model", "value": "gpt-5.4-mini"}, allowed=[],
+    )
+    assert status == 403 and body["reason"] == "not-allowed"
+    assert conv.control_changes == []
+
+
+async def test_control_route_passes_an_allowed_id_through():
+    conv = FakeConversation()
+    status, body = await _post_control(
+        conv, {"id": "reasoning_effort", "value": "high"}, allowed=["reasoning_effort"],
+    )
+    assert status == 200 and body == {"ok": True}
+    assert conv.control_changes == [("reasoning_effort", "high")]
+
+
 async def test_permission_roundtrip_by_jsonrpc_id(listener):
     # PermissionRequest.raw is the full requestApproval JSON-RPC object; the
     # listener correlates the operator's answer by its `id`.

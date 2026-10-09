@@ -29,6 +29,15 @@ Frozen kw-only dataclass composing the shared mixins from
 
   Per pair, setting one member without the other is a `ValueError` at
   construction (`_validate_blob_crypto` in `__post_init__`).
+* `SessionControlsConfigMixin` — the conversation widget's controls bar:
+  `show_session_controls` (requires conversation mode + `conversation_ui`) and
+  the optional `session_controls` allowlist of control ids (None: all). grok's
+  only control is `model` (switched inline via `session/set_model`). Every
+  controls snapshot — widgetData `controls` and the `x-optio-control-update`
+  re-emitted after a model switch — comes from the session's
+  `_build_controls`, which goes through `filter_controls`; the listener's
+  `/control` refuses an id outside `settable_controls` (403 `not-allowed`;
+  nothing is settable while the bar is off).
 
 ## Seed lifecycle
 

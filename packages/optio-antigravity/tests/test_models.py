@@ -137,3 +137,19 @@ def test_show_session_controls_requires_conversation_ui():
 def test_show_session_controls_ok_in_conversation_ui():
     cfg = _cfg(mode="conversation", conversation_ui=True, show_session_controls=True)
     assert cfg.show_session_controls is True
+
+
+def test_the_controls_settings_come_from_the_shared_mixin():
+    from optio_agents.config_types import SessionControlsConfigMixin
+    assert issubclass(AntigravityTaskConfig, SessionControlsConfigMixin)
+    ui = dict(mode="conversation", conversation_ui=True)
+    # None (the default) offers every control; /control may change nothing
+    # while the bar is off, else the allowlist.
+    assert _cfg(**ui, show_session_controls=True).session_controls is None
+    assert _cfg(**ui).settable_controls == []
+    assert _cfg(**ui, show_session_controls=True, session_controls=["model"]).settable_controls == ["model"]
+
+
+def test_session_controls_needs_show_session_controls():
+    with pytest.raises(ValueError, match="session_controls"):
+        _cfg(mode="conversation", conversation_ui=True, session_controls=["model"])

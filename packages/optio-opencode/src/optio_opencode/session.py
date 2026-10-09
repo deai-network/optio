@@ -176,6 +176,11 @@ def conversation_widget_data(config: "OpencodeTaskConfig", *, session_id: str, d
         "toolVerbosity": config.tool_verbosity,
         "thinkingVerbosity": config.thinking_verbosity,
         "showSessionControls": config.show_session_controls,
+        # The session_controls allowlist (None: every control). opencode's
+        # control snapshots are built client-side (OpencodeView, from the live
+        # provider catalog) and its model/effort changes are UI-local (no
+        # /control endpoint), so the view narrows its snapshots with this.
+        "sessionControls": config.session_controls,
         "nativeSpinner": config.native_spinner,
         "defaultModel": config.model,
         # Initial effort ("thought level") the widget seeds its effort slider

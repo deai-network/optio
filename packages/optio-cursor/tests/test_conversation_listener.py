@@ -212,6 +212,36 @@ async def test_control_route_forwards_to_conversation(listener):
         assert r.status == 409
 
 
+async def _post_control(conv, body, allowed):
+    lst = ConversationListener(conv, password="pw", allowed_controls=allowed)
+    port = await lst.start("127.0.0.1")
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.post(f"http://127.0.0.1:{port}/control", json=body,
+                              headers=_auth("pw")) as r:
+                return r.status, await r.json()
+    finally:
+        await lst.stop()
+
+
+async def test_control_route_refuses_an_id_outside_the_allowlist():
+    # allowed_controls is the task's settable_controls: a control hidden from
+    # the widget cannot be set by posting here directly; [] is the bar off.
+    for allowed in (["reasoning_effort"], []):
+        conv = FakeConversation()
+        status, body = await _post_control(
+            conv, {"id": "model", "value": "gpt-5"}, allowed,
+        )
+        assert status == 403 and body["reason"] == "not-allowed"
+        assert conv.control_changes == []
+
+
+async def test_control_route_passes_an_allowed_id_through():
+    conv = FakeConversation()
+    status, _ = await _post_control(conv, {"id": "model", "value": "gpt-5"}, ["model"])
+    assert status == 200 and conv.control_changes == [("model", "gpt-5")]
+
+
 async def test_permission_roundtrip_by_jsonrpc_id(listener):
     # Cursor's PermissionRequest.raw is the full ACP session/request_permission
     # JSON-RPC object; the listener correlates by its `id`.

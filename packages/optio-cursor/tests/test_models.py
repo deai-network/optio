@@ -6,7 +6,9 @@ a live cursor:
     text — CLI format runtime-unverified, see models.py header);
   * fetch_available_models source precedence (ACP → CLI → fallback);
   * CursorTaskConfig.show_session_controls validation + the single `model`
-    field (harmonization C3 dropped the separate default_model).
+    field (harmonization C3 dropped the separate default_model);
+  * the session-controls settings from SessionControlsConfigMixin (the
+    session_controls allowlist, settable_controls).
 
 The inline model-switch mechanism itself (session/set_model over ACP,
 [grok-pinned, cursor runtime-unverified]) is covered at the conversation level
@@ -178,6 +180,27 @@ def test_show_session_controls_requires_conversation_ui():
 def test_show_session_controls_ok_in_conversation_ui():
     cfg = _cfg(mode="conversation", conversation_ui=True, show_session_controls=True)
     assert cfg.show_session_controls is True
+
+
+def test_the_controls_settings_come_from_the_shared_mixin():
+    from optio_agents.config_types import SessionControlsConfigMixin
+    assert issubclass(CursorTaskConfig, SessionControlsConfigMixin)
+    cfg = _cfg(mode="conversation", conversation_ui=True,
+               show_session_controls=True, session_controls=["model"])
+    assert cfg.settable_controls == ["model"]
+    # The bar off: /control may change nothing.
+    assert _cfg(mode="conversation", conversation_ui=True).settable_controls == []
+
+
+def test_session_controls_defaults_to_offering_everything():
+    cfg = _cfg(mode="conversation", conversation_ui=True, show_session_controls=True)
+    assert cfg.session_controls is None
+    assert cfg.settable_controls is None
+
+
+def test_session_controls_needs_show_session_controls():
+    with pytest.raises(ValueError, match="session_controls"):
+        _cfg(mode="conversation", conversation_ui=True, session_controls=["model"])
 
 
 def test_native_spinner_requires_conversation_ui():

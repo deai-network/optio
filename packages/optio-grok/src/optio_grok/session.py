@@ -29,7 +29,7 @@ from optio_agents import seeds as _seeds
 from optio_agents.account import EMPTY, accounts_to_metadata
 from optio_agents.fs_grants import fs_isolation_dirs
 from optio_agents.input_listener import serialized, start_input_listener
-from optio_agents.session_controls import model_control
+from optio_agents.session_controls import filter_controls, model_control
 from optio_agents.todos import TodoTracker, extract_acp_todo
 from optio_agents.uploads import materialize, upload_url_token
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
@@ -564,6 +564,9 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                 conversation, password=listener_password,
                 download_reader=_read_download,
                 max_download_bytes=config.max_download_bytes,
+                # Only the controls the widget shows may be set: none when the
+                # controls bar is off, else the session_controls allowlist.
+                allowed_controls=config.settable_controls,
             )
             # The listener is an in-process aiohttp app (not a remote-host
             # process like ttyd), so it binds directly to the widget-tunnel
@@ -591,7 +594,10 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
 
             def _build_controls(model_id: "str | None") -> list[dict]:
                 """Derive the engine-neutral session-controls list for a given
-                current model: just the id="model" select.
+                current model: just the id="model" select, narrowed by the
+                task's session_controls allowlist. Every controls snapshot
+                (widgetData and the re-emit after a model switch) comes from
+                here.
 
                 NO live id="reasoning_effort" slider is surfaced. grok's ACP does
                 not advertise per-model reasoning-effort capability — the
@@ -600,11 +606,11 @@ async def run_grok_session(ctx: ProcessContext, config: GrokTaskConfig) -> None:
                 there is no reachable capability source. reasoning_effort stays a
                 launch-only knob (``--reasoning-effort``; see
                 host_actions.build_conversation_argv)."""
-                return [
+                return filter_controls([
                     model_control(
                         models=model_list["models"], current=model_id,
                     ).to_dict()
-                ]
+                ], config.session_controls)
 
             # Re-derive + re-emit the control set after a model change. (Today
             # this is just the id="model" select; grok exposes no per-model live

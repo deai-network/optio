@@ -262,3 +262,30 @@ describe('OpencodeView effort control', () => {
     expect(sent.body.variant).toBeUndefined();
   });
 });
+
+// The task's session_controls allowlist (widgetData.sessionControls): opencode
+// builds its controls here in the view, so the view narrows them. Absent/null
+// offers every control.
+describe('OpencodeView session_controls allowlist', () => {
+  const VARIANTS = { 'opencode/big-pickle': ['low', 'medium', 'high'] };
+
+  it('offers only the allowlisted controls', async () => {
+    installFetch({ history: [], posts: [] });
+    render(<OpencodeView {...makeProps({
+      sessionID: 'fake-session-id', directory: '/wd', showSessionControls: true,
+      modelVariants: VARIANTS, sessionControls: ['reasoning_effort'],
+    })} />);
+    await waitFor(() => expect(screen.getByTestId('control-reasoning_effort')).toBeTruthy());
+    expect(screen.queryByTestId('control-model')).toBeNull();
+  });
+
+  it('offers every control when the allowlist is null', async () => {
+    installFetch({ history: [], posts: [] });
+    render(<OpencodeView {...makeProps({
+      sessionID: 'fake-session-id', directory: '/wd', showSessionControls: true,
+      modelVariants: VARIANTS, sessionControls: null,
+    })} />);
+    await waitFor(() => expect(screen.getByTestId('control-reasoning_effort')).toBeTruthy());
+    expect(screen.getByTestId('control-model')).toBeTruthy();
+  });
+});

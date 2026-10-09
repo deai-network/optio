@@ -463,6 +463,11 @@ def _run_acp_stdio() -> int:
     launch (bad binary / sandbox exec denial / missing runtime lib). Used to
     verify the wrapper folds that stderr into the raised launch error instead of
     surfacing a bare "process ended".
+
+    ``FAKE_KIMI_FULL_CONFIG_OPTIONS=1`` advertises the whole kimi picker surface
+    at session/new (model + graded ``thinking`` + ``mode``), and answers each
+    ``session/set_config_option`` like real kimi: ack, then a
+    ``config_option_update`` notification carrying the FULL refreshed array.
     """
     fail = os.environ.get("FAKE_KIMI_ACP_FAIL_LAUNCH", "").strip()
     if fail:
@@ -471,6 +476,26 @@ def _run_acp_stdio() -> int:
         return 3
     session_id = "fake-kimi-session"
     exit_after = int(os.environ.get("FAKE_KIMI_EXIT_AFTER", "0") or "0")
+    full_options = os.environ.get("FAKE_KIMI_FULL_CONFIG_OPTIONS") == "1"
+    config_options = [{
+        "type": "select", "id": "model", "name": "Model",
+        "category": "model", "currentValue": "kimi-k2",
+        "options": [
+            {"value": "kimi-k2", "name": "Kimi K2"},
+            {"value": "kimi-k2-thinking", "name": "Kimi K2 Thinking"},
+        ],
+    }]
+    if full_options:
+        config_options += [
+            {"type": "select", "id": "thinking", "name": "Thinking",
+             "category": "thought_level", "currentValue": "medium",
+             "options": [{"value": v, "name": v.title()}
+                         for v in ("off", "low", "medium", "high")]},
+            {"type": "select", "id": "mode", "name": "Mode",
+             "category": "mode", "currentValue": "default",
+             "options": [{"value": "default", "name": "Default"},
+                         {"value": "yolo", "name": "Yolo"}]},
+        ]
     turn = 0
     next_perm_id = 1000
     while True:
@@ -493,14 +518,7 @@ def _run_acp_stdio() -> int:
         elif method == "session/new":
             _acp_send({"jsonrpc": "2.0", "id": mid, "result": {
                 "sessionId": session_id,
-                "configOptions": [{
-                    "type": "select", "id": "model", "name": "Model",
-                    "category": "model", "currentValue": "kimi-k2",
-                    "options": [
-                        {"value": "kimi-k2", "name": "Kimi K2"},
-                        {"value": "kimi-k2-thinking", "name": "Kimi K2 Thinking"},
-                    ],
-                }]}})
+                "configOptions": config_options}})
         elif method == "session/set_model":
             _acp_send({"jsonrpc": "2.0", "id": mid, "result": {}})
         elif method == "session/set_config_option":
@@ -509,6 +527,14 @@ def _run_acp_stdio() -> int:
             # permission mode via {configId:"mode"} right after session/new — ack
             # it so the awaited request resolves (else startup hangs).
             _acp_send({"jsonrpc": "2.0", "id": mid, "result": {}})
+            if full_options:
+                params = msg.get("params") or {}
+                for opt in config_options:
+                    if opt["id"] == params.get("configId"):
+                        opt["currentValue"] = params.get("value")
+                _acp_notify_update(session_id, {
+                    "sessionUpdate": "config_option_update",
+                    "configOptions": config_options})
         elif method == "session/prompt":
             turn += 1
             prompt = (msg.get("params") or {}).get("prompt") or []

@@ -18,7 +18,11 @@ from optio_agents import (
     TOOL_VERBOSITIES,
     ToolVerbosity,
 )
-from optio_agents.config_types import BlobCryptoConfigMixin, ClaustrumConfigMixin
+from optio_agents.config_types import (
+    BlobCryptoConfigMixin,
+    ClaustrumConfigMixin,
+    SessionControlsConfigMixin,
+)
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -73,7 +77,7 @@ def _identity_resume_refresh(config: "OpencodeTaskConfig") -> "OpencodeTaskConfi
 
 
 @dataclass(frozen=True, kw_only=True)
-class OpencodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
+class OpencodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin):
     """Configuration for one optio-opencode task instance.
 
     Inherits the claustrum filesystem-isolation triad (``fs_isolation`` /
@@ -186,9 +190,10 @@ class OpencodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
     # effort control only appears for a variant-capable model (re-derived on
     # model change). None leaves opencode's per-model default in place.
     reasoning_effort: "OpencodeReasoningEffort | None" = None
-    # Show the model picker in the conversation widget. Requires
-    # conversation_ui=True.
-    show_session_controls: bool = False
+    # show_session_controls / session_controls come from
+    # SessionControlsConfigMixin. opencode's controls: "model" (default
+    # config.model) and "reasoning_effort" (variant-capable models only).
+    # The bar requires conversation_ui=True.
     # Replace the generic working-spinner with opencode's on-brand native
     # spinner in the conversation widget. Requires mode='conversation' and
     # conversation_ui=True.
@@ -237,6 +242,7 @@ class OpencodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
         # fails fast before the opencode-specific checks below.
         self._validate_claustrum()
         self._validate_blob_crypto()
+        self._validate_session_controls()
         if self.mode not in ("iframe", "conversation"):
             raise ValueError(
                 f"OpencodeTaskConfig.mode={self.mode!r} is not one of "

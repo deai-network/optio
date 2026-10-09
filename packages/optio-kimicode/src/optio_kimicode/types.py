@@ -18,7 +18,11 @@ from optio_agents import (
     TOOL_VERBOSITIES,
     ToolVerbosity,
 )
-from optio_agents.config_types import BlobCryptoConfigMixin, ClaustrumConfigMixin
+from optio_agents.config_types import (
+    BlobCryptoConfigMixin,
+    ClaustrumConfigMixin,
+    SessionControlsConfigMixin,
+)
 from optio_agents.protocol.session import (
     DeliverableCallback,
     HookCallback,
@@ -98,7 +102,7 @@ _VALID_THINKING_VERBOSITY = {"hidden", "visible"}
 
 
 @dataclass(frozen=True, kw_only=True)
-class KimiCodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
+class KimiCodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin):
     """Configuration for one optio-kimicode task instance.
 
     Stage 0 covers iframe (``kimi web``) mode on the local host. Resume,
@@ -240,11 +244,12 @@ class KimiCodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
     thinking_verbosity: ThinkingVerbosity = "hidden"
 
     # --- conversation frontend parity (Stage 7) -------------------------
-    # Show the engine-neutral session-controls bar (model + thinking + mode) in
-    # the conversation widget. kimi switches inline over ACP (session/set_model
-    # for the model, session/set_config_option for thinking/mode — no process
-    # restart). Requires mode="conversation" and conversation_ui=True.
-    show_session_controls: bool = False
+    # show_session_controls / session_controls come from
+    # SessionControlsConfigMixin. kimi's controls (model + thinking + mode):
+    # "model", "reasoning_effort" (the thinking slider), "mode". kimi switches
+    # inline over ACP (session/set_model for the model, session/set_config_option
+    # for thinking/mode — no process restart). The bar requires
+    # mode="conversation" and conversation_ui=True.
     # Replace the generic working-spinner with kimicode's on-brand native
     # spinner in the conversation widget. Requires mode="conversation" and
     # conversation_ui=True.
@@ -283,6 +288,7 @@ class KimiCodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
         # fast (before the engine-specific checks below).
         self._validate_claustrum()
         self._validate_blob_crypto()
+        self._validate_session_controls()
         if (
             self.permission_mode is not None
             and self.permission_mode not in _VALID_PERMISSION_MODES

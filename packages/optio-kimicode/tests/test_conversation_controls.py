@@ -202,6 +202,59 @@ async def test_config_option_update_emits_control_snapshot(convo):
     await reader
 
 
+_FULL_CONFIG_OPTIONS = [
+    {"type": "select", "id": "model", "name": "Model", "category": "model",
+     "currentValue": "kimi-k2-thinking",
+     "options": [{"value": "kimi-k2", "name": "Kimi K2"},
+                 {"value": "kimi-k2-thinking", "name": "Kimi K2 Thinking"}]},
+    {"type": "select", "id": "thinking", "name": "Thinking",
+     "category": "thought_level", "currentValue": "high",
+     "options": [{"value": "off", "name": "Off"},
+                 {"value": "low", "name": "Low"},
+                 {"value": "high", "name": "High"}]},
+    {"type": "select", "id": "mode", "name": "Mode", "category": "mode",
+     "currentValue": "yolo",
+     "options": [{"value": "default", "name": "Default"},
+                 {"value": "yolo", "name": "Yolo"}]},
+]
+
+
+@pytest.mark.asyncio
+async def test_config_option_update_snapshot_is_narrowed_by_session_controls():
+    # The task's session_controls allowlist narrows the re-projected snapshot
+    # too: a hidden control never reaches the widget, whatever kimi reports.
+    handle = _FakeHandle()
+    c = KimiCodeConversation(cwd="/w", permission_gate=True,
+                             session_controls=["reasoning_effort", "mode"])
+    c.attach(handle)
+    reader = asyncio.create_task(c.run_reader())
+    await _bootstrap(c, handle)
+    events: list = []
+    c.on_event(events.append)
+
+    handle.stdout.feed({"jsonrpc": "2.0", "method": "session/update", "params": {
+        "sessionId": "s1", "update": {
+            "sessionUpdate": "config_option_update",
+            "configOptions": _FULL_CONFIG_OPTIONS,
+        },
+    }})
+
+    async def _wait_for_synthetic():
+        while True:
+            for ev in events:
+                if isinstance(ev, dict) and ev.get("type") == "x-optio-control-update":
+                    return ev
+            await asyncio.sleep(0.01)
+
+    synthetic = await asyncio.wait_for(_wait_for_synthetic(), 60)
+    assert [x["id"] for x in synthetic["controls"]] == ["reasoning_effort", "mode"]
+    assert synthetic["controls"][1]["value"] == "yolo"
+    # The hidden model control still tracks kimi's authoritative state.
+    assert c.current_model_id == "kimi-k2-thinking"
+    handle.stdout.eof()
+    await reader
+
+
 # --- parse_all_controls projection ------------------------------------------
 
 

@@ -143,3 +143,25 @@ def test_caller_message_toggles_protocol_feature():
         caller_messages=cfg_off.on_caller_message is not None,
     )
     assert proto_off.features.caller_messages is False
+
+
+# --- session controls (inherited from SessionControlsConfigMixin) ------------
+
+
+def _conv_ui(**kw):
+    return _mk(mode="conversation", conversation_ui=True, **kw)
+
+
+def test_session_controls_settings_come_from_the_shared_mixin():
+    from optio_agents.config_types import SessionControlsConfigMixin
+    assert issubclass(GrokTaskConfig, SessionControlsConfigMixin)
+    # /control may change the allowlisted ids; every control when there is no
+    # allowlist; none while the bar is off.
+    assert _conv_ui(show_session_controls=True, session_controls=["model"]).settable_controls == ["model"]
+    assert _conv_ui(show_session_controls=True).settable_controls is None
+    assert _conv_ui().settable_controls == []
+
+
+def test_session_controls_needs_show_session_controls():
+    with pytest.raises(ValueError, match="session_controls"):
+        _conv_ui(session_controls=["model"])

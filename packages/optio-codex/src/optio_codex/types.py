@@ -33,7 +33,11 @@ from optio_agents import (
     TOOL_VERBOSITIES,
     ToolVerbosity,
 )
-from optio_agents.config_types import BlobCryptoConfigMixin, ClaustrumConfigMixin
+from optio_agents.config_types import (
+    BlobCryptoConfigMixin,
+    ClaustrumConfigMixin,
+    SessionControlsConfigMixin,
+)
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -93,15 +97,16 @@ def _identity_resume_refresh(config: "CodexTaskConfig") -> "CodexTaskConfig":
 
 
 @dataclass(frozen=True, kw_only=True)
-class CodexTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
+class CodexTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin):
     """Configuration for one optio-codex task instance.
 
     Inherits the claustrum filesystem-isolation triad (``fs_isolation`` /
     ``extra_allowed_dirs`` / ``delivery_type``) from ``ClaustrumConfigMixin``
     and the at-rest blob-crypto quartet (``session_blob_encrypt/decrypt`` /
-    ``seed_blob_encrypt/decrypt``) from ``BlobCryptoConfigMixin``; those
-    fields stay top-level here (callers write ``fs_isolation=`` /
-    ``session_blob_encrypt=`` verbatim). Frozen because the mixins are frozen;
+    ``seed_blob_encrypt/decrypt``) from ``BlobCryptoConfigMixin``, and the
+    session-controls pair (``show_session_controls`` / ``session_controls``)
+    from ``SessionControlsConfigMixin``; those fields stay top-level here
+    (callers write ``fs_isolation=`` / ``session_blob_encrypt=`` verbatim). Frozen because the mixins are frozen;
     ``kw_only`` because the mixins contribute defaulted fields ahead of the
     required ``consumer_instructions``.
     """
@@ -222,10 +227,12 @@ class CodexTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
     thinking_verbosity: ThinkingVerbosity = "hidden"
 
     # --- conversation frontend parity (Stage 7) -------------------------
-    # Show the session controls (the model picker is the id="model" control).
-    # Codex switches the model INLINE: the chosen model rides the next
-    # turn/start and sticks — no process restart.
-    show_session_controls: bool = False
+    # show_session_controls / session_controls come from
+    # SessionControlsConfigMixin. Codex's controls: "model" (the picker) and
+    # "reasoning_effort" (only for a model with graded reasoning), both
+    # switched INLINE: the chosen value rides the next turn/start and sticks —
+    # no process restart. The bar requires mode="conversation" and
+    # conversation_ui=True.
     # Replace the generic working-spinner with codex's on-brand native
     # spinner in the conversation widget. Requires mode="conversation" and
     # conversation_ui=True.
@@ -297,6 +304,7 @@ class CodexTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
     def __post_init__(self) -> None:
         self._validate_claustrum()
         self._validate_blob_crypto()
+        self._validate_session_controls()
         if self.mode not in _VALID_MODES:
             raise ValueError(
                 f"CodexTaskConfig.mode={self.mode!r} is not one of "

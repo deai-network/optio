@@ -717,6 +717,21 @@ async def test_set_control_model_drops_effort_for_non_graded_model():
 
 
 @pytest.mark.asyncio
+async def test_set_control_model_reemit_is_narrowed_by_the_allowlist():
+    # session_controls=["model"] hides the effort slider: the snapshot
+    # re-emitted on a switch to a graded model must not bring it back.
+    c = CodexConversation(cwd="/w", session_controls=["model"])
+    c.thread_id = "t1"
+    c.model_list = _GRADED_MODEL_LIST
+    events: list = []
+    c.on_event(events.append)
+    await c.set_control("model", "gpt-5.5")        # graded: effort would show
+    update = next(e for e in events if e.get("type") == "x-optio-control-update")
+    assert [ctl["id"] for ctl in update["controls"]] == ["model"]
+    assert update["controls"][0]["value"] == "gpt-5.5"
+
+
+@pytest.mark.asyncio
 async def test_turn_start_error_response_unwinds_pending(convo):
     c, handle = convo
     reader = asyncio.create_task(c.run_reader())

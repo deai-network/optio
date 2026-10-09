@@ -11,9 +11,11 @@ in this mode).
 from __future__ import annotations
 
 import asyncio
+import base64
 import pathlib
 import time as _time
 
+import aiohttp
 import pytest
 
 from optio_core.lifecycle import Optio
@@ -415,6 +417,64 @@ async def test_conversation_ui_file_upload_materialize(
     finally:
         await optio.shutdown(grace_seconds=1.0)
 
+
+
+@pytest.mark.asyncio
+async def test_conversation_ui_session_controls_allowlist(
+    shim_install_dir, task_root, mongo_db,
+):
+    """session_controls narrows the controls bar: a control the allowlist
+    leaves out (here grok's only one, "model") is missing from widgetData's
+    controls and from the snapshot re-emitted after a model switch, and the
+    widget's /control refuses to set it."""
+    optio = await _make_optio(mongo_db, "gkconvctl")
+    try:
+        task = create_grok_task(
+            process_id="gk-conv-ctl",
+            name="Conversation controls allowlist",
+            config=_conversation_config(
+                shim_install_dir, conversation_ui=True,
+                show_session_controls=True, session_controls=[],
+            ),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result(
+            "gk-conv-ctl", session_id=None, timeout=60,
+        )
+
+        wd = await _wait_widget_data(optio, "gk-conv-ctl")
+        assert wd["showSessionControls"] is True
+        assert wd["controls"] == []
+
+        # widgetData is written after widgetUpstream, so the upstream is set.
+        upstream = (await optio.get_process("gk-conv-ctl"))["widgetUpstream"]
+        token = base64.b64encode(
+            f"optio:{upstream['innerAuth']['password']}".encode()
+        ).decode()
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{upstream['url']}/control",
+                headers={"Authorization": f"Basic {token}"},
+                json={"id": "model", "value": "grok-fake"},
+            ) as r:
+                assert r.status == 403
+                assert (await r.json())["reason"] == "not-allowed"
+
+        # The consumer holding the conversation can still switch the model;
+        # the snapshot re-emitted after the switch is narrowed the same way.
+        updates: list[dict] = []
+        conv.on_event(
+            lambda e: updates.append(e)
+            if e.get("type") == "x-optio-control-update" else None
+        )
+        await conv.set_control("model", "grok-fake")
+        await _wait_for(lambda: bool(updates))
+        assert updates[-1]["controls"] == []
+
+        await conv.close()
+        await _wait_terminal(optio, "gk-conv-ctl")
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
 
 def test_ui_widget_per_mode():
     """Conversation tasks carry no widget; iframe tasks use 'iframe-input'."""

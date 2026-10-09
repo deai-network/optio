@@ -197,7 +197,24 @@ when the hook returns, and when it raises `NothingToResurrect`.
   the caller's keys win per key while every other key the seed/snapshot
   carried is preserved.
 * `permission_mode` — forwarded verbatim to `claude
-  --permission-mode`. Validation happens in `__post_init__`.
+  --permission-mode` (the launch mode). Validation happens in
+  `__post_init__`. In a conversation with the controls bar it is also live:
+  see `SessionControlsConfigMixin` below.
+* `SessionControlsConfigMixin` — the conversation widget's controls bar:
+  `show_session_controls` (requires conversation mode + `conversation_ui`)
+  and the optional `session_controls` allowlist of control ids (None: all).
+  Claude Code's controls (`controls.build_controls`): `model` and
+  `reasoning_effort` (applied by relaunching claude with `--model` /
+  `--effort` + `--continue`), and `permission_mode`, switched in place with
+  the stream-json control request `set_permission_mode`. Offered modes
+  (`controls.offered_permission_modes`): with `permission_gate` default /
+  acceptEdits / plan / dontAsk, without it only acceptEdits / dontAsk;
+  bypassPermissions only for a session launched in it (Claude Code refuses
+  to switch into it otherwise). The select follows the mode the stream
+  reports (`system/init`, `system/status`); a relaunch keeps the running
+  mode. Every snapshot is narrowed by the allowlist, and the listener's
+  /control refuses an id outside `settable_controls` (403 `not-allowed`; all
+  of them while the bar is off).
 * `session_blob_encrypt/decrypt`, `seed_blob_encrypt/decrypt` —
   inherited from `optio_agents.config_types.BlobCryptoConfigMixin`
   (alongside the `ClaustrumConfigMixin` triad). Optional synchronous

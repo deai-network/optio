@@ -19,7 +19,7 @@ docstrings (`src/optio_codex/types.py`).
 
 ## Shared config mixins
 
-`CodexTaskConfig` inherits two shared field sets from
+`CodexTaskConfig` inherits three shared field sets from
 `optio_agents.config_types`; all fields stay top-level on the config:
 
 * `ClaustrumConfigMixin` — `fs_isolation` / `extra_allowed_dirs` /
@@ -36,6 +36,13 @@ docstrings (`src/optio_codex/types.py`).
   the `seed_encrypt`/`seed_decrypt` accessors; snapshot capture/restore uses
   the session pair directly. Per pair, setting one member without the other
   is a `ValueError` at construction (`_validate_blob_crypto`).
+* `SessionControlsConfigMixin` — `show_session_controls` /
+  `session_controls`. The bar (conversation UI only) offers `model` and, for
+  a graded-reasoning model, `reasoning_effort`; `session_controls` narrows it
+  to the listed ids. Both controls snapshots (widgetData's `controls`, and
+  the `x-optio-control-update` re-emitted on a model switch) go through
+  `filter_controls`; the listener's `/control` refuses an id outside
+  `settable_controls` with 403 `not-allowed` (every id while the bar is off).
 
 ## Binary provisioning (PINNED-BY-DESIGN)
 

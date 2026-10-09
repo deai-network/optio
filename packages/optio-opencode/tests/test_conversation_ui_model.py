@@ -74,6 +74,7 @@ def test_widget_data_carries_model_fields():
         "toolVerbosity": "verbose",
         "thinkingVerbosity": "hidden",
         "showSessionControls": True,
+        "sessionControls": None,
         "nativeSpinner": False,
         "defaultModel": "opencode/big-pickle",
         "defaultEffort": "high",
@@ -122,3 +123,56 @@ def test_reasoning_effort_rejects_bad_value():
             conversation_ui=True,
             reasoning_effort="turbo",
         )
+
+
+# --- the session_controls allowlist (SessionControlsConfigMixin) -------------
+
+
+def _ui_cfg(**kw):
+    base = dict(
+        consumer_instructions="task", fs_isolation=False,
+        mode="conversation", conversation_ui=True,
+    )
+    base.update(kw)
+    return OpencodeTaskConfig(**base)
+
+
+def test_the_controls_settings_come_from_the_shared_mixin():
+    from optio_agents.config_types import SessionControlsConfigMixin
+    assert issubclass(OpencodeTaskConfig, SessionControlsConfigMixin)
+    cfg = _ui_cfg(show_session_controls=True, session_controls=["model"])
+    assert cfg.settable_controls == ["model"]
+
+
+def test_session_controls_defaults_to_offering_everything():
+    cfg = _ui_cfg(show_session_controls=True)
+    assert cfg.session_controls is None
+    assert cfg.settable_controls is None
+
+
+def test_nothing_is_settable_while_the_bar_is_off():
+    assert _ui_cfg().settable_controls == []
+
+
+def test_session_controls_needs_show_session_controls():
+    with pytest.raises(ValueError, match="OpencodeTaskConfig: session_controls"):
+        _ui_cfg(session_controls=["model"])
+
+
+def test_session_controls_must_be_a_list_of_ids():
+    with pytest.raises(ValueError, match="OpencodeTaskConfig: session_controls"):
+        _ui_cfg(show_session_controls=True, session_controls="model")
+
+
+def test_widget_data_carries_the_session_controls_allowlist():
+    # opencode builds its control snapshots client-side (OpencodeView, from the
+    # live provider catalog), so the allowlist rides widgetData for the view to
+    # narrow them with.
+    cfg = _ui_cfg(show_session_controls=True, session_controls=["reasoning_effort"])
+    wd = conversation_widget_data(cfg, session_id="s1", directory="/wd")
+    assert wd["sessionControls"] == ["reasoning_effort"]
+
+
+def test_widget_data_session_controls_defaults_to_all():
+    wd = conversation_widget_data(_ui_cfg(), session_id="s1", directory="/wd")
+    assert wd["sessionControls"] is None

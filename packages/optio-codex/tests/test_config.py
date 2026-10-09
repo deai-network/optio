@@ -148,6 +148,27 @@ def test_upload_download_byte_limits_default():
     assert cfg.max_download_bytes == 10_000_000
 
 
+# --- session controls (shared SessionControlsConfigMixin) -------------------
+
+
+def test_the_controls_settings_come_from_the_shared_mixin():
+    from optio_agents.config_types import SessionControlsConfigMixin
+
+    assert issubclass(CodexTaskConfig, SessionControlsConfigMixin)
+    ui = dict(mode="conversation", conversation_ui=True)
+    # None (the default) offers every control.
+    assert _cfg(**ui, show_session_controls=True).session_controls is None
+    narrowed = _cfg(**ui, show_session_controls=True, session_controls=["model"])
+    assert narrowed.settable_controls == ["model"]
+    # The bar off: /control may change nothing.
+    assert _cfg(**ui).settable_controls == []
+
+
+def test_session_controls_needs_show_session_controls():
+    with pytest.raises(ValueError, match="session_controls"):
+        _cfg(mode="conversation", conversation_ui=True, session_controls=["model"])
+
+
 # --- Stage 8: filesystem-isolation config reconciliation --------------------
 
 

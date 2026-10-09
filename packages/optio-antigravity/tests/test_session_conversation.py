@@ -293,6 +293,49 @@ async def test_conversation_ui_session_lifecycle(shim_install_dir, task_root, mo
 
 
 @pytest.mark.asyncio
+async def test_session_controls_allowlist_narrows_the_snapshot(shim_install_dir, task_root, mongo_db):
+    """session_controls narrows the widgetData controls snapshot, and /control
+    refuses an id it leaves out. Antigravity builds only the "model" control,
+    so an allowlist without it leaves the bar empty and the model unsettable."""
+    optio = await _make_optio(mongo_db, "agconv6")
+    try:
+        task = create_antigravity_task(
+            process_id="ag-conv-allow",
+            name="Conversation controls allowlist",
+            config=_conversation_config(
+                shim_install_dir, conversation_ui=True,
+                show_session_controls=True, session_controls=["reasoning_effort"],
+            ),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result(
+            "ag-conv-allow", session_id=None, timeout=60,
+        )
+        proc = await _wait_widget_data(optio, "ag-conv-allow")
+        assert proc["widgetData"]["showSessionControls"] is True
+        assert proc["widgetData"]["controls"] == []
+
+        upstream = proc["widgetUpstream"]
+        token = base64.b64encode(
+            f"optio:{upstream['innerAuth']['password']}".encode()
+        ).decode()
+        headers = {"Authorization": f"Basic {token}"}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{upstream['url']}/control", headers=headers,
+                json={"id": "model", "value": "claude-sonnet-4"},
+            ) as r:
+                assert r.status == 403
+                assert (await r.json())["reason"] == "not-allowed"
+
+        await conv.close()
+        proc = await _wait_terminal(optio, "ag-conv-allow")
+        assert proc["status"]["state"] == "done"
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
+@pytest.mark.asyncio
 async def test_conversation_ui_file_upload_download(shim_install_dir, task_root, mongo_db):
     """conversation_ui migrates file upload to the generic materialize path: the
     session registers an in-process upload writer (resolved by

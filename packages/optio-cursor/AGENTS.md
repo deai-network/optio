@@ -22,8 +22,9 @@ explanatory comment there; that file is the reference, not this cheatsheet.
 
 ## Shared config mixins (from `optio_agents.config_types`)
 
-`CursorTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin)` — both mixins
-keep their fields top-level, so callers write them verbatim:
+`CursorTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin,
+SessionControlsConfigMixin)` — all three mixins keep their fields top-level,
+so callers write them verbatim:
 
 * `ClaustrumConfigMixin` — the filesystem-isolation triad `fs_isolation` /
   `extra_allowed_dirs` / `delivery_type` (delivery_type mandatory while
@@ -40,6 +41,12 @@ keep their fields top-level, so callers write them verbatim:
   `save_back_if_changed`, `capture_seed`) read the transforms through the
   mixin's `seed_encrypt` / `seed_decrypt` accessors — the ONLY home of the
   seed→session fallback; snapshot capture/restore keeps `session_blob_*`.
+* `SessionControlsConfigMixin` — `show_session_controls` (the widget's
+  controls bar; cursor's only control is `model`; needs conversation_ui) and
+  the optional `session_controls` allowlist of control ids (None: all). The
+  widgetData `controls` snapshot goes through `filter_controls`, and the
+  listener's `/control` refuses an id outside `settable_controls` (403
+  `not-allowed`; nothing is settable while the bar is off).
 
 ## Binary provisioning + freshness
 

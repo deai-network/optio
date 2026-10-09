@@ -29,7 +29,7 @@ from optio_agents.account import EMPTY, accounts_to_metadata
 from optio_agents.fs_grants import fs_isolation_dirs
 from optio_agents.input_listener import serialized, start_input_listener
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
-from optio_agents.session_controls import model_control
+from optio_agents.session_controls import filter_controls, model_control
 from optio_agents.todos import TodoTracker
 from optio_agents.uploads import materialize, upload_url_token
 from optio_host.host import Host, LocalHost, ProcessHandle
@@ -520,6 +520,9 @@ async def run_antigravity_session(
                 conversation, password=listener_password,
                 download_reader=_read_download,
                 max_download_bytes=config.max_download_bytes,
+                # Only the controls the widget shows may be set: none when the
+                # controls bar is off, else the session_controls allowlist.
+                allowed_controls=config.settable_controls,
             )
             # The listener is an in-process aiohttp app (not a remote-host
             # process like ttyd), so it binds directly to the widget-tunnel
@@ -540,7 +543,8 @@ async def run_antigravity_session(
             current_model = config.model or model_list.get("default")
             # The model is the id="model" entry of the engine-neutral
             # session-controls list; antigravity exposes only this one control
-            # (switched restart-based via set_control — the next turn's --model).
+            # (switched restart-based via set_control — the next turn's --model),
+            # narrowed by the session_controls allowlist.
             control = model_control(
                 models=model_list["models"], current=current_model,
             )
@@ -552,7 +556,7 @@ async def run_antigravity_session(
                 "thinkingVerbosity": config.thinking_verbosity,
                 "showSessionControls": config.show_session_controls,
                 "nativeSpinner": config.native_spinner,
-                "controls": [control.to_dict()],
+                "controls": filter_controls([control.to_dict()], config.session_controls),
                 "showFileUpload": config.show_file_upload,
                 "maxUploadBytes": config.max_upload_bytes,
                 "fileDownload": config.file_download,

@@ -22,7 +22,11 @@ from optio_agents import (
     TOOL_VERBOSITIES,
     ToolVerbosity,
 )
-from optio_agents.config_types import BlobCryptoConfigMixin, ClaustrumConfigMixin
+from optio_agents.config_types import (
+    BlobCryptoConfigMixin,
+    ClaustrumConfigMixin,
+    SessionControlsConfigMixin,
+)
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -91,7 +95,9 @@ def _identity_resume_refresh(
 
 
 @dataclass(frozen=True, kw_only=True)
-class AntigravityTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
+class AntigravityTaskConfig(
+    ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin,
+):
     """Configuration for one optio-antigravity task instance (Stage 0).
 
     Stage 0 covers iframe/ttyd mode on the local host. Resume, seeds,
@@ -221,11 +227,11 @@ class AntigravityTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
     # --- conversation frontend parity (Stage 7) -------------------------
     # The widget's model picker preselects ``config.model`` (falling back to the
     # live ``agy models`` default); there is no separate ``default_model`` knob.
-    # Show the engine-neutral session controls in the conversation widget.
-    # agy switches model by restarting the session with --model <new> +
-    # --continue (claudecode precedent — no inline switch). Requires
+    # show_session_controls / session_controls come from
+    # SessionControlsConfigMixin. Antigravity's only control is "model": agy
+    # switches model by restarting the session with --model <new> + --continue
+    # (claudecode precedent — no inline switch). The bar requires
     # mode="conversation" and conversation_ui=True.
-    show_session_controls: bool = False
     # Replace the generic working-spinner with antigravity's on-brand native
     # spinner (agy's braille "dots") in the conversation widget. Requires
     # mode="conversation" and conversation_ui=True.
@@ -264,10 +270,12 @@ class AntigravityTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
 
     def __post_init__(self) -> None:
         # Fail fast on a missing delivery_type (or a bad extra_allowed_dirs mode)
-        # before any other check; blob transforms are all-or-nothing per pair
-        # (shared mixin validation).
+        # before any other check; blob transforms are all-or-nothing per pair;
+        # a session_controls allowlist needs show_session_controls (shared mixin
+        # validation).
         self._validate_claustrum()
         self._validate_blob_crypto()
+        self._validate_session_controls()
         if (
             self.permission_mode is not None
             and self.permission_mode not in _VALID_PERMISSION_MODES

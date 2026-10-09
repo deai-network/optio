@@ -419,6 +419,77 @@ async def test_conversation_ui_widget_data_defaults_when_ungated(
 
 
 @pytest.mark.asyncio
+async def test_session_controls_allowlist_narrows_snapshots_and_gates_control(
+    shim_install_dir, task_root, mongo_db, monkeypatch,
+):
+    """session_controls=["reasoning_effort", "mode"]: the widgetData snapshot
+    and every config_option_update-driven snapshot offer only those controls,
+    and /control refuses the hidden model control while an offered one goes
+    through to kimi."""
+    # The fake advertises model + thinking + mode, and answers each
+    # set_config_option with a full config_option_update.
+    monkeypatch.setenv("FAKE_KIMI_FULL_CONFIG_OPTIONS", "1")
+    optio = await _make_optio(mongo_db, "kkconv9")
+    try:
+        task = create_kimicode_task(
+            process_id="kk-conv-allow",
+            name="Session controls allowlist",
+            config=_conversation_config(
+                shim_install_dir,
+                conversation_ui=True,
+                show_session_controls=True,
+                session_controls=["reasoning_effort", "mode"],
+            ),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result(
+            "kk-conv-allow", session_id=None, timeout=60,
+        )
+        wd = await _wait_widget_data(optio, "kk-conv-allow")
+        assert [c["id"] for c in wd["controls"]] == ["reasoning_effort", "mode"]
+
+        upstream = (await _wait_widget_upstream(optio, "kk-conv-allow"))["widgetUpstream"]
+        url = upstream["url"]
+        auth = {
+            "Authorization": "Basic "
+            + base64.b64encode(
+                f"optio:{upstream['innerAuth']['password']}".encode()
+            ).decode(),
+        }
+        updates: list[dict] = []
+
+        def _effort_high(e: dict) -> bool:
+            if e.get("type") != "x-optio-control-update":
+                return False
+            updates.append(e)
+            return any(
+                c.get("id") == "reasoning_effort" and c.get("value") == "high"
+                for c in e.get("controls") or []
+            )
+
+        async with aiohttp.ClientSession() as s:
+            async with s.post(f"{url}/control", headers=auth,
+                              json={"id": "model", "value": "kimi-k2-thinking"}) as r:
+                assert r.status == 403
+                assert (await r.json())["reason"] == "not-allowed"
+            async with s.get(f"{url}/events", headers=auth) as events:
+                async with s.post(f"{url}/control", headers=auth,
+                                  json={"id": "reasoning_effort", "value": "high"}) as r:
+                    assert r.status == 200
+                await _read_until(events, _effort_high)
+        assert updates
+        assert all(
+            [c["id"] for c in u["controls"]] == ["reasoning_effort", "mode"]
+            for u in updates
+        )
+
+        await conv.close()
+        await _wait_terminal(optio, "kk-conv-allow")
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
+@pytest.mark.asyncio
 async def test_conversation_ui_file_upload_materialize(
     shim_install_dir, task_root, mongo_db,
 ):
@@ -486,6 +557,32 @@ def test_ui_widget_per_mode():
         config=KimiCodeTaskConfig(consumer_instructions="x", delivery_type="audit"),
     )
     assert iframe_task.ui_widget == "iframe"
+
+
+async def _read_until(resp, predicate, timeout: float = 60.0) -> dict:
+    """Parse SSE ``data:`` frames until one satisfies ``predicate``; return it."""
+    buf = b""
+
+    async def _go() -> dict:
+        nonlocal buf
+        while True:
+            chunk = await resp.content.read(1024)
+            if not chunk:
+                raise AssertionError("SSE stream ended before the awaited event")
+            buf += chunk
+            while b"\n\n" in buf:
+                frame, buf = buf.split(b"\n\n", 1)
+                data = [l[5:] for l in frame.split(b"\n") if l.startswith(b"data:")]
+                if not data:
+                    continue
+                try:
+                    obj = json.loads(b"".join(data).strip())
+                except ValueError:
+                    continue
+                if predicate(obj):
+                    return obj
+
+    return await asyncio.wait_for(_go(), timeout)
 
 
 async def _read_sse(resp, want_final: bool, timeout: float = 60.0) -> list[dict]:

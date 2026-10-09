@@ -17,7 +17,11 @@ from optio_agents import (
     TOOL_VERBOSITIES,
     ToolVerbosity,
 )
-from optio_agents.config_types import BlobCryptoConfigMixin, ClaustrumConfigMixin
+from optio_agents.config_types import (
+    BlobCryptoConfigMixin,
+    ClaustrumConfigMixin,
+    SessionControlsConfigMixin,
+)
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -64,7 +68,7 @@ def _identity_resume_refresh(config: "CursorTaskConfig") -> "CursorTaskConfig":
 
 
 @dataclass(frozen=True, kw_only=True)
-class CursorTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
+class CursorTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin):
     """Configuration for one optio-cursor task instance (Stage 0).
 
     Stage 0 covers iframe/ttyd mode on the local host. Resume, seeds,
@@ -207,12 +211,12 @@ class CursorTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
     thinking_verbosity: ThinkingVerbosity = "hidden"
 
     # --- conversation frontend parity (Stage 7) -------------------------
-    # Show the engine-neutral session controls (the model picker) in the
-    # conversation widget. Cursor switches model inline over ACP
-    # (session/set_model — grok's live-pinned mechanism; cursor
-    # runtime-unverified, see models.py) — no process restart. Requires
-    # mode="conversation" and conversation_ui=True.
-    show_session_controls: bool = False
+    # show_session_controls / session_controls come from
+    # SessionControlsConfigMixin. Cursor's only control is "model" (the
+    # model picker), switched inline over ACP (session/set_model — grok's
+    # live-pinned mechanism; cursor runtime-unverified, see models.py) — no
+    # process restart. The bar requires mode="conversation" and
+    # conversation_ui=True.
     # Replace the generic working-spinner with cursor's on-brand native spinner
     # in the conversation widget. Requires mode='conversation' and
     # conversation_ui=True.
@@ -246,6 +250,10 @@ class CursorTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
         # Shared blob-crypto pairing validation (each encrypt/decrypt pair must
         # be set together) — see BlobCryptoConfigMixin.
         self._validate_blob_crypto()
+        # Shared session-controls validation (a well-formed session_controls
+        # allowlist, only together with show_session_controls) — see
+        # SessionControlsConfigMixin.
+        self._validate_session_controls()
         if self.sandbox is not None and self.sandbox not in _VALID_SANDBOX_MODES:
             raise ValueError(
                 f"CursorTaskConfig.sandbox={self.sandbox!r} "

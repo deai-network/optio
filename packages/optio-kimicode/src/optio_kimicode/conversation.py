@@ -87,6 +87,7 @@ from optio_agents.conversation import (
     PermissionDecision,
     PermissionRequest,
 )
+from optio_agents.session_controls import filter_controls
 
 from optio_kimicode.info import AGENT_INFO
 
@@ -107,8 +108,12 @@ class KimiCodeConversation:
         agent_label: str = AGENT_INFO.slug,
         permission_gate: bool = False,
         mcp_servers: list | None = None,
+        session_controls: "list[str] | None" = None,
     ) -> None:
         self._cwd = cwd
+        # The task's session_controls allowlist (None: every control): every
+        # controls snapshot this conversation emits is narrowed to it.
+        self._session_controls = session_controls
         self._agent_label = agent_label
         # When False, session/request_permission is answered with a defensive
         # deny instead of being queued for a handler.
@@ -307,7 +312,9 @@ class KimiCodeConversation:
                 self.current_model_id = c.value
         self._event_queue.put_nowait({
             "type": "x-optio-control-update",
-            "controls": [c.to_dict() for c in controls],
+            "controls": filter_controls(
+                [c.to_dict() for c in controls], self._session_controls,
+            ),
         })
 
     # -- event fan-out -----------------------------------------------------

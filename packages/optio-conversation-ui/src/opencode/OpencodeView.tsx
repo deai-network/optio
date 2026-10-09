@@ -106,6 +106,8 @@ interface OpencodeWidgetData {
   directory?: string;
   toolVerbosity?: 'silent' | 'description-only' | 'verbose';
   showSessionControls?: boolean;
+  // The task's session_controls allowlist (control ids); null/absent: all.
+  sessionControls?: string[] | null;
   defaultModel?: string; // "providerID/modelID"
   // Models the server-side startup probe found unusable, id → reason. The
   // picker greys these with the reason as a tooltip.
@@ -134,6 +136,7 @@ export function OpencodeView(props: WidgetProps) {
       sessionID={widgetData.sessionID}
       directory={widgetData.directory ?? ''}
       showSessionControls={widgetData.showSessionControls ?? false}
+      sessionControls={widgetData.sessionControls ?? null}
       defaultModel={widgetData.defaultModel}
       disabledModels={widgetData.disabledModels}
       modelVariants={widgetData.modelVariants}
@@ -143,9 +146,9 @@ export function OpencodeView(props: WidgetProps) {
 }
 
 function OpencodeChat(
-  props: WidgetProps & { sessionID: string; directory: string; showSessionControls: boolean; defaultModel?: string; disabledModels?: Record<string, string>; modelVariants?: Record<string, string[]>; defaultEffort?: string },
+  props: WidgetProps & { sessionID: string; directory: string; showSessionControls: boolean; sessionControls: string[] | null; defaultModel?: string; disabledModels?: Record<string, string>; modelVariants?: Record<string, string[]>; defaultEffort?: string },
 ) {
-  const { sessionID, directory, widgetProxyUrl, showSessionControls, defaultModel, disabledModels, modelVariants, defaultEffort } = props; // widgetProxyUrl ends with '/' — trailing slash is load-bearing
+  const { sessionID, directory, widgetProxyUrl, showSessionControls, sessionControls, defaultModel, disabledModels, modelVariants, defaultEffort } = props; // widgetProxyUrl ends with '/' — trailing slash is load-bearing
   const variants = modelVariants ?? {};
   const disabled = disabledModels ?? {};
   const toolVerbosity = ((props.process.widgetData as any)?.toolVerbosity ?? 'description-only') as
@@ -276,6 +279,7 @@ function OpencodeChat(
   // reflect the choice immediately.
   function onControlChange(id: string, value: string | boolean) {
     if (typeof value !== 'string') return;
+    if (sessionControls !== null && !sessionControls.includes(id)) return;
     if (id === 'model') {
       const [providerID, modelID] = value.split('/');
       const next = { providerID, modelID };
@@ -389,7 +393,11 @@ function OpencodeChat(
       onInterrupt={onInterrupt}
       onPermission={onPermission}
       onFileDownload={onFileDownload}
-      controls={showSessionControls ? state.controls : undefined}
+      // Opencode builds its controls here (no server-side snapshot), so the
+      // view narrows them to the task's session_controls allowlist.
+      controls={showSessionControls
+        ? state.controls.filter((c) => sessionControls === null || sessionControls.includes(c.id))
+        : undefined}
       onControlChange={showSessionControls ? onControlChange : undefined}
       themeMode={(props as any).themeMode}
       onToggleTheme={(props as any).onToggleTheme}

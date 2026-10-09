@@ -38,6 +38,7 @@ from optio_agents import RESUME_NOTICE, SYSTEM_MESSAGE_PREFIX
 from optio_agents import seeds as _seeds
 from optio_agents.account import EMPTY, accounts_to_metadata
 from optio_agents.fs_grants import fs_isolation_dirs
+from optio_agents.session_controls import filter_controls
 from optio_agents.protocol.session import _SessionFailed, run_log_protocol_session
 from optio_agents.todos import TodoTracker, extract_acp_todo
 from optio_agents.uploads import materialize, upload_url_token
@@ -541,6 +542,8 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
     if config.mode == "conversation":
         conversation = KimiCodeConversation(
             cwd=host.workdir, permission_gate=config.permission_gate,
+            # Narrows the config_option_update-driven controls snapshots.
+            session_controls=config.session_controls,
         )
     # Per-task conversation listener (conversation_ui only). Started in the
     # body after publish_result, torn down in the finally block.
@@ -660,6 +663,9 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                 conversation, password=listener_password,
                 download_reader=_read_download,
                 max_download_bytes=config.max_download_bytes,
+                # Only the controls the widget shows may be set: none when the
+                # controls bar is off, else the session_controls allowlist.
+                allowed_controls=config.settable_controls,
             )
             # The listener is an in-process aiohttp app (not a remote-host
             # process), so it binds directly to the widget-tunnel interface and
@@ -677,7 +683,8 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
             # (select). kimi is the one engine that surfaces more than just the
             # model control. config.model / config.reasoning_effort override the
             # respective control's initial value; otherwise the live current
-            # values are shown.
+            # values are shown. The session_controls allowlist narrows the
+            # snapshot (as it does every config_option_update re-projection).
             controls = kimi_models.parse_all_controls(
                 conversation.session_config_options,
                 default_model=config.model,
@@ -691,7 +698,9 @@ async def run_kimicode_session(ctx: ProcessContext, config: KimiCodeTaskConfig) 
                 "thinkingVerbosity": config.thinking_verbosity,
                 "showSessionControls": config.show_session_controls,
                 "nativeSpinner": config.native_spinner,
-                "controls": [c.to_dict() for c in controls],
+                "controls": filter_controls(
+                    [c.to_dict() for c in controls], config.session_controls,
+                ),
                 "showFileUpload": config.show_file_upload,
                 "maxUploadBytes": config.max_upload_bytes,
                 "fileDownload": config.file_download,

@@ -10,9 +10,12 @@ responder when argv contains ``app-server`` (no tmux/ttyd in this mode).
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import pathlib
 import time as _time
 
+import aiohttp
 import pytest
 
 from optio_core.lifecycle import Optio
@@ -57,6 +60,46 @@ async def _wait_widget_data(optio: Optio, process_id: str, timeout: float = 60.0
             return proc["widgetData"]
         await asyncio.sleep(0.05)
     raise AssertionError(f"{process_id} never set widgetData in {timeout}s")
+
+
+async def _wait_widget_upstream(optio: Optio, process_id: str, timeout: float = 60.0) -> dict:
+    """Poll the process doc until widgetUpstream is set; return it."""
+    end = _time.monotonic() + timeout
+    while _time.monotonic() < end:
+        proc = await optio.get_process(process_id)
+        if proc is not None and proc.get("widgetUpstream"):
+            return proc["widgetUpstream"]
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"{process_id} never set widgetUpstream in {timeout}s")
+
+
+def _basic(password: str) -> dict:
+    token = base64.b64encode(f"optio:{password}".encode()).decode()
+    return {"Authorization": f"Basic {token}"}
+
+
+async def _read_until(resp, predicate, timeout: float = 60.0) -> dict:
+    """Parse SSE data frames from an open aiohttp response until one satisfies
+    ``predicate``; return it. Keep-alive comment frames carry no data line."""
+    buf = b""
+
+    async def _go():
+        nonlocal buf
+        while True:
+            chunk = await resp.content.read(1024)
+            if not chunk:
+                raise AssertionError("SSE stream ended before a match")
+            buf += chunk
+            while b"\n\n" in buf:
+                frame, buf = buf.split(b"\n\n", 1)
+                data = [l[5:] for l in frame.split(b"\n") if l.startswith(b"data:")]
+                if not data:
+                    continue
+                event = json.loads(b"".join(data).strip())
+                if predicate(event):
+                    return event
+
+    return await asyncio.wait_for(_go(), timeout)
 
 
 def _conversation_config(shim_install_dir: pathlib.Path, **kw) -> CodexTaskConfig:
@@ -254,6 +297,52 @@ async def test_conversation_ui_publishes_widget(shim_install_dir, task_root, mon
 
         await conv.close()
         await _wait_terminal(optio, "cx-conv-ui")
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
+@pytest.mark.asyncio
+async def test_conversation_ui_session_controls_allowlist(shim_install_dir, task_root, mongo_db):
+    """session_controls=["model"]: widgetData offers only the model picker (the
+    fake's default model is graded, so the effort slider would be there too),
+    /control refuses the hidden reasoning_effort, and the snapshot re-emitted
+    on a model switch stays narrowed."""
+    optio = await _make_optio(mongo_db, "cxconvallow")
+    try:
+        task = create_codex_task(
+            process_id="cx-conv-allow",
+            name="Conversation controls allowlist",
+            config=_conversation_config(
+                shim_install_dir, conversation_ui=True,
+                show_session_controls=True, session_controls=["model"],
+            ),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result(
+            "cx-conv-allow", session_id=None, timeout=60,
+        )
+        wd = await _wait_widget_data(optio, "cx-conv-allow")
+        assert [c["id"] for c in wd["controls"]] == ["model"]
+
+        upstream = await _wait_widget_upstream(optio, "cx-conv-allow")
+        url, headers = upstream["url"], _basic(upstream["innerAuth"]["password"])
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{url}/control", headers=headers, json={
+                    "id": "reasoning_effort", "value": "high"}) as r:
+                assert r.status == 403
+                assert (await r.json())["reason"] == "not-allowed"
+            async with session.get(f"{url}/events", headers=headers) as events:
+                async with session.post(f"{url}/control", headers=headers, json={
+                        "id": "model", "value": "gpt-5.4-mini"}) as r:
+                    assert r.status == 200
+                upd = await _read_until(
+                    events, lambda e: e.get("type") == "x-optio-control-update",
+                )
+                assert [c["id"] for c in upd["controls"]] == ["model"]
+                assert upd["controls"][0]["value"] == "gpt-5.4-mini"
+
+        await conv.close()
+        await _wait_terminal(optio, "cx-conv-allow")
     finally:
         await optio.shutdown(grace_seconds=1.0)
 

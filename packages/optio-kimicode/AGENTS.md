@@ -30,6 +30,16 @@ Frozen kw-only dataclass composing the shared mixins from
 
   Per pair, setting one member without the other is a `ValueError` at
   construction (`_validate_blob_crypto` in `__post_init__`).
+* `SessionControlsConfigMixin` — the conversation widget's controls bar:
+  `show_session_controls` (requires conversation mode + `conversation_ui`) and
+  the optional `session_controls` allowlist of control ids (None: all). kimi's
+  controls are `model`, `reasoning_effort` (the thinking slider) and `mode`.
+  Every controls snapshot — widgetData `controls` and each
+  `x-optio-control-update` the conversation re-projects from a
+  `config_option_update` — goes through `filter_controls`, and the listener's
+  `/control` refuses an id outside `settable_controls` (403 `not-allowed`;
+  nothing is settable while the bar is off). The session's own startup
+  `set_control("mode", …)` pin is internal and not gated.
 
 ## Seed lifecycle
 

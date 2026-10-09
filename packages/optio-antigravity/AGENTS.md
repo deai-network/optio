@@ -24,8 +24,9 @@ explanatory comment there; that file is the reference, not this cheatsheet.
 
 ## Shared config mixins (from `optio_agents.config_types`)
 
-`AntigravityTaskConfig(BlobCryptoConfigMixin, ClaustrumConfigMixin)` — both
-mixins keep their fields top-level, so callers write them verbatim:
+`AntigravityTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin,
+SessionControlsConfigMixin)` — the mixins keep their fields top-level, so
+callers write them verbatim:
 
 * `ClaustrumConfigMixin` — the filesystem-isolation triad `fs_isolation` /
   `extra_allowed_dirs` / `delivery_type` (Landlock-only claustrum here:
@@ -42,6 +43,12 @@ mixins keep their fields top-level, so callers write them verbatim:
   `save_back_if_changed`, `capture_seed`) read the transforms through the
   mixin's `seed_encrypt` / `seed_decrypt` accessors — the ONLY home of the
   seed→session fallback; snapshot save/restore keeps `session_blob_*`.
+* `SessionControlsConfigMixin` — the conversation widget's controls bar:
+  `show_session_controls` (requires conversation mode + `conversation_ui`) and
+  the optional `session_controls` allowlist of control ids (None: all).
+  Antigravity's only control is `model`; the widgetData `controls` snapshot
+  is filtered by the allowlist and the listener's /control refuses any other
+  id (403 `not-allowed`, everything while the bar is off).
 
 ## Seed lifecycle
 
