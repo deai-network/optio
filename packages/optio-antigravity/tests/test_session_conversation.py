@@ -250,6 +250,8 @@ async def test_conversation_ui_session_lifecycle(shim_install_dir, task_root, mo
                 "category": "model",
                 "description": "What model is powering this conversation?",
                 "disabled": False,
+                # Model descriptions read in the open list, not in tooltips.
+                "inlineDescriptions": True,
                 "options": [
                     {"value": "gemini-2.5-pro", "label": "gemini-2.5-pro", "disabled": False},
                     {"value": "gemini-2.5-flash", "label": "gemini-2.5-flash", "disabled": False},
