@@ -22,6 +22,11 @@ function option(text: string): HTMLElement {
   return Array.from(document.querySelectorAll<HTMLElement>('.ant-select-item-option')).find((o) => o.textContent === text)!;
 }
 
+/** Where a pointer on a control lands: the tooltip anchor vultus wraps it in. */
+function hoverTarget(id: string): HTMLElement {
+  return screen.getByTestId(`control-${id}`).querySelector<HTMLElement>('span[style]')!;
+}
+
 function base(onControlChange: any) {
   return {
     state: initialChatState, closed: false, busy: false,
@@ -66,17 +71,20 @@ describe('SessionControls renderer', () => {
     expect(screen.getByTestId('control-reasoning_effort')).toBeTruthy();
   });
 
-  it('slider change fires onControlChange(id, level)', () => {
+  it('slider change fires onControlChange(id, level), once per move', () => {
     const cb = vi.fn();
     const sliderControls: SessionControl[] = [
       { id: 'reasoning_effort', kind: 'slider', label: 'Effort', value: 'low',
         levels: ['low', 'medium', 'high'] },
     ];
     render(<ConversationView {...{ ...base(cb), controls: sliderControls }} />);
-    // The handle carries role="slider"; ArrowRight advances to the next mark,
-    // standing in for a drag — the branch maps the new index back to its level.
-    // rc-slider's key handler reads event.keyCode, so pass it for jsdom.
+    // The handle carries role="slider"; ArrowRight advances to the next mark
+    // on keydown, and the move ends (one request) on keyup, as with a drag's
+    // release. rc-slider's key handler reads event.keyCode, so pass it for jsdom.
     fireEvent.keyDown(screen.getByRole('slider'), { key: 'ArrowRight', keyCode: 39 });
+    expect(cb).not.toHaveBeenCalled();
+    fireEvent.keyUp(screen.getByRole('slider'), { key: 'ArrowRight', keyCode: 39 });
+    expect(cb).toHaveBeenCalledTimes(1);
     expect(cb).toHaveBeenCalledWith('reasoning_effort', 'medium');
   });
 
@@ -90,7 +98,7 @@ describe('SessionControls renderer', () => {
     // .ant-slider inside it.
     expect(screen.getByTestId('control-reasoning_effort').querySelector('.ant-slider')!.className)
       .toContain('ant-slider-disabled');
-    fireEvent.mouseEnter(screen.getByText('Effort'));
+    fireEvent.mouseEnter(hoverTarget('reasoning_effort'));
     await waitFor(() => expect(screen.getByText('always on')).toBeTruthy());
   });
 
@@ -101,9 +109,9 @@ describe('SessionControls renderer', () => {
     ];
     render(<ConversationView {...{ ...base(vi.fn()), controls: locked }} />);
     // grayed: antd Segmented carries the disabled class
-    expect(screen.getByTestId('control-thinking').className).toContain('ant-segmented-disabled');
-    // hover the (enabled) labeled wrapper -> tooltip explains why
-    fireEvent.mouseEnter(screen.getByText('Thinking'));
+    expect(screen.getByTestId('control-thinking').querySelector('.ant-segmented-disabled')).toBeTruthy();
+    // hover the control -> its tooltip explains why
+    fireEvent.mouseEnter(hoverTarget('thinking'));
     await waitFor(() => expect(screen.getByText('always on')).toBeTruthy());
   });
 });
@@ -153,5 +161,87 @@ describe('select controls as vultus one-of selects', () => {
     expect(cb).not.toHaveBeenCalled();
     fireEvent.click(screen.getAllByRole('button').find((b) => b.textContent?.includes('OK'))!);
     await waitFor(() => expect(cb).toHaveBeenCalledWith('permission_mode', 'bypassPermissions'));
+  });
+});
+
+describe('compact controls bar', () => {
+  const described: SessionControl[] = [
+    { id: 'wide', kind: 'boolean', label: 'Wide', value: false,
+      description: 'Should the agent use the wide layout?' },
+    { id: 'thinking', kind: 'segmented', label: 'Thinking', value: 'low', levels: ['low', 'high'],
+      description: 'How much should the agent think?' },
+    { id: 'reasoning_effort', kind: 'slider', label: 'Effort', value: 'low',
+      levels: ['low', 'medium', 'high'], description: 'How hard should the model think?' },
+  ];
+  const view = (cb = vi.fn()) => render(<ConversationView {...{ ...base(cb), controls: described }} />);
+
+  it('a boolean control is a switch named by its label; a click asks for the other value', () => {
+    const cb = vi.fn();
+    view(cb);
+    fireEvent.click(screen.getByRole('switch', { name: 'Wide' }));
+    expect(cb).toHaveBeenCalledWith('wide', true);
+  });
+
+  it('a boolean control shows its description on hover', async () => {
+    view();
+    fireEvent.mouseEnter(hoverTarget('wide'));
+    await waitFor(() => expect(screen.getByText('Should the agent use the wide layout?')).toBeTruthy());
+  });
+
+  it('a segmented control is named by its label and described by its description', () => {
+    view();
+    const group = within(screen.getByTestId('control-thinking')).getByLabelText('Thinking');
+    expect(group.getAttribute('aria-description')).toContain('How much should the agent think?');
+  });
+
+  it("the slider's handle is named by the label and shows the description on hover", async () => {
+    view();
+    const handle = screen.getByRole('slider', { name: 'Effort' });
+    fireEvent.mouseEnter(handle);
+    await waitFor(() => expect(screen.getByText('How hard should the model think?')).toBeTruthy());
+  });
+
+  describe('labels', () => {
+    const widths = (scroll: number, client: number) => {
+      const own = (el: HTMLElement) => el.dataset.testid === 'session-toolbar';
+      const scrollDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollWidth');
+      const clientDesc = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientWidth');
+      Object.defineProperty(HTMLElement.prototype, 'scrollWidth', {
+        configurable: true,
+        // Without the compact class the labels take room: the content is wider.
+        get() { return own(this) ? (this.classList.contains('optio-cc-compact') ? client - 1 : scroll) : 0; },
+      });
+      Object.defineProperty(HTMLElement.prototype, 'clientWidth', {
+        configurable: true, get() { return own(this) ? client : 0; },
+      });
+      return () => {
+        if (scrollDesc) Object.defineProperty(HTMLElement.prototype, 'scrollWidth', scrollDesc);
+        if (clientDesc) Object.defineProperty(HTMLElement.prototype, 'clientWidth', clientDesc);
+      };
+    };
+
+    it('each control is led by its label', () => {
+      view();
+      const labels = Array.from(document.querySelectorAll('.optio-cc-control-label')).map((l) => l.textContent);
+      expect(labels).toEqual(['Wide', 'Thinking', 'Effort']);
+    });
+
+    it('shown while the toolbar fits', () => {
+      const restore = widths(400, 600);
+      try {
+        view();
+        expect(screen.getByTestId('session-toolbar').classList.contains('optio-cc-compact')).toBe(false);
+      } finally { restore(); }
+    });
+
+    it('hidden (compact) when they would overflow it; the controls keep their names', () => {
+      const restore = widths(800, 600);
+      try {
+        view();
+        expect(screen.getByTestId('session-toolbar').classList.contains('optio-cc-compact')).toBe(true);
+        expect(screen.getByRole('switch', { name: 'Wide' })).toBeTruthy();
+        expect(screen.getByRole('slider', { name: 'Effort' })).toBeTruthy();
+      } finally { restore(); }
+    });
   });
 });

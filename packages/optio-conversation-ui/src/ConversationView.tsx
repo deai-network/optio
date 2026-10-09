@@ -1,7 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Input, Segmented, Slider, Spin, Switch, Tooltip, theme } from 'antd';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { Alert, Button, Input, Spin, Switch, Tooltip, theme } from 'antd';
 import type { GlobalToken } from 'antd';
-import { ActionButton, CombinedActionButton, OneOfSelect, denyWithReason, useOneOfField, type ActionStatus } from 'vultus-antd';
+import {
+  ActionButton, BoolSwitch, CombinedActionButton, OneOfSegmented, OneOfSelect, OneOfSlider,
+  denyWithReason, useBoolField, useOneOfField, type ActionStatus,
+} from 'vultus-antd';
 import type { TextAreaRef } from 'antd/es/input/TextArea';
 import type { ChatItem, ChatState, SessionControl } from './chat.js';
 import { AnswerBlock } from './AnswerBlock.js';
@@ -363,6 +366,18 @@ const SEND_BUTTON_WIDTH = 222;
 // other flex parents elsewhere) is told to fill this specific slot, with
 // the main half absorbing the extra room and the chevron half staying its
 // natural size.
+// The session controls' labels hide when the toolbar would overflow with
+// them (ConversationView measures it); the controls keep them as their
+// accessible names.
+const COMPACT_STYLE_ID = 'optio-cc-compact-style';
+function ensureCompactStyle(): void {
+  if (typeof document === 'undefined' || document.getElementById(COMPACT_STYLE_ID)) return;
+  const el = document.createElement('style');
+  el.id = COMPACT_STYLE_ID;
+  el.textContent = '.optio-cc-compact .optio-cc-control-label { display: none; }';
+  document.head.appendChild(el);
+}
+
 const SEND_BUTTON_STYLE_ID = 'optio-cc-send-button-style';
 function ensureSendButtonStyle(): void {
   if (typeof document === 'undefined' || document.getElementById(SEND_BUTTON_STYLE_ID)) return;
@@ -894,29 +909,34 @@ function withTimeLabel(
   );
 }
 
-// A select control as vultus's one-of field (OneOfSelect): each option's
-// description on hover (markdown), a disabled one with its reason, primary /
-// danger options styled as action variants, and an option's `confirm`
-// question asked before switching to it. The control's own description and
-// the current option's describe the closed select.
-function SessionSelect({ control: c, disabled, onChange }: {
-  control: SessionControl;
-  disabled: boolean;
-  onChange: (id: string, value: string | boolean) => void;
-}) {
+// A control's enabledness for a vultus field: disabled while the session is
+// busy or closed (no reason), or because the engine marked it unchangeable
+// (its reason).
+function controlEnabled(c: SessionControl, disabled: boolean) {
+  return disabled ? (c.whyDisabled ? denyWithReason(c.whyDisabled) : false) : true;
+}
+
+// A select, segmented or slider control as vultus's one-of field: a select's
+// options with their descriptions (markdown, on hover; a disabled one with
+// its reason), primary / danger variants and an option's `confirm` question
+// asked before switching to it; a segmented or slider control's levels,
+// capitalized. The control's own description describes the field.
+function useControlOneOf(c: SessionControl, disabled: boolean, onChange: (id: string, value: string | boolean) => void) {
   const options = c.options ?? [];
-  const field = useOneOfField<string>({
+  return useOneOfField<string>({
     id: c.id,
     label: c.label,
     description: c.description,
-    enabled: disabled ? (c.whyDisabled ? denyWithReason(c.whyDisabled) : false) : true,
-    choices: options.map((o) => ({
-      value: o.value,
-      label: o.label,
-      description: o.description,
-      enabled: o.disabled ? (o.whyDisabled ? denyWithReason(o.whyDisabled) : false) : true,
-      variant: o.variant,
-    })),
+    enabled: controlEnabled(c, disabled),
+    choices: c.kind === 'select'
+      ? options.map((o) => ({
+        value: o.value,
+        label: o.label,
+        description: o.description,
+        enabled: o.disabled ? (o.whyDisabled ? denyWithReason(o.whyDisabled) : false) : true,
+        variant: o.variant,
+      }))
+      : (c.levels ?? []).map((l) => ({ value: l, label: capitalize(l) })),
     value: c.value === undefined || c.value === null ? '' : String(c.value),
     commit: {
       fire: (next) => onChange(c.id, next),
@@ -926,16 +946,49 @@ function SessionSelect({ control: c, disabled, onChange }: {
       },
     },
   });
+}
+
+function SessionOneOf({ control: c, disabled, onChange }: {
+  control: SessionControl;
+  disabled: boolean;
+  onChange: (id: string, value: string | boolean) => void;
+}) {
+  const field = useControlOneOf(c, disabled, onChange);
   return (
     <span data-testid={`control-${c.id}`} style={{ alignSelf: 'center' }}>
-      <OneOfSelect field={field} size="small" style={{ minWidth: 180 }} />
+      {c.kind === 'segmented' ? <OneOfSegmented field={field} size="small" />
+        : c.kind === 'slider' ? <OneOfSlider field={field} style={{ minWidth: 160 }} markStyle={{ fontSize: 10 }} />
+          : <OneOfSelect field={field} size="small" style={{ minWidth: 180 }} />}
     </span>
   );
 }
 
-// Generic renderer for engine-neutral session controls. Each control renders by
-// kind: boolean -> <Switch>, segmented -> <Segmented>, slider -> <Slider>,
-// select -> vultus OneOfSelect (SessionSelect). Every control carries a
+function SessionBool({ control: c, disabled, onChange }: {
+  control: SessionControl;
+  disabled: boolean;
+  onChange: (id: string, value: string | boolean) => void;
+}) {
+  const field = useBoolField({
+    id: c.id,
+    label: c.label,
+    description: c.description,
+    enabled: controlEnabled(c, disabled),
+    value: Boolean(c.value),
+    commit: { fire: (next) => onChange(c.id, next) },
+  });
+  return (
+    <span data-testid={`control-${c.id}`} style={{ alignSelf: 'center' }}>
+      <BoolSwitch field={field} size="small" />
+    </span>
+  );
+}
+
+// Engine-neutral session controls, each a vultus field widget: boolean ->
+// BoolSwitch, segmented -> OneOfSegmented, slider -> OneOfSlider (one request
+// per move), select -> OneOfSelect. Each explains itself on hover (its
+// description; a disabled one its reason) and is led by its muted label
+// (`optio-cc-control-label`, hidden when the toolbar is compact; the widget
+// keeps the label as its accessible name). Every control carries a
 // `control-<id>` data-testid.
 function SessionControls({
   controls, disabled, onChange,
@@ -951,79 +1004,15 @@ function SessionControls({
         // A control the engine marked unchangeable (e.g. a select/segmented
         // collapsed to one option) is grayed and explains itself on hover.
         const dis = disabled || Boolean(c.disabled);
-        let node: React.ReactNode;
-        if (c.kind === 'boolean') {
-          node = (
-            <Switch
-              data-testid={`control-${c.id}`}
-              size="small"
-              checked={Boolean(c.value)}
-              disabled={dis}
-              onChange={(v) => onChange(c.id, v)}
-            />
-          );
-        } else if (c.kind === 'segmented') {
-          node = (
-            <Segmented
-              data-testid={`control-${c.id}`}
-              size="small"
-              value={String(c.value)}
-              disabled={dis}
-              options={(c.levels ?? []).map((l) => ({
-                label: l.charAt(0).toUpperCase() + l.slice(1),
-                value: l,
-              }))}
-              onChange={(v) => onChange(c.id, String(v))}
-            />
-          );
-        } else if (c.kind === 'slider') {
-          const levels = c.levels ?? [];
-          const idx = Math.max(0, levels.indexOf(String(c.value)));
-          // antd's Slider (rc-slider) swallows data-testid rather than placing
-          // it on the rendered root, so hang the control-<id> testid on a
-          // wrapping span; the slider's disabled/handle state lives on the
-          // .ant-slider inside it.
-          node = (
-            <span
-              data-testid={`control-${c.id}`}
-              style={{ display: 'inline-flex', minWidth: 160, alignSelf: 'center', marginLeft: 10 }}
-            >
-              <Slider
-                style={{ flex: 1 }}
-                min={0} max={Math.max(0, levels.length - 1)} step={null}
-                marks={Object.fromEntries(
-                  levels.map((l, i) => [
-                    i,
-                    { style: { fontSize: 10, whiteSpace: 'nowrap' }, label: capitalize(l) },
-                  ]),
-                )}
-                value={idx} disabled={dis}
-                onChange={(v: number) => onChange(c.id, levels[v])}
-              />
-            </span>
-          );
-        } else {
-          node = <SessionSelect control={c} disabled={dis} onChange={onChange} />;
-        }
-        // Prefix each control with its (muted) label so "Thinking"/"Mode" are
-        // named — a bare Select/Segmented/Switch shows only its value.
-        const labeled = (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-            <span style={{ fontSize: 12, opacity: 0.65, whiteSpace: 'nowrap' }}>
+        return (
+          <span key={c.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span className="optio-cc-control-label" style={{ fontSize: 12, opacity: 0.65, whiteSpace: 'nowrap' }}>
               {c.label}
             </span>
-            {node}
+            {c.kind === 'boolean'
+              ? <SessionBool control={c} disabled={dis} onChange={onChange} />
+              : <SessionOneOf control={c} disabled={dis} onChange={onChange} />}
           </span>
-        );
-        // A disabled antd control emits no hover events, so hang the tooltip on
-        // the (enabled) labeled wrapper — hovering the label/name still fires.
-        // A select explains itself (vultus OneOfSelect's own tooltip).
-        return c.disabled && c.whyDisabled && c.kind !== 'select' ? (
-          <Tooltip key={c.id} title={c.whyDisabled}>
-            {labeled}
-          </Tooltip>
-        ) : (
-          <span key={c.id}>{labeled}</span>
         );
       })}
     </>
@@ -1095,6 +1084,22 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
   }, [counting]);
   const inputRef = useRef<TextAreaRef>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // The session controls' labels hide (optio-cc-compact) when the toolbar
+  // would overflow with them: measured without the class and put back if
+  // needed, before paint, on every resize and controls change.
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = toolbarRef.current;
+    if (!el) return undefined;
+    const fit = () => {
+      el.classList.remove('optio-cc-compact');
+      if (el.scrollWidth > el.clientWidth) el.classList.add('optio-cc-compact');
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [props.controls]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const stickToBottomRef = useRef(true);
@@ -1161,6 +1166,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
     ensureInterruptedStyle();
     ensureBandStyle();
     ensureSendButtonStyle();
+    ensureCompactStyle();
     inputRef.current?.focus();
     const timers = [100, 400, 1000].map((ms) => setTimeout(() => inputRef.current?.focus(), ms));
     return () => timers.forEach(clearTimeout);
@@ -1855,7 +1861,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
           />
           {/* Row 2: a single-height toolbar — model + attach on the left,
               Send/Interrupt pushed right. All size="small" so heights match. */}
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <div ref={toolbarRef} data-testid="session-toolbar" style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             {props.controls && props.onControlChange ? (
               <SessionControls
                 controls={props.controls}
