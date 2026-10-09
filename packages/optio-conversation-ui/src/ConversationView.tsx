@@ -582,47 +582,6 @@ function InterruptAndSendBoltIcon() {
   );
 }
 
-// Colors come from the antd theme (ConfigProvider algorithm), so the widget
-// follows the host app's light/dark switch instead of a hardcoded palette.
-function kvCell(token: GlobalToken): React.CSSProperties {
-  return {
-    border: `1px solid ${token.colorWarningBorder}`,
-    padding: '2px 6px',
-    verticalAlign: 'top',
-    fontFamily: 'monospace',
-    fontSize: 12,
-  };
-}
-
-// Render a tool-permission input object as a key→value table. Falls back to a
-// JSON string for non-object inputs (a bare string/array argument).
-function renderInputKV(input: unknown, token: GlobalToken): React.ReactNode {
-  const cell = kvCell(token);
-  if (input && typeof input === 'object' && !Array.isArray(input)) {
-    const entries = Object.entries(input as Record<string, unknown>);
-    if (entries.length === 0) return null;
-    return (
-      <table style={{ borderCollapse: 'collapse', width: 'auto', maxWidth: '100%' }}>
-        <tbody>
-          {entries.map(([k, v]) => (
-            <tr key={k}>
-              <td style={{ ...cell, fontWeight: 600, whiteSpace: 'nowrap', color: token.colorWarningText }}>{k}</td>
-              <td style={{ ...cell, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', color: token.colorTextSecondary }}>
-                {typeof v === 'string' ? v : JSON.stringify(v)}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    );
-  }
-  return (
-    <div style={{ fontFamily: 'monospace', fontSize: 12, color: token.colorTextSecondary, overflowWrap: 'anywhere' }}>
-      {JSON.stringify(input)}
-    </div>
-  );
-}
-
 // Ant Design X experiment: a tool row's details as X CodeHighlighter blocks.
 // A shell command is bash, an edit a diff, a written file in its file's
 // language; the remaining input fields (or all of them, for any other tool)
@@ -650,6 +609,13 @@ function looksLikeJson(text: string): boolean {
 function editDiff(oldText: string, newText: string): string {
   const mark = (prefix: string, text: string) => text.split('\n').map((l) => prefix + l).join('\n');
   return `${mark('- ', oldText)}\n${mark('+ ', newText)}`;
+}
+
+// A tool input's `description` field, when it has one.
+function inputDescription(input: unknown): string | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const d = (input as Record<string, unknown>).description;
+  return typeof d === 'string' && d !== '' ? d : undefined;
 }
 
 function renderToolInput(input: unknown, preview: string | undefined): React.ReactNode {
@@ -694,28 +660,6 @@ function renderToolInput(input: unknown, preview: string | undefined): React.Rea
   // No input fields (kimi/cursor permission-less tool calls carry their
   // detail only in the ACP content text): the preview.
   if (preview) return <CodeBlock lang="log" title="preview" maxHeight={TOOL_CODE_MAX_HEIGHT}>{preview}</CodeBlock>;
-  return null;
-}
-
-// Render a tool/permission's detail: the `input` KV table when it has fields,
-// else the `content`-derived text `preview`. kimi/cursor permission cards and
-// lazy/pending tool_calls carry NO rawInput — their detail lives only in the
-// ACP `content` text (see acp/events.ts acpContentText), so without this the
-// card shows just the tool name (the empty-card bug). Null when neither exists.
-function renderDetail(
-  input: unknown,
-  preview: string | undefined,
-  token: GlobalToken,
-): React.ReactNode {
-  const kv = renderInputKV(input, token);
-  if (kv) return kv;
-  if (preview) {
-    return (
-      <div style={{ fontFamily: 'monospace', fontSize: 12, color: token.colorTextSecondary, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-        {preview}
-      </div>
-    );
-  }
   return null;
 }
 
@@ -1784,10 +1728,13 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               gap: 6,
             }}
           >
+            {/* The input as X code blocks, like an expanded tool row; its
+                description (left out there) heads the card instead. */}
             <div>
               Permission requested: <strong>{item.toolName}</strong>
+              {inputDescription(item.input) ? ` · ${inputDescription(item.input)}` : ''}
             </div>
-            {renderDetail(item.input, item.preview, token)}
+            {renderToolInput(item.input, item.preview)}
             <div style={{ display: 'flex', gap: 8 }}>
               <Button
                 size="small"
