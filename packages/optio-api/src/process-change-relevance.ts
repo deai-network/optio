@@ -41,6 +41,16 @@ export function toProcessChange(ev: ChangeStreamDocument<Document>): ProcessChan
         doc: (ev.fullDocument ?? {}) as Record<string, unknown>,
       };
     case 'update': {
+      const trimmed = ev as unknown as { changedFields?: string[]; sessionValue?: unknown };
+      if (Array.isArray(trimmed.changedFields)) {
+        // Cut down by the change stream's own pipeline (process-change-hub.ts).
+        return {
+          op: 'update',
+          id: String(ev.documentKey._id),
+          fields: new Set(trimmed.changedFields.map(topLevel)),
+          values: 'sessionValue' in trimmed ? { originatingSessionId: trimmed.sessionValue } : {},
+        };
+      }
       const desc = ev.updateDescription ?? {};
       const values = (desc.updatedFields ?? {}) as Record<string, unknown>;
       const fields = new Set<string>([

@@ -408,14 +408,14 @@ Every stream (list, tree, multi-tree, session events) subscribes to the
 shared per MongoClient, database name and prefix). The hub holds one MongoDB
 change stream on `{prefix}_processes` while it has subscribers and asks a
 stream to re-read only for a change relevant to it, judged from the change
-event alone (no `fullDocument` lookup): the list for any insert, a shown
+event alone (no `fullDocument` lookup; a `$project` in the change stream's own pipeline cuts each event down to the operation, the id, the changed field names, an insert's `rootId` / `originatingSessionId` and an update's new `originatingSessionId`, so no log lines or documents reach the API): the list for any insert, a shown
 process's sent fields, or any `metadata` change; a tree for an insert under its
 root or any change of a member; session events for a process joining the
 session or a member's `sessionEvents`. While a stream's read is in flight every
 change counts as relevant. A stream re-reads at most once a second (the first
 change after a quiet second at once). Where change streams are unavailable (a
-standalone mongod: no `setName` in `hello`, or error 40573; no permission to
-watch: 13) the hub polls -- every stream re-reads once a second -- and tries
+standalone mongod refuses with error 40573; no permission to watch: 13; a
+sharded cluster's mongos watches fine) the hub polls -- every stream re-reads once a second -- and tries
 again every 5 minutes; after any other error it polls and reopens with backoff
 (1 s doubling to 30 s); every reopen makes every stream re-read once.
 `OPTIO_API_CHANGE_STREAMS=off` makes every hub poll. Event shapes are unchanged.

@@ -215,19 +215,42 @@ function unavailable(err: unknown): boolean {
   return typeof code === 'number' && UNAVAILABLE_CODES.has(code);
 }
 
-/** A ProcessChangeSource over `{prefix}_processes` of `db`. */
+/**
+ * Runs inside MongoDB: each change is cut down to what the relevance rules
+ * use -- operation, id, the changed top-level field names, an insert's or
+ * replace's `rootId` and `originatingSessionId`, an update's new
+ * `originatingSessionId` -- so log lines, progress messages and whole new
+ * documents never reach the API. `_id` (the resume token) stays.
+ */
+const TRIM_CHANGES: Document[] = [{
+  $project: {
+    operationType: 1,
+    documentKey: 1,
+    'fullDocument.rootId': 1,
+    'fullDocument.originatingSessionId': 1,
+    changedFields: {
+      $concatArrays: [
+        { $map: { input: { $objectToArray: { $ifNull: ['$updateDescription.updatedFields', {}] } }, in: '$$this.k' } },
+        { $ifNull: ['$updateDescription.removedFields', []] },
+        { $map: { input: { $ifNull: ['$updateDescription.truncatedArrays', []] }, in: '$$this.field' } },
+      ],
+    },
+    sessionValue: '$updateDescription.updatedFields.originatingSessionId',
+  },
+}];
+
+/** A ProcessChangeSource over `{prefix}_processes` of `db`. Whether the
+ *  server can watch is MongoDB's answer to the first read (a standalone
+ *  mongod refuses with 40573; a replica set or a sharded cluster accepts). */
 export function createMongoProcessChangeSource(db: Db, prefix: string): ProcessChangeSource {
   return {
     async open(onChange, onError) {
       const hello = await db.admin().command({ hello: 1 });
-      if (!hello.setName) {
-        throw new ChangeStreamsUnavailable('MongoDB is not a replica set; change streams are unavailable');
-      }
       // From the cluster time of `hello`: nothing written after open()
       // resolves is missed.
       const startAtOperationTime = hello.operationTime as Timestamp | undefined;
       const stream: ChangeStream<Document> = db.collection(`${prefix}_processes`).watch(
-        [], startAtOperationTime ? { startAtOperationTime } : {},
+        TRIM_CHANGES, startAtOperationTime ? { startAtOperationTime } : {},
       );
       let closed = false;
       const deliver = (ev: ChangeStreamDocument<Document> | null) => {

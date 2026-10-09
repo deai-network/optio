@@ -156,8 +156,13 @@ with an explicit migration message.
 
 ## SSE Streams
 
-- `GET /api/processes/:prefix/stream` — live flat process list, polls every 1 s. Accepts the same optional `?metadataFilter=<URL-encoded JSON>` query param as the REST list endpoint; the legacy `?metadata.<key>=<value>` form returns 400.
-- `GET /api/processes/:prefix/:id/tree/stream` — live process tree with log deltas, polls every 1 s
+- `GET /api/processes/:prefix/stream` — live flat process list. Accepts the same optional `?metadataFilter=<URL-encoded JSON>` query param as the REST list endpoint; the legacy `?metadata.<key>=<value>` form returns 400.
+- `GET /api/processes/:prefix/:id/tree/stream` — live process tree with log deltas
+
+A stream reads MongoDB once when it opens, then only when the shared change stream of its
+`(database, prefix)` reports a change relevant to it, at most once a second. Without change
+streams (a standalone MongoDB, or `OPTIO_API_CHANGE_STREAMS=off`) every stream re-reads once a
+second.
 
 ## Building Custom Adapters
 

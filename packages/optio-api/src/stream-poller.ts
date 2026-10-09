@@ -73,7 +73,14 @@ function driveByChanges(
 
   function start() {
     stopped = false;
-    void hub.subscribe(sub).then(() => run());
+    hub.subscribe(sub).then(
+      () => run(),
+      () => {
+        if (stopped) return;
+        stop();
+        opts.onError();
+      },
+    );
   }
 
   function stop() {

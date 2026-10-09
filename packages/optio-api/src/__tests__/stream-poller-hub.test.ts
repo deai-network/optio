@@ -123,3 +123,27 @@ describe.each(Object.keys(makers))('the %s stream', (kind) => {
     expect(state.finds).toBe(1);
   });
 });
+
+describe.each(Object.keys(makers))('the %s stream with a failing hub', (kind) => {
+  it('ends through onError instead of an unhandled rejection', async () => {
+    const { db, state } = fakeDb();
+    const failing = {
+      subscribe: async () => { throw new Error('hub broke'); },
+      unsubscribe: () => {},
+    } as unknown as ProcessChangeHub;
+    let errors = 0;
+    const poller = kind === 'list'
+      ? createListPoller({ db, prefix: 'p', hub: failing, sendEvent: () => {}, onError: () => { errors++; } })
+      : kind === 'tree'
+        ? createTreePoller({ db, prefix: 'p', hub: failing, rootId: ROOT.toString(), baseDepth: 0, sendEvent: () => {}, onError: () => { errors++; } })
+        : kind === 'multi-tree'
+          ? createMultiTreePoller({ db, prefix: 'p', hub: failing, treeRoots: [{ rootId: ROOT, baseDepth: 0 }], flatIds: [], sendEvent: () => {}, onError: () => { errors++; } })
+          : createSessionEventsPoller({ db, prefix: 'p', hub: failing, sessionId: 's1', sendEvent: () => {}, onError: () => { errors++; } });
+
+    poller.start();
+    await flush();
+
+    expect(errors).toBe(1);
+    expect(state.finds).toBe(0);
+  });
+});

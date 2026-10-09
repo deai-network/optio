@@ -102,6 +102,16 @@ describe('toProcessChange', () => {
       values: { 'progress.percent': 5, 'log.3': { message: 'x' }, originatingSessionId: 's1' },
     });
   });
+  it('reads an update already trimmed by the change stream', () => {
+    const id = new ObjectId();
+    expect(toProcessChange({
+      operationType: 'update', documentKey: { _id: id },
+      changedFields: ['progress.percent', 'log.3'], sessionValue: 's1',
+    } as any)).toEqual({
+      op: 'update', id: hex(id), fields: new Set(['progress', 'log']),
+      values: { originatingSessionId: 's1' },
+    });
+  });
   it('turns drop, rename, dropDatabase and invalidate into invalidate', () => {
     for (const operationType of ['drop', 'rename', 'dropDatabase', 'invalidate']) {
       expect(toProcessChange({ operationType } as any)).toEqual({ op: 'invalidate' });
