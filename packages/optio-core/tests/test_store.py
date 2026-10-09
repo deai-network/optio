@@ -473,3 +473,24 @@ async def test_relaunch_reset_without_log_empties_the_log(mongo_db):
     assert doc["status"]["state"] == "idle"
     assert doc["status"]["error"] is None
     assert doc["log"] == []
+
+
+async def test_relaunch_reset_preserves_resume_fields(mongo_db):
+    """The relaunch path keeps what resume needs (2026-04-24 resume design)."""
+    from optio_core.store import relaunch_reset
+    task = TaskInstance(
+        execute=dummy_execute, process_id="rr_keep", name="RR",
+        supports_resume=True,
+    )
+    proc = await upsert_process(mongo_db, "test", task)
+    await mongo_db["test_processes"].update_one(
+        {"_id": proc["_id"]}, {"$set": {"hasSavedState": True}},
+    )
+
+    await relaunch_reset(
+        mongo_db, "test", proc["_id"], ProcessStatus(state="scheduled"),
+        ("event", "State changed to scheduled"),
+    )
+    updated = await get_process_by_process_id(mongo_db, "test", "rr_keep")
+    assert updated["supportsResume"] is True
+    assert updated["hasSavedState"] is True
