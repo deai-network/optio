@@ -93,9 +93,11 @@ react-i18next / i18next. If the unitas links get relinked anyway: remove
 
 Rebase recipe for antd-x: stash the card change (`git stash push -- <ConversationView.tsx>`),
 `git rebase --onto <new base> <old base> csillag/antd-x`, pop, `pnpm install --lockfile-only`
-(no relink) and commit the lock if it changed. vite.config rarely changes, so the Vites can
-stay up; the demo engine restarts itself (watchfiles) and cancels running demo sessions, which
-the owner resumes.
+(no relink) and commit the lock if it changed. The demo engine restarts itself (watchfiles)
+and cancels running demo sessions, which the owner resumes. **Restart the :5180 Vite after a
+rebase or stash round-trip**: on 2026-10-09 its watcher missed the card file's stash pop (even
+a later `touch`) and kept serving the old card; check with
+`curl -sk https://localhost:5180/@fs<abs path of the file> | grep <new symbol>`.
 
 ## 4. Merged to optio main (193c035e) and released
 
