@@ -180,3 +180,11 @@ def test_an_option_may_be_listed_under_a_group():
     assert "group" not in ControlOption("a", "A").to_dict()
     c = model_control(models=[{"id": "m1"}, {"id": "m0", "group": "Older versions"}], current="m1")
     assert [o.get("group") for o in c.to_dict()["options"]] == [None, "Older versions"]
+
+
+def test_a_model_list_shows_its_descriptions_inline():
+    c = model_control(models=[{"id": "m1", "description": "Fast"}, {"id": "m2"}], current="m1").to_dict()
+    assert c["inlineDescriptions"] is True
+    plain = SessionControl(id="mode", kind="select", label="Mode", value="a",
+                           options=[ControlOption("a", "A")]).to_dict()
+    assert "inlineDescriptions" not in plain

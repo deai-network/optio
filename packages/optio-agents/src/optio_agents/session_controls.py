@@ -72,6 +72,9 @@ class SessionControl:
     levels: "list[str] | None" = None
     disabled: bool = False
     why_disabled: str | None = None
+    # A select whose options show their descriptions in the open list, under
+    # their labels, rather than in tooltips (e.g. a model list).
+    inline_descriptions: bool = False
 
     def to_dict(self) -> dict:
         d: dict = {
@@ -88,6 +91,8 @@ class SessionControl:
             d["levels"] = list(self.levels)
         if self.why_disabled is not None:
             d["whyDisabled"] = self.why_disabled
+        if self.inline_descriptions:
+            d["inlineDescriptions"] = True
         return d
 
 
@@ -115,6 +120,8 @@ def model_control(
         description=description, value=current or "", options=options,
         disabled=locked,
         why_disabled=SINGLE_OPTION_REASON if locked else None,
+        # Model descriptions are read side by side when picking one.
+        inline_descriptions=True,
     )
 
 

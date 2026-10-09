@@ -198,6 +198,7 @@ export interface SessionControl {
   levels?: string[]; // kind === 'segmented' | 'slider'
   disabled?: boolean; // whole control unchangeable (e.g. single option)
   whyDisabled?: string; // hover explanation when disabled
+  inlineDescriptions?: boolean; // select: option descriptions in the open list, not in tooltips
 }
 
 export interface ChatState {

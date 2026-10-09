@@ -297,6 +297,8 @@ async def test_conversation_ui_session_lifecycle(
                     # picked: the default alias, before any turn has run.
                     "value": "default",
                     "disabled": False,
+                    # Model descriptions read in the open list, not in tooltips.
+                    "inlineDescriptions": True,
                     "options": [
                         {"value": m["value"], "label": m["displayName"],
                          "description": m["description"], "disabled": False}

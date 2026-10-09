@@ -959,7 +959,7 @@ function SessionOneOf({ control: c, disabled, onChange }: {
     <span data-testid={`control-${c.id}`} style={{ alignSelf: 'center' }}>
       {c.kind === 'segmented' ? <OneOfSegmented field={field} size="small" />
         : c.kind === 'slider' ? <OneOfSlider field={field} style={{ minWidth: 160 }} markStyle={{ fontSize: 10 }} />
-          : <OneOfSelect field={field} size="small" style={{ minWidth: 180 }} />}
+          : <OneOfSelect field={field} size="small" style={{ minWidth: 180 }} inlineDescriptions={c.inlineDescriptions} />}
     </span>
   );
 }

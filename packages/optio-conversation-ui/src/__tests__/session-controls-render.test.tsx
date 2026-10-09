@@ -261,3 +261,23 @@ describe('select option groups', () => {
     expect(rows).toEqual(['Opus 5.5', 'Sonnet 5.5', '## Older versions', 'Opus 5']);
   });
 });
+
+describe('select controls with inline descriptions', () => {
+  it('the open list shows each option\'s description under its label', async () => {
+    const models: SessionControl[] = [
+      { id: 'model', kind: 'select', label: 'Model', value: 'opus', inlineDescriptions: true,
+        options: [{ value: 'opus', label: 'Opus 5.5', description: 'For complex work' },
+                  { value: 'sonnet', label: 'Sonnet 5.5', description: 'Most efficient for simpler tasks' }] },
+    ];
+    render(<ConversationView {...{ ...base(vi.fn()), controls: models }} />);
+    await openSelect('model');
+    const descriptions = Array.from(document.querySelectorAll('[data-choice-part="description"]')).map((d) => d.textContent);
+    expect(descriptions).toEqual(['For complex work', 'Most efficient for simpler tasks']);
+  });
+
+  it('without the flag, descriptions stay in tooltips', async () => {
+    render(<ConversationView {...base(vi.fn())} />);
+    await openSelect('model');
+    expect(document.querySelector('[data-choice-part="description"]')).toBeNull();
+  });
+});
