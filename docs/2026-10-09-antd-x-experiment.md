@@ -116,8 +116,9 @@ OPTIO_TRUSTED_ORIGINS); optio-conversation-ui needs vultus-antd >=0.5.0. vultus 
 (field tooltip on the whole slider), tooltips held back while a confirmation is open.
 
 Open items, not fixed (owner told):
-- optio-core race (executor run teardown fails a relaunch's result future); optio perf work
-  takes it. optio-claudecode's `_wait_terminal` test helper works around it.
+- optio-core race (executor run teardown failed a relaunch's result future): fixed on main
+  33ad5fd9 by optio perf work. optio-claudecode's `_wait_terminal` workaround (waits for
+  `_running_tasks` to drop the run) is now redundant; drop it next time that file is touched.
 - After an effort-only relaunch the model select can briefly show `default` when a task's
   settings.json names a model (runtime_model reset in `attach()`); needs a turn-timed fake to
   test.
