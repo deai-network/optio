@@ -1257,7 +1257,9 @@ def conversation_launch_env(
 
 # Positional prompt appended to the claude launch when ``auto_start`` is set —
 # kicks the agent off without the operator typing anything.
-AUTO_START_PROMPT = "Read CLAUDE.md and execute the task it describes"
+# A harness message (System: prefix), like the resume notice: the agent is
+# not handed a turn that reads as the human typing.
+AUTO_START_PROMPT = f"{SYSTEM_MESSAGE_PREFIX}Read CLAUDE.md and execute the task it describes"
 
 
 def build_auto_start_args(*, auto_start: bool, resuming: bool) -> list[str]:

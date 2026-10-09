@@ -129,7 +129,7 @@ class GrokTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
 
     # When True, a fresh launch kicks off the first turn itself — iframe mode
     # types a trailing positional prompt, conversation mode sends the
-    # AUTO_START_PROMPT ("Read AGENTS.md and execute the task it describes"). This
+    # AUTO_START_PROMPT ("System: Read AGENTS.md and execute the task it describes"). This
     # is for UNATTENDED task execution; a task must opt in. Defaults to False
     # (parity with claudecode): a conversation/chat task must NOT auto-fire a
     # kickoff, or grok-build starts an agentic loop on launch and blocks the

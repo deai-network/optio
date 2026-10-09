@@ -68,7 +68,9 @@ READY_TIMEOUT_S = 30.0
 
 # Fresh-launch kickoff prompt POSTed to the pre-created opencode session so the
 # agent starts the task unattended. Suppressed on resume.
-AUTO_START_PROMPT = "Read AGENTS.md and execute the task it describes"
+# A harness message (System: prefix), like the resume notice: the agent is
+# not handed a turn that reads as the human typing.
+AUTO_START_PROMPT = f"{SYSTEM_MESSAGE_PREFIX}Read AGENTS.md and execute the task it describes"
 
 
 def _build_host(config: OpencodeTaskConfig, process_id: str) -> Host:

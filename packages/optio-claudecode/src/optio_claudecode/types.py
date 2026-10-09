@@ -115,7 +115,7 @@ class ClaudeCodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
     allowed_tools: list[str] | None = None
     disallowed_tools: list[str] | None = None
     # When True, a fresh launch passes a trailing positional prompt
-    # ("Read CLAUDE.md and execute the task it describes") so claude starts the
+    # ("System: Read CLAUDE.md and execute the task it describes") so claude starts the
     # task unattended. Suppressed on resume (--continue) to avoid re-triggering.
     auto_start: bool = False
     # When True, run claude in focus view + fullscreen TUI (settings.json

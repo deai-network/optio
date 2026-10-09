@@ -123,7 +123,7 @@ class CursorTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin):
     ttyd_install_dir: str | None = None
 
     # When True, a fresh launch passes a trailing positional prompt
-    # ("Read AGENTS.md and execute the task it describes") so cursor-agent
+    # ("System: Read AGENTS.md and execute the task it describes") so cursor-agent
     # starts the task unattended. Defaults False (parity with
     # claudecode/grok/codex): an interactive/conversation task that does not
     # set this must NOT auto-fire a kickoff — it would start an agentic loop

@@ -800,7 +800,9 @@ def build_codex_flags(
     return out
 
 
-AUTO_START_PROMPT = "Read AGENTS.md and execute the task it describes"
+# A harness message (System: prefix), like the resume notice: the agent is
+# not handed a turn that reads as the human typing.
+AUTO_START_PROMPT = f"{SYSTEM_MESSAGE_PREFIX}Read AGENTS.md and execute the task it describes"
 
 
 def build_auto_start_args(
