@@ -913,7 +913,7 @@ convergence" above for the architectural rule, and the optio-core README's
 
 ### Stream Poller
 
-Used internally by SSE endpoints. Poll interval: 1000ms. Sends change events only (snapshot diffing).
+Used internally by SSE endpoints. Each stream reads MongoDB once at start, then only when the shared change stream of its `(database, prefix)` reports a change relevant to it, at most once a second; where change streams are unavailable (standalone MongoDB) or with `OPTIO_API_CHANGE_STREAMS=off`, once a second. Sends change events only (snapshot diffing). Details: `packages/optio-api/AGENTS.md` "Stream Poller"; spec `docs/2026-10-09-api-change-streams-design.md`.
 
 ```typescript
 interface StreamPollerOptions {

@@ -208,7 +208,7 @@ Registers two SSE routes (raw HTTP, not ts-rest):
 - `GET /api/processes/:prefix/stream` — flat list stream (uses `createListPoller`)
 - `GET /api/processes/:prefix/:id/tree/stream?maxDepth=N` — tree + log delta stream (uses `createTreePoller`)
 
-Both routes set `Content-Type: text/event-stream`, poll every 1 s, and call `poller.stop()` on request close.
+Both routes set `Content-Type: text/event-stream`, read MongoDB when a change is relevant to them (see "Stream Poller"), and call `poller.stop()` on request close.
 
 ```typescript
 function registerWidgetProxy(app: FastifyInstance, opts: OptioWidgetProxyOptions): void
@@ -380,9 +380,10 @@ interface StreamPollerOptions {
   db: Db;
   prefix: string;
   sendEvent: (data: unknown) => void;  // called with JSON-serializable event objects
-  onError: () => void;                 // called on poll failure; poller stops itself first
+  onError: () => void;                 // called on a failed read; the stream stops itself first
   metadataFilter?: ProcessMetadataFilter;
   scope?: ScopeFilter | null;          // access scope; $and-ed into the query
+  hub?: ProcessChangeHub;              // default: the shared hub of (db, prefix)
 }
 
 interface TreePollerOptions extends StreamPollerOptions {
@@ -392,13 +393,32 @@ interface TreePollerOptions extends StreamPollerOptions {
 }
 
 interface ListPollerHandle {
-  start(): void;  // begins setInterval at 1 s
-  stop(): void;   // clears interval
+  start(): void;  // subscribes to the hub, then reads once
+  stop(): void;   // unsubscribes; no read after it
 }
 
 function createListPoller(opts: StreamPollerOptions): ListPollerHandle
 function createTreePoller(opts: TreePollerOptions): ListPollerHandle
 ```
+
+**How a stream learns about changes** (`process-change-hub.ts`,
+`process-change-relevance.ts`; spec `docs/2026-10-09-api-change-streams-design.md`).
+Every stream (list, tree, multi-tree, session events) subscribes to the
+`ProcessChangeHub` of its `(database, prefix)` (`getProcessChangeHub(db, prefix)`;
+shared per MongoClient, database name and prefix). The hub holds one MongoDB
+change stream on `{prefix}_processes` while it has subscribers and asks a
+stream to re-read only for a change relevant to it, judged from the change
+event alone (no `fullDocument` lookup): the list for any insert, a shown
+process's sent fields, or any `metadata` change; a tree for an insert under its
+root or any change of a member; session events for a process joining the
+session or a member's `sessionEvents`. While a stream's read is in flight every
+change counts as relevant. A stream re-reads at most once a second (the first
+change after a quiet second at once). Where change streams are unavailable (a
+standalone mongod: no `setName` in `hello`, or error 40573; no permission to
+watch: 13) the hub polls -- every stream re-reads once a second -- and tries
+again every 5 minutes; after any other error it polls and reopens with backoff
+(1 s doubling to 30 s); every reopen makes every stream re-read once.
+`OPTIO_API_CHANGE_STREAMS=off` makes every hub poll. Event shapes are unchanged.
 
 ### SSE event shapes emitted by `createListPoller`
 
