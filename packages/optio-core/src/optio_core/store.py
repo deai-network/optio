@@ -1,5 +1,6 @@
 """MongoDB operations for process records."""
 
+import logging
 import re as _re
 from collections.abc import Collection
 from datetime import datetime, timedelta, timezone
@@ -7,11 +8,14 @@ from typing import Any
 from uuid import uuid4
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from pymongo.errors import OperationFailure
 
 from optio_core.models import (
     TaskInstance, ProcessStatus, Progress, InnerAuth, ProcessMetadataFilter,
 )
 
+
+logger = logging.getLogger(__name__)
 
 _OBJECTID_RE = _re.compile(r"^[a-fA-F0-9]{24}$")
 
@@ -37,6 +41,44 @@ def compute_expire_at(
     if ttl_seconds is None:
         return None
     return (now or datetime.now(timezone.utc)) + timedelta(seconds=ttl_seconds)
+
+
+# The process collection's indexes: (name, keys, options). Every query optio-core
+# and optio-api run on {prefix}_processes filters on one of these, except the
+# application-specific metadata.* filters.
+# Spec: docs/2026-10-09-process-indexes-design.md
+PROCESS_INDEXES: list[tuple[str, list[tuple[str, int]], dict]] = [
+    # _id -1 covers the newest-first sort of the processId lookups; with
+    # processId alone the planner may walk _id_ instead and filter.
+    ("processId_1__id_-1", [("processId", 1), ("_id", -1)], {}),
+    ("parentId_1_order_1", [("parentId", 1), ("order", 1)], {}),
+    ("rootId_1_depth_1_order_1", [("rootId", 1), ("depth", 1), ("order", 1)], {}),
+    ("status.state_1", [("status.state", 1)], {}),
+    ("originatingSessionId_1", [("originatingSessionId", 1)], {}),
+    # Same name and options as migration m004's.
+    ("expireAt_ttl", [("expireAt", 1)], {"expireAfterSeconds": 0}),
+]
+
+# IndexOptionsConflict, IndexKeySpecsConflict: an index with these keys exists
+# under another name or with other options.
+_INDEX_CONFLICT_CODES = (85, 86)
+
+
+async def ensure_process_indexes(db: AsyncIOMotorDatabase, prefix: str) -> None:
+    """Create PROCESS_INDEXES on `{prefix}_processes`; a no-op for the ones
+    that exist. An index that conflicts with an existing one is logged and
+    skipped; any other error propagates."""
+    coll = _collection(db, prefix)
+    for name, keys, options in PROCESS_INDEXES:
+        try:
+            await coll.create_index(keys, name=name, **options)
+        except OperationFailure as e:
+            if e.code not in _INDEX_CONFLICT_CODES:
+                raise
+            logger.warning(
+                "Index %s not created on %s: an existing index conflicts (%s)",
+                name, coll.name, e.details.get("errmsg") if e.details else e,
+            )
 
 
 async def upsert_process(db: AsyncIOMotorDatabase, prefix: str, task: TaskInstance) -> dict:
