@@ -33,7 +33,7 @@ from optio_core.models import (
 )
 from optio_core.store import (
     upsert_process, remove_stale_processes, find_stale_process_ids,
-    get_process_by_process_id, update_status, clear_result_fields,
+    get_process_by_process_id, update_status, relaunch_reset, delete_descendants,
     append_log, compute_expire_at, purge_processes, set_auto_resume_scheduled,
     finalize_if_active, set_has_unsaved_work, set_resurrecting, update_progress,
 )
@@ -1090,12 +1090,12 @@ class Optio:
         if proc["status"]["state"] not in DISMISSABLE_STATES:
             return DismissOutcome(ok=False, reason="not-dismissable")
 
-        await clear_result_fields(
+        await delete_descendants(
             self._config.mongo_db, self._config.prefix, proc["_id"],
         )
-        await update_status(
+        await relaunch_reset(
             self._config.mongo_db, self._config.prefix, proc["_id"],
-            ProcessStatus(state="idle"),
+            ProcessStatus(state="idle"), None,
         )
         post = await self._resolve(str(proc["_id"]))
         return DismissOutcome(ok=True, proc=post)

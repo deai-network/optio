@@ -202,3 +202,36 @@ async def test_relaunch_deletes_the_previous_runs_children(mongo_db):
     await executor.launch_process("w.again", session_id=None)
 
     assert await mongo_db["test_processes"].count_documents({"parentId": oid}) == 1
+
+
+async def test_dismiss_is_one_update_after_the_descendants_delete(mongo_db):
+    from bson import ObjectId
+    from optio_core.lifecycle import Optio
+
+    db = CountingDb(mongo_db, "dis")
+    fw = Optio()
+    await fw.init(mongo_db=db, prefix="dis")
+    try:
+        coll = mongo_db["dis_processes"]
+        row_oid, child_oid = ObjectId(), ObjectId()
+        await coll.insert_one({
+            "_id": row_oid, "processId": "done1",
+            "status": {"state": "done"},
+            "log": [{"timestamp": "t", "level": "event", "message": "State changed to done"}],
+        })
+        await coll.insert_one({
+            "_id": child_oid, "processId": "done1.c", "parentId": row_oid,
+            "status": {"state": "done"},
+        })
+        db.writes.clear()
+
+        out = await fw.dismiss("done1")
+
+        assert out.ok
+        assert len(db.updates_on(row_oid)) == 1
+        assert await coll.find_one({"_id": child_oid}) is None
+        doc = await coll.find_one({"_id": row_oid})
+        assert doc["status"]["state"] == "idle"
+        assert doc["log"] == []
+    finally:
+        await fw.shutdown()
