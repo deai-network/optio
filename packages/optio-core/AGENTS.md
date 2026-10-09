@@ -515,3 +515,20 @@ await optio_core.init(
     cancel_grace_seconds: float = 5.0,
 ) -> None
 ```
+
+### Process collection indexes and TTL
+
+`Optio.init` calls `store.ensure_process_indexes(db, prefix)` on every start. It
+creates, idempotently, `processId_1__id_-1`, `parentId_1_order_1`,
+`rootId_1_depth_1_order_1`, `status.state_1`, `originatingSessionId_1` and the
+`expireAt_ttl` TTL index (`expireAfterSeconds=0`, as migration m004) on
+`{prefix}_processes`; the list is `store.PROCESS_INDEXES`. An index that conflicts
+with an existing one (MongoDB codes 85/86) is logged as a warning and skipped; any
+other error fails `init`.
+
+`TaskInstance.ttl_seconds` is stored as `ttlSeconds`; a terminal state sets
+`expireAt` = now + `ttlSeconds`. `store.relaunch_reset` (relaunch and dismiss)
+removes `expireAt`, so a running or dismissed record is never evicted.
+`store.create_child_process(..., ttl_seconds=)` stores a child's `ttlSeconds`; the
+executor and `adhoc_define` pass the parent's. Spec:
+`docs/2026-10-09-process-indexes-design.md`
