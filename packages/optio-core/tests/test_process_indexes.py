@@ -96,3 +96,20 @@ async def test_init_ensures_the_indexes(mongo_db):
         assert await _indexes(mongo_db["idxinit_processes"]) == EXPECTED
     finally:
         await optio.shutdown()
+
+
+async def test_the_ttl_index_m004_created_is_kept_without_a_warning(mongo_db, caplog):
+    """The path every existing deployment takes: m004 created expireAt_ttl on
+    the collection, then every start ensures the indexes."""
+    from optio_core.migrations.m004_create_expire_at_ttl_index import (
+        create_expire_at_ttl_index,
+    )
+    coll = mongo_db["idx5_processes"]
+    await coll.insert_one({"processId": "p0"})  # the collection exists when m004 runs
+    await create_expire_at_ttl_index(mongo_db)
+    caplog.set_level(logging.WARNING, logger="optio_core.store")
+
+    await ensure_process_indexes(mongo_db, "idx5")
+
+    assert [r for r in caplog.records if r.name == "optio_core.store"] == []
+    assert await _indexes(coll) == EXPECTED
