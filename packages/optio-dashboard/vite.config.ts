@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+import { defineConfig, searchForWorkspaceRoot } from 'vite';
 import react from '@vitejs/plugin-react';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 import path from 'path';
@@ -11,6 +11,13 @@ import path from 'path';
 const devPort = Number(process.env.OPTIO_DEV_PORT) || undefined;
 const devHttps = process.env.OPTIO_DEV_HTTPS === '1';
 const devHost = process.env.OPTIO_DEV_HOST;
+// OPTIO_DEV_VULTUS: a unitas checkout whose vultus source the dev server uses
+// instead of the installed vultus-antd, without an install here (that
+// checkout's node_modules may belong to another worktree): vultus-antd is
+// aliased to its source, the dev server may serve it, and the libraries
+// vultus shares context with resolve to the app's single copy. Unset:
+// unchanged.
+const devVultus = process.env.OPTIO_DEV_VULTUS;
 
 export default defineConfig({
   plugins: [react(), ...(devHttps ? [basicSsl()] : [])],
@@ -28,7 +35,14 @@ export default defineConfig({
     // optio-ui added: it holds the module-level widget registry; a duplicate
     // instance means widgets registered by sibling packages (e.g.
     // optio-conversation-ui) land in a different Map than ProcessWidget reads.
-    dedupe: ['react', 'react-dom', '@tanstack/react-query', '@ts-rest/react-query', 'optio-ui'],
+    dedupe: [
+      'react', 'react-dom', '@tanstack/react-query', '@ts-rest/react-query', 'optio-ui',
+      ...(devVultus ? ['antd', 'react-i18next', 'i18next'] : []),
+    ],
+    alias: devVultus ? [
+      { find: /^vultus-antd\/markdown$/, replacement: path.join(devVultus, 'packages/vultus-antd/src/Markdown.tsx') },
+      { find: /^vultus-antd$/, replacement: path.join(devVultus, 'packages/vultus-antd/src/index.ts') },
+    ] : [],
   },
   root: path.resolve(__dirname, 'src/app'),
   build: {
@@ -38,6 +52,7 @@ export default defineConfig({
   server: {
     ...(devPort ? { port: devPort, strictPort: true } : {}),
     ...(devHost ? { host: true, allowedHosts: [devHost] } : {}),
+    ...(devVultus ? { fs: { allow: [searchForWorkspaceRoot(process.cwd()), devVultus] } } : {}),
     proxy: {
       // Object form with `ws: true` is required so WebSocket upgrades under
       // /api (e.g. the widget reverse-proxy at /api/widget/…/ws) are forwarded
