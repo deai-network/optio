@@ -381,8 +381,10 @@ async def create_child_process(
     metadata: dict | None = None,
     adhoc: bool = False,
     ephemeral: bool = False,
+    ttl_seconds: int | None = None,
 ) -> dict:
-    """Create a child process record."""
+    """Create a child process record. `ttl_seconds` is the parent's, so a
+    child expires with its parent instead of outliving it."""
     coll = _collection(db, prefix)
     now = datetime.now(timezone.utc)
     doc = {
@@ -403,6 +405,7 @@ async def create_child_process(
         "status": ProcessStatus(state=initial_state).to_dict(),
         "progress": Progress().to_dict(),
         "log": [],
+        "ttlSeconds": ttl_seconds,
         "createdAt": now,
     }
     result = await coll.insert_one(doc)
@@ -498,6 +501,10 @@ async def relaunch_reset(
     The log becomes `[<log entry>]`, or empty without `log`. Unlike
     clear_result_fields this does not delete descendants: the caller runs
     delete_descendants first. Spec: docs/2026-10-09-fewer-process-writes-design.md
+
+    `expireAt` is removed: the TTL monitor must not delete a running (or
+    dismissed) record; a terminal state sets it again.
+    Spec: docs/2026-10-09-process-indexes-design.md
     """
     # The whole `status` replaces the `status.*` resets: to_dict() writes every
     # field, and one $set may not hold both `status` and `status.<x>`.
@@ -506,7 +513,7 @@ async def relaunch_reset(
     fields["log"] = [_log_entry(*log)] if log is not None else []
     await _collection(db, prefix).update_one(
         {"_id": process_oid},
-        {"$set": fields},
+        {"$set": fields, "$unset": {"expireAt": ""}},
     )
 
 

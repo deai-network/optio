@@ -184,3 +184,124 @@ async def test_early_cancel_scheduled_task_with_ttl_sets_expire_at(mongo_db):
         )
     finally:
         await optio.shutdown(grace_seconds=1.0)
+
+
+# ---- TTL fixes (docs/2026-10-09-process-indexes-design.md) ----
+
+async def test_a_relaunch_clears_expire_at_until_the_run_ends(mongo_db):
+    from optio_core.executor import Executor
+    from optio_core.store import upsert_process
+
+    runs = {"n": 0}
+    running, release = asyncio.Event(), asyncio.Event()
+
+    async def body(ctx):  # noqa: ARG001
+        runs["n"] += 1
+        if runs["n"] == 2:
+            running.set()
+            await release.wait()
+
+    task = TaskInstance(execute=body, process_id="ttl.relaunch", name="R", ttl_seconds=3600)
+    oid = (await upsert_process(mongo_db, "test", task))["_id"]
+    executor = Executor(mongo_db, "test", {})
+    executor.register_tasks([task])
+    coll = mongo_db["test_processes"]
+
+    await executor.launch_process("ttl.relaunch", session_id=None)
+    assert (await coll.find_one({"_id": oid}))["expireAt"] is not None
+
+    second = asyncio.create_task(executor.launch_process("ttl.relaunch", session_id=None))
+    await asyncio.wait_for(running.wait(), 60)
+    assert "expireAt" not in await coll.find_one({"_id": oid})
+
+    release.set()
+    await asyncio.wait_for(second, 60)
+    assert (await coll.find_one({"_id": oid}))["expireAt"] is not None
+
+
+async def test_dismiss_clears_expire_at(mongo_db):
+    from bson import ObjectId
+
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix="ttldis")
+    try:
+        coll = mongo_db["ttldis_processes"]
+        oid = ObjectId()
+        await coll.insert_one({
+            "_id": oid, "processId": "done1", "status": {"state": "done"},
+            "expireAt": datetime.now(timezone.utc), "ttlSeconds": 60,
+        })
+
+        out = await optio.dismiss("done1")
+
+        assert out.ok
+        assert "expireAt" not in await coll.find_one({"_id": oid})
+    finally:
+        await optio.shutdown()
+
+
+async def _grandchild(ctx):  # noqa: ARG001
+    return None
+
+
+async def _child(ctx):
+    await ctx.run_child(_grandchild, f"{ctx.process_id}.g", "G")
+
+
+async def _parent(ctx):
+    await ctx.run_child(_child, f"{ctx.process_id}.c", "C")
+
+
+async def _run_tree(mongo_db, process_id, ttl_seconds):
+    from optio_core.executor import Executor
+    from optio_core.store import upsert_process
+
+    task = TaskInstance(
+        execute=_parent, process_id=process_id, name="P", ttl_seconds=ttl_seconds,
+    )
+    await upsert_process(mongo_db, "test", task)
+    executor = Executor(mongo_db, "test", {})
+    executor.register_tasks([task])
+    assert await executor.launch_process(process_id, session_id=None) == "done"
+    coll = mongo_db["test_processes"]
+    return (
+        await coll.find_one({"processId": f"{process_id}.c"}),
+        await coll.find_one({"processId": f"{process_id}.c.g"}),
+    )
+
+
+async def test_children_and_grandchildren_take_the_parents_ttl(mongo_db):
+    child, grandchild = await _run_tree(mongo_db, "ttl.tree", 3600)
+
+    for doc in (child, grandchild):
+        assert doc["ttlSeconds"] == 3600
+        assert doc["expireAt"] is not None
+
+
+async def test_children_of_a_parent_without_ttl_get_none(mongo_db):
+    child, grandchild = await _run_tree(mongo_db, "ttl.none", None)
+
+    for doc in (child, grandchild):
+        assert doc.get("ttlSeconds") is None
+        assert doc.get("expireAt") is None
+
+
+async def test_an_adhoc_child_takes_its_parents_ttl(mongo_db):
+    async def noop(ctx):  # noqa: ARG001
+        return None
+
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix="ttladhoc")
+    try:
+        parent = await optio.adhoc_define(
+            TaskInstance(execute=noop, process_id="ah.p", name="P", ttl_seconds=3600),
+        )
+        child = await optio.adhoc_define(
+            TaskInstance(execute=noop, process_id="ah.c", name="C"),
+            parent_id=parent["_id"],
+        )
+
+        doc = await mongo_db["ttladhoc_processes"].find_one({"_id": child["_id"]})
+        assert doc["ttlSeconds"] == 3600
+    finally:
+        await optio.shutdown()

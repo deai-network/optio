@@ -137,6 +137,8 @@ class ProcessContext:
 
         # Set by executor after creation
         self._executor: "Executor | None" = None
+        # The process's ttlSeconds, passed on to its children (set by the executor).
+        self._ttl_seconds: int | None = None
 
     def report_progress(
         self,

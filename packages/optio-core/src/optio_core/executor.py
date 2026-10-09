@@ -261,6 +261,7 @@ class Executor:
                 session_id=effective_session_id,
             )
             ctx._executor = self
+            ctx._ttl_seconds = ttl_seconds
 
             if parent_ctx is not None and parent_ctx._on_child_progress is not None:
                 child_process_id = proc["processId"]
@@ -454,6 +455,7 @@ class Executor:
             initial_state="scheduled",
             metadata=parent_ctx.metadata,
             description=description,
+            ttl_seconds=parent_ctx._ttl_seconds,
         )
         await append_log(self._db, self._prefix, parent_ctx._process_oid, "event", f"Spawned child: {name}")
 

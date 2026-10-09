@@ -423,6 +423,7 @@ class Optio:
                 metadata=task.metadata,
                 adhoc=True,
                 ephemeral=ephemeral,
+                ttl_seconds=parent.get("ttlSeconds"),
             )
 
         self._executor._task_registry[task.process_id] = task
