@@ -248,6 +248,7 @@ async def test_conversation_ui_session_lifecycle(shim_install_dir, task_root, mo
                 "label": "Model",
                 "value": "gemini-2.5-pro",
                 "category": "model",
+                "description": "What model is powering this conversation?",
                 "disabled": False,
                 "options": [
                     {"value": "gemini-2.5-pro", "label": "gemini-2.5-pro", "disabled": False},

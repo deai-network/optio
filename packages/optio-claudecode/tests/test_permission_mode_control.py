@@ -105,6 +105,14 @@ def test_controls_carry_a_permission_mode_select():
     assert ctrls["reasoning_effort"]["levels"] == ["low", "medium", "high"]
 
 
+def test_the_permissions_control_asks_its_question():
+    pm = _by_id(build_controls(
+        catalog=CATALOG, model=None, effort=None, permission_mode="default",
+        permission_options=permission_mode_options(permission_gate=True, bypass_allowed=False),
+    ))["permission_mode"]
+    assert pm["description"] == "How should Claude ask before it acts?"
+
+
 def test_a_manual_start_shows_as_the_manual_option():
     pm = _by_id(build_controls(
         catalog=CATALOG, model=None, effort=None, permission_mode="manual",

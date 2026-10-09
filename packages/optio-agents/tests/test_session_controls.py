@@ -159,3 +159,17 @@ def test_an_option_may_be_primary_or_danger_and_ask_a_confirmation():
     assert o["variant"] == "danger" and o["confirm"] == "Switch to Bypass?"
     plain = ControlOption("a", "A").to_dict()
     assert "variant" not in plain and "confirm" not in plain
+
+
+# --- every control explains itself on hover (labels may be hidden) ----------
+
+def test_the_model_and_effort_controls_ask_their_question():
+    from optio_agents.session_controls import EFFORT_DESCRIPTION, MODEL_DESCRIPTION
+    assert model_control(models=[{"id": "m"}], current="m").description == MODEL_DESCRIPTION
+    assert effort_control(levels=["low", "high"], current="low").description == EFFORT_DESCRIPTION
+    assert MODEL_DESCRIPTION.endswith("?") and EFFORT_DESCRIPTION.endswith("?")
+
+
+def test_an_engine_may_word_the_question_itself():
+    c = model_control(models=[{"id": "m"}], current="m", description="Which Kimi model answers?")
+    assert c.to_dict()["description"] == "Which Kimi model answers?"

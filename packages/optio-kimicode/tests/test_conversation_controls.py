@@ -368,3 +368,15 @@ def test_parse_all_controls_empty_and_malformed():
     assert parse_all_controls(None) == []
     assert parse_all_controls([]) == []
     assert parse_all_controls(["bogus", 3, None]) == []
+
+
+
+def test_an_agent_described_option_keeps_its_description():
+    from optio_kimicode.models import parse_all_controls
+    controls = parse_all_controls([
+        {"type": "select", "id": "mode", "name": "Mode", "category": "mode",
+         "description": "How autonomously Kimi works", "currentValue": "a",
+         "options": [{"value": "a", "name": "A"}, {"value": "b", "name": "B"}]},
+    ])
+    mode = next(c for c in controls if c.id == "mode")
+    assert mode.description == "How autonomously Kimi works"

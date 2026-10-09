@@ -155,6 +155,8 @@ def parse_all_controls(session_config_options, default_model=None, default_effor
     Missing/malformed input yields an empty list.
     """
     from optio_agents.session_controls import (
+        EFFORT_DESCRIPTION,
+        MODEL_DESCRIPTION,
         SINGLE_OPTION_REASON,
         ControlOption,
         SessionControl,
@@ -177,9 +179,12 @@ def parse_all_controls(session_config_options, default_model=None, default_effor
         ]
         cur = opt.get("currentValue")
         locked = len(options) <= 1  # nothing to switch to -> unchangeable
+        # The agent's own words for the control (shown on hover), else ours.
+        desc = opt.get("description") if isinstance(opt.get("description"), str) and opt.get("description") else None
         if oid == "model":
             controls.append(SessionControl(
                 id="model", kind="select", label="Model", category="model",
+                description=desc or MODEL_DESCRIPTION,
                 value=(default_model or cur or ""), options=options,
                 disabled=locked,
                 why_disabled=SINGLE_OPTION_REASON if locked else None,
@@ -200,23 +205,24 @@ def parse_all_controls(session_config_options, default_model=None, default_effor
                 levels=levels,
                 current=(default_effort or cur),
                 label="Thinking",
+                description=desc or EFFORT_DESCRIPTION,
             ))
         elif oid == "mode":
             controls.append(SessionControl(
                 id="mode", kind="select", label="Mode", category="mode",
-                value=(cur or ""), options=options,
+                description=desc, value=(cur or ""), options=options,
                 disabled=locked,
                 why_disabled=SINGLE_OPTION_REASON if locked else None,
             ))
         elif opt.get("type") == "boolean":
             controls.append(SessionControl(
                 id=oid or "", kind="boolean", label=(oid or "").title(),
-                value=bool(cur),
+                description=desc, value=bool(cur),
             ))
         else:
             controls.append(SessionControl(
                 id=oid or "", kind="select", label=(oid or "").title(),
-                value=(cur or ""), options=options,
+                description=desc, value=(cur or ""), options=options,
                 disabled=locked,
                 why_disabled=SINGLE_OPTION_REASON if locked else None,
             ))

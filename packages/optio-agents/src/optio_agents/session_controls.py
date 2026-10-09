@@ -19,6 +19,12 @@ ControlKind = Literal["select", "boolean", "segmented", "slider"]
 # and explains why on hover (see SessionControl.why_disabled).
 SINGLE_OPTION_REASON = "Only one option available."
 
+# What the common controls are for, as a question: shown on hover, so a
+# narrow controls bar can drop the labels (owner ruling 2026-10-09). Engines
+# may word their own.
+MODEL_DESCRIPTION = "What model is powering this conversation?"
+EFFORT_DESCRIPTION = "How much should the model think before answering?"
+
 
 @dataclass(frozen=True)
 class ControlOption:
@@ -81,7 +87,8 @@ class SessionControl:
 
 
 def model_control(
-    *, models: list[dict], current: str | None, label: str = "Model"
+    *, models: list[dict], current: str | None, label: str = "Model",
+    description: str = MODEL_DESCRIPTION,
 ) -> SessionControl:
     """Build the ``id="model"`` select from a wrapper's model catalog
     (``[{id,label,description?,disabled?,disabledReason?}]`` — the shape every
@@ -99,16 +106,18 @@ def model_control(
     locked = len(options) <= 1
     return SessionControl(
         id="model", kind="select", label=label, category="model",
-        value=current or "", options=options,
+        description=description, value=current or "", options=options,
         disabled=locked,
         why_disabled=SINGLE_OPTION_REASON if locked else None,
     )
 
 
-def effort_control(*, levels, current, disabled=False, why_disabled=None, label="Effort"):
+def effort_control(*, levels, current, disabled=False, why_disabled=None, label="Effort",
+                   description=EFFORT_DESCRIPTION):
     """Build the id="reasoning_effort" slider from ordered effort levels."""
     return SessionControl(
         id="reasoning_effort", kind="slider", label=label, category="thought_level",
+        description=description,
         value=(current or (levels[0] if levels else "")), levels=list(levels),
         disabled=disabled, why_disabled=why_disabled,
     )

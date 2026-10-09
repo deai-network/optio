@@ -75,6 +75,7 @@ def settable_permission_modes(options: list[ControlOption]) -> list[str]:
 def permission_mode_control(*, current: str, options: list[ControlOption]) -> SessionControl:
     return SessionControl(
         id="permission_mode", kind="select", label="Permissions", category="mode",
+        description="How should Claude ask before it acts?",
         value=current, options=options,
     )
 

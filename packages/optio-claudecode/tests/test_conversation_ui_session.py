@@ -288,6 +288,7 @@ async def test_conversation_ui_session_lifecycle(
                     "kind": "select",
                     "label": "Model",
                     "category": "model",
+                    "description": "What model is powering this conversation?",
                     # No-kickoff conversation: the warm-up probe ran a throwaway
                     # turn and read the runtime model from the shim's system/init
                     # ("fake-model"), so the picker is pre-seeded up front rather
@@ -307,6 +308,7 @@ async def test_conversation_ui_session_lifecycle(
                     "kind": "select",
                     "label": "Permissions",
                     "category": "mode",
+                    "description": "How should Claude ask before it acts?",
                     "value": "bypassPermissions",
                     "disabled": False,
                     "options": [
