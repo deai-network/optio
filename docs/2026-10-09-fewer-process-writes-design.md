@@ -142,7 +142,10 @@ In `packages/optio-core/tests/` (the real-Mongo test setup):
 - Dismiss: one update after the descendants' delete; the log empty, status
   idle.
 - The existing suite (cancel propagation, lost final states, resume, widget,
-  progress throttle and avalanche tests) passes unchanged.
+  progress throttle and avalanche tests) passes. Six test doubles that wrap
+  `update_status` / `update_progress` with fixed signatures (one in
+  `test_lost_final_writes.py`, five in `test_progress_throttle.py`) forward the
+  new keyword arguments; their assertions stay as they are.
 - Tests follow optio's rule: no wall-clock dependence.
 
 ## Measurement
