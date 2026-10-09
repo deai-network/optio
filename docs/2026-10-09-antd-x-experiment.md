@@ -102,7 +102,18 @@ next optio release, then raise optio-conversation-ui's vultus-antd range.
    returns `models: [{value (alias), resolvedModel, displayName, description, supportsEffort,
    supportedEffortLevels}]` (same as Claude Code's /model and claude-agent-acp); replaces
    /v1/models, declutter, the default-model probe turn and the resume upgrade logic; pinned
-   full ids keep working. Review its report/diff, run the suite, commit.
+   full ids keep working. **Helper finished (uncommitted, not yet reviewed by a session with
+   context to spare)**: models.py rewritten (`parse_cli_models`, `fetch_cli_models`,
+   `fallback_models`, `launch_model`, `shown_model`, `catalog_with`); `conversation.initialize()`
+   (answer kept off the event stream; `attach()` resets runtime_model); controls.build_controls
+   gains `runtime_model`; session.py drops the probe turn and the resume upgrade; fake_claude
+   answers `initialize` with the real list; new tests/test_cli_models.py (21). Suites:
+   parallel 534 passed + the known resume_refresh failure, serial 23 passed (logs
+   /tmp/sc-tests/cc-models-*.log). **Open owner decision**: a resumed session with no configured
+   model now launches with `--model default` (picks up newer models), so an operator's model pick
+   is not carried across an optio resume (effort/permission picks never were); persisting the
+   pick in a workdir file would be ~10 lines. Also: on resume the widget briefly shows the old
+   run's controls until the first system/init. Next: review the diff, decide, commit.
 4. Then: rebase antd-x/antd-x-base onto session-controls, `pnpm install` in both (links vultus
    from the unitas worktree), owner review on :5180/:5181.
 
