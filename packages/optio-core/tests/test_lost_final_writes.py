@@ -81,11 +81,11 @@ def _fail_update_status(monkeypatch, states, times=1):
     real = ex.update_status
     left = {"n": times}
 
-    async def flaky(db, prefix, oid, status, expire_at=None):
+    async def flaky(db, prefix, oid, status, expire_at=None, **kw):
         if status.state in states and left["n"] > 0:
             left["n"] -= 1
             raise AutoReconnect("injected: mongo unreachable")
-        return await real(db, prefix, oid, status, expire_at=expire_at)
+        return await real(db, prefix, oid, status, expire_at=expire_at, **kw)
 
     monkeypatch.setattr(ex, "update_status", flaky)
     return left

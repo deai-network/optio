@@ -29,10 +29,9 @@ from optio_core.models import (
 from optio_core.state_machine import LAUNCHABLE_STATES
 from optio_core.store import (
     get_process_by_process_id,
-    update_status, clear_result_fields,
-    create_child_process, append_log,
-    clear_widget_upstream, compute_expire_at,
-    finalize_if_active, _collection, set_has_unsaved_work,
+    update_status, relaunch_reset, delete_descendants,
+    create_child_process, append_log, compute_expire_at,
+    finalize_if_active, set_has_unsaved_work,
 )
 from optio_core.context import ProcessContext
 from optio_core.exceptions import ChildProcessFailed
@@ -180,12 +179,13 @@ class Executor:
         if current_state not in LAUNCHABLE_STATES:
             return None  # silently ignore (idempotent)
 
-        await clear_result_fields(self._db, self._prefix, proc["_id"])
-        await update_status(
-            self._db, self._prefix, proc["_id"],
-            ProcessStatus(state="scheduled"),
+        # The previous run's children go first; then one update resets the
+        # row and records the scheduled state with its log line.
+        await delete_descendants(self._db, self._prefix, proc["_id"])
+        await relaunch_reset(
+            self._db, self._prefix, proc["_id"], ProcessStatus(state="scheduled"),
+            ("event", "State changed to scheduled"),
         )
-        await append_log(self._db, self._prefix, proc["_id"], "event", "State changed to scheduled")
         # A launch rebuilds the workdir: whatever unsaved work a failed run
         # left there is gone from now on (Resurrect no longer applies).
         if proc.get("hasUnsavedWork"):
@@ -235,18 +235,14 @@ class Executor:
 
         try:
             now = datetime.now(timezone.utc)
-            await update_status(
-                self._db, self._prefix, oid,
-                ProcessStatus(state="running", running_since=now),
-            )
-            await append_log(self._db, self._prefix, oid, "event", "State changed to running")
-
             effective_session_id = (
                 parent_ctx.session_id if parent_ctx is not None else session_id
             )
-            await _collection(self._db, self._prefix).update_one(
-                {"_id": oid},
-                {"$set": {"originatingSessionId": effective_session_id}},
+            await update_status(
+                self._db, self._prefix, oid,
+                ProcessStatus(state="running", running_since=now),
+                log=("event", "State changed to running"),
+                set_fields={"originatingSessionId": effective_session_id},
             )
 
             ctx = ProcessContext(
@@ -281,6 +277,7 @@ class Executor:
                 await update_status(
                     self._db, self._prefix, oid, final,
                     expire_at=compute_expire_at(ttl_seconds),
+                    set_fields={"widgetUpstream": None},
                 )
                 final_recorded = True
                 return ("failed", None)
@@ -338,13 +335,10 @@ class Executor:
                     await update_status(
                         self._db, self._prefix, oid, final,
                         expire_at=compute_expire_at(ttl_seconds),
+                        log=("event", "State changed to cancelled (raised CancelledError)"),
+                        set_fields={"widgetUpstream": None},
                     )
                     final_recorded = True
-                    await append_log(
-                        self._db, self._prefix, oid, "event",
-                        "State changed to cancelled (raised CancelledError)",
-                    )
-                    await clear_widget_upstream(self._db, self._prefix, oid)
                     await self._cleanup_ephemeral(str(oid))
                 raise
             except Exception as e:
@@ -356,10 +350,10 @@ class Executor:
                 await update_status(
                     self._db, self._prefix, oid, final,
                     expire_at=compute_expire_at(ttl_seconds),
+                    log=("error", str(e)),
+                    set_fields={"widgetUpstream": None},
                 )
                 final_recorded = True
-                await append_log(self._db, self._prefix, oid, "error", str(e))
-                await clear_widget_upstream(self._db, self._prefix, oid)
                 await self._cleanup_ephemeral(str(oid))
                 return ("failed", e)
 
@@ -377,9 +371,10 @@ class Executor:
                 await update_status(
                     self._db, self._prefix, oid, final,
                     expire_at=compute_expire_at(ttl_seconds),
+                    log=("event", "State changed to done"),
+                    set_fields={"widgetUpstream": None},
                 )
                 final_recorded = True
-                await append_log(self._db, self._prefix, oid, "event", "State changed to done")
             elif end_state == "cancelled":
                 _trace(
                     "CANCEL-TRACE %s: executor write cancelled (after execute_fn returned)",
@@ -388,11 +383,11 @@ class Executor:
                 await update_status(
                     self._db, self._prefix, oid, final,
                     expire_at=compute_expire_at(ttl_seconds),
+                    log=("event", "State changed to cancelled"),
+                    set_fields={"widgetUpstream": None},
                 )
                 final_recorded = True
-                await append_log(self._db, self._prefix, oid, "event", "State changed to cancelled")
 
-            await clear_widget_upstream(self._db, self._prefix, oid)
             await self._cleanup_ephemeral(str(oid))
             return (end_state, None)
         finally:
