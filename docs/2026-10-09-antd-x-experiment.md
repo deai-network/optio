@@ -1,68 +1,42 @@
 # Ant Design X experiment, session controls and vultus one-of: handoff log
 
-Status as of 2026-10-09 ~12:30 CEST, written by "antd port" (aoe:fa9e60c76e02) for whoever
-picks this up after a context reset. The first version of this log (2026-10-09 00:30, by
-"conversation-ui tweaks", aoe:c1d32028376a) covered only the X experiment; that session
-handed over and lingers for questions.
+Status as of 2026-10-09 ~17:30 CEST, written by "antd port 3" (aoe:ebb2453dfe4c), the current
+holder (since 12:38). Earlier holders, advisory now: "antd port 2" (aoe:fa9e60c76e02, until
+12:36) and "conversation-ui tweaks" (aoe:c1d32028376a, the first X work).
 
-**Current holder since 12:38: "antd port 3" (aoe:ebb2453dfe4c).** "antd port 2"
-(aoe:fa9e60c76e02) retired to an advisory role at 12:36. Updated 13:10: unwind step 1 is done
-(OneOfSlider and the tooltip hold-back on unitas main eb66a0e, §5.1).
+**Where things stand:** the detours are closed. The session controls (permission modes, model
+list from the CLI, picks across a resume, compact bar, sorted model list with inline
+descriptions, dev-server knobs) are on **optio main 193c035e** (pushed 17:15; "optio perf
+work" runs the optio release batch). vultus **core 0.3.0 / antd 0.5.0** are on npm (unitas main
+41cb663). `csillag/antd-x` is rebased onto that main. Left: the permission card review (step 4
+below), then the remaining X candidates.
 
 ## 00. Goal hierarchy: why we are where we are (read this first)
 
 The **main goal** is the Ant Design X experiment (§1–2): replace optio-conversation-ui's
-widgets with X ones, one at a time, compared live against the vanilla UI. Everything else is
-a detour, nested like this:
+widgets with X ones, one at a time, compared live against the vanilla UI. The detours it
+spawned (a Claude Code permission-mode selector, the vultus one-of field, the session controls
+on vultus) are done and merged; see §4.
 
-1. **Main goal: the X experiment.** Last X step done: tool rows as ThoughtChain +
-   CodeHighlighter. Next X step that was waiting: the **permission card** as code blocks
-   (implemented, uncommitted), which the owner could not review because his test session ran
-   without a permission gate.
-   - **Detour 1: a Claude Code permission-mode selector** (`csillag/session-controls`, for
-     optio main), so the card can be reviewed in a session that asks. It grew while
-     answering the owner's questions: the `session_controls` allowlist, the shared
-     `SessionControlsConfigMixin`, the rollout to all agents, all six modes with tri-state
-     `allow_bypass_permissions`. Side requests done along the way, on the same branch or
-     main: the `System:` kickoff, the collapsible dashboard process list (main 660ce909).
-     - **Detour 2: the vultus one-of field** (unitas), because the modes need explanations
-       and disabled reasons and vultus had only boolean fields. Done and merged
-       (unitas main dbdaf2a): OneOfSelect, OneOfSegmented, variants, icons, markdown,
-       tooltip signs.
-       - **Detour 3: the session controls on vultus**: every select control on OneOfSelect
-         (done, 197bf962), model descriptions (done), Claude's model list from the CLI
-         (helper done, uncommitted, one owner decision open), the **compact controls bar**
-         (descriptions as questions done 10381b0f; label hiding and the other control kinds
-         still to do), which needs **OneOfSlider** for the effort slider (done, unitas main
-         eb66a0e).
-
-**Unwind order**, innermost first, each step closing a level:
-1. ~~OneOfSlider: fix the arrow-key test, story, docs, owner review, merge to unitas main.~~
-   Done 13:05, unitas main eb66a0e (pushed); see §5.1.
-2. Compact controls bar (BoolSwitch / OneOfSegmented / OneOfSlider, labels hidden when they do
-   not fit); review and commit the model-list work after the owner's resume decision.
-   Detour 3 closed.
-3. Rebase antd-x and antd-x-base onto session-controls, link vultus in both (`pnpm install`),
-   owner reviews the controls on :5180/:5181. Detour 2's consumer closed.
-4. **Back to the reason for detour 1**: the owner reviews the permission card in the gated
-   "Claude Code conversation — Config #1" task with Permissions on Manual; commit the card on
-   antd-x if approved.
-5. Push session-controls to optio main (§4 checklist); vultus release before the next optio
-   release. Detour 1 closed.
-6. Resume the main goal: the remaining X candidates (§2).
-
-Do not start new side work before the stack is unwound, unless the owner asks.
+**Unwind order** (what remains is in bold):
+1. ~~OneOfSlider~~ (unitas eb66a0e).
+2. ~~Compact controls bar; Claude's model list reviewed and committed~~ (resume decision:
+   all three picks kept, a vanished model matches its family).
+3. ~~Demo rebuilt on the session controls~~ (two worktrees now, §3).
+4. **Back to the reason for detour 1: the owner reviews the permission card** in the gated
+   "Claude Code conversation — Config #1" task (process 6ac7ee8304fb01ee4e6f26a1; the
+   "conversation+task" task has no gate and runs bypass, so it can show no card). The card is
+   the uncommitted change in the antd-x worktree; commit it on antd-x if approved.
+5. ~~Push session controls to optio main; vultus release~~ (17:15, 17:07).
+6. **Resume the main goal: the remaining X candidates (§2).**
 
 ## 0. Work streams at a glance
 
 | Stream | Where | State |
 |---|---|---|
-| X experiment (optio-conversation-ui widgets) | optio branch `csillag/antd-x`, worktree `.worktrees/csillag/antd-x`, demo https://excavator:5180 | committed up to ThoughtChain+CodeHighlighter; permission-card change uncommitted (awaits owner live review) |
-| Vanilla baseline | `csillag/antd-x-base` = session-controls + 2 dev-setup commits, worktree `.worktrees/csillag/antd-x-base`, https://excavator:5181 | needs re-reset after the next rebase |
-| Session controls etc. (for optio **main**) | optio branch `csillag/session-controls`, worktree `.worktrees/csillag/session-controls` (own `.venv`, node_modules linked to the unitas worktree) | 7 local commits (§4); a helper was reworking Claude Code's model list at handoff (§5.3) |
-| vultus one-of field | unitas `main` dbdaf2a (pushed) | done: useOneOfField, OneOfSelect, OneOfSegmented |
-| vultus OneOfSlider + tooltip hold-back | unitas `main` eb66a0e (pushed); worktree `~/deai/optio/.worktrees/csillag/unitas` detached at it, branch deleted | done (§5.1) |
-| optio main | origin/main 8d76a82c (optio perf work's docs commit on top of my 660ce909) | 660ce909 = hide the process list (pushed 00:37) |
+| X experiment | optio branch `csillag/antd-x`, worktree `.worktrees/csillag/antd-x`, https://excavator:5180; also runs the demo engine and API | main 193c035e + X deps (4d2c895f) + experiment + docs; permission card uncommitted |
+| Non-X work (optio main-bound) | optio branch `csillag/session-controls`, worktree `.worktrees/csillag/session-controls` (own `.venv`, owns the unitas worktree's node_modules links), https://excavator:5181 | equal to origin/main 193c035e; collect the next non-X changes here |
+| vultus | unitas main 41cb663, worktree `.worktrees/csillag/unitas` detached at it | released: core 0.3.0, antd 0.5.0 |
 
 All paths are on host `excavator` (`ssh -F /home/csillag/share/fleet-ssh/config excavator`),
 repo `~/deai/optio`, worktrees under `~/deai/optio/.worktrees/csillag/`.
@@ -75,7 +49,7 @@ Rulings: no hand-painted CSS except the owner-approved glass look (set once via 
 commit a UI change only after the owner reviewed it live; tests pinning old DOM are rewritten
 only for widgets we keep.
 
-## 2. X experiment status (branch `csillag/antd-x`, on top of session-controls 0aefbe44)
+## 2. X experiment status (branch `csillag/antd-x`, on optio main 193c035e)
 
 Committed (newest first): `tool rows as X ThoughtChain, details as CodeHighlighter`
 (CodeBlock.tsx wraps CodeHighlighter with Prism oneDark in dark mode; adds react-syntax-highlighter
@@ -83,97 +57,73 @@ dep), `glass bubbles, theme-tinted; System rows as Bubble.System` (homepage glas
 ant-design/x .dumi CustomizationProvider; user bubbles tinted with colorPrimary, System rows with
 preset purple, via CSS vars on the view root; stylesheet rewritten at module load so HMR updates),
 `X default bubbles on colorBgContainer`, the doc, `drop our mermaid and math libraries`,
-`answers rendered by XMarkdown`, `message bubbles as X Bubble`, `trust extra dev origins`,
-`setup` (2 commits: dev proxy target, X deps + dev port/HTTPS).
+`answers rendered by XMarkdown`, `message bubbles as X Bubble`, and first
+`Ant Design X experiment dependencies` (@ant-design/x, x-markdown; lockfile resolved
+lockfile-only). The dev-server knobs and trusted origins went to main.
 
 Uncommitted in the antd-x worktree: the permission card shows tool input as code blocks
-(`renderToolInput`; description next to the tool name; old KV table removed). The owner wants to
-review it live in a **gated** task ("Claude Code conversation — Config #1", permission_gate=True)
-with the Permissions dropdown on Manual; the "conversation+task" demo runs bypass without a gate.
+(`renderToolInput`; description next to the tool name; old KV table removed), awaiting the
+owner's live review (step 4).
 
 Remaining X candidates: Think (thinking rows, compaction summary), Bubble.Divider (conversation
 ended), error rows as error-tinted glass, Bubble.List + role map, Sender (+ Attachments),
 FileCard for downloads, Prompts for single-choice questions. Tests: 9 view tests fail by design
 (they pin the old bubble DOM).
 
-## 3. Methodology (unchanged, see git history of this file for the long version)
+## 3. Methodology
 
-One demo backend from the antd-x worktree (tmux `antd-x-demo`: windows `demo` (optio_demo under
-watchfiles, db `optio-demo`, prefix `optio`), `api` (:3100), `vite-antd-x` (:5180),
-`vite-main` (:5181), `vultus-gallery` (Storybook :6008 from the unitas worktree)). Login
-admin@optio.local / optio-dev. Screenshots: superego `~/chat/antd-x-shots` (playwright-core +
-/usr/bin/chromium; probe-*.mjs scripts). **Hot reload is the point**: the owner watches
-:5180/:5181 live. Vites restart only for a rebase (a rebase passes through main's vite.config);
-announce it first. Rebase recipe: C-c both Vites, `git stash` the uncommitted card change,
-rebase antd-x onto session-controls, pop, reset antd-x-base to the new setup commit
-(`git log --grep "^build(optio-dashboard, optio-conversation-ui): Ant Design X experiment setup"`),
-restart Vites with the commands in the tmux history. The demo engine restarts itself (watchfiles).
+Two worktrees (owner, 2026-10-09): `session-controls` collects everything non-X and serves
+:5181; `antd-x` is always rebased onto it (now onto main) and serves :5180. One demo backend
+from the antd-x worktree (tmux `antd-x-demo`: windows `demo` (optio_demo under watchfiles, db
+`optio-demo`, prefix `optio`), `api` (:3100), `vite-antd-x` (:5180), `vite-main` (:5181, from
+the session-controls worktree), `vultus-gallery` (Storybook :6008 from the unitas worktree)).
+Login admin@optio.local / optio-dev. Screenshots: superego `~/chat/antd-x-shots`
+(playwright-core + /usr/bin/chromium; `shoot.mjs <path> <name>` shoots both ports; probe-*.mjs).
+**Hot reload is the point**: the owner watches :5180/:5181 live.
 
-## 4. `csillag/session-controls` (for optio main), on 660ce909
+**Start the Vites with the vite binary, never `pnpm ... dev`**: pnpm auto-installs before a
+run when the workspace changed, which relinks the unitas worktree's shared package
+node_modules into that worktree's store (it did at 14:38 and broke session-controls' tests
+with two Reacts). Command (in `packages/optio-dashboard` of the worktree):
+`OPTIO_DEV_VULTUS=~/deai/optio/.worktrees/csillag/unitas OPTIO_API_URL=http://localhost:3100
+OPTIO_DEV_PORT=5180|5181 OPTIO_DEV_HTTPS=1 OPTIO_DEV_HOST=excavator ./node_modules/.bin/vite`.
+OPTIO_DEV_VULTUS aliases vultus-antd to the unitas worktree's source (HMR) and dedupes antd /
+react-i18next / i18next. If the unitas links get relinked anyway: remove
+`unitas/packages/vultus-{core,antd}/node_modules` and `pnpm install` in session-controls.
 
-| Commit | What |
-|---|---|
-| 1204e2f1 | the auto-start kickoff is a `System:` message in all 7 adapters (owner: the agent is told the human may be absent) |
-| 1b047fdb | Claude Code `permission_mode` live control (stream-json `set_permission_mode`, follows system/init + system/status); `session_controls` allowlist |
-| f0e78829 | `SessionControlsConfigMixin` (optio_agents.config_types): show_session_controls + session_controls, `settable_controls`, `_validate_session_controls` |
-| 0aefbe44 | allowlist in every agent (6 helpers); /control refuses ids outside settable_controls (403), every id while the bar is off; opencode: browser-side filter only (no server gate) |
-| 1d22ca25 | all six modes (Manual=wire `default`, Accept edits, Plan, Auto, Don't ask, Bypass), Manual/Plan disabled without the gate with a reason; tri-state `allow_bypass_permissions` (None: only when starting in bypass; False + bypass start = error); permission_mode accepts manual/auto; uniformity guard; AGENTS.md |
-| 197bf962 | select session controls rendered by vultus `useOneOfField` + `OneOfSelect` (`SessionSelect`); ControlOption `variant`/`confirm`; Bypass = danger with a popconfirm; model descriptions (codex, cursor, grok; kimi already) |
-| 10381b0f | control descriptions as questions (MODEL_DESCRIPTION, EFFORT_DESCRIPTION, Permissions; kimi passes agent descriptions) |
+Rebase recipe for antd-x: stash the card change (`git stash push -- <ConversationView.tsx>`),
+`git rebase --onto <new base> <old base> csillag/antd-x`, pop, `pnpm install --lockfile-only`
+(no relink) and commit the lock if it changed. vite.config rarely changes, so the Vites can
+stay up; the demo engine restarts itself (watchfiles) and cancels running demo sessions, which
+the owner resumes.
 
-**Before pushing to main**: the first four commits carry a `Co-Authored-By` trailer, which
-optio/excavator/unitas forbid (root AGENTS.md); strip them
-(`git filter-branch --msg-filter` over 660ce909..HEAD), rebase onto origin/main, run all
-suites with full logs, keep `pnpm-lock.yaml` out, tell "optio perf work" (the push restarts the
-excavator engine once), push. unitas main must contain whatever vultus code optio uses (the main
-checkout links `~/deai/unitas`); a vultus release (core 0.3.0 / antd 0.5.0) is needed before the
-next optio release, then raise optio-conversation-ui's vultus-antd range.
+## 4. Merged to optio main (193c035e) and released
 
-## 5. In flight at handoff
+From `csillag/session-controls`, 18 commits on 7b73cf45 (trailers stripped): the `System:`
+kickoff; the `session_controls` allowlist and `SessionControlsConfigMixin` in every agent; all
+six Claude Code permission modes with tri-state `allow_bypass_permissions`; select controls as
+vultus one-of selects with descriptions, variants, confirmations; control descriptions as
+questions; Claude's model list from the CLI (`initialize`), the operator's picks (model,
+effort, permission mode) kept across an optio resume (`picks.py`; a short initialize-only
+probe before the resumed launch, asked with the configured model or `default`, never the saved
+one; a vanished model matches its family via `models.restore_model`); the compact controls
+bar (BoolSwitch, OneOfSegmented, OneOfSlider; labels hidden when the toolbar would overflow);
+the model select sorted (current first, older versions under "Older versions",
+`ControlOption.group`) with inline descriptions (`inlineDescriptions`, every agent's model
+list); opt-in dev-server knobs (OPTIO_API_URL, OPTIO_DEV_PORT/HTTPS/HOST, OPTIO_DEV_VULTUS,
+OPTIO_TRUSTED_ORIGINS); optio-conversation-ui needs vultus-antd >=0.5.0. vultus 0.3.0/0.5.0
+(unitas 41cb663): one-of field and widgets, choice groups, inline descriptions, OneOfSlider
+(field tooltip on the whole slider), tooltips held back while a confirmation is open.
 
-1. **OneOfSlider: done**, unitas main eb66a0e (pushed 13:05; 051bcee + eb66a0e on dbdaf2a).
-   - The arrow-key failure was the test: @rc-component/slider 1.1.1 (antd 6.6.5) moves on keydown
-     and ends the move (onChangeComplete) on **keyup**; the test sent keydown only. A held key
-     repeats keydown and ends with one keyup, so a held key is still one request.
-   - Owner review on :6008 (story Fields/One of/Effort): the handle used to jump back to the old
-     choice while the commit ran. Now it stays on the requested choice while the confirmation
-     is asked and the commit runs (`asking || field.pending`), then shows the stored value (the
-     old one after Cancel or a failure). Verified in Chromium with an in-page
-     MutationObserver: one handle change only (`probe-slider-trace.mjs`).
-   - Found while testing, fixed in **all six confirming widgets** (owner's choice): the
-     widget's own tooltip stayed open over its popconfirm and covered the question and
-     buttons (OneOfSegmented on main had it too). `useConfirm` returns `asking` (popconfirm,
-     cascade modal or typing confirmation open; `useOneOfRequest` passes it on); ActionButton
-     (iconOnly), BoolSwitch, BoolCheckbox, OneOfSelect, OneOfSegmented, OneOfSlider hold back
-     their tooltips meanwhile. Design doc decisions 25 (tooltips) and 26 (slider).
-   - vultus-antd 174/174, tsc clean (vultus-antd and gallery); logs /tmp/vultus-tests/*-eb66a0e.log.
-2. **Compact controls bar** (approved): in optio-conversation-ui `SessionControls`:
-   boolean -> vultus `BoolSwitch`, segmented -> `OneOfSegmented`, slider -> `OneOfSlider`
-   (small marks), all with the control description; labels get class `optio-cc-control-label`
-   and are hidden when they do not fit: measure in a ResizeObserver callback / layout effect by
-   removing `optio-cc-compact` from the toolbar, reading scrollWidth vs clientWidth, re-adding
-   it if needed (synchronous, no flicker); labels stay the accessible names.
-3. **Claude model list from the CLI** (approved; a helper agent was implementing it in
-   packages/optio-claudecode, uncommitted): the stream-json control request `initialize`
-   returns `models: [{value (alias), resolvedModel, displayName, description, supportsEffort,
-   supportedEffortLevels}]` (same as Claude Code's /model and claude-agent-acp); replaces
-   /v1/models, declutter, the default-model probe turn and the resume upgrade logic; pinned
-   full ids keep working. **Helper finished (uncommitted, not yet reviewed by a session with
-   context to spare)**: models.py rewritten (`parse_cli_models`, `fetch_cli_models`,
-   `fallback_models`, `launch_model`, `shown_model`, `catalog_with`); `conversation.initialize()`
-   (answer kept off the event stream; `attach()` resets runtime_model); controls.build_controls
-   gains `runtime_model`; session.py drops the probe turn and the resume upgrade; fake_claude
-   answers `initialize` with the real list; new tests/test_cli_models.py (21). Suites:
-   parallel 534 passed + the known resume_refresh failure, serial 23 passed (logs
-   /tmp/sc-tests/cc-models-*.log). **Open owner decision**: a resumed session with no configured
-   model now launches with `--model default` (picks up newer models), so an operator's model pick
-   is not carried across an optio resume (effort/permission picks never were); persisting the
-   pick in a workdir file would be ~10 lines. Also: on resume the widget briefly shows the old
-   run's controls until the first system/init. Next: review the diff, decide, commit.
-4. Then: rebase antd-x/antd-x-base onto session-controls, `pnpm install` in both (links vultus
-   from the unitas worktree), owner review on :5180/:5181.
+Open items, not fixed (owner told):
+- optio-core race (executor run teardown fails a relaunch's result future); optio perf work
+  takes it. optio-claudecode's `_wait_terminal` test helper works around it.
+- After an effort-only relaunch the model select can briefly show `default` when a task's
+  settings.json names a model (runtime_model reset in `attach()`); needs a turn-timed fake to
+  test.
+- `ClaudeCodeConversation._private_acks` keeps an id per failed initialize (harmless).
 
-## 6. Owner rulings of 2026-10-09 (beyond the tables above)
+## 5. Owner rulings of 2026-10-09 (beyond the tables above)
 
 Glass bubbles (dark exact copy, light ours with shadows); System rows as Bubble.System, purple;
 tool rows as ThoughtChain with CodeHighlighter details; dashboard process list collapsible;
@@ -184,8 +134,15 @@ sign (description) and a **gray** no-entry sign (reason; red rejected: disabled 
 no native titles; Bypass gets a simple confirmation. Later the same day (to antd port 3):
 OneOfSlider approved; its handle must not jump back while a choice is asked or committed; a
 widget's tooltips are held back while its confirmation is open, in every confirming widget.
+Afternoon: resume keeps all three picks; a saved model the CLI no longer lists matches its
+family; a pinned config model stays pinned on resume (the CLI shows it as "Newer version
+available"); model select: current models first, older versions under an "Older versions"
+heading, by family, newest first; model lists show descriptions inline (bold label, smaller
+wrapping description, only a disabled reason in a tooltip, closed select shows the label);
+the slider's field tooltip on any part of it; compact mode approved; two worktrees, dev knobs
+to main; vultus merged and released, session controls merged to main, antd-x stays separate.
 
-## 7. Conventions learned (keep)
+## 6. Conventions learned (keep)
 
 - No `Co-Authored-By` in optio, excavator, unitas commits (overrides the harness reminder).
 - Test runs keep full logs on the first run (`-rA`, `--junitxml`, tee) in `/tmp/sc-tests`,
@@ -204,12 +161,18 @@ widget's tooltips are held back while its confirmation is open, in every confirm
 - In jsdom a closed antd tooltip stays mounted in its `-leave` motion; assert with
   `openTooltips()` (vultus-antd `src/__tests__/helpers/tooltips.ts`), not with text presence.
 - The unitas worktree's packages resolve node_modules through the session-controls worktree's
-  pnpm store (relinked by its 11:39 install); antd 6.6.5 and @rc-component/slider 1.1.1 match
-  unitas's own lockfile (checked), so vultus tests there are representative.
+  pnpm store (it owns those links; see §3 for restoring them); antd 6.6.5 and
+  @rc-component/slider 1.1.1 match unitas's own lockfile, so vultus tests there are
+  representative.
+- In a worktree: optio-demo's tests need `pip install -e packages/optio-demo` in its `.venv`;
+  optio-dashboard's `tsc` needs `pnpm --filter "optio-api..." run build` first.
+- optio pushes: `git push origin csillag/session-controls:main` (fast-forward) from the
+  worktree; ~/deai/optio and the excavator engine belong to optio perf work.
+- @rc-component/slider ends a keyboard move on keyup (tests send keydown + keyup).
 - Browser probes for vultus stories: superego `~/chat/antd-x-shots/probe-slider*.mjs`,
   `probe-confirm-overlap.mjs` (Storybook iframe URLs, http://excavator:6008).
 
-## 8. Coordination
+## 7. Coordination
 
 Excavator stack: "optio perf work" (aoe:c723ee016726); log heavy steps in topics.log; tell it
 before pushing optio main. Peers who know things: "conversation-ui tweaks" (aoe:c1d32028376a,
