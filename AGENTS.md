@@ -630,6 +630,14 @@ grok, kimicode, antigravity) inherit their common field sets from mixins in
   `seed_blob_encrypt`/`decrypt` wrap the shared pool-account SEED tar
   (pool-scoped key), falling back to the session pair when unset. Setting one
   member of a pair without the other raises `ValueError` at construction.
+- **`SessionControlsConfigMixin`** — the conversation widget's controls bar:
+  `show_session_controls`, plus the optional `session_controls` allowlist of
+  control ids (None: every control the engine builds; setting it without the
+  bar raises `ValueError`). Engines narrow every controls snapshot with
+  `optio_agents.session_controls.filter_controls` and their `/control` refuses
+  an id outside `settable_controls` (403 `not-allowed`; every id while the bar
+  is off). opencode builds its controls in the browser, so its widget applies
+  the allowlist there and it has no server-side gate.
 
 `optio-agents-all` guards this uniformity with a union-wide test; its
 `create_task` passes configs through verbatim. Details:

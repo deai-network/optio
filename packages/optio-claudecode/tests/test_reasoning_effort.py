@@ -192,7 +192,7 @@ def _build_controls(catalog, model, effort):
     permission mode: the model select and the effort slider's presence gate."""
     from optio_claudecode.controls import build_controls
     return build_controls(catalog=catalog, model=model, effort=effort,
-                          permission_mode=None, permission_modes=[])
+                          permission_mode=None, permission_options=[])
 
 
 def test_controls_include_effort_for_capable_model():

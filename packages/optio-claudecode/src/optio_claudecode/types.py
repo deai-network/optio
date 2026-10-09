@@ -61,9 +61,12 @@ __all__ = [
 ]
 
 
-PermissionMode = Literal["default", "plan", "acceptEdits", "bypassPermissions", "dontAsk"]
-_VALID_PERMISSION_MODES = {"default", "plan", "acceptEdits", "bypassPermissions", "dontAsk"}
-_HEADLESS_SAFE_PERMISSION_MODES = {"acceptEdits", "bypassPermissions", "dontAsk"}
+# "manual" is Claude Code's current name for "default" (both accepted); "auto"
+# lets its classifier decide.
+PermissionMode = Literal["default", "manual", "plan", "acceptEdits", "auto", "bypassPermissions", "dontAsk"]
+_VALID_PERMISSION_MODES = {"default", "manual", "plan", "acceptEdits", "auto", "bypassPermissions", "dontAsk"}
+# Modes that never wait for an answer (auto: a blocked action just does not run).
+_HEADLESS_SAFE_PERMISSION_MODES = {"acceptEdits", "auto", "bypassPermissions", "dontAsk"}
 
 # Graded reasoning-effort levels claude's --effort flag accepts (ordered). The
 # live control (id="reasoning_effort") is a slider over these; only models that
@@ -116,6 +119,11 @@ class ClaudeCodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionC
     scrub_env: list[str] | None = None
 
     permission_mode: PermissionMode | None = None
+    # Whether bypassPermissions is reachable at all (Claude Code decides that
+    # at launch: --allow-dangerously-skip-permissions). None: only when the task
+    # starts in it; True: also when starting in another mode; False: never
+    # (contradicts starting in it). See bypass_allowed.
+    allow_bypass_permissions: bool | None = None
     allowed_tools: list[str] | None = None
     disallowed_tools: list[str] | None = None
     # When True, a fresh launch passes a trailing positional prompt
@@ -273,11 +281,24 @@ class ClaudeCodeTaskConfig(ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionC
     # model change does. Validated against ReasoningEffort below.
     reasoning_effort: "ReasoningEffort | None" = None
 
+    @property
+    def bypass_allowed(self) -> bool:
+        """Whether bypassPermissions is reachable (allow_bypass_permissions,
+        or by default only when the task starts in it)."""
+        if self.allow_bypass_permissions is not None:
+            return self.allow_bypass_permissions
+        return self.permission_mode == "bypassPermissions"
+
     def __post_init__(self) -> None:
         # Validate the inherited claustrum triad first, so a missing
         # delivery_type (with fs_isolation on) fails fast.
         self._validate_claustrum()
         self._validate_blob_crypto()
+        if self.allow_bypass_permissions is False and self.permission_mode == "bypassPermissions":
+            raise ValueError(
+                "ClaudeCodeTaskConfig: permission_mode='bypassPermissions' contradicts "
+                "allow_bypass_permissions=False."
+            )
         if self.permission_mode is not None and self.permission_mode not in _VALID_PERMISSION_MODES:
             raise ValueError(
                 f"ClaudeCodeTaskConfig.permission_mode={self.permission_mode!r} "

@@ -196,25 +196,33 @@ when the hook returns, and when it raises `NothingToResurrect`.
   AFTER the seed (fresh) or restored snapshot (resume) on all paths, so
   the caller's keys win per key while every other key the seed/snapshot
   carried is preserved.
-* `permission_mode` — forwarded verbatim to `claude
-  --permission-mode` (the launch mode). Validation happens in
-  `__post_init__`. In a conversation with the controls bar it is also live:
-  see `SessionControlsConfigMixin` below.
+* `permission_mode` — the starting mode, forwarded verbatim to `claude
+  --permission-mode`: `manual` (Claude Code's current name; `default` still
+  accepted, and is what the stream reports), `acceptEdits`, `plan`, `auto`,
+  `dontAsk`, `bypassPermissions`. Validation happens in `__post_init__`; a
+  conversation without `permission_gate` must start in one that never waits
+  for an answer (`acceptEdits`, `auto`, `dontAsk`, `bypassPermissions`) or
+  have `allowed_tools`.
+* `allow_bypass_permissions: bool | None = None` — whether bypassPermissions is
+  reachable at all (Claude Code decides at launch; passed as
+  `--allow-dangerously-skip-permissions`). None: only when starting in it;
+  True: also from another starting mode; False: never (contradicts starting in
+  it, a config error). `bypass_allowed` resolves it.
 * `SessionControlsConfigMixin` — the conversation widget's controls bar:
   `show_session_controls` (requires conversation mode + `conversation_ui`)
   and the optional `session_controls` allowlist of control ids (None: all).
   Claude Code's controls (`controls.build_controls`): `model` and
   `reasoning_effort` (applied by relaunching claude with `--model` /
   `--effort` + `--continue`), and `permission_mode`, switched in place with
-  the stream-json control request `set_permission_mode`. Offered modes
-  (`controls.offered_permission_modes`): with `permission_gate` default /
-  acceptEdits / plan / dontAsk, without it only acceptEdits / dontAsk;
-  bypassPermissions only for a session launched in it (Claude Code refuses
-  to switch into it otherwise). The select follows the mode the stream
-  reports (`system/init`, `system/status`); a relaunch keeps the running
-  mode. Every snapshot is narrowed by the allowlist, and the listener's
-  /control refuses an id outside `settable_controls` (403 `not-allowed`; all
-  of them while the bar is off).
+  the stream-json control request `set_permission_mode`. The select always
+  lists all six modes with a description each
+  (`controls.permission_mode_options`); without `permission_gate` Manual and
+  Plan (they ask the operator) are disabled with the reason, and Bypass is
+  disabled unless `bypass_allowed`. Only enabled modes can be set. The select
+  follows the mode the stream reports (`system/init`, `system/status`); a
+  relaunch keeps the running mode. Every snapshot is narrowed by the
+  allowlist, and the listener's /control refuses an id outside
+  `settable_controls` (403 `not-allowed`; all of them while the bar is off).
 * `session_blob_encrypt/decrypt`, `seed_blob_encrypt/decrypt` —
   inherited from `optio_agents.config_types.BlobCryptoConfigMixin`
   (alongside the `ClaustrumConfigMixin` triad). Optional synchronous

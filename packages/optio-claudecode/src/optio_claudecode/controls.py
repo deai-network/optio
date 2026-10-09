@@ -8,7 +8,6 @@ in the session body, so it is unit-testable without a live host.
 from __future__ import annotations
 
 from optio_agents.session_controls import (
-    SINGLE_OPTION_REASON,
     ControlOption,
     SessionControl,
     effort_control,
@@ -18,44 +17,59 @@ from optio_agents.session_controls import (
 
 from optio_claudecode import models as cc_models
 
-# Claude Code's permission modes: (label, description) as the select shows them.
+# Claude Code's permission modes, in its own order (its Shift+Tab cycle, then
+# dontAsk and bypass): wire value -> (label, description). "default" is the
+# value Claude Code reports for the mode its docs and CLI now call "manual".
 PERMISSION_MODES: dict[str, tuple[str, str]] = {
-    "default": ("Ask", "Ask before editing files or running commands"),
-    "acceptEdits": ("Accept edits", "Edit files without asking"),
-    "plan": ("Plan", "Read and plan only; no edits or commands"),
-    "dontAsk": ("Don't ask", "Run only pre-approved tools; refuse the rest without asking"),
-    "bypassPermissions": ("Bypass", "Run everything without asking"),
+    "default": ("Manual", "Asks before editing files or running commands"),
+    "acceptEdits": ("Accept edits", "Edits files without asking; asks before other commands"),
+    "plan": ("Plan", "Reads and plans without editing; asks you to approve the plan"),
+    "auto": ("Auto", "A classifier reviews each action instead of you; risky actions are blocked"),
+    "dontAsk": ("Don't ask", "Runs only pre-approved tools; refuses anything that would need approval"),
+    "bypassPermissions": ("Bypass", "Runs everything without asking"),
 }
 
-# With the permission gate a question reaches the operator, so the modes that
-# ask are usable; without it nobody can answer one, so only the modes that
-# never ask are (ClaudeCodeTaskConfig's headless-safe rule).
-_GATED_MODES = ["default", "acceptEdits", "plan", "dontAsk"]
-_UNGATED_MODES = ["acceptEdits", "dontAsk"]
+# The modes that ask the operator (Manual before acting, Plan to approve its
+# plan): usable only when the permission gate routes questions to the widget.
+_ASKING_MODES = {"default", "plan"}
+_NEEDS_GATE = ("Needs the permission gate: this task has no one to answer Claude's "
+               "questions (permission_gate is off).")
+_BYPASS_NOT_ALLOWED = "Not allowed for this task (allow_bypass_permissions)."
 
 
-def offered_permission_modes(*, permission_gate: bool, launch_mode: str | None) -> list[str]:
-    """The permission modes a session can switch between. bypassPermissions
-    only when the session was launched in it: Claude Code refuses to switch
-    into it otherwise (verified on 2.1.268: "Cannot set permission mode to
-    bypassPermissions because the session was not launched with
-    --dangerously-skip-permissions")."""
-    modes = list(_GATED_MODES if permission_gate else _UNGATED_MODES)
-    if launch_mode == "bypassPermissions":
-        modes.append("bypassPermissions")
-    return modes
+def canonical_permission_mode(mode: str | None) -> str | None:
+    """The wire value for a configured mode: "manual" is reported as "default"."""
+    return "default" if mode == "manual" else mode
 
 
-def permission_mode_control(*, current: str, modes: list[str]) -> SessionControl:
-    options = [
-        ControlOption(value=m, label=PERMISSION_MODES[m][0], description=PERMISSION_MODES[m][1])
-        for m in modes
-    ]
-    locked = len(options) <= 1
+def permission_mode_options(*, permission_gate: bool, bypass_allowed: bool) -> list[ControlOption]:
+    """Every Claude Code permission mode, always all six: the ones this session
+    cannot use are disabled with the reason (the modes that ask, without the
+    permission gate; bypass, when the task does not allow it: Claude Code
+    refuses to switch into it unless launched able to)."""
+    options = []
+    for mode, (label, description) in PERMISSION_MODES.items():
+        reason = None
+        if mode in _ASKING_MODES and not permission_gate:
+            reason = _NEEDS_GATE
+        elif mode == "bypassPermissions" and not bypass_allowed:
+            reason = _BYPASS_NOT_ALLOWED
+        options.append(ControlOption(
+            value=mode, label=label, description=description,
+            disabled=reason is not None, why_disabled=reason,
+        ))
+    return options
+
+
+def settable_permission_modes(options: list[ControlOption]) -> list[str]:
+    """The modes a set_control may switch to: the enabled options."""
+    return [o.value for o in options if not o.disabled]
+
+
+def permission_mode_control(*, current: str, options: list[ControlOption]) -> SessionControl:
     return SessionControl(
         id="permission_mode", kind="select", label="Permissions", category="mode",
         value=current, options=options,
-        disabled=locked, why_disabled=SINGLE_OPTION_REASON if locked else None,
     )
 
 
@@ -65,21 +79,21 @@ def build_controls(
     model: str | None,
     effort: str | None,
     permission_mode: str | None,
-    permission_modes: list[str],
+    permission_options: list[ControlOption],
     allowed: "list[str] | None" = None,
 ) -> list[dict]:
     """The serialized controls snapshot. The model select is always built; the
     reasoning_effort slider only when the running model advertises graded
     effort (model may be None before system/init names it); the
-    permission_mode select when the session offers any mode, showing the
-    running mode (else the first offered). ``allowed`` is the task's
+    permission_mode select (all six modes, unusable ones disabled with their
+    reason) showing the running mode (else the first usable one). ``allowed`` is the task's
     session_controls allowlist (None: all)."""
     ctrls = [model_control(models=catalog, current=model)]
     levels, default = cc_models.model_effort(model, catalog) if model else (None, None)
     if levels:
         ctrls.append(effort_control(levels=levels, current=effort or default))
-    if permission_modes:
-        ctrls.append(permission_mode_control(
-            current=permission_mode or permission_modes[0], modes=permission_modes,
-        ))
+    if permission_options:
+        settable = settable_permission_modes(permission_options)
+        current = canonical_permission_mode(permission_mode) or (settable or [permission_options[0].value])[0]
+        ctrls.append(permission_mode_control(current=current, options=permission_options))
     return filter_controls([c.to_dict() for c in ctrls], allowed)

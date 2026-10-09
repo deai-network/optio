@@ -35,6 +35,8 @@ from optio_claudecode import host_actions
 
 
 _TERMINAL = {"done", "failed", "cancelled"}
+NEEDS_GATE = ("Needs the permission gate: this task has no one to answer Claude's "
+              "questions (permission_gate is off).")
 
 
 # --- 1. validation matrix (pure unit) ------------------------------------
@@ -299,7 +301,7 @@ async def test_conversation_ui_session_lifecycle(
                 },
                 {
                     # Launched in bypassPermissions without the permission gate:
-                    # the modes that never ask, and bypass (launched in it).
+                    # all six modes; the two that ask are disabled (no gate).
                     "id": "permission_mode",
                     "kind": "select",
                     "label": "Permissions",
@@ -307,13 +309,23 @@ async def test_conversation_ui_session_lifecycle(
                     "value": "bypassPermissions",
                     "disabled": False,
                     "options": [
+                        {"value": "default", "label": "Manual",
+                         "description": "Asks before editing files or running commands",
+                         "disabled": True, "whyDisabled": NEEDS_GATE},
                         {"value": "acceptEdits", "label": "Accept edits",
-                         "description": "Edit files without asking", "disabled": False},
+                         "description": "Edits files without asking; asks before other commands",
+                         "disabled": False},
+                        {"value": "plan", "label": "Plan",
+                         "description": "Reads and plans without editing; asks you to approve the plan",
+                         "disabled": True, "whyDisabled": NEEDS_GATE},
+                        {"value": "auto", "label": "Auto",
+                         "description": "A classifier reviews each action instead of you; risky actions are blocked",
+                         "disabled": False},
                         {"value": "dontAsk", "label": "Don't ask",
-                         "description": "Run only pre-approved tools; refuse the rest without asking",
+                         "description": "Runs only pre-approved tools; refuses anything that would need approval",
                          "disabled": False},
                         {"value": "bypassPermissions", "label": "Bypass",
-                         "description": "Run everything without asking", "disabled": False},
+                         "description": "Runs everything without asking", "disabled": False},
                     ],
                 },
             ],

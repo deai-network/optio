@@ -108,6 +108,24 @@ stay top-level on each config — callers write `fs_isolation=` /
   fallback lives ONLY in the `seed_encrypt` / `seed_decrypt` accessor
   properties — engine seed ops must read the transforms through those, never
   the raw `seed_blob_*` fields.
+* `SessionControlsConfigMixin` — the conversation widget's controls bar:
+  `show_session_controls: bool = False` and `session_controls: list[str] |
+  None = None` (allowlist of control ids; None offers every control). Engines
+  call `self._validate_session_controls()` from `__post_init__` (the allowlist
+  must be a list of ids and needs the bar on). `settable_controls` is what a
+  `/control` endpoint may change: `[]` while the bar is off, else the
+  allowlist.
+
+## Session controls (`optio_agents.session_controls`)
+
+* `SessionControl` / `ControlOption` — one engine-neutral live control and a
+  select's option (`description`, `disabled` + `why_disabled`), serialized with
+  `to_dict()` for widgetData and `x-optio-control-update` snapshots.
+  `model_control` / `effort_control` build the common two.
+* `filter_controls(controls, allowed)` — narrows a serialized snapshot to the
+  allowlist (None: all); every emitted snapshot goes through it.
+* `control_allowed(control_id, allowed)` — the `/control` gate.
+* `validate_session_controls(...)` — the config check behind the mixin.
 
 Also here: `AllowedDir`, `ConversationMode`, `ToolVerbosity` (+
 `TOOL_VERBOSITIES`, the SSOT validation set), `ThinkingVerbosity`,

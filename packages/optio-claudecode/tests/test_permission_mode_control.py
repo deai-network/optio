@@ -7,7 +7,12 @@ import aiohttp
 import pytest
 
 from optio_agents.conversation import ConversationClosed
-from optio_claudecode.controls import build_controls, offered_permission_modes
+from optio_claudecode.controls import (
+    build_controls,
+    canonical_permission_mode,
+    permission_mode_options,
+    settable_permission_modes,
+)
 from optio_claudecode.conversation import ClaudeCodeConversation, ControlRejected
 from optio_claudecode.conversation_listener import ConversationListener
 from optio_claudecode.host_actions import build_claude_flags
@@ -22,31 +27,50 @@ CATALOG = [
 ]
 
 
-# --- which modes a session can offer ------------------------------------------
+# --- the permission modes a session lists -------------------------------------
 
-def test_a_gated_session_offers_the_modes_that_may_ask():
-    # With the permission gate, a question reaches the operator, so the modes
-    # that ask (default, plan's plan approval) are usable.
-    assert offered_permission_modes(permission_gate=True, launch_mode=None) == [
-        "default", "acceptEdits", "plan", "dontAsk",
-    ]
+ALL_MODES = ["default", "acceptEdits", "plan", "auto", "dontAsk", "bypassPermissions"]
 
 
-def test_an_ungated_session_offers_only_modes_that_never_ask():
-    # Without the gate nobody can answer a question: the headless-safe modes.
-    assert offered_permission_modes(permission_gate=False, launch_mode="acceptEdits") == [
-        "acceptEdits", "dontAsk",
-    ]
+def _opts(**kw):
+    return {o.value: o for o in permission_mode_options(**kw)}
 
 
-def test_bypass_is_offered_only_when_the_session_was_launched_in_it():
-    # Claude Code refuses to switch into bypassPermissions unless the process
-    # was started with it allowed; a session launched in it may come back.
-    assert "bypassPermissions" not in offered_permission_modes(
-        permission_gate=True, launch_mode="default")
-    assert offered_permission_modes(permission_gate=False, launch_mode="bypassPermissions") == [
-        "acceptEdits", "dontAsk", "bypassPermissions",
-    ]
+def test_every_session_lists_all_six_modes_in_claude_codes_order():
+    for gate in (True, False):
+        for bypass in (True, False):
+            opts = permission_mode_options(permission_gate=gate, bypass_allowed=bypass)
+            assert [o.value for o in opts] == ALL_MODES
+            # Manual is Claude Code's current name for the wire value "default".
+            assert opts[0].label == "Manual"
+            assert all(o.label and o.description for o in opts)
+
+
+def test_with_the_gate_every_mode_but_a_disallowed_bypass_is_enabled():
+    opts = _opts(permission_gate=True, bypass_allowed=False)
+    assert [m for m in ALL_MODES if not opts[m].disabled] == ALL_MODES[:-1]
+    assert opts["bypassPermissions"].why_disabled
+
+
+def test_without_the_gate_the_modes_that_ask_are_disabled_with_a_reason():
+    # Manual asks before acting and Plan asks to approve its plan: without the
+    # permission gate nobody can answer, so they are listed but disabled.
+    opts = _opts(permission_gate=False, bypass_allowed=True)
+    for mode in ("default", "plan"):
+        assert opts[mode].disabled and "permission gate" in opts[mode].why_disabled
+    for mode in ("acceptEdits", "auto", "dontAsk", "bypassPermissions"):
+        assert not opts[mode].disabled and opts[mode].why_disabled is None
+
+
+def test_settable_modes_are_the_enabled_ones():
+    opts = permission_mode_options(permission_gate=False, bypass_allowed=False)
+    assert settable_permission_modes(opts) == ["acceptEdits", "auto", "dontAsk"]
+
+
+def test_manual_is_reported_as_default():
+    assert canonical_permission_mode("manual") == "default"
+    assert canonical_permission_mode("auto") == "auto"
+    assert canonical_permission_mode(None) is None
 
 
 # --- the controls snapshot ----------------------------------------------------
@@ -58,30 +82,33 @@ def _by_id(ctrls):
 def test_controls_carry_a_permission_mode_select():
     ctrls = _by_id(build_controls(
         catalog=CATALOG, model="claude-opus-4-8", effort=None,
-        permission_mode="acceptEdits", permission_modes=["default", "acceptEdits", "plan"],
+        permission_mode="acceptEdits",
+        permission_options=permission_mode_options(permission_gate=False, bypass_allowed=False),
     ))
     pm = ctrls["permission_mode"]
     assert pm["kind"] == "select" and pm["category"] == "mode"
     assert pm["value"] == "acceptEdits"
-    assert [o["value"] for o in pm["options"]] == ["default", "acceptEdits", "plan"]
-    assert all(o["label"] and o.get("description") for o in pm["options"])
+    assert [o["value"] for o in pm["options"]] == ALL_MODES
+    opt = {o["value"]: o for o in pm["options"]}
+    assert opt["plan"]["disabled"] is True and opt["plan"]["whyDisabled"]
+    assert opt["auto"]["disabled"] is False and opt["auto"]["description"]
     assert pm["disabled"] is False
     # model and effort are unchanged
     assert ctrls["model"]["value"] == "claude-opus-4-8"
     assert ctrls["reasoning_effort"]["levels"] == ["low", "medium", "high"]
 
 
-def test_a_single_offered_mode_is_shown_locked():
+def test_a_manual_start_shows_as_the_manual_option():
     pm = _by_id(build_controls(
-        catalog=CATALOG, model=None, effort=None,
-        permission_mode="dontAsk", permission_modes=["dontAsk"],
+        catalog=CATALOG, model=None, effort=None, permission_mode="manual",
+        permission_options=permission_mode_options(permission_gate=True, bypass_allowed=False),
     ))["permission_mode"]
-    assert pm["disabled"] is True and pm["whyDisabled"]
+    assert pm["value"] == "default"
 
 
-def test_no_offered_modes_means_no_permission_control():
+def test_no_permission_options_means_no_permission_control():
     ctrls = _by_id(build_controls(
-        catalog=CATALOG, model=None, effort=None, permission_mode=None, permission_modes=[],
+        catalog=CATALOG, model=None, effort=None, permission_mode=None, permission_options=[],
     ))
     assert "permission_mode" not in ctrls
 
@@ -89,7 +116,8 @@ def test_no_offered_modes_means_no_permission_control():
 def test_the_allowlist_narrows_the_snapshot():
     ctrls = build_controls(
         catalog=CATALOG, model="claude-opus-4-8", effort=None,
-        permission_mode="default", permission_modes=["default", "plan"],
+        permission_mode="default",
+        permission_options=permission_mode_options(permission_gate=True, bypass_allowed=False),
         allowed=["permission_mode"],
     )
     assert [c["id"] for c in ctrls] == ["permission_mode"]
@@ -117,6 +145,30 @@ def test_session_controls_defaults_to_offering_everything():
 def test_session_controls_narrows_shown_controls():
     cfg = _cfg(show_session_controls=True, session_controls=["model", "permission_mode"])
     assert cfg.session_controls == ["model", "permission_mode"]
+
+
+def test_bypass_follows_the_starting_mode_unless_set():
+    # None (default): bypass is reachable only for a task that starts in it.
+    assert _cfg(permission_mode="bypassPermissions").bypass_allowed is True
+    assert _cfg(permission_mode="acceptEdits").bypass_allowed is False
+    assert _cfg(permission_mode="manual", allow_bypass_permissions=True).bypass_allowed is True
+
+
+def test_starting_in_bypass_contradicts_disallowing_it():
+    with pytest.raises(ValueError, match="allow_bypass_permissions"):
+        _cfg(permission_mode="bypassPermissions", allow_bypass_permissions=False)
+
+
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+def test_claude_codes_current_mode_names_are_valid_starting_modes(mode):
+    assert _cfg(permission_mode=mode).permission_mode == mode
+
+
+def test_auto_needs_no_permission_gate_to_start():
+    # auto decides by itself (its classifier); headless, a blocked action just
+    # doesn't run, so an ungated conversation may start in it.
+    cfg = _cfg(permission_gate=False, permission_mode="auto")
+    assert cfg.permission_mode == "auto"
 
 
 def test_session_controls_needs_show_session_controls():

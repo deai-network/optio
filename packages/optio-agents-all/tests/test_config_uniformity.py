@@ -8,7 +8,7 @@ from typing import get_args
 import pytest
 
 from optio_agents import BlobCryptoConfigMixin
-from optio_agents.config_types import ClaustrumConfigMixin
+from optio_agents.config_types import ClaustrumConfigMixin, SessionControlsConfigMixin
 
 import optio_agents_all as aa
 from optio_agents_all.factory import _REGISTRY
@@ -42,6 +42,14 @@ def _seed_dec(data: bytes) -> bytes:
 def test_union_members_inherit_shared_mixins(cls):
     assert issubclass(cls, BlobCryptoConfigMixin)
     assert issubclass(cls, ClaustrumConfigMixin)
+    assert issubclass(cls, SessionControlsConfigMixin)
+
+
+@pytest.mark.parametrize("cls", CONFIG_TYPES, ids=lambda c: c.__name__)
+def test_session_controls_allowlist_needs_the_bar_on_every_engine(cls):
+    # The allowlist narrows show_session_controls; alone it is a config error.
+    with pytest.raises(ValueError, match="session_controls"):
+        _make(cls, session_controls=["model"])
 
 
 @pytest.mark.parametrize("cls", CONFIG_TYPES, ids=lambda c: c.__name__)

@@ -542,18 +542,20 @@ async def run_claudecode_session(
         # effort relaunch to re-emit the controls snapshot (effort presence and
         # preselected level follow the running model).
         build_controls = None
-        # The permission modes this session can switch between (the
-        # permission_mode control); switched live, so a relaunch keeps the
-        # running one, and may return to bypass when launched in it.
-        permission_modes = cc_controls.offered_permission_modes(
-            permission_gate=config.permission_gate, launch_mode=config.permission_mode,
+        # The permission_mode control: all six modes, the ones this session
+        # cannot use disabled with their reason. Switched live, so a relaunch
+        # keeps the running mode; bypass stays reachable when the task allows it.
+        permission_options = cc_controls.permission_mode_options(
+            permission_gate=config.permission_gate, bypass_allowed=config.bypass_allowed,
         )
-        conversation.permission_modes_offered = permission_modes
+        conversation.permission_modes_offered = cc_controls.settable_permission_modes(
+            permission_options,
+        )
 
         async def _spawn(model: str | None, *, do_continue: bool):
             claude_flags = host_actions.build_claude_flags(
                 permission_mode=conversation.permission_mode or config.permission_mode,
-                allow_bypass="bypassPermissions" in permission_modes,
+                allow_bypass=config.bypass_allowed,
                 allowed_tools=config.allowed_tools,
                 disallowed_tools=config.disallowed_tools,
                 model=model,
@@ -727,7 +729,7 @@ async def run_claudecode_session(
                 return cc_controls.build_controls(
                     catalog=model_list["models"], model=model, effort=effort,
                     permission_mode=conversation.permission_mode or config.permission_mode,
-                    permission_modes=permission_modes,
+                    permission_options=permission_options,
                     allowed=config.session_controls,
                 )
 
