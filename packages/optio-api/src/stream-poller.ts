@@ -3,6 +3,7 @@ import type { ProcessMetadataFilter } from 'optio-contracts';
 import { metadataFilterToMongo } from './metadata-filter-query.js';
 import { andScope } from './access-scope.js';
 import type { ScopeFilter } from './auth.js';
+import { LIST_PROJECTION } from './process-change-relevance.js';
 
 export interface StreamPollerOptions {
   db: Db;
@@ -18,17 +19,6 @@ export interface ListPollerHandle {
   start(): void;
   stop(): void;
 }
-
-/**
- * The fields the list stream compares and sends; the poll reads nothing else
- * (no log, widgetData, params or sessionEvents), so each tick stays small.
- */
-const LIST_PROJECTION = {
-  processId: 1, name: 1, status: 1, progress: 1, cancellable: 1, special: 1,
-  warning: 1, metadata: 1, depth: 1, supportsResume: 1, hasSavedState: 1,
-  supportsResurrect: 1, hasUnsavedWork: 1, resurrecting: 1,
-  autoResumeScheduled: 1, browserOpenRequests: 1,
-} as const;
 
 export function createListPoller(opts: StreamPollerOptions): ListPollerHandle {
   const { db, prefix, sendEvent, onError, metadataFilter, scope } = opts;
