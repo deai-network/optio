@@ -187,6 +187,12 @@ async def test_resume_creates_second_snapshot_and_passes_continue(
     # First launch: no --continue. Second (resume): --continue present.
     assert "--continue" not in launches[0]
     assert any("--continue" in launch for launch in launches[1:])
+    # Nothing configured: the fresh launch leaves the model to claude; the
+    # continued one passes the default alias, so it runs the newest default
+    # model rather than the full id its transcript ended on.
+    assert "--model" not in launches[0]
+    resumed = next(launch for launch in launches[1:] if "--continue" in launch)
+    assert resumed[resumed.index("--model") + 1] == "default"
 
 
 async def test_resume_with_no_prior_snapshot_falls_back_to_fresh(

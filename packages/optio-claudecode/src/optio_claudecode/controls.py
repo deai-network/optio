@@ -88,15 +88,22 @@ def build_controls(
     permission_mode: str | None,
     permission_options: list[ControlOption],
     allowed: "list[str] | None" = None,
+    runtime_model: str | None = None,
 ) -> list[dict]:
-    """The serialized controls snapshot. The model select is always built; the
-    reasoning_effort slider only when the running model advertises graded
-    effort (model may be None before system/init names it); the
-    permission_mode select (all six modes, unusable ones disabled with their
-    reason) showing the running mode (else the first usable one). ``allowed`` is the task's
-    session_controls allowlist (None: all)."""
-    ctrls = [model_control(models=catalog, current=model)]
-    levels, default = cc_models.model_effort(model, catalog) if model else (None, None)
+    """The serialized controls snapshot. The model select is always built,
+    over ``catalog`` (the CLI's model list, ``models.parse_cli_models``),
+    showing ``models.shown_model``: ``model`` (the configured or picked
+    value, None: ``default``) unless ``runtime_model`` (the full id
+    system/init reported) says otherwise; a value the catalog lacks is added
+    as an option. The reasoning_effort slider only when the shown model lists
+    effort levels, over those; the permission_mode select (all six modes,
+    unusable ones disabled with their reason) showing the running mode (else
+    the first usable one). ``allowed`` is the task's session_controls
+    allowlist (None: all)."""
+    shown = cc_models.shown_model(catalog, picked=model, runtime=runtime_model)
+    options = cc_models.catalog_with(catalog, shown)
+    ctrls = [model_control(models=options, current=shown)]
+    levels, default = cc_models.model_effort(shown, options)
     if levels:
         ctrls.append(effort_control(levels=levels, current=effort or default))
     if permission_options:

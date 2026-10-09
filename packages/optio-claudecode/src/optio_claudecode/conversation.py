@@ -113,6 +113,10 @@ class ClaudeCodeConversation:
         self._queued_permission_requests: list[dict] = []
         self._next_request_id = 0
         self._control_acks: dict[str, asyncio.Future] = {}
+        # Our control_requests whose answer is for us alone, not fanned out to
+        # on_event subscribers (so not buffered for replay): initialize's
+        # answer is large (every command and agent) and means nothing to the UI.
+        self._private_acks: set[str] = set()
         self._dispatcher_task: asyncio.Task | None = None
         # Set while the session body is killing the current claude process to
         # relaunch it on a new model. A process EOF during a restart must NOT
@@ -139,6 +143,10 @@ class ClaudeCodeConversation:
         # The new live process is attached; a future real EOF should close
         # normally again.
         self._restarting = False
+        # A new process has not named its model yet: it does in its own
+        # system/init. Until then the previous process's model is stale.
+        self.runtime_model = None
+        self.runtime_model_observed.clear()
         # Fix 25 (final-review-2 I3 / ledger line 399): a relaunch (model or
         # effort change) kills the old process and calls attach() with the
         # new one. The old process's send()s never got their result (it was
@@ -198,6 +206,9 @@ class ClaudeCodeConversation:
             fut = self._control_acks.pop(rid, None)
             if fut is not None and not fut.done():
                 fut.set_result(obj)
+            if rid in self._private_acks:
+                self._private_acks.discard(rid)
+                return
         elif t == "control_request":
             req = obj.get("request") or {}
             if req.get("subtype") == "can_use_tool":
@@ -405,6 +416,37 @@ class ClaudeCodeConversation:
             raise ControlRejected(str(response.get("error") or "refused"))
         self.permission_mode = mode
         self.permission_mode_observed.set()
+
+    async def initialize(self) -> dict:
+        """Ask the running Claude about itself: the stream-json control
+        request ``initialize``, as the Agent SDK sends it. Returns the answer's
+        ``response`` dict (``models``: the list Claude Code's own /model picker
+        shows; also ``commands``, ``agents``, ``account``, ...). The answer is
+        not fanned out to on_event subscribers. Raises ControlRejected on an
+        error answer, ConversationClosed when the process ends first."""
+        if self._closed.is_set():
+            raise ConversationClosed(self._close_reason or "conversation closed")
+        self._next_request_id += 1
+        rid = f"optio-{self._next_request_id}"
+        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._control_acks[rid] = fut
+        self._private_acks.add(rid)
+        try:
+            await self._write_json({
+                "type": "control_request",
+                "request_id": rid,
+                "request": {"subtype": "initialize"},
+            })
+            obj = await fut
+        finally:
+            # A late answer (after a caller's timeout) stays private: _route
+            # drops the id from _private_acks only when the answer arrives.
+            self._control_acks.pop(rid, None)
+        response = obj.get("response") or {}
+        if response.get("subtype") == "error":
+            raise ControlRejected(str(response.get("error") or "refused"))
+        inner = response.get("response")
+        return inner if isinstance(inner, dict) else {}
 
     def emit_control_update(self, controls: list[dict]) -> None:
         """Fan out a synthetic ``x-optio-control-update`` carrying a full

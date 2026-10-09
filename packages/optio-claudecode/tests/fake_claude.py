@@ -27,6 +27,70 @@ SCENARIOS = (
     "long_then_signaled", "idempotent_done", "seed",
 )
 
+# The model list the real CLI (2.1.268) answers the stream-json control request
+# ``initialize`` with, verbatim (an empty, logged-out HOME; no --model). Tests
+# import it as the expected catalog.
+CLI_MODELS = [
+    {"value": "default", "resolvedModel": "claude-opus-5[1m]",
+     "displayName": "Default (recommended)",
+     "description": "Use the default model (currently Opus 5 (1M context)) \u00b7 $5/$25 per Mtok",
+     "supportsEffort": True, "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"],
+     "supportsAdaptiveThinking": True, "supportsFastMode": True, "supportsAutoMode": True},
+    {"value": "opus[1m]", "resolvedModel": "claude-opus-5[1m]",
+     "displayName": "Opus (1M context)",
+     "description": "Opus 5 with 1M context \u00b7 Best for everyday, complex tasks \u00b7 $5/$25 per Mtok",
+     "supportsEffort": True, "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"],
+     "supportsAdaptiveThinking": True, "supportsFastMode": True, "supportsAutoMode": True},
+    {"value": "sonnet", "resolvedModel": "claude-sonnet-5",
+     "displayName": "Sonnet",
+     "description": "Sonnet 5 \u00b7 Efficient for routine tasks \u00b7 $2/$10 per Mtok",
+     "supportsEffort": True, "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"],
+     "supportsAdaptiveThinking": True, "supportsAutoMode": True},
+    {"value": "haiku", "resolvedModel": "claude-haiku-4-5-20251001",
+     "displayName": "Haiku",
+     "description": "Haiku 4.5 \u00b7 Fastest for quick answers \u00b7 $1/$5 per Mtok"},
+]
+
+
+def _cli_list() -> "list[dict]":
+    """CLI_MODELS, or the list in the file FAKE_CLAUDE_MODELS_FILE names (a
+    test changing what the CLI offers between runs)."""
+    path = os.environ.get("FAKE_CLAUDE_MODELS_FILE")
+    return json.loads(Path(path).read_text(encoding="utf-8")) if path else CLI_MODELS
+
+
+def cli_models_for(model_arg: "str | None") -> "tuple[list[dict], str]":
+    """(the initialize model list, the model system/init reports) for a
+    launch with ``--model model_arg``, as the real CLI does it: an alias runs
+    its resolvedModel; a value that is neither an alias nor some alias's
+    resolvedModel (a pinned full id) runs as given and is appended to the list
+    as an entry of its own; no --model runs the default."""
+    listed = [dict(m) for m in _cli_list()]
+    if model_arg and not any(model_arg in (m["value"], m["resolvedModel"]) for m in listed):
+        listed.append({"value": model_arg, "resolvedModel": model_arg,
+                       "displayName": model_arg, "description": "Custom model"})
+    wanted = model_arg or "default"
+    running = next((m["resolvedModel"] for m in listed if m["value"] == wanted), wanted)
+    return listed, running
+
+
+def _transcript_model() -> "str | None":
+    """The model the newest transcript ended on (its last ``message.model``):
+    what the real CLI runs on ``--continue`` without ``--model``."""
+    config_dir = (os.environ.get("CLAUDE_CONFIG_DIR")
+                  or os.path.join(os.environ.get("HOME", ""), ".claude"))
+    files = sorted(Path(config_dir, "projects").glob("*/*.jsonl"),
+                   key=lambda f: f.stat().st_mtime)
+    model = None
+    for line in files[-1].read_text(encoding="utf-8").splitlines() if files else []:
+        try:
+            msg = json.loads(line).get("message")
+        except (ValueError, AttributeError):
+            continue
+        if isinstance(msg, dict) and isinstance(msg.get("model"), str):
+            model = msg["model"]
+    return model
+
 
 def _log(line: str) -> None:
     log = Path.cwd() / "optio.log"
@@ -184,6 +248,10 @@ def run_stream_json_mode(argv: list[str]) -> int:
                                    from the outside by the product's own
                                    GRACEFUL_INTERRUPT_TIMEOUT_S (which kills
                                    this process), not by a fake sleep.
+      FAKE_CLAUDE_INITIALIZE     — 'error-fresh': answer the control request
+                                   initialize with an error (as a CLI without
+                                   it would) unless launched with --continue
+                                   (a relaunch answers normally).
     """
     def emit(obj):
         sys.stdout.write(json.dumps(obj) + "\n")
@@ -203,8 +271,15 @@ def run_stream_json_mode(argv: list[str]) -> int:
     bypass_ok = (mode == "bypassPermissions"
                  or "--allow-dangerously-skip-permissions" in argv
                  or "--dangerously-skip-permissions" in argv)
+    # The model: --model resolved the way the real CLI does (cli_models_for);
+    # the stream-json control request `initialize` answers with the list.
+    # --continue without --model keeps the model the transcript ended on.
+    model_arg = argv[argv.index("--model") + 1] if "--model" in argv else None
+    if model_arg is None and "--continue" in argv:
+        model_arg = _transcript_model()
+    models, running_model = cli_models_for(model_arg)
     emit({"type": "system", "subtype": "init", "session_id": session_id,
-          "model": "fake-model", "cwd": os.getcwd(), "permissionMode": mode})
+          "model": running_model, "cwd": os.getcwd(), "permissionMode": mode})
     n = 0
     for line in sys.stdin:
         line = line.strip()
@@ -213,6 +288,21 @@ def run_stream_json_mode(argv: list[str]) -> int:
         msg = json.loads(line)
         if msg.get("type") == "control_request":
             sub = (msg.get("request") or {}).get("subtype")
+            if sub == "initialize" and (
+                    os.environ.get("FAKE_CLAUDE_INITIALIZE") == "error-fresh"
+                    and "--continue" not in argv):
+                emit({"type": "control_response", "response": {
+                    "subtype": "error", "request_id": msg.get("request_id"),
+                    "error": "Unsupported control request subtype: initialize",
+                }})
+                continue
+            if sub == "initialize":
+                emit({"type": "control_response", "response": {
+                    "subtype": "success", "request_id": msg.get("request_id"),
+                    "response": {"commands": [], "agents": [], "models": models,
+                                 "current_permission_mode": mode},
+                }})
+                continue
             if sub == "set_permission_mode":
                 want = (msg.get("request") or {}).get("mode")
                 if want == "bypassPermissions" and not bypass_ok:

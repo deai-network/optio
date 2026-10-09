@@ -13,6 +13,7 @@ from opencode: sensitive state is the ``<workdir>/home/.claude/`` subtree
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
 import json
 import logging
@@ -48,6 +49,7 @@ from optio_agents.uploads import materialize, upload_url_token
 from optio_claudecode import cred_watcher
 from optio_claudecode import host_actions
 from optio_claudecode import models as cc_models
+from optio_claudecode import picks as cc_picks
 from optio_claudecode.info import AGENT_INFO
 from optio_claudecode.conversation import ClaudeCodeConversation
 from optio_claudecode.todos import (
@@ -388,16 +390,13 @@ async def run_claudecode_session(
                 pinned=claustrum.CLAUSTRUM_PINNED_TAG,
             )
 
-        resume_model = await _resume_model(
-            host, pinned=config.model, continuing=pass_continue,
-        )
-        if resume_model and resume_model != config.model:
-            ctx.report_progress(None, f"Resuming on {resume_model}…")
         claude_flags = host_actions.build_claude_flags(
             permission_mode=config.permission_mode,
             allowed_tools=config.allowed_tools,
             disallowed_tools=config.disallowed_tools,
-            model=resume_model or config.model,
+            # A continued session runs an alias (default when none is
+            # configured), not the full id its transcript ended on.
+            model=cc_models.launch_model(config.model, continuing=pass_continue),
             resuming=pass_continue,
         )
         # auto_start: append the kickoff prompt ONLY on a genuine fresh launch.
@@ -514,34 +513,44 @@ async def run_claudecode_session(
         )
         cred_baseline = cred_baseline_out
 
-        current_model = config.model
+        # The `--model` value, also the model select's value: the configured
+        # model or the operator's pick (an alias from the CLI's list, or a
+        # full id). None: no --model (claude's default) on a fresh launch; a
+        # continued session runs the default alias (models.launch_model).
+        current_model = cc_models.launch_model(config.model, continuing=pass_continue)
         # Live graded reasoning-effort, applied as `--effort` at (re)launch the
         # same way current_model drives `--model`. Starts at the configured
         # value; a reasoning_effort control change updates it and relaunches.
         current_effort = config.reasoning_effort
-        # Fetched on a continued session so the launch can move to the newest
-        # model in the saved conversation's family. Reused by the widget
-        # catalog below; None until then on a fresh launch.
-        model_list = None
-        if pass_continue:
-            model_list = await cc_models.fetch_available_models(
-                host, home_dir=f"{host.workdir}/home",
-            )
-            transcript_model = None if config.model else await _transcript_model(host)
-            upgraded = cc_models.resume_launch_model(
-                pinned=config.model,
-                transcript_model=transcript_model,
-                catalog=model_list["models"],
-            )
-            source = (config.model or transcript_model or "").split("[", 1)[0]
-            if upgraded and upgraded != source:
-                ctx.report_progress(None, f"Resuming on {upgraded}…")
-                current_model = upgraded
-        # Set inside the conversation_ui block once the model catalog is fetched;
+        # An optio resume of a continued conversation brings back the
+        # operator's picks (picks.py), each checked against this run: the
+        # permission mode below, the model and effort once the CLI has listed
+        # its models. `picks` is what the next resume restores, saved on every
+        # pick; `correcting_restore` marks the one relaunch that applies a
+        # correction (not a pick).
+        saved_picks = (await cc_picks.load(host)
+                       if resuming and pass_continue and config.conversation_ui else None)
+        picks = saved_picks or cc_picks.Picks()
+        correcting_restore = False
+        if saved_picks is not None:
+            current_model = saved_picks.model or current_model
+            current_effort = saved_picks.effort or current_effort
+        # The CLI's own model list (its answer to the stream-json control
+        # request initialize), asked once claude is up; None until then, and
+        # while the CLI could not tell (then the picker offers the bare
+        # aliases and a relaunch asks again).
+        cli_models = None
+        # Set inside the conversation_ui block once the model list is in;
         # (model, effort) -> serialized control list. Reused on every model/
         # effort relaunch to re-emit the controls snapshot (effort presence and
-        # preselected level follow the running model).
+        # preselected level follow the selected model).
         build_controls = None
+        # The controls snapshot the widget was last given (widgetData or an
+        # x-optio-control-update). The system/init branch re-emits only a
+        # changed one; the permission branch (system/init carries
+        # permissionMode too) re-emits always, so a refused switch reverts
+        # the select.
+        shown_controls = None
         # The permission_mode control: all six modes, the ones this session
         # cannot use disabled with their reason. Switched live, so a relaunch
         # keeps the running mode; bypass stays reachable when the task allows it.
@@ -551,6 +560,46 @@ async def run_claudecode_session(
         conversation.permission_modes_offered = cc_controls.settable_permission_modes(
             permission_options,
         )
+        if saved_picks is not None:
+            # Launched in it (`--permission-mode`), if this task offers it.
+            restored_mode = cc_picks.restorable_permission_mode(
+                saved_picks.permission_mode, conversation.permission_modes_offered,
+            )
+            if restored_mode:
+                conversation.permission_mode = restored_mode
+            picks = dataclasses.replace(picks, permission_mode=restored_mode)
+
+        def _resolved(value: str | None) -> str | None:
+            # The full id the CLI listed `value` as resolving to (None: unknown).
+            return next((m.get("resolved") for m in cli_models or [] if m["id"] == value), None)
+
+        def _restore_picks(catalog: list[dict]) -> bool:
+            # The restored picks against the CLI's list: a model it no longer
+            # lists moves to its family (models.restore_model; else the
+            # configured model, else default), an effort level the model lacks
+            # gives way to its default. True when either changed.
+            nonlocal current_model, current_effort, picks
+            changed = False
+            if saved_picks.model:
+                restored = cc_models.restore_model(
+                    catalog, saved=saved_picks.model, resolved=saved_picks.model_resolved,
+                )
+                if restored != saved_picks.model:
+                    target = restored or cc_models.launch_model(config.model, continuing=True)
+                    label = next((m["label"] for m in catalog if m["id"] == target), target)
+                    ctx.report_progress(
+                        None, f"Resuming on {label}: {saved_picks.model} is no longer offered",
+                    )
+                    picks = dataclasses.replace(picks, model=restored, model_resolved=next(
+                        (m.get("resolved") for m in catalog if m["id"] == restored), None))
+                    current_model, changed = target, True
+            if saved_picks.effort:
+                shown = cc_models.shown_model(catalog, picked=current_model, runtime=None)
+                levels, _ = cc_models.model_effort(shown, catalog)
+                if levels and current_effort not in levels:
+                    picks = dataclasses.replace(picks, effort=None)
+                    current_effort, changed = None, True
+            return changed
 
         async def _spawn(model: str | None, *, do_continue: bool):
             claude_flags = host_actions.build_claude_flags(
@@ -583,24 +632,18 @@ async def run_claudecode_session(
             reader = asyncio.create_task(conversation.run_reader())
             return handle, reader
 
-        async def _probe_default_model(env) -> str | None:
-            """Best-effort warm-up: run a throwaway claude turn and read
-            ``system/init`` to learn the account-default model, so a no-kickoff
-            conversation's model dropdown (and effort slider) populate before the
-            operator's first prompt instead of staying empty. `claude -p`
-            reveals the runtime model only in ``system/init`` at turn start, and
-            ``/v1/models`` carries no default flag — hence the probe.
-
-            The probe process is killed the instant ``system/init`` arrives,
-            which precedes any assistant token (inference), so it is cheap. It
-            runs under the SAME claustrum fs-isolation as the real session — the
-            agent binary is untrusted regardless of how short the turn is.
-            Returns the base model id (variant suffix stripped) or None on any
-            failure — the caller then falls back to today's empty-until-first-
-            turn behaviour."""
+        env = host_actions.conversation_launch_env(
+            host.workdir,
+            {**(config.env or {}), **focus_env, **(hook_ctx.browser_launch_env or {})},
+        )
+        async def _probe_cli_models(model: str | None) -> list[dict] | None:
+            """The CLI's model list before the launch: a short-lived claude
+            (same env and fs-isolation, ``--model model``, no ``--continue``)
+            asked only ``initialize``, then stopped. No turn, so no API call,
+            and it writes no transcript (a later ``--continue`` is unaffected).
+            None when it cannot tell."""
             flags = host_actions.build_claude_flags(
-                permission_mode=config.permission_mode,
-                allowed_tools=None, disallowed_tools=None, model=None,
+                permission_mode=None, allowed_tools=None, disallowed_tools=None, model=model,
             )
             argv = host_actions.build_conversation_argv(
                 claude_path, claude_flags=flags, permission_gate=False,
@@ -608,59 +651,54 @@ async def run_claudecode_session(
             wrap = await _build_claustrum_wrap(host, config, claustrum_path)
             if wrap:
                 argv = [*wrap, *argv]
-            cmd = " ".join(shlex.quote(a) for a in argv)
-            handle = None
+            probe = None
             try:
-                handle = await host.launch_subprocess(
-                    cmd, env=env, cwd=host.workdir,
+                probe = await host.launch_subprocess(
+                    " ".join(shlex.quote(a) for a in argv), env=env, cwd=host.workdir,
                     env_remove=config.scrub_env, stdin=True,
                 )
-                handle.stdin.write(
-                    (json.dumps({"type": "user", "message": {"role": "user",
-                     "content": [{"type": "text", "text": "hi"}]}}) + "\n").encode()
-                )
-                drain = getattr(handle.stdin, "drain", None)
+                probe.stdin.write((json.dumps({
+                    "type": "control_request", "request_id": "optio-probe",
+                    "request": {"subtype": "initialize"},
+                }) + "\n").encode())
+                drain = getattr(probe.stdin, "drain", None)
                 if drain is not None:
                     await drain()
-                async with asyncio.timeout(30):
-                    async for raw in handle.stdout:
+                async with asyncio.timeout(cc_models.INITIALIZE_TIMEOUT_S):
+                    async for raw in probe.stdout:
                         try:
                             ev = json.loads(raw)
-                        except Exception:
+                        except ValueError:
                             continue
-                        if ev.get("type") == "system" and ev.get("subtype") == "init":
-                            m = ev.get("model")
-                            return (m.split("[", 1)[0]
-                                    if isinstance(m, str) and m else None)
-            except Exception:
-                _LOG.exception(
-                    "claude default-model probe failed; model dropdown stays "
-                    "empty until the first turn")
+                        resp = ev.get("response") if isinstance(ev, dict) else None
+                        if (ev.get("type") == "control_response" and isinstance(resp, dict)
+                                and resp.get("request_id") == "optio-probe"):
+                            inner = resp.get("response") if resp.get("subtype") == "success" else None
+                            models = inner.get("models") if isinstance(inner, dict) else None
+                            return cc_models.parse_cli_models(models) or None
+            except Exception:  # noqa: BLE001 — best effort: checked after the launch
+                _LOG.info("model list probe failed; restored picks are checked after launch",
+                          exc_info=True)
             finally:
-                if handle is not None:
+                if probe is not None:
                     try:
-                        await host.terminate_subprocess(handle, aggressive=True)
-                    except Exception:
+                        # Graceful, so claude removes its sessions/<pid>.json.
+                        await host.terminate_subprocess(probe, aggressive=False)
+                    except Exception:  # noqa: BLE001
                         pass
             return None
 
-        env = host_actions.conversation_launch_env(
-            host.workdir,
-            {**(config.env or {}), **focus_env, **(hook_ctx.browser_launch_env or {})},
-        )
-        # No-kickoff warm-up: a conversation with no auto-start prompt and no
-        # resume never fires a turn until the operator types, so `system/init`
-        # (the only place `claude -p` reveals the runtime model) never arrives
-        # and the model dropdown/effort slider stay empty. Probe the default
-        # model up front so the controls populate immediately. Skipped when a
-        # kickoff will reveal the model anyway (auto_start), on resume (prior
-        # model is known), or when the model is pinned by config.
-        if (config.conversation_ui and not resuming and not config.auto_start
-                and current_model is None):
-            ctx.report_progress(None, "Detecting default model…")
-            probed = await _probe_default_model(env)
-            if probed:
-                current_model = probed
+        # A resume restoring picks asks the CLI's list first, so this launch
+        # already runs the checked picks: no message can reach a model the
+        # CLI no longer offers. When the probe cannot tell, the launched
+        # process's list is used instead (then a correction relaunches).
+        restore_pending = False
+        if saved_picks is not None and (saved_picks.model or saved_picks.effort):
+            probed = await _probe_cli_models(current_model)
+            if probed is not None:
+                _restore_picks(probed)
+            else:
+                restore_pending = True
         ctx.report_progress(None, f"Launching {AGENT_INFO.name} (conversation)…")
         handle, reader_task = await _spawn(current_model, do_continue=pass_continue)
         launched_handle = handle
@@ -715,19 +753,33 @@ async def run_claudecode_session(
                 f"http://{upstream_host}:{listener_port}",
                 inner_auth=BasicAuth(username="optio", password=listener_password),
             )
-            if model_list is None:
-                model_list = await cc_models.fetch_available_models(
-                    host, home_dir=f"{host.workdir}/home",
-                )
+            # Before the first message: claude answers initialize at once.
+            cli_models = await cc_models.fetch_cli_models(conversation)
+            if restore_pending and cli_models is not None:
+                saved_model = saved_picks.model
+                if _restore_picks(cli_models):
+                    if saved_model and saved_model not in (current_model, config.model):
+                        # Listed only as the echo of this launch's --model.
+                        cli_models = [m for m in cli_models if m["id"] != saved_model] or None
+                    correcting_restore = True
+                    conversation.requested_model = current_model
+                    conversation.model_change_requested.set()
 
             def build_controls(model, effort):
-                # See controls.build_controls: model select, effort slider for a
-                # graded-effort model, permission_mode select showing the
-                # running mode; narrowed by the session_controls allowlist.
-                # current model may be None (no --model): the view sniffs the
-                # runtime model from system/init and folds it into the value.
+                # See controls.build_controls: the model select over the CLI's
+                # list (the bare aliases when it could not tell) showing the
+                # picked alias, else default, unless the model the running
+                # claude reports says otherwise; the effort slider over the
+                # selected model's levels; the permission_mode select showing
+                # the running mode; narrowed by the session_controls allowlist.
                 return cc_controls.build_controls(
-                    catalog=model_list["models"], model=model, effort=effort,
+                    catalog=cli_models or cc_models.fallback_models(),
+                    model=model, effort=effort,
+                    # While a model change is pending (a pick, or the
+                    # correction of a restored one), the running process's
+                    # model is about to go: not shown.
+                    runtime_model=(None if conversation.model_change_requested.is_set()
+                                   else conversation.runtime_model),
                     permission_mode=conversation.permission_mode or config.permission_mode,
                     permission_options=permission_options,
                     allowed=config.session_controls,
@@ -735,13 +787,14 @@ async def run_claudecode_session(
 
             # widgetData.uploadUrl token; see optio_agents.uploads.upload_url_token.
             upload_url = upload_url_token(ctx._db.name, ctx._prefix, ctx.process_id)
+            shown_controls = build_controls(current_model, current_effort)
             await ctx.set_widget_data({
                 "protocol": "claudecode",
                 "toolVerbosity": config.tool_verbosity,
                 "thinkingVerbosity": config.thinking_verbosity,
                 "showSessionControls": config.show_session_controls,
                 "nativeSpinner": config.native_spinner,
-                "controls": build_controls(current_model, current_effort),
+                "controls": shown_controls,
                 "showFileUpload": config.show_file_upload,
                 "maxUploadBytes": config.max_upload_bytes,
                 "fileDownload": config.file_download,
@@ -819,21 +872,18 @@ async def run_claudecode_session(
                             t.cancel()
 
                 if init_task in done and close_task not in done and wait_task not in done:
-                    # --- runtime model observed from the stream's system/init:
-                    # adopt the REAL running model (a default-model session has
-                    # config.model None, but the stream names it, e.g.
-                    # "claude-opus-4-8[1m]") and re-emit the controls snapshot so
-                    # the reasoning_effort slider appears for the actual model.
-                    # Presence-only; NOT a relaunch. Strip the [..] variant
-                    # suffix before the catalog lookup. ---
+                    # --- the running model, as the stream's system/init names
+                    # it (a full id, e.g. "claude-opus-5[1m]"): it moves the
+                    # model select only when it is not what the selected alias
+                    # resolves to (controls.build_controls); re-emit the
+                    # snapshot then. NOT a relaunch; current_model (the
+                    # --model value) is unchanged. ---
                     conversation.runtime_model_observed.clear()
                     if build_controls is not None:
-                        base = (conversation.runtime_model or "").split("[", 1)[0]
-                        if base and base != current_model:
-                            current_model = base
-                            conversation.emit_control_update(
-                                build_controls(current_model, current_effort)
-                            )
+                        snapshot = build_controls(current_model, current_effort)
+                        if snapshot != shown_controls:
+                            shown_controls = snapshot
+                            conversation.emit_control_update(snapshot)
                     continue
 
                 if perm_task in done and close_task not in done and wait_task not in done:
@@ -843,9 +893,14 @@ async def run_claudecode_session(
                     # a relaunch. ---
                     conversation.permission_mode_observed.clear()
                     if build_controls is not None:
-                        conversation.emit_control_update(
-                            build_controls(current_model, current_effort)
-                        )
+                        shown_controls = build_controls(current_model, current_effort)
+                        conversation.emit_control_update(shown_controls)
+                    # Kept for a resume while it differs from the configured mode.
+                    mode = conversation.permission_mode
+                    kept = mode if mode and mode != config.permission_mode else None
+                    if config.conversation_ui and kept != picks.permission_mode:
+                        picks = dataclasses.replace(picks, permission_mode=kept)
+                        await cc_picks.save(host, picks)
                     if not (model_task in done or effort_task in done):
                         continue
 
@@ -859,9 +914,18 @@ async def run_claudecode_session(
                     if model_task in done:
                         current_model = conversation.requested_model or current_model
                         conversation.model_change_requested.clear()
+                        if not correcting_restore:
+                            picks = dataclasses.replace(
+                                picks, model=current_model, model_resolved=_resolved(current_model),
+                            )
                     if effort_task in done:
                         current_effort = conversation.requested_effort or current_effort
                         conversation.effort_change_requested.clear()
+                        if not correcting_restore:
+                            picks = dataclasses.replace(picks, effort=current_effort)
+                    correcting_restore = False
+                    if config.conversation_ui:
+                        await cc_picks.save(host, picks)
                     ctx.report_progress(
                         None,
                         f"Switching to model={current_model or 'default'} "
@@ -915,11 +979,15 @@ async def run_claudecode_session(
                         await conv_listener.reset_transport()
                     # Re-derive + re-emit the controls for the (possibly new)
                     # model: the reasoning_effort slider's presence and its
-                    # preselected level follow the running model.
+                    # preselected level follow the selected model. The list is
+                    # kept from the first process (a pinned full id's own
+                    # entry stays offered); asked again only if that one could
+                    # not tell.
                     if build_controls is not None:
-                        conversation.emit_control_update(
-                            build_controls(current_model, current_effort)
-                        )
+                        if cli_models is None:
+                            cli_models = await cc_models.fetch_cli_models(conversation)
+                        shown_controls = build_controls(current_model, current_effort)
+                        conversation.emit_control_update(shown_controls)
                     ctx.report_progress(
                         None, f"{AGENT_INFO.name} resumed on {current_model or 'default model'}"
                     )
@@ -1475,42 +1543,6 @@ async def task_todos_from_transcript(host: Host, extractor: ClaudeTodoExtractor)
     return todo_progress_from_transcript(
         getattr(body, "stdout", None) or "", extractor,
     )
-
-
-async def _transcript_model(host: Host) -> str | None:
-    """Model the restored conversation ended on, or None if it cannot be read.
-
-    Claude records ``message.model`` on assistant turns in the project jsonl.
-    The newest transcript's tail is enough: the last model is the one
-    ``--continue`` would keep. A missing tree or an unreadable file leaves
-    the resume on whatever ``--continue`` chooses."""
-    path = await _newest_transcript_path(host)
-    if not path:
-        return None
-    tail = await host.run_command(
-        f"tail -c 262144 {shlex.quote(path)} 2>/dev/null"
-    )
-    return cc_models.model_from_transcript(getattr(tail, "stdout", None) or "")
-
-
-async def _resume_model(host: Host, *, pinned: str | None, continuing: bool) -> str | None:
-    """``--model`` for a continued session: newest enabled catalog id in the
-    family of ``pinned`` or, when nothing is pinned, of the transcript model.
-    None when this is not a continue, or when the catalog cannot name a model
-    at least as new as the one the session is already on."""
-    if not continuing:
-        return None
-    catalog = await cc_models.fetch_available_models(
-        host, home_dir=f"{host.workdir}/home",
-    )
-    transcript_model = None if pinned else await _transcript_model(host)
-    upgraded = cc_models.resume_launch_model(
-        pinned=pinned, transcript_model=transcript_model, catalog=catalog["models"],
-    )
-    source = (pinned or transcript_model or "").split("[", 1)[0]
-    if not upgraded or upgraded == source:
-        return None
-    return upgraded
 
 
 async def _has_transcript(host: Host) -> bool:

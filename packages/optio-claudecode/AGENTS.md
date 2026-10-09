@@ -39,13 +39,27 @@ tracking the config field (defaults to `True`); when `supports_resume` it
 also carries the `resurrect` hook (see Resurrect below). Resume snapshots the
 `<workdir>/home/.claude/` subtree (encryptable session blob) plus a plaintext
 workdir blob; on resume the workdir is restored and `--continue` is appended to
-claude's argv. When that resume continues a transcript, and the pinned model or
-the model the transcript ended on is a `claude-<family>-<version>` id, the
-launch also passes `--model` set to the newest enabled catalog id in that
-family (haiku, sonnet, opus, fable, or any other parsed family) whenever that
-id is at least as new: a higher version, and on a tie the undated alias over a
-dated snapshot. A catalog that only lists older ids leaves the saved model in
-place. A fresh launch keeps its configured model. See
+claude's argv. A launch that continues a transcript also passes `--model`: the
+configured model, else the `default` alias (`models.launch_model`, both modes).
+`--continue` alone keeps the full model id the transcript ended on (even over a
+settings.json `model`; verified on CLI 2.1.268), while an alias runs the newest
+model it names, so a resumed session moves to a newer model by itself; a pinned
+full id stays pinned. A fresh launch passes only a configured model. An
+in-session relaunch (a model or effort pick) passes the picked model, else the
+launch value, else none (`--continue` then keeps the model the process ran).
+The operator's picks in the conversation widget (model, reasoning effort,
+permission mode) are kept across an optio resume (`picks.py`: a file in
+`home/.claude`, so in the session blob; only an optio resume reads it back, not
+`session_restore_from` or a seed). Before the resumed launch a short-lived
+claude (same env and isolation, no `--continue`, no turn, no transcript) is
+asked only `initialize`, and each pick is checked against that list: a model it
+no longer offers (the CLI's echo of an unknown `--model` does not count) moves
+to the newest entry of its family (`models.restore_model`: the
+`claude-<family>-<version>` of the full id saved with the pick, its `[variant]`
+kept when offered, never `default`), else the configured model, else
+`default`; an effort level the model lacks gives way to its default; a
+permission mode the task does not offer is dropped. When that probe cannot
+tell, the launched process's list is used and a correction relaunches. See
 `docs/2026-05-29-optio-claudecode-resume-design.md`.
 
 ## Snapshot capture and unsaved work
@@ -223,6 +237,28 @@ when the hook returns, and when it raises `NothingToResurrect`.
   relaunch keeps the running mode. Every snapshot is narrowed by the
   allowlist, and the listener's /control refuses an id outside
   `settable_controls` (403 `not-allowed`; all of them while the bar is off).
+* The model select lists what the running CLI answers to the stream-json
+  control request `initialize` (`ClaudeCodeConversation.initialize`, whose
+  answer is not fanned out to on_event; `models.fetch_cli_models`), asked once
+  claude is up, before the first message: the list Claude Code's own /model
+  picker shows, in its order. Option value = the alias (`default`,
+  `opus[1m]`, `sonnet`, `haiku`, ...; `--model` takes these), label =
+  `displayName`, description = `description`. The reasoning_effort slider
+  offers the selected model's `supportedEffortLevels` (no slider when it does
+  not `supportsEffort`), preselecting `high` (else the highest level). The
+  value shown (`models.shown_model`): the configured or picked value, else
+  `default`; the full id system/init reports (e.g. `claude-opus-5[1m]`) moves
+  it only when the shown entry's `resolvedModel` is something else (e.g. a
+  settings.json `model`), to the alias resolving to it, else to the id itself.
+  A pinned full id is launched as given and shown as the alias that resolves
+  to it today (e.g. `claude-sonnet-5` shows Sonnet), else as its own entry:
+  the CLI lists one for a `--model` that no alias names (e.g.
+  `claude-opus-4-8`, "Newer version available"), and a value the list lacks
+  gets a bare option. The list is kept from the first process (so a pinned
+  entry stays offered after a switch); when the CLI cannot tell (an error
+  answer, no models, no answer in `models.INITIALIZE_TIMEOUT_S`) the select
+  offers the bare aliases default/opus/sonnet/haiku without descriptions or
+  effort levels, and the next relaunch asks again.
 * `session_blob_encrypt/decrypt`, `seed_blob_encrypt/decrypt` —
   inherited from `optio_agents.config_types.BlobCryptoConfigMixin`
   (alongside the `ClaustrumConfigMixin` triad). Optional synchronous
