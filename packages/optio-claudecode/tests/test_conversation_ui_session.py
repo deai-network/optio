@@ -143,11 +143,16 @@ async def _make_optio(mongo_db, prefix: str) -> Optio:
 
 
 async def _wait_terminal(optio: Optio, process_id: str, timeout: float = 60.0) -> dict:
-    """Poll until process_id reaches a terminal state or timeout."""
+    """Poll until process_id reaches a terminal state, and the executor has
+    torn the run down too, or timeout. The terminal state is written before
+    the teardown, which fails whatever result future is waiting for the
+    process: a relaunch in between (a resume right away) would get its own
+    future failed with ResultNotPublished (optio-core race, 2026-10-09)."""
     end = _time.monotonic() + timeout
     while _time.monotonic() < end:
         proc = await optio.get_process(process_id)
-        if proc is not None and proc["status"]["state"] in _TERMINAL:
+        if (proc is not None and proc["status"]["state"] in _TERMINAL
+                and proc["_id"] not in optio._executor._running_tasks):
             return proc
         await asyncio.sleep(0.05)
     raise AssertionError(f"{process_id} did not reach terminal state in {timeout}s")
