@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Index names, keys and options exactly as the spec's table: `processId_1` `{processId: 1}`; `parentId_1_order_1` `{parentId: 1, order: 1}`; `rootId_1_depth_1_order_1` `{rootId: 1, depth: 1, order: 1}`; `status.state_1` `{"status.state": 1}`; `originatingSessionId_1` `{originatingSessionId: 1}`; `expireAt_ttl` `{expireAt: 1}` with `expireAfterSeconds=0`.
+- Index names, keys and options exactly as the spec's table: `processId_1__id_-1` `{processId: 1, _id: -1}`; `parentId_1_order_1` `{parentId: 1, order: 1}`; `rootId_1_depth_1_order_1` `{rootId: 1, depth: 1, order: 1}`; `status.state_1` `{"status.state": 1}`; `originatingSessionId_1` `{originatingSessionId: 1}`; `expireAt_ttl` `{expireAt: 1}` with `expireAfterSeconds=0`.
 - Conflict codes 85 (IndexOptionsConflict) and 86 (IndexKeySpecsConflict) are a logged warning naming the index; any other error propagates.
 - optio-api is not touched (read-only rule). m004 is not touched.
 - Tests must not depend on wall-clock time (AGENTS.md); hang ceilings 60 s; no test of MongoDB's TTL monitor.
@@ -43,7 +43,7 @@
 ```python
 EXPECTED = {
     "_id_": ([("_id", 1)], None),
-    "processId_1": ([("processId", 1)], None),
+    "processId_1__id_-1": ([("processId", 1), ("_id", -1)], None),
     "parentId_1_order_1": ([("parentId", 1), ("order", 1)], None),
     "rootId_1_depth_1_order_1": ([("rootId", 1), ("depth", 1), ("order", 1)], None),
     "status.state_1": ([("status.state", 1)], None),
@@ -62,14 +62,14 @@ async def test_ensure_twice_changes_nothing(mongo_db):
     # call twice; _indexes after the second call == EXPECTED
 
 async def test_an_index_with_the_same_keys_under_another_name_is_a_warning(mongo_db, caplog):
-    # create_index([("processId", 1)], name="my_pid") first
+    # create_index([("processId", 1), ("_id", -1)], name="my_pid") first
     # ensure_process_indexes does not raise
-    # exactly one WARNING record from "optio_core.store" whose message contains "processId_1"
-    # indexes == EXPECTED minus "processId_1", plus "my_pid": ([("processId", 1)], None)
+    # exactly one WARNING record from "optio_core.store" whose message contains "processId_1__id_-1"
+    # indexes == EXPECTED minus "processId_1__id_-1", plus "my_pid" with the same keys
 
 async def test_lookups_use_the_indexes(mongo_db):
     # ensure, insert 3 docs with distinct processId and a shared parentId
-    # explain of find({"processId": "p1"}).sort("_id", -1).limit(1): an IXSCAN stage on "processId_1"
+    # explain of find({"processId": "p1"}).sort("_id", -1).limit(1): an IXSCAN stage on "processId_1__id_-1"
     # explain of find({"parentId": oid}).sort("order", 1): an IXSCAN stage on "parentId_1_order_1"
     # (walk queryPlanner.winningPlan recursively for {"stage": "IXSCAN", "indexName": ...})
 ```

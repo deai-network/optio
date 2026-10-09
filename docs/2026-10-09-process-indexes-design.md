@@ -32,7 +32,7 @@ MongoDB has only the `_id` index:
 
 | Name | Keys | Options | Serves |
 |---|---|---|---|
-| `processId_1` | `{processId: 1}` | | lookups by processId (engine launch, optio-api resolve / scope) |
+| `processId_1__id_-1` | `{processId: 1, _id: -1}` | | lookups by processId, newest first (engine launch, optio-api resolve / scope); `_id` covers the sort, without it the planner may walk `_id_` and filter instead |
 | `parentId_1_order_1` | `{parentId: 1, order: 1}` | | children: delete_descendants, list_direct_children, cancel cascades, tree REST, roots_only counts |
 | `rootId_1_depth_1_order_1` | `{rootId: 1, depth: 1, order: 1}` | | tree and multi-tree streams, `list_processes(root_id=)` |
 | `status.state_1` | `{"status.state": 1}` | | `count_processes(states=)`, the startup reconcile, auto-resume |
@@ -106,7 +106,7 @@ In `packages/optio-core/tests/` (real Mongo, no wall-clock dependence):
 
 - `ensure_process_indexes` on a new prefix creates the six indexes with their
   keys, names and the TTL option; a second call changes nothing; a
-  pre-existing index with the same keys as `processId_1` under another name
+  pre-existing index with the same keys as `processId_1__id_-1` under another name
   gives one logged warning naming it, the other five are created, no error.
 - `Optio.init` on a new prefix leaves the six indexes in place.
 - `explain` of the `processId` lookup and of the children-by-`parentId` query
