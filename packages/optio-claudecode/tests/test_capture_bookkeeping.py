@@ -1,6 +1,7 @@
 """Capture bookkeeping for Resurrect: pending-capture record, unsaved-work
 flag, credentials guard, keeping the taskdir after a failed capture."""
 
+import asyncio
 import os
 
 import pytest
@@ -58,6 +59,31 @@ async def test_store_workdir_snapshot_records_then_clears(mongo_db, tmp_path, ct
     assert await PC.load_pending_capture(mongo_db, "test", ctx.process_id) is None
     doc = await mongo_db["test_processes"].find_one({"_id": ctx._process_oid})
     assert doc["hasSavedState"] is True
+    assert doc["hasUnsavedWork"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_capture_cut_off_after_its_snapshot_record_is_already_flagged(
+        mongo_db, tmp_path, ctx_and_captures, monkeypatch):
+    """The force-cancel can cut a capture off after its snapshot record is in
+    (seen 2026-10-10: 3 s into pruning). The snapshot is complete then, so the
+    process must already say so: saved state, no unsaved work (Resume, not a
+    Resurrect that finds nothing to save)."""
+    ctx, _cap, _flag = ctx_and_captures
+    await _flags(mongo_db, ctx, supportsResume=True, supportsResurrect=True, hasUnsavedWork=True)
+    host = _local_host(tmp_path)
+
+    async def _cut_off(*a, **kw):
+        raise asyncio.CancelledError()
+    monkeypatch.setattr(S, "prune_snapshots", _cut_off)
+
+    with pytest.raises(asyncio.CancelledError):
+        await S._store_workdir_snapshot(
+            ctx, host, end_state="cancelled", workdir_exclude=None, session_blob_id=ObjectId())
+
+    assert await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id) is not None
+    doc = await mongo_db["test_processes"].find_one({"_id": ctx._process_oid})
+    assert doc.get("hasSavedState") is True
     assert doc["hasUnsavedWork"] is False
 
 

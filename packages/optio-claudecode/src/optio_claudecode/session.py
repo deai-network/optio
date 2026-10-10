@@ -1889,7 +1889,7 @@ async def _store_workdir_snapshot(
     session_blob_id: ObjectId,
 ) -> None:
     """Second half of a capture: archive the workdir, insert the snapshot
-    record, prune, flag the state. Resurrect calls it alone when a cut-off
+    record, flag the state, prune. Resurrect calls it alone when a cut-off
     capture had already stored the session blob and removed home/.claude.
     """
     # 4c. Record the blobs before streaming: a capture cut off past the cancel
@@ -1937,9 +1937,19 @@ async def _store_workdir_snapshot(
             deliverables_emitted=[],
         )
     await delete_pending_capture(ctx._db, ctx._prefix, ctx.process_id)
+
+    # 7. surface the Resume affordance in the dashboard. Right after the
+    # record, before the pruning: a force-cancel past the grace can cut the
+    # capture off anywhere from here on, and the snapshot is complete now, so
+    # the process must already offer Resume, not a Resurrect of work that is
+    # saved (seen 2026-10-10: cut off 3 s into the steps after the record).
+    async with _traced("capture: mark_has_saved_state"):
+        await ctx.mark_has_saved_state()
+    _trace("capture: mark_has_saved_state DONE")
+    await ctx.clear_unsaved_work()
     ctx.report_progress(None, "Snapshot saved")
 
-    # 7. prune + delete stale blobs.
+    # 8. prune + delete stale blobs.
     async with _traced("capture: prune") as t:
         pruned = await prune_snapshots(
             ctx._db, prefix=ctx._prefix, process_id=ctx.process_id,
@@ -1954,12 +1964,6 @@ async def _store_workdir_snapshot(
             except Exception:
                 _LOG.exception("delete_blob(workdir) failed")
     _trace("capture: prune pruned=%d", len(pruned))
-
-    # 8. surface the Resume affordance in the dashboard.
-    async with _traced("capture: mark_has_saved_state"):
-        await ctx.mark_has_saved_state()
-    _trace("capture: mark_has_saved_state DONE")
-    await ctx.clear_unsaved_work()
 
 
 async def _rotate_optio_log(host: Host) -> None:

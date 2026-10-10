@@ -81,8 +81,12 @@ session_blob_id)`, callable on its own: it records
 `load_pending_capture`, `delete_pending_capture`,
 `discard_pending_workdir_blob`), streams the workdir into a
 GridFS blob opened with that pre-generated `workdirBlobId`, inserts the
-snapshot record, deletes the pending record, prunes, and calls
-`mark_has_saved_state()` then `clear_unsaved_work()`. A capture cut off while
+snapshot record, deletes the pending record, calls `mark_has_saved_state()`
+then `clear_unsaved_work()`, and prunes. The flags come before the pruning: the
+snapshot is complete once its record is in, and a force-cancel past the grace
+can cut the capture off during the pruning (seen 2026-10-10: 3 s into it); the
+process then already offers Resume rather than a Resurrect of saved work. A
+capture cut off while
 streaming the workdir leaves the pending record behind, naming the partial
 workdir blob. One cut off between inserting the snapshot record and deleting
 the pending record leaves a record naming that snapshot's complete workdir
