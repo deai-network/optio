@@ -20,6 +20,12 @@ from optio_agents.config_types import (
     WelcomeConfigMixin,
 )
 from optio_agents.context import HookContext, HookContextProtocol, SYSTEM_MESSAGE_PREFIX
+from optio_agents.custom_controls import (
+    ControlSettings,
+    CustomControl,
+    CustomControlsConfigMixin,
+    CustomOption,
+)
 from optio_agents.conversation import (
     Conversation,
     ConversationClosed,
@@ -112,6 +118,10 @@ __all__ = [
     "McpServer",
     "McpServersProvider",
     "resolve_mcp_servers",
+    "ControlSettings",
+    "CustomControl",
+    "CustomControlsConfigMixin",
+    "CustomOption",
     "browser_shims",
     "claustrum",
     "model_probe",

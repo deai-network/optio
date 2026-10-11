@@ -658,6 +658,13 @@ grok, kimicode, antigravity) inherit their common field sets from mixins in
   resolves a map for the viewer's language (`resolve_text`: the language's
   entry, else `"en"`, else the first). Anything but a `WelcomeCard` or None
   raises `ValueError`.
+- **`CustomControlsConfigMixin`** (`optio_agents.custom_controls`) —
+  `custom_controls`: task-defined selectors (`CustomControl` with
+  `CustomOption`s, each setting a fixed `ControlSettings` combination of
+  model / reasoning effort / permission mode; labels a string or a language
+  map read by `resolve_text`), independent of the controls bar. Only
+  claudecode accepts a non-empty list so far
+  (`optio_agents_all.supports_custom_controls`); the others raise `ValueError`.
 
 `optio-agents-all` guards this uniformity with a union-wide test; its
 `create_task` passes configs through verbatim. Details:

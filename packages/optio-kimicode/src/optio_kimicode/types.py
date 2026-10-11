@@ -24,6 +24,7 @@ from optio_agents.config_types import (
     SessionControlsConfigMixin,
     WelcomeConfigMixin,
 )
+from optio_agents.custom_controls import CustomControlsConfigMixin
 from optio_agents.mcp import McpConfigMixin
 from optio_agents.protocol.session import (
     DeliverableCallback,
@@ -106,6 +107,7 @@ _VALID_THINKING_VERBOSITY = {"hidden", "visible"}
 @dataclass(frozen=True, kw_only=True)
 class KimiCodeTaskConfig(
     ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin, McpConfigMixin,
+    CustomControlsConfigMixin,
     WelcomeConfigMixin,
 ):
     """Configuration for one optio-kimicode task instance.
@@ -297,6 +299,8 @@ class KimiCodeTaskConfig(
         self._validate_welcome()
         # This engine cannot hand MCP servers to its agent yet: refuse mcp_servers.
         self._validate_mcp(supported=False, agent=self.agent_type)
+        # Nor can it apply custom session controls: refuse a non-empty custom_controls.
+        self._validate_custom_controls(supported=False, agent=self.agent_type)
         if (
             self.permission_mode is not None
             and self.permission_mode not in _VALID_PERMISSION_MODES

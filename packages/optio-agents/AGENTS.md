@@ -145,6 +145,40 @@ stay top-level on each config — callers write `fs_isolation=` /
   fresh and resume (a provider's result is checked; its exception fails the
   launch). Only claudecode translates it so far: ask
   `optio_agents_all.supports_mcp(agent_type)`.
+* `CustomControlsConfigMixin` (in `optio_agents.custom_controls`) —
+  `custom_controls: list[CustomControl] | None`: task-defined selectors shown
+  in the conversation view, independent of `show_session_controls` /
+  `session_controls`. Engines call
+  `self._validate_custom_controls(supported=..., agent=...)` from
+  `__post_init__`: an engine that cannot apply them refuses a non-empty list
+  (`<agent> does not support custom_controls yet`); otherwise control ids are
+  unique and each setting (model, reasoning effort, permission mode) is set by
+  the options of at most one control. Only claudecode applies them so far: ask
+  `optio_agents_all.supports_custom_controls(agent_type)`. See the next
+  section.
+
+## Custom session controls (`optio_agents.custom_controls`)
+
+* `Text` — a plain string or a map of language code (`en`, `hu`, `de`, ...)
+  to a non-empty string; `resolve_text(text, language)` gives the language's
+  entry, else `en`, else the first entry (a plain string as is).
+* `ControlSettings(model, reasoning_effort, permission_mode)` — what an option
+  sets; None leaves a setting alone, at least one is set. `reasoning_effort` is
+  one of `KNOWN_REASONING_EFFORTS` (low, medium, high, xhigh, max) and
+  `permission_mode` one of `KNOWN_PERMISSION_MODES` (Claude Code's wire values:
+  `default`, `acceptEdits`, `plan`, `auto`, `dontAsk`, `bypassPermissions`;
+  `manual` is spelled `default`). Kept here because optio-agents imports no
+  engine; optio-agents-all's tests keep them equal to optio-claudecode's.
+  `to_dict()` holds only the set values.
+* `CustomOption(value, label, settings, description=None)` — `value` of
+  letters, digits, `_`, `-`; `label` / `description` are `Text`.
+* `CustomControl(id, label, default, options, description=None)` — `id` of
+  letters, digits, `_`, `-` (its `/control` id is `custom:<id>`); at least 2
+  options with unique values; `default` is one of them, applied when a session
+  starts.
+
+All are frozen and validated on construction (`ValueError`); language maps
+and the options list are copied.
 
 ## Localized text (`optio_agents.text`)
 
