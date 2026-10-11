@@ -26,6 +26,12 @@ from optio_agents.conversation import (
     PermissionDecision,
     PermissionRequest,
 )
+from optio_agents.mcp import (
+    McpConfigMixin,
+    McpServer,
+    McpServersProvider,
+    resolve_mcp_servers,
+)
 from optio_agents.protocol import (
     CALLER_MESSAGE_QUEUE_BOUND,
     DELIVERABLE_QUEUE_BOUND,
@@ -102,6 +108,10 @@ __all__ = [
     "ConversationClosed",
     "PermissionDecision",
     "PermissionRequest",
+    "McpConfigMixin",
+    "McpServer",
+    "McpServersProvider",
+    "resolve_mcp_servers",
     "browser_shims",
     "claustrum",
     "model_probe",
