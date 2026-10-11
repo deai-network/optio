@@ -66,14 +66,14 @@ function renderView(props: ConversationViewProps, locale?: typeof huHU) {
 const bandTexts = () => screen.queryAllByTestId('switch-band').map((b) => b.textContent);
 
 describe('switch band texts', () => {
-  it('a model switch is a band in the resume band look: "Model switched" without the model control', () => {
+  it('a model switch is a band in the resume band look: "Model switched." without the model control', () => {
     renderView(makeProps({ state: makeState([
       { kind: 'resumed', seq: 1 },
       { kind: 'switched', seq: 2, model: 'claude-sonnet-5-5' },
     ]) }));
     const band = screen.getByTestId('switch-band');
     const resume = screen.getByTestId('resume-band');
-    expect(band.textContent).toBe('Model switched');
+    expect(band.textContent).toBe('Model switched.');
     // The resume marker's look: a solid X Bubble.Divider.
     const divider = band.querySelector('.ant-bubble-divider .ant-divider');
     expect(divider).not.toBeNull();
@@ -81,7 +81,7 @@ describe('switch band texts', () => {
     expect(divider!.className).toBe(resume.querySelector('.ant-bubble-divider .ant-divider')!.className);
   });
 
-  it('"Model switched to <label>" when the built-in model control is shown, else its id', () => {
+  it('"Model switched to <label>." when the built-in model control is shown, else its id', () => {
     renderView(makeProps({
       controls: MODEL_CONTROL, onControlChange: vi.fn(),
       state: makeState([
@@ -90,19 +90,19 @@ describe('switch band texts', () => {
         { kind: 'switched', seq: 3 },
       ]),
     }));
-    expect(bandTexts()).toEqual(['Model switched to Sonnet 5.5', 'Model switched to claude-haiku-5', 'Model switched']);
+    expect(bandTexts()).toEqual(['Model switched to Sonnet 5.5.', 'Model switched to claude-haiku-5.', 'Model switched.']);
   });
 
-  it('"Model switched" when the controls shown have no model control', () => {
+  it('"Model switched." when the controls shown have no model control', () => {
     renderView(makeProps({
       controls: [{ id: 'thinking', kind: 'segmented', label: 'Thinking', value: 'low', levels: ['low', 'high'] }],
       onControlChange: vi.fn(),
       state: makeState([{ kind: 'switched', seq: 1, model: 'claude-sonnet-5-5' }]),
     }));
-    expect(bandTexts()).toEqual(['Model switched']);
+    expect(bandTexts()).toEqual(['Model switched.']);
   });
 
-  it('our pick: "Switched to <option label> mode", lowercased', () => {
+  it('our pick: "Switched to <option label> mode.", lowercased', () => {
     renderView(makeProps({
       customControls: [SPEED, TONE], onCustomControlChange: vi.fn(async () => null),
       state: makeState([
@@ -110,7 +110,7 @@ describe('switch band texts', () => {
         { kind: 'switched', seq: 2, control: 'tone', option: 'detailed' },
       ]),
     }));
-    expect(bandTexts()).toEqual(['Switched to fast mode', 'Switched to detailed mode']);
+    expect(bandTexts()).toEqual(['Switched to fast mode.', 'Switched to detailed mode.']);
   });
 
   it('the option label in the UI language', () => {
@@ -118,7 +118,7 @@ describe('switch band texts', () => {
       customControls: [SPEED], onCustomControlChange: vi.fn(async () => null),
       state: makeState([{ kind: 'switched', seq: 1, control: 'speed', option: 'fast' }]),
     }), huHU);
-    expect(bandTexts()).toEqual(['Switched to gyors mode']);
+    expect(bandTexts()).toEqual(['Switched to gyors mode.']);
   });
 
   it('an unknown control or option falls back to the generic text', () => {
@@ -130,7 +130,7 @@ describe('switch band texts', () => {
         { kind: 'switched', seq: 2, control: 'gone', option: 'fast' },
       ]),
     }));
-    expect(bandTexts()).toEqual(['Model switched to Sonnet 5.5', 'Model switched']);
+    expect(bandTexts()).toEqual(['Model switched to Sonnet 5.5.', 'Model switched.']);
   });
 });
 
@@ -235,7 +235,7 @@ describe('ClaudeCodeView switch bands', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
     fire(pick('fast'), echo('claude-sonnet-5-5'), controlResponse, update('fast'));
     await act(async () => answer(new Response(JSON.stringify({ ok: true }), { status: 200 })));
-    expect(bandTexts()).toEqual(['Switched to fast mode']);
+    expect(bandTexts()).toEqual(['Switched to fast mode.']);
     expect(screen.queryByText(/local-command-stdout|Set model to/)).toBeNull();
     await waitFor(() => expect(idle()).toBe(true));
   });
@@ -243,7 +243,7 @@ describe('ClaudeCodeView switch bands', () => {
   it('a pick that changes only the effort draws its band too', () => {
     render(<ClaudeCodeView {...widgetProps({ customControls: [SPEED] })} />);
     fire(...turn, pick('fast'), controlResponse, update('fast'));
-    expect(bandTexts()).toEqual(['Switched to fast mode']);
+    expect(bandTexts()).toEqual(['Switched to fast mode.']);
   });
 
   it('a refused pick draws no band', () => {
@@ -256,14 +256,14 @@ describe('ClaudeCodeView switch bands', () => {
   it('a switch optio did not ask for names the model when the built-in model control is shown', () => {
     render(<ClaudeCodeView {...widgetProps({ showSessionControls: true, controls: MODEL_CONTROL, customControls: [SPEED] })} />);
     fire(...turn, echo('claude-sonnet-5-5'));
-    expect(bandTexts()).toEqual(['Model switched to Sonnet 5.5']);
+    expect(bandTexts()).toEqual(['Model switched to Sonnet 5.5.']);
     expect(idle()).toBe(true);
   });
 
-  it('a switch optio did not ask for, without the built-in controls: "Model switched"', () => {
+  it('a switch optio did not ask for, without the built-in controls: "Model switched."', () => {
     render(<ClaudeCodeView {...widgetProps({ controls: MODEL_CONTROL, customControls: [SPEED] })} />);
     fire(...turn, echo('claude-sonnet-5-5'));
-    expect(bandTexts()).toEqual(['Model switched']);
+    expect(bandTexts()).toEqual(['Model switched.']);
   });
 
   it('a replayed buffer after a resume shows the same bands, and the resume band names the mode', () => {
@@ -275,7 +275,7 @@ describe('ClaudeCodeView switch bands', () => {
       { type: 'x-optio-resumed', customControls: [{ id: 'speed', value: 'fast' }] },
       { type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'System: you have been resumed' }] } },
     );
-    expect(bandTexts()).toEqual(['Switched to fast mode', 'Model switched']);
+    expect(bandTexts()).toEqual(['Switched to fast mode.', 'Model switched.']);
     const resume = screen.getByTestId('resume-band');
     expect(resume.textContent).toBe('Session has been saved and resumed in fast mode.');
     const [, generic] = screen.getAllByTestId('switch-band');

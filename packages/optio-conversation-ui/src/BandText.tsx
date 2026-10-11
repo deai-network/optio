@@ -4,16 +4,17 @@ import { useLanguage } from './text.js';
 
 // The switch and resume bands' texts (owner request 2026-10-12). A
 // task-defined option is named by its label in the UI language, lowercased
-// ("Switched to fast mode").
+// ("Switched to fast mode."). Every band text ends with a period, as the
+// resume and compaction bands' do.
 
 type ResumedItem = Extract<ChatItem, { kind: 'resumed' }>;
 type SwitchedItem = Extract<ChatItem, { kind: 'switched' }>;
 
 // A switch band: optio's own pick of a task-defined control's option,
-// "Switched to <option> mode". Else (a model switch optio did not ask for, or
+// "Switched to <option> mode.". Else (a model switch optio did not ask for, or
 // a control or option `customControls` does not have) "Model switched to
-// <model>" while the built-in model control is shown (`controls` has it): its
-// option's label for the model, else the model's id; "Model switched" when it
+// <model>." while the built-in model control is shown (`controls` has it): its
+// option's label for the model, else the model's id; "Model switched." when it
 // is not shown or the model is not known.
 export function switchBandText(
   item: SwitchedItem,
@@ -23,12 +24,12 @@ export function switchBandText(
 ): string {
   if (item.control !== undefined && item.option !== undefined) {
     const label = customOptionLabel(customControls, item.control, item.option, language);
-    if (label !== undefined) return `Switched to ${label.toLowerCase()} mode`;
+    if (label !== undefined) return `Switched to ${label.toLowerCase()} mode.`;
   }
   const modelControl = controls?.find((c) => c.id === 'model');
-  if (modelControl === undefined || item.model === undefined) return 'Model switched';
+  if (modelControl === undefined || item.model === undefined) return 'Model switched.';
   const option = modelControl.options?.find((o) => o.value === item.model);
-  return `Model switched to ${option?.label ?? item.model}`;
+  return `Model switched to ${option?.label ?? item.model}.`;
 }
 
 // A resume band: "Session has been saved and resumed in <option> mode." for
