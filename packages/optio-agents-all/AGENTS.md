@@ -21,12 +21,15 @@ dataclasses.
   a 0/1-element list).
 * `AGENTS` / `get_agent_info(agent_type)` — canonical per-engine metadata
   (`optio_agents.AgentInfo`).
+* `MCP_AGENT_TYPES` / `supports_mcp(agent_type)` -- the engines whose config
+  accepts `mcp_servers` (only `claudecode` for now; guarded by
+  `tests/test_capabilities.py`).
 
 ## Config uniformity guarantee
 
 Every member of `AgentTaskConfig` subclasses the shared mixins from
-`optio_agents.config_types`, so these field sets are uniform across all 7
-engines (guarded by `tests/test_config_uniformity.py`):
+`optio_agents.config_types` (and `optio_agents.mcp`), so these field sets are
+uniform across all 7 engines (guarded by `tests/test_config_uniformity.py`):
 
 * `ClaustrumConfigMixin` — `fs_isolation` / `extra_allowed_dirs` /
   `delivery_type`.
@@ -39,6 +42,10 @@ engines (guarded by `tests/test_config_uniformity.py`):
   raises `ValueError`) and `welcome_widget_data`, the
   `{title, description, icon, minHeight}` dict every engine publishes as the
   conversation widget's `welcome` widgetData key.
+* `McpConfigMixin` -- `mcp_servers` (a list of `McpServer` or a provider
+  awaited with the process id). An engine outside `MCP_AGENT_TYPES` raises
+  `ValueError` (`<agent_type> does not support mcp_servers yet`) at
+  construction for any non-None value.
 
 Full mixin semantics: `packages/optio-agents/AGENTS.md`.
 

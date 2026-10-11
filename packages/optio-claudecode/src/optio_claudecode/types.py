@@ -25,6 +25,7 @@ from optio_agents.config_types import (
     SessionControlsConfigMixin,
     WelcomeConfigMixin,
 )
+from optio_agents.mcp import McpConfigMixin
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -92,7 +93,7 @@ def _identity_resume_refresh(config: "ClaudeCodeTaskConfig") -> "ClaudeCodeTaskC
 
 @dataclass(frozen=True, kw_only=True)
 class ClaudeCodeTaskConfig(
-    ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin,
+    ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin, McpConfigMixin,
     WelcomeConfigMixin,
 ):
     """Configuration for one optio-claudecode task instance.
@@ -300,6 +301,8 @@ class ClaudeCodeTaskConfig(
         # delivery_type (with fs_isolation on) fails fast.
         self._validate_claustrum()
         self._validate_blob_crypto()
+        # MCP servers are supported here (a malformed static list is refused).
+        self._validate_mcp(supported=True, agent=self.agent_type)
         if self.allow_bypass_permissions is False and self.permission_mode == "bypassPermissions":
             raise ValueError(
                 "ClaudeCodeTaskConfig: permission_mode='bypassPermissions' contradicts "

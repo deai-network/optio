@@ -24,6 +24,7 @@ from optio_agents.config_types import (
     SessionControlsConfigMixin,
     WelcomeConfigMixin,
 )
+from optio_agents.mcp import McpConfigMixin
 from optio_agents.protocol.session import (
     CallerMessageCallback,
     DeliverableCallback,
@@ -79,7 +80,7 @@ def _identity_resume_refresh(config: "OpencodeTaskConfig") -> "OpencodeTaskConfi
 
 @dataclass(frozen=True, kw_only=True)
 class OpencodeTaskConfig(
-    ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin,
+    ClaustrumConfigMixin, BlobCryptoConfigMixin, SessionControlsConfigMixin, McpConfigMixin,
     WelcomeConfigMixin,
 ):
     """Configuration for one optio-opencode task instance.
@@ -248,6 +249,8 @@ class OpencodeTaskConfig(
         self._validate_blob_crypto()
         self._validate_session_controls()
         self._validate_welcome()
+        # This engine cannot hand MCP servers to its agent yet: refuse mcp_servers.
+        self._validate_mcp(supported=False, agent=self.agent_type)
         if self.mode not in ("iframe", "conversation"):
             raise ValueError(
                 f"OpencodeTaskConfig.mode={self.mode!r} is not one of "

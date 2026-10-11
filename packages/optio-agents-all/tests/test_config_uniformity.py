@@ -1,14 +1,14 @@
 """Uniformity guard: the shared config surface must be identical across all 7
 engines. Every ``AgentTaskConfig`` union member inherits the blob-crypto,
-claustrum, session-controls and welcome field sets from the
-``optio_agents.config_types`` mixins, so the guard is structural (subclass
-checks) plus behavioral (validation + fallback behave the same on each
-concrete config class)."""
+claustrum, session-controls, welcome and MCP field sets from the
+``optio_agents.config_types`` and ``optio_agents.mcp`` mixins, so the guard is
+structural (subclass checks) plus behavioral (validation + fallback behave
+the same on each concrete config class)."""
 from typing import get_args
 
 import pytest
 
-from optio_agents import BlobCryptoConfigMixin, WelcomeCard, WelcomeConfigMixin
+from optio_agents import BlobCryptoConfigMixin, McpConfigMixin, WelcomeCard, WelcomeConfigMixin
 from optio_agents.config_types import ClaustrumConfigMixin, SessionControlsConfigMixin
 
 import optio_agents_all as aa
@@ -45,6 +45,7 @@ def test_union_members_inherit_shared_mixins(cls):
     assert issubclass(cls, ClaustrumConfigMixin)
     assert issubclass(cls, SessionControlsConfigMixin)
     assert issubclass(cls, WelcomeConfigMixin)
+    assert issubclass(cls, McpConfigMixin)
 
 
 @pytest.mark.parametrize("cls", CONFIG_TYPES, ids=lambda c: c.__name__)

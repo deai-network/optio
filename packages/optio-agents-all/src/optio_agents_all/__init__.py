@@ -15,6 +15,7 @@ from optio_grok import create_grok_task
 from optio_kimicode import create_kimicode_task
 from optio_opencode import create_opencode_task
 
+from optio_agents_all.capabilities import MCP_AGENT_TYPES, supports_mcp
 from optio_agents_all.factory import (
     analyze_account,
     analyze_accounts,
@@ -39,6 +40,8 @@ __all__ = [
     "analyze_accounts",
     "AGENTS",
     "get_agent_info",
+    "MCP_AGENT_TYPES",
+    "supports_mcp",
     "AgentType",
     "AgentTaskConfig",
     "KimiCodeTaskConfig",
