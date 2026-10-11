@@ -68,6 +68,7 @@ from optio_claudecode.seed_manifest import (
 )
 from optio_claudecode.pending_captures import (
     delete_pending_capture,
+    discard_pending_conversation_blob,
     discard_pending_workdir_blob,
     load_pending_capture,
     record_pending_capture,
@@ -1343,6 +1344,7 @@ def _effective_workdir_excludes(workdir_exclude: list[str] | None) -> list[str]:
     """The exclude list a workdir tar actually uses: the given list (the
     archive defaults when None, as the hosts read None), plus the
     conversation buffer file unless already listed. Always a new list."""
+    # Unanchored on purpose: a file of this internal name is dropped at any depth.
     base = DEFAULT_WORKDIR_EXCLUDES if workdir_exclude is None else workdir_exclude
     if _CONV_BUFFER_FILE in base:
         return list(base)
@@ -1779,9 +1781,17 @@ async def _store_conversation_blob(
     task's ``session_blob_encrypt``: plaintext only when the session blob is
     plaintext too). Returns its id."""
     payload = encrypt(data) if encrypt is not None else data
+    expected_len = len(payload)
     async with ctx.store_blob("conversation") as writer:
         await writer.write(payload)
-    return writer.file_id
+        conversation_blob_id = writer.file_id
+        written = getattr(writer, "_position", None)
+        if written is not None and written != expected_len:
+            raise RuntimeError(
+                f"conversation blob short-write: expected {expected_len} bytes, "
+                f"GridIn._position is {written}"
+            )
+    return conversation_blob_id
 
 
 # How often _stream_archive_to_blob emits a "Snapshot: archiving workdir, N MB
@@ -1948,15 +1958,22 @@ async def _store_workdir_snapshot(
     whatever ``workdir_exclude`` the caller passes.
     """
     # 4c. Record the blobs before streaming: a capture cut off past the cancel
-    # grace leaves this record, naming the partial workdir blob to delete.
+    # grace leaves this record, naming the partial workdir blob to delete
+    # (and its conversation blob, already stored).
     # A record still here is from a cut-off capture nobody resurrected (the
     # run was resumed or restarted instead); the upsert below would orphan
-    # its partial blob, so discard that first (kept if a snapshot names it).
+    # its partial blob and its conversation blob, so discard those first
+    # (each kept if a snapshot names it).
     stale = await load_pending_capture(ctx._db, ctx._prefix, ctx.process_id)
     if stale is not None:
         await discard_pending_workdir_blob(
             ctx._db, ctx._prefix,
             process_id=ctx.process_id, record=stale, delete_blob=ctx.delete_blob,
+        )
+        await discard_pending_conversation_blob(
+            ctx._db, ctx._prefix,
+            process_id=ctx.process_id, record=stale, delete_blob=ctx.delete_blob,
+            keep=conversation_blob_id,
         )
     workdir_blob_id = ObjectId()
     await record_pending_capture(
@@ -1964,6 +1981,7 @@ async def _store_workdir_snapshot(
         process_id=ctx.process_id,
         session_blob_id=session_blob_id,
         workdir_blob_id=workdir_blob_id,
+        conversation_blob_id=conversation_blob_id,
     )
 
     # 5. stream the plaintext workdir tar.

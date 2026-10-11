@@ -20,13 +20,14 @@ from motor.motor_asyncio import AsyncIOMotorGridFSBucket
 
 import optio_claudecode.session as S
 from optio_claudecode import ClaudeCodeTaskConfig, create_claudecode_task
+from optio_claudecode import pending_captures as PC
 from optio_claudecode.snapshots import (
     SNAPSHOT_RETENTION,
     insert_snapshot,
     load_latest_snapshot,
     prune_snapshots,
 )
-from optio_host.archive import DEFAULT_WORKDIR_EXCLUDES
+from optio_host.archive import DEFAULT_WORKDIR_EXCLUDES, yield_workdir_archive
 from optio_host.host import LocalHost
 
 
@@ -175,6 +176,9 @@ async def test_workdir_tar_never_contains_buffer_file(
     host = _local_host(tmp_path)
     with open(os.path.join(host.workdir, S._CONV_BUFFER_FILE), "w") as f:
         f.write('[[1, {"type": "user", "secret": "s"}]]')
+    os.makedirs(os.path.join(host.workdir, "sub"))
+    with open(os.path.join(host.workdir, "sub", S._CONV_BUFFER_FILE), "w") as f:
+        f.write("[]")
 
     await S._capture_snapshot(
         ctx, host, end_state="done", workdir_exclude=workdir_exclude,
@@ -183,7 +187,32 @@ async def test_workdir_tar_never_contains_buffer_file(
     snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id)
     names = await _tar_names(mongo_db, snap["workdirBlobId"])
     assert "keep.txt" in names
+    assert "sub" in names
     assert S._CONV_BUFFER_FILE not in names
+    assert f"sub/{S._CONV_BUFFER_FILE}" not in names
+
+
+@pytest.mark.asyncio
+async def test_fallback_archive_drops_buffer_file(tmp_path):
+    """The in-process tarfile fallback (a host without tar or bash) honours
+    the same exclude, at the top level and below it."""
+    root = tmp_path / "wd"
+    (root / "sub").mkdir(parents=True)
+    (root / "keep.txt").write_text("work\n")
+    (root / S._CONV_BUFFER_FILE).write_text("[]")
+    (root / "sub" / S._CONV_BUFFER_FILE).write_text("[]")
+
+    data = b"".join([
+        chunk async for chunk in yield_workdir_archive(
+            str(root), exclude=S._effective_workdir_excludes([]),
+        )
+    ])
+
+    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+        names = set(tar.getnames())
+    assert "keep.txt" in names
+    assert S._CONV_BUFFER_FILE not in names
+    assert f"sub/{S._CONV_BUFFER_FILE}" not in names
 
 
 @pytest.mark.asyncio
@@ -271,6 +300,193 @@ async def test_prune_deletes_conversation_blob(mongo_db, tmp_path, ctx_and_captu
     assert await mongo_db["fs.chunks"].count_documents({"files_id": oldest}) == 0
     for blob_id in kept:
         assert await mongo_db["fs.files"].count_documents({"_id": blob_id}) == 1
+
+
+# --- pending-capture tracking ----------------------------------------------------
+
+
+async def _cut_off_capture(ctx, host, monkeypatch) -> ObjectId:
+    """Run a capture with a conversation whose workdir stream is cut off;
+    return the id of the conversation blob it stored."""
+    real_stream = S._stream_archive_to_blob
+
+    async def _cut_off(*a, **kw):
+        raise RuntimeError("cut off")
+    monkeypatch.setattr(S, "_stream_archive_to_blob", _cut_off)
+    with pytest.raises(RuntimeError, match="cut off"):
+        await S._capture_snapshot(
+            ctx, host, end_state="cancelled", workdir_exclude=None,
+            session_blob_encrypt=_encrypt, conversation=_BUFFER,
+        )
+    monkeypatch.setattr(S, "_stream_archive_to_blob", real_stream)
+    files = await _conversation_files(ctx._db)
+    assert len(files) == 1
+    return files[0]["_id"]
+
+
+async def _blob_exists(mongo_db, blob_id) -> bool:
+    return await mongo_db["fs.files"].count_documents({"_id": blob_id}) == 1
+
+
+@pytest.mark.asyncio
+async def test_cut_off_capture_leaves_pending_record_naming_conversation_blob(
+        mongo_db, tmp_path, ctx_and_captures, monkeypatch):
+    ctx, _cap, _flag = ctx_and_captures
+    await _flags(mongo_db, ctx)
+    conv_id = await _cut_off_capture(ctx, _local_host(tmp_path), monkeypatch)
+
+    record = await PC.load_pending_capture(mongo_db, "test", ctx.process_id)
+    assert record["conversationBlobId"] == conv_id
+    assert PC.pending_conversation_blob_id(record) == conv_id
+    assert await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id) is None
+
+
+@pytest.mark.asyncio
+async def test_pending_record_without_conversation_names_none(mongo_db):
+    await PC.record_pending_capture(
+        mongo_db, "test", process_id="p", session_blob_id=ObjectId(), workdir_blob_id=ObjectId(),
+    )
+    record = await PC.load_pending_capture(mongo_db, "test", "p")
+    assert "conversationBlobId" not in record
+    assert PC.pending_conversation_blob_id(record) is None
+    assert PC.pending_conversation_blob_id(None) is None
+
+
+@pytest.mark.asyncio
+async def test_launch_settle_deletes_an_uncommitted_captures_conversation_blob(
+        mongo_db, tmp_path, ctx_and_captures, monkeypatch):
+    ctx, _cap, _flag = ctx_and_captures
+    await _flags(mongo_db, ctx)
+    conv_id = await _cut_off_capture(ctx, _local_host(tmp_path), monkeypatch)
+
+    assert await PC.settle_pending_capture(ctx, discard_session_blob=True) is False
+
+    assert not await _blob_exists(mongo_db, conv_id)
+    assert await mongo_db["fs.chunks"].count_documents({"files_id": conv_id}) == 0
+    assert await PC.load_pending_capture(mongo_db, "test", ctx.process_id) is None
+
+
+@pytest.mark.asyncio
+async def test_hook_settle_keeps_an_uncommitted_captures_conversation_blob(
+        mongo_db, tmp_path, ctx_and_captures, monkeypatch):
+    """The Resurrect hook settles without discard_session_blob: the blobs of
+    the cut-off capture stay for its fallback, like the session blob."""
+    ctx, _cap, _flag = ctx_and_captures
+    await _flags(mongo_db, ctx)
+    conv_id = await _cut_off_capture(ctx, _local_host(tmp_path), monkeypatch)
+
+    assert await PC.settle_pending_capture(ctx) is False
+
+    assert await _blob_exists(mongo_db, conv_id)
+
+
+@pytest.mark.asyncio
+async def test_launch_settle_keeps_a_committed_captures_conversation_blob(
+        mongo_db, tmp_path, ctx_and_captures):
+    """Cut off between inserting the snapshot record and deleting the pending
+    one: the conversation blob is that snapshot's and stays."""
+    ctx, _cap, _flag = ctx_and_captures
+    await _flags(mongo_db, ctx)
+    await S._capture_snapshot(
+        ctx, _local_host(tmp_path), end_state="done", workdir_exclude=None,
+        session_blob_encrypt=_encrypt, conversation=_BUFFER,
+    )
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id)
+    await PC.record_pending_capture(
+        mongo_db, "test", process_id=ctx.process_id,
+        session_blob_id=snap["sessionBlobId"], workdir_blob_id=snap["workdirBlobId"],
+        conversation_blob_id=snap["conversationBlobId"],
+    )
+
+    assert await PC.settle_pending_capture(ctx, discard_session_blob=True) is True
+
+    assert await _blob_exists(mongo_db, snap["conversationBlobId"])
+    assert await PC.load_pending_capture(mongo_db, "test", ctx.process_id) is None
+
+
+@pytest.mark.asyncio
+async def test_next_capture_discards_a_stale_records_conversation_blob(
+        mongo_db, tmp_path, ctx_and_captures, monkeypatch):
+    """A cut-off capture followed by a Resume/Restart that did not settle
+    (a stale record): the next capture deletes the unreferenced conversation
+    blob the record names, and records its own."""
+    ctx, _cap, _flag = ctx_and_captures
+    await _flags(mongo_db, ctx)
+    host = _local_host(tmp_path)
+    stale_conv = await _cut_off_capture(ctx, host, monkeypatch)
+
+    _plant_credentials(host)
+    await S._capture_snapshot(
+        ctx, host, end_state="done", workdir_exclude=None,
+        session_blob_encrypt=_encrypt, conversation=b"[[2,{}]]",
+    )
+
+    assert not await _blob_exists(mongo_db, stale_conv)
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id)
+    assert snap["conversationBlobId"] != stale_conv
+    assert await _read_blob(mongo_db, snap["conversationBlobId"]) == b"E[[2,{}]]"
+    assert await PC.load_pending_capture(mongo_db, "test", ctx.process_id) is None
+
+
+@pytest.mark.asyncio
+async def test_stale_record_discard_keeps_a_referenced_or_current_conversation_blob(
+        mongo_db, tmp_path, ctx_and_captures):
+    ctx, _cap, _flag = ctx_and_captures
+    await _flags(mongo_db, ctx)
+    host = _local_host(tmp_path)
+    await S._capture_snapshot(
+        ctx, host, end_state="done", workdir_exclude=None, conversation=_BUFFER,
+    )
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id)
+    referenced = snap["conversationBlobId"]
+
+    # A stale record naming the committed snapshot's conversation blob: kept.
+    await PC.record_pending_capture(
+        mongo_db, "test", process_id=ctx.process_id,
+        session_blob_id=snap["sessionBlobId"], workdir_blob_id=snap["workdirBlobId"],
+        conversation_blob_id=referenced,
+    )
+    await S._store_workdir_snapshot(
+        ctx, host, end_state="done", workdir_exclude=None, session_blob_id=ObjectId(),
+    )
+    assert await _blob_exists(mongo_db, referenced)
+
+    # A stale record naming the blob this very capture stores: kept too.
+    async with ctx.store_blob("conversation") as w:
+        await w.write(b"[]")
+    current = w.file_id
+    await PC.record_pending_capture(
+        mongo_db, "test", process_id=ctx.process_id,
+        session_blob_id=ObjectId(), workdir_blob_id=ObjectId(), conversation_blob_id=current,
+    )
+    await S._store_workdir_snapshot(
+        ctx, host, end_state="done", workdir_exclude=None, session_blob_id=ObjectId(),
+        conversation_blob_id=current,
+    )
+    assert await _blob_exists(mongo_db, current)
+
+
+@pytest.mark.asyncio
+async def test_conversation_blob_short_write_raises(ctx_and_captures, monkeypatch):
+    ctx, _cap, _flag = ctx_and_captures
+
+    class _ShortWriter:
+        file_id = ObjectId()
+        _position = 0
+
+        async def write(self, b):
+            self._position = len(b) - 1
+
+    class _Cm:
+        async def __aenter__(self):
+            return _ShortWriter()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(ctx, "store_blob", lambda name, file_id=None: _Cm())
+    with pytest.raises(RuntimeError, match="conversation blob short-write"):
+        await S._store_conversation_blob(ctx, b"abc", encrypt=None)
 
 
 # --- the task factory ----------------------------------------------------------

@@ -87,12 +87,15 @@ session_blob_id, conversation_blob_id=None)`, callable on its own. Every
 claudecode workdir tar is made there, and it archives with
 `_effective_workdir_excludes(workdir_exclude)`: the given list (the archive
 defaults when None) plus `.optio-conversation-buffer.json` (the file older
-versions wrote the buffer to), whatever the caller passes. It records
-`{processId, sessionBlobId, workdirBlobId, startedAt}` in
-`{prefix}_claudecode_pending_captures` (one document per processId, upserted;
+versions wrote the buffer to), whatever the caller passes (unanchored: a
+file of that name is dropped at any depth). It records
+`{processId, sessionBlobId, workdirBlobId, conversationBlobId?, startedAt}`
+in `{prefix}_claudecode_pending_captures` (one document per processId,
+upserted; `conversationBlobId` only when the capture stored one;
 `optio_claudecode.pending_captures`: `record_pending_capture`,
-`load_pending_capture`, `delete_pending_capture`,
-`discard_pending_workdir_blob`), streams the workdir into a
+`load_pending_capture`, `pending_conversation_blob_id(record)`,
+`delete_pending_capture`, `discard_pending_workdir_blob`,
+`discard_pending_conversation_blob`), streams the workdir into a
 GridFS blob opened with that pre-generated `workdirBlobId`, inserts the
 snapshot record (with `conversationBlobId` when given), deletes the pending
 record, calls `mark_has_saved_state()` then `clear_unsaved_work()`, and
@@ -119,11 +122,15 @@ when a snapshot references the blob (that capture had committed), calls
 `mark_has_saved_state()`; it does not touch `hasUnsavedWork` (optio-core
 clears it at launch). With `discard_session_blob` (the launch path only),
 for a capture that had not committed it also deletes the record's session
-blob unless a snapshot has it as `sessionBlobId`: after a launch it is
-garbage, and a later session-blob fallback could adopt it. The Resurrect
-hook settles without it (its fallback needs that blob). Before recording its own, `_store_workdir_snapshot`
-also discards the blob of any record still present (the upsert would
-orphan it).
+blob unless a snapshot has it as `sessionBlobId`, and its conversation blob
+unless a snapshot has it as `conversationBlobId`
+(`discard_pending_conversation_blob(db, prefix, *, process_id, record,
+delete_blob, keep=None)`): after a launch they are garbage, and a later
+session-blob fallback could adopt them. The Resurrect
+hook settles without it (its fallback needs those blobs). Before recording its own, `_store_workdir_snapshot`
+also discards the workdir blob and the conversation blob (unless it is the
+one this capture stores) of any record still present, each kept when a
+snapshot references it (the upsert would orphan them).
 
 `hasUnsavedWork`: `session._on_agent_live` calls `ctx.mark_unsaved_work()`
 when claude goes live (the iframe launch, after the tmux path is resolved so a
