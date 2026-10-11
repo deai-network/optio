@@ -269,6 +269,17 @@ class Optio:
         # test_group_cancel failures.
         await self._sync_definitions()
 
+        # Deferred migrations: need task definitions (e.g. a task's
+        # session_crypto), so they run right after the initial sync, before
+        # the scheduler starts and before any launch/resume is possible.
+        # Blocking here means startup can't race a migration that's
+        # rewriting a process's records. Spec:
+        # docs/2026-10-11-conversation-buffer-encryption-design.md §5.
+        from optio_core.deferred_migrations import deferred_migrations
+        await deferred_migrations.run(
+            mongo_db, prefix, lambda pid: self._executor._task_registry.get(pid),
+        )
+
         redis_info = f", redis='{redis_url}'" if redis_url else ", no Redis"
         logger.info(f"Optio initialized: db='{mongo_db.name}', prefix='{prefix}'{redis_info}")
 

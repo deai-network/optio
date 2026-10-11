@@ -532,3 +532,63 @@ removes `expireAt`, so a running or dismissed record is never evicted.
 `store.create_child_process(..., ttl_seconds=)` stores a child's `ttlSeconds`; the
 executor and `adhoc_define` pass the parent's. Spec:
 `docs/2026-10-09-process-indexes-design.md`
+
+---
+
+### TaskInstance.session_crypto
+
+```python
+@dataclass
+class TaskInstance:
+    ...
+    session_crypto: SessionCrypto | None = None
+```
+
+```python
+@dataclass(frozen=True)
+class SessionCrypto:
+    encrypt: Callable[[bytes], bytes] | None = None
+    decrypt: Callable[[bytes], bytes] | None = None
+```
+
+Optional, last field. A task's at-rest cipher for its own encrypted blob channels
+(e.g. the session blob). Filled by an engine wrapper's task factory from its config
+(e.g. optio-claudecode's `session_blob_encrypt`/`session_blob_decrypt`); other
+engines may fill it later. `None` cipher members mean "no encryption configured" —
+the blob is plaintext. Read back by code that resolves a process's `TaskInstance`
+outside a running task — the engine resolves the task the same way
+`Optio.resurrect` does, via the executor's task registry keyed by process id — most
+notably a deferred migration (below), which needs the cipher to transform a blob it
+is rewriting. Both exported from `optio_core`. Spec:
+`docs/2026-10-11-conversation-buffer-encryption-design.md` §4.
+
+---
+
+### Deferred migrations
+
+`optio_core.deferred_migrations` is a second migration registry, parallel to
+`optio_core.migrations.fw_migrations`, for migrations that need task definitions —
+most commonly a task's `session_crypto`. `fw_migrations` runs before the initial
+sync and gets only the database; `deferred_migrations` runs right after it, inside
+`Optio.init`, before the scheduler starts and before any launch/resume is possible,
+and start blocks until it finishes.
+
+```python
+from optio_core import deferred_migrations, DeferredMigrationContext
+
+@deferred_migrations.register("my_migration", depends_on=["other_migration"])
+async def my_migration(ctx: DeferredMigrationContext) -> None:
+    task = ctx.task_for(process_id)   # TaskInstance | None, via the executor's
+                                       # task registry (same resolution as resurrect)
+    ...
+```
+
+`DeferredMigrationContext` carries `db`, `prefix` (the app's plain prefix) and
+`task_for(process_id) -> TaskInstance | None`. Applied migrations are tracked in
+`{prefix}_fw_deferred_migrations`, independently of `fw_migrations`' own tracking
+collection. A migration that raises fails engine start, like a failing
+`fw_migrations` entry, and is retried on the next start — migrations must be
+idempotent per item. Packages register at import time, as with `fw_migrations`
+(e.g. optio-claudecode registering its migration in its package `__init__`, so any
+app that builds claudecode tasks has it). Spec:
+`docs/2026-10-11-conversation-buffer-encryption-design.md` §5.

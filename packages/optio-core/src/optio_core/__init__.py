@@ -3,11 +3,13 @@
 from optio_core.models import (
     TaskInstance, TaskInstanceCore, ChildResult, ChildHandle, LaunchBlocked,
     LaunchOutcome, CancelOutcome, DismissOutcome, ResurrectOutcome, MongoStore,
+    SessionCrypto,
 )
 from optio_core.exceptions import (
     LaunchError, ResultNotPublished, NothingToResurrect,
 )
 from optio_core.lifecycle import Optio
+from optio_core.deferred_migrations import deferred_migrations, DeferredMigrationContext
 
 _instance = Optio()
 
@@ -45,6 +47,7 @@ __all__ = [
     "block_launches", "unblock_launches",
     "group_cancel", "group_cancel_and_wait",
     "rpc_server", "mongo_store", "MongoStore",
+    "SessionCrypto", "deferred_migrations", "DeferredMigrationContext",
 ]
 
 

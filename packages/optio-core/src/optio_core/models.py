@@ -73,6 +73,24 @@ class TaskInstanceCore:
     params: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class SessionCrypto:
+    """A task's at-rest cipher for its own encrypted blob channels.
+
+    Each member is `Callable[[bytes], bytes] | None`; `None` means "no
+    encryption configured" (the blob is stored/read as plaintext). Filled by
+    an engine wrapper's task factory from its config's
+    `session_blob_encrypt` / `session_blob_decrypt` (see
+    `optio_agents.config_types.BlobCryptoConfigMixin`); read back by code
+    that resolves a process's `TaskInstance` outside of a running task (e.g.
+    a deferred migration — see `optio_core.deferred_migrations`) and needs
+    its cipher to transform a blob it is rewriting. Spec:
+    docs/2026-10-11-conversation-buffer-encryption-design.md §4.
+    """
+    encrypt: Callable[[bytes], bytes] | None = None
+    decrypt: Callable[[bytes], bytes] | None = None
+
+
 @dataclass
 class TaskInstance(TaskInstanceCore):
     """A unit of work provided by the application's task generator."""
@@ -100,6 +118,13 @@ class TaskInstance(TaskInstanceCore):
     # None fires at second 0. Lets an application spread many minute-aligned
     # schedules (e.g. one heartbeat per item) across the minute.
     schedule_offset_seconds: int | None = None
+    # This task's at-rest cipher for its own encrypted blob channels (e.g.
+    # the session blob). None means the task configures no encryption.
+    # Filled by engine-wrapper task factories (e.g. optio-claudecode's, from
+    # its config's session_blob_encrypt/decrypt); read by code that resolves
+    # a process's TaskInstance outside a running task, such as a deferred
+    # migration. Spec: docs/2026-10-11-conversation-buffer-encryption-design.md §4.
+    session_crypto: SessionCrypto | None = None
 
 
 @dataclass
