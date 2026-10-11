@@ -90,7 +90,10 @@ latest snapshot's record into a new blob, the stored bytes as they are (no
 decrypt, no re-encrypt; `_latest_conversation_bytes(ctx) -> bytes | None`
 reads them, None without a record, never raising), since pruning deletes
 per snapshot. Rescue passes that copy as `conversation_blob_id` and deletes
-it when the credentials guard refuses. Its second half is
+it when the credentials guard refuses. The teardown capture of a resumed run
+does the same when it has no export (the export raised, or the run failed
+after claude came up but before the listener started), so the record it
+resumed from is kept. Its second half is
 `session._store_workdir_snapshot(ctx, host, *, end_state, workdir_exclude,
 session_blob_id, conversation_blob_id=None)`, callable on its own. Every
 claudecode workdir tar is made there, and it archives with
@@ -173,9 +176,13 @@ headers. It raises `ArchiveError` unless the input is intact: every gzip
 member complete with matching CRC and length, an all-zero end-of-archive
 block followed only by zeros (a bad or truncated header is not an end), and
 only copyable members (no unknown or sparse types, no data on non-regular
-ones). Buffer found: with a task (`ctx.task_for`) the bytes become a
-`conversation` blob, through `task.session_crypto.encrypt` when set; without
-one they are dropped. One compare-and-set `update_one` (the document must
+ones; any other error raised while reading or copying the archive, e.g. a
+`ValueError` for a header field the PAX copy cannot hold, is an
+`ArchiveError` too). Buffer found: with a task (`ctx.task_for`) that has a
+`session_crypto`, the bytes become a `conversation` blob, through its
+`encrypt` when set (plaintext only for `SessionCrypto(encrypt=None)`);
+without a task, or with `session_crypto` None (cipher unknown), they are
+dropped. One compare-and-set `update_one` (the document must
 still name the old blob and be unmarked) sets the new `workdirBlobId`, the
 `conversationBlobId`, the marker and `migratedFromWorkdirBlobId: <old>`; no
 match deletes the new blobs and leaves the document alone. Then

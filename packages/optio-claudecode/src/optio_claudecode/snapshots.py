@@ -6,7 +6,9 @@ One document per terminal run per process_id. Layout:
       _id:             ObjectId,
       processId:       str,
       capturedAt:      datetime,
-      endState:        str,          # "done" | "failed" | "cancelled"
+      endState:        str,          # "done" | "failed" | "cancelled" | "rescued"
+                                     # (crash-orphan rescue) | "resurrected"
+                                     # (the Resurrect hook)
       sessionBlobId:   ObjectId,     # GridFS — encrypted tar.gz of home/.claude
       workdirBlobId:   ObjectId,     # GridFS — plaintext tar.gz of workdir minus home/.claude
       conversationBlobId: ObjectId,  # optional; GridFS "conversation" — the

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import logging
 import os
 import pathlib
 import tarfile
@@ -501,8 +502,9 @@ def _decrypt(b: bytes) -> bytes:
 
 
 async def _snapshot_with_record(mongo_db, ctx, payload: bytes | None) -> ObjectId | None:
-    """A snapshot one second old (blobs stored after it are strictly newer)
-    whose conversation blob holds ``payload`` as stored; returns its id."""
+    """A snapshot an hour old whose conversation blob holds ``payload`` as
+    stored; returns its id. Blobs stored by the test, before or after it, are
+    newer, however slowly a starved CPU runs the test."""
     from datetime import timedelta
     conv_id = None
     if payload is not None:
@@ -515,7 +517,7 @@ async def _snapshot_with_record(mongo_db, ctx, payload: bytes | None) -> ObjectI
         conversation_blob_id=conv_id,
     )
     await mongo_db["test_claudecode_session_snapshots"].update_one(
-        {"_id": doc["_id"]}, {"$set": {"capturedAt": doc["capturedAt"] - timedelta(seconds=1)}},
+        {"_id": doc["_id"]}, {"$set": {"capturedAt": doc["capturedAt"] - timedelta(hours=1)}},
     )
     return conv_id
 
@@ -582,6 +584,41 @@ async def test_resume_with_undecryptable_or_corrupt_blob_is_empty(mongo_db, ctx_
     conv_id = await _snapshot_with_record(mongo_db, ctx, b"E[]")
     await ctx.delete_blob(conv_id)
     assert await S._load_conversation_buffer(ctx, decrypt=_decrypt) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("record", [
+    b'{"a": "secret-content"}',                          # not a list
+    b'[["x", {}], [1, "secret-content"], [2]]',          # no valid entry
+], ids=["not-a-list", "no-valid-entry"])
+async def test_malformed_record_logs_one_warning(mongo_db, ctx_and_captures, caplog, record):
+    """Valid JSON that is not a buffer: one warning naming the process, never
+    the record's content."""
+    ctx, _cap, _flag = ctx_and_captures
+    await _snapshot_with_record(mongo_db, ctx, _encrypt(record))
+
+    with caplog.at_level(logging.WARNING, logger=S.__name__):
+        assert await S._load_conversation_buffer(ctx, decrypt=_decrypt) is None
+
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(warnings) == 1, [r.getMessage() for r in warnings]
+    assert warnings[0].name == S.__name__
+    message = warnings[0].getMessage()
+    assert ctx.process_id in message
+    assert "secret-content" not in message and not warnings[0].exc_info
+
+
+@pytest.mark.asyncio
+async def test_empty_record_is_empty_without_a_warning(mongo_db, ctx_and_captures, caplog):
+    """`[]` (or only the close marker) is a buffer with nothing in it, not a
+    malformed one."""
+    ctx, _cap, _flag = ctx_and_captures
+    for record in (b"[]", b'[[1, {"type": "x-optio-closed"}]]'):
+        await mongo_db["test_claudecode_session_snapshots"].delete_many({})
+        await _snapshot_with_record(mongo_db, ctx, _encrypt(record))
+        with caplog.at_level(logging.WARNING, logger=S.__name__):
+            assert await S._load_conversation_buffer(ctx, decrypt=_decrypt) is None
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []
 
 
 @pytest.mark.asyncio
@@ -1013,3 +1050,86 @@ async def test_resume_primes_the_listener_from_the_encrypted_record(
 
     assert primed[0] is None  # the fresh launch
     assert primed[1] == [(seq, event) for seq, event in exported]
+
+
+@pytest.mark.serial
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["export-raises", "listener-never-started"])
+async def test_resumed_run_without_an_export_keeps_the_record(
+    shim_install_dir: pathlib.Path,
+    claude_cache_dir: pathlib.Path,
+    task_root,
+    mongo_db,
+    monkeypatch,
+    failure,
+):
+    """A resumed run whose capture has no listener export (the export raised,
+    or the run failed after claude came up but before the listener started)
+    carries the latest record forward, the stored bytes as they are, instead
+    of leaving the new snapshot without a conversation record."""
+    from optio_core.lifecycle import Optio
+
+    prefix, pid = "cckeep", f"cc-conv-keep-{failure}"
+    optio = Optio()
+    await optio.init(mongo_db=mongo_db, prefix=prefix)
+    try:
+        task = create_claudecode_task(
+            process_id=pid, name="Conversation record kept",
+            config=ClaudeCodeTaskConfig(
+                consumer_instructions="Converse with the test.",
+                mode="conversation",
+                conversation_ui=True,
+                permission_mode="bypassPermissions",
+                fs_isolation=False,
+                install_dir=str(claude_cache_dir),
+                ttyd_install_dir=str(shim_install_dir),
+                supports_resume=True,
+                credentials_json={"token": "test"},
+                session_blob_encrypt=_xor,
+                session_blob_decrypt=_xor,
+            ),
+        )
+        await optio.adhoc_define(task)
+        conv = await optio.launch_and_await_result(pid, session_id=None, timeout=60)
+        await _wait_widget_data(optio, pid)
+        result_seen = asyncio.Event()
+        conv.on_event(lambda e: result_seen.set() if e.get("type") == "result" else None)
+        await conv.send("ping")
+        await asyncio.wait_for(result_seen.wait(), 60)
+        await conv.close()
+        await _wait_terminal(optio, pid)
+        first = await load_latest_snapshot(mongo_db, prefix=prefix, process_id=pid)
+        stored = await _read_blob(mongo_db, first["conversationBlobId"])
+
+        if failure == "export-raises":
+            def _export_raises(self):
+                raise RuntimeError("export broke")
+            monkeypatch.setattr(S.ConversationListener, "export_buffer", _export_raises)
+            conv2 = await optio.launch_and_await_result(
+                pid, resume=True, session_id=None, timeout=60,
+            )
+            await conv2.close()
+        else:
+            async def _fails(ctx, config):
+                raise RuntimeError("failed after claude came up")
+            monkeypatch.setattr(S, "_on_agent_live", _fails)
+            await asyncio.wait_for(
+                optio.launch_and_wait(pid, resume=True, session_id=None), 120,
+            )
+            proc = await optio.get_process(pid)
+            assert proc["status"]["state"] == "failed"
+            assert "failed after claude came up" in proc["status"]["error"]
+        await _wait_terminal(optio, pid)
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+    snaps = await mongo_db[f"{prefix}_claudecode_session_snapshots"].find(
+        {"processId": pid},
+    ).sort("capturedAt", -1).to_list(None)
+    assert len(snaps) == 2
+    latest = snaps[0]
+    assert latest["_id"] != first["_id"]
+    # A copy (pruning deletes per snapshot), of the stored bytes as they are.
+    assert latest["conversationBlobId"] != first["conversationBlobId"]
+    assert await _read_blob(mongo_db, latest["conversationBlobId"]) == stored
+    assert await _read_blob(mongo_db, first["conversationBlobId"]) == stored

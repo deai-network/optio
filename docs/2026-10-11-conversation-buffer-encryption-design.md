@@ -66,6 +66,9 @@ The listener runs in the engine process, so the export never touches the agent h
   snapshot's conversation record forward: it re-stores the bytes as a new blob, since pruning deletes
   per snapshot. A rescued session so keeps the history of its last suspend. Pre-fix, that history
   rode along in the restored workdir file.
+- **A resumed run's teardown without an export** (the export raised, or the run failed after claude
+  came up but before the listener started) copies the latest record forward the same way, so the
+  new snapshot keeps the history the run resumed from.
 
 ### 3. Resume path
 
@@ -113,9 +116,11 @@ It visits every document in `{prefix}_claudecode_session_snapshots` without the 
    without a leading `./`). Keep that member's bytes aside. It streams with bounded memory; tar
    metadata (modes, mtimes, links) is preserved.
 2. **If the buffer was present:**
-   - the task is found → store the bytes as the `conversation` blob, transformed with its
-     `session_crypto.encrypt` when set;
-   - no task definition → drop the bytes (decision 4).
+   - the task is found and has a `session_crypto` → store the bytes as the `conversation` blob,
+     transformed with its `session_crypto.encrypt` when set; only `SessionCrypto(encrypt=None)` (a
+     task that genuinely has no session encryption) gives a plaintext record;
+   - no task definition, or a task whose `session_crypto` is None (cipher unknown) → drop the bytes
+     (decision 4).
 3. **If the buffer was absent:** no new workdir blob is kept (the stream is discarded); only the
    marker is set.
 4. **Update the document in one write:** the new `workdirBlobId` (when rewritten), `conversationBlobId`
@@ -159,8 +164,8 @@ without a rewrite.
   - a raising migration fails start and is retried.
 - **The migration**, on fixture snapshots:
   - with the buffer and a task with encryption → encrypted record, stripped workdir, old blob gone;
-  - a task without encryption → plaintext record;
-  - no task → stripped, no record;
+  - a task without encryption (`SessionCrypto(encrypt=None)`) → plaintext record;
+  - no task, or a task with `session_crypto` None → stripped, no record;
   - without the buffer → marked only;
   - an interrupted run resumes;
   - member metadata is preserved.

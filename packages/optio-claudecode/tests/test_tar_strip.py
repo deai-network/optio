@@ -261,6 +261,18 @@ def damaged_flipped_deflate() -> bytes:
     return bytes(data)
 
 
+def damaged_no_end_blocks() -> bytes:
+    # The tar stops right after the last member's data (no end-of-archive
+    # blocks), inside an intact gzip stream: tarfile alone reads the missing
+    # header as the end; _StrictTarInfo refuses it.
+    raw = _tar_bytes(_damage_base())
+    with tarfile.open(fileobj=io.BytesIO(raw)) as tar:
+        last = tar.getmembers()[-1]
+    end = last.offset_data + -(-last.size // tarfile.BLOCKSIZE) * tarfile.BLOCKSIZE
+    assert raw[end:].strip(b"\0") == b""  # only the end blocks are cut
+    return gzip.compress(raw[:end], mtime=0)
+
+
 def damaged_data_after_end() -> bytes:
     return gzip.compress(_tar_bytes(_damage_base()) + b"\x01" * 512, mtime=0)
 
@@ -277,14 +289,26 @@ def uncopyable_symlink_with_data() -> bytes:
     return gzip.compress(_tar_bytes([*_damage_base(), (info, None)]), mtime=0)
 
 
+def uncopyable_huge_device_number() -> bytes:
+    # GNU tar stores a device major over 7 octal digits base-256; tarfile reads
+    # it, but writing it in the PAX copy raises ValueError("overflow in number
+    # field"), which is not a TarError.
+    info = tarfile.TarInfo("./dev")
+    info.type = tarfile.CHRTYPE
+    info.devmajor = 8 ** 7
+    return gzip.compress(_tar_bytes([*_damage_base(), (info, None)]), mtime=0)
+
+
 DAMAGED_ARCHIVES = {
     "bad-crc": damaged_bad_crc,
     "missing-trailer": damaged_missing_trailer,
     "bad-header-checksum": damaged_header_checksum,
     "flipped-deflate": damaged_flipped_deflate,
     "data-after-end": damaged_data_after_end,
+    "no-end-blocks": damaged_no_end_blocks,
     "custom-type": uncopyable_custom_type,
     "symlink-with-data": uncopyable_symlink_with_data,
+    "huge-device-number": uncopyable_huge_device_number,
 }
 
 

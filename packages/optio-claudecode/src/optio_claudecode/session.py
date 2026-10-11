@@ -1304,13 +1304,22 @@ async def run_claudecode_session(
                 _snapshot_t0 = _time.monotonic()
                 _trace("finally: capture_snapshot START")
                 try:
-                    await _capture_snapshot(
+                    # A resumed run with no export (it raised, or the run failed
+                    # before the listener started): keep the record it resumed
+                    # from, as rescue does, rather than a snapshot without one.
+                    carried = None
+                    if resuming and conversation_export is None:
+                        carried = await _carry_conversation_forward(ctx)
+                    saved = await _capture_snapshot(
                         ctx, host,
                         end_state="cancelled" if cancelled else "done",
                         workdir_exclude=config.workdir_exclude,
                         session_blob_encrypt=config.session_blob_encrypt,
                         conversation=conversation_export,
+                        conversation_blob_id=carried,
                     )
+                    if not saved and carried is not None:
+                        await ctx.delete_blob(carried)
                     _trace(
                         "finally: capture_snapshot DONE (%.1fs)",
                         _time.monotonic() - _snapshot_t0,
@@ -1423,14 +1432,22 @@ async def _load_conversation_buffer(
         _LOG.warning("conversation record is not valid JSON; starting empty")
         return None
     out: list[tuple[int, dict]] = []
+    valid = 0
     for entry in data if isinstance(data, list) else []:
         if (isinstance(entry, list) and len(entry) == 2
                 and isinstance(entry[0], int) and isinstance(entry[1], dict)):
+            valid += 1
             # Defensive: drop any terminal close marker a pre-fix buffer may
             # carry, so it never replays the prior run's close on resume.
             if entry[1].get("type") == "x-optio-closed":
                 continue
             out.append((entry[0], entry[1]))
+    if not isinstance(data, list) or (data and not valid):
+        # The id only: the record's content is the conversation.
+        _LOG.warning(
+            "conversation record of process %s is not a list of [seq, event] "
+            "entries; starting empty", ctx.process_id,
+        )
     return out or None
 
 

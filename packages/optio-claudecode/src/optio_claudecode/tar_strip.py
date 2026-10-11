@@ -201,11 +201,13 @@ def _strip_sync(bridge: _Bridge, name: str) -> bytes | None:
                     raise ArchiveError("data after the end-of-archive marker")
     except (_Aborted, ArchiveError):
         raise
-    except (tarfile.TarError, OSError, EOFError, zlib.error) as exc:
-        # OSError: tarfile reports a truncated member as OSError("unexpected
-        # end of data"). The file objects here are in memory, so nothing else
-        # raises it.
-        raise ArchiveError(f"unreadable gzip tar: {exc}") from exc
+    except Exception as exc:
+        # The worker does no I/O except through the bridge (which raises only
+        # _Aborted), so anything else comes from the archive content: TarError,
+        # zlib.error, EOFError, OSError (tarfile reports a truncated member as
+        # OSError("unexpected end of data")), and ValueError (e.g. a header
+        # field the PAX copy cannot hold: "overflow in number field").
+        raise ArchiveError(f"unreadable gzip tar: {type(exc).__name__}: {exc}") from exc
     writer.finish()
     bridge.call(bridge.outq.put(_END))
     return stripped

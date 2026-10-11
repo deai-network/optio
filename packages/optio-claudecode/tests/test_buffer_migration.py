@@ -149,13 +149,15 @@ async def test_migrates_with_task_cipher(mongo_db):
         assert f["metadata"] == {"processId": str(oid), "prefix": _PREFIX, "name": name}
 
 
-@pytest.mark.parametrize("crypto", [None, SessionCrypto()], ids=["no-crypto", "empty-crypto"])
-async def test_plaintext_when_task_has_no_cipher(mongo_db, crypto):
+async def test_plaintext_when_task_has_no_session_encryption(mongo_db):
+    """`SessionCrypto(encrypt=None)` (what the claudecode factory builds
+    without session encryption): the task genuinely stores its session blobs
+    plaintext, so the record is stored plaintext too."""
     oid = await _process(mongo_db, "p1")
     snap = await _snapshot(mongo_db, "p1", buffer=True, owner=str(oid))
 
     await M.claudecode_conversation_buffer_out_of_workdir(
-        _ctx(mongo_db, {"p1": _task("p1", crypto)}),
+        _ctx(mongo_db, {"p1": _task("p1", SessionCrypto(encrypt=None, decrypt=None))}),
     )
 
     doc = await _reload(mongo_db, snap)
@@ -183,6 +185,26 @@ async def test_no_task_strips_and_drops(mongo_db):
     assert await _blob_gone(mongo_db, snap["workdirBlobId"])
     f = await _file_doc(mongo_db, doc["workdirBlobId"])
     assert f["metadata"] == {"processId": "gone", "prefix": _PREFIX, "name": "workdir"}
+
+
+async def test_task_with_unknown_cipher_strips_and_drops(mongo_db):
+    """A task whose `session_crypto` is None does not say whether its session
+    blobs are encrypted: storing the buffer plaintext could undo the task's
+    encryption, so it is dropped, as with no task."""
+    oid = await _process(mongo_db, "p1")
+    snap = await _snapshot(mongo_db, "p1", buffer=True, owner=str(oid))
+
+    await M.claudecode_conversation_buffer_out_of_workdir(
+        _ctx(mongo_db, {"p1": _task("p1", None)}),
+    )
+
+    doc = await _reload(mongo_db, snap)
+    assert doc["conversationBufferMigrated"] is True
+    assert "conversationBlobId" not in doc
+    assert await mongo_db["fs.files"].count_documents({"filename": "conversation"}) == 0
+    names = _tar_names(await _read_blob(mongo_db, doc["workdirBlobId"]))
+    assert names == {"./keep.txt", "./src/main.py"}
+    assert await _blob_gone(mongo_db, snap["workdirBlobId"])
 
 
 async def test_absent_buffer_marks_only(mongo_db):

@@ -16,10 +16,12 @@ workdir blob of every snapshot. This migration visits every
   capture) is only marked.
 * Otherwise its workdir blob is streamed through `tar_strip.strip_member` into
   a new `workdir` blob without the top-level buffer file.
-  - Buffer found and the process has a task: the bytes become the snapshot's
-    `conversation` blob, through `task.session_crypto.encrypt` when set
-    (plaintext otherwise, like the session blob).
-  - Buffer found, no task definition: the bytes are dropped.
+  - Buffer found and the process has a task with a `session_crypto`: the
+    bytes become the snapshot's `conversation` blob, through
+    `session_crypto.encrypt` when set (plaintext when it is None: the task
+    has no session encryption, like its session blob).
+  - Buffer found, no task definition, or a task whose `session_crypto` is
+    None (cipher unknown): the bytes are dropped.
   - One compare-and-set `update_one` (the document must still name the old
     blob and be unmarked) sets the new `workdirBlobId`, the
     `conversationBlobId` (when stored), the marker and
@@ -109,7 +111,7 @@ class _Counts:
     visited: int = 0
     stripped: int = 0         # buffer found, workdir blob rewritten
     records_stored: int = 0   # ... and stored as the conversation blob
-    dropped: int = 0          # ... and dropped (no task definition)
+    dropped: int = 0          # ... and dropped (no task, or its cipher unknown)
     marked_only: int = 0      # new-style snapshot, or no buffer
     corrupt: int = 0          # missing, corrupt or unreadable workdir blob
     changed: int = 0          # the document changed under us; left alone
@@ -185,16 +187,18 @@ class _Run:
             return
 
         task = self.ctx.task_for(process_id)
+        crypto = task.session_crypto if task is not None else None
         conversation_id = None
         try:
-            if task is not None:
-                crypto = task.session_crypto
-                payload = crypto.encrypt(buffer) if crypto and crypto.encrypt else buffer
+            if crypto is not None:
+                payload = crypto.encrypt(buffer) if crypto.encrypt else buffer
                 conversation_id = await _store_blob(
                     self.bucket, payload, metadata={**metadata, "name": "conversation"},
                 )
-            # No task definition: no cipher to store the buffer under; it is
-            # dropped (design decision 4).
+            # No task definition, or a task whose session_crypto is None
+            # (cipher unknown): no known cipher to store the buffer under; it
+            # is dropped (design decision 4). Only SessionCrypto(encrypt=None),
+            # a task that has no session encryption, stores it plaintext.
         except BaseException:
             # E.g. the cipher failed: the start fails and is retried; do not
             # leave a workdir copy behind each time. (Not after the update
@@ -227,7 +231,7 @@ class _Run:
         _LOG.debug(
             "%s: snapshot %s (process %s): buffer %s; workdir blob %s replaced by %s",
             _NAME, doc["_id"], process_id,
-            "stored" if conversation_id is not None else "dropped (no task)",
+            "stored" if conversation_id is not None else "dropped (no task or cipher unknown)",
             old_id, new_id,
         )
 
