@@ -7,7 +7,8 @@ fixed combination of model / reasoning effort / permission mode
 (``ControlSettings``); the control names its ``default`` option. Labels and
 descriptions are ``Text`` (``optio_agents.text``, shared with the rest of the
 agent configuration): a plain string or a per-language map
-(``{"en": ..., "hu": ...}``) that ``resolve_text`` reads.
+(``{"en": ..., "hu": ...}``) that ``resolve_text`` reads. A control's label
+may be None (no caption); an option's may not.
 
 Every engine TaskConfig inherits ``CustomControlsConfigMixin``. An engine that
 cannot apply the controls yet refuses a non-empty list
@@ -107,11 +108,11 @@ class CustomOption:
 @dataclass(frozen=True)
 class CustomControl:
     """One custom selector: ``id`` (letters, digits, ``_``, ``-``), a ``label``
-    and optional ``description`` (``Text``), at least two ``options`` with
-    unique values, and the ``default`` option's value, applied when a session
-    starts."""
+    (``Text``, or None: no caption) and optional ``description`` (``Text``),
+    at least two ``options`` with unique values, and the ``default`` option's
+    value, applied when a session starts."""
     id: str
-    label: Text
+    label: Text | None
     default: str
     options: list[CustomOption]
     description: Text | None = None
@@ -123,7 +124,8 @@ class CustomControl:
                 "letters, digits, '_' and '-'."
             )
         where = f"CustomControl {self.id!r}"
-        object.__setattr__(self, "label", check_text(self.label, what=f"{where}: label"))
+        if self.label is not None:
+            object.__setattr__(self, "label", check_text(self.label, what=f"{where}: label"))
         if self.description is not None:
             object.__setattr__(
                 self, "description", check_text(self.description, what=f"{where}: description")

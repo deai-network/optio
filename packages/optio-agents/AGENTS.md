@@ -173,9 +173,9 @@ stay top-level on each config — callers write `fs_isolation=` /
 * `CustomOption(value, label, settings, description=None)` — `value` of
   letters, digits, `_`, `-`; `label` / `description` are `Text`.
 * `CustomControl(id, label, default, options, description=None)` — `id` of
-  letters, digits, `_`, `-` (its `/control` id is `custom:<id>`); at least 2
-  options with unique values; `default` is one of them, applied when a session
-  starts.
+  letters, digits, `_`, `-` (its `/control` id is `custom:<id>`); `label` is
+  `Text` or None (no caption); at least 2 options with unique values;
+  `default` is one of them, applied when a session starts.
 
 All are frozen and validated on construction (`ValueError`); language maps
 and the options list are copied.

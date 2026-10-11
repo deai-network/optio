@@ -67,7 +67,7 @@ def test_known_values():
 @pytest.mark.parametrize("label", ["", {}, {"en": ""}, {"": "Fast"}, {"en": 5}, 5, None],
                          ids=["empty-str", "empty-map", "empty-value", "empty-key",
                               "non-str-value", "int", "none"])
-def test_a_bad_label_is_refused(label):
+def test_a_bad_option_label_is_refused(label):
     with pytest.raises(ValueError, match="label"):
         _option(label=label)
 
@@ -176,6 +176,20 @@ def test_control_positional_order():
     control = CustomControl("pick", "Pick", "a", options, "Which one")
     assert (control.id, control.label, control.default, control.options,
             control.description) == ("pick", "Pick", "a", options, "Which one")
+
+
+def test_a_controls_label_is_optional():
+    # None: the control shows no caption (an option's label stays required).
+    control = CustomControl(id="speed", label=None, default="a",
+                            options=[_option("a"), _option("b")])
+    assert control.label is None
+    assert CustomControl("speed", None, "a", [_option("a"), _option("b")]).label is None
+
+
+@pytest.mark.parametrize("label", ["", {}, {"en": ""}], ids=["empty-str", "empty-map", "empty-value"])
+def test_a_controls_empty_label_is_still_refused(label):
+    with pytest.raises(ValueError, match="label"):
+        CustomControl(id="speed", label=label, default="a", options=[_option("a"), _option("b")])
 
 
 @pytest.mark.parametrize("bad_id", ["", "custom:speed", "has space", None])
