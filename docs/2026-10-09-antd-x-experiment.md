@@ -11,6 +11,30 @@ work" runs the optio release batch). vultus **core 0.3.0 / antd 0.5.0** are on n
 41cb663). `csillag/antd-x` is rebased onto that main. Left: the permission card review (step 4
 below), then the remaining X candidates.
 
+**RESUMED 2026-10-11 (antd port 3).** Rebased onto optio main 83154201 (vultus 0.4.0/0.6.0
+spinner slot, optio-conversation-ui 0.8.0): a running ThoughtChain tool node shows the app-lent
+Spinner (key `optio:tool:<callId>`) as its icon, else X's loading icon. Layout on excavator,
+each optio worktree with its OWN sibling worktrees (each install owns only its siblings' links):
+- `~/deai/optio/.worktrees/csillag/{antd-x, unitas, daeo-style}`: the experiment; siblings
+  detached at unitas 9d3ef91 / daeo-style 1f55f99.
+- `~/deai/optio/.worktrees/x-baseline/{optio, unitas, daeo-style}`: the non-X baseline,
+  branch `csillag/x-baseline` = optio main + the experiment's build commits (daeo link, Daeo/plain
+  switch, header colours); local only.
+- daeo-style is linked from the sibling (`pnpm-workspace` entries, experiment commit
+  ebce12b6): the bridge `@deai-network/daeo-style-for-vultus`; no GitHub Packages token exists
+  on the hosts. Tests: `src/__tests__/daeo-style.test.tsx` renders the view inside
+  DaeoStyleProvider; vitest dedupes react/antd/cssinjs/vultus-antd; all tests pinning the old
+  DOM of kept widgets were rewritten (751 pass).
+- Demo: tmux `antd-x-demo` (demo engine on db optio-demo and the API :3100 from antd-x;
+  `vite-x` :5180 from antd-x; `vite-base` :5181 from x-baseline; Vites started with
+  `./node_modules/.bin/vite`). Both dashboards have a header switch Daeo | Plain (reloads;
+  `?style=`), Daeo by default, plus a light/dark toggle in Daeo. No Storybook (it would need an
+  install inside a unitas sibling, which relinks that sibling).
+- Found while rewriting tests, for the owner: compaction bands keep the old lavender while
+  System rows are glass; `js`/`ts` code fences are not highlighted (CodeHighlighter loads Prism
+  by full name); a failed tool's text is no longer red (only X's status icon); X bubbles have no
+  tail.
+
 **PARKED 2026-10-09 ~18:00 (owner: more pressing work).** Everything non-X is on optio main and
 released (optio-conversation-ui 0.7.0, optio-claudecode 0.6.9, optio-agents 0.6.7, ...; vultus
 0.3.0/0.5.0; excavator main 461e46f5 consumes them). This branch is pushed to origin as
