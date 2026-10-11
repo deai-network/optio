@@ -10,9 +10,12 @@ This package replaces the engine-specific `optio-claudecode-ui`. A single regist
 pnpm add optio-conversation-ui
 ```
 
-Peer deps: `react >=18`, `react-dom >=18`, `antd >=6`, `vultus-antd >=0.2.0`. vultus
+Peer deps: `react >=18`, `react-dom >=18`, `antd >=6`, `vultus-antd >=0.5.0`. vultus
 is a peer so the app's one copy carries its `VultusProvider` context (error toasts, router
-links) into the conversation's buttons.
+links, a lent loading spinner) into the conversation's buttons. The
+[loading spinner](#loading-spinner) slot needs the vultus-antd release that adds
+`VultusProvider components` (and the vultus-core release under it); this range is raised to
+`>=0.6.0` with that release. Until then the workspace link to unitas provides it.
 
 ## Usage
 
@@ -43,6 +46,42 @@ It registers for `ui_widget = "conversation"`. Each task carries its engine in `
 - Optional opt-in light/dark theming (`ownTheme`).
 - Resume band (owner request 2026-10-08): where a session was saved and resumed, a band with zig-zag top and bottom edges spans the whole transcript area (not just the reading column), labelled "Session has been saved and resumed.". The `System: you have been resumed` row stays, right after it. claudecode draws it at the listener's `x-optio-resumed` marker; the ACP engines (grok, cursor, kimicode) have no marker and draw it from the resume notice itself. Verified against real claudecode and grok sessions only.
 - Compaction bands (claudecode, owner request 2026-10-08): two of the same band per context compaction, in the `System:` bubble's colours (its fill, and its border along the zig-zag edges): "Context is being compacted." at the CLI's `system/compact_boundary`, then the summary Claude continues from (a synthetic user event starting "This session is being continued from a previous conversation") as a lavender row that shows its first line and expands to the whole summary on click, then "Context has been compacted.". A summary with no boundary before it draws both bands itself. The closing band absorbs a `/compact` command's own replay echoes (`<local-command-stdout>Compacted …` and `<command-name>/compact</command-name>…`), which otherwise render as user bubbles. Verified against a real `/compact` capture (`claudecode-compact-manual.jsonl`); an automatic compaction has the same boundary and summary, without the echoes.
+
+## Loading spinner
+
+An app can lend its own loading spinner through vultus-core's components slot, set with
+vultus-antd's `VultusProvider`:
+
+```tsx
+import { VultusProvider } from 'vultus-antd';
+
+<VultusProvider components={{ Spinner: MySpinner }}>
+  <App />
+</VultusProvider>
+```
+
+`MySpinner` receives vultus-core's `SpinnerProps`: a required `spinnerKey` (the spinner's
+identity), an optional `size` and an optional `label`. The conversation then shows it, at
+size `'small'`, in place of antd's spinners:
+
+| Where | `spinnerKey` |
+|-------|--------------|
+| A running background task's muted line | `optio:background:<task>`: the background task id, else the call id, else the item's `seq` |
+| A running tool row | `optio:tool:<call>`: the call id, else the item's `seq` |
+| The "working…" indicator while the agent works | `optio:working` |
+| An in-progress step in the task list | `optio:todo:<todo id>` |
+| The opencode view before "Loading…" (no session yet) | `optio:process:<id>:widget` |
+
+The lent spinner wins over the agent-brand spinner a task enables with its
+`native_spinner` option: with a lent spinner, the "working…" indicator always shows it.
+
+Each agent view wraps its conversation in a vultus-core `<SpinnerScope
+name="optio:process:<id>">` (`<id>` is the process `_id`), so every key inside carries that
+prefix: `optio:process:<id>/optio:working`, and likewise the vultus buttons and fields inside
+(send bar, Interrupt, session controls), e.g. the pending Interrupt button's
+`optio:process:<id>/vultus:action:interrupt`. A page showing several conversations keeps the
+keys unique. The opencode "Loading…" key sits outside that scope and names the process
+itself. Without a lent spinner nothing changes.
 
 ## Consumer requirements
 

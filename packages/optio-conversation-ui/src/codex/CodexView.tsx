@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useRef } from 'react';
 import type { WidgetProps } from 'optio-ui';
+import { SpinnerScope } from 'vultus-antd';
 import type { ChatState, SessionControl } from '../chat.js';
 import { initialChatState, reduceCodexEvent } from './events.js';
 import { resolveUploadUrl, uploadFiles, bundleUploadNotice } from '../uploads.js';
@@ -92,64 +93,66 @@ export function CodexView(props: WidgetProps) {
   }
 
   return (
-    <ConversationView
-      todos={todosFromWidgetData(props.process.widgetData)}
-      state={state}
-      closed={state.closed}
-      busy={busy}
-      toolVerbosity={toolVerbosity}
-      thinkingVerbosity={thinkingVerbosity}
-      showFileUpload={showFileUpload}
-      maxUploadBytes={maxUploadBytes}
-      fileDownload={fileDownload}
-      nativeSpinner={nativeSpinner ? <NativeSpinner engine="codex" /> : undefined}
-      onSend={async (body, attachments) => {
-        // With attachments, upload through the generic route first, then bundle
-        // one System: notice per stored file into the prompt so codex reads them
-        // from the workdir with its own tools. The optimistic echo still shows
-        // the operator's text.
-        let prompt = body;
-        if (attachments.length > 0) {
-          const uploadUrl = resolveUploadUrl(props.process.widgetData, widgetProxyUrl);
-          if (!uploadUrl) return false;
-          const { ok: stored, failed } = await uploadFiles(uploadUrl, attachments, maxUploadBytes);
-          for (const f of failed) {
-            // Surface each failed upload as an immediate, transient error row.
-            localSeqRef.current -= 1;
-            dispatch({ ev: { type: 'x-optio-local-error', text: `Upload failed: ${f.name} — ${f.error}` }, seq: localSeqRef.current });
+    <SpinnerScope name={`optio:process:${props.process._id}`}>
+      <ConversationView
+        todos={todosFromWidgetData(props.process.widgetData)}
+        state={state}
+        closed={state.closed}
+        busy={busy}
+        toolVerbosity={toolVerbosity}
+        thinkingVerbosity={thinkingVerbosity}
+        showFileUpload={showFileUpload}
+        maxUploadBytes={maxUploadBytes}
+        fileDownload={fileDownload}
+        nativeSpinner={nativeSpinner ? <NativeSpinner engine="codex" /> : undefined}
+        onSend={async (body, attachments) => {
+          // With attachments, upload through the generic route first, then bundle
+          // one System: notice per stored file into the prompt so codex reads them
+          // from the workdir with its own tools. The optimistic echo still shows
+          // the operator's text.
+          let prompt = body;
+          if (attachments.length > 0) {
+            const uploadUrl = resolveUploadUrl(props.process.widgetData, widgetProxyUrl);
+            if (!uploadUrl) return false;
+            const { ok: stored, failed } = await uploadFiles(uploadUrl, attachments, maxUploadBytes);
+            for (const f of failed) {
+              // Surface each failed upload as an immediate, transient error row.
+              localSeqRef.current -= 1;
+              dispatch({ ev: { type: 'x-optio-local-error', text: `Upload failed: ${f.name} — ${f.error}` }, seq: localSeqRef.current });
+            }
+            // Everything failed and no prompt to send → don't send an empty turn.
+            if (stored.length === 0 && body.trim() === '') return false;
+            prompt = bundleUploadNotice(stored, body);
           }
-          // Everything failed and no prompt to send → don't send an empty turn.
-          if (stored.length === 0 && body.trim() === '') return false;
-          prompt = bundleUploadNotice(stored, body);
-        }
-        const ok = await post('send', { text: prompt });
-        if (ok) {
-          // Optimistic local echo: show the message now (codex emits no user
-          // echo of its own). Negative seqs keep React keys clear of wire seqs.
+          const ok = await post('send', { text: prompt });
+          if (ok) {
+            // Optimistic local echo: show the message now (codex emits no user
+            // echo of its own). Negative seqs keep React keys clear of wire seqs.
+            localSeqRef.current -= 1;
+            dispatch({ ev: { type: 'x-optio-local-user', text: body }, seq: localSeqRef.current });
+          }
+          return ok;
+        }}
+        onInterrupt={() => void post('interrupt', {})}
+        onPermission={(requestId, behavior) => {
+          const body =
+            behavior === 'deny'
+              ? { request_id: requestId, behavior, message: 'Denied by the operator.' }
+              : { request_id: requestId, behavior };
+          void post('permission', body);
+        }}
+        onFileDownload={onFileDownload}
+        controls={state.controls}
+        onControlChange={(id, value) => {
+          // Optimistic local fold, then POST /control. Codex switches the model
+          // INLINE (the chosen model rides the next turn/start — no restart).
           localSeqRef.current -= 1;
-          dispatch({ ev: { type: 'x-optio-local-user', text: body }, seq: localSeqRef.current });
-        }
-        return ok;
-      }}
-      onInterrupt={() => void post('interrupt', {})}
-      onPermission={(requestId, behavior) => {
-        const body =
-          behavior === 'deny'
-            ? { request_id: requestId, behavior, message: 'Denied by the operator.' }
-            : { request_id: requestId, behavior };
-        void post('permission', body);
-      }}
-      onFileDownload={onFileDownload}
-      controls={state.controls}
-      onControlChange={(id, value) => {
-        // Optimistic local fold, then POST /control. Codex switches the model
-        // INLINE (the chosen model rides the next turn/start — no restart).
-        localSeqRef.current -= 1;
-        dispatch({ ev: { type: 'x-optio-control-update', id, value }, seq: localSeqRef.current });
-        void post('control', { id, value });
-      }}
-      themeMode={(props as any).themeMode}
-      onToggleTheme={(props as any).onToggleTheme}
-    />
+          dispatch({ ev: { type: 'x-optio-control-update', id, value }, seq: localSeqRef.current });
+          void post('control', { id, value });
+        }}
+        themeMode={(props as any).themeMode}
+        onToggleTheme={(props as any).onToggleTheme}
+      />
+    </SpinnerScope>
   );
 }

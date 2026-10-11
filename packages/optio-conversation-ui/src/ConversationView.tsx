@@ -3,7 +3,7 @@ import { Alert, Button, Input, Spin, Switch, Tooltip, theme } from 'antd';
 import type { GlobalToken } from 'antd';
 import {
   ActionButton, BoolSwitch, CombinedActionButton, OneOfSegmented, OneOfSelect, OneOfSlider,
-  denyWithReason, useBoolField, useOneOfField, type ActionStatus,
+  denyWithReason, useBoolField, useOneOfField, useSpinnerKey, useVultusComponents, type ActionStatus,
 } from 'vultus-antd';
 import type { TextAreaRef } from 'antd/es/input/TextArea';
 import type { ChatItem, ChatState, SessionControl } from './chat.js';
@@ -85,6 +85,8 @@ export interface ConversationViewProps {
   // On-brand "working" indicator, supplied by the engine view when the task
   // sets the native_spinner option (conversation mode only). When absent, the
   // generic antd <Spin> is used. The view passes its engine's NativeSpinner.
+  // A Spinner the app lends through vultus-core's slot wins over it (key
+  // optio:working; see SlotSpinner).
   nativeSpinner?: React.ReactNode;
   onSend: (text: string, attachments: Attachment[]) => Promise<boolean>; // returns ok
   // Resolves whether the request reached the listener (Fix 6, manual-test
@@ -723,6 +725,20 @@ function QuestionCard({
   );
 }
 
+// A loading site's spinner. When the app lends a Spinner through vultus-core's
+// slot (vultus-antd's VultusProvider components={{ Spinner }}), this renders
+// that Spinner, keyed `localKey` within any enclosing SpinnerScope (each agent
+// view scopes its conversation with optio:process:<id>); the lent Spinner wins
+// over `fallback` (the working indicator's agent-brand nativeSpinner).
+// Otherwise it renders `fallback`, else antd's small Spin: exactly what the
+// site rendered before the slot existed.
+function SlotSpinner({ localKey, fallback }: { localKey: string; fallback?: React.ReactNode }): React.ReactNode {
+  const { Spinner } = useVultusComponents();
+  const spinnerKey = useSpinnerKey(localKey);
+  if (Spinner) return <Spinner spinnerKey={spinnerKey} size="small" />;
+  return fallback ?? <Spin size="small" />;
+}
+
 function renderBackgroundRunning(
   item: Extract<ChatItem, { kind: 'tool' }>,
   elapsed: string | null,
@@ -735,7 +751,7 @@ function renderBackgroundRunning(
       data-testid="background-running"
       style={{ color: token.colorTextTertiary, fontSize: 12, display: 'flex', alignItems: 'center', gap: 8 }}
     >
-      <Spin size="small" />
+      <SlotSpinner localKey={`optio:background:${item.taskId ?? item.callId ?? item.seq}`} />
       <span>
         Background task running: {what}
         {elapsed ? ` · ${elapsed}` : ''}
@@ -1543,7 +1559,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               style={{ fontFamily: 'monospace', cursor: 'pointer' }}
               onClick={() => toggleTool(item.seq)}
             >
-              {!finished && !stopped ? <Spin size="small" /> : glyph}{' '}
+              {!finished && !stopped ? <SlotSpinner localKey={`optio:tool:${item.callId ?? item.seq}`} /> : glyph}{' '}
               <strong>{item.name}</strong>{summary ? `: ${summary}` : ''}
               {item.background && finished && item.result ? ` · ${item.result}` : ''}
               {elapsed ? <span data-testid="tool-elapsed">{` · ${elapsed}`}</span> : null}
@@ -1804,7 +1820,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
               maxWidth: wide ? '100%' : 880, margin: '0 auto', width: '100%',
               display: 'flex', alignItems: 'center', gap: 8, color: token.colorTextTertiary,
             }}>
-              {nativeSpinner ?? <Spin size="small" />} working…
+              <SlotSpinner localKey="optio:working" fallback={nativeSpinner} /> working…
             </div>
           )}
         </div>
@@ -2045,7 +2061,7 @@ export function ConversationView(props: ConversationViewProps): React.JSX.Elemen
                 <>
                   {todo.status === 'in_progress' && !failed ? (
                     <span data-testid="conversation-todo-spinner" style={{ display: 'inline-flex', verticalAlign: 'middle', marginRight: 6 }}>
-                      <Spin size="small" />
+                      <SlotSpinner localKey={`optio:todo:${todo.id}`} />
                     </span>
                   ) : (
                     <span

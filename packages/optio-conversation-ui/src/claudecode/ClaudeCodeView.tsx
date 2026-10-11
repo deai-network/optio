@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useRef } from 'react';
 import type { WidgetProps } from 'optio-ui';
+import { SpinnerScope } from 'vultus-antd';
 import type { ChatState, SessionControl } from '../chat.js';
 import { initialChatState, reduceEvent } from './events.js';
 import type { Attachment } from '../attachments.js';
@@ -133,61 +134,63 @@ export function ClaudeCodeView(props: WidgetProps) {
   }
 
   return (
-    <ConversationView
-      todos={todosFromWidgetData(props.process.widgetData)}
-      state={state}
-      closed={state.closed}
-      busy={busy}
-      toolVerbosity={toolVerbosity}
-      thinkingVerbosity={thinkingVerbosity}
-      showFileUpload={showFileUpload}
-      maxUploadBytes={maxUploadBytes}
-      fileDownload={fileDownload}
-      nativeSpinner={nativeSpinner ? <NativeSpinner engine="claudecode" /> : undefined}
-      onSend={async (body, attachments) => {
-        // Send (idle) or Send when ready (busy): the listener answers
-        // {id, queued}; queued means Claude holds it until the next tool result.
-        const prompt = await preparePrompt(body, attachments);
-        if (prompt === null) return false;
-        const resp = await postJson('send', { text: prompt });
-        if (resp === null) return false;
-        localEcho(body, resp, resp.queued === true);
-        return true;
-      }}
-      onSteer={async (body, attachments, upTo) => {
-        // Interrupt and send (body), or Send now on a queued bubble (no
-        // body, `upTo` the clicked bubble's own id — Fix 13b): POST /steer
-        // stops the running step, then Claude runs what it holds up to
-        // (and including) `upTo`, and the new text follows.
-        const prompt = body === '' && attachments.length === 0 ? '' : await preparePrompt(body, attachments);
-        if (prompt === null) return false;
-        const resp = await postJson('steer', upTo !== undefined ? { text: prompt, upTo } : { text: prompt });
-        if (resp === null) return false;
-        localEcho(body, resp, false);
-        return true;
-      }}
-      onInterrupt={() => post('interrupt', {})}
-      onPermission={(requestId, behavior) => {
-        // Claude Code's can_use_tool schema wants a human-readable reason on
-        // deny; send a default so a bare click satisfies it. (The wire also
-        // carries a free-form message if a reason field is added later.)
-        const body =
-          behavior === 'deny'
-            ? { request_id: requestId, behavior, message: 'Denied by the operator.' }
-            : { request_id: requestId, behavior };
-        void post('permission', body);
-      }}
-      onFileDownload={onFileDownload}
-      controls={showSessionControls ? state.controls : undefined}
-      onControlChange={(id, value) => {
-        // Optimistic patch through the reducer, then POST /control; a model
-        // change makes the engine relaunch claude (restart-based).
-        localSeqRef.current -= 1;
-        dispatch({ ev: { type: 'x-optio-control-update', id, value }, seq: localSeqRef.current });
-        void post('control', { id, value });
-      }}
-      themeMode={(props as any).themeMode}
-      onToggleTheme={(props as any).onToggleTheme}
-    />
+    <SpinnerScope name={`optio:process:${props.process._id}`}>
+      <ConversationView
+        todos={todosFromWidgetData(props.process.widgetData)}
+        state={state}
+        closed={state.closed}
+        busy={busy}
+        toolVerbosity={toolVerbosity}
+        thinkingVerbosity={thinkingVerbosity}
+        showFileUpload={showFileUpload}
+        maxUploadBytes={maxUploadBytes}
+        fileDownload={fileDownload}
+        nativeSpinner={nativeSpinner ? <NativeSpinner engine="claudecode" /> : undefined}
+        onSend={async (body, attachments) => {
+          // Send (idle) or Send when ready (busy): the listener answers
+          // {id, queued}; queued means Claude holds it until the next tool result.
+          const prompt = await preparePrompt(body, attachments);
+          if (prompt === null) return false;
+          const resp = await postJson('send', { text: prompt });
+          if (resp === null) return false;
+          localEcho(body, resp, resp.queued === true);
+          return true;
+        }}
+        onSteer={async (body, attachments, upTo) => {
+          // Interrupt and send (body), or Send now on a queued bubble (no
+          // body, `upTo` the clicked bubble's own id — Fix 13b): POST /steer
+          // stops the running step, then Claude runs what it holds up to
+          // (and including) `upTo`, and the new text follows.
+          const prompt = body === '' && attachments.length === 0 ? '' : await preparePrompt(body, attachments);
+          if (prompt === null) return false;
+          const resp = await postJson('steer', upTo !== undefined ? { text: prompt, upTo } : { text: prompt });
+          if (resp === null) return false;
+          localEcho(body, resp, false);
+          return true;
+        }}
+        onInterrupt={() => post('interrupt', {})}
+        onPermission={(requestId, behavior) => {
+          // Claude Code's can_use_tool schema wants a human-readable reason on
+          // deny; send a default so a bare click satisfies it. (The wire also
+          // carries a free-form message if a reason field is added later.)
+          const body =
+            behavior === 'deny'
+              ? { request_id: requestId, behavior, message: 'Denied by the operator.' }
+              : { request_id: requestId, behavior };
+          void post('permission', body);
+        }}
+        onFileDownload={onFileDownload}
+        controls={showSessionControls ? state.controls : undefined}
+        onControlChange={(id, value) => {
+          // Optimistic patch through the reducer, then POST /control; a model
+          // change makes the engine relaunch claude (restart-based).
+          localSeqRef.current -= 1;
+          dispatch({ ev: { type: 'x-optio-control-update', id, value }, seq: localSeqRef.current });
+          void post('control', { id, value });
+        }}
+        themeMode={(props as any).themeMode}
+        onToggleTheme={(props as any).onToggleTheme}
+      />
+    </SpinnerScope>
   );
 }

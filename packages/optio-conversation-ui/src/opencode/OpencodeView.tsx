@@ -1,6 +1,7 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
 import { isTerminalState } from 'optio-ui';
 import type { WidgetProps } from 'optio-ui';
+import { SpinnerScope, useSpinnerKey, useVultusComponents } from 'vultus-antd';
 import type { ChatItem, ChatState, SessionControl } from '../chat.js';
 import { initialChatState } from '../chat.js';
 import {
@@ -127,8 +128,19 @@ export function OpencodeView(props: WidgetProps) {
   // Gate on widgetData like IframeWidget does — the session id and directory
   // are the transport's addressing and arrive with the widget data.
   const widgetData = (props.process?.widgetData ?? undefined) as OpencodeWidgetData | undefined;
+  // The app's lent Spinner (vultus-core's slot), shown before "Loading…" as in
+  // optio-ui's IframeWidget; without one, the bare text as before.
+  const { Spinner } = useVultusComponents();
+  const spinnerKey = useSpinnerKey(`optio:process:${props.process?._id}:widget`);
   if (!widgetData?.sessionID) {
-    return <div data-testid="optio-widget-loading">Loading…</div>;
+    return (
+      <div data-testid="optio-widget-loading">
+        {Spinner && (
+          <span style={{ marginInlineEnd: 8 }}><Spinner spinnerKey={spinnerKey} size="small" /></span>
+        )}
+        Loading…
+      </div>
+    );
   }
   return (
     <OpencodeChat
@@ -378,29 +390,31 @@ function OpencodeChat(
   }
 
   return (
-    <ConversationView
-      todos={todosFromWidgetData(props.process.widgetData)}
-      state={state}
-      closed={closed}
-      busy={busy}
-      toolVerbosity={toolVerbosity}
-      thinkingVerbosity={thinkingVerbosity}
-      showFileUpload={showFileUpload}
-      maxUploadBytes={maxUploadBytes}
-      fileDownload={fileDownload}
-      nativeSpinner={nativeSpinner ? <NativeSpinner engine="opencode" /> : undefined}
-      onSend={onSend}
-      onInterrupt={onInterrupt}
-      onPermission={onPermission}
-      onFileDownload={onFileDownload}
-      // Opencode builds its controls here (no server-side snapshot), so the
-      // view narrows them to the task's session_controls allowlist.
-      controls={showSessionControls
-        ? state.controls.filter((c) => sessionControls === null || sessionControls.includes(c.id))
-        : undefined}
-      onControlChange={showSessionControls ? onControlChange : undefined}
-      themeMode={(props as any).themeMode}
-      onToggleTheme={(props as any).onToggleTheme}
-    />
+    <SpinnerScope name={`optio:process:${props.process._id}`}>
+      <ConversationView
+        todos={todosFromWidgetData(props.process.widgetData)}
+        state={state}
+        closed={closed}
+        busy={busy}
+        toolVerbosity={toolVerbosity}
+        thinkingVerbosity={thinkingVerbosity}
+        showFileUpload={showFileUpload}
+        maxUploadBytes={maxUploadBytes}
+        fileDownload={fileDownload}
+        nativeSpinner={nativeSpinner ? <NativeSpinner engine="opencode" /> : undefined}
+        onSend={onSend}
+        onInterrupt={onInterrupt}
+        onPermission={onPermission}
+        onFileDownload={onFileDownload}
+        // Opencode builds its controls here (no server-side snapshot), so the
+        // view narrows them to the task's session_controls allowlist.
+        controls={showSessionControls
+          ? state.controls.filter((c) => sessionControls === null || sessionControls.includes(c.id))
+          : undefined}
+        onControlChange={showSessionControls ? onControlChange : undefined}
+        themeMode={(props as any).themeMode}
+        onToggleTheme={(props as any).onToggleTheme}
+      />
+    </SpinnerScope>
   );
 }
