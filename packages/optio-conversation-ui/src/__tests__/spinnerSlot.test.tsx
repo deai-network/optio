@@ -14,7 +14,9 @@ import type { ChatItem, ChatState } from '../chat.js';
 // indicator prefers it over the agent-brand nativeSpinner, and each agent view
 // scopes every key inside it with `optio:process:<id>`. Without one, every site
 // renders antd's spinner as before (the existing tests pin that output; the
-// no-provider cases here only check the slot leaves it alone).
+// no-provider cases here only check the slot leaves it alone), except the tool
+// row: on the Ant Design X experiment it is an X ThoughtChain node, whose own
+// loading status icon is the no-provider spinner.
 
 const calls: SpinnerProps[] = [];
 function RecSpinner(p: SpinnerProps) {
@@ -29,6 +31,20 @@ function propsOf(key: string): SpinnerProps | undefined {
 
 function keysIn(el: HTMLElement): (string | null)[] {
   return within(el).queryAllByTestId('rec-spinner').map((s) => s.getAttribute('data-key'));
+}
+
+// Ant Design X experiment: a tool row is an X ThoughtChain node. Its status
+// slot holds X's own status icon (loading, check-circle, minus-circle, ...),
+// or, while the tool runs and a Spinner is lent, that Spinner as the node icon.
+function toolNode(line: HTMLElement): HTMLElement {
+  return line.closest('.ant-thought-chain-node') as HTMLElement;
+}
+function statusOf(line: HTMLElement): HTMLElement {
+  return toolNode(line).querySelector('.ant-thought-chain-status') as HTMLElement;
+}
+/** The aria-label of X's status icon in the row's node, if it shows one. */
+function statusIcon(line: HTMLElement): string | null {
+  return statusOf(line).querySelector('.anticon')?.getAttribute('aria-label') ?? null;
 }
 
 function lent(node: ReactNode) {
@@ -107,34 +123,40 @@ describe('tool row (site 12)', () => {
     const row: ChatItem = { kind: 'tool', name: 'Bash', input: { command: 'ls' }, seq: 4, status: 'running', callId: 'toolu_9' };
     render(lent(<ConversationView {...makeProps({ state: makeState([row]) })} />));
     const line = screen.getByTestId('tool-call');
-    expect(keysIn(line)).toEqual(['optio:tool:toolu_9']);
+    // The lent Spinner is the node's icon, in place of X's loading icon.
+    expect(keysIn(statusOf(line))).toEqual(['optio:tool:toolu_9']);
+    expect(keysIn(toolNode(line))).toEqual(['optio:tool:toolu_9']);
     expect(propsOf('optio:tool:toolu_9')).toStrictEqual({ spinnerKey: 'optio:tool:toolu_9', size: 'small' });
-    expect(line.querySelector('.ant-spin')).toBeNull();
-    expect(line.textContent).toContain('Bash');
+    expect(statusIcon(line)).toBeNull();
+    expect(toolNode(line).querySelector('.ant-spin')).toBeNull();
+    expect(toolNode(line).textContent).toContain('Bash');
   });
 
   it('without a call id the key falls back to the seq', () => {
     const row: ChatItem = { kind: 'tool', name: 'Read', input: { file_path: '/x' }, seq: 5 };
     render(lent(<ConversationView {...makeProps({ state: makeState([row]) })} />));
-    expect(keysIn(screen.getByTestId('tool-call'))).toEqual(['optio:tool:5']);
+    expect(keysIn(toolNode(screen.getByTestId('tool-call')))).toEqual(['optio:tool:5']);
   });
 
-  it('finished and stopped tools show their glyph, no spinner', () => {
+  it('finished and stopped tools show their status icon, no spinner', () => {
     const rows: ChatItem[] = [
       { kind: 'tool', name: 'Bash', input: { command: 'ls' }, seq: 1, status: 'done', callId: 'a' },
       { kind: 'tool', name: 'Bash', input: { command: 'ls' }, seq: 2, status: 'stopped', callId: 'b' },
     ];
     render(lent(<ConversationView {...makeProps({ state: makeState(rows) })} />));
     const lines = screen.getAllByTestId('tool-call');
-    expect(lines.flatMap(keysIn)).toEqual([]);
-    expect(lines[0].textContent).toContain('✓');
-    expect(lines[1].textContent).toContain('⏹');
+    expect(lines.map(toolNode).flatMap(keysIn)).toEqual([]);
+    expect(screen.queryByTestId('rec-spinner')).toBeNull();
+    expect(statusIcon(lines[0])).toBe('check-circle');
+    expect(statusIcon(lines[1])).toBe('minus-circle');
   });
 
-  it('without a provider: antd\'s Spin, as before', () => {
+  it('without a provider: X\'s own loading icon', () => {
     const row: ChatItem = { kind: 'tool', name: 'Bash', input: { command: 'ls' }, seq: 4, status: 'running', callId: 'toolu_9' };
     render(bare(<ConversationView {...makeProps({ state: makeState([row]) })} />));
-    expect(screen.getByTestId('tool-call').querySelector('.ant-spin')).not.toBeNull();
+    const line = screen.getByTestId('tool-call');
+    expect(statusOf(line).classList.contains('ant-thought-chain-status-loading')).toBe(true);
+    expect(statusIcon(line)).toBe('loading');
     expect(screen.queryByTestId('rec-spinner')).toBeNull();
   });
 });
@@ -273,17 +295,19 @@ describe('re-rendering across the lent Spinner and the loading gate is safe', ()
       ({ kind: 'tool', name: 'Bash', input: { command: 'ls' }, seq: 1, status, callId: 'c1' });
     const view = (status: 'running' | 'done', withSpinner: boolean) =>
       stable(<ConversationView {...makeProps({ state: makeState([tool(status)]), busy: status === 'running' })} />, withSpinner);
+    const line = () => screen.getByTestId('tool-call');
     const { rerender } = render(view('running', false));
-    expect(screen.getByTestId('tool-call').querySelector('.ant-spin')).not.toBeNull();
+    expect(statusIcon(line())).toBe('loading');
     rerender(view('running', true));
-    expect(keysIn(screen.getByTestId('tool-call'))).toEqual(['optio:tool:c1']);
+    expect(keysIn(toolNode(line()))).toEqual(['optio:tool:c1']);
+    expect(statusIcon(line())).toBeNull();
     expect(keysIn(screen.getByText('working…'))).toEqual(['optio:working']);
     rerender(view('running', false));
     expect(screen.queryByTestId('rec-spinner')).toBeNull();
-    expect(screen.getByTestId('tool-call').querySelector('.ant-spin')).not.toBeNull();
+    expect(statusIcon(line())).toBe('loading');
     rerender(view('done', true));
     expect(screen.queryByTestId('rec-spinner')).toBeNull();
-    expect(screen.getByTestId('tool-call').textContent).toContain('✓');
+    expect(statusIcon(line())).toBe('check-circle');
   });
 });
 

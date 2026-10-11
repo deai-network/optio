@@ -57,6 +57,30 @@ function fire(ev: unknown) {
   act(() => MockEventSource.last!.emit(ev, ++seq));
 }
 
+// Ant Design X experiment: each tool call is an X ThoughtChain node. The tool
+// name is its title (a click there toggles the node), the one-line summary
+// (testid tool-call) its description, X's status icon its icon, and the input
+// and result its collapsible content, as X CodeHighlighter blocks.
+const toolNode = (row: HTMLElement) => row.closest('.ant-thought-chain-node') as HTMLElement;
+const titleOf = (row: HTMLElement) => toolNode(row).querySelector('.ant-thought-chain-node-title')!.textContent;
+const statusIconOf = (row: HTMLElement) =>
+  toolNode(row).querySelector('.ant-thought-chain-status .anticon')?.getAttribute('aria-label') ?? null;
+// The summary line without its elapsed time.
+const summaryOf = (row: HTMLElement) =>
+  Array.from(row.childNodes)
+    .filter((n) => !(n instanceof HTMLElement && n.dataset.testid === 'tool-elapsed'))
+    .map((n) => n.textContent)
+    .join('');
+// The code blocks under `root`: X's header title and the code text.
+const codeBlocks = (root: ParentNode) =>
+  Array.from(root.querySelectorAll('.ant-codeHighlighter')).map((b) => ({
+    title: b.querySelector('.ant-codeHighlighter-header-title')?.textContent ?? null,
+    code: b.querySelector('.ant-codeHighlighter-code')?.textContent ?? '',
+  }));
+// Each tool result's output text (the code of its "output" block).
+const outputs = () =>
+  screen.queryAllByTestId('tool-result').map((n) => n.querySelector('.ant-codeHighlighter-code')?.textContent ?? '');
+
 describe('ConversationWidget', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -165,15 +189,20 @@ describe('ConversationWidget', () => {
   it('tool verbosity: description-only with no salient field shows just the name', () => {
     render(<ConversationWidget {...propsV('description-only')} />);
     fireTool('mystery', { count: 3 });
-    expect(screen.getByTestId('tool-call').textContent).toContain('mystery');
-    expect(screen.queryByText('count')).toBeNull();
+    const row = screen.getByTestId('tool-call');
+    // The name is the node's title; the summary line has no field to show,
+    // only the elapsed time.
+    expect(titleOf(row)).toBe('mystery');
+    expect(summaryOf(row)).toBe('');
+    expect(toolNode(row).textContent).not.toContain('count');
   });
 
-  it('tool verbosity: verbose renders the input key-value table', () => {
+  it('tool verbosity: verbose renders the input as code blocks', () => {
     render(<ConversationWidget {...propsV('verbose')} />);
     fireTool('read', { file_path: '/a/b.txt' });
-    expect(screen.getByText('file_path')).toBeTruthy();
-    expect(screen.getByText('/a/b.txt')).toBeTruthy();
+    const blocks = codeBlocks(toolNode(screen.getByTestId('tool-call')));
+    expect(blocks.map((b) => b.title)).toEqual(['input']);
+    expect(JSON.parse(blocks[0].code)).toEqual({ file_path: '/a/b.txt' });
   });
   it('working indicator renders OUTSIDE the resize-observed content node (no reflow loop)', () => {
     render(<ConversationWidget {...makeProps()} />);
@@ -261,14 +290,17 @@ describe('ConversationWidget', () => {
     expect(screen.queryByTestId('tool-result')).toBeNull();
   });
 
-  it('tool verbosity verbose: every call starts expanded, and a click collapses a finished one', () => {
+  it('tool verbosity verbose: every call starts expanded, and a click collapses a finished one', async () => {
     render(<ConversationWidget {...propsV('verbose')} />);
     fireSession();
     expect(statuses()).toEqual(['done', 'done', 'running']);
-    expect(screen.getByText('file_path')).toBeTruthy();
-    expect(screen.getAllByTestId('tool-result')[0].textContent).toBe('a b');
-    fireEvent.click(screen.getAllByTestId('tool-call')[0].firstElementChild!);
-    expect(screen.queryAllByTestId('tool-result').some((n) => n.textContent === 'a b')).toBe(false);
+    const rows = screen.getAllByTestId('tool-call');
+    // The running Read call shows its input; the finished first call its output.
+    expect(codeBlocks(toolNode(rows[2])).map((b) => JSON.parse(b.code))).toEqual([{ file_path: '/x' }]);
+    expect(outputs()[0]).toBe('a b');
+    fireEvent.click(toolNode(rows[0]).querySelector('.ant-thought-chain-node-title')!);
+    // X runs its collapse motion before the content goes.
+    await waitFor(() => expect(outputs()).not.toContain('a b'));
   });
 
   it('an empty background summary shows the tool name in the silent line', () => {
@@ -283,7 +315,8 @@ describe('ConversationWidget', () => {
     fire({ type: 'x-optio-closed', reason: 'process ended' });
     const row = screen.getByTestId('tool-call');
     expect(row.getAttribute('data-tool-status')).toBe('stopped');
-    expect(row.textContent).toContain('⏹');
+    // X's abort status icon (the old row's ⏹ glyph).
+    expect(statusIconOf(row)).toBe('minus-circle');
   });
 
   it('a background job the resumed run lost shows as stopped after the resume marker', () => {

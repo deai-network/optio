@@ -123,14 +123,22 @@ describe('CodexView (Stages 6-7 parity)', () => {
     expect(clickSpy).toHaveBeenCalled();
   });
 
-  it('verbose tool verbosity renders the command item as a key-value table', () => {
+  it('verbose tool verbosity renders the command item as code blocks', () => {
     render(<ConversationWidget {...makeProps({ protocol: 'codex', toolVerbosity: 'verbose' })} />);
     fire(cmdStarted('ls -la', '/w'));
-    expect(screen.getByText('command')).toBeTruthy();
+    const node = screen.getByTestId('tool-call').closest('.ant-thought-chain-node')!;
+    // The node's content: X CodeHighlighter blocks (header title, code text).
+    const blocks = Array.from(node.querySelectorAll('.ant-codeHighlighter')).map((b) => ({
+      title: b.querySelector('.ant-codeHighlighter-header-title')?.textContent,
+      code: b.querySelector('.ant-codeHighlighter-code')?.textContent ?? '',
+    }));
     // codex names the tool row by the command itself (no separate ACP title),
-    // so `ls -la` appears both as the row name and the KV `command` value.
-    expect(screen.getAllByText('ls -la').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('cwd')).toBeTruthy();
+    // so `ls -la` is both the node title and the bash block; cwd is the rest
+    // of the input, as JSON.
+    expect(node.querySelector('.ant-thought-chain-node-title')!.textContent).toBe('ls -la');
+    expect(blocks.map((b) => b.title)).toEqual(['bash', 'input']);
+    expect(blocks[0].code).toBe('ls -la');
+    expect(JSON.parse(blocks[1].code)).toMatchObject({ cwd: '/w' });
   });
 
   it('a permission request renders a card and answering POSTs /permission', async () => {
