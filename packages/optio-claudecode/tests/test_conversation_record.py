@@ -911,6 +911,7 @@ async def test_read_hook_returns_decrypted_events_and_captured_at(mongo_db, ctx_
     """Called with a real ReadOnlyProcessContext (process_id, _db, _prefix,
     load_blob only — the engine's conversation archive listener gives it no
     more than that)."""
+    from datetime import timezone
     ctx, _cap, _flag = ctx_and_captures
     await _snapshot_with_record(mongo_db, ctx, _encrypt(json.dumps(_ENTRIES).encode()))
     snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id)
@@ -922,7 +923,10 @@ async def test_read_hook_returns_decrypted_events_and_captured_at(mongo_db, ctx_
     # lists (JSON-shaped), not tuples.
     assert out["events"] == [[1, _ENTRIES[0][1]], [2, _ENTRIES[1][1]]]
     assert all(isinstance(e, list) for e in out["events"])
-    assert out["capturedAt"] == snap["capturedAt"].isoformat()
+    # Mongo decodes a naive (UTC) datetime; the wire value must carry an
+    # explicit UTC offset, not get silently read as local time by the UI.
+    assert out["capturedAt"].endswith("+00:00")
+    assert out["capturedAt"] == snap["capturedAt"].replace(tzinfo=timezone.utc).isoformat()
 
 
 @pytest.mark.asyncio

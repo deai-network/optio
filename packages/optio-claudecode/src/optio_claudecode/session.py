@@ -1471,6 +1471,14 @@ async def _read_conversation(
         ctx._db, prefix=ctx._prefix, process_id=ctx.process_id,
     )
     captured_at = snapshot["capturedAt"] if snapshot is not None else None
+    if captured_at is not None:
+        # Mongo (pymongo/motor) decodes to a naive datetime that is UTC; a
+        # naive isoformat() carries no offset, and the UI's `new Date(...)`
+        # then reads it as local time. Always emit an explicit UTC offset.
+        captured_at = (
+            captured_at.replace(tzinfo=timezone.utc) if captured_at.tzinfo is None
+            else captured_at.astimezone(timezone.utc)
+        )
     return {
         "events": [[seq, event] for seq, event in events],
         "capturedAt": captured_at.isoformat() if captured_at is not None else None,
