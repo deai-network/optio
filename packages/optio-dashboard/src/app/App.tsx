@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { Alert, Button, Layout, Select, Typography, notification } from 'antd';
+import { Alert, Button, Layout, Segmented, Select, Typography, notification } from 'antd';
 import { MenuFoldOutlined, MenuUnfoldOutlined } from '@ant-design/icons';
 import {
   OptioProvider,
@@ -16,10 +16,36 @@ import { registerConversationWidget } from 'optio-conversation-ui';
 import { LoginForm } from './LoginForm.js';
 import { useSession, signOut } from './auth-client.js';
 import { useProcessRoute } from './processRoute.js';
+import { styleMode, switchStyleMode, useDaeoTheme, type StyleMode } from './styleMode.js';
 
-// The dashboard has no ConfigProvider of its own, so let the conversation
-// widget own its light/dark toggle (☀/🌙 in the conversation header).
-registerConversationWidget({ ownTheme: true });
+// The plain look has no theme of its own, so the conversation widget owns its
+// light/dark toggle (☀/🌙 in the conversation header); in the Daeo look the
+// host's theme rules (Ant Design X experiment, styleMode.tsx).
+registerConversationWidget({ ownTheme: styleMode === 'plain' });
+
+/** Ant Design X experiment: the Daeo or plain look (reloads), and the Daeo look's light/dark. */
+function StyleSwitch() {
+  const daeo = useDaeoTheme();
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <Segmented<StyleMode>
+        size="small"
+        value={styleMode}
+        options={[{ label: 'Daeo', value: 'daeo' }, { label: 'Plain', value: 'plain' }]}
+        onChange={switchStyleMode}
+      />
+      {daeo && (
+        <Button
+          size="small"
+          aria-label={daeo.theme === 'dark' ? 'Light theme' : 'Dark theme'}
+          onClick={() => daeo.setTheme(daeo.theme === 'dark' ? 'light' : 'dark')}
+        >
+          {daeo.theme === 'dark' ? '\u2600' : '\u{1F319}'}
+        </Button>
+      )}
+    </div>
+  );
+}
 
 const { Header, Sider, Content } = Layout;
 const { Title } = Typography;
@@ -153,6 +179,7 @@ function AppContent() {
           <Button onClick={() => refetch()}>Refresh</Button>
         </>
       )}
+      <StyleSwitch />
       <Button onClick={() => signOut()}>Sign out</Button>
     </div>
   );

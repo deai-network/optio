@@ -25,6 +25,7 @@
     "start": "node dist/cli.js"
   },
   "dependencies": {
+    "@ant-design/cssinjs": "^2.0.0",
     "@ant-design/icons": "^6.3.4",
     "@deai-network/daeo-style-for-vultus": "^0.3.0",
     "@fastify/static": "^8.0.0",

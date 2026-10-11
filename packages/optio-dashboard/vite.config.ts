@@ -21,6 +21,12 @@ const devHost = process.env.OPTIO_DEV_HOST;
 // checkout's, two components contexts, and a Spinner lent through vultus-antd's
 // VultusProvider would not reach optio-ui. Unset: unchanged.
 const devVultus = process.env.OPTIO_DEV_VULTUS;
+// OPTIO_DEV_DAEO (Ant Design X experiment): a daeo-style checkout whose
+// packages the dev server takes by source, for the demo's Daeo look
+// (src/app/styleMode.tsx) where they are not installed (no GitHub Packages
+// token); cssinjs is deduped with antd's. Unset: unchanged.
+const devDaeo = process.env.OPTIO_DEV_DAEO;
+const daeoSrc = (pkg: string, file: string) => path.join(devDaeo ?? '', 'packages', pkg, 'src', file);
 
 export default defineConfig({
   plugins: [react(), ...(devHttps ? [basicSsl()] : [])],
@@ -44,13 +50,25 @@ export default defineConfig({
       // resolve it (it is not a dependency here), and Vite resolves deduped
       // packages from the root.
       ...(devVultus ? ['antd', 'react-i18next', 'i18next', 'vultus-core'] : []),
+      ...(devDaeo ? ['antd', '@ant-design/cssinjs'] : []),
     ],
-    alias: devVultus ? [
-      { find: /^vultus-antd\/markdown$/, replacement: path.join(devVultus, 'packages/vultus-antd/src/Markdown.tsx') },
-      { find: /^vultus-antd$/, replacement: path.join(devVultus, 'packages/vultus-antd/src/index.ts') },
-      { find: /^vultus-core\/link$/, replacement: path.join(devVultus, 'packages/vultus-core/src/LinkContext.tsx') },
-      { find: /^vultus-core$/, replacement: path.join(devVultus, 'packages/vultus-core/src/index.ts') },
-    ] : [],
+    alias: [
+      ...(devVultus ? [
+        { find: /^vultus-antd\/markdown$/, replacement: path.join(devVultus, 'packages/vultus-antd/src/Markdown.tsx') },
+        { find: /^vultus-antd$/, replacement: path.join(devVultus, 'packages/vultus-antd/src/index.ts') },
+        { find: /^vultus-core\/link$/, replacement: path.join(devVultus, 'packages/vultus-core/src/LinkContext.tsx') },
+        { find: /^vultus-core$/, replacement: path.join(devVultus, 'packages/vultus-core/src/index.ts') },
+      ] : []),
+      ...(devDaeo ? [
+        { find: /^@deai-network\/daeo-style-for-vultus$/, replacement: daeoSrc('daeo-style-for-vultus', 'index.ts') },
+        { find: /^@deai-network\/daeo-style-antd\/provider$/, replacement: daeoSrc('daeo-style-antd', 'provider.ts') },
+        { find: /^@deai-network\/daeo-style-antd\/styles\.css$/, replacement: daeoSrc('daeo-style-antd', 'styles.css') },
+        { find: /^@deai-network\/daeo-style-antd$/, replacement: daeoSrc('daeo-style-antd', 'index.ts') },
+        { find: /^@deai-network\/daeo-style-tokens\/theme\.css$/, replacement: daeoSrc('daeo-style-tokens', 'theme.css') },
+        { find: /^@deai-network\/daeo-style-tokens\/fonts\.css$/, replacement: daeoSrc('daeo-style-tokens', 'fonts.css') },
+        { find: /^@deai-network\/daeo-style-tokens$/, replacement: daeoSrc('daeo-style-tokens', 'index.ts') },
+      ] : []),
+    ],
   },
   root: path.resolve(__dirname, 'src/app'),
   build: {
@@ -60,7 +78,9 @@ export default defineConfig({
   server: {
     ...(devPort ? { port: devPort, strictPort: true } : {}),
     ...(devHost ? { host: true, allowedHosts: [devHost] } : {}),
-    ...(devVultus ? { fs: { allow: [searchForWorkspaceRoot(process.cwd()), devVultus] } } : {}),
+    ...(devVultus || devDaeo
+      ? { fs: { allow: [searchForWorkspaceRoot(process.cwd()), ...[devVultus, devDaeo].filter((d): d is string => !!d)] } }
+      : {}),
     proxy: {
       // Object form with `ws: true` is required so WebSocket upgrades under
       // /api (e.g. the widget reverse-proxy at /api/widget/…/ws) are forwarded
