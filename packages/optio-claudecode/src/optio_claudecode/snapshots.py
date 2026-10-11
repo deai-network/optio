@@ -9,6 +9,10 @@ One document per terminal run per process_id. Layout:
       endState:        str,          # "done" | "failed" | "cancelled"
       sessionBlobId:   ObjectId,     # GridFS — encrypted tar.gz of home/.claude
       workdirBlobId:   ObjectId,     # GridFS — plaintext tar.gz of workdir minus home/.claude
+      conversationBlobId: ObjectId,  # optional; GridFS "conversation" — the
+                                     # conversation listener's replay buffer
+                                     # (export_buffer() JSON), encrypted like
+                                     # the session blob; never a workdir file
       deliverablesEmitted: list,     # audit metadata only; not replayed
     }
 
@@ -17,8 +21,8 @@ so optio does not record or replay a session UUID. This is the only schema
 divergence from optio-opencode's parallel module.
 
 Retention: keep the latest `SNAPSHOT_RETENTION` per processId. Older rows
-are deleted by `prune_snapshots` and their GridFS blobs are expected to be
-deleted by the caller using the ids returned.
+are deleted by `prune_snapshots` and their GridFS blobs (conversation blob
+included) are expected to be deleted by the caller using the ids returned.
 """
 
 from __future__ import annotations
@@ -53,6 +57,7 @@ async def insert_snapshot(
     session_blob_id: ObjectId,
     workdir_blob_id: ObjectId,
     deliverables_emitted: list,
+    conversation_blob_id: ObjectId | None = None,
 ) -> dict:
     await ensure_indexes(db, prefix)
     doc = {
@@ -63,6 +68,8 @@ async def insert_snapshot(
         "workdirBlobId": workdir_blob_id,
         "deliverablesEmitted": deliverables_emitted,
     }
+    if conversation_blob_id is not None:
+        doc["conversationBlobId"] = conversation_blob_id
     result = await _collection(db, prefix).insert_one(doc)
     doc["_id"] = result.inserted_id
     return doc
@@ -81,14 +88,18 @@ async def prune_snapshots(
 ) -> list[dict]:
     """Keep the latest SNAPSHOT_RETENTION; delete the rest.
 
-    Returns a list of `{sessionBlobId, workdirBlobId}` dicts for the
-    deleted snapshots so the caller can remove the corresponding GridFS
-    blobs.
+    Returns a list of `{sessionBlobId, workdirBlobId[, conversationBlobId]}`
+    dicts for the deleted snapshots so the caller can remove the
+    corresponding GridFS blobs (`conversationBlobId` only when the snapshot
+    has one).
     """
     coll = _collection(db, prefix)
     all_docs = await coll.find(
         {"processId": process_id},
-        projection={"sessionBlobId": 1, "workdirBlobId": 1, "capturedAt": 1},
+        projection={
+            "sessionBlobId": 1, "workdirBlobId": 1, "conversationBlobId": 1,
+            "capturedAt": 1,
+        },
         sort=[("capturedAt", -1)],
     ).to_list(None)
     stale = all_docs[SNAPSHOT_RETENTION:]
@@ -96,7 +107,10 @@ async def prune_snapshots(
         return []
     stale_ids = [d["_id"] for d in stale]
     await coll.delete_many({"_id": {"$in": stale_ids}})
-    return [
-        {"sessionBlobId": d["sessionBlobId"], "workdirBlobId": d["workdirBlobId"]}
-        for d in stale
-    ]
+    out = []
+    for d in stale:
+        ids = {"sessionBlobId": d["sessionBlobId"], "workdirBlobId": d["workdirBlobId"]}
+        if d.get("conversationBlobId") is not None:
+            ids["conversationBlobId"] = d["conversationBlobId"]
+        out.append(ids)
+    return out

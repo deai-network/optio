@@ -36,7 +36,11 @@ create_claudecode_task(
 
 `TaskInstance` returned has `ui_widget="iframe"` and `supports_resume`
 tracking the config field (defaults to `True`); when `supports_resume` it
-also carries the `resurrect` hook (see Resurrect below). Resume snapshots the
+also carries the `resurrect` hook (see Resurrect below). Its
+`session_crypto` is always `SessionCrypto(encrypt=config.session_blob_encrypt,
+decrypt=config.session_blob_decrypt)` (members None without session
+encryption), so the engine can reach the cipher of a process that is not
+running. Resume snapshots the
 `<workdir>/home/.claude/` subtree (encryptable session blob) plus a plaintext
 workdir blob; on resume the workdir is restored and `--continue` is appended to
 claude's argv. A launch that continues a transcript also passes `--model`: the
@@ -71,18 +75,29 @@ and claude came up) and in crash-orphan rescue. It returns `True` when it
 inserted a snapshot record and `False` when its credentials guard refused
 (teardown ignores the result; rescue logs which one happened). Its first half: the credentials guard (no
 `home/.claude/.credentials.json` → no snapshot), the session blob (tar of
-`home/.claude`, through `session_blob_encrypt`), then `rm -rf home/.claude`
-and the regenerable mozilla dirs. Its second half is
+`home/.claude`, through `session_blob_encrypt`), the conversation blob when
+its `conversation: bytes | None` kwarg is given (`_store_conversation_blob`:
+GridFS name `conversation`, through `session_blob_encrypt` too; the
+conversation-mode teardown passes the listener's `export_buffer()` JSON,
+exported in memory before `stop()` and never written to the host), then
+`rm -rf home/.claude` and the regenerable mozilla dirs. A refused capture
+stores neither blob. Its second half is
 `session._store_workdir_snapshot(ctx, host, *, end_state, workdir_exclude,
-session_blob_id)`, callable on its own: it records
+session_blob_id, conversation_blob_id=None)`, callable on its own. Every
+claudecode workdir tar is made there, and it archives with
+`_effective_workdir_excludes(workdir_exclude)`: the given list (the archive
+defaults when None) plus `.optio-conversation-buffer.json` (the file older
+versions wrote the buffer to), whatever the caller passes. It records
 `{processId, sessionBlobId, workdirBlobId, startedAt}` in
 `{prefix}_claudecode_pending_captures` (one document per processId, upserted;
 `optio_claudecode.pending_captures`: `record_pending_capture`,
 `load_pending_capture`, `delete_pending_capture`,
 `discard_pending_workdir_blob`), streams the workdir into a
 GridFS blob opened with that pre-generated `workdirBlobId`, inserts the
-snapshot record, deletes the pending record, calls `mark_has_saved_state()`
-then `clear_unsaved_work()`, and prunes. The flags come before the pruning: the
+snapshot record (with `conversationBlobId` when given), deletes the pending
+record, calls `mark_has_saved_state()` then `clear_unsaved_work()`, and
+prunes (a pruned snapshot's session, workdir and conversation blobs are
+deleted). The flags come before the pruning: the
 snapshot is complete once its record is in, and a force-cancel past the grace
 can cut the capture off during the pruning (seen 2026-10-10: 3 s into it); the
 process then already offers Resume rather than a Resurrect of saved work. A
@@ -434,8 +449,10 @@ the inner basic-auth credential; GET = viewer role, POST = operator):
 Replay-buffer semantics:
 
 * `collections.deque(maxlen=1000)` of raw events, stamped with a
-  monotonic `seq`. Session-persistent only — nothing goes to Mongo;
-  after the task ends the conversation view is gone.
+  monotonic `seq`. Nothing goes to Mongo while the task runs; with
+  `supports_resume` the teardown capture stores `export_buffer()` as the
+  snapshot's `conversation` blob (see Snapshot capture), else the
+  conversation view is gone after the task ends.
 * Mechanical type filter, not interpretation: events of type
   `stream_event` (the partial-message deltas) and `system` events of
   subtype `thinking_tokens` (a reasoning-token count the widget ignores,

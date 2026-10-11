@@ -29,7 +29,7 @@ from typing import AsyncIterator, Callable
 from bson import ObjectId
 
 from optio_core.context import ProcessContext
-from optio_core.models import BasicAuth, TaskInstance
+from optio_core.models import BasicAuth, SessionCrypto, TaskInstance
 
 from optio_agents.context import HookContext
 from optio_agents.conversation import ConversationClosed
@@ -1138,6 +1138,8 @@ async def run_claudecode_session(
                     except Exception:
                         _LOG.exception("clear control upstream failed")
 
+            # The listener's replay buffer, exported below for the snapshot capture.
+            conversation_export: bytes | None = None
             if conv_listener is not None:
                 async with _traced("finally: conversation listener teardown"):
                     # Drop the in-process upload writer so a late materializeUpload
@@ -1147,15 +1149,17 @@ async def run_claudecode_session(
                         ctx.clear_upload_writer()
                     except Exception:
                         _LOG.exception("clear upload writer failed")
-                    # Persist the replay buffer into the workdir BEFORE stop() so it
-                    # lands in the resume snapshot; the next launch re-primes from it.
+                    # Export the replay buffer BEFORE stop(); the capture stores it
+                    # as the snapshot's own (encrypted) conversation blob, the next
+                    # launch re-primes from it. Kept in memory: never written to the
+                    # host workdir, whose snapshot blob is plaintext.
                     if config.supports_resume:
                         try:
-                            await host.write_text(
-                                _CONV_BUFFER_FILE, json.dumps(conv_listener.export_buffer()),
-                            )
+                            conversation_export = json.dumps(
+                                conv_listener.export_buffer(),
+                            ).encode("utf-8")
                         except Exception:
-                            _LOG.exception("conversation buffer persist failed")
+                            _LOG.exception("conversation buffer export failed")
                     try:
                         await conv_listener.stop()
                     except Exception:
@@ -1300,6 +1304,7 @@ async def run_claudecode_session(
                         end_state="cancelled" if cancelled else "done",
                         workdir_exclude=config.workdir_exclude,
                         session_blob_encrypt=config.session_blob_encrypt,
+                        conversation=conversation_export,
                     )
                     _trace(
                         "finally: capture_snapshot DONE (%.1fs)",
@@ -1326,9 +1331,22 @@ async def run_claudecode_session(
 # --- helpers ---------------------------------------------------------------
 
 
-# Workdir-relative file the conversation listener's replay buffer is persisted
-# to at teardown (captured in the resume snapshot, re-primed on resume).
+# Workdir-relative file the conversation listener's replay buffer was persisted
+# to at teardown before it became the snapshot's own (encrypted) conversation
+# blob. No longer written; every workdir tar excludes it
+# (_effective_workdir_excludes), since a workdir restored from an older
+# snapshot may still hold it.
 _CONV_BUFFER_FILE = ".optio-conversation-buffer.json"
+
+
+def _effective_workdir_excludes(workdir_exclude: list[str] | None) -> list[str]:
+    """The exclude list a workdir tar actually uses: the given list (the
+    archive defaults when None, as the hosts read None), plus the
+    conversation buffer file unless already listed. Always a new list."""
+    base = DEFAULT_WORKDIR_EXCLUDES if workdir_exclude is None else workdir_exclude
+    if _CONV_BUFFER_FILE in base:
+        return list(base)
+    return [*base, _CONV_BUFFER_FILE]
 
 
 async def _load_conversation_buffer(host: Host) -> "list[tuple[int, dict]] | None":
@@ -1750,6 +1768,22 @@ async def _store_session_blob(
     return session_blob_id, expected_len
 
 
+async def _store_conversation_blob(
+    ctx: ProcessContext,
+    data: bytes,
+    *,
+    encrypt: "Callable[[bytes], bytes] | None",
+) -> ObjectId:
+    """Store the conversation replay buffer (``export_buffer()`` JSON) as its
+    own GridFS blob, ``conversation``, through ``encrypt`` when set (the
+    task's ``session_blob_encrypt``: plaintext only when the session blob is
+    plaintext too). Returns its id."""
+    payload = encrypt(data) if encrypt is not None else data
+    async with ctx.store_blob("conversation") as writer:
+        await writer.write(payload)
+    return writer.file_id
+
+
 # How often _stream_archive_to_blob emits a "Snapshot: archiving workdir, N MB
 # so far" progress line while streaming the remote tar into GridFS.
 _ARCHIVE_PROGRESS_INTERVAL_S = 30.0
@@ -1819,8 +1853,11 @@ async def _capture_snapshot(
     end_state: str,
     workdir_exclude: list[str] | None,
     session_blob_encrypt: "Callable[[bytes], bytes] | None" = None,
+    conversation: bytes | None = None,
 ) -> bool:
-    """Capture a snapshot: session blob, then workdir blob and record.
+    """Capture a snapshot: session blob, conversation blob (when
+    ``conversation``, the listener's exported replay buffer, is given), then
+    workdir blob and record.
 
     Returns True when a snapshot record was inserted, False when the
     credentials guard refused (nothing stored). Raises on any other failure.
@@ -1859,6 +1896,14 @@ async def _capture_snapshot(
         f"({session_bytes_len / (1024 * 1024):.1f} MB, {t.elapsed:.0f} s)",
     )
 
+    # 3b. the conversation replay buffer, encrypted like the session blob.
+    conversation_blob_id: ObjectId | None = None
+    if conversation is not None:
+        async with _traced("capture: store_conversation_blob"):
+            conversation_blob_id = await _store_conversation_blob(
+                ctx, conversation, encrypt=session_blob_encrypt,
+            )
+
     # 4. defensive wipe so the workdir tar cannot carry sensitive state.
     async with _traced("capture: rm -rf home/.claude"):
         await host.run_command(f"rm -rf {shlex.quote(workdir)}/home/.claude")
@@ -1880,6 +1925,7 @@ async def _capture_snapshot(
         end_state=end_state,
         workdir_exclude=workdir_exclude,
         session_blob_id=session_blob_id,
+        conversation_blob_id=conversation_blob_id,
     )
     return True
 
@@ -1891,10 +1937,15 @@ async def _store_workdir_snapshot(
     end_state: str,
     workdir_exclude: list[str] | None,
     session_blob_id: ObjectId,
+    conversation_blob_id: ObjectId | None = None,
 ) -> None:
     """Second half of a capture: archive the workdir, insert the snapshot
     record, flag the state, prune. Resurrect calls it alone when a cut-off
     capture had already stored the session blob and removed home/.claude.
+
+    Every claudecode workdir tar is made here, so this is where the
+    conversation buffer file is always excluded (_effective_workdir_excludes),
+    whatever ``workdir_exclude`` the caller passes.
     """
     # 4c. Record the blobs before streaming: a capture cut off past the cancel
     # grace leaves this record, naming the partial workdir blob to delete.
@@ -1916,11 +1967,12 @@ async def _store_workdir_snapshot(
     )
 
     # 5. stream the plaintext workdir tar.
+    exclude = _effective_workdir_excludes(workdir_exclude)
     ctx.report_progress(None, "Snapshot: archiving workdir…")
     async with _traced("capture: archive_workdir+store") as t:
         async with ctx.store_blob("workdir", file_id=workdir_blob_id) as wwriter:
             total_bytes = await _stream_archive_to_blob(
-                ctx, host, workdir_exclude, wwriter, start=t.start,
+                ctx, host, exclude, wwriter, start=t.start,
             )
     _trace("capture: archive_workdir+store id=%s bytes=%d", workdir_blob_id, total_bytes)
     ctx.report_progress(
@@ -1939,6 +1991,7 @@ async def _store_workdir_snapshot(
             session_blob_id=session_blob_id,
             workdir_blob_id=workdir_blob_id,
             deliverables_emitted=[],
+            conversation_blob_id=conversation_blob_id,
         )
     await delete_pending_capture(ctx._db, ctx._prefix, ctx.process_id)
 
@@ -1967,6 +2020,11 @@ async def _store_workdir_snapshot(
                 await ctx.delete_blob(p["workdirBlobId"])
             except Exception:
                 _LOG.exception("delete_blob(workdir) failed")
+            if p.get("conversationBlobId") is not None:
+                try:
+                    await ctx.delete_blob(p["conversationBlobId"])
+                except Exception:
+                    _LOG.exception("delete_blob(conversation) failed")
     _trace("capture: prune pruned=%d", len(pruned))
 
 
@@ -2119,4 +2177,8 @@ def create_claudecode_task(
         supports_resume=config.supports_resume,
         resurrect=_resurrect if config.supports_resume else None,
         metadata=metadata or {},
+        session_crypto=SessionCrypto(
+            encrypt=config.session_blob_encrypt,
+            decrypt=config.session_blob_decrypt,
+        ),
     )

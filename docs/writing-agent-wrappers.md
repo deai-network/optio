@@ -1022,6 +1022,14 @@ replay but NOT on a live turn, so the replay→first-live-turn seam needs an exp
 turn-boundary event. Other engines persist differently — opencode moves history via
 explicit session-DB export/import, claudecode via `--continue` self-resolving from its
 HOME — each with its *own* capture/flush timing to establish the same way.
+claudecode's conversation-UI history (the listener's replay buffer) is optio's, not the
+agent's: the listener runs in the engine process, so at teardown its `export_buffer()`
+JSON is kept in memory and stored as the snapshot's own GridFS blob (`conversation`,
+through `session_blob_encrypt` like the session blob, referenced as
+`conversationBlobId`). It never becomes a workdir file: the workdir blob is plaintext,
+and every claudecode workdir tar excludes `.optio-conversation-buffer.json`, the file
+older versions wrote. Keep any conversation content you persist out of the workdir the
+same way.
 
 ## Appendix D — Task configuration surface
 
