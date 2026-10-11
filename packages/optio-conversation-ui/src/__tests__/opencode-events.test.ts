@@ -58,6 +58,16 @@ describe('opencode event reducer (recorded fixtures)', () => {
     expect(t && t.kind === 'tool' && t.name).toBe('bash');
   });
 
+  it('tool row carries the part callID across updates (a stable spinner key)', () => {
+    const tool = (status: string) => ({ type: 'message.part.updated', properties: { part: { id: 't1', messageID: 'm1', sessionID: SID, type: 'tool', callID: 'c1', tool: 'bash', state: { status, input: { command: 'echo hi' } } } } });
+    const s1 = play([tool('pending')]);
+    const s2 = play([tool('running')], s1);
+    const t1 = s1.items.find((i) => i.kind === 'tool');
+    const t2 = s2.items.find((i) => i.kind === 'tool');
+    expect(t1 && t1.kind === 'tool' && t1.callId).toBe('c1');
+    expect(t2 && t2.kind === 'tool' && t2.callId).toBe('c1');
+  });
+
   it('permission.asked creates a card; permission.replied answers it', () => {
     const ask = { type: 'permission.asked', properties: { id: 'per_1', sessionID: SID, permission: 'bash', patterns: [], metadata: { command: 'rm -rf' }, always: [] } };
     const s = play([ask]);

@@ -182,9 +182,12 @@ function reduce(
           : ostatus === 'error' ? 'failed'
             : ostatus === 'pending' || ostatus === 'running' ? 'running'
               : undefined;
+      // callID is the tool call's identity across its part updates (each update
+      // replaces the row with a new seq), so keys built from it stay stable.
+      const callId = typeof part.callID === 'string' ? part.callID : undefined;
       return {
         ...st, partTypes,
-        items: [...dropTools(st.items), { kind: 'tool', name: part.tool ?? 'tool', input: part.state?.input ?? {}, status, seq }],
+        items: [...dropTools(st.items), { kind: 'tool', name: part.tool ?? 'tool', input: part.state?.input ?? {}, status, seq, ...(callId ? { callId } : {}) }],
       };
     }
     // reasoning / step-start / step-finish / unknown: remember the type
