@@ -13,10 +13,13 @@ const devHttps = process.env.OPTIO_DEV_HTTPS === '1';
 const devHost = process.env.OPTIO_DEV_HOST;
 // OPTIO_DEV_VULTUS: a unitas checkout whose vultus source the dev server uses
 // instead of the installed vultus-antd, without an install here (that
-// checkout's node_modules may belong to another worktree): vultus-antd is
-// aliased to its source, the dev server may serve it, and the libraries
-// vultus shares context with resolve to the app's single copy. Unset:
-// unchanged.
+// checkout's node_modules may belong to another worktree): vultus-antd and
+// vultus-core are aliased to its source, the dev server may serve it, and the
+// libraries vultus shares context with resolve to the app's single copy.
+// vultus-core is aliased too because optio-ui imports it directly: without the
+// alias optio-ui would get this workspace's copy and vultus-antd the
+// checkout's, two components contexts, and a Spinner lent through vultus-antd's
+// VultusProvider would not reach optio-ui. Unset: unchanged.
 const devVultus = process.env.OPTIO_DEV_VULTUS;
 
 export default defineConfig({
@@ -37,11 +40,16 @@ export default defineConfig({
     // optio-conversation-ui) land in a different Map than ProcessWidget reads.
     dedupe: [
       'react', 'react-dom', '@tanstack/react-query', '@ts-rest/react-query', 'optio-ui',
-      ...(devVultus ? ['antd', 'react-i18next', 'i18next'] : []),
+      // vultus-core is only deduped beside its alias: the app root cannot
+      // resolve it (it is not a dependency here), and Vite resolves deduped
+      // packages from the root.
+      ...(devVultus ? ['antd', 'react-i18next', 'i18next', 'vultus-core'] : []),
     ],
     alias: devVultus ? [
       { find: /^vultus-antd\/markdown$/, replacement: path.join(devVultus, 'packages/vultus-antd/src/Markdown.tsx') },
       { find: /^vultus-antd$/, replacement: path.join(devVultus, 'packages/vultus-antd/src/index.ts') },
+      { find: /^vultus-core\/link$/, replacement: path.join(devVultus, 'packages/vultus-core/src/LinkContext.tsx') },
+      { find: /^vultus-core$/, replacement: path.join(devVultus, 'packages/vultus-core/src/index.ts') },
     ] : [],
   },
   root: path.resolve(__dirname, 'src/app'),
