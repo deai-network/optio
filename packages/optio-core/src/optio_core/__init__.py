@@ -10,6 +10,7 @@ from optio_core.exceptions import (
 )
 from optio_core.lifecycle import Optio
 from optio_core.deferred_migrations import deferred_migrations, DeferredMigrationContext
+from optio_core.conversation_archive import ConversationArchiveListener
 
 _instance = Optio()
 
@@ -48,6 +49,7 @@ __all__ = [
     "group_cancel", "group_cancel_and_wait",
     "rpc_server", "mongo_store", "MongoStore",
     "SessionCrypto", "deferred_migrations", "DeferredMigrationContext",
+    "ConversationArchiveListener",
 ]
 
 

@@ -43,6 +43,7 @@ from optio_core.state_machine import (
 )
 from optio_core.exceptions import LaunchError, NothingToResurrect
 from optio_core.context import ProcessContext
+from optio_core.conversation_archive import ConversationArchiveListener
 from optio_core.executor import Executor
 from clamator_protocol import RpcServerCore
 from clamator_over_redis import RedisRpcServer
@@ -122,6 +123,9 @@ class Optio:
         # the resurrect hook. While a process is here, launch and a second
         # resurrect are refused.
         self._resurrecting: dict[ObjectId, asyncio.Task] = {}
+        # The engine-wide conversation archive listener; started by run(),
+        # stopped by shutdown().
+        self._archive_listener: ConversationArchiveListener | None = None
 
     @property
     def mongo_store(self) -> MongoStore:
@@ -578,6 +582,32 @@ class Optio:
         self._resurrecting[oid] = run
         return ResurrectOutcome(ok=True, proc=proc)
 
+    def _detached_context(
+        self, proc: dict, *, session_id: str | None = None,
+    ) -> ProcessContext:
+        """A ProcessContext for `proc` outside any run of its task: its own
+        cancellation flag (never set), resume=False. Used for task hooks the
+        engine calls outside `execute` — the resurrect hook and the
+        conversation archive's read_conversation hook."""
+        oid = proc["_id"]
+        ctx = ProcessContext(
+            process_oid=oid,
+            process_id=proc["processId"],
+            root_oid=proc.get("rootId") or oid,
+            depth=proc.get("depth", 0),
+            params=proc.get("params", {}),
+            metadata=proc.get("metadata", {}),
+            services=self._executor._services,
+            db=self._config.mongo_db,
+            prefix=self._config.prefix,
+            cancellation_flag=asyncio.Event(),
+            child_counter={"next": 0},
+            resume=False,
+            session_id=session_id,
+        )
+        ctx._executor = self._executor
+        return ctx
+
     async def _run_resurrect(
         self, proc: dict, task: TaskInstance, session_id: str | None,
     ) -> None:
@@ -590,22 +620,7 @@ class Optio:
             await update_progress(db, prefix, oid, Progress(
                 percent=None, message="Resurrecting: saving the unsaved work…",
             ))
-            ctx = ProcessContext(
-                process_oid=oid,
-                process_id=proc["processId"],
-                root_oid=proc.get("rootId") or oid,
-                depth=proc.get("depth", 0),
-                params=proc.get("params", {}),
-                metadata=proc.get("metadata", {}),
-                services=self._executor._services,
-                db=db,
-                prefix=prefix,
-                cancellation_flag=asyncio.Event(),
-                child_counter={"next": 0},
-                resume=False,
-                session_id=session_id,
-            )
-            ctx._executor = self._executor
+            ctx = self._detached_context(proc, session_id=session_id)
             try:
                 try:
                     await task.resurrect(ctx)
@@ -1231,7 +1246,27 @@ class Optio:
         except (NotImplementedError, RuntimeError):
             pass  # Signal handlers not available (e.g., in tests)
 
-        # Start the clamator RPC server first (non-blocking; spawns its own tasks)
+        # The conversation archive listener, before the RPC server (read-only;
+        # serves suspended tasks' conversation records to the optio-api proxy).
+        # A failure to start is logged and the engine runs on without it: the
+        # proxy then answers 503. Spec:
+        # docs/2026-10-12-suspended-conversation-view-design.md §1.
+        listener = ConversationArchiveListener(
+            db=self._config.mongo_db,
+            prefix=self._config.prefix,
+            resolve_task=lambda pid: self._executor._task_registry.get(pid),
+            make_context=self._detached_context,
+        )
+        try:
+            await listener.start()
+            self._archive_listener = listener
+        except Exception:
+            logger.exception(
+                "conversation archive listener failed to start; suspended "
+                "conversations will not be readable",
+            )
+
+        # Start the clamator RPC server (non-blocking; spawns its own tasks)
         if self.rpc_server is not None and self._owned_rpc_server:
             await self.rpc_server.start()
 
@@ -1266,6 +1301,8 @@ class Optio:
                     await self._shutdown_task
                 except Exception:
                     logger.exception("shutdown task raised")
+            # Normally already stopped by shutdown(); idempotent.
+            await self._stop_archive_listener()
             await self._scheduler.stop()
 
     async def _stamp_auto_resume_if_eligible(self, oid: ObjectId) -> None:
@@ -1334,6 +1371,9 @@ class Optio:
                 )
                 await self.rpc_server.stop(grace_ms=grace_ms)
 
+            # 2b. Conversation archive listener: unpublish and close.
+            await self._stop_archive_listener()
+
             # 3. Cancel everything via the unified mechanism.
             grace = (
                 grace_seconds
@@ -1398,6 +1438,17 @@ class Optio:
             # run() return and asyncio.run() tear-down cancel the drain.)
             if hasattr(self, '_shutdown_event'):
                 self._shutdown_event.set()
+
+    async def _stop_archive_listener(self) -> None:
+        """Stop the conversation archive listener, if running. Never raises:
+        a failure here must not abort the shutdown drain."""
+        listener, self._archive_listener = self._archive_listener, None
+        if listener is None:
+            return
+        try:
+            await listener.stop()
+        except Exception:
+            logger.exception("stopping the conversation archive listener failed")
 
     async def _reconcile_interrupted_processes(self) -> None:
         """Mark processes left in active states by a previous session as failed.

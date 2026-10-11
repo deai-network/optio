@@ -125,6 +125,17 @@ class TaskInstance(TaskInstanceCore):
     # a process's TaskInstance outside a running task, such as a deferred
     # migration. Spec: docs/2026-10-11-conversation-buffer-encryption-design.md §4.
     session_crypto: SessionCrypto | None = None
+    # Optional "read conversation" hook: returns the conversation record a
+    # suspended process saved, for a read-only view, without resuming it. Called
+    # by the engine's conversation archive listener (optio_core.conversation_archive)
+    # with a detached ProcessContext (the one Optio.resurrect builds), only for a
+    # suspended process (cancelled + supportsResume + hasSavedState). Returns
+    # either a list of [seq, event] entries (capturedAt is then null), or a dict
+    # {"events": [[seq, event], ...], "capturedAt": <ISO string or datetime of
+    # the record, or None>}; None (or a dict whose "events" is None) means "no
+    # record". It runs in the engine, so it may decrypt; it must not write.
+    # Spec: docs/2026-10-12-suspended-conversation-view-design.md §1.
+    read_conversation: Callable[..., Awaitable[list | dict | None]] | None = None
 
 
 @dataclass

@@ -592,3 +592,75 @@ idempotent per item. Packages register at import time, as with `fw_migrations`
 (e.g. optio-claudecode registering its migration in its package `__init__`, so any
 app that builds claudecode tasks has it). Spec:
 `docs/2026-10-11-conversation-buffer-encryption-design.md` §5.
+
+---
+
+### TaskInstance.read_conversation
+
+```python
+@dataclass
+class TaskInstance:
+    ...
+    read_conversation: Callable[[ProcessContext], Awaitable[list | dict | None]] | None = None
+```
+
+Optional, last field. Returns the conversation record a suspended process saved, for a
+read-only view without resuming it. The engine's conversation archive listener (below)
+calls it with a detached `ProcessContext` (`Optio._detached_context`, the same one
+`Optio.resurrect` builds: own never-set cancellation flag, `resume=False`), and only for
+a suspended process (`status.state == "cancelled"`, `supportsResume`, `hasSavedState`).
+It returns either a list of `[seq, event]` entries (`capturedAt` is then null), or a dict
+`{"events": [[seq, event], ...], "capturedAt": <ISO string or datetime, or None>}` (a
+naive datetime is taken as UTC). `None`, or a dict whose `events` is `None`, means "no
+record". It runs inside the engine, so it may decrypt with the task's own cipher; it
+must not write. optio-claudecode sets it when `conversation_ui` is on. Spec:
+`docs/2026-10-12-suspended-conversation-view-design.md` §1.
+
+---
+
+### Conversation archive listener
+
+`optio_core.conversation_archive.ConversationArchiveListener` (exported from
+`optio_core`): one aiohttp server per engine, serving suspended tasks' conversation
+records to the optio-api proxy (`GET /processes/:id/conversation`). Decryption stays in
+the engine; the plaintext exists only in memory and in transit.
+
+```python
+listener = ConversationArchiveListener(
+    db=db, prefix=prefix,
+    resolve_task=lambda process_id: ...,        # TaskInstance | None
+    make_context=lambda proc_doc: ...,          # ProcessContext
+)
+await listener.start()   # bind + publish; listener.url, listener.password
+await listener.stop()    # unpublish (only its own document) + close; idempotent
+```
+
+- **Lifecycle:** `Optio.run()` starts it before the RPC server (resolving tasks through
+  the executor's task registry, contexts through `Optio._detached_context`);
+  `Optio.shutdown()` stops it right after the RPC server. A failure to start is logged
+  and the engine runs on without it (the proxy then answers 503).
+- **Network:** binds `OPTIO_WIDGET_TUNNEL_BIND` (default `127.0.0.1`) on an ephemeral
+  port; advertises `OPTIO_WIDGET_TUNNEL_HOST` (default `127.0.0.1`), as the per-task
+  conversation listeners do.
+- **Publication:** `{_id: "conversationArchive", url: "http://<host>:<port>/", password,
+  updatedAt}` in `{prefix}_engine_endpoints`, replaced on every start. `stop()` deletes
+  it only while it still holds this listener's password, so an overlapping newer
+  engine's document survives the old engine's shutdown. A crashed engine leaves a stale
+  document.
+- **Route:** `GET /conversation/{processId}`, `processId` being the process document's
+  `_id` (ObjectId hex). Basic auth `optio:<password>` (random
+  `secrets.token_urlsafe(32)` per start). Every response carries
+  `Cache-Control: no-store`; errors are `{"reason", "message"}`:
+
+  | Status | `reason` | When |
+  |---|---|---|
+  | 200 | — | `{"events": [[seq, event], ...], "capturedAt": <ISO or null>}` |
+  | 401 | `unauthorized` | missing or wrong basic auth |
+  | 404 | `not-found` | no process document with that `_id` |
+  | 409 | `not-suspended` | not `cancelled` + `supportsResume` + `hasSavedState` |
+  | 404 | `no-conversation-support` | no registered task, or its `read_conversation` is `None` |
+  | 404 | `no-conversation` | the hook returned `None` |
+  | 500 | `read-failed` | the hook raised or returned something unusable |
+
+  A failed read is logged with the process `_id`, its `processId` and the exception type
+  only, never the exception message (it may carry content). Nothing logs the password.
