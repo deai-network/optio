@@ -7,6 +7,12 @@ packages:
   # builds fall back to the published package when this path is absent.
   - '../unitas/packages/vultus-core'
   - '../unitas/packages/vultus-antd'
+  # Ant Design X experiment only: daeo-style (private) from the sibling
+  # checkout, so the conversation UI is tested and demoed under its
+  # DaeoStyleProvider (the bridge); no GitHub Packages token needed.
+  - '../daeo-style/packages/daeo-style-tokens'
+  - '../daeo-style/packages/daeo-style-antd'
+  - '../daeo-style/packages/daeo-style-for-vultus'
 # Resolve semver-range deps against workspace packages when present (needed for
 # the external vultus link above; pnpm 10+ defaults these to false).
 linkWorkspacePackages: true

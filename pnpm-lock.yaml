@@ -12,6 +12,125 @@ importers:
         specifier: ^0.1.9
         version: 0.1.9(zod@4.3.6)
 
+  ../daeo-style/packages/daeo-style-antd:
+    dependencies:
+      '@deai-network/daeo-style-tokens':
+        specifier: workspace:^
+        version: link:../daeo-style-tokens
+    devDependencies:
+      '@ant-design/cssinjs':
+        specifier: ^2.1.2
+        version: 2.1.2(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      '@testing-library/jest-dom':
+        specifier: ^6.9.1
+        version: 6.9.1
+      '@testing-library/react':
+        specifier: ^16.3.2
+        version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.15
+      '@types/react':
+        specifier: ^19.0.0
+        version: 19.2.14
+      '@types/react-dom':
+        specifier: ^19.0.0
+        version: 19.2.3(@types/react@19.2.14)
+      antd:
+        specifier: ^6.6.5
+        version: 6.6.5(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      jsdom:
+        specifier: ^29.0.1
+        version: 29.0.2(@noble/hashes@2.2.0)
+      react:
+        specifier: ^19.2.4
+        version: 19.2.4
+      react-dom:
+        specifier: ^19.2.4
+        version: 19.2.4(react@19.2.4)
+      tsx:
+        specifier: ^4.21.0
+        version: 4.21.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@22.19.15)(jsdom@29.0.2(@noble/hashes@2.2.0))(tsx@4.21.0)
+
+  ../daeo-style/packages/daeo-style-for-vultus:
+    dependencies:
+      '@deai-network/daeo-style-antd':
+        specifier: workspace:^
+        version: link:../daeo-style-antd
+      '@deai-network/daeo-style-tokens':
+        specifier: workspace:^
+        version: link:../daeo-style-tokens
+    devDependencies:
+      '@ant-design/cssinjs':
+        specifier: ^2.1.2
+        version: 2.1.2(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      '@testing-library/jest-dom':
+        specifier: ^6.9.1
+        version: 6.9.1
+      '@testing-library/react':
+        specifier: ^16.3.2
+        version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.15
+      '@types/react':
+        specifier: ^19.0.0
+        version: 19.2.14
+      '@types/react-dom':
+        specifier: ^19.0.0
+        version: 19.2.3(@types/react@19.2.14)
+      antd:
+        specifier: ^6.6.5
+        version: 6.6.5(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      i18next:
+        specifier: ^25.0.0
+        version: 25.10.10(typescript@5.9.3)
+      jsdom:
+        specifier: ^29.0.1
+        version: 29.0.2(@noble/hashes@2.2.0)
+      react:
+        specifier: ^19.2.4
+        version: 19.2.4
+      react-dom:
+        specifier: ^19.2.4
+        version: 19.2.4(react@19.2.4)
+      react-i18next:
+        specifier: ^17.0.0
+        version: 17.0.0(i18next@25.10.10(typescript@5.9.3))(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@22.19.15)(jsdom@29.0.2(@noble/hashes@2.2.0))(tsx@4.21.0)
+      vultus-antd:
+        specifier: ^0.6.0
+        version: link:../../../unitas/packages/vultus-antd
+
+  ../daeo-style/packages/daeo-style-tokens:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.19.15
+      jsdom:
+        specifier: ^29.0.1
+        version: 29.0.2(@noble/hashes@2.2.0)
+      tsx:
+        specifier: ^4.21.0
+        version: 4.21.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@22.19.15)(jsdom@29.0.2(@noble/hashes@2.2.0))(tsx@4.21.0)
+
   ../unitas/packages/vultus-antd:
     dependencies:
       react-markdown:
@@ -270,6 +389,12 @@ importers:
         specifier: ^16.1.1
         version: 16.1.1(react@19.2.4)
     devDependencies:
+      '@ant-design/cssinjs':
+        specifier: ^2.0.0
+        version: 2.1.2(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      '@deai-network/daeo-style-for-vultus':
+        specifier: ^0.3.0
+        version: link:../../../daeo-style/packages/daeo-style-for-vultus
       '@testing-library/jest-dom':
         specifier: ^6.9.1
         version: 6.9.1
@@ -315,6 +440,9 @@ importers:
       '@ant-design/icons':
         specifier: ^6.3.4
         version: 6.3.4(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      '@deai-network/daeo-style-for-vultus':
+        specifier: ^0.3.0
+        version: link:../../../daeo-style/packages/daeo-style-for-vultus
       '@fastify/static':
         specifier: ^8.0.0
         version: 8.3.0
