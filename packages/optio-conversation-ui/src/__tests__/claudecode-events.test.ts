@@ -1205,3 +1205,23 @@ describe('a message sent while a resumed session starts (waiting announcement)',
     expect(item && item.kind === 'user' && item.local).toBe(true);
   });
 });
+
+// CLI 2.1.296: a live model switch (apply_flag_settings) in a conversation
+// that has had a turn echoes the CLI's own "/model" output as an isReplay
+// user event, with no turn around it (no session_state_changed, no result).
+describe('live model switch echo (local-command-stdout)', () => {
+  const switchEcho = {
+    type: 'user', isReplay: true, timestamp: T9, uuid: '9fb29c52-0b6e-474e-8266-f771e709e1d4',
+    message: { role: 'user', content: '<local-command-stdout>Set model to `claude-sonnet-5-5`</local-command-stdout>' },
+  };
+
+  it('does not make an idle agent busy', () => {
+    const s = run([user('q'), assistantText('a', 'msg_1'), result('a'), switchEcho]);
+    expect(s.busy).toBe(false);
+  });
+
+  it('leaves a busy agent busy', () => {
+    const s = run([user('q'), assistantText('a', 'msg_1'), switchEcho]);
+    expect(s.busy).toBe(true);
+  });
+});

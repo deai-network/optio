@@ -26,10 +26,13 @@ const PART_SEPARATOR = '\n\n';
 const INTERRUPT_ECHO = /^\[Request interrupted by user( for tool use)?\]$/;
 const ABORTED = new Set<string>(['aborted_streaming', 'aborted_tools']);
 
+// The CLI's wrapper around a local command's output, echoed as a user event.
+const LOCAL_COMMAND_STDOUT = '<local-command-stdout>';
+
 // A /compact command's own replay echoes, after its summary (CLI 2.1.294):
 // its output, then the command itself.
 function isCompactCommandEcho(text: string): boolean {
-  return text.startsWith('<local-command-stdout>Compacted') || text.includes('<command-name>/compact</command-name>');
+  return text.startsWith(`${LOCAL_COMMAND_STDOUT}Compacted`) || text.includes('<command-name>/compact</command-name>');
 }
 
 // The kind of the last conversation item, the pinned queued tail left out.
@@ -947,7 +950,11 @@ export function reduceEvent(
       const userItem: UserItem = { kind: 'user', text: text.trimEnd(), seq };
       if (echoTs !== undefined) userItem.timestamp = echoTs;
       const rows: ChatItem[] = attach ? [attach, userItem] : [userItem];
-      return { ...state, items: insertBeforePending(state.items, rows), busy: true };
+      // A local command's output is no turn: CLI 2.1.296 echoes a live model
+      // switch (apply_flag_settings) as "<local-command-stdout>Set model to
+      // …" with no turn around it, so it leaves busy as it was.
+      const busy = text.startsWith(LOCAL_COMMAND_STDOUT) ? state.busy : true;
+      return { ...state, items: insertBeforePending(state.items, rows), busy };
     }
 
     // Synthetic, widget-emitted: render the operator's own message the moment
