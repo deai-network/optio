@@ -666,6 +666,11 @@ Replay-buffer semantics:
   `session_blob_decrypt`): the latest snapshot's conversation blob, only
   `[seq: int, event: dict]` entries, `x-optio-closed` dropped; absent,
   undecryptable or malformed gives an empty buffer, logged, never fatal.
+  The same record, via `session._read_conversation(ctx, *, decrypt)` (set as
+  `TaskInstance.read_conversation` only when `conversation_ui`), backs the
+  read-only suspended-process view for the engine's conversation archive
+  listener, which gives it a read-only context (process_id, _db, _prefix,
+  load_blob only).
   The workdir restore (`_restore_workdir_snapshot`) deletes a top-level
   `.optio-conversation-buffer.json` a pre-fix snapshot may carry, unread.
   When a resumed run re-primes the listener from the buffer,

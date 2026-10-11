@@ -1451,6 +1451,32 @@ async def _load_conversation_buffer(
     return out or None
 
 
+async def _read_conversation(
+    ctx: ProcessContext, *, decrypt: "Callable[[bytes], bytes] | None",
+) -> dict | None:
+    """The ``TaskInstance.read_conversation`` hook (set only when
+    ``conversation_ui``): the suspended process's saved conversation record,
+    read through the same decrypt/parse/filter as a resume
+    (``_load_conversation_buffer``). Returns ``{"events": [[seq, event],
+    ...], "capturedAt": <iso or None>}``, or None when there is no record.
+
+    ``ctx`` may be the engine's read-only context (process_id, _db, _prefix,
+    load_blob only) — this function and everything it calls touch nothing
+    else.
+    """
+    events = await _load_conversation_buffer(ctx, decrypt=decrypt)
+    if events is None:
+        return None
+    snapshot = await load_latest_snapshot(
+        ctx._db, prefix=ctx._prefix, process_id=ctx.process_id,
+    )
+    captured_at = snapshot["capturedAt"] if snapshot is not None else None
+    return {
+        "events": [[seq, event] for seq, event in events],
+        "capturedAt": captured_at.isoformat() if captured_at is not None else None,
+    }
+
+
 # Fix 19 (owner ruling 2026-09-15, session-end design part 4): how long a
 # cooperative cancel gives a running turn to end gracefully (the CLI then
 # keeps the partial answer in its transcript) before the reader stops and
@@ -2282,5 +2308,9 @@ def create_claudecode_task(
         session_crypto=SessionCrypto(
             encrypt=config.session_blob_encrypt,
             decrypt=config.session_blob_decrypt,
+        ),
+        read_conversation=(
+            (lambda ctx: _read_conversation(ctx, decrypt=config.session_blob_decrypt))
+            if config.conversation_ui else None
         ),
     )

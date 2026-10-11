@@ -31,6 +31,7 @@ from optio_claudecode.snapshots import (
     load_latest_snapshot,
     prune_snapshots,
 )
+from optio_core.conversation_archive import ReadOnlyProcessContext
 from optio_host.archive import DEFAULT_WORKDIR_EXCLUDES, yield_workdir_archive
 from optio_host.host import LocalHost
 
@@ -876,6 +877,65 @@ def test_task_factory_sets_session_crypto():
     assert plain.session_crypto is not None
     assert plain.session_crypto.encrypt is None
     assert plain.session_crypto.decrypt is None
+
+
+# --- the read_conversation hook (suspended-view reads) -------------------------
+
+
+def test_read_hook_set_only_in_conversation_mode():
+    conv_task = create_claudecode_task(
+        "p", "P", ClaudeCodeTaskConfig(
+            consumer_instructions="x", fs_isolation=False,
+            mode="conversation", conversation_ui=True,
+            permission_mode="bypassPermissions",
+        ),
+    )
+    assert conv_task.read_conversation is not None
+
+    iframe_task = create_claudecode_task(
+        "q", "Q", ClaudeCodeTaskConfig(consumer_instructions="x", fs_isolation=False),
+    )
+    assert iframe_task.read_conversation is None
+
+    plain_conversation_task = create_claudecode_task(
+        "r", "R", ClaudeCodeTaskConfig(
+            consumer_instructions="x", fs_isolation=False,
+            mode="conversation", permission_mode="bypassPermissions",
+        ),
+    )
+    assert plain_conversation_task.read_conversation is None
+
+
+@pytest.mark.asyncio
+async def test_read_hook_returns_decrypted_events_and_captured_at(mongo_db, ctx_and_captures):
+    """Called with a real ReadOnlyProcessContext (process_id, _db, _prefix,
+    load_blob only — the engine's conversation archive listener gives it no
+    more than that)."""
+    ctx, _cap, _flag = ctx_and_captures
+    await _snapshot_with_record(mongo_db, ctx, _encrypt(json.dumps(_ENTRIES).encode()))
+    snap = await load_latest_snapshot(mongo_db, prefix="test", process_id=ctx.process_id)
+    ro_ctx = ReadOnlyProcessContext(ctx)
+
+    out = await S._read_conversation(ro_ctx, decrypt=_decrypt)
+
+    # The close marker is dropped, as for a resume; entries come back as
+    # lists (JSON-shaped), not tuples.
+    assert out["events"] == [[1, _ENTRIES[0][1]], [2, _ENTRIES[1][1]]]
+    assert all(isinstance(e, list) for e in out["events"])
+    assert out["capturedAt"] == snap["capturedAt"].isoformat()
+
+
+@pytest.mark.asyncio
+async def test_read_hook_none_without_record(mongo_db, ctx_and_captures):
+    ctx, _cap, _flag = ctx_and_captures
+    ro_ctx = ReadOnlyProcessContext(ctx)
+
+    # No snapshot at all.
+    assert await S._read_conversation(ro_ctx, decrypt=_decrypt) is None
+
+    # A snapshot without a conversation record.
+    await _snapshot_with_record(mongo_db, ctx, None)
+    assert await S._read_conversation(ro_ctx, decrypt=_decrypt) is None
 
 
 # --- the teardown (real engine, fake claude) -----------------------------------
