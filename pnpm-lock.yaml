@@ -307,7 +307,7 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.13)(@types/node@22.19.15)(jsdom@29.0.2(@noble/hashes@2.2.0))(tsx@4.21.0)
       vultus-antd:
-        specifier: ^0.5.0
+        specifier: ^0.6.0
         version: link:../../../unitas/packages/vultus-antd
 
   packages/optio-dashboard:
@@ -490,7 +490,7 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4(@types/debug@4.1.13)(@types/node@22.19.15)(jsdom@29.0.2(@noble/hashes@2.2.0))(tsx@4.21.0)
       vultus-core:
-        specifier: ^0.3.0
+        specifier: ^0.4.0
         version: link:../../../unitas/packages/vultus-core
 
 packages:

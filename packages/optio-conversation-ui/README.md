@@ -10,12 +10,10 @@ This package replaces the engine-specific `optio-claudecode-ui`. A single regist
 pnpm add optio-conversation-ui
 ```
 
-Peer deps: `react >=18`, `react-dom >=18`, `antd >=6`, `vultus-antd >=0.5.0`. vultus
+Peer deps: `react >=18`, `react-dom >=18`, `antd >=6`, `vultus-antd >=0.6.0`. vultus
 is a peer so the app's one copy carries its `VultusProvider` context (error toasts, router
-links, a lent loading spinner) into the conversation's buttons. The
-[loading spinner](#loading-spinner) slot needs the vultus-antd release that adds
-`VultusProvider components` (and the vultus-core release under it); this range is raised to
-`>=0.6.0` with that release. Until then the workspace link to unitas provides it.
+links, a lent loading spinner) into the conversation's buttons; 0.6.0 is the vultus-antd
+release with the [loading spinner](#loading-spinner) slot (`VultusProvider components`).
 optio-ui (a dependency) takes `vultus-core` as a peer: list `vultus-core` in the app too, at
 the range vultus-antd depends on, so both resolve to one copy (two copies mean two contexts,
 and optio-ui's spinners would quietly stay antd's).

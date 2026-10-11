@@ -3,7 +3,7 @@
 ## Package
 
 - **name**: `optio-ui`
-- **version**: `0.6.1`
+- **version**: `0.7.0`
 - **type**: `module` (ESM)
 - **entry**: `src/index.ts`
 
@@ -22,9 +22,9 @@
 - `@tanstack/react-query: >=5`
 - `react-i18next: >=15`
 - `i18next: >=24`
-- `vultus-core: >=0.3.0` — a peer so the app has one copy and one components context
-  (see "Spinner slot"); in this workspace a dev dependency linked to `../unitas/packages/vultus-core`.
-  Raised to `>=0.4.0` (the release that adds the slot) when optio-ui is next released.
+- `vultus-core: >=0.4.0` — a peer so the app has one copy and one components context
+  (see "Spinner slot"); 0.4.0 is the release with the slot. In this workspace a dev dependency
+  linked to `../unitas/packages/vultus-core`.
 
 ## Conventions
 
