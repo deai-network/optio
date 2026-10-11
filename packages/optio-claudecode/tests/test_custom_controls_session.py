@@ -7,7 +7,8 @@ permission mode; widgetData and every control update carry
 ``POST /control {id: "custom:<id>", value}`` switches claude live, refused
 while a turn runs (Review Focus 1); a built-in change clears the selection
 and a custom pick moves the built-ins (Review Focus 2); a resume keeps the
-pick (Review Focus 3).
+pick (Review Focus 3), and its x-optio-resumed names the selection it runs
+(switch bands).
 """
 from __future__ import annotations
 
@@ -455,3 +456,127 @@ async def test_claude_running_another_effort_than_optio_set_is_reported(
         "apply_flag_settings", "get_settings",             # Fast
         "apply_flag_settings", "get_settings",             # Extensive
     ]
+
+
+# --- switch bands: the resume marker names the selection; a pick replays in place -------
+
+
+async def _events_until(resp, done, timeout: float = 60.0) -> list[dict]:
+    """The SSE events, in order (the replay buffer, then the live tail), read
+    until ``done(events)`` holds."""
+    events: list[dict] = []
+    await _read_until(resp, lambda e: events.append(e) or done(events), timeout)
+    return events
+
+
+def _resumed(events: list[dict]) -> list[dict]:
+    return [e for e in events if e.get("type") == "x-optio-resumed"]
+
+
+def _resume_turn_ended(events: list[dict]) -> bool:
+    """The resume notice's turn has ended: a result after the run's marker."""
+    types = [e.get("type") for e in events]
+    return "x-optio-resumed" in types and "result" in types[types.index("x-optio-resumed"):]
+
+
+async def _resume(optio, process_id: str):
+    """Resume ``process_id``; return its conversation and the /events url and headers."""
+    conv = await optio.launch_and_await_result(process_id, resume=True, session_id=None, timeout=60)
+    upstream = (await _wait_widget_upstream(optio, process_id))["widgetUpstream"]
+    await _wait_widget_data(optio, process_id)
+    return conv, upstream["url"], _basic(upstream["innerAuth"]["password"])
+
+
+async def _one_turn_then_close(optio, process_id: str) -> None:
+    """A fresh run with one turn (so it leaves a replay buffer), closed."""
+    conv = await optio.launch_and_await_result(process_id, session_id=None, timeout=60)
+    await _wait_widget_data(optio, process_id)
+    _, replied = _replies(conv)
+    await conv.send("ping")
+    await asyncio.wait_for(replied.wait(), 60)
+    await conv.close()
+    await _wait_terminal(optio, process_id)
+
+
+async def test_a_resume_marker_names_the_selection_the_resumed_run_launches_with(
+    shim_install_dir: pathlib.Path,
+    claude_cache_dir: pathlib.Path,
+    task_root,
+    mongo_db,
+    tmp_path: pathlib.Path,
+):
+    """Switch bands. Run 2 (resume, nothing picked) marks its resume with the
+    default, Extensive; the operator picks Fast, and an x-optio-custom-pick
+    goes out ahead of the switch. Run 3 (resume, the saved Fast pick) marks
+    its resume with Fast; its replay holds run 2's marker and the pick in
+    place."""
+    optio = await _make_optio(mongo_db, "cccc-bands")
+    try:
+        task = create_claudecode_task(
+            process_id="cc-cc-bands", name="Resume marker selection",
+            config=_ui_config(
+                shim_install_dir, claude_cache_dir, custom_controls=[SPEED],
+                supports_resume=True, credentials_json={"token": "test"},
+                before_execute=_plant_transcript_on("claude-opus-5[1m]"),
+            ),
+        )
+        await optio.adhoc_define(task)
+        await _one_turn_then_close(optio, "cc-cc-bands")
+
+        conv, url, headers = await _resume(optio, "cc-cc-bands")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{url}/events", headers=headers) as events:
+                seen = await _events_until(events, _resume_turn_ended)
+                assert _resumed(seen) == [{"type": "x-optio-resumed",
+                                           "customControls": [{"id": "speed", "value": "extensive"}]}]
+                assert await _pick(session, url, headers, "speed", "fast") == (200, {"ok": True})
+                seen = await _events_until(events, lambda evs: _custom_update("speed", "fast")(evs[-1]))
+                assert [e for e in seen if e.get("type") == "x-optio-custom-pick"] == [
+                    {"type": "x-optio-custom-pick", "id": "speed", "value": "fast"}]
+        await conv.close()
+        await _wait_terminal(optio, "cc-cc-bands")
+
+        conv, url, headers = await _resume(optio, "cc-cc-bands")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{url}/events", headers=headers) as events:
+                seen = await _events_until(events, lambda evs: len(_resumed(evs)) == 2)
+        earlier, this = _resumed(seen)
+        assert earlier["customControls"] == [{"id": "speed", "value": "extensive"}]
+        assert this == {"type": "x-optio-resumed", "customControls": [{"id": "speed", "value": "fast"}]}
+        pick = seen.index({"type": "x-optio-custom-pick", "id": "speed", "value": "fast"})
+        assert seen.index(earlier) < pick < len(seen) - 1
+        assert (conv.model, conv.effort) == ("sonnet", "medium")
+        await conv.close()
+        await _wait_terminal(optio, "cc-cc-bands")
+    finally:
+        await optio.shutdown(grace_seconds=1.0)
+
+
+async def test_without_custom_controls_the_resume_marker_names_no_selection(
+    shim_install_dir: pathlib.Path,
+    claude_cache_dir: pathlib.Path,
+    task_root,
+    mongo_db,
+):
+    optio = await _make_optio(mongo_db, "cccc-nobands")
+    try:
+        task = create_claudecode_task(
+            process_id="cc-cc-nobands", name="Resume marker without custom controls",
+            config=_ui_config(
+                shim_install_dir, claude_cache_dir,
+                supports_resume=True, credentials_json={"token": "test"},
+                before_execute=_plant_transcript_on("claude-opus-5[1m]"),
+            ),
+        )
+        await optio.adhoc_define(task)
+        await _one_turn_then_close(optio, "cc-cc-nobands")
+
+        conv, url, headers = await _resume(optio, "cc-cc-nobands")
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"{url}/events", headers=headers) as events:
+                seen = await _events_until(events, lambda evs: len(_resumed(evs)) == 1)
+        assert seen[-1] == {"type": "x-optio-resumed"}
+        await conv.close()
+        await _wait_terminal(optio, "cc-cc-nobands")
+    finally:
+        await optio.shutdown(grace_seconds=1.0)

@@ -180,6 +180,23 @@ def custom_control_value(
     return None
 
 
+def custom_controls_selection(
+    controls: "Sequence[CustomControl] | None", *, catalog: list[dict],
+    model: str | None, effort: str | None, permission_mode: str | None,
+) -> list[dict]:
+    """Per control ``{id, value}``: the selection derived from these values
+    (``custom_control_value``; None when no option matches). A resumed run's
+    ``x-optio-resumed`` carries it as ``customControls``: the mode it
+    launches in."""
+    return [
+        {"id": control.id, "value": custom_control_value(
+            control, catalog=catalog, model=model, effort=effort,
+            permission_mode=permission_mode,
+        )}
+        for control in controls or ()
+    ]
+
+
 def custom_controls_snapshot(
     controls: "Sequence[CustomControl] | None", *, catalog: list[dict],
     model: str | None, effort: str | None, permission_mode: str | None,
@@ -187,8 +204,9 @@ def custom_controls_snapshot(
     """widgetData.customControls (and every x-optio-control-update's): per
     control ``{id, label, description, options: [{value, label,
     description}], value}``. Labels and descriptions as defined (a string or
-    a language map: the widget picks the language); a missing description is
-    None; ``value`` is the derived selection (``custom_control_value``).
+    a language map: the widget picks the language); a missing description,
+    and a control's label when it has no caption, is None; ``value`` is the
+    derived selection (``custom_control_value``).
     Language maps are copied: the payload goes out in events and widgetData,
     the definition stays the task's."""
     def text(value):

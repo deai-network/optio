@@ -735,6 +735,9 @@ async def run_claudecode_session(
         # process's list is used instead (then a correction switches it live,
         # before the first message).
         restore_pending = False
+        # The probe's list (None: not asked, or it could not tell); also what
+        # x-optio-resumed's selection is derived over (below).
+        probed = None
         if saved_picks is not None and (saved_picks.model or saved_picks.effort):
             probed = await _probe_cli_models(current_model)
             if probed is not None:
@@ -808,6 +811,21 @@ async def run_claudecode_session(
                 await _load_conversation_buffer(ctx, decrypt=config.session_blob_decrypt)
                 if resuming else None
             )
+            # The resume marker (x-optio-resumed) names the custom controls'
+            # selection this run launches with: the values running now, its
+            # restored picks over the controls' defaults
+            # (controls.custom_controls_selection), so the widget can say
+            # which mode the session resumed in. Over the probe's model list
+            # when a resume asked it (claude itself is asked below, once the
+            # listener is up), else none: then only the same value matches.
+            # No key without custom controls.
+            resumed_selection = None
+            if initial_events and config.custom_controls:
+                resumed_selection = cc_controls.custom_controls_selection(
+                    config.custom_controls, catalog=probed or [],
+                    model=conversation.model, effort=conversation.effort,
+                    permission_mode=conversation.permission_mode or base_mode,
+                )
             # conversation_ui occupies the single permission-handler slot (see design §2).
             # File uploads flow through the generic optio-api /api/widget-upload
             # route → materializeUpload RPC → this per-task writer, which runs in
@@ -843,6 +861,7 @@ async def run_claudecode_session(
                 # says; a refused pick re-sends the running values.
                 custom_controls=config.custom_controls,
                 refresh_controls=_emit_controls,
+                resumed_custom_controls=resumed_selection,
                 # Reasoning gets its own rows: a cut-off reply's partial keeps
                 # only its text.
                 show_thinking=config.thinking_verbosity == "visible",

@@ -9,7 +9,9 @@ optio-api widget proxy (which injects the basic-auth credential):
                      After a resume the restored history is followed by one
                      {"type": "x-optio-resumed"} marker, carrying
                      "requeued": [ids] when the run re-sends messages the
-                     previous run left undelivered (Fix 19).
+                     previous run left undelivered (Fix 19), and
+                     "customControls": [{id, value}] when the task defines
+                     custom controls (the selection the run launches with).
   POST /send       — {text}  -> steering.send_when_ready; {ok, id, queued}
   POST /steer      — {text, upTo?} -> steering.interrupt_and_send; {ok, id}
                      (empty text: Send now, deliver what is queued; id is
@@ -20,7 +22,9 @@ optio-api widget proxy (which injects the basic-auth credential):
   POST /control    — {id, value}                  -> conversation.set_control;
                      {id: "custom:<control id>", value: <option value>}
                      -> conversation.apply_settings(the option's settings),
-                     refused (409 busy) while a turn runs
+                     refused (409 busy) while a turn runs; a pick that gets
+                     as far as the switch is announced first by an
+                     x-optio-custom-pick {id, value}
   GET  /download   — ?path=<relpath>              -> download_reader; returns
                      the bytes with Content-Disposition: attachment.
   POST /permission — {request_id, behavior, updated_input?, message?}
@@ -56,6 +60,12 @@ BUFFER_MAXLEN = 1000
 # Synthetic marker appended after a re-primed (resumed) history: the prior
 # run's process is gone, so anything it left running will never report.
 RESUMED_EVENT_TYPE = "x-optio-resumed"
+# Synthetic marker for a custom control pick, {"type", "id": <control id>,
+# "value": <option value>}: emitted through the conversation's emit_event
+# (buffered and persisted) right before the switch, so it precedes whatever
+# claude answers it with (e.g. its echo of a model change). The widget draws
+# the pick's band from it, and no band for that echo.
+CUSTOM_PICK_EVENT_TYPE = "x-optio-custom-pick"
 # Synthetic marker this listener stamps for every streamed message (Fix 12,
 # owner ruling 2026-09-14): stream_event frames carry no time and are never
 # buffered (see UNBUFFERED_TYPES below), so a streamed message's true start
@@ -112,6 +122,7 @@ class ConversationListener:
         allowed_controls: "list[str] | None" = None,
         custom_controls: "Sequence[CustomControl] | None" = None,
         refresh_controls: "Callable[[], None] | None" = None,
+        resumed_custom_controls: "Sequence[dict] | None" = None,
         show_thinking: bool = False,
         hold_input: bool = False,
     ) -> None:
@@ -172,10 +183,16 @@ class ConversationListener:
             # rows that run left running (a background task, a call with no
             # result). Buffered and persisted like any event, so a later
             # resume replays it at this point. It lists the ids this run
-            # re-queues, so the widget keeps those bubbles queued.
+            # re-queues, so the widget keeps those bubbles queued; and, when
+            # the task defines custom controls, the selection this run
+            # launches with (``resumed_custom_controls``, the session's
+            # controls.custom_controls_selection), so the widget names the
+            # mode it resumed in.
             resumed: dict = {"type": RESUMED_EVENT_TYPE}
             if self._undelivered:
                 resumed["requeued"] = [qid for qid, _ in self._undelivered]
+            if resumed_custom_controls is not None:
+                resumed["customControls"] = [dict(c) for c in resumed_custom_controls]
             self._seq += 1
             self._buffer.append((self._seq, resumed))
         # Fix 19, session end. Whether a turn runs (session_state_changed
@@ -566,7 +583,15 @@ class ConversationListener:
         are re-sent, replacing the widget's optimistic selection. ``busy`` is
         checked again under the conversation's switch lock, right before
         each request is written (``apply_settings``' ``busy``): the switch
-        may wait for another pick, or ask claude first, while a turn starts."""
+        may wait for another pick, or ask claude first, while a turn starts.
+
+        A pick past the 400 / ``closed`` / ``busy`` checks is announced by an
+        ``x-optio-custom-pick`` (``CUSTOM_PICK_EVENT_TYPE``) through the
+        conversation's event stream right before ``apply_settings``, so it
+        precedes everything that answers the switch. Its outcome follows:
+        the running values re-sent (an x-optio-control-update) whether the
+        switch was applied or refused, a refusal under the switch lock
+        included; nothing if the conversation closes first."""
         control = self._custom_controls.get(control_id)
         if control is None:
             return web.json_response({"ok": False, "reason": "bad-id"}, status=400)
@@ -580,6 +605,11 @@ class ConversationListener:
             self._refresh()
             return web.json_response({"ok": False, "reason": "busy"}, status=409)
         settings = option.settings
+        # Queued ahead of the request apply_settings writes, so ahead of
+        # anything claude answers it with.
+        self._conversation.emit_event({
+            "type": CUSTOM_PICK_EVENT_TYPE, "id": control.id, "value": option.value,
+        })
         try:
             await self._conversation.apply_settings(
                 model=settings.model, effort=settings.reasoning_effort,

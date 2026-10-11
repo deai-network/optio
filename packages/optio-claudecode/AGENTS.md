@@ -446,8 +446,9 @@ when the hook returns, and when it raises `NothingToResurrect`.
   widgetData `customControls` and every `x-optio-control-update`
   (`controls.custom_controls_snapshot`): per control `{id, label,
   description, options: [{value, label, description}], value}`, labels and
-  descriptions as defined (a string or a language map; a missing description
-  is null), `value` the option whose settings all match the running values
+  descriptions as defined (a string or a language map; a missing description,
+  and the label of a control without a caption, is null), `value` the option
+  whose settings all match the running values
   (`controls.custom_control_value`; the model compared as the model select
   shows it), else null (e.g. after a manual built-in change). `[]` without
   custom controls. `POST /control {id: "custom:<control id>", value: <option
@@ -464,7 +465,16 @@ when the hook returns, and when it raises `NothingToResurrect`.
   `rejected` + `error` when claude refuses or the session cannot apply the
   option's values (`ValueError`). After `busy` / `rejected` the listener's
   `refresh_controls` re-emits the running values, replacing the widget's
-  optimistic selection.
+  optimistic selection. A pick past the 400 / `closed` / `busy` checks is
+  announced right before `apply_settings` by `{"type": "x-optio-custom-pick",
+  "id": <control id>, "value": <option value>}` through the conversation's
+  `emit_event` (buffered and persisted), so it precedes whatever claude
+  answers the switch with (Claude Code echoes a model change as an
+  `isReplay` user event, `<local-command-stdout>Set model to ...`); the
+  widget draws the pick's band from it, and none for that echo. Its outcome
+  follows as the `x-optio-control-update` above. A
+  resumed run's `x-optio-resumed` carries `customControls: [{id, value}]`,
+  the selection it launches with (Replay-buffer semantics, Resume).
 * `session_blob_encrypt/decrypt`, `seed_blob_encrypt/decrypt` —
   inherited from `optio_agents.config_types.BlobCryptoConfigMixin`
   (alongside the `ClaustrumConfigMixin` triad). Optional synchronous
@@ -655,7 +665,9 @@ Replay-buffer semantics:
   `{"type": "x-optio-permission-answered", "request_id": ..., "behavior": ...}`,
   broadcast (and buffered) when a permission is answered so every
   viewer sees the card resolve; `{"type": "x-optio-resumed"}` (below);
-  `{"type": "x-optio-message-start", "id", "ts"}` (Fix 12); and, at a
+  `{"type": "x-optio-message-start", "id", "ts"}` (Fix 12);
+  `{"type": "x-optio-custom-pick", "id", "value"}` right before a custom
+  control's switch (see `custom_controls` above); and, at a
   session end mid-turn (Fix 19, below), `{"type": "x-optio-partial", "id",
   "text"}` and `{"type": "x-optio-interrupt", "by": "session"}`.
 * `x-optio-message-start` (Fix 12, owner ruling 2026-09-14: an assistant
@@ -825,7 +837,14 @@ Replay-buffer semantics:
   the session calls `listener.requeue_undelivered()`: `Steering.requeue`
   re-sends them in order, each under a new uuid with one `{"type":
   "x-optio-requeued", "id", "new_id"}`, one at a time (Fix 17). Nothing
-  the CLI already started is re-sent.
+  the CLI already started is re-sent. When the task defines custom
+  controls, the marker also carries `"customControls": [{"id", "value"}]`:
+  the selection the resumed run launches with (its restored picks over the
+  controls' defaults; `value` null when no option matches), which the
+  session derives (`controls.custom_controls_selection`) before it builds
+  the listener (`resumed_custom_controls=`), over the probe's model list
+  when the resume asked it. The widget names that mode in its resume band.
+  No key without custom controls.
 
 **Handler-slot rule**: `conversation_ui=True` occupies the single
 `on_permission_request` slot (the listener registers the handler and

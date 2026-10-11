@@ -5,9 +5,11 @@ fixed combination of model / reasoning effort / permission mode. Pure units
 here: the settings the defaults launch with, the selection derived from the
 running values, the widget's ``customControls`` shape, what
 ``ClaudeCodeTaskConfig`` refuses, the listener's ``/control`` for
-``custom:<id>`` ids (against a fake conversation), and the conversation taking
-a model the task itself names though the CLI's list lacks it. The session
-tests are in ``test_custom_controls_session.py``.
+``custom:<id>`` ids (against a fake conversation) with the
+``x-optio-custom-pick`` marker it emits, the selection ``x-optio-resumed``
+carries, and the conversation taking a model the task itself names though
+the CLI's list lacks it. The session tests are in
+``test_custom_controls_session.py``.
 """
 from __future__ import annotations
 
@@ -146,6 +148,34 @@ def test_the_snapshot_carries_the_definitions_unresolved_and_the_derived_value()
         None, catalog=CATALOG, model=None, effort=None, permission_mode=None) == []
 
 
+def test_a_control_without_a_label_has_a_null_label_in_the_snapshot():
+    captionless = CustomControl(id="speed", label=None, default="extensive", options=SPEED.options)
+    [snapshot] = cc_controls.custom_controls_snapshot(
+        [captionless], catalog=CATALOG, model="opus", effort="xhigh", permission_mode=None,
+    )
+    assert snapshot["label"] is None and snapshot["value"] == "extensive"
+
+
+# --- x-optio-resumed's customControls: the selection a resumed run launches with ------
+
+
+def test_the_selection_is_each_controls_id_and_derived_value():
+    assert cc_controls.custom_controls_selection(
+        [SPEED, ACCESS], catalog=CATALOG,
+        model="sonnet", effort="medium", permission_mode="acceptEdits",
+    ) == [{"id": "speed", "value": "fast"}, {"id": "access", "value": "edits"}]
+    # No option matching (a manual change) is null; without a catalog only
+    # the same value matches.
+    assert cc_controls.custom_controls_selection(
+        [SPEED], catalog=[], model="haiku", effort="medium", permission_mode=None,
+    ) == [{"id": "speed", "value": None}]
+    assert cc_controls.custom_controls_selection(
+        [SPEED], catalog=[], model="opus", effort="xhigh", permission_mode=None,
+    ) == [{"id": "speed", "value": "extensive"}]
+    assert cc_controls.custom_controls_selection(
+        None, catalog=CATALOG, model=None, effort=None, permission_mode=None) == []
+
+
 def test_the_emitted_update_carries_the_custom_controls_when_given():
     conv = ClaudeCodeConversation()
     conv.emit_control_update([{"id": "model"}], custom_controls=[{"id": "speed"}])
@@ -237,21 +267,31 @@ def test_options_that_differ_in_a_setting_both_set_are_accepted():
 
 class _Conversation(FakeConversation):
     """FakeConversation plus apply_settings: records each call, raises
-    ``fail`` when set."""
+    ``fail`` when set; an applied one is answered with an
+    x-optio-control-update, as the session's hook does. ``log``: the type of
+    every event fanned out and each apply_settings call, in order."""
 
     def __init__(self):
         super().__init__()
         self.applied: list[dict] = []
         self.fail: Exception | None = None
         self.busy = None
+        self.log: list[str] = []
+        self.listener: ConversationListener | None = None
+
+    def fire(self, event):
+        self.log.append(event.get("type"))
+        super().fire(event)
 
     async def apply_settings(self, model=None, effort=None, permission_mode=None, *, busy=None):
         self.busy = busy
+        self.log.append("apply_settings")
         if self.closed:
             raise ConversationClosed("closed")
         if self.fail is not None:
             raise self.fail
         self.applied.append({"model": model, "effort": effort, "permission_mode": permission_mode})
+        self.emit_event({"type": "x-optio-control-update"})
 
     async def set_control(self, control_id, value):
         raise AssertionError(f"set_control({control_id!r}, {value!r})")
@@ -261,7 +301,7 @@ class _Conversation(FakeConversation):
 async def custom():
     conv = _Conversation()
     refreshed: list[int] = []
-    lst = ConversationListener(
+    lst = conv.listener = ConversationListener(
         conv, password="pw",
         allowed_controls=[],                      # the controls bar is off
         custom_controls=[SPEED, ACCESS],
@@ -270,6 +310,11 @@ async def custom():
     port = await lst.start("127.0.0.1")
     yield conv, f"http://127.0.0.1:{port}", refreshed
     await lst.stop()
+
+
+def _pick_marks(conv: _Conversation) -> list[dict]:
+    """The x-optio-custom-pick events in the listener's replay buffer."""
+    return [e for _, e in conv.listener._buffer if e.get("type") == "x-optio-custom-pick"]
 
 
 async def _post(url: str, body: dict) -> tuple[int, dict]:
@@ -285,6 +330,41 @@ async def test_a_custom_pick_applies_the_options_settings_in_one_call(custom):
     assert await _post(url, {"id": "custom:access", "value": "auto"}) == (200, {"ok": True})
     assert conv.applied[-1] == {"model": None, "effort": None, "permission_mode": "auto"}
     assert refreshed == []
+
+
+async def test_a_custom_pick_is_marked_in_the_event_stream_right_before_the_switch(custom):
+    # Switch bands: the widget tells its own pick from a model change it did
+    # not make by this marker, which precedes the switch and everything that
+    # answers it, and is buffered (so replayed and persisted).
+    conv, url, _ = custom
+    assert await _post(url, {"id": "custom:speed", "value": "fast"}) == (200, {"ok": True})
+    assert conv.log == ["x-optio-custom-pick", "apply_settings", "x-optio-control-update"]
+    assert [e for _, e in conv.listener._buffer] == [
+        {"type": "x-optio-custom-pick", "id": "speed", "value": "fast"},
+        {"type": "x-optio-control-update"},
+    ]
+    assert [e for _, e in conv.listener.export_buffer()][0] == {
+        "type": "x-optio-custom-pick", "id": "speed", "value": "fast"}
+    # Also a pick claude may not change anything for (the same option again).
+    assert await _post(url, {"id": "custom:speed", "value": "fast"}) == (200, {"ok": True})
+    assert len(_pick_marks(conv)) == 2
+
+
+@pytest.mark.parametrize("error", [
+    ControlRejected("apply_flag_settings: no can do"),
+    ValueError("reasoning effort 'xhigh' is not offered for claude-opus-4-8"),
+    cc_conversation.SwitchBusy("a turn is running"),
+])
+async def test_a_pick_refused_by_the_switch_itself_was_marked_before_it(custom, error):
+    # The marker goes out before apply_settings is called, so a refusal the
+    # switch raises follows it; the widget learns the outcome from the
+    # running values that are re-sent then (x-optio-control-update).
+    conv, url, refreshed = custom
+    conv.fail = error
+    assert (await _post(url, {"id": "custom:speed", "value": "fast"}))[0] == 409
+    assert conv.log == ["x-optio-custom-pick", "apply_settings"]
+    assert _pick_marks(conv) == [{"type": "x-optio-custom-pick", "id": "speed", "value": "fast"}]
+    assert refreshed == [1]
 
 
 async def test_custom_ids_are_accepted_while_the_built_in_controls_are_not(custom):
@@ -306,6 +386,7 @@ async def test_an_unknown_control_or_option_is_400(custom, body, reason):
     conv, url, refreshed = custom
     assert await _post(url, body) == (400, {"ok": False, "reason": reason})
     assert conv.applied == [] and refreshed == []
+    assert _pick_marks(conv) == []                     # no switch: no marker
 
 
 async def test_a_listener_without_custom_controls_knows_no_custom_id():
@@ -331,9 +412,11 @@ async def test_a_pick_while_a_turn_runs_is_refused_and_changes_nothing(custom):
     conv.fire({"type": "system", "subtype": "session_state_changed", "state": "running"})
     assert (await _post(url, {"id": "custom:speed", "value": "fast"}))[0] == 409
     assert conv.applied == [] and refreshed == [1, 1]
+    assert _pick_marks(conv) == []                        # refused before the switch: no marker
     conv.fire({"type": "system", "subtype": "session_state_changed", "state": "idle"})
     assert (await _post(url, {"id": "custom:speed", "value": "fast"}))[0] == 200
     assert conv.applied == [{"model": "sonnet", "effort": "medium", "permission_mode": None}]
+    assert len(_pick_marks(conv)) == 1
 
 
 async def test_a_pick_on_a_closed_conversation_is_refused(custom):
@@ -342,6 +425,7 @@ async def test_a_pick_on_a_closed_conversation_is_refused(custom):
     assert await _post(url, {"id": "custom:speed", "value": "fast"}) == (
         409, {"ok": False, "reason": "closed"})
     assert conv.applied == [] and refreshed == []
+    assert _pick_marks(conv) == []
 
 
 async def test_a_conversation_closing_during_the_switch_is_closed(custom):
@@ -383,6 +467,37 @@ async def test_a_refused_switch_is_409_rejected_with_the_reason(custom, error):
     assert await _post(url, {"id": "custom:speed", "value": "extensive"}) == (
         409, {"ok": False, "reason": "rejected", "error": str(error)})
     assert conv.applied == [] and refreshed == [1]
+
+
+# --- the resume marker: the selection the resumed run launches with ----------------------
+
+
+def test_the_resume_marker_carries_the_selection_the_session_passes_in():
+    selection = [{"id": "speed", "value": "fast"}]
+    restored = [(1, {"type": "user"}), (2, {"type": "result"})]
+    lst = ConversationListener(FakeConversation(), password="pw", initial_events=restored,
+                               resumed_custom_controls=selection)
+    assert lst._buffer[-1] == (3, {"type": "x-optio-resumed",
+                                   "customControls": [{"id": "speed", "value": "fast"}]})
+    selection[0]["value"] = "extensive"                 # a copy: the marker stays
+    assert lst._buffer[-1][1]["customControls"] == [{"id": "speed", "value": "fast"}]
+    assert lst.export_buffer()[-1][1]["customControls"] == [{"id": "speed", "value": "fast"}]
+    # A selection of none (no option matches the running values) is null.
+    lst = ConversationListener(FakeConversation(), password="pw", initial_events=restored,
+                               resumed_custom_controls=[{"id": "speed", "value": None}])
+    assert lst._buffer[-1][1]["customControls"] == [{"id": "speed", "value": None}]
+
+
+def test_without_custom_controls_the_resume_marker_has_no_selection_key():
+    lst = ConversationListener(FakeConversation(), password="pw",
+                               initial_events=[(1, {"type": "user"})])
+    assert lst._buffer[-1] == (2, {"type": "x-optio-resumed"})
+
+
+def test_a_fresh_start_has_no_resume_marker_even_with_a_selection():
+    lst = ConversationListener(FakeConversation(), password="pw",
+                               resumed_custom_controls=[{"id": "speed", "value": "fast"}])
+    assert list(lst._buffer) == []
 
 
 # --- a model the task names is switched to as given --------------------------------------
@@ -446,6 +561,51 @@ async def test_a_turn_starting_while_the_pick_asks_for_the_model_list_refuses_it
         assert pick.result() == (409, {"ok": False, "reason": "busy"})
         assert refreshed == [1]
         assert (conv.model, conv.effort) == ("opus", "xhigh")
+    finally:
+        await lst.stop()
+        await _done(handle, reader)
+
+
+# --- the pick marker on a real conversation: ahead of what claude answers ---------------
+
+# How Claude Code 2.1.296 echoes a model change made with apply_flag_settings
+# (no turn around it).
+_MODEL_ECHO = {"type": "user", "isReplay": True, "message": {
+    "role": "user", "content": "<local-command-stdout>Set model to `claude-sonnet-5`</local-command-stdout>"}}
+
+
+async def test_the_pick_marker_is_buffered_before_anything_claude_answers_the_switch_with():
+    """Switch bands: the marker enters the conversation's own event stream
+    before the request is written, so it precedes claude's echo of the model
+    change and its answer in the replay buffer; the widget draws one band for
+    the pick and none for the echo."""
+    conv, handle, reader = _conv(model="opus", effort="xhigh")
+    conv.task_models = cc_controls.task_models([SPEED])
+    lst = ConversationListener(conv, password="pw", allowed_controls=[], custom_controls=[SPEED])
+    port = await lst.start("127.0.0.1")
+    try:
+        pick = asyncio.create_task(
+            _post(f"http://127.0.0.1:{port}", {"id": "custom:speed", "value": "fast"}))
+        req = await _next_request(handle)
+        assert req["request"] == {"subtype": "apply_flag_settings",
+                                  "settings": {"model": "sonnet", "effortLevel": "medium"}}
+        handle.stdout.feed(_MODEL_ECHO)
+        _answer(handle, req)
+        await _answer_readback(handle)
+        assert await asyncio.wait_for(pick, 60) == (200, {"ok": True})
+        # Dispatched in order: once this is buffered, so is all before it.
+        conv.emit_event({"type": "x-test-mark"})
+        for _ in range(6000):
+            if any(e.get("type") == "x-test-mark" for _, e in lst._buffer):
+                break
+            await asyncio.sleep(0.01)
+        assert [e for _, e in lst._buffer] == [
+            {"type": "x-optio-custom-pick", "id": "speed", "value": "fast"},
+            _MODEL_ECHO,
+            {"type": "control_response",
+             "response": {"subtype": "success", "request_id": req["request_id"]}},
+            {"type": "x-test-mark"},
+        ]
     finally:
         await lst.stop()
         await _done(handle, reader)
