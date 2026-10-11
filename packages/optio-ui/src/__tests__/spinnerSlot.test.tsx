@@ -43,9 +43,9 @@ function RecSpinner(p: SpinnerProps) {
   return <span data-testid="rec-spinner" data-key={p.spinnerKey} />;
 }
 
-/** The size the site passed to the lent Spinner, from the last call keyed `key`. */
-function sizeOf(key: string): SpinnerProps['size'] {
-  return calls.filter((c) => c.spinnerKey === key).at(-1)?.size;
+/** The props the lent Spinner last received for `key`. */
+function propsOf(key: string): SpinnerProps | undefined {
+  return calls.filter((c) => c.spinnerKey === key).at(-1);
 }
 
 const i18n = i18next.createInstance();
@@ -120,8 +120,16 @@ describe('ProcessList — spinner slot', () => {
     const { container } = render(wrap(<ProcessList processes={[]} loading />));
     const spinner = screen.getByTestId('rec-spinner');
     expect(spinner.getAttribute('data-key')).toBe('optio:process-list');
-    expect(sizeOf('optio:process-list')).toBe('default');
+    // Exactly its own props: nothing injected by antd (className, style, percent).
+    expect(propsOf('optio:process-list')).toStrictEqual({ spinnerKey: 'optio:process-list', size: 'default' });
     expect(spinner.closest('.ant-spin-spinning')).not.toBeNull();
+    // antd's injected className lands on optio's wrapper, which undoes .ant-spin-dot's 1em box.
+    const indicator = spinner.parentElement as HTMLElement;
+    expect(indicator.classList.contains('optio-spinner-slot-indicator')).toBe(true);
+    expect(indicator.classList.contains('ant-spin-dot')).toBe(true);
+    expect(indicator.style.width).toBe('auto');
+    expect(indicator.style.height).toBe('auto');
+    expect(indicator.style.display).toBe('inline-flex');
     // antd's own dot indicator is not rendered.
     expect(container.querySelector('.ant-spin-dot-holder')).toBeNull();
   });
@@ -146,7 +154,8 @@ describe('LaunchControls — spinner slot', () => {
     const btn = screen.getByRole('button', { name: 'Resurrecting' });
     expect((btn as HTMLButtonElement).disabled).toBe(true);
     expect(within(btn).getByTestId('rec-spinner').getAttribute('data-key')).toBe('optio:process:9:resurrecting');
-    expect(sizeOf('optio:process:9:resurrecting')).toBe('small');
+    // Exactly its own props: nothing injected by antd (className, style, percent).
+    expect(propsOf('optio:process:9:resurrecting')).toStrictEqual({ spinnerKey: 'optio:process:9:resurrecting', size: 'small' });
     expect(container.querySelector('.anticon-loading')).toBeNull();
   });
 
@@ -172,7 +181,8 @@ describe('ProcessDetailView — spinner slot', () => {
     render(wrap(<ProcessDetailView processId="abc" />));
     const loading = screen.getByTestId('optio-detail-loading');
     expect(within(loading).getByTestId('rec-spinner').getAttribute('data-key')).toBe('optio:process:abc:detail');
-    expect(sizeOf('optio:process:abc:detail')).toBe('small');
+    // Exactly its own props: nothing injected by antd (className, style, percent).
+    expect(propsOf('optio:process:abc:detail')).toStrictEqual({ spinnerKey: 'optio:process:abc:detail', size: 'small' });
     expect(loading.textContent).toBe('Loading…');
     expect(spinnerBeforeText(loading)).toBe(true);
   });
@@ -188,7 +198,8 @@ describe('IframeWidget — spinner slot', () => {
     render(wrap(<IframeWidget {...iframeProps({ widgetData: undefined })} />));
     const loading = screen.getByTestId('optio-widget-loading');
     expect(within(loading).getByTestId('rec-spinner').getAttribute('data-key')).toBe('optio:process:abc:widget');
-    expect(sizeOf('optio:process:abc:widget')).toBe('small');
+    // Exactly its own props: nothing injected by antd (className, style, percent).
+    expect(propsOf('optio:process:abc:widget')).toStrictEqual({ spinnerKey: 'optio:process:abc:widget', size: 'small' });
     expect(loading.textContent).toBe('Loading…');
     expect(spinnerBeforeText(loading)).toBe(true);
   });

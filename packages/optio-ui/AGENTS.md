@@ -71,16 +71,18 @@ If in doubt: add a predicate, don't inline the check.
 
 ## Spinner slot (vultus-core)
 
-optio-ui's loading sites render the spinner an app lends through vultus-core's components
-context (`useVultusComponents().Spinner`, set with `VultusComponentsContext.Provider` or
-vultus-antd's `VultusProvider components={{ Spinner }}`) in place of antd's. Each site calls
+An app lends a spinner through vultus-core's components context
+(`useVultusComponents().Spinner`, set with `VultusComponentsContext.Provider` or vultus-antd's
+`VultusProvider components={{ Spinner }}`). optio-ui shows it in place of antd's spinners in
+`ProcessList` and `LaunchControls`, and before the "Loading…" text in `ProcessDetailView` and
+`IframeWidget`. Each site calls
 `useVultusComponents()` and `useSpinnerKey(localKey)` unconditionally (before any early
 return) and renders `<Spinner spinnerKey={key} size=… />` when a Spinner is lent, its
 unchanged antd code otherwise.
 
 | Site | Local key | Size | Lent Spinner |
 |------|-----------|------|--------------|
-| `ProcessList` | `optio:process-list` | `'default'` | `List loading={{ spinning: loading, indicator: <Spinner …/> }}` |
+| `ProcessList` | `optio:process-list` | `'default'` | `List loading={{ spinning: loading, indicator: <SpinnerSlotIndicator><Spinner …/></SpinnerSlotIndicator> }}`; the wrapper (`span.optio-spinner-slot-indicator`) takes the `className`/`style`/`percent` antd's Spin injects into its indicator and undoes `.ant-spin-dot`'s 1em box, so the Spinner receives only `spinnerKey` and `size` |
 | `LaunchControls` (resurrecting) | `optio:process:${process._id}:resurrecting` | `'small'` | the disabled button's `icon`, in place of `LoadingOutlined` |
 | `ProcessDetailView` (no tree yet) | `optio:process:${processId}:detail` | `'small'` | before the "Loading…" text (test id `optio-detail-loading` unchanged) |
 | `IframeWidget` (no `widgetData` yet) | `optio:process:${process._id}:widget` | `'small'` | before the "Loading…" text (test id `optio-widget-loading` unchanged) |

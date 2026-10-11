@@ -974,11 +974,11 @@ Package: `optio-ui`. React components and hooks. Requires `OptioProvider` at roo
 
 **Spinner slot.** An app can lend its loading spinner through vultus-core
 (`<VultusComponentsContext.Provider value={{ Spinner }}>`, or vultus-antd's
-`VultusProvider components={{ Spinner }}`); optio-ui then renders it in place of antd's at
-`ProcessList` (key `optio:process-list`, size `'default'`), the `LaunchControls` Resurrecting
-indicator (`optio:process:<id>:resurrecting`), and before "Loading…" in `ProcessDetailView`
-(`optio:process:<id>:detail`) and the iframe widget (`optio:process:<id>:widget`), size
-`'small'`. A vultus-core `SpinnerScope` prefixes the keys; without a lent spinner nothing
+`VultusProvider components={{ Spinner }}`); optio-ui then shows it in place of antd's spinners
+in `ProcessList` (key `optio:process-list`, size `'default'`) and the `LaunchControls`
+Resurrecting indicator (`optio:process:<id>:resurrecting`), and before the "Loading…" text in
+`ProcessDetailView` (`optio:process:<id>:detail`) and the iframe widget
+(`optio:process:<id>:widget`); size `'small'` except `ProcessList`. A vultus-core `SpinnerScope` prefixes the keys; without a lent spinner nothing
 changes. Details: `packages/optio-ui/AGENTS.md` "Spinner slot".
 
 ### OptioProvider Props

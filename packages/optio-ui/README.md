@@ -112,8 +112,9 @@ following keys:
 
 ## Loading spinner
 
-By default the loading states show antd's spinners. An app can lend its own spinner through
-vultus-core's components slot, and optio-ui renders it in their place:
+An app can lend its own spinner through vultus-core's components slot. optio-ui then shows
+it in place of antd's spinners in `ProcessList` and `LaunchControls`, and before the
+"Loading…" text in `ProcessDetailView` and the built-in `iframe` widget:
 
 ```tsx
 import { VultusComponentsContext } from 'vultus-core';
