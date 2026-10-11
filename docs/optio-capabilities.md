@@ -531,7 +531,8 @@ Path safety: `validate_deliverable_path` (realpath + escape rejection) and
 ### 6.3 The capability model — the weakest part
 
 **There is no `capabilities()` query.** A consumer cannot ask "does engine X support resume /
-permissions?" programmatically (MCP is the one exception: `optio_agents_all.supports_mcp`, below).
+permissions?" programmatically (MCP servers and custom session controls are the two exceptions:
+`optio_agents_all.supports_mcp` and `optio_agents_all.supports_custom_controls`, below).
 Capability is expressed four ways, all largely implicit:
 
 1. `ProtocolFeatures` — three facets only (browser, client messages, caller messages).
@@ -561,6 +562,14 @@ claude no built-in tools). The other six configs refuse any non-None `mcp_server
 not support mcp_servers yet") until their translation lands; the three ACP wrappers still send an empty
 `mcpServers` slot on the wire. Since every config has the field, the field set no longer tells
 support apart: ask `optio_agents_all.supports_mcp(agent_type)` (backed by `MCP_AGENT_TYPES`).
+
+**Custom session controls are part of it too (since 2026-10-11).** `optio_agents.custom_controls`
+defines `CustomControl`, a task-defined selector in the conversation input bar whose `CustomOption`s
+each set a fixed combination of model / reasoning effort / permission mode (`ControlSettings`), and
+`CustomControlsConfigMixin`, which all seven configs inherit (`custom_controls`). Only **claudecode**
+applies them (widgetData `customControls`; a pick switches the running claude live); the other six
+refuse a non-empty list. As with MCP, the field set does not tell support apart: ask
+`optio_agents_all.supports_custom_controls(agent_type)` (backed by `CUSTOM_CONTROLS_AGENT_TYPES`).
 
 **One capability did arrive, and it is the account layer.** `optio_agents/account.py` (165 lines) now
 exists — `UsageWindow`, `AccountInfo` (with a `summary` property and `next_reset()`), `EMPTY`,
