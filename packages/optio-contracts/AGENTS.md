@@ -195,6 +195,7 @@ processes to a named domain (e.g., a specific application or worker).
 | `getTree` | GET | `/processes/:prefix/:id/tree` | `prefix: string`, `id: ObjectId` | `maxDepth?: number` (int, min 0) | 200: `ProcessTreeNode`, 404: `Error` |
 | `getLog` | GET | `/processes/:prefix/:id/log` | `prefix: string`, `id: ObjectId` | `cursor?`, `limit` (1–100, default 20) | 200: `PaginatedResponse<LogEntry>`, 404: `Error` |
 | `getTreeLog` | GET | `/processes/:prefix/:id/tree/log` | `prefix: string`, `id: ObjectId` | `cursor?`, `limit` (1–100, default 20), `maxDepth?: number` (int, min 0) | 200: `PaginatedResponse<LogEntry & { processId: ObjectId, processLabel: string }>`, 404: `Error` |
+| `getConversation` | GET | `/processes/:id/conversation` | `id: string` | `database?`, `prefix?` | 200: `ConversationRecord` (`{ events: unknown[], capturedAt: string \| null }`), 401: `Error`, 403/404/409/500/503: `{ reason: ConversationFailureReason, message: string }` |
 | `launch` | POST | `/processes/:prefix/:id/launch` | `prefix: string`, `id: ObjectId` | — | 200: `Process`, 404: `Error`, 409: `Error` (body: `{ resume?: boolean }` — optional; omitting the body entirely is valid) |
 | `cancel` | POST | `/processes/:prefix/:id/cancel` | `prefix: string`, `id: ObjectId` | — | 200: `Process`, 404: `Error`, 409: `Error` |
 | `dismiss` | POST | `/processes/:prefix/:id/dismiss` | `prefix: string`, `id: ObjectId` | — | 200: `Process`, 404: `Error`, 409: `Error` |
@@ -208,6 +209,7 @@ processes to a named domain (e.g., a specific application or worker).
 - `getTreeLog` — returns merged log entries across the process subtree, each augmented with `processId` (ObjectId) and `processLabel` (string) to identify the source process.
 - `launch` — optional body `{ resume?: boolean }`. Clients may omit the body entirely; setting `resume: true` requests a resume. 409 indicates a state conflict (e.g., launching an already-running process) **or** `resume: true` against a task whose `supportsResume` is `false`.
 - `cancel` / `dismiss` — no request body. 409 indicates a state conflict.
+- `getConversation` — the saved conversation record of a suspended process (cancelled, `supportsResume`, `hasSavedState`), read-only; optio-api proxies it from the engine's conversation archive, which decrypts. `events` are `[seq, event]` pairs (the recent part a resume replays); `capturedAt` is the ISO time of the snapshot, or null. The 401 is optio-api's authentication (`{ message }`); the others carry a `ConversationFailureReason`: 403 `forbidden`; 404 `not-found` / `no-conversation-support` / `no-conversation`; 409 `not-suspended`; 500 `read-failed`; 503 `engine-unavailable`.
 - `resurrect` — saves the work a failed run left on its host, then resumes (engine RPC `resurrect`). Optional body `{ sessionId?: string | null }`, the initiating session. Error responses carry a typed `{ reason, message }` body, `reason` being a `ResurrectFailureReason`.
 - `resync` — body: `{ clean?: boolean; metadataFilter?: ProcessMetadataFilter }`. Triggers re-sync of process definitions from the server-side registry. `metadataFilter` (when present) scopes the re-sync to tasks whose stored metadata matches.
 
@@ -244,3 +246,4 @@ re-exported from the package root. Browser-safe: they do not pull in `@clamator/
 | `ResurrectFailureReason` | `not-found`, `not-resurrectable`, `no-resurrect-support`, `resurrect-in-progress`, `launch-blocked`, `shutting-down` |
 | `GroupCancelFailureReason` | `invalid-persist-without-block` |
 | `BlockLaunchesFailureReason` | `invalid-filter` |
+| `ConversationFailureReason` (in `api-to-frontend.ts`) | `forbidden`, `not-found`, `no-conversation-support`, `no-conversation`, `not-suspended`, `read-failed`, `engine-unavailable` |

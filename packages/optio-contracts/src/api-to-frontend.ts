@@ -23,6 +23,38 @@ const DismissErrorBody = z.object({
 
 const ResurrectErrorBody = z.object({ reason: ResurrectFailureReason, message: z.string() });
 
+/**
+ * Why `getConversation` gave no record. The engine's conversation archive
+ * answers not-found / no-conversation-support / no-conversation (404),
+ * not-suspended (409) and read-failed (500); optio-api adds forbidden (403,
+ * the host's `authorize` refused the 'widget' action) and engine-unavailable
+ * (503: no published archive, the engine unreachable or too slow, or an answer
+ * that was not the archive's).
+ */
+export const ConversationFailureReason = z.enum([
+  'forbidden',
+  'not-found',
+  'no-conversation-support',
+  'no-conversation',
+  'not-suspended',
+  'read-failed',
+  'engine-unavailable',
+]);
+export type ConversationFailureReason = z.infer<typeof ConversationFailureReason>;
+
+const ConversationErrorBody = z.object({ reason: ConversationFailureReason, message: z.string() });
+
+/**
+ * A suspended process's saved conversation record: `events` are `[seq, event]`
+ * pairs (the recent part a resume replays); `capturedAt` is the ISO time of the
+ * snapshot it was read from, or null.
+ */
+export const ConversationRecordSchema = z.object({
+  events: z.array(z.unknown()),
+  capturedAt: z.string().nullable(),
+});
+export type ConversationRecord = z.infer<typeof ConversationRecordSchema>;
+
 const ProcessTreeNodeSchema = ProcessSchema.extend({
   children: z.array(z.lazy(() => ProcessSchema.extend({ children: z.array(z.any()) }))),
 });
@@ -105,6 +137,22 @@ export const processesContract = c.router({
       404: ErrorSchema,
     },
     summary: 'Get merged log entries across subtree',
+  },
+  getConversation: {
+    method: 'GET',
+    path: '/processes/:id/conversation',
+    pathParams: z.object({ id: ProcessIdParamSchema }),
+    query: InstanceQuerySchema,
+    responses: {
+      200: ConversationRecordSchema,
+      401: ErrorSchema,
+      403: ConversationErrorBody,
+      404: ConversationErrorBody,
+      409: ConversationErrorBody,
+      500: ConversationErrorBody,
+      503: ConversationErrorBody,
+    },
+    summary: 'Read a suspended process\'s saved conversation record (read-only; proxied from the engine)',
   },
   launch: {
     method: 'POST',

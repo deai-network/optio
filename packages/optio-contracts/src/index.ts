@@ -18,7 +18,13 @@ export type { SessionEventsStreamMessage } from './schemas/session-events.js';
 export { and, or, not, leaf, eq, ne, isIn, notIn, exists, gt, gte, lt, lte } from './process-filter-helpers.js';
 
 // Contract
-export { processesContract, discoveryContract } from './api-to-frontend.js';
+export {
+  processesContract,
+  discoveryContract,
+  ConversationFailureReason,
+  ConversationRecordSchema,
+  type ConversationRecord,
+} from './api-to-frontend.js';
 
 // Engine contract failure-reason enums (Zod schemas + types) — browser-safe re-exports
 export {

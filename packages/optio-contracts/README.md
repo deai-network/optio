@@ -34,7 +34,7 @@ The package hosts two typed contracts. Contract files follow `<server>-to-<clien
 
 ### `processesContract` (HTTP, ts-rest)
 
-ts-rest router with 9 endpoints, used by `optio-ui` to call `optio-api`:
+ts-rest router with 11 endpoints, used by `optio-ui` to call `optio-api`:
 
 | Name | Method | Path |
 |------|--------|------|
@@ -43,9 +43,11 @@ ts-rest router with 9 endpoints, used by `optio-ui` to call `optio-api`:
 | `getTree` | GET | `/processes/:prefix/:id/tree` |
 | `getLog` | GET | `/processes/:prefix/:id/log` |
 | `getTreeLog` | GET | `/processes/:prefix/:id/tree/log` |
+| `getConversation` | GET | `/processes/:id/conversation` |
 | `launch` | POST | `/processes/:prefix/:id/launch` |
 | `cancel` | POST | `/processes/:prefix/:id/cancel` |
 | `dismiss` | POST | `/processes/:prefix/:id/dismiss` |
+| `resurrect` | POST | `/processes/:id/resurrect` |
 | `resync` | POST | `/processes/:prefix/resync` |
 
 Used at runtime by ts-rest; no codegen step.
